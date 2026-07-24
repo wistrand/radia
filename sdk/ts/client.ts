@@ -14,9 +14,15 @@ import type {
 } from "../../src/storage/adapter.ts";
 import type { Template } from "../../src/core/matching.ts";
 import type { PutRequest } from "../../src/core/record.ts";
-import type { KindDef } from "../../src/core/kinds.ts";
+import { KIND_DEF, type KindDef, kindDefKey } from "../../src/core/kinds.ts";
 
-export type { AckResult, Lease, PutRequest, RadiaRecord, SpaceEvent, Template };
+export type { AckResult, KindDef, Lease, PutRequest, RadiaRecord, SpaceEvent, Template };
+
+export interface KindStateCount {
+  kind: string;
+  state: string;
+  count: number;
+}
 
 export type TakeSelector = { template: Template } | { recordId: string; template?: Template };
 
@@ -55,8 +61,11 @@ export class RadiaClient {
     return this.req("GET", "/v0/health");
   }
 
-  registerKind(def: KindDef): Promise<{ kind: string }> {
-    return this.req("POST", "/v0/kinds", def);
+  /** Declare a kind: put a kind_def record (idempotent per declaration). Kinds are records,
+   *  not a side endpoint — discover them with `listKinds()` (a query for kind_def records). */
+  async registerKind(def: KindDef): Promise<{ kind: string }> {
+    await this.put({ kind: KIND_DEF, body: def }, kindDefKey(def));
+    return { kind: def.kind };
   }
 
   put(req: PutRequest, idempotencyKey?: string): Promise<{ id: string }> {
@@ -93,12 +102,62 @@ export class RadiaClient {
   }
 
   async getEvents(after = 0, limit = 200): Promise<SpaceEvent[]> {
-    const r = await this.req("GET", `/v0/events?after=${after}&limit=${limit}`);
+    const r = await this.req("GET", `/v0/ops/events?after=${after}&limit=${limit}`);
     return r.events;
   }
 
+  async getStats(): Promise<KindStateCount[]> {
+    const r = await this.req("GET", "/v0/ops/stats");
+    return r.stats;
+  }
+
+  /** All declared kinds — the latest kind_def record per kind name (a redeclaration is a
+   *  successor record). Discovery through the substrate: a plain query, no kinds endpoint. */
+  async listKinds(): Promise<KindDef[]> {
+    const records = await this.query({ kind: KIND_DEF }, 1000);
+    const latest = new Map<string, { id: string; def: KindDef }>();
+    for (const rec of records) {
+      const def = rec.body as KindDef;
+      if (!def || typeof def.kind !== "string") continue;
+      const prev = latest.get(def.kind);
+      if (!prev || prev.id < rec.id) latest.set(def.kind, { id: rec.id, def });
+    }
+    return [...latest.values()].map((v) => v.def);
+  }
+
+  /** Ops-plane envelope query: records filtered by runtime state (leased/available/…), optional
+   *  `expired` (lapsed lease) / `stale` (seconds sat available). Returns records with envelopes. */
+  async queryEnvelopes(
+    q: { state: string; expired?: boolean; stale?: number; limit?: number },
+  ): Promise<{ record: RadiaRecord | null; envelope: unknown }[]> {
+    const p = new URLSearchParams({ state: q.state });
+    if (q.expired) p.set("expired", "1");
+    if (q.stale !== undefined) p.set("stale", String(q.stale));
+    if (q.limit !== undefined) p.set("limit", String(q.limit));
+    const r = await this.req("GET", `/v0/ops/records?${p}`);
+    return r.records;
+  }
+
+  async getRecord(recordId: string): Promise<RadiaRecord | null> {
+    try {
+      return await this.req("GET", `/v0/ops/records/${encodeURIComponent(recordId)}`);
+    } catch (e) {
+      if (e instanceof RadiaClientError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
+  diagnostics(): Promise<unknown> {
+    return this.req("GET", "/v0/ops/diagnostics");
+  }
+
+  /** Control-plane remediation: 'reclaim' | 'dead-letter' | 'requeue'. Returns {applied}. */
+  async admin(action: "reclaim" | "dead-letter" | "requeue", recordId: string): Promise<{ applied: boolean }> {
+    return await this.req("POST", `/v0/ops/records/${encodeURIComponent(recordId)}/${action}`);
+  }
+
   async getLineage(recordId: string): Promise<{ record: RadiaRecord; depth: number }[]> {
-    const r = await this.req("GET", `/v0/records/${encodeURIComponent(recordId)}/lineage`);
+    const r = await this.req("GET", `/v0/ops/records/${encodeURIComponent(recordId)}/lineage`);
     return r.lineage;
   }
 

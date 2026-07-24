@@ -120,6 +120,19 @@ control-plane ops (kinds, templates, definitions, runs — see design-auth.md)
 
 HTTP + JSON, OpenAPI-first; long-poll for blocking ops.
 
+**Two planes under `/v0` (implemented):** the frozen coordination verbs live at `/v0/*`
+(records put/read_one/query, `takes`, `leases/*`, `watches`, `health`); the
+experimental **observability + control** surface lives under `/v0/ops/*` (`stats`, `events`,
+`diagnostics`, envelope query `records?state=…`, record introspection
+`records/{id}[/envelope|/lineage|/graph]`, and remediation
+`records/{id}/{reclaim|dead-letter|requeue}`). The prefix split carries both the
+stability boundary and the (future) auth boundary — `/v0/ops/*` is grant-gated to
+human/supervisor principals. **Kinds are not a verb:** a kind declaration is a `kind_def`
+record on the coordination plane (`put` it, `query {kind:kind_def}` to discover) — no
+`/v0/kinds` endpoint. Principle: express features through the substrate (records, queries,
+content-routing) rather than as scattered endpoints — see [CLAUDE.md](../CLAUDE.md)
+"Design principle".
+
 - Watch: `POST /watches` → `GET /watches/{id}/events` (SSE, event cursor, resumption).
   **Cursor older than retained events → 410 `cursor_expired`:** the client performs a
   catch-up query and opens a new watch. **M1 status (implemented):** backed by the event

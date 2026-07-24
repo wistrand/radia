@@ -3,13 +3,20 @@
 // template compilation (core/matching.ts) validates predicates against it: a predicate on
 // an undeclared path, or order_by on a non-sortable path, is a registration error.
 //
-// The in-memory registry is a per-Space cache; declarations are persisted via the adapter
-// (`putKind`/`loadKinds`, a `kinds` table) and reloaded at startup by `Space.loadKinds`, so
-// they survive restart. Still deferred: the physical expression indexes for declared paths
-// (predicate pushdown) — the semantic oracle, not an index, defines correctness. See
-// agent_docs/plan-m0-implementation.md Phase 2.
+// The in-memory registry is a per-Space cache. Declarations are NOT a side table: each is a
+// record of the reserved `kind_def` kind (body = a KindDef), committed through the normal
+// `put` path, discoverable by query, and watchable like any record. `Space.loadKinds` rebuilds
+// the cache at startup by querying those records (latest per kind wins — a redeclaration is a
+// successor record, not a mutation). The one bootstrap is the `kind_def` meta-kind itself,
+// registered in code (META_KIND_DEF) so a query for `kind_def` records can compile. Still
+// deferred: the physical expression indexes for declared paths (predicate pushdown) — the
+// semantic oracle, not an index, defines correctness. See
+// agent_docs/plan-m0-implementation.md Phase 2 and agent_docs/design-matching.md.
 
 import { RadiaError } from "./errors.ts";
+
+/** The reserved kind whose records ARE kind declarations (body = a KindDef). */
+export const KIND_DEF = "kind_def";
 
 export type IndexedType = "keyword" | "integer" | "timestamp" | "array";
 
@@ -30,6 +37,22 @@ export interface KindDef {
   indexedPaths: IndexedPath[];
   /** Paths order_by may use. Must each be a declared indexed path. */
   sortablePaths?: string[];
+}
+
+/** The self-describing declaration of the `kind_def` meta-kind. Registered in code (the one
+ *  bootstrap) so `query {kind: kind_def}` compiles; its records are all other declarations. */
+export const META_KIND_DEF: KindDef = {
+  kind: KIND_DEF,
+  indexedPaths: [{ path: "kind", type: "keyword" }],
+};
+
+/** A deterministic idempotency key for a declaration, stable across process restarts and
+ *  independent of field order: the same def dedups (no record growth), a changed def is a new
+ *  successor record. Shared by the server and the SDK so both produce the same key. */
+export function kindDefKey(def: KindDef): string {
+  const ip = [...(def.indexedPaths ?? [])].map((p) => `${p.path}:${p.type}`).sort().join(",");
+  const sp = [...(def.sortablePaths ?? [])].sort().join(",");
+  return `kind_def:${def.kind}:${ip}:${sp}`;
 }
 
 function validPath(path: string): boolean {

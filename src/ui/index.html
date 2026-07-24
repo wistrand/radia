@@ -285,7 +285,7 @@ async function loadHealth() {
     + `<div><b>Version:</b> <span class="mono">${esc(d.version)}</span> · <b>API:</b> ${esc(d.api)}</div>`;
 }
 async function loadStats() {
-  const r = await api("GET", "/v0/stats");
+  const r = await api("GET", "/v0/ops/stats");
   if (!r.ok) return;
   const rows = r.data.stats;
   if (!rows.length) { $("stats").innerHTML = `<div class="empty">No records yet.</div>`; return; }
@@ -294,11 +294,18 @@ async function loadStats() {
     + `</tbody></table>`;
 }
 
-// ---- kinds ----
+// ---- kinds (kinds are kind_def records: discover by query, declare by put) ----
 async function loadKinds() {
-  const r = await api("GET", "/v0/kinds");
+  const r = await api("POST", "/v0/records/query", { kind: "kind_def", limit: 1000 });
   if (!r.ok) return;
-  const kinds = r.data.kinds;
+  const latest = new Map(); // kind name -> latest def (a redeclaration is a successor record)
+  for (const rec of r.data.records) {
+    const def = rec.body;
+    if (!def || typeof def.kind !== "string") continue;
+    const prev = latest.get(def.kind);
+    if (!prev || prev.id < rec.id) latest.set(def.kind, { id: rec.id, def });
+  }
+  const kinds = [...latest.values()].map((v) => v.def);
   $("kind-list").innerHTML = kinds.map((k) => `<option value="${esc(k.kind)}">`).join("");
   if (!kinds.length) { $("kinds-list").innerHTML = `<div class="empty">No kinds registered.</div>`; return; }
   $("kinds-list").innerHTML = kinds.map((k) =>
@@ -312,8 +319,11 @@ async function registerKind() {
   try { indexedPaths = JSON.parse($("k-indexed").value || "[]"); }
   catch (e) { return note("k-msg", "err", "Indexed paths: invalid JSON"); }
   sortablePaths = $("k-sortable").value.split(",").map((s) => s.trim()).filter(Boolean);
-  const r = await api("POST", "/v0/kinds", { kind: $("k-name").value.trim(), indexedPaths, sortablePaths });
-  if (r.ok) { note("k-msg", "ok", `Registered “${r.data.kind}”.`); loadKinds(); }
+  const def = { kind: $("k-name").value.trim(), indexedPaths, sortablePaths };
+  const ip = [...indexedPaths].map((p) => `${p.path}:${p.type}`).sort().join(",");
+  const key = `kind_def:${def.kind}:${ip}:${[...sortablePaths].sort().join(",")}`;
+  const r = await api("POST", "/v0/records", { kind: "kind_def", body: def }, { "Idempotency-Key": key });
+  if (r.ok) { note("k-msg", "ok", `Registered “${def.kind}”.`); loadKinds(); }
   else note("k-msg", "err", errText(r));
 }
 
@@ -351,13 +361,13 @@ function renderRecordList(el, records, onClick) {
 async function showDetail(id, target = "rec-detail") {
   let rec = (window._recs || {})[id];
   if (!rec) {
-    const r = await api("GET", "/v0/records/" + encodeURIComponent(id));
+    const r = await api("GET", "/v0/ops/records/" + encodeURIComponent(id));
     if (r.ok) rec = r.data;
   }
   if (!rec) { $(target).innerHTML = `<div class="empty">record not found</div>`; return; }
-  const env = await api("GET", "/v0/envelopes/" + encodeURIComponent(id));
+  const env = await api("GET", "/v0/ops/records/" + encodeURIComponent(id) + "/envelope");
   const e = env.ok ? env.data : null;
-  const lin = await api("GET", "/v0/records/" + encodeURIComponent(id) + "/lineage");
+  const lin = await api("GET", "/v0/ops/records/" + encodeURIComponent(id) + "/lineage");
   let lineageHtml = "";
   if (lin.ok && lin.data.lineage.length > 1) {
     lineageHtml = `<b>Lineage (ancestry)</b><div style="margin-top:6px">`
@@ -402,7 +412,7 @@ async function showGraph(id) {
 async function refreshGraph() {
   if (!currentRoot) return;
   const q = $("g-hidechunks").checked ? "?exclude=llm_chunk" : "";
-  const r = await api("GET", `/v0/records/${encodeURIComponent(currentRoot)}/graph${q}`);
+  const r = await api("GET", `/v0/ops/records/${encodeURIComponent(currentRoot)}/graph${q}`);
   if (!r.ok) { $("g-canvas").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
   renderGraph("g-canvas", r.data);
 }
@@ -529,7 +539,7 @@ async function settle(op) {
 // ---- feed ----
 let feedSeq = 0, feedTimer = null, feedRows = [];
 async function pollFeed() {
-  const r = await api("GET", "/v0/events?after=" + feedSeq + "&limit=200");
+  const r = await api("GET", "/v0/ops/events?after=" + feedSeq + "&limit=200");
   if (!r.ok) return;
   for (const e of r.data.events) { feedSeq = Math.max(feedSeq, e.seq); feedRows.unshift(e); }
   feedRows = feedRows.slice(0, 300);

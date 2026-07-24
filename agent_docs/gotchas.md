@@ -32,9 +32,38 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   `parent_ids` JSON text, not an indexed reverse edge. Fine for the dev console at small
   scale; a real reverse index (or an edges table) is the fix before it's a hot path. It
   works because ids are ULIDs (no `%`/`_`), so `like '%"<id>"%'` is safe.
+- **SSE watch streams detect client disconnect via the response stream's `cancel()`, not
+  `req.signal`.** Under `Deno.serve`'s legacy semantics, `request.signal` aborts on a *fully
+  delivered response*, not only on client disconnect — using it to gate a long-lived SSE loop
+  risks a false teardown, and merely reading it emits a deprecation warning
+  (`--unstable-no-legacy-abort`). `handleWatchEvents` instead sets a `closed` flag in the
+  `ReadableStream`'s `cancel()` callback (Deno invokes it when the client goes away) and races
+  the keepalive wait against a wake promise so disconnect cleanup is prompt. Don't reintroduce
+  `req.signal` here.
+
 - **The graph/lineage viewer excludes nothing by default except what the caller asks**
   (`?exclude=llm_chunk`): streaming `llm_chunk` records would otherwise dominate a
   conversation graph. Keep chunk flushing coarse for the same reason (event-log volume).
+
+- **Kinds are records (`kind_def`), and the `kind_def` meta-kind is the one bootstrap in
+  code.** A kind declaration is a `kind_def` record; the registry is a cache rebuilt by
+  querying them (`Space.loadKinds`). This has a chicken-and-egg: to `query {kind:kind_def}`
+  the kind `kind_def` must be registered. Broken by registering `META_KIND_DEF` in the Space
+  constructor (in code, never a record). Consequences to preserve: `Space.put` special-cases
+  `kind_def` (validate the body as a `KindDef`, register it after commit — on idempotent
+  replay too); re-declaring `kind_def` itself is rejected; a re-declaration of any other kind
+  is a **successor** record (immutability), so `loadKinds`/`listKinds` take the latest per kind
+  name (by ULID id). Re-registering an identical def is idempotent (deterministic key from
+  `kindDefKey`), so restarts don't grow records. Don't reintroduce a `kinds` table or a
+  `/v0/kinds` endpoint — that's the side-table-beside-the-substrate this replaced.
+
+- **The ops query language is body-only by design; the envelope query is the ops exception.**
+  The content-routing template DSL matches record *bodies* (for routing) and deliberately can't
+  see the runtime envelope (state/attempt/lease). So observability that needs the envelope
+  (diagnostics, "what's stuck") is NOT a template query — it's `GET /v0/ops/records?state=…`
+  (`Space.queryEnvelopes`), and diagnostics composes that. Don't try to fold envelope-state,
+  aggregation (stats), DAG-traversal (lineage/graph), or get-by-id into the template DSL:
+  those are legitimately first-class ops capabilities, not endpoints pretending to be queries.
 
 - **Idempotency is checked before lease validation, and the order is load-bearing.**
   `ack` commits, the HTTP response is lost, the agent retries; the task is now consumed

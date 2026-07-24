@@ -8,8 +8,27 @@
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./kinds.ts";
-import { TOOL_SCHEMAS } from "./tools.ts";
-import type { ChatMessage } from "./openrouter.ts";
+import type { ChatMessage, ToolDef } from "./openrouter.ts";
+
+// Tools are DISCOVERED from the space, not hard-coded: each tool-worker publishes its tools
+// as `capability` records. The chatbot keeps a live tool set by WATCHING those records — a new
+// capability record appears in the stream and the tool is available on the next turn, no code
+// change and no per-turn re-query. `discoverTools()` returns the watched cache.
+let toolCache: ToolDef[] = [];
+async function refreshTools(): Promise<void> {
+  const caps = await client.query({ kind: "capability" }, 200);
+  toolCache = caps.map((c) => (c.body as { def: ToolDef }).def);
+}
+function discoverTools(): ToolDef[] {
+  return toolCache;
+}
+/** Maintain toolCache from the capability record stream until aborted. */
+async function watchCapabilities(signal: AbortSignal): Promise<void> {
+  await refreshTools(); // seed
+  try {
+    for await (const _ of client.watch({ kind: "capability" }, signal)) await refreshTools();
+  } catch { /* aborted on shutdown */ }
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const enc = new TextEncoder();
@@ -102,7 +121,11 @@ procs.push(
   }).spawn(),
 );
 
+const capWatch = new AbortController();
+watchCapabilities(capWatch.signal); // background: keep the tool set live from capability records
+
 function cleanup() {
+  capWatch.abort();
   for (const p of procs) {
     try {
       p.kill();
@@ -119,7 +142,13 @@ console.log(`sandbox: ${roots.join(", ")}`);
 console.log(`space ${url}${spawnedSpace ? " (spawned)" : " (existing)"} — open it and watch the Feed tab. Ctrl-D to quit.`);
 
 const SYSTEM_PROMPT =
-  "You are a concise assistant. You can read, list, and search text files in a sandboxed directory, get the time, and do arithmetic — use the provided tools when helpful.";
+  "You are a concise assistant on Radia, a content-routed coordination runtime. Your " +
+  "available tools are the functions provided to you; they are discovered from the space, so " +
+  "the set may change between turns. Do not confuse your tools with record kinds. Everything " +
+  "in Radia is a record — including this conversation (kind 'message', matched by your " +
+  "conversationId) and your own reasoning (llm_call/llm_result) — so your space_* tools can " +
+  "inspect and even remediate the space itself. Use state-changing tools deliberately, and " +
+  "prefer to inspect before acting.";
 
 // The conversation is an append-only thread of `message` records on the space, not a
 // client-held array. The chatbot appends messages (assigning indices) and reads results;
@@ -142,6 +171,9 @@ async function appendMessage(
 }
 
 await appendMessage({ role: "system", content: SYSTEM_PROMPT });
+
+// Wait for the tool-workers to publish their capabilities (the watch fills the cache).
+for (let i = 0; i < 50 && discoverTools().length === 0; i++) await sleep(200);
 
 // Read stdin line by line (works for an interactive TTY and for piped input, unlike prompt()).
 const stdin = Deno.stdin.readable.getReader();
@@ -194,7 +226,7 @@ async function turn(): Promise<void> {
     const upToIndex = nextIndex - 1;
     const { id: callId } = await client.put({
       kind: "llm_call",
-      body: { conversationId, upToIndex, model, tools: TOOL_SCHEMAS },
+      body: { conversationId, upToIndex, model, tools: discoverTools() },
       parentIds: [conversationId],
     });
     const { message: msg, finishReason, streamed } = await streamResult(callId);

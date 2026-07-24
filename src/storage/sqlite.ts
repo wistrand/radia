@@ -109,10 +109,6 @@ create table if not exists events (
   state text,
   detail text
 );
-create table if not exists kinds (
-  kind text primary key,
-  def text not null
-);
 `;
 
 type SqlValue = string | number | null;
@@ -355,15 +351,45 @@ export class SqliteAdapter implements StorageAdapter {
     return Promise.resolve(Number(row.seq));
   }
 
-  putKind(kind: string, defJson: string): Promise<void> {
-    this.db.prepare("insert into kinds (kind, def) values (?, ?) on conflict(kind) do update set def = excluded.def")
-      .run(kind, defJson);
-    return Promise.resolve();
+  envelopesInState(state: string, limit: number): Promise<Envelope[]> {
+    const rows = this.db
+      .prepare("select * from record_runtime where state = ? order by available_at limit ?")
+      .all(state, limit) as RawRow[];
+    return Promise.resolve(rows.map(rowToEnvelope));
   }
 
-  loadKinds(): Promise<string[]> {
-    const rows = this.db.prepare("select def from kinds order by kind").all() as { def: string }[];
-    return Promise.resolve(rows.map((r) => r.def));
+  adminTransition(
+    recordId: string,
+    fromStates: string[],
+    toState: string,
+    opts: { now: string; bumpAttempt?: boolean; onlyExpired?: boolean },
+  ): Promise<boolean> {
+    const inList = fromStates.map((s) => `'${s}'`).join(","); // fixed enum, no injection
+    const sets = [`state = '${toState}'`, "lease_id = null"];
+    if (opts.bumpAttempt) sets.push("attempt = attempt + 1");
+    if (toState === "available") sets.push("available_at = ?");
+    let where = `record_id = ? and state in (${inList})`;
+    if (opts.onlyExpired) where += " and leased_until < ?";
+    // param order matches ? left-to-right: [available_at?], record_id, [leased_until?]
+    const params: SqlParam[] = [];
+    if (toState === "available") params.push(opts.now);
+    params.push(recordId);
+    if (opts.onlyExpired) params.push(opts.now);
+
+    return Promise.resolve(this.tx(() => {
+      const info = this.db.prepare(`update record_runtime set ${sets.join(", ")} where ${where}`).run(...params);
+      if (Number(info.changes) === 0) return false;
+      const kr = this.db.prepare("select kind from record_runtime where record_id = ?").get(recordId) as { kind: string } | undefined;
+      this.appendEvent({
+        runId: "admin",
+        operation: "admin",
+        recordId,
+        kind: kr?.kind,
+        state: toState as Envelope["state"],
+        detail: { from: fromStates },
+      }, opts.now);
+      return true;
+    }));
   }
 
   private appendEvent(e: EventInput, ts: string): void {

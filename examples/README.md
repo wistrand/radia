@@ -69,6 +69,14 @@ once (linear, not quadratic — no re-embedding), the whole conversation is reco
 from the space (`query` the thread), and every message is a record you can watch in the
 Feed. This is the blackboard shared-memory pattern, not just content-routed dispatch.
 
+**Tools are discovered, not hard-coded.** Each tool-worker publishes its tools as
+`capability` records (`{tool, schema}`); the chatbot keeps a live tool set by *watching* them
+(`watch {kind:capability}`) and dispatches by content (`tool_call{tool}` → whichever worker
+registered it). Add a tool-worker → its capability record streams in and the chatbot gains the
+tool on the next turn, no code or prompt change. This is "no preconfigured routing table" (§7)
+applied to tools — the substrate coordinating its own capabilities. (Kinds work the same way:
+the chatbot's `capability` kind, like every kind, is a `kind_def` record, not a config table.)
+
 ```bash
 export OPENROUTER_API_KEY=sk-or-...          # https://openrouter.ai/keys
 deno task dev                                # optional: open http://localhost:7788, Feed tab
@@ -88,8 +96,22 @@ Why subprocesses: permission isolation only holds across processes.
 
 Tools: `read_file`, `list_files`, `search_files`, `stat` (sandboxed to `RADIA_CHAT_DIRS`,
 default `examples/chat/sandbox`; `list_files`/`read_file`/`stat` return `size` + `modified`
-so size/date questions get ground truth, not guesses), plus `time` and `calc`. Config:
-`OPENROUTER_API_KEY`,
+so size/date questions get ground truth, not guesses), plus `time` and `calc`.
+
+**Inspection tools** (`inspect.ts`) make the chatbot a conversational inspector of its own
+space: `space_stats`, `space_kinds`, `space_query`, `space_record`, `space_lineage`,
+`space_events`, and `space_doctor` (a derived health report — stuck leases, dead-letters,
+stale-available). Because everything is a record, it can inspect *itself* — ask it "how many
+records are in the space?", "show the lineage of the last summary", "is the space healthy?",
+or "query my conversation thread" (the conversation is `kind:message` with your
+`conversationId`). Output is size-capped so results are LLM-friendly, and each inspection is
+itself a `tool_call` (a small observer effect).
+
+**Remediation tools** (`remediate.ts`) turn it into an operator: `space_reclaim` (un-stick
+an expired lease), `space_dead_letter`, `space_requeue` — control-plane operations that
+bypass lease fencing (fixing another worker's stuck record), so they're privileged (grant-
+gated with real auth). Pair with `space_doctor`: "find what's stuck and fix it," in chat.
+Config: `OPENROUTER_API_KEY`,
 `RADIA_CHAT_MODEL` (default `openai/gpt-4o-mini`), `RADIA_CHAT_DIRS`, `RADIA_URL`.
 
 Honest edges (documented, not hidden): a crashed inference retries and can double-spend
@@ -114,8 +136,10 @@ until **artifacts** (§2.4, M1) let it be stored once and referenced. Not a CI t
 | `coordinator.ts` | seeds a job + a standalone task, reads outcomes |
 | `demo.ts` | orchestrates all of the above in one process (`deno task demo`) |
 | `chat/chat.ts` | CLI chatbot (pure record I/O); appends the `message` thread, spawns scoped workers, runs the REPL |
-| `chat/kinds.ts` | registers `conversation`/`message`/`llm_*`/`tool_*` kinds |
+| `chat/kinds.ts` | registers `conversation`/`message`/`llm_*`/`tool_*`/`capability` kinds |
 | `chat/inference.ts` | inference-worker: reconstructs the thread from `message` records → OpenRouter (stream) → `llm_chunk` + `llm_result` |
 | `chat/toolworker.ts` | tool-worker: `tool_call` → sandboxed tool → `tool_result` (scoped perms) |
-| `chat/tools.ts` | tool impls + JSON schemas + sandbox (realpath allowlist, `calc`) |
+| `chat/tools.ts` | file/compute tool impls + JSON schemas + sandbox (realpath allowlist, `calc`) |
+| `chat/inspect.ts` | space-inspection tools (`space_stats`/`query`/`lineage`/`events`/`doctor`, …) |
+| `chat/remediate.ts` | remediation tools (`space_reclaim`/`dead_letter`/`requeue`) over the admin endpoints |
 | `chat/openrouter.ts` | streaming OpenAI-compatible client (sole API-key holder's dep) |

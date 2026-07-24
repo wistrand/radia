@@ -8,8 +8,24 @@ export async function handleStats(space: Space): Promise<Response> {
   return Response.json({ stats: await space.stats() });
 }
 
-export function handleListKinds(space: Space): Response {
-  return Response.json({ kinds: space.listKinds() });
+/**
+ * Envelope query: records filtered by runtime state (the envelope dimension the content-routing
+ * query language deliberately excludes). `?state=leased&expired=1&stale=60&limit=100`. Returns
+ * `{records:[{record, envelope}]}`. The substrate primitive diagnostics is a caller of.
+ */
+export async function handleEnvelopeQuery(space: Space, url: URL): Promise<Response> {
+  const state = url.searchParams.get("state");
+  const valid = new Set(["available", "leased", "consumed", "dead_letter", "expired"]);
+  if (!state || !valid.has(state)) {
+    return problem(400, "invalid_state", `state must be one of ${[...valid].join(", ")}`);
+  }
+  const expired = url.searchParams.get("expired") === "1" || url.searchParams.get("expired") === "true";
+  const staleParam = url.searchParams.get("stale");
+  const staleSeconds = staleParam ? Number(staleParam) : undefined;
+  const limit = Math.min(Number(url.searchParams.get("limit") ?? "100") || 100, 500);
+  // deno-lint-ignore no-explicit-any
+  const rows = await space.queryEnvelopes({ state: state as any, expired, staleSeconds, limit });
+  return Response.json({ records: rows });
 }
 
 export async function handleEnvelope(space: Space, recordId: string): Promise<Response> {
@@ -42,4 +58,18 @@ export async function handleGraph(space: Space, recordId: string, url: URL): Pro
   const graph = await space.getGraph(recordId, { excludeKinds });
   if (!graph.nodes.length) return problem(404, "not_found", `no record ${recordId}`);
   return Response.json(graph);
+}
+
+export async function handleDiagnostics(space: Space): Promise<Response> {
+  return Response.json(await space.diagnostics());
+}
+
+/** Control-plane remediation (bypasses lease fencing; grant-gated with real auth). */
+export async function handleAdmin(space: Space, recordId: string, action: string): Promise<Response> {
+  let applied: boolean;
+  if (action === "reclaim") applied = await space.reclaim(recordId);
+  else if (action === "dead-letter") applied = await space.forceDeadLetter(recordId);
+  else if (action === "requeue") applied = await space.requeue(recordId);
+  else return problem(404, "not_found", `unknown admin action ${action}`);
+  return Response.json({ action, recordId, applied });
 }

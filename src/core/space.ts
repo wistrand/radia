@@ -13,6 +13,7 @@ import type {
   LeaseSpec,
   PutInput,
   RadiaRecord,
+  RecordState,
   RenewResult,
   SettleResult,
   SpaceEvent,
@@ -20,10 +21,12 @@ import type {
   TakeResult,
   TakeSelector,
 } from "../storage/adapter.ts";
+import { addSeconds } from "./time.ts";
 import { buildRecord, type PutRequest } from "./record.ts";
 import { compileTemplate, matchesRecord, type Template } from "./matching.ts";
-import { type KindDef, KindRegistry } from "./kinds.ts";
+import { KIND_DEF, type KindDef, kindDefKey, KindRegistry, META_KIND_DEF, validateKindDef } from "./kinds.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
+import { RadiaError } from "./errors.ts";
 import { Notifier } from "./notifier.ts";
 
 export interface SpaceContext {
@@ -67,6 +70,14 @@ export interface GraphNode {
   createdAt: string;
 }
 
+export interface Diagnostics {
+  now: string;
+  counts: Record<string, number>;
+  deadLetter: { count: number; sample: unknown[] };
+  stuckLeases: { count: number; sampledFrom: number; sample: unknown[] };
+  staleAvailable: { count: number; thresholdSeconds: number; sample: unknown[] };
+}
+
 /** A short, generic label for a graph node — kind plus a common discriminating field. */
 function labelFor(rec: RadiaRecord): string {
   const b = (rec.body ?? {}) as Record<string, unknown>;
@@ -85,32 +96,60 @@ export class Space {
     ctx: Partial<SpaceContext> = {},
   ) {
     this.ctx = { ...DEFAULT_CONTEXT, ...ctx };
+    // Bootstrap: the meta-kind is defined in code so a query for kind_def records compiles.
+    // Every other kind is a kind_def record, loaded into this registry by loadKinds().
+    this.kinds.register(META_KIND_DEF);
   }
 
   get storageName(): string {
     return this.storage.name;
   }
 
-  /** Declare a kind (validate + cache in memory). Throws RadiaError on an invalid def.
-   *  Synchronous so direct callers see it immediately; use persistKind to store it durably. */
+  /** Declare a kind (validate + cache in memory only). Throws RadiaError on an invalid def.
+   *  Synchronous so direct callers see it immediately; use persistKind to store it durably
+   *  (as a kind_def record). Most in-process callers (tests, examples) only need this. */
   registerKind(def: KindDef): void {
     this.kinds.register(def);
   }
 
-  /** Durably store a (already-validated) kind declaration. */
-  persistKind(def: KindDef): Promise<void> {
-    return this.storage.putKind(def.kind, JSON.stringify(def));
+  /** Durably store a kind declaration as a kind_def record (and cache it). Idempotent per
+   *  declaration content, so re-declaring the same def across restarts does not grow records. */
+  async persistKind(def: KindDef): Promise<void> {
+    validateKindDef(def);
+    await this.put({ kind: KIND_DEF, body: def }, kindDefKey(def));
   }
 
-  /** Load persisted kind declarations into the registry (call once at startup). */
+  /** Rebuild the registry from kind_def records (call once at startup). A kind's latest
+   *  declaration wins (records are immutable; a redeclaration is a successor, not a mutation). */
   async loadKinds(): Promise<void> {
-    for (const defJson of await this.storage.loadKinds()) {
+    const records = await this.storage.query({ kind: KIND_DEF }, 1000);
+    const latest = new Map<string, RadiaRecord>();
+    for (const rec of records) {
+      const kind = (rec.body as { kind?: unknown } | null)?.kind;
+      if (typeof kind !== "string") continue;
+      const prev = latest.get(kind);
+      if (!prev || prev.id < rec.id) latest.set(kind, rec); // ULID id is monotonic ~ recency
+    }
+    for (const rec of latest.values()) {
       try {
-        this.kinds.register(JSON.parse(defJson) as KindDef);
+        this.kinds.register(rec.body as KindDef);
       } catch {
         // skip a malformed persisted declaration rather than fail startup
       }
     }
+  }
+
+  /** Validate a kind_def record body as a KindDef. Rejects redefining the built-in meta-kind. */
+  private kindDefFromBody(body: unknown): KindDef {
+    if (body === null || typeof body !== "object") {
+      throw new RadiaError("invalid_kind", "a kind_def record body must be a KindDef object");
+    }
+    const def = body as KindDef;
+    if (def.kind === KIND_DEF) {
+      throw new RadiaError("reserved_kind", `'${KIND_DEF}' is the built-in meta-kind and cannot be redeclared`);
+    }
+    validateKindDef(def);
+    return def;
   }
 
   /** DB clock passthrough (health, diagnostics). */
@@ -119,6 +158,18 @@ export class Space {
   }
 
   async put(req: PutRequest, idempotencyKey?: string): Promise<{ id: string }> {
+    // A kind_def record IS a kind declaration: validate its body as a KindDef before commit,
+    // so the substrate coordinates its own schema through the normal write path (no side table).
+    if (req.kind === KIND_DEF) {
+      const def = this.kindDefFromBody(req.body); // throws RadiaError on an invalid declaration
+      const id = await this.putRaw(req, idempotencyKey);
+      this.kinds.register(def); // reflect it in this process's registry (also on idempotent replay)
+      return id;
+    }
+    return this.putRaw(req, idempotencyKey);
+  }
+
+  private async putRaw(req: PutRequest, idempotencyKey?: string): Promise<{ id: string }> {
     const now = await this.storage.now(); // INVARIANT: timestamps come from the DB clock
     const { record, bodyJson } = await buildRecord(req, {
       principal: this.ctx.principal,
@@ -359,6 +410,88 @@ export class Space {
   /** Resolve when a mutation occurs (a watch wakeup) or after timeoutMs (keepalive). */
   waitForEvents(timeoutMs: number): Promise<void> {
     return this.notifier.wait(timeoutMs);
+  }
+
+  // ---- envelope query + diagnostics + remediation (ops plane; would be grant-gated) ----
+
+  /**
+   * Query records by their runtime ENVELOPE state — the dimension the content-routing query
+   * language deliberately omits (it matches record bodies, for routing). This is the ops-plane
+   * substrate primitive: `expired` keeps only leased rows whose lease has lapsed; `staleSeconds`
+   * keeps only first-attempt rows that have sat available longer than that. Diagnostics composes
+   * it rather than hand-rolling the same scans. All time math uses the DB clock.
+   */
+  async queryEnvelopes(
+    q: { state: RecordState; expired?: boolean; staleSeconds?: number; limit?: number },
+  ): Promise<{ record: RadiaRecord | null; envelope: Envelope }[]> {
+    const now = await this.storage.now();
+    let envs = await this.storage.envelopesInState(q.state, q.limit ?? 100);
+    if (q.expired) envs = envs.filter((e) => e.leasedUntil !== undefined && e.leasedUntil < now);
+    if (q.staleSeconds !== undefined) {
+      const before = addSeconds(now, -q.staleSeconds);
+      envs = envs.filter((e) => e.attempt === 0 && e.availableAt < before);
+    }
+    const rows: { record: RadiaRecord | null; envelope: Envelope }[] = [];
+    for (const e of envs) rows.push({ record: await this.storage.getRecord(e.recordId), envelope: e });
+    return rows;
+  }
+
+  /** A derived health report, composed from queryEnvelopes + stats: counts by state,
+   *  dead-letters, expired-but-stuck leases, and available records that have sat unclaimed. */
+  async diagnostics(): Promise<Diagnostics> {
+    const now = await this.storage.now();
+    const stats = await this.storage.stats();
+    const total = (state: string) => stats.filter((s) => s.state === state).reduce((a, s) => a + s.count, 0);
+    const SAMPLE = 500;
+    const STALE_S = 60;
+
+    const deadLetter = await this.queryEnvelopes({ state: "dead_letter", limit: 50 });
+    const stuck = await this.queryEnvelopes({ state: "leased", expired: true, limit: SAMPLE });
+    const stale = await this.queryEnvelopes({ state: "available", staleSeconds: STALE_S, limit: SAMPLE });
+    const env = (r: { envelope: Envelope }) => r.envelope;
+
+    return {
+      now,
+      counts: {
+        available: total("available"),
+        leased: total("leased"),
+        consumed: total("consumed"),
+        dead_letter: total("dead_letter"),
+        expired: total("expired"),
+      },
+      deadLetter: { count: total("dead_letter"), sample: deadLetter.slice(0, 10).map((r) => ({ recordId: env(r).recordId, kind: env(r).kind, attempt: env(r).attempt })) },
+      stuckLeases: {
+        count: stuck.length,
+        sampledFrom: Math.min(total("leased"), SAMPLE),
+        sample: stuck.slice(0, 10).map((r) => ({ recordId: env(r).recordId, kind: env(r).kind, leaseId: env(r).leaseId, leasedUntil: env(r).leasedUntil, attempt: env(r).attempt })),
+      },
+      staleAvailable: { count: stale.length, thresholdSeconds: STALE_S, sample: stale.slice(0, 10).map((r) => ({ recordId: env(r).recordId, kind: env(r).kind, availableAt: env(r).availableAt })) },
+    };
+  }
+
+  /** Un-stick an expired lease: force it back to available (attempt +1). Only if the lease
+   *  has actually expired — never disturbs a valid lease. Returns whether it applied. */
+  async reclaim(recordId: string): Promise<boolean> {
+    const now = await this.storage.now();
+    const applied = await this.storage.adminTransition(recordId, ["leased"] as RecordState[], "available", { now, bumpAttempt: true, onlyExpired: true });
+    if (applied) this.notifier.notify();
+    return applied;
+  }
+
+  /** Give up on a record: force it to dead_letter (from available or leased). */
+  async forceDeadLetter(recordId: string): Promise<boolean> {
+    const now = await this.storage.now();
+    const applied = await this.storage.adminTransition(recordId, ["available", "leased"] as RecordState[], "dead_letter", { now });
+    if (applied) this.notifier.notify();
+    return applied;
+  }
+
+  /** Retry a dead-lettered record: force it back to available. */
+  async requeue(recordId: string): Promise<boolean> {
+    const now = await this.storage.now();
+    const applied = await this.storage.adminTransition(recordId, ["dead_letter"] as RecordState[], "available", { now });
+    if (applied) this.notifier.notify();
+    return applied;
   }
 
   private compile(template: Template): CompiledMatch {

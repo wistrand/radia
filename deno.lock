@@ -6,6 +6,7 @@
     "jsr:@std/internal@^1.0.14": "1.0.14",
     "jsr:@std/path@1": "1.1.5",
     "jsr:@std/ulid@1": "1.0.0",
+    "jsr:@std/yaml@*": "1.1.2",
     "npm:@electric-sql/pglite@0.2": "0.2.17"
   },
   "jsr": {
@@ -26,6 +27,9 @@
     },
     "@std/ulid@1.0.0": {
       "integrity": "d41c3d27a907714413649fee864b7cde8d42ee68437d22b79d5de4f81d808780"
+    },
+    "@std/yaml@1.1.2": {
+      "integrity": "de612653c036749ba2044165e316f52412b0f0698afffb7ee80b5331d6d2abae"
     }
   },
   "npm": {

@@ -6,9 +6,12 @@ info:
     Content-routed coordination runtime. This is the frozen wire contract; the runtime
     implements it (not the reverse). Freeze policy (see
     agent_docs/plan-m0-implementation.md "OpenAPI freeze policy"): the data-plane core is
-    v0-stable and additive-only; control-plane and the dev/diagnostic endpoints are
-    experimental. Per-element stability is `x-stability`. SemVer 0.x means the surface may
-    still move; the additive-only rule is what makes the stable subset dependable.
+    v0-stable and additive-only; kinds are declared through it (a `kind_def` record, no kinds
+    endpoint). The observability+control plane under `/v0/ops/*` (stats, events, diagnostics,
+    record + envelope introspection, remediation) is experimental and grant-gated (with real
+    auth). Per-element stability is
+    `x-stability`. SemVer 0.x means the surface may still move; the additive-only rule is
+    what makes the stable subset dependable.
 
     Implemented through M0 (Phases 0-6) plus M1 watches. Not implemented yet: artifacts,
     grants/run-tokens/taint/delegation, scheduler admission, request/bid/award, keyset
@@ -296,42 +299,89 @@ paths:
         "404": { $ref: "#/components/responses/Problem" }
         "410": { $ref: "#/components/responses/Problem" }
 
-  # --- Control plane + dev/diagnostics: EXPERIMENTAL ----------------------------------
+  # --- observability/control plane (/ops/*): EXPERIMENTAL --------------------------------
+  # /v0/ops/* is the observe-and-operate plane (stats, events, diagnostics, record + envelope
+  # introspection, remediation); grant-gated to human/supervisor principals with real auth.
+  #
+  # There is NO /kinds endpoint. A kind declaration is a record of the reserved `kind_def`
+  # kind (body = a KindDef): declare a kind with `POST /records` {kind: kind_def, body: <KindDef>}
+  # and discover kinds with `POST /records/query` {kind: kind_def}. Expressing kinds through the
+  # substrate (records + query) rather than a bespoke endpoint — see CLAUDE.md "Design principle".
+  # Re-declaring a kind emits a successor record (records are immutable; latest per name wins).
 
-  /kinds:
-    post:
-      operationId: registerKind
-      summary: Declare a kind's indexed/sortable paths
-      x-stability: experimental
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/KindDef" }
-      responses:
-        "201":
-          description: registered
-          content:
-            application/json:
-              schema:
-                type: object
-                properties: { kind: { type: string } }
-        "422": { $ref: "#/components/responses/Problem" }
+  /ops/records:
     get:
-      operationId: listKinds
-      summary: Registered kind declarations
+      operationId: envelopeQuery
+      summary: Query records by runtime envelope state (leased/available/…), the dimension the content-routing query omits
+      description: >
+        The ops-plane substrate primitive for observability: filter by envelope `state`, plus
+        optional `expired` (lease has lapsed) and `stale` (seconds sat available). Diagnostics is
+        a composition of these. Returns records with their envelopes.
       x-stability: experimental
+      parameters:
+        - { name: state, in: query, required: true, schema: { type: string, enum: [available, leased, consumed, dead_letter, expired] } }
+        - { name: expired, in: query, required: false, schema: { type: string, enum: ["1", "true"] } }
+        - { name: stale, in: query, required: false, schema: { type: integer }, description: "keep first-attempt available rows older than this many seconds" }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 100, maximum: 500 } }
       responses:
         "200":
-          description: kinds
+          description: records with envelopes
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  kinds: { type: array, items: { $ref: "#/components/schemas/KindDef" } }
+                  records:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        record: { $ref: "#/components/schemas/Record" }
+                        envelope: { $ref: "#/components/schemas/Envelope" }
+        "400": { $ref: "#/components/responses/Problem" }
 
-  /stats:
+  /ops/diagnostics:
+    get:
+      operationId: diagnostics
+      summary: Derived health report — counts, dead-letters, stuck leases, stale-available (dev console)
+      x-stability: experimental
+      responses:
+        "200":
+          description: diagnostics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  now: { type: string }
+                  counts: { type: object, additionalProperties: { type: integer } }
+                  deadLetter: { type: object }
+                  stuckLeases: { type: object }
+                  staleAvailable: { type: object }
+
+  /ops/records/{recordId}/{action}:
+    post:
+      operationId: adminRemediate
+      summary: Control-plane remediation (bypasses lease fencing; grant-gated with real auth)
+      description: "`action` is reclaim (un-stick an EXPIRED lease → available, attempt+1), dead-letter, or requeue (dead_letter → available). Returns {applied}."
+      x-stability: experimental
+      parameters:
+        - { name: recordId, in: path, required: true, schema: { type: string } }
+        - { name: action, in: path, required: true, schema: { type: string, enum: [reclaim, dead-letter, requeue] } }
+      responses:
+        "200":
+          description: "{action, recordId, applied}"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  action: { type: string }
+                  recordId: { type: string }
+                  applied: { type: boolean }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  /ops/stats:
     get:
       operationId: stats
       summary: Record counts by kind and state (dev console)
@@ -353,7 +403,7 @@ paths:
                         state: { type: string }
                         count: { type: integer }
 
-  /events:
+  /ops/events:
     get:
       operationId: events
       summary: Append-only event log after a seq (dev console / audit)
@@ -371,7 +421,7 @@ paths:
                 properties:
                   events: { type: array, items: { $ref: "#/components/schemas/Event" } }
 
-  /envelopes/{recordId}:
+  /ops/records/{recordId}/envelope:
     get:
       operationId: getEnvelope
       summary: The mutable runtime envelope for a record (dev console)
@@ -386,7 +436,7 @@ paths:
               schema: { $ref: "#/components/schemas/Envelope" }
         "404": { $ref: "#/components/responses/Problem" }
 
-  /records/{recordId}:
+  /ops/records/{recordId}:
     get:
       operationId: getRecord
       summary: A single record by id (dev console)
@@ -401,7 +451,7 @@ paths:
               schema: { $ref: "#/components/schemas/Record" }
         "404": { $ref: "#/components/responses/Problem" }
 
-  /records/{recordId}/lineage:
+  /ops/records/{recordId}/lineage:
     get:
       operationId: lineage
       summary: A record and its ancestry via parent_ids (dev console)
@@ -425,7 +475,7 @@ paths:
                         depth: { type: integer }
         "404": { $ref: "#/components/responses/Problem" }
 
-  /records/{recordId}/graph:
+  /ops/records/{recordId}/graph:
     get:
       operationId: graph
       summary: The parent_ids relationship graph around a record (dev console)
@@ -602,7 +652,9 @@ components:
               dir: { type: string, enum: [asc, desc] }
 
     KindDef:
-      description: Per-kind indexing contract. EXPERIMENTAL.
+      description: >
+        Per-kind indexing contract. This is the BODY of a `kind_def` record — declare a kind by
+        putting one (there is no /kinds endpoint). EXPERIMENTAL.
       x-stability: experimental
       type: object
       required: [kind, indexedPaths]

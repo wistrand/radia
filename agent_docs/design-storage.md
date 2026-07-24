@@ -9,8 +9,9 @@ distribution strategy. Origin: outline §10.
 partial claim index, and the SQL mapping below; both pass the full conformance suite in CI.
 The `dev` mode is `deno task dev` (in-memory by default; `--db <path>` persists — a file
 for SQLite, a data directory for PGlite; records, envelopes, events, idempotency, and kind
-declarations all survive restart — kinds are stored in a `kinds` table and reloaded into
-the registry at startup via `Space.loadKinds`). **Not implemented:** the standalone
+declarations all survive restart — kind declarations are `kind_def` records (no separate
+table), reloaded into the in-memory registry at startup via `Space.loadKinds`). **Not
+implemented:** the standalone
 **Postgres** adapter and `single-node`/`production` modes (M1+), `npm`/`pip` binary
 wrapping (Phase 7), envelope encryption/KMS (M2).
 
@@ -45,7 +46,7 @@ wrapping (Phase 7), envelope encryption/KMS (M2).
 | watch        | wakeups (Postgres LISTEN/NOTIFY; embedded: in-process `Notifier`) + event-log cursor catch-up; 410 on expired cursors (dormant until GC)                                           |
 | Timers       | `available_at` / `deadline_at` indexes + sweeper (backoff, bid windows, lease resurrection, priority aging) — **M2**                                                               |
 | Event log    | append-only `events` table (monotonic seq), same transaction as each mutation                                                                                                     |
-| Kinds        | `kinds` table (declaration JSON); reloaded into the in-memory registry at startup (`Space.loadKinds`)                                                                              |
+| Kinds        | `kind_def` **records** (no table); the in-memory registry is a cache rebuilt at startup by querying them (`Space.loadKinds`)                                                        |
 | Clock        | DB `now()` for all lease/timing math                                                                                                                                              |
 | Blobs        | object store + artifact table (sha256, size, internal URI); runtime-issued download capabilities — **not implemented (M1)**                                                        |
 

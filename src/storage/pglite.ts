@@ -101,10 +101,6 @@ create table if not exists events (
   state text,
   detail text
 );
-create table if not exists kinds (
-  kind text primary key,
-  def text not null
-);
 `;
 
 export class PgliteAdapter implements StorageAdapter {
@@ -365,16 +361,48 @@ export class PgliteAdapter implements StorageAdapter {
     return res.rows[0].seq;
   }
 
-  async putKind(kind: string, defJson: string): Promise<void> {
-    await this.db.query(
-      "insert into kinds (kind, def) values ($1, $2) on conflict (kind) do update set def = excluded.def",
-      [kind, defJson],
+  async envelopesInState(state: string, limit: number): Promise<Envelope[]> {
+    const res = await this.db.query<RawRow>(
+      "select * from record_runtime where state = $1 order by available_at limit $2",
+      [state, limit],
     );
+    return res.rows.map(rowToEnvelope);
   }
 
-  async loadKinds(): Promise<string[]> {
-    const res = await this.db.query<{ def: string }>("select def from kinds order by kind");
-    return res.rows.map((r) => r.def);
+  async adminTransition(
+    recordId: string,
+    fromStates: string[],
+    toState: string,
+    opts: { now: string; bumpAttempt?: boolean; onlyExpired?: boolean },
+  ): Promise<boolean> {
+    const inList = fromStates.map((s) => `'${s}'`).join(","); // fixed enum, no injection
+    const sets = [`state = '${toState}'`, "lease_id = null"];
+    const params: unknown[] = [];
+    if (opts.bumpAttempt) sets.push("attempt = attempt + 1");
+    if (toState === "available") {
+      params.push(opts.now);
+      sets.push(`available_at = $${params.length}`);
+    }
+    params.push(recordId);
+    let where = `record_id = $${params.length} and state in (${inList})`;
+    if (opts.onlyExpired) {
+      params.push(opts.now);
+      where += ` and leased_until < $${params.length}`;
+    }
+    return await this.db.transaction(async (tx) => {
+      const res = await tx.query(`update record_runtime set ${sets.join(", ")} where ${where}`, params);
+      if ((res.affectedRows ?? 0) === 0) return false;
+      const kr = await tx.query<{ kind: string }>("select kind from record_runtime where record_id = $1", [recordId]);
+      await this.appendEvent(tx, {
+        runId: "admin",
+        operation: "admin",
+        recordId,
+        kind: kr.rows[0]?.kind,
+        state: toState as Envelope["state"],
+        detail: { from: fromStates },
+      }, opts.now);
+      return true;
+    });
   }
 
   private async appendEvent(tx: Transaction, e: EventInput, ts: string): Promise<void> {

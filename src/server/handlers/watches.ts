@@ -48,6 +48,11 @@ export function handleWatchEvents(space: Space, watchId: string, req: Request): 
   }
 
   const enc = new TextEncoder();
+  // Detect client disconnect via the stream's cancel() callback (Deno invokes it when the
+  // client goes away), NOT req.signal — under Deno.serve's legacy semantics req.signal also
+  // aborts on a fully-delivered response, which would falsely tear down a live stream.
+  let closed = false;
+  let wake: () => void = () => {};
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const send = (s: string) => {
@@ -56,7 +61,7 @@ export function handleWatchEvents(space: Space, watchId: string, req: Request): 
         } catch { /* stream closed */ }
       };
       send(": connected\n\n");
-      while (!req.signal.aborted) {
+      while (!closed) {
         let events;
         try {
           events = await space.getEvents(cursor, 200);
@@ -64,18 +69,25 @@ export function handleWatchEvents(space: Space, watchId: string, req: Request): 
           break;
         }
         for (const e of events) {
+          if (closed) break;
           cursor = e.seq;
           if (await space.matchesEvent(watch.match, e)) {
             send(`id: ${e.seq}\ndata: ${JSON.stringify({ seq: e.seq, recordId: e.recordId, kind: e.kind })}\n\n`);
           }
         }
-        if (req.signal.aborted) break;
-        await space.waitForEvents(15_000); // wake on a mutation, else keepalive
+        if (closed) break;
+        // Wake on a mutation or the 15s keepalive — but resolve immediately on disconnect.
+        await Promise.race([space.waitForEvents(15_000), new Promise<void>((r) => (wake = r))]);
+        if (closed) break;
         send(": keepalive\n\n");
       }
       try {
         controller.close();
       } catch { /* already closed */ }
+    },
+    cancel() {
+      closed = true;
+      wake(); // stop waiting and exit the loop promptly
     },
   });
 

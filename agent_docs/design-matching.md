@@ -6,8 +6,11 @@ Spec and rationale for template matching. Origin: outline §3.
 `$exists`/`$any`/`$each`/`$or` operators with the divergence semantics live in
 `src/core/matching.ts`; the pure evaluator (`matchesRecord`) is the **semantic oracle**
 that defines what a template matches. The per-kind indexing contract is
-`src/core/kinds.ts` (an in-memory registry backed by a persisted `kinds` table via the
-adapter, reloaded at startup). `read_one`/`query` fetch by kind and filter + order with the
+`src/core/kinds.ts` (an in-memory registry). Declarations are **not a side table**: each is a
+`kind_def` record, written via `put` and reloaded at startup by querying those records
+(`Space.loadKinds`); the registry is a cache/projection. The one bootstrap is the `kind_def`
+meta-kind itself (`META_KIND_DEF`), defined in code so a query for `kind_def` records can
+compile. `read_one`/`query` fetch by kind and filter + order with the
 oracle; **pushing predicates onto physical per-kind expression indexes is deferred** (paired
 with the M1 keyset query — see [plan-m0-implementation.md](plan-m0-implementation.md) Phase 2).
 Any future indexed SQL must agree with the oracle.
@@ -57,6 +60,17 @@ Each kind declares `indexed_paths` (typed: keyword / integer / timestamp / array
 the rate-limited slow lane) and `order_by` on non-sortable paths. Hot declared paths
 become generated columns / expression indexes on `record_runtime` (see
 [design-storage.md](design-storage.md)).
+
+A declaration is itself a **record** of the reserved `kind_def` kind (body = the contract
+above), expressed through the substrate rather than a bespoke table/endpoint (see
+[CLAUDE.md](../CLAUDE.md) "Design principle"). Declare a kind by `put`-ing a `kind_def`
+record; discover kinds by `query {kind: kind_def}`. Records are immutable, so re-declaring a
+kind emits a **successor** `kind_def` record (latest per kind name wins on reload) rather than
+mutating the prior one. The server validates a `kind_def` body on `put` (M0 status: `Space.put`
+special-cases the reserved kind), and rejects redeclaring `kind_def` itself — the meta-kind is
+the one declaration defined in code (`META_KIND_DEF`), which breaks the bootstrap cycle so its
+own records can compile. Because they are ordinary records, kind declarations appear in the
+event log and are watchable.
 
 ## Two matching directions
 

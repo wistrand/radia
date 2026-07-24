@@ -12,6 +12,7 @@ import { idempotencySuites } from "./suites/idempotency.ts";
 import { eventSuites } from "./suites/events.ts";
 import { faultSuites } from "./suites/faults.ts";
 import { watchSuites } from "./suites/watches.ts";
+import { adminSuites } from "./suites/admin.ts";
 
 conformance(adapters, [
   ...smokeSuites,
@@ -23,4 +24,5 @@ conformance(adapters, [
   ...eventSuites,
   ...faultSuites,
   ...watchSuites,
+  ...adminSuites,
 ]);

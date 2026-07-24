@@ -277,11 +277,24 @@ export interface StorageAdapter {
   /** The highest event seq so far (0 if none) — a watch's starting cursor. (M1) */
   latestEventSeq(): Promise<number>;
 
-  /** Persist a kind declaration (upsert). `defJson` is an opaque serialized KindDef. */
-  putKind(kind: string, defJson: string): Promise<void>;
+  // Kind declarations are NOT a storage concern: they are kind_def records, written via put()
+  // and read via query() like any record (see core/space.ts loadKinds). No kinds table.
 
-  /** All persisted kind declarations as serialized JSON strings (loaded into the registry at startup). */
-  loadKinds(): Promise<string[]>;
+  /** Envelopes currently in a given state, capped (diagnostics). */
+  envelopesInState(state: RecordState, limit: number): Promise<Envelope[]>;
+
+  /**
+   * Admin/control-plane forced state transition (bypasses lease fencing — used to remediate
+   * another worker's stuck records). Moves a record from one of `fromStates` to `toState`
+   * (optionally only if its lease is expired, and/or bumping attempt), appends an event, and
+   * returns whether a row actually changed. Not a lease settlement.
+   */
+  adminTransition(
+    recordId: Ulid,
+    fromStates: RecordState[],
+    toState: RecordState,
+    opts: { now: string; bumpAttempt?: boolean; onlyExpired?: boolean },
+  ): Promise<boolean>;
 }
 
 /** Marker for port methods a phase has not implemented yet. */

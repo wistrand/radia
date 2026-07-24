@@ -1,6 +1,6 @@
 # Plan: milestones
 
-> Status: not started. This whole repo is design-only. Origin: outline §11.
+> Status: M0 (Phases 0–6) + M1 watches built and verified; M2/M3 unbuilt. Origin: outline §11.
 
 ## Goal
 
@@ -20,12 +20,12 @@ SDK. M2/M3 are unbuilt.
 
 ### M0 — semantic kernel prototype, embedded-first — DONE (except MCP adapter + Python SDK)
 
-**Status:** Phases 0–6 built and verified (88 conformance tests on both adapters); the web
+**Status:** Phases 0–6 built and verified (94 conformance tests on both adapters); the web
 console (Feed, records browser, kinds, query, worker, and a relationship-**graph** view),
 runnable agent examples, and a CLI LLM chatbot ship too. Enhancements layered on since the
 phases: M1 watches (below), optional on-disk persistence (`--db`, records + envelopes +
 events + idempotency + kind declarations), the chatbot's conversation-as-record-thread
-model, and dev diagnostics (`GET /v0/records/{id}` and `/graph`). Remaining M0 items: the
+model, and dev diagnostics (`GET /v0/ops/records/{id}` and `/graph`). Remaining M0 items: the
 bundled **MCP adapter** and the **Python SDK** (Phase 7). Full per-phase record in
 [plan-m0-implementation.md](plan-m0-implementation.md).
 
@@ -67,7 +67,7 @@ two-terminal demo works.
 - [ ] polished Python + TS SDKs
 - [x] watches (SSE, cursors, 410 semantics) — `POST /v0/watches` + `GET /v0/watches/{id}/events` (SSE, `Last-Event-ID`/`?cursor=` resumption, 410 `cursor_expired` path); backed by the event log + an in-process `Notifier` (LISTEN/NOTIFY-equivalent wakeup); wakeup-by-kind (+ predicate) matching in `Space.matchesEvent`. SDK `client.watch()` async generator; `agentLoop` is now event-driven (watch wakeups + poll fallback). 410/GC dormant until event-log retention (M2).
 - [ ] artifact service
-- [ ] orphan/starvation diagnostics
+- [~] orphan/starvation diagnostics — a derived-diagnostics report + remediation ships (`GET /v0/ops/diagnostics`, admin reclaim/dead-letter/requeue); uses age/state heuristics, not full template-match orphan/starving-template analysis
 
 **Verify:** the same suite green against Postgres *and* embedded; watch resumption and
 410 `cursor_expired` behave per [design-api.md](design-api.md).

@@ -6,13 +6,20 @@ the integrity and confidentiality architectures. Origin: outline §9.
 **M0/M1 status:** the **transactional event log** (append-only, same-transaction, run
 identity), **lineage** query, and `body_sha256` are built — event append lives in each
 adapter (`appendEvent`), lineage in `src/core/space.ts` (`getLineage`), read via
-`GET /v0/events` and `GET /v0/records/{id}/lineage`; watches consume the log
+`GET /v0/ops/events` and `GET /v0/ops/records/{id}/lineage`; watches consume the log
 (`src/core/notifier.ts`). The web console surfaces these: a live event **Feed**, and a
-**relationship graph** (`Space.getGraph` over `childrenOf`, `GET /v0/records/{id}/graph`)
-that renders the `parent_ids` DAG around a record. **Not implemented:** the
-hash-chained/anchored tamper-evident log (§9.1, M1–M2), envelope encryption /
-crypto-shredding (§9.2, M2), repeated-pattern livelock detection (M3), re-execution tooling
-(M3), and orphan/starvation diagnostics (M1).
+**relationship graph** (`Space.getGraph` over `childrenOf`, `GET /v0/ops/records/{id}/graph`)
+that renders the `parent_ids` DAG around a record. The runtime **envelope** (state/attempt/
+lease — the dimension the content-routing query language deliberately omits) is queryable at
+`GET /v0/ops/records?state=…[&expired=1&stale=<s>]` (`Space.queryEnvelopes`); a first
+**derived-diagnostics** report (`Space.diagnostics`, `GET /v0/ops/diagnostics`) is a
+*composition* of those envelope queries — counts, dead-letters, expired-but-stuck leases, and
+stale-available records — and **remediation** (`adminTransition`,
+`POST /v0/ops/records/{id}/{reclaim|dead-letter|requeue}`) can act on them. **Not
+implemented:** the hash-chained/anchored tamper-evident log (§9.1, M1–M2), envelope
+encryption / crypto-shredding (§9.2, M2), repeated-pattern livelock detection (M3),
+re-execution tooling (M3), and the full orphan/starving-template analysis (M1 — the current
+diagnostics use age/state heuristics, not template-match analysis).
 
 ## Contents
 - Invariants
@@ -44,6 +51,15 @@ one.
 ## Diagnostics
 
 Orphan records · starving templates · wakeup amplification · duplicate-execution rate.
+
+Diagnostics are **compositions of substrate queries, not hand-rolled reports.** The building
+block is the envelope query (`Space.queryEnvelopes` / `GET /v0/ops/records?state=…`): filter
+records by runtime state, plus `expired` (lapsed lease) and `stale` (seconds sat available).
+Query-where-possible has a real boundary here: the content-routing template language matches
+record *bodies* (for routing) and deliberately can't see the envelope, so envelope filtering,
+aggregation (stats), and DAG-traversal (lineage/graph) are first-class ops capabilities rather
+than template queries — pushing them into the body-match DSL would corrupt it. What *can* be a
+query is one (the envelope filter); what genuinely can't stays a derived capability.
 
 ## Livelock detection — repeated patterns, not cycles
 

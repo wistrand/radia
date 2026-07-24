@@ -39,9 +39,9 @@ content, not by addressing.
 | `deno.json`                             | tasks (`dev`/`check`/`conformance`/`compile`) + import map |
 | `src/main.ts`                           | `radia` CLI entry; `radia dev` boots an embedded space + dev UI |
 | `src/ui/index.html`                     | self-contained dev web console served at `GET /` (no build, public API only) |
-| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes), `problem.ts` (RFC 9457), `handlers/` (`records.ts`, `kinds.ts`, `leases.ts`, `dev.ts` stats/events/lineage/graph, `watches.ts` SSE) |
-| `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port: records/leases/idempotency/events/kind-persistence/graph + compiled-match AST), `row.ts` (shared row/value mapping) + `pglite.ts`, `sqlite.ts` |
-| `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + relationship graph, kind persistence), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order), `kinds.ts` (indexing contract), `take.ts` (claim ranking), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts`, `errors.ts` |
+| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes), `problem.ts` (RFC 9457), `handlers/` (`records.ts`, `leases.ts`, `dev.ts` = ops plane: stats/events/lineage/graph/envelope-query/diagnostics/admin, `watches.ts` SSE) |
+| `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port: records/leases/idempotency/events/graph + compiled-match AST; kinds are records, not a port concern), `row.ts` (shared row/value mapping) + `pglite.ts`, `sqlite.ts` |
+| `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + relationship graph, kinds-as-records, envelope query), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order), `kinds.ts` (indexing contract + `kind_def` meta-kind), `take.ts` (claim ranking), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts`, `errors.ts` |
 | `sdk/ts/`                               | TS SDK stub: `client.ts` (`RadiaClient` over `/v0`, incl. `watch()` SSE), `loop.ts` (`agentLoop`, event-driven, design §5) |
 | `examples/`                             | demo agents + `demo.ts`, and `chat/` — a CLI LLM chatbot (full symmetry: llm + tool calls are records); see `examples/README.md` |
 | `conformance/`                          | storage-adapter contract suite (`run.test.ts`, `harness.ts`) |
@@ -76,6 +76,35 @@ Research and planning:
 - [agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md): the buildable M0 plan — Deno + TS runtime, storage decisions, phase-by-phase build with verify steps.
 - [agent_docs/plan-validation.md](agent_docs/plan-validation.md): baselines, metrics, fault-injection matrix (§12).
 - [agent_docs/gotchas.md](agent_docs/gotchas.md): rejected approaches, the risk register, and non-obvious "why is it like this" decisions. Skim before proposing a change to signing, encryption, idempotency ordering, or storage backends.
+
+## Design principle: express features through the substrate, not beside it
+
+Before adding a bespoke endpoint, a hard-coded list, or out-of-band config, ask whether the
+feature can be a **record, a query, or content-routed dispatch** — Radia's own primitives.
+Radia is a coordination substrate; it should coordinate its *own* capabilities and
+operations through itself (dogfooding). Symptoms of violating this: a growing flat API of
+one-off endpoints, static tool/route tables, features that only the operator can reach
+out-of-band. Three applications already made:
+
+- **Kinds are records, not a side table.** A kind declaration is a `kind_def` record
+  (body = the indexing contract), written via `put` and discovered by `query {kind:kind_def}`
+  — no `kinds` table, no `/v0/kinds` endpoint. The registry is a cache/projection rebuilt from
+  those records at startup; a redeclaration is a successor record (latest wins), not a mutation.
+  One bootstrap: the `kind_def` meta-kind is defined in code so its own records can compile.
+  See `src/core/kinds.ts` (`KIND_DEF`, `META_KIND_DEF`) and `Space.put`/`loadKinds`.
+- **Observability/control is a coherent, grant-gated plane, not scattered endpoints.** The
+  coordination verbs are frozen under `/v0/*`; observe-and-operate (stats, events,
+  diagnostics, record + envelope introspection, remediation) lives under `/v0/ops/*`, one
+  prefix that is also the (future) auth boundary. Push what *can* be a query onto a query:
+  the envelope (runtime state) is queryable at `GET /v0/ops/records?state=…`, and diagnostics
+  is a *composition* of those queries, not hand-rolled scans. What genuinely can't be a
+  body-match query stays a derived capability by design — the content-routing query language
+  matches record *bodies* (for routing), so aggregation (stats), DAG-traversal (lineage/graph),
+  and get-by-id are legitimately first-class, not endpoints pretending to be queries.
+- **Capabilities are records the substrate routes and the agent discovers.** Tool-workers
+  publish `capability` records ({tool, schema}); an agent *watches/queries* them to build its
+  tool list and dispatches by content (`tool_call{tool}` → whichever worker registered it) — no
+  preconfigured routing table (§7). Add a worker → the agent gains the tool, no code change.
 
 ## Invariants
 

@@ -6,7 +6,9 @@
 
 import { agentLoop } from "../../sdk/ts/loop.ts";
 import { RadiaClient } from "../../sdk/ts/client.ts";
-import { makeTools } from "./tools.ts";
+import { makeTools, TOOL_SCHEMAS } from "./tools.ts";
+import { INSPECT_SCHEMAS, makeInspectTools } from "./inspect.ts";
+import { makeRemediateTools, REMEDIATE_SCHEMAS } from "./remediate.ts";
 
 function arg(name: string): string | undefined {
   const i = Deno.args.indexOf(name);
@@ -20,8 +22,18 @@ function argAll(name: string): string[] {
 
 const url = arg("--url") ?? "http://127.0.0.1:7788";
 const roots = argAll("--dir");
-const tools = makeTools(roots);
 const client = new RadiaClient(url);
+// File/compute tools (sandboxed) + space-inspection + remediation tools (via the client).
+const tools = { ...makeTools(roots), ...makeInspectTools(client), ...makeRemediateTools(client) };
+
+// Publish this worker's capabilities as `capability` records so agents can DISCOVER the
+// available tools from the space (no hard-coded tool list). In a real system this
+// registration would be grant-gated — an untrusted worker publishing a tool is a threat.
+const schemas = [...TOOL_SCHEMAS, ...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS];
+for (const name of Object.keys(tools)) {
+  const def = schemas.find((s) => s.function.name === name);
+  if (def) await client.put({ kind: "capability", body: { tool: name, def } }, `capability:${name}`);
+}
 
 await agentLoop(client, {
   name: "tools",

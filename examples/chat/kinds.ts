@@ -7,6 +7,10 @@
 import type { RadiaClient } from "../../sdk/ts/client.ts";
 
 export async function registerChatKinds(client: RadiaClient): Promise<void> {
+  // A `capability` record = a tool a worker serves ({tool, def}). The chatbot DISCOVERS its
+  // tools by querying these, instead of a hard-coded list (content-routed capability
+  // discovery — the "no preconfigured routing table" thesis applied to tools).
+  await client.registerKind({ kind: "capability", indexedPaths: [{ path: "tool", type: "keyword" }] });
   await client.registerKind({ kind: "conversation", indexedPaths: [] });
   await client.registerKind({
     kind: "message",

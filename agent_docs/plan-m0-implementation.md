@@ -1,7 +1,9 @@
 # Plan: M0 implementation
 
-> Status: not started. This is the buildable, phase-by-phase plan for M0 (the semantic
-> kernel prototype). Milestone scope and the M1–M3 outline live in
+> Status: Phases 0–6 DONE (94 conformance tests on both adapters), plus M1 watches and a
+> range of enhancements (see "Current state" and "Enhancements" below). Remaining: Phase 7
+> (MCP adapter, Python SDK, packaging). This is the buildable, phase-by-phase plan for M0
+> (the semantic kernel prototype). Milestone scope and the M1–M3 outline live in
 > [plan-milestones.md](plan-milestones.md); this doc is the technical *how* for M0 only.
 
 ## Goal
@@ -88,25 +90,35 @@ grant/auth/scheduler shapes that aren't validated until M1–M3.
 
 ## Current state
 
-Phases 0–6 are **DONE** and verified (88 conformance tests on both adapters), plus M1
+Phases 0–6 are **DONE** and verified (94 conformance tests on both adapters), plus M1
 watches, the dev console + examples, and several enhancements (see below). Remaining:
 Phase 7 (MCP adapter, Python SDK, `npx`/`pipx` packaging). Per-phase records with verify
 results are in the Phases section below.
 
 **Enhancements built on top of the phases** (not in the original M0 checklist):
 - On-disk persistence: `deno task dev --db <path>` (SQLite file / PGlite dir); records,
-  envelopes, events, idempotency, and kind declarations (`kinds` table + `Space.loadKinds`)
-  all reload on restart.
+  envelopes, events, idempotency, and kind declarations (kinds are `kind_def` records rebuilt
+  by `Space.loadKinds`) all reload on restart.
+- Kinds-as-records: kind declarations are `kind_def` records (no `kinds` table, no `/v0/kinds`
+  endpoint); declare via `put`, discover via `query {kind:kind_def}`. Ops envelope query
+  (`GET /v0/ops/records?state=…`) makes the runtime envelope queryable; diagnostics composes it.
+  Chatbot tool discovery is watch-driven (capabilities are watchable records).
 - Relationship **graph** diagnostic: `childrenOf` (reverse of lineage) + `Space.getGraph`,
-  `GET /v0/records/{id}/graph` and `GET /v0/records/{id}`, and a Graph view in the console
+  `GET /v0/ops/records/{id}/graph` and `GET /v0/ops/records/{id}`, and a Graph view in the console
   (layered SVG, wide rows wrap, optional live refresh).
 - The chatbot's conversation is an append-only `message` record thread (blackboard), not a
   client-held array; the inference-worker reconstructs context from the space.
+- Derived **diagnostics** + **remediation**: `GET /v0/ops/diagnostics` (`Space.diagnostics` —
+  counts, dead-letters, expired-but-stuck leases, stale-available) and control-plane
+  `POST /v0/ops/records/{id}/{reclaim|dead-letter|requeue}` (`adminTransition`, bypasses
+  lease fencing; `reclaim` only touches an *expired* lease). Surfaced as chatbot tools
+  (`space_doctor` + `space_reclaim`/`space_dead_letter`/`space_requeue`) so the chat example
+  is both inspector and operator.
 
 ## Proposed layout
 
-No source tree exists yet; this is the target. Update the CLAUDE.md Layout table as it
-lands.
+The original target layout (the actual tree is in [CLAUDE.md](../CLAUDE.md); the sketch
+below is kept for the phase-planning record):
 
 ```
 deno.json            # tasks + import map; no build for dev
@@ -164,9 +176,9 @@ just curl.
 **BUILT** (ahead of Phase 7): `src/ui/index.html` served at `GET /`, with all panels
 working — Overview, Records browser (with lineage in detail), Kinds, Put, Query
 playground, Worker, and a live **Feed** tab. Backing endpoints added to support it: `GET
-/v0/stats`, `GET /v0/kinds`, `POST /v0/records/query` (basic list — keyset-cursor `query`
-is still M1), `GET /v0/envelopes/{id}`, `GET /v0/events`, and `GET
-/v0/records/{id}/lineage`. Remaining polish: SSE push for the feed (currently polls;
+/v0/ops/stats`, `POST /v0/records/query` (basic list — keyset-cursor `query`
+is still M1; the Kinds panel uses it with `{kind:kind_def}`), `GET /v0/ops/records/{id}/envelope`,
+`GET /v0/ops/events`, and `GET /v0/ops/records/{id}/lineage`. Remaining polish: SSE push for the feed (currently polls;
 proper watches land in M1).
 
 Principles:
@@ -188,8 +200,8 @@ Panels (each maps to existing endpoints):
 |-------|-------------|-------|
 | Space overview — backend, DB clock, counts by kind/state | `GET /v0/health` (+ counts) | Phase 1 |
 | Records browser — filter by kind, view body + runtimeMeta + envelope state, follow `parent_ids` | `read_one` / `query` | Phase 1 (richer at M1 query) |
-| Graph — the `parent_ids` relationship DAG around a record (conversation/job fan-out) as a layered SVG; wide generations wrap to rows (bounded width), optional live auto-refresh, hide-chunks toggle | `GET /v0/records/{id}/graph` (+ `childrenOf`) | built |
-| Kinds — view + register indexed/sortable paths | `POST /v0/kinds` | Phase 2 |
+| Graph — the `parent_ids` relationship DAG around a record (conversation/job fan-out) as a layered SVG; wide generations wrap to rows (bounded width), optional live auto-refresh, hide-chunks toggle | `GET /v0/ops/records/{id}/graph` (+ `childrenOf`) | built |
+| Kinds — view + register indexed/sortable paths (kinds are `kind_def` records) | `POST /v0/records` + `query {kind:kind_def}` | Phase 2 |
 | Put a record — kind + JSON body form | `POST /v0/records` | Phase 1 |
 | Query playground — template (match + order_by) with friendly validation errors | `read_one` | Phase 2 |
 | Worker panel — take a record, then renew/ack/nack/release by hand to drive the lifecycle | `takes` + `leases/*` | Phase 3 |
@@ -234,7 +246,7 @@ read-one match/miss(null), 400 `problem+json` on bad body. See
 
 ### Phase 2 — matching — DONE
 
-- [x] Per-kind `indexed_paths` (typed: keyword/integer/timestamp/array) and `sortable_paths` declaration + registration validation (`src/core/kinds.ts` `KindRegistry`/`validateKindDef`); `POST /v0/kinds` handler. Invalid declarations rejected (`invalid_kind`/`invalid_path`/`invalid_type`/`duplicate_path`/`unsortable_path`).
+- [x] Per-kind `indexed_paths` (typed: keyword/integer/timestamp/array) and `sortable_paths` declaration + registration validation (`src/core/kinds.ts` `KindRegistry`/`validateKindDef`). Declarations are **`kind_def` records** (not a table/endpoint): `put` validates + registers, `query {kind:kind_def}` discovers, `Space.loadKinds` rebuilds the registry at startup; the `kind_def` meta-kind (`META_KIND_DEF`) is the one code bootstrap. Invalid declarations rejected (`invalid_kind`/`invalid_path`/`invalid_type`/`duplicate_path`/`unsortable_path`); redeclaring `kind_def` rejected (`reserved_kind`).
 - [x] Full operator set in the oracle (`src/core/matching.ts`): `$eq` (implicit), `$gt/$gte/$lt/$lte`, `$in`, `$exists`, `$any/$each`, `$and/$or` (depth ≤ 3). Forbidden (`$regex/$where/$expr`) and deferred (`$ne/$nin/$not/$prefix`) operators rejected at compile.
 - [x] Divergence semantics: missing ≠ null, no type coercion (cross-type = false), explicit array quantifiers (scalar predicates never distribute).
 - [x] Template validation against the kind: predicate paths ⊆ indexed paths, `order_by` ⊆ sortable paths; `unknown_kind`/`undeclared_path`/`unsortable_path`. `order_by` + deterministic record-id tie-break.
@@ -284,7 +296,7 @@ ack conflict → `idempotency_conflict`. Live `radia dev` confirmed via curl (he
 - [x] Append-only `events` table (monotonic `seq`, id, ts, run_id, operation, record_id, kind, state, detail) written in the **same transaction** as each mutation via `appendEvent`, inside each op's tx. Run identity on every event (M0: creator principal for `put`, lease owner for settlements — real run tokens in Phase 7).
 - [x] One event per successful op: `put`, `take`, `ack` (with `resultId` in detail), `nack`, `release`, and `expire`→`dead_letter`. No-op outcomes (`lease_lost`, idempotency replay) append nothing. `renew` is intentionally not evented (heartbeat noise; it changes no lifecycle state).
 - [x] Dead-letter transition preserves `kind` (Phase 3); event records resulting state.
-- [x] Lineage BFS over `parent_ids` (`src/core/space.ts` `getLineage`, cycle-guarded, node-capped). Endpoints: `GET /v0/events?after=&limit=`, `GET /v0/records/{id}/lineage`.
+- [x] Lineage BFS over `parent_ids` (`src/core/space.ts` `getLineage`, cycle-guarded, node-capped). Endpoints: `GET /v0/ops/events?after=&limit=`, `GET /v0/ops/records/{id}/lineage`.
 
 **Verify:** PASSED. `deno task conformance` green — 68 tests, both adapters: successful
 ops append one event each in seq order with run identity; `lease_lost` and idempotency
@@ -292,7 +304,7 @@ replay append nothing; nack backoff vs. dead-letter evented with resulting state
 returns ancestry with correct depths. Live `radia dev` confirmed via curl (event stream
 put/take/ack, lineage child→parent). See [design-observability.md](design-observability.md).
 
-> Dev UI live feed + lineage viewer now BUILT (Feed tab polls `/v0/events`; record detail
+> Dev UI live feed + lineage viewer now BUILT (Feed tab polls `/v0/ops/events`; record detail
 > shows ancestry) — the last two dev-UI panels from the "Dev UI" section.
 
 ### Phase 6 — basic fault suite — DONE

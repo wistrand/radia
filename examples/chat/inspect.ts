@@ -1,0 +1,67 @@
+// Inspection tools — let the chatbot inspect the Radia space it runs on, in natural
+// language. Thin wrappers over the read endpoints, with BOUNDED output (small limits,
+// truncated bodies) so results are good LLM food, not firehoses. Because the chatbot's own
+// thinking/acting are records in the same space, these also let it inspect itself
+// (its conversation thread, its own llm_calls, their lineage).
+//
+// Note the observer effect: each inspection is itself a tool_call/tool_result (and the
+// wrapping llm_call/message), so calling space_stats slightly changes the stats.
+
+import type { RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
+import type { Tool } from "./tools.ts";
+import type { ToolDef } from "./openrouter.ts";
+
+/** A record trimmed for the prompt: id, kind, createdAt, and a size-capped body. */
+function compact(rec: RadiaRecord): unknown {
+  const s = JSON.stringify(rec.body);
+  const body = s.length > 1500 ? { _truncated: true, preview: s.slice(0, 1500) } : rec.body;
+  return { id: rec.id, kind: rec.kind, createdAt: rec.runtimeMeta.createdAt, body };
+}
+
+export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
+  return {
+    space_stats: () => client.getStats().then((stats) => ({ stats })),
+
+    space_kinds: () => client.listKinds().then((kinds) => ({ kinds })),
+
+    space_query: async (a) => {
+      const limit = Math.min(Number(a.limit ?? 10) || 10, 25);
+      const records = await client.query(
+        { kind: String(a.kind ?? ""), match: a.match as Record<string, unknown> | undefined, orderBy: a.orderBy as never },
+        limit,
+      );
+      return { count: records.length, records: records.map(compact) };
+    },
+
+    space_record: async (a) => {
+      const rec = await client.getRecord(String(a.recordId ?? ""));
+      return rec ? compact(rec) : { error: "not found" };
+    },
+
+    space_lineage: async (a) => {
+      const lineage = await client.getLineage(String(a.recordId ?? ""));
+      return { lineage: lineage.map((n) => ({ depth: n.depth, id: n.record.id, kind: n.record.kind })) };
+    },
+
+    space_events: async (a) => {
+      const after = Number(a.after ?? 0) || 0;
+      const limit = Math.min(Number(a.limit ?? 20) || 20, 50);
+      const events = await client.getEvents(after, limit);
+      return {
+        events: events.map((e) => ({ seq: e.seq, op: e.operation, kind: e.kind, state: e.state, recordId: e.recordId })),
+      };
+    },
+
+    space_doctor: () => client.diagnostics(),
+  };
+}
+
+export const INSPECT_SCHEMAS: ToolDef[] = [
+  { type: "function", function: { name: "space_stats", description: "Counts of records by kind and state in the Radia space (a quick overview / health check).", parameters: { type: "object", properties: {} } } },
+  { type: "function", function: { name: "space_kinds", description: "List the registered record kinds and their indexed/sortable paths.", parameters: { type: "object", properties: {} } } },
+  { type: "function", function: { name: "space_query", description: "Find records by kind, with an optional match (equality/$gt/$in/$exists/…) and order_by. Returns up to `limit` (default 10, max 25) records with size-capped bodies. The conversation itself is records: kind 'message' with match {conversationId}.", parameters: { type: "object", properties: { kind: { type: "string" }, match: { type: "object" }, orderBy: { type: "array" }, limit: { type: "integer" } }, required: ["kind"] } } },
+  { type: "function", function: { name: "space_record", description: "Fetch a single record by id.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
+  { type: "function", function: { name: "space_lineage", description: "The ancestry (parent_ids) of a record, as a list of {depth, id, kind} — how it was derived.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
+  { type: "function", function: { name: "space_events", description: "Recent event-log entries (put/take/ack/nack/…) after seq `after`. Returns {seq, op, kind, state, recordId}.", parameters: { type: "object", properties: { after: { type: "integer" }, limit: { type: "integer" } } } } },
+  { type: "function", function: { name: "space_doctor", description: "A derived health report: counts by state, dead-lettered records, expired-but-stuck leases, and records that have sat available/unclaimed. Use to answer 'is the space healthy / what's stuck?'.", parameters: { type: "object", properties: {} } } },
+];

@@ -1,6 +1,8 @@
 # Plan: validation
 
-> Status: not started. Origin: outline §12. The measurement plan that proves the design's
+> Status: the M0 fault subset is implemented (see [plan-m0-implementation.md](plan-m0-implementation.md)
+> Phase 6); the baselines/metrics and the fuller fault matrix (partition, failover, cursor
+> storm) are not yet run. Origin: outline §12. The measurement plan that proves the design's
 > claims and the fault matrix each milestone must survive.
 
 ## Goal

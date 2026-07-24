@@ -1,12 +1,16 @@
-// HTTP surface. Deno.serve, no framework (minimal-deps invariant). All routes are under
-// the /v0/ prefix so clients pin the frozen data-plane version. Phase 1 serves health +
-// the record data plane (put, read_one); the remaining operations land in Phases 3-7.
+// HTTP surface. Deno.serve, no framework (minimal-deps invariant). Two planes under /v0:
+//   - coordination (frozen v0-stable): records (put/read_one/query), takes, leases, watches,
+//     health — what agents use to do work. Kinds are declared THROUGH this plane: a kind is a
+//     kind_def record (POST /v0/records), discovered by query — no dedicated kinds endpoint.
+//   - observability + control (experimental, grant-gated with real auth): /v0/ops/* —
+//     stats, events, diagnostics, record + envelope introspection (records[/{id}[/envelope|
+//     lineage|graph]]), and remediation (reclaim/dead-letter/requeue). Reading/operating the
+//     space. The prefix split carries both the stability boundary and the (future) auth boundary.
 
 import type { Space } from "../core/space.ts";
 import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
-import { handleRegisterKind } from "./handlers/kinds.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
-import { handleEnvelope, handleEvents, handleGetRecord, handleGraph, handleLineage, handleListKinds, handleStats } from "./handlers/dev.ts";
+import { handleAdmin, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleGetRecord, handleGraph, handleLineage, handleStats } from "./handlers/dev.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem } from "./problem.ts";
 
@@ -37,37 +41,33 @@ function makeHandler(space: Space, ui: string) {
     const url = new URL(req.url);
     const route = `${req.method} ${url.pathname}`;
 
-    // Path-param routes.
-    if (req.method === "GET" && url.pathname.startsWith("/v0/envelopes/")) {
-      return await handleEnvelope(space, decodeURIComponent(url.pathname.slice("/v0/envelopes/".length)));
-    }
-    if (req.method === "GET" && url.pathname.startsWith("/v0/records/") && url.pathname.endsWith("/lineage")) {
-      const id = url.pathname.slice("/v0/records/".length, -"/lineage".length);
-      return await handleLineage(space, decodeURIComponent(id));
-    }
-    if (req.method === "GET" && url.pathname.startsWith("/v0/records/") && url.pathname.endsWith("/graph")) {
-      const id = url.pathname.slice("/v0/records/".length, -"/graph".length);
-      return await handleGraph(space, decodeURIComponent(id), url);
-    }
-    if (
-      req.method === "GET" && url.pathname.startsWith("/v0/records/") &&
-      !url.pathname.endsWith("/lineage") && !url.pathname.endsWith("/graph")
-    ) {
-      const id = url.pathname.slice("/v0/records/".length);
-      if (id) return await handleGetRecord(space, decodeURIComponent(id));
-    }
+    // --- coordination plane, path-param: watch SSE stream ---
     if (req.method === "GET" && url.pathname.startsWith("/v0/watches/") && url.pathname.endsWith("/events")) {
       const id = url.pathname.slice("/v0/watches/".length, -"/events".length);
       return handleWatchEvents(space, decodeURIComponent(id), req);
     }
 
+    // --- observability + control plane: /v0/ops/records/{id}[/{envelope|lineage|graph}|/{reclaim|dead-letter|requeue}] ---
+    if (url.pathname.startsWith("/v0/ops/records/")) {
+      const parts = url.pathname.slice("/v0/ops/records/".length).split("/");
+      const id = decodeURIComponent(parts[0] ?? "");
+      const tail = parts[1];
+      if (id) {
+        if (req.method === "GET" && !tail) return await handleGetRecord(space, id);
+        if (req.method === "GET" && tail === "envelope") return await handleEnvelope(space, id);
+        if (req.method === "GET" && tail === "lineage") return await handleLineage(space, id);
+        if (req.method === "GET" && tail === "graph") return await handleGraph(space, id, url);
+        if (req.method === "POST" && (tail === "reclaim" || tail === "dead-letter" || tail === "requeue")) {
+          return await handleAdmin(space, id, tail);
+        }
+      }
+    }
+
     switch (route) {
       case "GET /":
         return new Response(ui, { headers: { "content-type": "text/html; charset=utf-8" } });
-      case "POST /v0/watches":
-        return await handleCreateWatch(space, req);
-      case "GET /v0/events":
-        return await handleEvents(space, url);
+
+      // --- coordination plane (frozen v0-stable) ---
       case "GET /v0/health":
         return Response.json({
           status: "ok",
@@ -76,12 +76,6 @@ function makeHandler(space: Space, ui: string) {
           storage: space.storageName,
           now: await space.now(),
         });
-      case "GET /v0/stats":
-        return await handleStats(space);
-      case "GET /v0/kinds":
-        return handleListKinds(space);
-      case "POST /v0/kinds":
-        return await handleRegisterKind(space, req);
       case "POST /v0/records":
         return await handlePut(space, req);
       case "POST /v0/records/read-one":
@@ -98,6 +92,19 @@ function makeHandler(space: Space, ui: string) {
         return await handleNack(space, req);
       case "POST /v0/leases/release":
         return await handleRelease(space, req);
+      case "POST /v0/watches":
+        return await handleCreateWatch(space, req);
+
+      // --- observability + control plane (experimental) ---
+      case "GET /v0/ops/records":
+        return await handleEnvelopeQuery(space, url);
+      case "GET /v0/ops/stats":
+        return await handleStats(space);
+      case "GET /v0/ops/events":
+        return await handleEvents(space, url);
+      case "GET /v0/ops/diagnostics":
+        return await handleDiagnostics(space);
+
       default:
         return problem(404, "not_found", `no route for ${route}`);
     }
