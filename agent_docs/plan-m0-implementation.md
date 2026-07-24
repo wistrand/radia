@@ -20,19 +20,67 @@ This is a focused prototype (2–3 careful weeks), explicitly **not** production
   compile` produces per-OS binaries for release, Web Crypto covers `body_sha256`, and
   `Deno.serve` covers HTTP without a framework. This satisfies the CLAUDE.md invariant
   *minimal dependencies, maximal platform independence, near-zero build steps*.
-- **Embedded storage: PGlite** (`npm:@electric-sql/pglite`, WASM Postgres). Chosen over
-  SQLite for M0 so the SQL dialect and the take semantics match the M1 Postgres adapter,
-  which minimizes storage-adapter drift (the top risk in
-  [gotchas.md](gotchas.md)). PGlite is single-connection, so takes serialize in-process —
-  which is exactly the point below.
+- **Two embedded adapters from M0: PGlite and SQLite.** This activates the
+  *every-adapter-in-CI-from-day-one* invariant (CLAUDE.md) at M0 rather than deferring it
+  to M1 — the point is to make the `StorageAdapter` port honest before Postgres arrives,
+  so storage-adapter drift (the top risk in [gotchas.md](gotchas.md)) is caught while the
+  kernel is small.
+  - **PGlite** (`npm:@electric-sql/pglite`, WASM Postgres) keeps one adapter's SQL dialect
+    and take semantics aligned with the M1 Postgres adapter.
+  - **SQLite** (`jsr:@db/sqlite`, FFI) is the lighter, WASM-free adapter and the real test
+    that the port abstracts: SQLite's WAL single-writer concurrency, its JSON path
+    functions, and its lack of Postgres generated-column/expression-index parity differ
+    from PGlite, so any leak of Postgres assumptions into `core/` surfaces here.
 - **`SKIP LOCKED` is the Postgres *implementation* of the take contract, not the
   contract** (see [design-storage.md](design-storage.md)). The adapter interface exposes
-  an atomic take; the embedded adapter relies on PGlite's single-connection
-  serialization, the M1 Postgres adapter will use `FOR UPDATE SKIP LOCKED`. Both satisfy
-  the same conformance test.
+  an atomic take; both embedded adapters serialize takes in-process (PGlite single
+  connection, SQLite single writer), and the M1 Postgres adapter will use `FOR UPDATE SKIP
+  LOCKED`. All three satisfy the same conformance test.
+- **Path indexing is abstracted, not assumed.** The per-kind `indexed_paths` contract maps
+  to Postgres generated columns / expression indexes on one adapter and to SQLite
+  expression indexes over `json_extract` on the other. `core/matching.ts` speaks the port,
+  never a backend dialect. Getting this seam right is the main reason SQLite is in M0.
 - **Dependencies kept tiny and audited:** Deno std (`jsr:@std/ulid`, `jsr:@std/assert`,
-  `jsr:@std/http` helpers as needed) + PGlite. No web framework, no ORM. Each further
-  dependency is a cost to justify.
+  `jsr:@std/http` helpers as needed) + PGlite + `jsr:@db/sqlite`. No web framework, no ORM.
+  Each further dependency is a cost to justify.
+
+## OpenAPI freeze policy (M0)
+
+`openapi/radia.yaml` is the frozen wire contract, but only the validated parts are
+frozen at M0. Scope: **freeze the data-plane core; mark control-plane and auth
+experimental.**
+
+Frozen at M0 as **v0-stable** (additive-only — new optional fields and new enum values
+allowed, no removals or renames):
+
+- the nine data-plane verbs: `put`, `read_one`, `query`, `take`, `ack`, `nack`,
+  `release`, `renew`, `watch`;
+- record / runtime-envelope / lease JSON shapes;
+- status values `lease_lost`, `idempotency_conflict`, and the `dead_letter` state;
+- the RFC 9457 error model;
+- the matching operator whitelist and its divergence semantics (see
+  [design-matching.md](design-matching.md)).
+
+Marked **experimental** (may change without a major bump) at M0:
+
+- control-plane: kinds, templates, agent-definitions, runs, grants;
+- auth and credential exchange (auto-provisioned locally at M0; real at M1).
+
+Mechanism:
+
+- **Per-element `x-stability: stable | beta | experimental`** on every operation and
+  schema in the spec, so stability is granular and self-documenting.
+- **SemVer 0.x**, where `0.x` signals the whole surface may still move; the additive-only
+  rule above is what makes the frozen subset dependable within 0.x.
+- **Reserved names now** so later additions aren't breaking: the deferred operators
+  (`$ne`, `$nin`, `$not`, `$prefix`, full-text) and room for future status values are
+  reserved; frozen request bodies use `additionalProperties: false`.
+- **Version signaling** via a `/v0/` path prefix (or `Radia-Api-Version` header) so
+  clients pin.
+
+This honors the CLAUDE.md invariant *the wire contract is what's frozen, not the
+implementation* for the parts M0 actually exercises, without committing to the
+grant/auth/scheduler shapes that aren't validated until M1–M3.
 
 ## Current state
 
@@ -63,7 +111,8 @@ src/
     auth.ts          # auto-provisioned local principals/run tokens
   storage/
     adapter.ts       # StorageAdapter interface — the port/contract
-    pglite.ts        # embedded adapter (M0)
+    pglite.ts        # embedded adapter — WASM Postgres (M0)
+    sqlite.ts        # embedded adapter — SQLite via jsr:@db/sqlite (M0)
   mcp/               # bundled MCP adapter (credentials outside model context)
   inspector/         # minimal web inspector (static assets + SSE feed)
 sdk/
@@ -76,9 +125,11 @@ conformance/         # storage-adapter contract suite + basic fault cases
 
 - **Conformance suite is the contract.** It targets the `StorageAdapter` interface, not a
   concrete backend, and is written *before or alongside* each behavior. `deno task
-  conformance` runs it against every registered adapter (just PGlite at M0; Postgres joins
-  at M1 without the tests changing). This is the standing guard against storage-adapter
-  drift — the CLAUDE.md invariant.
+  conformance` runs it against **every registered adapter** — PGlite *and* SQLite at M0;
+  Postgres joins at M1 without the tests changing. A behavior is not done until it is green
+  on both M0 adapters. This is the standing guard against storage-adapter drift — the
+  CLAUDE.md invariant — and running two adapters from the first commit is what keeps it
+  real rather than aspirational.
 - **Fault cases** live in the same suite, driving crashes/retries through adapter and
   handler seams (not real process kills at M0): crash-before-effect, after-effect-before-ack,
   after-commit-before-response, duplicate ack, stale ack after reassignment. Full matrix in
@@ -96,16 +147,16 @@ Ordered by dependency; each is independently verifiable before the next starts.
 
 - [ ] `deno.json` with tasks: `dev`, `test`, `conformance`, `check`, `compile`. No build step for `dev`.
 - [ ] `StorageAdapter` interface in `src/storage/adapter.ts` (the port every backend implements).
-- [ ] OpenAPI skeleton `openapi/radia.yaml` covering the ten operations' shapes (frozen contract).
-- [ ] Conformance harness that runs a suite against any adapter; PGlite adapter stub wired in.
+- [ ] OpenAPI skeleton `openapi/radia.yaml` covering the ten operations' shapes, with per-element stability annotations (see freeze policy below).
+- [ ] Conformance harness that runs a suite against a list of adapters; **both PGlite and SQLite stubs wired in**.
 - [ ] `radia dev` boots `Deno.serve` and answers a health endpoint.
 
 **Verify:** `deno task dev` serves health; `deno task conformance` runs the (empty) suite
-green against the PGlite adapter.
+green against **both** the PGlite and SQLite adapters.
 
 ### Phase 1 — record model and storage
 
-- [ ] `records` (immutable) + `record_runtime` (envelope) schema in PGlite, with `kind`, `deadline_at`, and hot routing fields denormalized into the envelope at commit.
+- [ ] `records` (immutable) + `record_runtime` (envelope) schema in **both adapters** (PGlite and SQLite), with `kind`, `deadline_at`, and hot routing fields denormalized into the envelope at commit.
 - [ ] ULID ids; `body_sha256` over plaintext on every record (Web Crypto).
 - [ ] `put(record, idempotency_key)` and `read_one(template)` handlers.
 - [ ] Server-assigned `runtime_meta` (`created_by`, `created_at`, `schema_version`); client cannot set authoritative fields.
@@ -181,14 +232,14 @@ claims a record; one line in an MCP-capable harness config participates without 
 
 ## Open questions
 
-- **PGlite vs. Deno SQLite for the M0 embedded adapter.** Recommending PGlite for
-  Postgres-dialect continuity with M1. Adding a SQLite adapter later is the first real
-  test that the `StorageAdapter` port abstracts cleanly — worth doing early if drift is a
-  concern, but not required for M0.
-- **How much of the OpenAPI contract to freeze at M0** vs. mark provisional. Freeze the
-  ten operations' request/response shapes; leave control-plane detail provisional until M1.
+- **SQLite library choice.** `jsr:@db/sqlite` (FFI, mature, needs `--allow-ffi`) is the
+  M0 pick. Deno's built-in `node:sqlite` would be zero-external-dependency but is still
+  unstable; revisit switching to it once it stabilizes.
 - **npm/pip binary distribution mechanics** (embed vs. download-on-install) — defer the
   polished version to M1; a rough shim is enough for the M0 demo.
+
+Resolved: **two embedded adapters (PGlite + SQLite) ship in M0** — the port-abstraction
+test happens now, not at M1. OpenAPI freeze scope is settled by the policy below.
 
 <!-- When M0 lands: fold each phase's built behavior into the relevant architecture-*.md
      (promoted from design-*.md), point those docs into src/ paths + symbols, delete the
