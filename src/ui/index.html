@@ -66,6 +66,12 @@
   .st-available { background: var(--avail); } .st-leased { background: var(--leased); }
   .st-consumed { background: var(--consumed); } .st-dead_letter { background: var(--dead); }
   .st-expired { background: var(--consumed); }
+  .tag { font-size: 11px; padding: 1px 7px; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--code); color: var(--muted); margin-right: 4px; display: inline-block; }
+  .tag-taint { color: var(--err); border-color: var(--err); }
+  .tag-deleg { color: var(--accent); border-color: var(--accent); }
+  .tag-grant { color: var(--info); border-color: var(--info); }
+  .tree { margin-left: 4px; }
   .note { border-radius: 8px; padding: 10px 12px; margin-top: 12px; font-size: 13px; border: 1px solid var(--line); }
   .note.ok { color: var(--ok); } .note.err { color: var(--err); } .note.info { color: var(--info); }
   .empty { color: var(--muted); padding: 18px; text-align: center; }
@@ -90,6 +96,7 @@
   <button data-tab="worker">Worker</button>
   <button data-tab="feed">Feed</button>
   <button data-tab="graph">Graph</button>
+  <button data-tab="auth">Auth</button>
 </nav>
 <main>
   <!-- OVERVIEW -->
@@ -233,6 +240,15 @@
     <div class="panel"><div id="g-canvas"><div class="empty">Pick a record above.</div></div></div>
     <div class="panel"><h2>Detail</h2><div id="g-detail"><div class="empty">Click a node.</div></div></div>
   </section>
+
+  <!-- AUTH -->
+  <section id="auth">
+    <div class="panel">
+      <h2>Authorization <button class="btn ghost" style="float:right" onclick="loadAuth()">Refresh</button></h2>
+      <p class="muted" style="margin-top:0">The bootstrap chain, read straight from the substrate — <code>agent_definition</code> → its <code>agent_run</code>s (run tokens) → the <code>grant</code> records that scope each agent. All are ordinary records (only the token <i>hash</i> is stored). The chat example creates these when run with auth (<code>RADIA_CHAT_ROLE=user deno task chat</code>).</p>
+      <div id="auth-body"><div class="empty">loading…</div></div>
+    </div>
+  </section>
 </main>
 <datalist id="kind-list"></datalist>
 
@@ -269,7 +285,19 @@ document.querySelectorAll("#nav button").forEach((b) => b.onclick = () => {
   if (b.dataset.tab === "kinds") loadKinds();
   if (b.dataset.tab === "feed") startFeed();
   if (b.dataset.tab === "graph") loadGraphRoots();
+  if (b.dataset.tab === "auth") loadAuth();
 });
+
+// ---- taint + delegation badges (shared by the records list, detail, and graph) ----
+function metaFlags(rec) {
+  const m = rec.runtimeMeta || {};
+  let h = "";
+  if (m.taint) h += `<span class="tag tag-taint" title="untrusted data lineage">tainted</span>`;
+  if (m.delegationContext && m.delegationContext.chain && m.delegationContext.chain.length) {
+    h += `<span class="tag tag-deleg" title="authority chain, derived from the lease">deleg: ${esc(m.delegationContext.chain.join(" → "))}</span>`;
+  }
+  return h;
+}
 
 // ---- health / overview ----
 async function loadHealth() {
@@ -353,8 +381,10 @@ function renderRecordList(el, records, onClick) {
   const rows = records.map((rec) => {
     window._recs[rec.id] = rec;
     const preview = esc(JSON.stringify(rec.body)).slice(0, 60);
+    const flags = metaFlags(rec);
     return `<tr class="click" onclick="(${onClick.name})('${rec.id}')"><td class="mono">${esc(rec.id.slice(-8))}</td>`
-      + `<td class="mono muted">${esc(rec.runtimeMeta.createdAt.slice(11, 23))}</td><td class="mono">${preview}</td></tr>`;
+      + `<td class="mono muted">${esc(rec.runtimeMeta.createdAt.slice(11, 23))}</td>`
+      + `<td class="mono">${flags ? flags + "<br>" : ""}${preview}</td></tr>`;
   }).join("");
   $(el).innerHTML = `<table><thead><tr><th>ID</th><th>Created</th><th>Body</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
@@ -376,8 +406,16 @@ async function showDetail(id, target = "rec-detail") {
         + `${n.depth === 0 ? "●" : "└"} ${esc(n.record.id.slice(-8))} <span class="muted">${esc(n.record.kind)}</span></div>`
       ).join("") + `</div>`;
   }
+  const m = rec.runtimeMeta || {};
+  const dc = m.delegationContext;
+  const authHtml =
+    `<b>Authority &amp; taint</b><div class="mono" style="margin:6px 0 10px">`
+    + `<div>taint: ${m.taint ? `<span class="tag tag-taint">tainted</span> <span class="muted">untrusted data lineage</span>` : `<span class="muted">clean</span>`}</div>`
+    + `<div>delegation: ${dc ? `<span class="tag tag-deleg">${esc(dc.chain.join(" → "))}</span> <span class="muted">from lease ${esc((dc.origin || "").slice(-8))}</span>` : `<span class="muted">none (root / operator authority)</span>`}</div>`
+    + `<div>created_by: <span class="muted">${esc(m.createdBy || "")}</span></div></div>`;
   $(target).innerHTML =
-    `<div style="margin-bottom:8px">${e ? stateBadge(e.state) : ""} <span class="mono">${esc(id)}</span></div>`
+    `<div style="margin-bottom:8px">${e ? stateBadge(e.state) : ""} <span class="mono">${esc(id)}</span> <span class="mono muted">${esc(rec.kind)}</span></div>`
+    + authHtml
     + `<b>Body</b><pre>${esc(JSON.stringify(rec.body, null, 2))}</pre>`
     + `<b>Runtime meta</b><pre>${esc(JSON.stringify(rec.runtimeMeta, null, 2))}</pre>`
     + (e ? `<b>Envelope</b><pre>${esc(JSON.stringify(e, null, 2))}</pre>` : "")
@@ -474,10 +512,15 @@ function renderGraph(el, data) {
     const p = pos.get(n.id);
     if (!p) continue;
     const c = graphColor(n.kind);
+    const rx = p.x + nodeW / 2, ty = p.y - nodeH / 2;
+    let marks = "";
+    if (n.delegated) marks += `<circle cx="${rx - 8}" cy="${ty + 7}" r="4" fill="var(--accent)"><title>delegated work (chain length ${n.delegated})</title></circle>`;
+    if (n.taint) marks += `<circle cx="${rx - (n.delegated ? 20 : 8)}" cy="${ty + 7}" r="4" fill="var(--err)"><title>tainted (untrusted data lineage)</title></circle>`;
     s += `<g onclick="showDetail('${n.id}','g-detail')">`
       + `<rect x="${p.x - nodeW / 2}" y="${p.y - nodeH / 2}" width="${nodeW}" height="${nodeH}" rx="7" fill="var(--panel)" stroke="${c}" stroke-width="2"/>`
       + `<circle cx="${p.x - nodeW / 2 + 12}" cy="${p.y}" r="4" fill="${c}"/>`
       + `<text x="${p.x - nodeW / 2 + 22}" y="${p.y + 4}" font-size="11" fill="var(--ink)">${esc(n.label).slice(0, 16)}</text>`
+      + marks
       + `</g>`;
   }
   s += `</svg>`;
@@ -560,6 +603,67 @@ function renderFeed() {
 function startFeed() { feedSeq = 0; feedRows = []; pollFeed(); if ($("feed-live").checked) feedTimer = setInterval(pollFeed, 1000); }
 function stopFeed() { if (feedTimer) { clearInterval(feedTimer); feedTimer = null; } }
 function toggleLive() { stopFeed(); if ($("feed-live").checked) feedTimer = setInterval(pollFeed, 1000); }
+
+// ---- auth (the bootstrap chain, read from records: agent_definition -> agent_run -> grant) ----
+async function loadAuth() {
+  const [defs, grants, runs] = await Promise.all([
+    api("POST", "/v0/records/query", { kind: "agent_definition", limit: 500 }),
+    api("POST", "/v0/records/query", { kind: "grant", limit: 2000 }),
+    api("POST", "/v0/records/query", { kind: "agent_run", limit: 2000 }),
+  ]);
+  if (!defs.ok) { $("auth-body").innerHTML = `<div class="note err">${esc(errText(defs))}</div>`; return; }
+
+  // agent definitions, deduped by agent (latest record wins)
+  const agents = new Map();
+  for (const r of defs.data.records) {
+    const a = r.body && r.body.agent;
+    if (!a) continue;
+    const prev = agents.get(a);
+    if (!prev || prev.id < r.id) agents.set(a, { id: r.id, tokenHash: r.body.tokenHash });
+  }
+  // grants grouped by principal
+  const grantsBy = {};
+  for (const r of (grants.ok ? grants.data.records : [])) {
+    const b = r.body || {};
+    (grantsBy[b.principal] ??= []).push(b);
+  }
+  // runs: latest record per run id (a stop is a successor), grouped by agent
+  const runLatest = new Map();
+  for (const r of (runs.ok ? runs.data.records : [])) {
+    const b = r.body || {};
+    const prev = runLatest.get(b.run);
+    if (!prev || prev.id < r.id) runLatest.set(b.run, { id: r.id, ...b });
+  }
+  const runsByAgent = {};
+  for (const rl of runLatest.values()) (runsByAgent[rl.agent] ??= []).push(rl);
+
+  const grantChips = (gs) => gs.length
+    ? gs.map((g) => `<span class="tag tag-grant" title="${g.template ? "template-scoped: " + esc(JSON.stringify(g.template)) : "kind-scoped"}">${esc(g.kind)}: ${esc((g.operations || []).join(", "))}${g.template ? " ⋔" : ""}</span>`).join(" ")
+    : `<span class="muted">none</span>`;
+  const runLines = (rs) => rs.length
+    ? rs.map((r) => `<div class="mono" style="font-size:12px;margin-top:3px">${esc(r.run.slice(0, 22))}… `
+        + `<span class="badge ${r.status === "stopped" ? "st-dead_letter" : "st-available"}">${esc(r.status || "active")}</span> `
+        + `<span class="muted">${r.expiresAt ? "expires " + esc(r.expiresAt.slice(11, 19)) : ""}</span></div>`).join("")
+    : `<span class="muted">none</span>`;
+
+  const cards = [...agents.entries()].map(([agent, d]) => {
+    return `<div class="panel" style="background:var(--bg)">`
+      + `<b class="mono">${esc(agent)}</b> <span class="muted mono" style="font-size:11px">token ${esc((d.tokenHash || "").slice(0, 12))}… <span title="only the sha256 hash is stored; the plaintext token is returned once at mint">(hashed)</span></span>`
+      + `<div class="tree" style="margin-top:8px"><span class="muted">grants:</span> ${grantChips(grantsBy[agent] || [])}</div>`
+      + `<div class="tree" style="margin-top:8px"><span class="muted">run tokens:</span> ${runLines(runsByAgent[agent] || [])}</div>`
+      + `</div>`;
+  });
+
+  // grants whose principal has no agent_definition (e.g. a directly-assigned principal)
+  const orphans = Object.keys(grantsBy).filter((p) => p && !agents.has(p));
+  if (orphans.length) {
+    cards.push(`<div class="panel" style="background:var(--bg)"><b class="muted">principals with grants but no definition</b>`
+      + orphans.map((p) => `<div class="tree" style="margin-top:6px"><span class="mono">${esc(p)}</span> ${grantChips(grantsBy[p])}</div>`).join("")
+      + `</div>`);
+  }
+
+  $("auth-body").innerHTML = cards.length ? cards.join("") : `<div class="empty">No agent definitions yet. Run the chat example with auth: <code>RADIA_CHAT_ROLE=user deno task chat</code></div>`;
+}
 
 // init
 loadHealth();

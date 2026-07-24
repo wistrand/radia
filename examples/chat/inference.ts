@@ -7,15 +7,16 @@ import { agentLoop } from "../../sdk/ts/loop.ts";
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { type ChatMessage, streamChat, type ToolCall, type ToolDef } from "./openrouter.ts";
 
-const argUrl = (() => {
-  const i = Deno.args.indexOf("--url");
+function arg(name: string): string | undefined {
+  const i = Deno.args.indexOf(name);
   return i >= 0 ? Deno.args[i + 1] : undefined;
-})();
+}
 
-const url = argUrl ?? Deno.env.get("RADIA_URL") ?? "http://127.0.0.1:7788";
+const url = arg("--url") ?? Deno.env.get("RADIA_URL") ?? "http://127.0.0.1:7788";
+const token = arg("--token"); // agent:chat-inference run token (scoped grants)
 const apiKey = Deno.env.get("OPENROUTER_API_KEY") ?? "";
 const model = Deno.env.get("RADIA_CHAT_MODEL") ?? "openai/gpt-4o-mini";
-const client = new RadiaClient(url);
+const client = new RadiaClient(url, token ? { token } : {});
 
 await agentLoop(client, {
   name: "inference",

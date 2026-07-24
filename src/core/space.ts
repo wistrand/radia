@@ -92,6 +92,8 @@ export interface GraphNode {
   kind: string;
   label: string;
   createdAt: string;
+  taint: boolean; // untrusted data lineage (see design-data-model)
+  delegated: number; // delegation-chain length (0 = root/operator work)
 }
 
 export interface Diagnostics {
@@ -586,6 +588,8 @@ export class Space {
         kind: r.kind,
         label: labelFor(r),
         createdAt: r.runtimeMeta.createdAt,
+        taint: r.runtimeMeta.taint,
+        delegated: r.runtimeMeta.delegationContext?.chain.length ?? 0,
       })),
       edges: edges.filter((e) => nodeIds.has(e.from) && nodeIds.has(e.to)),
     };

@@ -111,12 +111,33 @@ itself a `tool_call` (a small observer effect).
 an expired lease), `space_dead_letter`, `space_requeue` — control-plane operations that
 bypass lease fencing (fixing another worker's stuck record), so they're privileged (grant-
 gated with real auth). Pair with `space_doctor`: "find what's stuck and fix it," in chat.
-Config: `OPENROUTER_API_KEY`,
+
+**Run it with auth (`roles.ts`).** The launcher is the OPERATOR of its local space, so it
+bootstraps the chain (design-auth): it registers kinds and, as operator, mints **least-privilege
+run tokens** for the two workers (`agent:chat-inference` = take `llm_call`, put
+`llm_result`/`llm_chunk`; `agent:chat-tools` = take `tool_call`, put `tool_result`/`capability`).
+The **session role** picks who the REPL (and its `space_*` tools) run as:
+
+```bash
+deno task chat                       # role=admin (default): session is the OPERATOR
+RADIA_CHAT_ROLE=user deno task chat  # role=user: session is a scoped agent:chat-user run token
+```
+
+As **admin** the `space_*` inspect/remediate tools have full `/ops/*` access. As a **user** the
+session is `agent:chat-user` — granted only the conversational kinds — so it can chat, query its
+own thread, and discover tools, but `space_stats`/`space_doctor`/`space_reclaim`/`declassify`
+return **403** (try "is the space healthy?"), and `space_query {kind: grant}` is denied too. This
+is the same enforcement the conformance suite covers, exercised by a real agent: workers are
+least-privileged, the user is scoped, and the operator is the only principal on the control plane.
+
+Config: `OPENROUTER_API_KEY`, `RADIA_CHAT_ROLE` (`admin`|`user`, or `--role`),
 `RADIA_CHAT_MODEL` (default `openai/gpt-4o-mini`), `RADIA_CHAT_DIRS`, `RADIA_URL`.
 
 Honest edges (documented, not hidden): a crashed inference retries and can double-spend
 (at-least-once — the gateway is the real fix); file contents become records and flow to the
-model (taint, M3). The thread model makes Radia storage linear, but re-sending history to
+model — taint now exists (a tool-worker could `put {taint:true}` on file reads so the untrust
+propagates, and a sensitive consumer could `take {requireUntainted}`), though this example
+doesn't wire it yet. The thread model makes Radia storage linear, but re-sending history to
 the provider each call is inherent to stateless chat APIs (prompt caching mitigates it,
 provider-side), and a large single message (e.g. a 64 KB file read) is still one big record
 until **artifacts** (§2.4, M1) let it be stored once and referenced. Not a CI test
@@ -137,6 +158,7 @@ until **artifacts** (§2.4, M1) let it be stored once and referenced. Not a CI t
 | `demo.ts` | orchestrates all of the above in one process (`deno task demo`) |
 | `chat/chat.ts` | CLI chatbot (pure record I/O); appends the `message` thread, spawns scoped workers, runs the REPL |
 | `chat/kinds.ts` | registers `conversation`/`message`/`llm_*`/`tool_*`/`capability` kinds |
+| `chat/roles.ts` | least-privilege grant sets + bootstrap (mint worker/session run tokens; admin vs user) |
 | `chat/inference.ts` | inference-worker: reconstructs the thread from `message` records → OpenRouter (stream) → `llm_chunk` + `llm_result` |
 | `chat/toolworker.ts` | tool-worker: `tool_call` → sandboxed tool → `tool_result` (scoped perms) |
 | `chat/tools.ts` | file/compute tool impls + JSON schemas + sandbox (realpath allowlist, `calc`) |

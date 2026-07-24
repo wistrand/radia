@@ -67,6 +67,7 @@ out-of-band isolation layer, complementary to grants.
 - Principals
 - Bootstrap
 - Grants
+- Authorization flow (the request path)
 - Delegation
 - Taint
 - Revocation semantics
@@ -110,6 +111,23 @@ flowchart TB
 - `POST /v0/agent-runs/{id}/stop` — stops a run (operator or the run's own token); the token
   stops resolving. **Built.**
 
+```mermaid
+sequenceDiagram
+    participant H as Human operator
+    participant S as Space
+    participant W as Worker
+    H->>S: POST /agent-definitions {agent, grants}
+    Note over S: put agent_definition + grant records,<br/>store only the token HASH
+    S-->>H: definitionToken (shown once)
+    H-->>W: hand off definitionToken (out of band)
+    W->>S: POST /agent-runs (Bearer definitionToken)
+    Note over S: put agent_run {status active, expiresAt},<br/>store only the run-token HASH
+    S-->>W: runToken (once) + run:id
+    W->>S: coordination op (Bearer runToken)
+    Note over S: resolve token to run:id,<br/>authorize as its agent
+    S-->>W: 200, or 403 per grant
+```
+
 Definitions and runs **are records** (`agent_definition` / `agent_run`), expressed through the
 substrate like grants and kinds — only the token *hash* is stored, never the plaintext. Source:
 `src/core/auth.ts` (`CredentialStore`, `mintCredential`), `src/server/handlers/agents.ts`.
@@ -134,6 +152,35 @@ rejected at `put` (`wildcard_grant`); kind + op scoping is enforced in `Space.au
 read/take (`grant ∧ request`, `combineMatch`); multiple grants union, an unrestricted grant
 widens to the whole kind. See [design-matching.md](design-matching.md).
 
+## Authorization flow (the request path)
+
+Every request resolves a principal, passes the ops-plane gate, then runs `authorize`. A `run:*`
+principal authorizes as its **agent** (`grantSubject` — grants inherit down the chain), so the
+grant lookup is keyed by `(subject, kind, op)`.
+
+```mermaid
+flowchart TD
+    Req[request] --> B{"Authorization: Bearer?"}
+    B -->|"valid, active run token"| Prin["principal = run:id"]
+    B -->|"invalid / expired / stopped"| E401[["401"]]
+    B -->|"absent"| XH{"X-Radia-Principal header?"}
+    XH -->|"set (dev-only)"| Prin2["principal = that value"]
+    XH -->|"absent"| Oper["principal = human:local (operator)"]
+    Prin --> Ops
+    Prin2 --> Ops
+    Oper --> Ops
+    Ops{"path under /v0/ops/* ?"} -->|"yes, not privileged"| E403a[["403"]]
+    Ops -->|"no, or privileged"| Az["authorize(principal, op, kind)"]
+    Az --> Priv{"privileged?<br/>human:* / supervisor / operator run"}
+    Priv -->|"yes"| Allow(["allow — no constraint"])
+    Priv -->|"no"| Res{"reserved-kind write?<br/>grant / signal / agent_*"}
+    Res -->|"yes"| E403b[["403 forbidden"]]
+    Res -->|"no"| Grant{"matching grant record<br/>for (subject, kind, op)?"}
+    Grant -->|"none"| E403c[["403 forbidden"]]
+    Grant -->|"yes, no template"| Allow
+    Grant -->|"yes, with template"| AllowT(["allow — AND grant ∧ request"])
+```
+
 ## Delegation
 
 `delegation_context` (see [design-data-model.md](design-data-model.md)) is server-derived
@@ -142,12 +189,26 @@ record's authoritative `lease_owner`, maps it to its agent, and extends the leas
 chain — `{chain, origin}` accumulates the authority path (never data parents). Emitting the
 result is authorized as the acting agent's `put` for that kind.
 
-Data parents contribute nothing. The design end state is that *effective permission on delegated
+A record has **two independent lineages that never cross**: authority flows down the *lease*
+(delegation), untrust flows down the *data parents* (taint). Deriving data from a privileged
+record grants nothing.
+
+```mermaid
+flowchart TB
+    LE["claimed lease<br/>(lease_owner → agent)"] -->|"AUTHORITY lineage"| R["record emitted by ack"]
+    PA["parent_ids<br/>(data parents)"] -->|"DATA lineage: taint = OR(parents)"| R
+    R --> DC["delegation_context.chain<br/>(who authorized this)"]
+    R --> TX["taint flag<br/>(is this untrusted data)"]
+```
+
+The two never cross: a tainted (untrusted) data parent still grants no authority, and a
+privileged authority chain does not launder taint.
+
+The design end state is that *effective permission on delegated
 work = intersection of the authorization chain's grants* — but a hard chain-intersection gate is
 **deferred**: it would block legitimate pipelines (a → b, where b legitimately produces a kind a
 cannot), so M1 enforces the acting agent's own `put` grant and keeps the chain as the authority
-record. Intersection composes with taint (M3): taint is untrusted **data** lineage; delegation is
-**authority** lineage; sensitive consumers may constrain both.
+record. Intersection composes with taint (M3): sensitive consumers may constrain both lineages.
 
 ## Taint — server-computed
 
@@ -165,7 +226,21 @@ puts) and the taint-composed chain-intersection policy (M3).
 
 ## Revocation semantics
 
-Defined explicitly, not implied:
+Defined explicitly, not implied. A run's token stops resolving in every terminal state (→ 401);
+they differ in what happens to the run's **in-flight leases**:
+
+```mermaid
+stateDiagram-v2
+    [*] --> active: mint run token
+    active --> active: renew / operate
+    active --> expired: token TTL elapses
+    active --> stopped: stopRun()
+    active --> quarantined: stopRun(quarantine)
+    expired --> gone: 401, leases expire on their own clocks
+    stopped --> gone: 401, leases expire on their own clocks
+    quarantined --> gone: 401, in-flight leases force-released to lease_lost
+    gone --> [*]
+```
 
 - **Run stopped:** no new operations or renewals; held leases expire on their own clocks
   (quickly, since renewal has stopped). **Built** (`stopRun`, token stops resolving).

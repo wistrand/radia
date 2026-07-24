@@ -21,10 +21,15 @@ function argAll(name: string): string[] {
 }
 
 const url = arg("--url") ?? "http://127.0.0.1:7788";
+const token = arg("--token"); // agent:chat-tools run token — the worker's own identity
+const sessionToken = arg("--session-token"); // the session principal for space_* tools (absent = operator)
 const roots = argAll("--dir");
-const client = new RadiaClient(url);
-// File/compute tools (sandboxed) + space-inspection + remediation tools (via the client).
-const tools = { ...makeTools(roots), ...makeInspectTools(client), ...makeRemediateTools(client) };
+const client = new RadiaClient(url, token ? { token } : {}); // claims tool_calls, publishes capabilities
+// The space_* inspection/remediation tools act as the SESSION principal, not the worker: operator
+// for role=admin (full /ops access), the scoped agent:chat-user for role=user (so /ops calls 403).
+const spaceClient = new RadiaClient(url, sessionToken ? { token: sessionToken } : {});
+// File/compute tools (sandboxed, no client) + space inspection + remediation (session-scoped).
+const tools = { ...makeTools(roots), ...makeInspectTools(spaceClient), ...makeRemediateTools(spaceClient) };
 
 // Publish this worker's capabilities as `capability` records so agents can DISCOVER the
 // available tools from the space (no hard-coded tool list). In a real system this

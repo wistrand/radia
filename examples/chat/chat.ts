@@ -8,6 +8,7 @@
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./kinds.ts";
+import { bootstrap, type Role } from "./roles.ts";
 import type { ChatMessage, ToolDef } from "./openrouter.ts";
 
 // Tools are DISCOVERED from the space, not hard-coded: each tool-worker publishes its tools
@@ -18,6 +19,10 @@ let toolCache: ToolDef[] = [];
 async function refreshTools(): Promise<void> {
   const caps = await client.query({ kind: "capability" }, 200);
   toolCache = caps.map((c) => (c.body as { def: ToolDef }).def);
+}
+function arg(name: string): string | undefined {
+  const i = Deno.args.indexOf(name);
+  return i >= 0 ? Deno.args[i + 1] : undefined;
 }
 function discoverTools(): ToolDef[] {
   return toolCache;
@@ -60,13 +65,18 @@ if (roots.length === 0) {
   Deno.exit(1);
 }
 
-const client = new RadiaClient(url);
+// `admin` is the OPERATOR client used to bootstrap (register kinds, assign grants, mint run
+// tokens). `client` is the SESSION client the REPL uses — operator for role=admin, or a scoped
+// agent:chat-user run token for role=user (assigned after bootstrap, below).
+const role: Role = (arg("--role") ?? Deno.env.get("RADIA_CHAT_ROLE")) === "user" ? "user" : "admin";
+const admin = new RadiaClient(url);
+let client: RadiaClient = admin;
 const procs: Deno.ChildProcess[] = [];
 let spawnedSpace = false;
 
 async function healthy(): Promise<boolean> {
   try {
-    await client.health();
+    await admin.health();
     return true;
   } catch {
     return false;
@@ -92,18 +102,26 @@ if (!await healthy()) {
   }
 }
 
-await registerChatKinds(client);
+// Bootstrap as operator: register kinds, then mint least-privilege run tokens for the workers
+// and (for role=user) the scoped session. The REPL then switches to the session client.
+await registerChatKinds(admin);
+const { inferenceToken, toolsToken, sessionToken } = await bootstrap(admin, role);
+client = new RadiaClient(url, sessionToken ? { token: sessionToken } : {});
 
-// Inference-worker: has the API key, no file access.
+// Tokens are passed to the subprocess workers as args (a local demo; a real deployment would
+// use a secret channel, since argv is visible via `ps`).
+// Inference-worker (agent:chat-inference): has the API key, no file access.
 procs.push(
   new Deno.Command("deno", {
-    args: ["run", "--allow-net", "--allow-env", "examples/chat/inference.ts", "--url", url],
+    args: ["run", "--allow-net", "--allow-env", "examples/chat/inference.ts", "--url", url, "--token", inferenceToken],
     stdout: "null",
     stderr: "inherit",
     stdin: "null",
   }).spawn(),
 );
-// Tool-worker: can read only the sandbox dirs, can reach only the local space, no env.
+// Tool-worker (agent:chat-tools): reads only the sandbox dirs, reaches only the local space, no
+// env. Its space_* inspection/remediation tools act as the SESSION principal (--session-token):
+// operator for admin (so they work), the scoped user for role=user (so /ops/* calls 403).
 procs.push(
   new Deno.Command("deno", {
     args: [
@@ -113,6 +131,9 @@ procs.push(
       "examples/chat/toolworker.ts",
       "--url",
       `http://127.0.0.1:${port}`,
+      "--token",
+      toolsToken,
+      ...(sessionToken ? ["--session-token", sessionToken] : []),
       ...roots.flatMap((r) => ["--dir", r]),
     ],
     stdout: "null",
@@ -137,7 +158,12 @@ Deno.addSignalListener("SIGINT", () => {
   Deno.exit(0);
 });
 
-console.log(`radia chat — model ${model}`);
+console.log(`radia chat — model ${model} — role ${role}`);
+console.log(
+  role === "admin"
+    ? "auth: session runs as the OPERATOR — space_* inspect/remediate tools have full /ops access."
+    : "auth: session runs as scoped agent:chat-user — it can converse, but space_* /ops tools will 403 (try 'is the space healthy?').",
+);
 console.log(`sandbox: ${roots.join(", ")}`);
 console.log(`space ${url}${spawnedSpace ? " (spawned)" : " (existing)"} — open it and watch the Feed tab. Ctrl-D to quit.`);
 
@@ -148,7 +174,14 @@ const SYSTEM_PROMPT =
   "in Radia is a record — including this conversation (kind 'message', matched by your " +
   "conversationId) and your own reasoning (llm_call/llm_result) — so your space_* tools can " +
   "inspect and even remediate the space itself. Use state-changing tools deliberately, and " +
-  "prefer to inspect before acting.";
+  "prefer to inspect before acting.\n" +
+  (role === "admin"
+    ? "This session runs as the OPERATOR: your space_* tools have full access to the space's control plane."
+    : "This session runs as a SCOPED USER (agent:chat-user). Use any tool you are given normally — the " +
+      "file, compute, and conversation tools all work. Some space_* tools touch the control plane and the " +
+      "space may refuse them for this principal. ALWAYS call the tool the task needs; never refuse or skip " +
+      "a tool without calling it. Only if a call returns a forbidden/403 error, tell the user plainly that " +
+      "you lack the grant for that operation.");
 
 // The conversation is an append-only thread of `message` records on the space, not a
 // client-held array. The chatbot appends messages (assigning indices) and reads results;
