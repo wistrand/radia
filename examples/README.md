@@ -77,6 +77,21 @@ tool on the next turn, no code or prompt change. This is "no preconfigured routi
 applied to tools — the substrate coordinating its own capabilities. (Kinds work the same way:
 the chatbot's `capability` kind, like every kind, is a `kind_def` record, not a config table.)
 
+**Model selection is content-routing, and the routing is delegated to the substrate.** There are
+three capability/cost **tiers** — `fast`, `balanced`, `deep` — each served by its own
+inference-worker that claims only its tier's calls (`take {kind:llm_call, match:{tier}}`) and
+advertises a `model` record. **The chat holds no routing logic:** it puts an *untiered* `llm_call`.
+A **router-worker** (`chat/router.ts`) claims untiered calls (`match:{tier:{$exists:false}}`),
+classifies the turn (a heuristic here — swap it for a classifier model without touching the chat),
+and re-dispatches a *tiered* `llm_call`; the matching inference-worker serves it and supplies the
+concrete model. The result stays keyed to the original call (`replyTo`), so the chat is oblivious
+to the indirection — it just sees `[routed → deep]`. So both model-serving *and* the model-choice
+are content-routed steps in the substrate; add a tier-worker → a new model is live, no orchestrator
+change. Two models across three tiers by default (`fast`/`balanced` → `openai/gpt-4o-mini`, `deep`
+→ `anthropic/claude-sonnet-5`); override per tier with `RADIA_CHAT_MODEL_{FAST,BALANCED,DEEP}` (e.g.
+point `balanced` at a mid-tier model). Next: a cheap-first **escalation** cascade (answer at `fast`;
+the model calls an `escalate` tool to re-issue at `deep`) — again a worker change, not a chat one.
+
 ```bash
 export OPENROUTER_API_KEY=sk-or-...          # https://openrouter.ai/keys
 deno task dev                                # optional: open http://localhost:7788, Feed tab
@@ -131,7 +146,8 @@ is the same enforcement the conformance suite covers, exercised by a real agent:
 least-privileged, the user is scoped, and the operator is the only principal on the control plane.
 
 Config: `OPENROUTER_API_KEY`, `RADIA_CHAT_ROLE` (`admin`|`user`, or `--role`),
-`RADIA_CHAT_MODEL` (default `openai/gpt-4o-mini`), `RADIA_CHAT_DIRS`, `RADIA_URL`.
+`RADIA_CHAT_MODEL_{FAST,BALANCED,DEEP}` (per-tier model overrides), `RADIA_CHAT_DIRS`, `RADIA_URL`.
+(No tier setting — the router-worker picks the tier per turn.)
 
 Honest edges (documented, not hidden): a crashed inference retries and can double-spend
 (at-least-once — the gateway is the real fix); file contents become records and flow to the
@@ -157,9 +173,10 @@ until **artifacts** (§2.4, M1) let it be stored once and referenced. Not a CI t
 | `coordinator.ts` | seeds a job + a standalone task, reads outcomes |
 | `demo.ts` | orchestrates all of the above in one process (`deno task demo`) |
 | `chat/chat.ts` | CLI chatbot (pure record I/O); appends the `message` thread, spawns scoped workers, runs the REPL |
-| `chat/kinds.ts` | registers `conversation`/`message`/`llm_*`/`tool_*`/`capability` kinds |
+| `chat/kinds.ts` | registers `conversation`/`message`/`llm_*` (llm_call indexed on `tier`)/`tool_*`/`capability`/`model` kinds |
 | `chat/roles.ts` | least-privilege grant sets + bootstrap (mint worker/session run tokens; admin vs user) |
-| `chat/inference.ts` | inference-worker: reconstructs the thread from `message` records → OpenRouter (stream) → `llm_chunk` + `llm_result` |
+| `chat/router.ts` | router-worker: claims UNTIERED `llm_call`s, classifies the turn, re-dispatches a tiered call (`replyTo` keeps the result correlated) — routing delegated to the substrate |
+| `chat/inference.ts` | per-tier inference-worker (`--tier`/`--model`): claims `{llm_call, tier}`, advertises a `model` record, reconstructs the thread from `message` records → OpenRouter (stream) → `llm_chunk` + `llm_result` |
 | `chat/toolworker.ts` | tool-worker: `tool_call` → sandboxed tool → `tool_result` (scoped perms) |
 | `chat/tools.ts` | file/compute tool impls + JSON schemas + sandbox (realpath allowlist, `calc`) |
 | `chat/inspect.ts` | space-inspection tools (`space_stats`/`query`/`lineage`/`events`/`doctor`, …) |

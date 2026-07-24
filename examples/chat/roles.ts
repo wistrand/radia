@@ -20,12 +20,22 @@ interface Grant {
   operations: string[];
 }
 
-// inference-worker: claims llm_call, emits llm_result + streamed llm_chunk, reads the thread.
+// inference-worker: claims llm_call (any tier), emits llm_result + streamed llm_chunk, advertises
+// its tier→model as a `model` record, and reads the thread. One token serves all tier-workers.
 const INFERENCE_GRANTS: Grant[] = [
   { kind: "llm_call", operations: ["take"] },
   { kind: "llm_result", operations: ["put"] },
   { kind: "llm_chunk", operations: ["put"] },
+  { kind: "model", operations: ["put"] },
   { kind: "message", operations: ["query"] },
+];
+
+// router-worker: claims UNTIERED llm_calls, classifies the turn, and re-dispatches a tiered one.
+// Model selection is delegated here (a substrate worker), not decided in the chat client.
+const ROUTER_GRANTS: Grant[] = [
+  { kind: "llm_call", operations: ["take", "put"] },
+  { kind: "message", operations: ["query"] },
+  { kind: "model", operations: ["query"] },
 ];
 
 // tool-worker: claims tool_call, emits tool_result, and publishes its capability records.
@@ -61,6 +71,7 @@ async function mint(admin: RadiaClient, agent: string, grants: Grant[]): Promise
 
 export interface Bootstrapped {
   inferenceToken: string;
+  routerToken: string;
   toolsToken: string;
   /** The REPL/session token: undefined for admin (operator), a scoped run token for user. */
   sessionToken?: string;
@@ -69,7 +80,8 @@ export interface Bootstrapped {
 /** Bootstrap the run tokens for this session (called by chat.ts as the operator). */
 export async function bootstrap(admin: RadiaClient, role: Role): Promise<Bootstrapped> {
   const inferenceToken = await mint(admin, "agent:chat-inference", INFERENCE_GRANTS);
+  const routerToken = await mint(admin, "agent:chat-router", ROUTER_GRANTS);
   const toolsToken = await mint(admin, "agent:chat-tools", TOOLS_GRANTS);
   const sessionToken = role === "user" ? await mint(admin, "agent:chat-user", USER_GRANTS) : undefined;
-  return { inferenceToken, toolsToken, sessionToken };
+  return { inferenceToken, routerToken, toolsToken, sessionToken };
 }

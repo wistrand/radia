@@ -15,16 +15,26 @@ function arg(name: string): string | undefined {
 const url = arg("--url") ?? Deno.env.get("RADIA_URL") ?? "http://127.0.0.1:7788";
 const token = arg("--token"); // agent:chat-inference run token (scoped grants)
 const apiKey = Deno.env.get("OPENROUTER_API_KEY") ?? "";
-const model = Deno.env.get("RADIA_CHAT_MODEL") ?? "openai/gpt-4o-mini";
+// This worker serves one tier (fast/balanced/deep) with one model; it claims only its tier's
+// llm_calls. `--model` is the concrete OpenRouter model; a call may still override via body.model.
+const tier = arg("--tier"); // omit → serve ALL tiers (single-worker back-compat)
+const model = arg("--model") ?? Deno.env.get("RADIA_CHAT_MODEL") ?? "openai/gpt-4o-mini";
 const client = new RadiaClient(url, token ? { token } : {});
 
+// Advertise this tier→model as a `model` record so the fleet is discoverable (console + a future
+// router), the same way tool-workers publish `capability` records.
+if (tier) await client.put({ kind: "model", body: { tier, model } }, `model:${tier}`);
+
 await agentLoop(client, {
-  name: "inference",
-  templates: [{ kind: "llm_call" }],
+  name: `inference:${tier ?? "all"}`,
+  templates: [tier ? { kind: "llm_call", match: { tier } } : { kind: "llm_call" }],
   leaseSeconds: 60, // inference can be slow; the heartbeat keeps the lease alive
   handle: async (rec, c) => {
     const callId = rec.id;
-    const body = rec.body as { conversationId: string; upToIndex: number; model?: string; tools?: ToolDef[] };
+    const body = rec.body as { conversationId: string; upToIndex: number; model?: string; tools?: ToolDef[]; replyTo?: string };
+    // The router re-dispatches under a new id but sets `replyTo` to the ORIGINAL call the chat
+    // awaits — key the streamed chunks + result to that, so the chat never sees the indirection.
+    const resultKey = body.replyTo ?? callId;
     let index = 0;
     try {
       // Reconstruct the context from the space — the thread lives in `message` records,
@@ -47,15 +57,15 @@ await agentLoop(client, {
       const { message, finishReason, usage } = await streamChat(
         { apiKey, model: body.model ?? model, messages, tools: body.tools },
         async (delta) => {
-          await c.put({ kind: "llm_chunk", body: { callId, index: index++, delta }, parentIds: [callId] });
+          await c.put({ kind: "llm_chunk", body: { callId: resultKey, index: index++, delta }, parentIds: [callId] });
         },
       );
-      return { kind: "llm_result", body: { callId, message, finishReason, usage } };
+      return { kind: "llm_result", body: { callId: resultKey, message, finishReason, usage, tier } };
     } catch (e) {
       // Don't nack (that retries and double-spends); surface the error as the result.
       return {
         kind: "llm_result",
-        body: { callId, message: { role: "assistant", content: `[inference error: ${e}]` }, finishReason: "error" },
+        body: { callId: resultKey, message: { role: "assistant", content: `[inference error: ${e}]` }, finishReason: "error", tier },
       };
     }
   },

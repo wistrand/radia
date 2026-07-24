@@ -20,7 +20,11 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     sortablePaths: ["index"],
     claimable: false,
   });
-  await client.registerKind({ kind: "llm_call", indexedPaths: [] });
+  // llm_call is indexed on `tier` so a per-tier inference-worker claims `{match:{tier}}` — model
+  // selection is content-routing (like tool_call → the worker that serves the tool). A `model`
+  // record (reference) advertises which tier→model each worker serves, for discovery + the console.
+  await client.registerKind({ kind: "llm_call", indexedPaths: [{ path: "tier", type: "keyword" }] });
+  await client.registerKind({ kind: "model", indexedPaths: [{ path: "tier", type: "keyword" }], claimable: false });
   await client.registerKind({ kind: "llm_result", indexedPaths: [{ path: "callId", type: "keyword" }], claimable: false });
   await client.registerKind({
     kind: "llm_chunk",

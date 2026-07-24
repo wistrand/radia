@@ -43,7 +43,16 @@ const write = (s: string) => Deno.stdout.writeSync(enc.encode(s));
 // the chat's records show up there. Spawns its own space only if none is running.
 const url = Deno.env.get("RADIA_URL") ?? "http://127.0.0.1:7788";
 const port = new URL(url).port || "7788";
-const model = Deno.env.get("RADIA_CHAT_MODEL") ?? "openai/gpt-4o-mini";
+
+// Three capability/cost tiers, each served by its own inference-worker (model selection is
+// content-routing). Two models across three tiers: fast/balanced use the cheap model, deep the
+// capable one — point `balanced` at a mid-tier model via the env var. The chat does NOT choose a
+// tier: it puts UNTIERED llm_calls; the router-worker classifies each turn and picks the tier.
+const TIERS: Record<string, string> = {
+  fast: Deno.env.get("RADIA_CHAT_MODEL_FAST") ?? "openai/gpt-4o-mini",
+  balanced: Deno.env.get("RADIA_CHAT_MODEL_BALANCED") ?? "openai/gpt-4o-mini",
+  deep: Deno.env.get("RADIA_CHAT_MODEL_DEEP") ?? "anthropic/claude-sonnet-5",
+};
 const apiKey = Deno.env.get("OPENROUTER_API_KEY");
 if (!apiKey) {
   console.error("Set OPENROUTER_API_KEY (get one at https://openrouter.ai/keys).");
@@ -105,15 +114,28 @@ if (!await healthy()) {
 // Bootstrap as operator: register kinds, then mint least-privilege run tokens for the workers
 // and (for role=user) the scoped session. The REPL then switches to the session client.
 await registerChatKinds(admin);
-const { inferenceToken, toolsToken, sessionToken } = await bootstrap(admin, role);
+const { inferenceToken, routerToken, toolsToken, sessionToken } = await bootstrap(admin, role);
 client = new RadiaClient(url, sessionToken ? { token: sessionToken } : {});
 
 // Tokens are passed to the subprocess workers as args (a local demo; a real deployment would
 // use a secret channel, since argv is visible via `ps`).
-// Inference-worker (agent:chat-inference): has the API key, no file access.
+// One inference-worker per tier (all agent:chat-inference): each claims only `{llm_call, tier}` and
+// serves its model. Add a tier here → a new model is live, no orchestrator change (content-routing).
+for (const [t, m] of Object.entries(TIERS)) {
+  procs.push(
+    new Deno.Command("deno", {
+      args: ["run", "--allow-net", "--allow-env", "examples/chat/inference.ts", "--url", url, "--token", inferenceToken, "--tier", t, "--model", m],
+      stdout: "null",
+      stderr: "inherit",
+      stdin: "null",
+    }).spawn(),
+  );
+}
+// Router-worker (agent:chat-router): claims UNTIERED llm_calls and picks the tier per turn, so
+// the chat holds no routing logic. Model selection is delegated to the substrate.
 procs.push(
   new Deno.Command("deno", {
-    args: ["run", "--allow-net", "--allow-env", "examples/chat/inference.ts", "--url", url, "--token", inferenceToken],
+    args: ["run", "--allow-net", "--allow-env", "examples/chat/router.ts", "--url", url, "--token", routerToken],
     stdout: "null",
     stderr: "inherit",
     stdin: "null",
@@ -158,7 +180,9 @@ Deno.addSignalListener("SIGINT", () => {
   Deno.exit(0);
 });
 
-console.log(`radia chat — model ${model} — role ${role}`);
+console.log(`radia chat — role ${role}`);
+console.log(`tiers: ${Object.entries(TIERS).map(([t, m]) => `${t}=${m}`).join("  ")}`);
+console.log("routing: automatic — a router-worker classifies each turn and picks the tier (no /commands).");
 console.log(
   role === "admin"
     ? "auth: session runs as the OPERATOR — space_* inspect/remediate tools have full /ops access."
@@ -255,14 +279,16 @@ Deno.exit(0);
 async function turn(): Promise<void> {
   for (let round = 0; round < 8; round++) {
     write("\nassistant> ");
-    // The call references the thread by (conversationId, upToIndex) — no embedded history.
+    // An UNTIERED call: the router-worker classifies the turn and re-dispatches it to a tier. The
+    // chat picks no model — it just references the thread by (conversationId, upToIndex).
     const upToIndex = nextIndex - 1;
     const { id: callId } = await client.put({
       kind: "llm_call",
-      body: { conversationId, upToIndex, model, tools: discoverTools() },
+      body: { conversationId, upToIndex, tools: discoverTools() },
       parentIds: [conversationId],
     });
-    const { message: msg, finishReason, streamed } = await streamResult(callId);
+    const { message: msg, finishReason, streamed, tier } = await streamResult(callId);
+    if (tier) write(`  \x1b[2m[routed → ${tier}]\x1b[0m\n`);
     await appendMessage({ role: "assistant", content: msg.content ?? null, tool_calls: msg.tool_calls }, [callId]);
 
     if (msg.tool_calls && msg.tool_calls.length > 0) {
@@ -300,6 +326,7 @@ interface StreamedResult {
   message: ChatMessage;
   finishReason: string;
   streamed: boolean;
+  tier?: string; // the tier the router chose, stamped by the inference-worker
 }
 
 // Poll llm_chunk + llm_result for a call, printing deltas as they arrive.
@@ -321,8 +348,8 @@ async function streamResult(callId: string): Promise<StreamedResult> {
     const result = await client.readOne({ kind: "llm_result", match: { callId } });
     if (result) {
       await printNew(); // flush any stragglers
-      const body = result.body as { message: ChatMessage; finishReason: string };
-      return { message: body.message, finishReason: body.finishReason, streamed: lastIndex >= 0 };
+      const body = result.body as { message: ChatMessage; finishReason: string; tier?: string };
+      return { message: body.message, finishReason: body.finishReason, streamed: lastIndex >= 0, tier: body.tier };
     }
     await sleep(120);
   }
