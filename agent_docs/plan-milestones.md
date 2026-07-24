@@ -23,6 +23,10 @@ Scope note: 2–3 careful weeks for a focused prototype (embedded storage, limit
 predicates, auto-provisioned local auth, minimal hardening, basic fault testing) —
 explicitly **not** production-readiness.
 
+> The buildable, phase-by-phase version of this checklist (Deno + TS runtime, PGlite
+> embedded storage, ordered phases with verify steps) is in
+> [plan-m0-implementation.md](plan-m0-implementation.md).
+
 - [ ] `npx radia dev` — embedded storage (SQLite/PGlite), single process, bundled MCP
       adapter + minimal web inspector
 - [ ] put / take / ack / nack / release / renew

@@ -57,7 +57,8 @@ Design docs (spec + rationale for subsystems not yet built):
 Research and planning:
 
 - [agent_docs/research-positioning.md](agent_docs/research-positioning.md): thesis, evidence, prior art, the defensible gap (§1).
-- [agent_docs/plan-milestones.md](agent_docs/plan-milestones.md): M0–M3 delivery plan (§11).
+- [agent_docs/plan-milestones.md](agent_docs/plan-milestones.md): M0–M3 delivery plan, milestone scope (§11).
+- [agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md): the buildable M0 plan — Deno + TS runtime, storage decisions, phase-by-phase build with verify steps.
 - [agent_docs/plan-validation.md](agent_docs/plan-validation.md): baselines, metrics, fault-injection matrix (§12).
 - [agent_docs/gotchas.md](agent_docs/gotchas.md): rejected approaches, the risk register, and non-obvious "why is it like this" decisions. Skim before proposing a change to signing, encryption, idempotency ordering, or storage backends.
 

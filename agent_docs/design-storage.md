@@ -80,8 +80,12 @@ local agent processes still crash.
 
 Distribution ≠ implementation language: ship one native (or single-runtime) server binary
 wrapped for both `npm` and `pip` (the esbuild/uv pattern), because agent developers split
-across both ecosystems. Acceptable M0 shortcut: a TypeScript server on PGlite reaches the
-demo fastest and can be rewritten behind the stable OpenAPI protocol later.
+across both ecosystems. M0 decision: a **Deno + TypeScript** server on **PGlite** —
+`deno compile` gives per-OS binaries with no build step for dev, and PGlite keeps the M0
+SQL dialect aligned with the M1 Postgres adapter. The wire contract is frozen, so the
+implementation can be rewritten behind the stable OpenAPI protocol later. See
+[plan-m0-implementation.md](plan-m0-implementation.md) for the runtime rationale and build
+plan.
 
 The `dev` command bundles the MCP adapter and inspector: the sharpest onboarding path is
 `npx radia dev`, one line in an MCP-capable harness config (e.g. Claude Code), and a real
