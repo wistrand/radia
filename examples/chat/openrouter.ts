@@ -1,0 +1,130 @@
+// Thin OpenRouter client (OpenAI-compatible chat completions, streaming + tool calling).
+// Only the inference-worker imports this — it is the sole holder of the API key.
+
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+export interface ChatMessage {
+  role: string;
+  content?: string | null;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+  name?: string;
+}
+
+export interface ToolDef {
+  type: "function";
+  function: { name: string; description: string; parameters: unknown };
+}
+
+export interface StreamOpts {
+  apiKey: string;
+  model: string;
+  messages: ChatMessage[];
+  tools?: ToolDef[];
+}
+
+export interface StreamResult {
+  message: ChatMessage;
+  finishReason: string;
+  usage?: Record<string, unknown>;
+}
+
+const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
+
+/**
+ * Stream a completion. `onChunk` is called with accumulated content text on a coarse
+ * cadence (~150 ms) so callers can emit chunk records without flooding; content and any
+ * tool calls are assembled from the SSE deltas and returned whole.
+ */
+export async function streamChat(opts: StreamOpts, onChunk: (text: string) => Promise<void>): Promise<StreamResult> {
+  const res = await fetch(ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${opts.apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://github.com/radia",
+      "X-Title": "Radia chat",
+    },
+    body: JSON.stringify({
+      model: opts.model,
+      messages: opts.messages,
+      tools: opts.tools,
+      tool_choice: opts.tools ? "auto" : undefined,
+      stream: true,
+      stream_options: { include_usage: true },
+    }),
+  });
+  if (!res.ok || !res.body) {
+    throw new Error(`openrouter ${res.status}: ${await res.text()}`);
+  }
+
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  const toolCalls: ToolCall[] = [];
+  let finishReason = "";
+  let usage: Record<string, unknown> | undefined;
+  let pending = "";
+  let lastFlush = Date.now();
+
+  const flush = async (force: boolean) => {
+    if (pending && (force || Date.now() - lastFlush > 150)) {
+      await onChunk(pending);
+      pending = "";
+      lastFlush = Date.now();
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += dec.decode(value, { stream: true });
+
+    let nl: number;
+    while ((nl = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (data === "[DONE]") continue;
+      let json: any;
+      try {
+        json = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      if (json.usage) usage = json.usage;
+      const choice = json.choices?.[0];
+      if (!choice) continue;
+      const delta = choice.delta ?? {};
+      if (delta.content) {
+        content += delta.content;
+        pending += delta.content;
+      }
+      if (delta.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index ?? 0;
+          toolCalls[idx] ??= { id: "", type: "function", function: { name: "", arguments: "" } };
+          if (tc.id) toolCalls[idx].id = tc.id;
+          if (tc.function?.name) toolCalls[idx].function.name += tc.function.name;
+          if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
+        }
+      }
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+      await flush(false);
+    }
+  }
+  await flush(true);
+
+  const message: ChatMessage = {
+    role: "assistant",
+    content: content || null,
+    ...(toolCalls.length ? { tool_calls: toolCalls.filter(Boolean) } : {}),
+  };
+  return { message, finishReason, usage };
+}

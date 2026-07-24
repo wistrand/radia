@@ -40,13 +40,16 @@ content, not by addressing.
 | `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes), `problem.ts` (RFC 9457), `handlers/` (`records.ts` put/read_one/query, `kinds.ts`, `leases.ts`, `dev.ts` stats/kinds-list/envelope) |
 | `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port + compiled-match AST + lease types), `row.ts` (shared row/value mapping) + `pglite.ts`, `sqlite.ts` |
 | `src/core/`                             | storage-agnostic logic: `space.ts` (service, incl. lineage BFS), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order), `kinds.ts` (indexing contract), `take.ts` (claim ranking), `time.ts`, `ids.ts`, `errors.ts` |
+| `sdk/ts/`                               | TS SDK stub: `client.ts` (`RadiaClient` over `/v0`), `loop.ts` (`agentLoop`, design §5) |
+| `examples/`                             | demo agents + `demo.ts`, and `chat/` — a CLI LLM chatbot (full symmetry: llm + tool calls are records); see `examples/README.md` |
 | `conformance/`                          | storage-adapter contract suite (`run.test.ts`, `harness.ts`) |
 | `openapi/radia.yaml`                    | the frozen wire contract (source of truth)                 |
 | `agent_docs/`                           | design deep dives, one topic per file (linked below)       |
 | `notes/radia-runtime-outline-v0.3.md`   | origin design outline; provenance, not maintained doc      |
 
 Build/run: `deno task dev` (no build step), `deno task conformance` (both adapters),
-`deno task compile` (release binary). Implementation is following
+`deno task demo` (end-to-end agent demo over HTTP), `deno task compile` (release binary).
+Implementation is following
 [agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md) phase by
 phase; that plan's proposed layout is the map for code not yet written.
 

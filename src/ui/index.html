@@ -418,9 +418,9 @@ function renderFeed() {
       + `<td class="mono muted">${e.detail ? esc(JSON.stringify(e.detail)) : ""}</td></tr>`
     ).join("") + `</tbody></table>`;
 }
-function startFeed() { feedSeq = 0; feedRows = []; pollFeed(); if ($("feed-live").checked) feedTimer = setInterval(pollFeed, 2000); }
+function startFeed() { feedSeq = 0; feedRows = []; pollFeed(); if ($("feed-live").checked) feedTimer = setInterval(pollFeed, 1000); }
 function stopFeed() { if (feedTimer) { clearInterval(feedTimer); feedTimer = null; } }
-function toggleLive() { stopFeed(); if ($("feed-live").checked) feedTimer = setInterval(pollFeed, 2000); }
+function toggleLive() { stopFeed(); if ($("feed-live").checked) feedTimer = setInterval(pollFeed, 1000); }
 
 // init
 loadHealth();

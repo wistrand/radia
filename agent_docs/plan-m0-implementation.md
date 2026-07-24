@@ -299,7 +299,7 @@ real infra and is deferred past M0 — see [plan-validation.md](plan-validation.
 - [ ] Bundled MCP adapter (`src/mcp/`): holds credentials outside the model context, heartbeats internally.
 - [ ] Friendly dev UI (`src/ui/index.html`) served at `GET /` — space overview, records browser, kinds, put form, query playground, and worker panel; live feed + lineage viewer follow their backing APIs (Phase 5 / M1). Self-contained, public-API-only. See "Dev UI" above.
 - [ ] Minimal CLI (`src/cli.ts`) over the public API only.
-- [ ] TS + Python SDK stubs with the hand-written heartbeat (renew at lease/3) and loop harness.
+- [~] TS SDK stub BUILT ahead of schedule (`sdk/ts/client.ts` + `loop.ts` — `RadiaClient` over `/v0`, `agentLoop` with heartbeat at lease/3, per-attempt idempotency key). Demo agents in `examples/` (worker/planner/aggregator/coordinator) + `deno task demo` exercise it end-to-end over HTTP. Remaining: Python SDK parity, polish.
 - [ ] Release wrapping: `deno compile` → per-OS binary → thin `npm` and `pip` shims (the esbuild/uv pattern; can be rough at M0).
 
 **Verify:** the under-a-minute demo — `npx radia dev` (or `pipx run`) brings up the space

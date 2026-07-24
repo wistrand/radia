@@ -1,0 +1,6 @@
+TODO
+- finish the M0 kernel (done through Phase 6)
+- write the CLI chatbot example with sandboxed file tools
+- add watches (M1) so streaming and tool waits stop polling
+- wire the demo into CI as a smoke check
+- decide on the transactional tool gateway for side-effect safety

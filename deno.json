@@ -4,13 +4,17 @@
   "exports": "./src/main.ts",
   "tasks": {
     "dev": "deno run --allow-net --allow-read --allow-write --allow-env src/main.ts dev",
-    "check": "deno check src/main.ts conformance/run.test.ts",
+    "check": "deno check src/main.ts conformance/run.test.ts examples/demo.ts examples/chat/chat.ts examples/chat/inference.ts examples/chat/toolworker.ts",
     "conformance": "deno test --allow-read --allow-write conformance/",
+    "demo": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/demo.ts",
+    "demo:ci": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/demo.ts --once",
+    "chat": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/chat/chat.ts",
     "compile": "deno compile --allow-net --allow-read --allow-write --allow-env --include src/ui/index.html --output radia src/main.ts"
   },
   "imports": {
     "@std/ulid": "jsr:@std/ulid@^1.0.0",
     "@std/assert": "jsr:@std/assert@^1.0.0",
+    "@std/path": "jsr:@std/path@^1.0.0",
     "@electric-sql/pglite": "npm:@electric-sql/pglite@^0.2.0"
   }
 }
