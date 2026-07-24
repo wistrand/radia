@@ -292,8 +292,9 @@ export interface StorageAdapter {
   // Kind declarations are NOT a storage concern: they are kind_def records, written via put()
   // and read via query() like any record (see core/space.ts loadKinds). No kinds table.
 
-  /** Envelopes currently in a given state, capped (diagnostics). */
-  envelopesInState(state: RecordState, limit: number): Promise<Envelope[]>;
+  /** Envelopes currently in a given state, capped (diagnostics). `excludeKinds` filters them out
+   *  at the query level (before the cap) — used to skip reference kinds in the starvation check. */
+  envelopesInState(state: RecordState, limit: number, excludeKinds?: string[]): Promise<Envelope[]>;
 
   /**
    * Emergency quarantine: force every `leased` record owned by `ownerRun` back to `available`,

@@ -361,10 +361,18 @@ export class PgliteAdapter implements StorageAdapter {
     return res.rows[0].seq;
   }
 
-  async envelopesInState(state: string, limit: number): Promise<Envelope[]> {
+  async envelopesInState(state: string, limit: number, excludeKinds?: string[]): Promise<Envelope[]> {
+    const params: unknown[] = [state];
+    let where = "state = $1";
+    if (excludeKinds && excludeKinds.length > 0) {
+      const ph = excludeKinds.map((_, i) => `$${params.length + i + 1}`).join(", ");
+      where += ` and kind not in (${ph})`;
+      params.push(...excludeKinds);
+    }
+    params.push(limit);
     const res = await this.db.query<RawRow>(
-      "select * from record_runtime where state = $1 order by available_at limit $2",
-      [state, limit],
+      `select * from record_runtime where ${where} order by available_at limit $${params.length}`,
+      params,
     );
     return res.rows.map(rowToEnvelope);
   }

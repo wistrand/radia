@@ -61,6 +61,13 @@ the rate-limited slow lane) and `order_by` on non-sortable paths. Hot declared p
 become generated columns / expression indexes on `record_runtime` (see
 [design-storage.md](design-storage.md)).
 
+A kind also declares `claimable` (default `true`): whether its records are *work* (claimed by a
+worker with `take`) or *reference* data (facts, config, history — written once, read by `query`,
+never taken). It's a diagnostic hint, not a matching rule: `claimable:false` opts the kind out of
+the starvation check (`Space.diagnostics` — a reference record sitting `available` forever is
+normal, not stale). The reserved control kinds (`kind_def`/`grant`/`signal`/`agent_*`) default to
+`claimable:false`.
+
 A declaration is itself a **record** of the reserved `kind_def` kind (body = the contract
 above), expressed through the substrate rather than a bespoke table/endpoint (see
 [CLAUDE.md](../CLAUDE.md) "Design principle"). Declare a kind by `put`-ing a `kind_def`

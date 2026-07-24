@@ -31,6 +31,7 @@ import {
   GRANT,
   type GrantDef,
   type GrantOp,
+  isClaimable,
   KIND_DEF,
   type KindDef,
   kindDefKey,
@@ -57,6 +58,8 @@ export interface SpaceContext {
   supervisor: string;
   /** How long a minted run token stays valid (short-lived; the run refreshes by re-minting). */
   runTokenSeconds: number;
+  /** Age past which an unclaimed *claimable* record counts as stale in diagnostics (starvation). */
+  diagnosticsStaleSeconds: number;
 }
 
 const DEFAULT_CONTEXT: SpaceContext = {
@@ -69,6 +72,7 @@ const DEFAULT_CONTEXT: SpaceContext = {
   maxCumulativeSeconds: 300,
   supervisor: "agent:supervisor",
   runTokenSeconds: 900, // 15 min; a live run re-mints before expiry
+  diagnosticsStaleSeconds: 60,
 };
 
 /** How a caller selects work to take. */
@@ -101,6 +105,9 @@ export interface Diagnostics {
   counts: Record<string, number>;
   deadLetter: { count: number; sample: unknown[] };
   stuckLeases: { count: number; sampledFrom: number; sample: unknown[] };
+  /** Unclaimed *claimable* (work) records older than the threshold — a starvation signal.
+   *  Reference kinds (`claimable:false`: facts, config, grants, history) are excluded: they sit
+   *  available forever by design and are not stale. */
   staleAvailable: { count: number; thresholdSeconds: number; sample: unknown[] };
 }
 
@@ -671,10 +678,10 @@ export class Space {
    * it rather than hand-rolling the same scans. All time math uses the DB clock.
    */
   async queryEnvelopes(
-    q: { state: RecordState; expired?: boolean; staleSeconds?: number; limit?: number },
+    q: { state: RecordState; expired?: boolean; staleSeconds?: number; limit?: number; excludeKinds?: string[] },
   ): Promise<{ record: RadiaRecord | null; envelope: Envelope }[]> {
     const now = await this.storage.now();
-    let envs = await this.storage.envelopesInState(q.state, q.limit ?? 100);
+    let envs = await this.storage.envelopesInState(q.state, q.limit ?? 100, q.excludeKinds);
     if (q.expired) envs = envs.filter((e) => e.leasedUntil !== undefined && e.leasedUntil < now);
     if (q.staleSeconds !== undefined) {
       const before = addSeconds(now, -q.staleSeconds);
@@ -692,11 +699,15 @@ export class Space {
     const stats = await this.storage.stats();
     const total = (state: string) => stats.filter((s) => s.state === state).reduce((a, s) => a + s.count, 0);
     const SAMPLE = 500;
-    const STALE_S = 60;
+    const STALE_S = this.ctx.diagnosticsStaleSeconds;
+    // Starvation is only meaningful for CLAIMABLE (work) kinds: reference records (facts, config,
+    // grants, kind_defs, history) sit `available` forever by design — not stale, so exclude them
+    // (filtered in the query, before the sample cap, so real stale work is never crowded out).
+    const referenceKinds = this.kinds.list().filter((d) => !isClaimable(d)).map((d) => d.kind);
 
     const deadLetter = await this.queryEnvelopes({ state: "dead_letter", limit: 50 });
     const stuck = await this.queryEnvelopes({ state: "leased", expired: true, limit: SAMPLE });
-    const stale = await this.queryEnvelopes({ state: "available", staleSeconds: STALE_S, limit: SAMPLE });
+    const stale = await this.queryEnvelopes({ state: "available", staleSeconds: STALE_S, limit: SAMPLE, excludeKinds: referenceKinds });
     const env = (r: { envelope: Envelope }) => r.envelope;
 
     return {

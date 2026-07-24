@@ -799,6 +799,7 @@ components:
               path: { type: string }
               type: { type: string, enum: [keyword, integer, timestamp, array] }
         sortablePaths: { type: array, items: { type: string } }
+        claimable: { type: boolean, default: true, description: "records of this kind are claimed as work (take); false = reference data (facts/config/history, never taken) — excluded from the starvation diagnostic" }
 
     GrantDef:
       description: >

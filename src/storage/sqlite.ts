@@ -351,10 +351,13 @@ export class SqliteAdapter implements StorageAdapter {
     return Promise.resolve(Number(row.seq));
   }
 
-  envelopesInState(state: string, limit: number): Promise<Envelope[]> {
+  envelopesInState(state: string, limit: number, excludeKinds?: string[]): Promise<Envelope[]> {
+    const exclude = excludeKinds && excludeKinds.length > 0
+      ? ` and kind not in (${excludeKinds.map(() => "?").join(", ")})`
+      : "";
     const rows = this.db
-      .prepare("select * from record_runtime where state = ? order by available_at limit ?")
-      .all(state, limit) as RawRow[];
+      .prepare(`select * from record_runtime where state = ?${exclude} order by available_at limit ?`)
+      .all(state, ...(excludeKinds ?? []), limit) as RawRow[];
     return Promise.resolve(rows.map(rowToEnvelope));
   }
 

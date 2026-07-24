@@ -10,9 +10,11 @@ export async function registerDemoKinds(client: RadiaClient): Promise<void> {
     kind: "task",
     indexedPaths: [{ path: "op", type: "keyword" }, { path: "jobId", type: "keyword" }],
   });
+  // result/summary are facts read by `query`, never `take`n → reference kinds (claimable:false).
   await client.registerKind({
     kind: "result",
     indexedPaths: [{ path: "op", type: "keyword" }, { path: "jobId", type: "keyword" }],
+    claimable: false,
   });
-  await client.registerKind({ kind: "summary", indexedPaths: [{ path: "jobId", type: "keyword" }] });
+  await client.registerKind({ kind: "summary", indexedPaths: [{ path: "jobId", type: "keyword" }], claimable: false });
 }

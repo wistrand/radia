@@ -64,6 +64,12 @@ aggregation (stats), and DAG-traversal (lineage/graph) are first-class ops capab
 than template queries — pushing them into the body-match DSL would corrupt it. What *can* be a
 query is one (the envelope filter); what genuinely can't stays a derived capability.
 
+The **stale-available** (starvation) check counts only **claimable** kinds — a record of a
+`claimable:false` reference kind (facts, config, grants, history) sitting `available` forever is
+normal, not stale, so it is excluded at the query level (`excludeKinds`, before the sample cap, so
+real starved work is never crowded out by reference records). See
+[design-matching.md](design-matching.md) `claimable`.
+
 ## Livelock detection — repeated patterns, not cycles
 
 The lineage DAG is acyclic by construction; ping-pong livelock is a repeating signature

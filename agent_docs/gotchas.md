@@ -140,6 +140,20 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   And a template's paths are validated (indexed-path check) only when a query using it compiles,
   not at grant creation (the kind may not be registered yet) — a bad path surfaces as a 400 later.
 
+- **Stale-available diagnostics count only `claimable` kinds; reference records are not "stuck".**
+  A record sitting `available` isn't necessarily starved work — reference kinds (`claimable:false`:
+  facts, config, `grant`/`kind_def`/`agent_*`, conversation history) are written once and read by
+  `query`, never `take`n, so they sit available forever by design. `Space.diagnostics` excludes
+  them (`excludeKinds`, filtered in the adapter query *before* the 500 sample cap, so a real starved
+  `task` is never crowded out by hundreds of `message`/`capability` records). Reserved control kinds
+  default `claimable:false`; user reference kinds must declare it. Don't "fix" a large
+  stale-available count by raising the threshold — check the kinds are marked reference.
+- **`KindRegistry.register` copies fields explicitly — add new `KindDef` fields there or they're
+  silently dropped.** It rebuilds the stored def (`{kind, indexedPaths, sortablePaths, …}`) rather
+  than spreading, so a new field (like `claimable`) is lost on registration unless you add it to the
+  copy. This bit the `claimable` work: the flag validated and persisted fine but read back as
+  `undefined` everywhere until `register` was taught to carry it (caught by conformance). Same
+  applies to `kindDefKey` — include a new field there too, or a changed value won't mint a successor.
 - **The ops query language is body-only by design; the envelope query is the ops exception.**
   The content-routing template DSL matches record *bodies* (for routing) and deliberately can't
   see the runtime envelope (state/attempt/lease). So observability that needs the envelope

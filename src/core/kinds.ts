@@ -93,6 +93,16 @@ export interface KindDef {
   indexedPaths: IndexedPath[];
   /** Paths order_by may use. Must each be a declared indexed path. */
   sortablePaths?: string[];
+  /** Whether records of this kind are *claimed as work* (`take`n by a worker) vs. *reference*
+   *  data (facts, config, history — written once, read by `query`, never taken). Default true.
+   *  `false` opts the kind out of the starvation check: a reference record sitting `available`
+   *  forever is normal, not stale work. See `Space.diagnostics`. */
+  claimable?: boolean;
+}
+
+/** A kind is claimable (work) unless it explicitly declares `claimable: false` (reference data). */
+export function isClaimable(def: KindDef | undefined): boolean {
+  return def?.claimable !== false;
 }
 
 /** The self-describing declaration of the `kind_def` meta-kind. Registered in code (the one
@@ -100,6 +110,7 @@ export interface KindDef {
 export const META_KIND_DEF: KindDef = {
   kind: KIND_DEF,
   indexedPaths: [{ path: "kind", type: "keyword" }],
+  claimable: false, // kind declarations are reference records, never taken
 };
 
 /** Declarations of the reserved control kinds, registered in code (bootstrap) so their own
@@ -110,12 +121,14 @@ export const META_RESERVED: KindDef[] = [
   {
     kind: GRANT,
     indexedPaths: [{ path: "principal", type: "keyword" }, { path: "kind", type: "keyword" }],
+    claimable: false,
   },
-  { kind: SIGNAL, indexedPaths: [{ path: "topic", type: "keyword" }] },
-  { kind: AGENT_DEFINITION, indexedPaths: [{ path: "agent", type: "keyword" }] },
+  { kind: SIGNAL, indexedPaths: [{ path: "topic", type: "keyword" }], claimable: false },
+  { kind: AGENT_DEFINITION, indexedPaths: [{ path: "agent", type: "keyword" }], claimable: false },
   {
     kind: AGENT_RUN,
     indexedPaths: [{ path: "run", type: "keyword" }, { path: "agent", type: "keyword" }],
+    claimable: false,
   },
 ];
 
@@ -125,7 +138,7 @@ export const META_RESERVED: KindDef[] = [
 export function kindDefKey(def: KindDef): string {
   const ip = [...(def.indexedPaths ?? [])].map((p) => `${p.path}:${p.type}`).sort().join(",");
   const sp = [...(def.sortablePaths ?? [])].sort().join(",");
-  return `kind_def:${def.kind}:${ip}:${sp}`;
+  return `kind_def:${def.kind}:${ip}:${sp}:${def.claimable === false ? "ref" : "work"}`;
 }
 
 function validPath(path: string): boolean {
@@ -166,6 +179,9 @@ export function validateKindDef(def: KindDef): void {
       );
     }
   }
+  if (def.claimable !== undefined && typeof def.claimable !== "boolean") {
+    throw new RadiaError("invalid_type", "kind.claimable must be a boolean");
+  }
 }
 
 export class KindRegistry {
@@ -177,6 +193,7 @@ export class KindRegistry {
       kind: def.kind,
       indexedPaths: [...def.indexedPaths],
       sortablePaths: [...(def.sortablePaths ?? [])],
+      ...(def.claimable !== undefined ? { claimable: def.claimable } : {}),
     });
   }
 

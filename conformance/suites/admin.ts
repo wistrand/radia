@@ -29,6 +29,26 @@ export const adminSuites: Suite[] = [
     },
   },
   {
+    name: "diagnostics stale-available counts only CLAIMABLE kinds (reference kinds are excluded)",
+    run: async (adapter) => {
+      // diagnosticsStaleSeconds:-1 → every attempt-0 available record is 'stale' (no waiting).
+      const space = new Space(adapter, { diagnosticsStaleSeconds: -1 });
+      space.registerKind({ kind: "task", indexedPaths: [] }); // claimable (work)
+      space.registerKind({ kind: "fact", indexedPaths: [], claimable: false }); // reference
+
+      await space.put({ kind: "task", body: {} }); // a work record sitting available = starvation
+      await space.put({ kind: "fact", body: {} }); // reference data at rest = NOT stale
+      await space.put({ kind: "fact", body: {} });
+      // grant/kind_def records exist too (reserved, claimable:false) and must also be excluded
+      await space.put({ kind: "grant", body: { principal: "agent:x", kind: "task", operations: ["take"] } });
+
+      const d = await space.diagnostics();
+      assertEquals(d.staleAvailable.count, 1); // only the task, not the facts/grant/kind_defs
+      const kinds = (d.staleAvailable.sample as { kind: string }[]).map((s) => s.kind);
+      assertEquals(kinds, ["task"]);
+    },
+  },
+  {
     name: "reclaim un-sticks an expired lease (attempt +1); leaves a valid lease alone",
     run: async (adapter) => {
       const space = newSpace(adapter);
