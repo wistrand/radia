@@ -24,7 +24,19 @@ import type {
 import { addSeconds } from "./time.ts";
 import { buildRecord, type PutRequest } from "./record.ts";
 import { compileTemplate, matchesRecord, type Template } from "./matching.ts";
-import { KIND_DEF, type KindDef, kindDefKey, KindRegistry, META_KIND_DEF, validateKindDef } from "./kinds.ts";
+import {
+  GRANT,
+  type GrantDef,
+  type GrantOp,
+  KIND_DEF,
+  type KindDef,
+  kindDefKey,
+  KindRegistry,
+  META_RESERVED,
+  validateGrantDef,
+  validateKindDef,
+  WRITE_PROTECTED_KINDS,
+} from "./kinds.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
 import { Notifier } from "./notifier.ts";
@@ -37,6 +49,8 @@ export interface SpaceContext {
   defaultBackoffSeconds: number;
   maxAttempts: number;
   maxCumulativeSeconds: number;
+  /** The one supervisor agent that, like `human:*`, may write grants/signal and reach `/ops/*`. */
+  supervisor: string;
 }
 
 const DEFAULT_CONTEXT: SpaceContext = {
@@ -47,6 +61,7 @@ const DEFAULT_CONTEXT: SpaceContext = {
   defaultBackoffSeconds: 5,
   maxAttempts: 5,
   maxCumulativeSeconds: 300,
+  supervisor: "agent:supervisor",
 };
 
 /** How a caller selects work to take. */
@@ -96,9 +111,10 @@ export class Space {
     ctx: Partial<SpaceContext> = {},
   ) {
     this.ctx = { ...DEFAULT_CONTEXT, ...ctx };
-    // Bootstrap: the meta-kind is defined in code so a query for kind_def records compiles.
-    // Every other kind is a kind_def record, loaded into this registry by loadKinds().
-    this.kinds.register(META_KIND_DEF);
+    // Bootstrap: the reserved control kinds (kind_def, grant, signal) are defined in code so
+    // queries for their records compile. Every other kind is a kind_def record, loaded by
+    // loadKinds(); grants are grant records, read by authorize().
+    for (const def of META_RESERVED) this.kinds.register(def);
   }
 
   get storageName(): string {
@@ -152,6 +168,44 @@ export class Space {
     return def;
   }
 
+  private grantDefFromBody(body: unknown): GrantDef {
+    if (body === null || typeof body !== "object") {
+      throw new RadiaError("invalid_grant", "a grant record body must be a GrantDef object");
+    }
+    return body as GrantDef;
+  }
+
+  // ---- authorization (M1 slice; the bootstrap chain + tokens + taint are deferred) ----
+
+  /** A privileged principal (`human:*` or the one supervisor agent) has operator access: it
+   *  may reach `/ops/*`, write grants/signal, and perform any coordination op without a grant. */
+  isPrivileged(principal: string): boolean {
+    return principal.startsWith("human:") || principal === this.ctx.supervisor;
+  }
+
+  /**
+   * Authorize `principal` to run coordination `op` on records of `kind`. Throws
+   * RadiaError("forbidden") if denied. Privileged principals pass. Writing a reserved control
+   * kind (grant/signal) requires privilege (grants are assigned, never self-declared). Any
+   * other principal needs a matching **grant record** (kind-scoped, op-scoped) — grants are
+   * discovered through the substrate (a query), not a config table.
+   */
+  async authorize(principal: string, op: GrantOp, kind: string): Promise<void> {
+    if (this.isPrivileged(principal)) return;
+    if ((op === "put" || op === "take") && WRITE_PROTECTED_KINDS.has(kind)) {
+      throw new RadiaError("forbidden", `writing '${kind}' records requires a human or supervisor principal`);
+    }
+    // Grants are records: query the ones for this (principal, kind) and check the op.
+    const grants = await this.query({ kind: GRANT, match: { principal, kind } }, 100);
+    const granted = grants.some((g) => {
+      const ops = (g.body as Partial<GrantDef>)?.operations;
+      return Array.isArray(ops) && ops.includes(op);
+    });
+    if (!granted) {
+      throw new RadiaError("forbidden", `principal '${principal}' has no '${op}' grant for kind '${kind}'`);
+    }
+  }
+
   /** DB clock passthrough (health, diagnostics). */
   now(): Promise<string> {
     return this.storage.now();
@@ -165,6 +219,11 @@ export class Space {
       const id = await this.putRaw(req, idempotencyKey);
       this.kinds.register(def); // reflect it in this process's registry (also on idempotent replay)
       return id;
+    }
+    // A grant record IS an authorization grant: validate its body before commit (write-protection
+    // — that only a privileged principal may put one — is enforced at the API boundary).
+    if (req.kind === GRANT) {
+      validateGrantDef(this.grantDefFromBody(req.body));
     }
     return this.putRaw(req, idempotencyKey);
   }

@@ -22,7 +22,14 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   }
 }
 
-export async function handlePut(space: Space, req: Request): Promise<Response> {
+/** Map a RadiaError to a status: forbidden→403, idempotency_conflict→409, else the fallback. */
+function statusFor(code: string, fallback: number): number {
+  if (code === "forbidden") return 403;
+  if (code === "idempotency_conflict") return 409;
+  return fallback;
+}
+
+export async function handlePut(space: Space, req: Request, principal: string): Promise<Response> {
   const j = await readJson(req);
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
 
@@ -37,20 +44,19 @@ export async function handlePut(space: Space, req: Request): Promise<Response> {
   };
 
   try {
+    await space.authorize(principal, "put", put.kind);
     const { id } = await space.put(put, req.headers.get("Idempotency-Key") ?? undefined);
     return new Response(JSON.stringify({ id }), {
       status: 201,
       headers: { "content-type": "application/json" },
     });
   } catch (e) {
-    if (e instanceof RadiaError) {
-      return problem(e.code === "idempotency_conflict" ? 409 : 422, e.code, e.message);
-    }
+    if (e instanceof RadiaError) return problem(statusFor(e.code, 422), e.code, e.message);
     throw e;
   }
 }
 
-export async function handleQuery(space: Space, req: Request): Promise<Response> {
+export async function handleQuery(space: Space, req: Request, principal: string): Promise<Response> {
   const j = await readJson(req);
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
   if (typeof j.kind !== "string" || j.kind.length === 0) {
@@ -63,15 +69,16 @@ export async function handleQuery(space: Space, req: Request): Promise<Response>
   };
   const limit = typeof j.limit === "number" && j.limit > 0 ? Math.min(j.limit, 500) : 100;
   try {
+    await space.authorize(principal, "query", template.kind);
     const records = await space.query(template, limit);
     return Response.json({ records });
   } catch (e) {
-    if (e instanceof RadiaError) return problem(400, e.code, e.message);
+    if (e instanceof RadiaError) return problem(statusFor(e.code, 400), e.code, e.message);
     throw e;
   }
 }
 
-export async function handleReadOne(space: Space, req: Request): Promise<Response> {
+export async function handleReadOne(space: Space, req: Request, principal: string): Promise<Response> {
   const j = await readJson(req);
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
   if (typeof j.kind !== "string" || j.kind.length === 0) {
@@ -84,11 +91,12 @@ export async function handleReadOne(space: Space, req: Request): Promise<Respons
     orderBy: j.orderBy as Template["orderBy"],
   };
   try {
+    await space.authorize(principal, "read_one", template.kind);
     const record = await space.readOne(template);
     return Response.json(record); // null serializes to `null`
   } catch (e) {
     // Template validation failures (undeclared_path, unknown_kind, ...) are client errors.
-    if (e instanceof RadiaError) return problem(400, e.code, e.message);
+    if (e instanceof RadiaError) return problem(statusFor(e.code, 400), e.code, e.message);
     throw e;
   }
 }

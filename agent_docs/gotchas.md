@@ -57,6 +57,20 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   `kindDefKey`), so restarts don't grow records. Don't reintroduce a `kinds` table or a
   `/v0/kinds` endpoint — that's the side-table-beside-the-substrate this replaced.
 
+- **Authorization is enforced at the HTTP boundary, not inside `Space` methods.** `Space.put`/
+  `take`/`query` stay principal-agnostic (they use the space's own context); the handlers resolve
+  the caller and call `Space.authorize` before dispatching. Consequence: **in-process callers
+  (conformance, examples, `demo.ts`) bypass enforcement** — they exercise the mechanism by
+  calling `authorize` directly (see `conformance/suites/auth.ts`), and `created_by` still comes
+  from `SpaceContext`, not the resolved caller (per-request `created_by` threading is a deferred
+  follow-up; tests pin `created_by === "local:dev"`). Don't "fix" this by moving grant checks
+  into `Space` methods without also threading the principal through every call site.
+- **Default principal is the operator, so dev stays open; enforcement only bites an assumed
+  principal.** An unauthenticated request resolves to `human:local` (privileged) — the UI, demo,
+  and examples work with no auth. `X-Radia-Principal` lets a dev client ASSUME an agent/run
+  principal to test grants; it is **insecure by construction** (a client must not choose its own
+  identity) and exists only until real run tokens land. Never ship it as production auth.
+
 - **The ops query language is body-only by design; the envelope query is the ops exception.**
   The content-routing template DSL matches record *bodies* (for routing) and deliberately can't
   see the runtime envelope (state/attempt/lease). So observability that needs the envelope

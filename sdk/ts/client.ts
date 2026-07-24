@@ -43,12 +43,18 @@ function defaultBase(): string {
 }
 
 export class RadiaClient {
-  constructor(readonly base: string = defaultBase()) {}
+  /** @param principal dev-only: assume a principal via `X-Radia-Principal` (to exercise grant
+   *  enforcement). Omit for the default operator. Real run tokens are deferred (see design-auth). */
+  constructor(readonly base: string = defaultBase(), private readonly principal?: string) {}
 
   private async req(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<any> {
     const res = await fetch(this.base + path, {
       method,
-      headers: { ...(body !== undefined ? { "content-type": "application/json" } : {}), ...headers },
+      headers: {
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
+        ...(this.principal ? { "X-Radia-Principal": this.principal } : {}),
+        ...headers,
+      },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const text = await res.text();
@@ -70,6 +76,12 @@ export class RadiaClient {
 
   put(req: PutRequest, idempotencyKey?: string): Promise<{ id: string }> {
     return this.req("POST", "/v0/records", req, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {});
+  }
+
+  /** Assign a kind-scoped grant (a `grant` record — writable only by a human/supervisor
+   *  principal). `operations` are coordination verbs: put | take | query | read_one. */
+  grant(principal: string, kind: string, operations: string[]): Promise<{ id: string }> {
+    return this.put({ kind: "grant", body: { principal, kind, operations } }, `grant:${principal}:${kind}:${[...operations].sort().join(",")}`);
   }
 
   readOne(template: Template): Promise<RadiaRecord | null> {

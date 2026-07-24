@@ -18,6 +18,47 @@ import { RadiaError } from "./errors.ts";
 /** The reserved kind whose records ARE kind declarations (body = a KindDef). */
 export const KIND_DEF = "kind_def";
 
+/** Reserved kind whose records ARE authorization grants (body = a GrantDef). */
+export const GRANT = "grant";
+
+/** Reserved control kind: operator/supervisor broadcasts (grant-management adjacent). */
+export const SIGNAL = "signal";
+
+/** Reserved kinds only a human/supervisor principal may write (assigned, never self-declared). */
+export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL]);
+
+/** The coordination operations a grant can authorize. */
+export type GrantOp = "put" | "take" | "query" | "read_one";
+const VALID_OPS = new Set<GrantOp>(["put", "take", "query", "read_one"]);
+
+/** A kind-scoped authorization grant. Never wildcard; assigned by a privileged writer. */
+export interface GrantDef {
+  principal: string; // the principal the grant is FOR (e.g. agent:summarizer, run:...)
+  kind: string; // the concrete record kind it applies to — never "*"
+  operations: GrantOp[]; // which coordination verbs on that kind
+}
+
+/** Validate a grant body. Throws RadiaError. Rejects wildcard kinds (kind-scoped invariant). */
+export function validateGrantDef(def: GrantDef): void {
+  if (typeof def.principal !== "string" || def.principal.length === 0) {
+    throw new RadiaError("invalid_grant", "grant.principal must be a non-empty string");
+  }
+  if (typeof def.kind !== "string" || def.kind.length === 0) {
+    throw new RadiaError("invalid_grant", "grant.kind must be a non-empty string");
+  }
+  if (def.kind === "*" || def.kind.includes("*")) {
+    throw new RadiaError("wildcard_grant", "grants are kind-scoped; wildcard kinds are never allowed");
+  }
+  if (!Array.isArray(def.operations) || def.operations.length === 0) {
+    throw new RadiaError("invalid_grant", "grant.operations must be a non-empty array");
+  }
+  for (const op of def.operations) {
+    if (!VALID_OPS.has(op)) {
+      throw new RadiaError("invalid_grant", `unknown grant operation '${op}'`);
+    }
+  }
+}
+
 export type IndexedType = "keyword" | "integer" | "timestamp" | "array";
 
 const VALID_TYPES = new Set<IndexedType>([
@@ -45,6 +86,18 @@ export const META_KIND_DEF: KindDef = {
   kind: KIND_DEF,
   indexedPaths: [{ path: "kind", type: "keyword" }],
 };
+
+/** Declarations of the reserved control kinds, registered in code (bootstrap) so their own
+ *  records can be queried. `grant` is indexed on principal+kind so the authorizer can look up
+ *  a principal's grants for a kind directly. */
+export const META_RESERVED: KindDef[] = [
+  META_KIND_DEF,
+  {
+    kind: GRANT,
+    indexedPaths: [{ path: "principal", type: "keyword" }, { path: "kind", type: "keyword" }],
+  },
+  { kind: SIGNAL, indexedPaths: [{ path: "topic", type: "keyword" }] },
+];
 
 /** A deterministic idempotency key for a declaration, stable across process restarts and
  *  independent of field order: the same def dedups (no record growth), a changed def is a new

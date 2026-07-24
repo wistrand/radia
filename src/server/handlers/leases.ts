@@ -50,7 +50,7 @@ function parseLease(j: Record<string, unknown>): Lease | null {
   };
 }
 
-export async function handleTake(space: Space, req: Request): Promise<Response> {
+export async function handleTake(space: Space, req: Request, principal: string): Promise<Response> {
   const j = await body(req);
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
 
@@ -65,10 +65,14 @@ export async function handleTake(space: Space, req: Request): Promise<Response> 
 
   const leaseSeconds = typeof j.leaseSeconds === "number" && j.leaseSeconds > 0 ? j.leaseSeconds : undefined;
   try {
+    // Authorize on the kind: from the template, or (record-id-only take) the record's own kind.
+    let kind = "template" in sel && sel.template ? sel.template.kind : undefined;
+    if (!kind && "recordId" in sel) kind = (await space.getRecord(sel.recordId))?.kind;
+    if (kind) await space.authorize(principal, "take", kind);
     const result = await space.take(sel, { leaseSeconds });
     return ok(result); // {record, lease} or null
   } catch (e) {
-    if (e instanceof RadiaError) return problem(400, e.code, e.message);
+    if (e instanceof RadiaError) return problem(e.code === "forbidden" ? 403 : 400, e.code, e.message);
     throw e;
   }
 }

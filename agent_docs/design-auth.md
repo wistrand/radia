@@ -3,12 +3,27 @@
 Spec and rationale for principals, grants, delegation, taint, revocation, and budgets.
 Origin: outline §8.
 
-**M0 status:** mostly **not implemented**. M0 runs with a single auto-provisioned local
-principal (`local:dev`) and run id (`run:local`) in `src/core/space.ts` (`SpaceContext`);
-records get `taint:false` and no `delegation_context`. Grants, run tokens / the control
-plane, taint + declassification, delegation, revocation, and budget enforcement are M1–M3.
-The examples run tool-workers as **OS-permission-scoped subprocesses** (`--allow-read`/net,
-no env) — a real but out-of-band isolation layer, not the grant system described here.
+**M1 status (partial — grants + enforcement built):** kind-scoped **grants are records**
+(reserved `grant` kind; body `{principal, kind, operations}`, indexed on principal+kind, never
+wildcard — `src/core/kinds.ts`). `Space.authorize(principal, op, kind)` enforces them and
+`Space.isPrivileged` marks operators (`human:*` or the one configured supervisor,
+`SpaceContext.supervisor`, default `agent:supervisor`). Enforcement is wired at the HTTP
+boundary (`src/server/http.ts` + the record/take handlers): coordination `put`/`take`/`query`/
+`read_one` call `authorize`; `/v0/ops/*` requires a privileged principal; writing a reserved
+control kind (`grant`/`signal`) requires privilege — grants are **assigned, never
+self-declared**. The caller principal is resolved from the request: default operator
+`human:local` (so unauthenticated dev/UI/examples stay fully open), with a dev-only
+`X-Radia-Principal` header to assume an agent/run principal for testing (SDK: `new
+RadiaClient(url, principal)`, `client.grant(...)`). Conformance: `conformance/suites/auth.ts`.
+
+**Deferred to later M1–M3 (this slice does not build):** the real bootstrap chain
+(`POST /agent-definitions` / `/agent-runs`) and short-lived **run tokens** — the
+`X-Radia-Principal` header is an insecure dev stand-in, not auth; **template-scoped** grants
+(the `grant ∧ template` intersection — this slice scopes by kind + op only);
+`delegation_context` derivation; **taint** + declassification (records still get `taint:false`,
+no `delegation_context`); **revocation**/quarantine semantics; and **budget** enforcement. The
+examples also run tool-workers as **OS-permission-scoped subprocesses** (`--allow-read`/net, no
+env) — a real but out-of-band isolation layer, complementary to the grant system.
 
 ## Contents
 - Invariants
@@ -64,6 +79,15 @@ model context.
 Kind-scoped verbs, never wildcard. Template-scoped grants: the effective query is
 `grant ∧ requested template`, **computed server-side** (see
 [design-matching.md](design-matching.md)).
+
+A grant **is a record** of the reserved `grant` kind (`{principal, kind, operations}`) —
+assigned by a human/supervisor `put`-ing one, discovered by the authorizer via a `query`, not a
+config table or a bespoke endpoint. Another instance of expressing a feature through the
+substrate (see [CLAUDE.md](../CLAUDE.md) "Design principle"): the same immutability, event-log
+visibility, and watchability every record has apply to authorization state. Wildcard kinds are
+rejected at `put` (`wildcard_grant`); the kind + op scoping is enforced in
+`Space.authorize`. Template-scoped intersection is the deferred next step (kind + op ships
+first).
 
 ## Delegation
 

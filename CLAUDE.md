@@ -84,7 +84,7 @@ feature can be a **record, a query, or content-routed dispatch** — Radia's own
 Radia is a coordination substrate; it should coordinate its *own* capabilities and
 operations through itself (dogfooding). Symptoms of violating this: a growing flat API of
 one-off endpoints, static tool/route tables, features that only the operator can reach
-out-of-band. Three applications already made:
+out-of-band. Four applications already made:
 
 - **Kinds are records, not a side table.** A kind declaration is a `kind_def` record
   (body = the indexing contract), written via `put` and discovered by `query {kind:kind_def}`
@@ -105,6 +105,11 @@ out-of-band. Three applications already made:
   publish `capability` records ({tool, schema}); an agent *watches/queries* them to build its
   tool list and dispatches by content (`tool_call{tool}` → whichever worker registered it) — no
   preconfigured routing table (§7). Add a worker → the agent gains the tool, no code change.
+- **Grants are records the runtime reads, not a config table.** A kind-scoped grant is a
+  reserved `grant` record ({principal, kind, operations}); a human/supervisor `put`s one and
+  `Space.authorize` discovers it by `query`. Authorization state gets the same immutability,
+  event-log visibility, and watchability as any record. `signal`/`grant` writes and `/v0/ops/*`
+  are the grant-gated boundary — see [agent_docs/design-auth.md](agent_docs/design-auth.md).
 
 ## Invariants
 

@@ -13,9 +13,17 @@ info:
     `x-stability`. SemVer 0.x means the surface may still move; the additive-only rule is
     what makes the stable subset dependable.
 
-    Implemented through M0 (Phases 0-6) plus M1 watches. Not implemented yet: artifacts,
-    grants/run-tokens/taint/delegation, scheduler admission, request/bid/award, keyset
-    query cursor, event-log retention/GC (so 410 cursor_expired is dormant).
+    Authorization (partial M1): kind-scoped grants are reserved `grant` records (assigned by a
+    human/supervisor; discovered by query). The caller principal is resolved from the request —
+    default operator `human:local`, or a dev-only `X-Radia-Principal` header to assume an agent/
+    run principal (insecure stand-in; real run tokens deferred). `put`/`take`/`query`/`read_one`
+    are grant-checked; `/v0/ops/*` and writing `grant`/`signal` records require an operator
+    (`403 forbidden` otherwise).
+
+    Implemented through M0 (Phases 0-6) plus M1 watches + kind-scoped grants. Not implemented
+    yet: artifacts, run-tokens/taint/delegation/template-scoped grants, scheduler admission,
+    request/bid/award, keyset query cursor, event-log retention/GC (so 410 cursor_expired is
+    dormant).
 
 servers:
   - url: /v0
@@ -308,6 +316,12 @@ paths:
   # and discover kinds with `POST /records/query` {kind: kind_def}. Expressing kinds through the
   # substrate (records + query) rather than a bespoke endpoint — see CLAUDE.md "Design principle".
   # Re-declaring a kind emits a successor record (records are immutable; latest per name wins).
+  #
+  # Likewise there is NO /grants endpoint. Reserved kinds `grant` (body {principal, kind,
+  # operations}; kind-scoped, never wildcard) and `signal` are records too, WRITE-PROTECTED to
+  # operator principals: a human/supervisor `POST /records` {kind: grant, ...} assigns a grant;
+  # `Space.authorize` discovers it by query. Non-operators get 403 on grant/signal writes and on
+  # any /ops/* path. See design-auth.md.
 
   /ops/records:
     get:

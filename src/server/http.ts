@@ -36,10 +36,28 @@ export function startServer(opts: ServerOptions): { finished: Promise<void> } {
   return { finished: server.finished };
 }
 
+/**
+ * Resolve the calling principal. M1-minimal, auto-provisioned local auth (NOT production):
+ * default is the operator `human:local`, so unauthenticated dev/UI/examples stay fully open.
+ * The `X-Radia-Principal` header lets a dev client ASSUME an agent/run principal to exercise
+ * grant enforcement — insecure by design (a client shouldn't pick its own identity); real run
+ * tokens + the agent-definition/agent-run bootstrap chain are deferred (see design-auth.md).
+ */
+function resolvePrincipal(req: Request): string {
+  const assumed = req.headers.get("X-Radia-Principal");
+  return assumed && assumed.length > 0 ? assumed : "human:local";
+}
+
 function makeHandler(space: Space, ui: string) {
   return async function handler(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const route = `${req.method} ${url.pathname}`;
+    const principal = resolvePrincipal(req);
+
+    // The observe-and-operate plane is grant-gated: operator (human/supervisor) only.
+    if (url.pathname.startsWith("/v0/ops/") && !space.isPrivileged(principal)) {
+      return problem(403, "forbidden", `principal '${principal}' may not access the ops plane`);
+    }
 
     // --- coordination plane, path-param: watch SSE stream ---
     if (req.method === "GET" && url.pathname.startsWith("/v0/watches/") && url.pathname.endsWith("/events")) {
@@ -77,13 +95,13 @@ function makeHandler(space: Space, ui: string) {
           now: await space.now(),
         });
       case "POST /v0/records":
-        return await handlePut(space, req);
+        return await handlePut(space, req, principal);
       case "POST /v0/records/read-one":
-        return await handleReadOne(space, req);
+        return await handleReadOne(space, req, principal);
       case "POST /v0/records/query":
-        return await handleQuery(space, req);
+        return await handleQuery(space, req, principal);
       case "POST /v0/takes":
-        return await handleTake(space, req);
+        return await handleTake(space, req, principal);
       case "POST /v0/leases/renew":
         return await handleRenew(space, req);
       case "POST /v0/leases/ack":

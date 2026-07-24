@@ -96,7 +96,7 @@ export const recordSuites: Suite[] = [
           runtimeMeta: { createdBy: "attacker" },
         }),
       });
-      const res = await handlePut(space, req);
+      const res = await handlePut(space, req, "human:local");
       assertEquals(res.status, 201);
 
       const rec = await space.readOne({ kind: "task", match: { tag: "boundary" } });

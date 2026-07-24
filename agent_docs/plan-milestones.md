@@ -61,7 +61,7 @@ two-terminal demo works.
 - [ ] read_one + keyset query
 - [ ] long-polls
 - [~] schema version registry — kind *declarations* now persist (`kinds` table, reloaded at startup); schema *versioning* + migration still to do
-- [ ] kind- and template-scoped grants
+- [~] kind- and template-scoped grants — **kind-scoped grants built** (grants are `grant` records; `Space.authorize` + `isPrivileged`; enforced at the HTTP boundary; `/v0/ops/*` and `grant`/`signal` writes are operator-only; dev principal via `X-Radia-Principal`). **Template-scoped** (`grant ∧ template`), real run tokens/bootstrap chain, delegation, taint, revocation, budgets still to do. See [design-auth.md](design-auth.md).
 - [ ] resource limits enforced
 - [ ] hash-chained event log
 - [ ] polished Python + TS SDKs
