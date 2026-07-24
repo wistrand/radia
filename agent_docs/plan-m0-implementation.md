@@ -1,7 +1,8 @@
 # Plan: M0 implementation
 
-> Status: Phases 0–6 DONE (94 conformance tests on both adapters), plus M1 watches and a
-> range of enhancements (see "Current state" and "Enhancements" below). Remaining: Phase 7
+> Status: Phases 0–6 DONE (130 conformance tests on both adapters), plus M1 watches, the M1
+> **authorization stack** (grants, run tokens, delegation, taint — see below), and a range of
+> enhancements (see "Current state" and "Enhancements" below). Remaining M0: Phase 7
 > (MCP adapter, Python SDK, packaging). This is the buildable, phase-by-phase plan for M0
 > (the semantic kernel prototype). Milestone scope and the M1–M3 outline live in
 > [plan-milestones.md](plan-milestones.md); this doc is the technical *how* for M0 only.
@@ -90,10 +91,11 @@ grant/auth/scheduler shapes that aren't validated until M1–M3.
 
 ## Current state
 
-Phases 0–6 are **DONE** and verified (94 conformance tests on both adapters), plus M1
-watches, the dev console + examples, and several enhancements (see below). Remaining:
-Phase 7 (MCP adapter, Python SDK, `npx`/`pipx` packaging). Per-phase records with verify
-results are in the Phases section below.
+Phases 0–6 are **DONE** and verified (130 conformance tests on both adapters), plus M1
+watches, the M1 **authorization stack** (grants, run-token bootstrap chain, per-run leases,
+delegation, taint — see the Enhancements note below), the dev console + examples, and several
+enhancements. Remaining M0: Phase 7 (MCP adapter, Python SDK, `npx`/`pipx` packaging). Per-phase
+records with verify results are in the Phases section below.
 
 **Enhancements built on top of the phases** (not in the original M0 checklist):
 - On-disk persistence: `deno task dev --db <path>` (SQLite file / PGlite dir); records,
@@ -114,6 +116,14 @@ results are in the Phases section below.
   lease fencing; `reclaim` only touches an *expired* lease). Surfaced as chatbot tools
   (`space_doctor` + `space_reclaim`/`space_dead_letter`/`space_requeue`) so the chat example
   is both inspector and operator.
+- **Authorization stack (M1, ahead of the M1 milestone):** grants are `grant` records enforced by
+  `Space.authorize` at the HTTP boundary; the bootstrap chain (`agent-definitions` → `agent-runs` →
+  stop/quarantine) mints run tokens (`src/core/auth.ts`, only the hash stored); `Authorization:
+  Bearer` is the sole channel (no header → operator default; the dev console holds a server-minted
+  operator token). Per-run lease ownership, template-scoped grants, `delegation_context`, and
+  `taint` + declassify all built; the chat example runs with real `admin`/`user` roles and the
+  console surfaces the auth records (Auth tab) + taint/delegation badges. Detail in
+  [design-auth.md](design-auth.md); this is M1 work, tracked in [plan-milestones.md](plan-milestones.md).
 
 ## Proposed layout
 
@@ -293,7 +303,7 @@ ack conflict → `idempotency_conflict`. Live `radia dev` confirmed via curl (he
 
 ### Phase 5 — event log and dead-letter — DONE
 
-- [x] Append-only `events` table (monotonic `seq`, id, ts, run_id, operation, record_id, kind, state, detail) written in the **same transaction** as each mutation via `appendEvent`, inside each op's tx. Run identity on every event (M0: creator principal for `put`, lease owner for settlements — real run tokens in Phase 7).
+- [x] Append-only `events` table (monotonic `seq`, id, ts, run_id, operation, record_id, kind, state, detail) written in the **same transaction** as each mutation via `appendEvent`, inside each op's tx. Run identity on every event (creator principal for `put`, lease owner for settlements — real run tokens now built, M1).
 - [x] One event per successful op: `put`, `take`, `ack` (with `resultId` in detail), `nack`, `release`, and `expire`→`dead_letter`. No-op outcomes (`lease_lost`, idempotency replay) append nothing. `renew` is intentionally not evented (heartbeat noise; it changes no lifecycle state).
 - [x] Dead-letter transition preserves `kind` (Phase 3); event records resulting state.
 - [x] Lineage BFS over `parent_ids` (`src/core/space.ts` `getLineage`, cycle-guarded, node-capped). Endpoints: `GET /v0/ops/events?after=&limit=`, `GET /v0/ops/records/{id}/lineage`.

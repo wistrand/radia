@@ -12,11 +12,14 @@ The name honors Radia Perlman, whose Spanning Tree Protocol showed independent n
 building a shared structure with no central controller. In the tradition of Linda, it
 is a lineage homage.
 
-> Status: M0 kernel built (Phases 0–6) plus M1 watches — put/take/ack/nack/release/renew,
+> Status: M0 kernel built (Phases 0–6) plus a growing M1 slice — put/take/ack/nack/release/renew,
 > record+envelope split, fencing, idempotency, matching, transactional event log +
-> lineage, dead-letter, and SSE watches — running on two storage adapters (embedded
-> PGlite and SQLite) behind the frozen wire contract, with a web console and runnable
-> agent examples. Not production-ready. See `agent_docs/` for the structured design and
+> lineage, dead-letter, and SSE watches, plus the **authorization stack**: kind- and
+> template-scoped grants (as records), the run-token bootstrap chain, per-run leases with
+> stop/quarantine, `delegation_context`, and `taint` + declassify — running on two storage
+> adapters (embedded PGlite and SQLite) behind the frozen wire contract, with a web console
+> and runnable agent examples (including a CLI chatbot that runs with real auth roles). Not
+> production-ready. See `agent_docs/` for the structured design and
 > [notes/radia-runtime-outline-v0.3.md](notes/radia-runtime-outline-v0.3.md) for the origin
 > outline (v0.3).
 
@@ -61,8 +64,8 @@ deno task conformance  # the storage-adapter contract suite (both adapters)
 Storage is in-memory by default. To persist across restarts, pass `--db`:
 
 ```bash
-deno task dev --storage sqlite --db ./radia.db   # SQLite file (WAL)
-deno task dev --storage pglite --db ./radia-pg   # PGlite data directory
+deno task dev --storage sqlite --db ./.radia/radia.db   # SQLite file (WAL)
+deno task dev --storage pglite --db ./.radia/radia-pg   # PGlite data directory
 ```
 
 Records, envelopes, events, idempotency, and kind declarations all persist and reload on

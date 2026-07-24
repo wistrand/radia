@@ -11,22 +11,25 @@ conformance + fault-injection suite against every storage adapter (see
 
 ## Current state
 
-M0 (Phases 0–6) plus M1 watches are built and verified; see
+M0 (Phases 0–6) plus M1 watches and the M1 **authorization stack** (grants, run-token bootstrap
+chain, per-run leases with stop/quarantine, delegation, taint) are built and verified; see
 [plan-m0-implementation.md](plan-m0-implementation.md) for the per-phase record and the
 `design-*` docs for spec + rationale + source pointers. Remaining M0: MCP adapter + Python
-SDK. M2/M3 are unbuilt.
+SDK. The rest of M2/M3 is unbuilt.
 
 ## Phases
 
 ### M0 — semantic kernel prototype, embedded-first — DONE (except MCP adapter + Python SDK)
 
-**Status:** Phases 0–6 built and verified (94 conformance tests on both adapters); the web
-console (Feed, records browser, kinds, query, worker, and a relationship-**graph** view),
-runnable agent examples, and a CLI LLM chatbot ship too. Enhancements layered on since the
-phases: M1 watches (below), optional on-disk persistence (`--db`, records + envelopes +
-events + idempotency + kind declarations), the chatbot's conversation-as-record-thread
-model, and dev diagnostics (`GET /v0/ops/records/{id}` and `/graph`). Remaining M0 items: the
-bundled **MCP adapter** and the **Python SDK** (Phase 7). Full per-phase record in
+**Status:** Phases 0–6 built and verified (130 conformance tests on both adapters); the web
+console (Feed, records browser, kinds, query, worker, relationship-**graph**, and an **Auth**
+view), runnable agent examples, and a CLI LLM chatbot (runnable with real auth roles) ship too.
+Enhancements layered on since the phases: M1 watches (below), the M1 **authorization stack**
+(grants, run tokens, per-run leases, delegation, taint), optional on-disk persistence (`--db`,
+records + envelopes + events + idempotency + kind declarations), the chatbot's
+conversation-as-record-thread model, and dev diagnostics (`GET /v0/ops/records/{id}` and
+`/graph`). Remaining M0 items: the bundled **MCP adapter** and the **Python SDK** (Phase 7).
+Full per-phase record in
 [plan-m0-implementation.md](plan-m0-implementation.md).
 
 Scope note: 2–3 careful weeks for a focused prototype (embedded storage, limited
@@ -57,11 +60,11 @@ two-terminal demo works.
 ### M1 — usable runtime
 
 - [ ] Postgres storage adapter (same conformance + fault suite as embedded)
-- [~] single-node deployment mode with admin-provisioned auth — **auth bootstrap chain + per-run leases built** (agent definitions → run tokens → stop/quarantine; `Authorization: Bearer`; a run inherits its agent's grants and owns its leases; graceful stop vs. emergency quarantine; credential index is a cache over `agent_definition`/`agent_run` records). OIDC for `human:*`, the deployment mode itself, and federated identity still to do. See [design-auth.md](design-auth.md).
+- [~] single-node deployment mode with admin-provisioned auth — **auth bootstrap chain + per-run leases built** (agent definitions → run tokens → stop/quarantine; `Authorization: Bearer` is the sole channel; a run inherits its agent's grants and owns its leases; graceful stop vs. emergency quarantine; credential index is a cache over `agent_definition`/`agent_run` records; the dev console holds a server-minted operator token). OIDC for `human:*`, the deployment mode itself, and federated identity still to do. See [design-auth.md](design-auth.md).
 - [ ] read_one + keyset query
 - [ ] long-polls
-- [~] schema version registry — kind *declarations* now persist (`kinds` table, reloaded at startup); schema *versioning* + migration still to do
-- [x] kind- and template-scoped grants — grants are `grant` records; `Space.authorize` + `isPrivileged`; enforced at the HTTP boundary; `/v0/ops/*` and `grant`/`signal` writes operator-only. **Template-scoped** grants (`grant ∧ request` via `combineMatch`) built for query/read_one/take (put ignores the template — write-side scoping deferred). Delegation, taint, budgets still to do. See [design-auth.md](design-auth.md).
+- [~] schema version registry — kind *declarations* now persist (as `kind_def` records, reloaded at startup by `Space.loadKinds`); schema *versioning* + migration still to do
+- [x] kind- and template-scoped grants — grants are `grant` records; `Space.authorize` + `isPrivileged`; enforced at the HTTP boundary; `/v0/ops/*` and `grant`/`signal` writes operator-only. **Template-scoped** grants (`grant ∧ request` via `combineMatch`) built for query/read_one/take (put ignores the template — write-side scoping deferred). Delegation and taint are also built (rows below); budgets and per-principal trust classification still to do. See [design-auth.md](design-auth.md).
 - [ ] resource limits enforced
 - [ ] hash-chained event log
 - [ ] polished Python + TS SDKs

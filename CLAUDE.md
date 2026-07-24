@@ -3,9 +3,12 @@ Guidance for agents working in this repo. Read this first, then the relevant fil
 
 ## What this is
 
-Radia is a content-routed coordination runtime for LLM agents. **M0 (Phases 0–6) plus M1
-watches are built** (Deno + TypeScript; embedded PGlite and SQLite adapters; web console;
-runnable agent examples incl. a CLI LLM chatbot). The authoritative design lives in
+Radia is a content-routed coordination runtime for LLM agents. **M0 (Phases 0–6) plus a
+growing M1 slice are built** — watches (SSE), and the **authorization stack**: kind- and
+template-scoped grants (as records), the bootstrap chain + run tokens, per-run lease ownership
+with stop/quarantine, `delegation_context`, and `taint` + declassify (Deno + TypeScript;
+embedded PGlite and SQLite adapters; web console; runnable agent examples incl. a CLI LLM
+chatbot that runs with real auth roles). The authoritative design lives in
 `agent_docs/` (structured by topic) and originates from
 [notes/radia-runtime-outline-v0.3.md](notes/radia-runtime-outline-v0.3.md), the v0.3
 functional design outline. The `design-*` docs are spec + rationale; built ones carry an
@@ -39,9 +42,9 @@ content, not by addressing.
 | `deno.json`                             | tasks (`dev`/`check`/`conformance`/`compile`) + import map |
 | `src/main.ts`                           | `radia` CLI entry; `radia dev` boots an embedded space + dev UI |
 | `src/ui/index.html`                     | self-contained dev web console served at `GET /` (no build, public API only) |
-| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes), `problem.ts` (RFC 9457), `handlers/` (`records.ts`, `leases.ts`, `dev.ts` = ops plane: stats/events/lineage/graph/envelope-query/diagnostics/admin, `watches.ts` SSE) |
+| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes, `resolveAuth` Bearer, ops-plane gate, operator-token injection), `problem.ts` (RFC 9457), `handlers/` (`records.ts` + authorize, `leases.ts`, `agents.ts` = bootstrap chain, `dev.ts` = ops plane: stats/events/lineage/graph/envelope-query/diagnostics/admin/declassify, `watches.ts` SSE) |
 | `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port: records/leases/idempotency/events/graph + compiled-match AST; kinds are records, not a port concern), `row.ts` (shared row/value mapping) + `pglite.ts`, `sqlite.ts` |
-| `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + relationship graph, kinds-as-records, envelope query), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order), `kinds.ts` (indexing contract + `kind_def` meta-kind), `take.ts` (claim ranking), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts`, `errors.ts` |
+| `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + graph, kinds-as-records, envelope query, `authorize`/grants, delegation, taint, bootstrap chain), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order + `combineMatch`), `kinds.ts` (indexing contract + `kind_def`/`grant`/`signal`/`agent_*` reserved kinds), `auth.ts` (`CredentialStore`, token mint/hash), `take.ts` (claim ranking), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts`, `errors.ts` |
 | `sdk/ts/`                               | TS SDK stub: `client.ts` (`RadiaClient` over `/v0`, incl. `watch()` SSE), `loop.ts` (`agentLoop`, event-driven, design §5) |
 | `examples/`                             | demo agents + `demo.ts`, and `chat/` — a CLI LLM chatbot (full symmetry: llm + tool calls are records); see `examples/README.md` |
 | `conformance/`                          | storage-adapter contract suite (`run.test.ts`, `harness.ts`) |
@@ -162,8 +165,9 @@ live at the top of the relevant `agent_docs/` file, not here.
 ## Doc lifecycle
 
 Subsystem docs are `design-*` (spec + rationale). Built ones now open with an "M0/M1
-status" note pointing into `src/`; unbuilt ones (scheduler = M3, marketplace = M2, most of
-auth = M1–M3) stay pure design. Full rename to `architecture-*` is deferred to avoid link
+status" note pointing into `src/`; **auth is substantially built (M1)** and its doc carries a
+status note (OIDC, budgets, and the chain-intersection policy stay deferred). Still pure design:
+scheduler (M3), marketplace (M2). Full rename to `architecture-*` is deferred to avoid link
 churn — the status note + source pointers serve the same purpose for now. `plan-*` docs
 track milestone progress; `plan-m0-implementation.md` is the phase-by-phase record.
 

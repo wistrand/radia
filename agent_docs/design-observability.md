@@ -15,7 +15,10 @@ lease — the dimension the content-routing query language deliberately omits) i
 **derived-diagnostics** report (`Space.diagnostics`, `GET /v0/ops/diagnostics`) is a
 *composition* of those envelope queries — counts, dead-letters, expired-but-stuck leases, and
 stale-available records — and **remediation** (`adminTransition`,
-`POST /v0/ops/records/{id}/{reclaim|dead-letter|requeue}`) can act on them. **Not
+`POST /v0/ops/records/{id}/{reclaim|dead-letter|requeue}`) can act on them. The taint-clearing
+**declassify** (`POST /v0/ops/records/{id}/declassify`, operator-gated — see
+[design-auth.md](design-auth.md)) is the other operator action on this plane. All `/v0/ops/*` is
+grant-gated to operator principals (enforced). **Not
 implemented:** the hash-chained/anchored tamper-evident log (§9.1, M1–M2), envelope
 encryption / crypto-shredding (§9.2, M2), repeated-pattern livelock detection (M3),
 re-execution tooling (M3), and the full orphan/starving-template analysis (M1 — the current
