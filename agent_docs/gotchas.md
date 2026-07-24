@@ -149,13 +149,14 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   both adapters get it for free and it stays backend-neutral. It's a claim-time skip, not a query
   predicate (taint is runtime metadata, not body — the content-routing DSL can't see it, same as the
   envelope).
-- **Template-scoped grants restrict reads/claims, not writes.** A grant's `template` is AND-ed
-  into `query`/`read_one`/`take` (`grant ∧ request` via `combineMatch`); `put` **ignores** it, so
-  a template-scoped grant still authorizes putting any record of that kind (write-side scoping is
-  deferred). Also: the constraint nests as `$and[request, $or[templates]]`, so a grant template
-  must be a flat equality map — a `$or`/`$and` inside one can exceed the depth-3 compile limit.
-  And a template's paths are validated (indexed-path check) only when a query using it compiles,
-  not at grant creation (the kind may not be registered yet) — a bad path surfaces as a 400 later.
+- **Template-scoped grants apply to reads/claims AND writes.** A grant's `template` is AND-ed into
+  `query`/`read_one`/`take` (`grant ∧ request` via `combineMatch`), and on `put`/ack the record body
+  must satisfy it (`Space.bodyMatchesGrant`) — a scoped principal writes only records inside its
+  template. Note the asymmetry: read-side ANDs the template into the *query*; write-side matches the
+  *body* against it. Also: the read constraint nests as `$and[request, $or[templates]]`, so a grant
+  template must be a flat equality map — a `$or`/`$and` inside one can exceed the depth-3 compile
+  limit. And a template's paths are validated (indexed-path check) only when it compiles at use, not
+  at grant creation (the kind may not be registered yet) — a bad path surfaces as a 400/denied later.
 
 - **Stale-available diagnostics count only `claimable` kinds; reference records are not "stuck".**
   A record sitting `available` isn't necessarily starved work — reference kinds (`claimable:false`:

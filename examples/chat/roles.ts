@@ -20,13 +20,16 @@ interface Grant {
   operations: string[];
 }
 
-// inference-worker: claims llm_call (any tier), emits llm_result + streamed llm_chunk, advertises
-// its tier→model as a `model` record, and reads the thread. One token serves all tier-workers.
+// inference-worker: claims llm_call (its tier), emits llm_result + streamed llm_chunk, advertises
+// its tier→model (`model` record) + the `escalate` capability, and reads the thread. On
+// self-escalation it re-dispatches an llm_call to a stronger tier (put llm_call) and reads the
+// `model` fleet to find that tier. One token serves all tier-workers.
 const INFERENCE_GRANTS: Grant[] = [
-  { kind: "llm_call", operations: ["take"] },
+  { kind: "llm_call", operations: ["take", "put"] },
   { kind: "llm_result", operations: ["put"] },
   { kind: "llm_chunk", operations: ["put"] },
-  { kind: "model", operations: ["put"] },
+  { kind: "model", operations: ["put", "query"] },
+  { kind: "capability", operations: ["put"] },
   { kind: "message", operations: ["query"] },
 ];
 

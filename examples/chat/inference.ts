@@ -19,11 +19,32 @@ const apiKey = Deno.env.get("OPENROUTER_API_KEY") ?? "";
 // llm_calls. `--model` is the concrete OpenRouter model; a call may still override via body.model.
 const tier = arg("--tier"); // omit → serve ALL tiers (single-worker back-compat)
 const model = arg("--model") ?? Deno.env.get("RADIA_CHAT_MODEL") ?? "openai/gpt-4o-mini";
+const rank = Number(arg("--rank") ?? "0"); // capability rank (cheap→capable); escalation goes up
 const client = new RadiaClient(url, token ? { token } : {});
 
-// Advertise this tier→model as a `model` record so the fleet is discoverable (console + a future
-// router), the same way tool-workers publish `capability` records.
-if (tier) await client.put({ kind: "model", body: { tier, model } }, `model:${tier}`);
+// The `escalate` tool: the model DISCOVERS it (like any capability) and calls it when it's out of
+// depth; this worker INTERCEPTS the call and re-dispatches the turn to a stronger tier (never
+// surfaced to the chat). Guidance lives in the description, not the chat's prompt.
+const ESCALATE: ToolDef = {
+  type: "function",
+  function: {
+    name: "escalate",
+    description: "Escalate this turn to a more capable model. Call this ONLY when the request needs " +
+      "deeper reasoning/analysis or harder code than you can confidently handle; it re-runs the turn " +
+      "on a stronger model and discards your partial work. Do not use it for ordinary turns.",
+    parameters: { type: "object", properties: { reason: { type: "string" } } },
+  },
+};
+// Content-key (hashed → header-safe) so a changed def is a successor, not a 409.
+async function defHash(def: unknown): Promise<string> {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(def)));
+  return [...new Uint8Array(bytes)].slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+if (tier) {
+  await client.put({ kind: "model", body: { tier, model, rank } }, `model:${tier}:${model}:${rank}`);
+  await client.put({ kind: "capability", body: { tool: "escalate", def: ESCALATE } }, `capability:escalate:${await defHash(ESCALATE)}`);
+}
 
 await agentLoop(client, {
   name: `inference:${tier ?? "all"}`,
@@ -54,12 +75,25 @@ await agentLoop(client, {
           return cm;
         });
 
+      // Can this turn escalate? Find the next-higher-rank tier from the `model` records (the
+      // ordering is discovered, not hard-coded). Offer `escalate` only if a stronger tier exists;
+      // otherwise strip it so the top model just answers (and can't emit an unhandled escalate).
+      const fleet = (await c.query({ kind: "model" }, 100)).map((m) => m.body as { tier: string; rank: number });
+      const higher = fleet.filter((m) => (m.rank ?? 0) > rank).sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))[0];
+      const tools = higher ? body.tools : (body.tools ?? []).filter((t) => t.function.name !== "escalate");
+
       const { message, finishReason, usage } = await streamChat(
-        { apiKey, model: body.model ?? model, messages, tools: body.tools },
+        { apiKey, model: body.model ?? model, messages, tools },
         async (delta) => {
           await c.put({ kind: "llm_chunk", body: { callId: resultKey, index: index++, delta }, parentIds: [callId] });
         },
       );
+      // Self-escalation: the model asked for a stronger model and one exists → re-dispatch the turn
+      // to that tier (result stays keyed to the original call). A tool-call turn streams no text, so
+      // nothing was shown. The stronger worker re-decides, so the cascade terminates at the top tier.
+      if (higher && message.tool_calls?.some((tc) => tc.function.name === "escalate")) {
+        return { kind: "llm_call", body: { conversationId: body.conversationId, upToIndex: body.upToIndex, tools: body.tools, tier: higher.tier, replyTo: resultKey, escalatedFrom: tier } };
+      }
       return { kind: "llm_result", body: { callId: resultKey, message, finishReason, usage, tier } };
     } catch (e) {
       // Don't nack (that retries and double-spends); surface the error as the result.

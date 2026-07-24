@@ -222,9 +222,10 @@ export class Space {
    *
    * Returns the **template constraint** for template-scoped grants: `null` when unrestricted
    * (privileged, or at least one matching grant has no template), or the list of grant templates
-   * (their union) that the request must additionally match — callers AND it in via `combineMatch`
-   * (the effective query is `grant ∧ request`). `put` ignores the constraint (write-side template
-   * scoping is not enforced yet).
+   * (their union) the request must additionally satisfy. For read/take, callers AND it into the
+   * query via `combineMatch` (`grant ∧ request`); for `put`, callers check the record body against
+   * it with `bodyMatchesGrant` (write-side scoping — the principal may only write records inside
+   * the grant's template).
    */
   async authorize(principal: string, op: GrantOp, kind: string): Promise<Record<string, unknown>[] | null> {
     if (this.isPrivileged(principal)) return null;
@@ -248,6 +249,20 @@ export class Space {
       templates.push(t);
     }
     return templates; // constrained: request must additionally match one of these
+  }
+
+  /** Write-side template scoping: does `body` (of `kind`) satisfy at least one grant `template`?
+   *  A template-scoped `put` grant lets a principal write only records inside its template (the
+   *  union across grants). Compiles each template against the kind (so its paths must be declared
+   *  indexed, same as read-side) and evaluates the body with the matching oracle. */
+  bodyMatchesGrant(kind: string, body: unknown, templates: Record<string, unknown>[]): boolean {
+    return templates.some((t) => {
+      try {
+        return matchesRecord({ kind, body } as RadiaRecord, this.compile({ kind, match: t }));
+      } catch {
+        return false; // an uncompilable grant template (e.g. undeclared path) grants nothing
+      }
+    });
   }
 
   /**
@@ -493,8 +508,14 @@ export class Space {
       const owner = (await this.storage.getEnvelope(lease.recordId))?.leaseOwner;
       // Emitting a result IS a put: authorize the ACTING principal to put this kind (this closes
       // the gap where ack-emitted records bypassed put-authorization). Pipeline-friendly — each
-      // agent needs only its own grant. Throws forbidden before anything is consumed.
-      if (owner) await this.authorize(owner, "put", result.kind);
+      // agent needs only its own grant. A template-scoped grant also constrains the result body.
+      // Throws forbidden before anything is consumed.
+      if (owner) {
+        const constraint = await this.authorize(owner, "put", result.kind);
+        if (constraint && !this.bodyMatchesGrant(result.kind, result.body, constraint)) {
+          throw new RadiaError("forbidden", `result body is outside the template scope of the put grant for '${result.kind}'`);
+        }
+      }
       // Derive the audit authority chain from the lease (undefined for operator/root owners).
       const delegationContext = owner ? await this.deriveDelegation(owner, lease.recordId) : undefined;
       // Taint propagates along data lineage: the leased record is a parent, so a tainted task

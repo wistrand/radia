@@ -47,7 +47,9 @@ principal's read/take is then `grant ∧ request`, computed server-side — the 
 grant template(s) into the request via `combineMatch` (`src/core/matching.ts`). Multiple grants
 union (an unrestricted grant widens back to the whole kind); `Space.authorize` returns the
 constraint (`null` = unrestricted, else the template list). Applies to `query`/`read_one`/
-`take`; `put` ignores the template (write-side template scoping is not enforced yet).
+`take` (`grant ∧ request` via `combineMatch`) and to `put` (write-side: the record body must
+satisfy the grant template, checked with `Space.bodyMatchesGrant` in the put handler and on
+ack-emitted results).
 
 **Delegation (built):** work emitted via `ack` under a managed run's lease carries a
 server-derived `delegation_context` `{chain, origin}` (`Space.deriveDelegation`) — the authority
@@ -58,14 +60,14 @@ ack-emitted records bypassed put-authorization. This is pipeline-friendly: each 
 its own grant, and the chain records the path (see [design-data-model.md](design-data-model.md)).
 
 **Deferred to later M1–M3:** real OIDC for `human:*` and the `agent-definitions` credential
-(the operator boundary is the local default + the dev header, not federated identity); write-
-side (`put`) template scoping; the stricter **chain-intersection** delegation policy (effective
-permission = intersection of the whole chain's grants — rejected as a hard default because it
-breaks legitimate pipelines; it belongs with taint composition); per-principal **trust
-classification** (auto-tainting untrusted principals' puts — the current taint model is
-propagation + client-raise + declassify); and **budget** enforcement. The examples also run
-tool-workers as **OS-permission-scoped subprocesses** (`--allow-read`/net, no env) — a real but
-out-of-band isolation layer, complementary to grants.
+(the operator boundary is the auto-provisioned local default, not federated identity); the
+stricter **chain-intersection** delegation policy (effective permission = intersection of the
+whole chain's grants — rejected as a hard default because it breaks legitimate pipelines; it
+belongs with taint composition); per-principal **trust classification** (auto-tainting untrusted
+principals' puts — needs the caller threaded into `put`, the same follow-up as per-request
+`created_by`; the current taint model is propagation + client-raise + declassify); and **budget**
+enforcement. The examples also run tool-workers as **OS-permission-scoped subprocesses**
+(`--allow-read`/net, no env) — a real but out-of-band isolation layer, complementary to grants.
 
 ## Contents
 - Invariants
@@ -153,9 +155,11 @@ config table or a bespoke endpoint. Another instance of expressing a feature thr
 substrate (see [CLAUDE.md](../CLAUDE.md) "Design principle"): the same immutability, event-log
 visibility, and watchability every record has apply to authorization state. Wildcard kinds are
 rejected at `put` (`wildcard_grant`); kind + op scoping is enforced in `Space.authorize`.
-**Template scoping is built:** a grant's optional `template` is AND-ed into the principal's
-read/take (`grant ∧ request`, `combineMatch`); multiple grants union, an unrestricted grant
-widens to the whole kind. See [design-matching.md](design-matching.md).
+**Template scoping is built (read and write):** a grant's optional `template` is AND-ed into the
+principal's read/take (`grant ∧ request`, `combineMatch`) and, on `put`, the record body must
+satisfy the template (`Space.bodyMatchesGrant`, in the put handler and on ack-emitted results) —
+so a scoped principal both *sees* and *writes* only records inside its template. Multiple grants
+union, an unrestricted grant widens to the whole kind. See [design-matching.md](design-matching.md).
 
 ## Authorization flow (the request path)
 

@@ -181,6 +181,23 @@ export const authSuites: Suite[] = [
     },
   },
   {
+    name: "template-scoped PUT grant: a principal may only write records inside its template",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({ kind: "note", indexedPaths: [{ path: "team", type: "keyword" }] });
+      // agent:w may put notes only for team=blue
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "note", operations: ["put"], template: { team: "blue" } } });
+      const c = await space.authorize("agent:w", "put", "note");
+      assert(c); // constrained (not null)
+      assertEquals(space.bodyMatchesGrant("note", { team: "blue", text: "x" }, c!), true); // in scope
+      assertEquals(space.bodyMatchesGrant("note", { team: "red", text: "x" }, c!), false); // out of scope
+      assertEquals(space.bodyMatchesGrant("note", { text: "x" }, c!), false); // missing the scoped field
+      // an additional UNRESTRICTED put grant widens back to the whole kind
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "note", operations: ["put"] } });
+      assertEquals(await space.authorize("agent:w", "put", "note"), null);
+    },
+  },
+  {
     name: "template-scoped grant enforced end-to-end: query returns only grant ∧ request",
     run: async (adapter) => {
       const space = new Space(adapter);

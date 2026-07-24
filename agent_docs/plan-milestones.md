@@ -64,7 +64,7 @@ two-terminal demo works.
 - [ ] read_one + keyset query
 - [ ] long-polls
 - [~] schema version registry — kind *declarations* now persist (as `kind_def` records, reloaded at startup by `Space.loadKinds`); schema *versioning* + migration still to do
-- [x] kind- and template-scoped grants — grants are `grant` records; `Space.authorize` + `isPrivileged`; enforced at the HTTP boundary; `/v0/ops/*` and `grant`/`signal` writes operator-only. **Template-scoped** grants (`grant ∧ request` via `combineMatch`) built for query/read_one/take (put ignores the template — write-side scoping deferred). Delegation and taint are also built (rows below); budgets and per-principal trust classification still to do. See [design-auth.md](design-auth.md).
+- [x] kind- and template-scoped grants — grants are `grant` records; `Space.authorize` + `isPrivileged`; enforced at the HTTP boundary; `/v0/ops/*` and `grant`/`signal` writes operator-only. **Template-scoped** grants built for read (query/read_one/take, `grant ∧ request` via `combineMatch`) AND write (put/ack, the record body must satisfy the template via `bodyMatchesGrant`). Delegation and taint are also built (rows below); budgets and per-principal trust classification still to do. See [design-auth.md](design-auth.md).
 - [ ] resource limits enforced
 - [ ] hash-chained event log
 - [ ] polished Python + TS SDKs

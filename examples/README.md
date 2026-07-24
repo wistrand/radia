@@ -91,8 +91,16 @@ to the indirection — it just sees `[routed → deep]`. So both model-serving *
 are content-routed steps in the substrate; add a tier-worker → a new model is live, no orchestrator
 change. Two models across three tiers by default (`fast`/`balanced` → `openai/gpt-4o-mini`, `deep`
 → `anthropic/claude-sonnet-5`); override per tier with `RADIA_CHAT_MODEL_{FAST,BALANCED,DEEP}` (e.g.
-point `balanced` at a mid-tier model). Next: a cheap-first **escalation** cascade (answer at `fast`;
-the model calls an `escalate` tool to re-issue at `deep`) — again a worker change, not a chat one.
+point `balanced` at a mid-tier model).
+
+**Cheap-first, escalate on demand.** On top of routing there's a cost **cascade**: the model is
+offered an `escalate` capability (a discovered tool — guidance in its description), and when it's
+out of depth it calls `escalate`. The inference-worker *intercepts* that call and re-dispatches the
+turn to the next-stronger tier (ordered by the `rank` on each `model` record), keyed to the same
+original call — so the chat only ever sees the final answer and `[routed → deep]`. The top tier has
+no escalation target (the tool is stripped, so it just answers), which terminates the cascade. So
+the router *pre*-routes each turn and escalation *catches* an under-routed one; both are worker
+behavior, and the chat is unchanged (it still puts an untiered call and reads one result).
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-...          # https://openrouter.ai/keys
@@ -180,7 +188,7 @@ until **artifacts** (§2.4, M1) let it be stored once and referenced. Not a CI t
 | `chat/kinds.ts` | registers `conversation`/`message`/`llm_*` (llm_call indexed on `tier`)/`tool_*`/`capability`/`model` kinds |
 | `chat/roles.ts` | least-privilege grant sets + bootstrap (mint worker/session run tokens; admin vs user) |
 | `chat/router.ts` | router-worker: claims UNTIERED `llm_call`s, classifies the turn, re-dispatches a tiered call (`replyTo` keeps the result correlated) — routing delegated to the substrate |
-| `chat/inference.ts` | per-tier inference-worker (`--tier`/`--model`): claims `{llm_call, tier}`, advertises a `model` record, reconstructs the thread from `message` records → OpenRouter (stream) → `llm_chunk` + `llm_result` |
+| `chat/inference.ts` | per-tier inference-worker (`--tier`/`--model`/`--rank`): claims `{llm_call, tier}`, advertises a `model` record + the `escalate` capability, reconstructs the thread → OpenRouter (stream) → `llm_chunk` + `llm_result`; intercepts an `escalate` call and re-dispatches the turn to the next-stronger tier |
 | `chat/toolworker.ts` | tool-worker: `tool_call` → sandboxed tool → `tool_result` (scoped perms) |
 | `chat/tools.ts` | file/compute tool impls + JSON schemas + sandbox (realpath allowlist, `calc`) |
 | `chat/inspect.ts` | space-inspection tools (`space_stats`/`query`/`lineage`/`events`/`doctor`, …) |

@@ -129,10 +129,11 @@ client = new RadiaClient(url, sessionToken ? { token: sessionToken } : {});
 // use a secret channel, since argv is visible via `ps`).
 // One inference-worker per tier (all agent:chat-inference): each claims only `{llm_call, tier}` and
 // serves its model. Add a tier here → a new model is live, no orchestrator change (content-routing).
+let rank = 0; // TIERS is cheap→capable in insertion order; rank drives escalation direction
 for (const [t, m] of Object.entries(TIERS)) {
   procs.push(
     new Deno.Command("deno", {
-      args: ["run", "--allow-net", "--allow-env", "examples/chat/inference.ts", "--url", url, "--token", inferenceToken, "--tier", t, "--model", m],
+      args: ["run", "--allow-net", "--allow-env", "examples/chat/inference.ts", "--url", url, "--token", inferenceToken, "--tier", t, "--model", m, "--rank", String(rank++)],
       stdout: "null",
       stderr: "inherit",
       stdin: "null",
