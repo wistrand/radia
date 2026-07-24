@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radia dev console</title>
+<style>
+  :root {
+    --bg: #f7f7f8; --panel: #fff; --ink: #1a1a1f; --muted: #6b7280; --line: #e4e4e7;
+    --accent: #4f46e5; --accent-ink: #fff; --code: #f3f4f6;
+    --ok: #15803d; --warn: #b45309; --err: #b91c1c; --info: #1d4ed8;
+    --avail: #2563eb; --leased: #b45309; --consumed: #6b7280; --dead: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e0e11; --panel: #17171b; --ink: #e8e8ea; --muted: #9ca3af; --line: #2a2a31;
+      --accent: #818cf8; --accent-ink: #0e0e11; --code: #1e1e24;
+      --ok: #4ade80; --warn: #fbbf24; --err: #f87171; --info: #60a5fa;
+      --avail: #60a5fa; --leased: #fbbf24; --consumed: #9ca3af; --dead: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { padding: 16px 20px; border-bottom: 1px solid var(--line); display: flex;
+    align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .health { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--code);
+    border: 1px solid var(--line); color: var(--muted); }
+  nav { display: flex; gap: 4px; padding: 8px 16px; border-bottom: 1px solid var(--line);
+    flex-wrap: wrap; position: sticky; top: 0; background: var(--bg); z-index: 2; }
+  nav button { background: none; border: 0; color: var(--muted); padding: 8px 12px;
+    border-radius: 8px; cursor: pointer; font-size: 13px; }
+  nav button.active { background: var(--accent); color: var(--accent-ink); }
+  main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+  section { display: none; }
+  section.active { display: block; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px; margin-bottom: 16px; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  input, select, textarea, button { font: inherit; color: var(--ink); }
+  input, select, textarea { width: 100%; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; }
+  textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; min-height: 84px; resize: vertical; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > * { flex: 1; min-width: 120px; }
+  .btn { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px;
+    padding: 8px 14px; cursor: pointer; width: auto; }
+  .btn.ghost { background: var(--code); color: var(--ink); border: 1px solid var(--line); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
+  tr.click { cursor: pointer; }
+  tr.click:hover td { background: var(--code); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px; overflow: auto; font-size: 12.5px; }
+  .mono { font-family: ui-monospace, monospace; font-size: 12px; }
+  .muted { color: var(--muted); }
+  .badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; color: #fff; text-transform: capitalize; }
+  .st-available { background: var(--avail); } .st-leased { background: var(--leased); }
+  .st-consumed { background: var(--consumed); } .st-dead_letter { background: var(--dead); }
+  .st-expired { background: var(--consumed); }
+  .note { border-radius: 8px; padding: 10px 12px; margin-top: 12px; font-size: 13px; border: 1px solid var(--line); }
+  .note.ok { color: var(--ok); } .note.err { color: var(--err); } .note.info { color: var(--info); }
+  .empty { color: var(--muted); padding: 18px; text-align: center; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Radia</h1>
+  <span class="sub">dev console</span>
+  <div class="health" id="health"><span class="pill">connecting…</span></div>
+</header>
+<nav id="nav">
+  <button data-tab="overview" class="active">Overview</button>
+  <button data-tab="records">Records</button>
+  <button data-tab="kinds">Kinds</button>
+  <button data-tab="put">Put</button>
+  <button data-tab="query">Query</button>
+  <button data-tab="worker">Worker</button>
+  <button data-tab="feed">Feed</button>
+</nav>
+<main>
+  <!-- OVERVIEW -->
+  <section id="overview" class="active">
+    <div class="panel">
+      <h2>Space</h2>
+      <div id="overview-health" class="muted">loading…</div>
+    </div>
+    <div class="panel">
+      <h2>Records by kind and state <button class="btn ghost" style="float:right" onclick="loadStats()">Refresh</button></h2>
+      <div id="stats"></div>
+    </div>
+  </section>
+
+  <!-- RECORDS -->
+  <section id="records">
+    <div class="panel">
+      <h2>Browse records</h2>
+      <div class="row">
+        <div><label>Kind</label><input id="rec-kind" list="kind-list" placeholder="task"></div>
+        <div style="max-width:120px"><label>Limit</label><input id="rec-limit" type="number" value="50"></div>
+      </div>
+      <div class="actions"><button class="btn" onclick="loadRecords()">Load</button></div>
+    </div>
+    <div class="grid2">
+      <div class="panel"><h2>Results</h2><div id="rec-list"><div class="empty">Load a kind to browse.</div></div></div>
+      <div class="panel"><h2>Detail</h2><div id="rec-detail"><div class="empty">Select a record.</div></div></div>
+    </div>
+  </section>
+
+  <!-- KINDS -->
+  <section id="kinds">
+    <div class="grid2">
+      <div class="panel">
+        <h2>Registered kinds <button class="btn ghost" style="float:right" onclick="loadKinds()">Refresh</button></h2>
+        <div id="kinds-list"></div>
+      </div>
+      <div class="panel">
+        <h2>Register a kind</h2>
+        <label>Kind</label><input id="k-name" placeholder="task">
+        <label>Indexed paths (JSON array of {path, type})</label>
+        <textarea id="k-indexed">[
+  { "path": "tag", "type": "keyword" },
+  { "path": "n", "type": "integer" }
+]</textarea>
+        <label>Sortable paths (comma-separated, optional)</label>
+        <input id="k-sortable" placeholder="n">
+        <div class="actions"><button class="btn" onclick="registerKind()">Register</button></div>
+        <div id="k-msg"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PUT -->
+  <section id="put">
+    <div class="panel">
+      <h2>Put a record</h2>
+      <label>Kind</label><input id="p-kind" list="kind-list" placeholder="task">
+      <label>Body (JSON)</label>
+      <textarea id="p-body">{ "tag": "hello", "n": 42 }</textarea>
+      <label>Idempotency-Key (optional — replay the same key to dedup)</label>
+      <input id="p-idem" placeholder="leave blank for none">
+      <div class="actions"><button class="btn" onclick="putRecord()">Put</button></div>
+      <div id="p-msg"></div>
+    </div>
+  </section>
+
+  <!-- QUERY -->
+  <section id="query">
+    <div class="panel">
+      <h2>Query playground</h2>
+      <div class="row">
+        <div><label>Kind</label><input id="q-kind" list="kind-list" placeholder="task"></div>
+        <div style="max-width:120px"><label>Limit</label><input id="q-limit" type="number" value="50"></div>
+      </div>
+      <label>Match (JSON, optional)</label>
+      <textarea id="q-match">{ "n": { "$gt": 3 } }</textarea>
+      <label>Order by (JSON array of {path, dir}, optional)</label>
+      <textarea id="q-order" style="min-height:52px">[ { "path": "n", "dir": "asc" } ]</textarea>
+      <div class="actions"><button class="btn" onclick="runQuery()">Run</button></div>
+      <div id="q-msg"></div>
+      <div id="q-results"></div>
+    </div>
+  </section>
+
+  <!-- WORKER -->
+  <section id="worker">
+    <div class="panel">
+      <h2>Claim work</h2>
+      <div class="row">
+        <div><label>Kind (template)</label><input id="w-kind" list="kind-list" placeholder="task"></div>
+        <div style="max-width:140px"><label>Lease seconds</label><input id="w-lease" type="number" value="30"></div>
+      </div>
+      <div class="actions"><button class="btn" onclick="takeWork()">Take</button></div>
+      <div id="w-msg"></div>
+    </div>
+    <div class="panel" id="w-holding" style="display:none">
+      <h2>Held lease</h2>
+      <div id="w-lease-view"></div>
+      <label>Result body on ack (JSON, optional)</label>
+      <textarea id="w-result" style="min-height:52px">{ "ok": true }</textarea>
+      <label>Idempotency-Key for ack (optional — retry to replay the stored result)</label>
+      <input id="w-idem" placeholder="leave blank for none">
+      <div class="actions">
+        <button class="btn" onclick="settle('renew')">Renew</button>
+        <button class="btn" onclick="settle('ack')">Ack</button>
+        <button class="btn ghost" onclick="settle('nack')">Nack</button>
+        <button class="btn ghost" onclick="settle('release')">Release</button>
+      </div>
+      <div id="w-settle"></div>
+    </div>
+  </section>
+
+  <!-- FEED -->
+  <section id="feed">
+    <div class="panel">
+      <h2>Event log
+        <label style="display:inline; float:right; font-size:12px; color:var(--muted)">
+          <input type="checkbox" id="feed-live" style="width:auto" checked onchange="toggleLive()"> live
+        </label>
+      </h2>
+      <div id="feed-list"><div class="empty">No events yet.</div></div>
+    </div>
+  </section>
+</main>
+<datalist id="kind-list"></datalist>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function api(method, path, body, headers = {}) {
+  const h = { ...headers };
+  if (body !== undefined) h["content-type"] = "application/json";
+  const res = await fetch(path, {
+    method,
+    headers: h,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+  return { ok: res.ok, status: res.status, data };
+}
+function esc(s) { return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+function note(el, kind, msg) { $(el).innerHTML = `<div class="note ${kind}">${esc(msg)}</div>`; }
+function errText(r) { return (r.data && r.data.detail) ? `${r.data.title}: ${r.data.detail}` : `HTTP ${r.status}`; }
+function stateBadge(s) { return `<span class="badge st-${s}">${s}</span>`; }
+
+// ---- nav ----
+document.querySelectorAll("#nav button").forEach((b) => b.onclick = () => {
+  document.querySelectorAll("#nav button").forEach((x) => x.classList.remove("active"));
+  document.querySelectorAll("main section").forEach((x) => x.classList.remove("active"));
+  b.classList.add("active");
+  $(b.dataset.tab).classList.add("active");
+  stopFeed();
+  if (b.dataset.tab === "overview") { loadHealth(); loadStats(); }
+  if (b.dataset.tab === "kinds") loadKinds();
+  if (b.dataset.tab === "feed") startFeed();
+});
+
+// ---- health / overview ----
+async function loadHealth() {
+  const r = await api("GET", "/v0/health");
+  if (!r.ok) { $("health").innerHTML = `<span class="pill">offline</span>`; return; }
+  const d = r.data;
+  $("health").innerHTML = `<span class="pill">storage: ${esc(d.storage)}</span>`
+    + `<span class="pill">api ${esc(d.api)}</span>`
+    + `<span class="pill">v${esc(d.version)}</span>`;
+  $("overview-health").innerHTML =
+    `<div><b>Storage backend:</b> <span class="mono">${esc(d.storage)}</span></div>`
+    + `<div><b>DB clock:</b> <span class="mono">${esc(d.now)}</span></div>`
+    + `<div><b>Version:</b> <span class="mono">${esc(d.version)}</span> · <b>API:</b> ${esc(d.api)}</div>`;
+}
+async function loadStats() {
+  const r = await api("GET", "/v0/stats");
+  if (!r.ok) return;
+  const rows = r.data.stats;
+  if (!rows.length) { $("stats").innerHTML = `<div class="empty">No records yet.</div>`; return; }
+  $("stats").innerHTML = `<table><thead><tr><th>Kind</th><th>State</th><th>Count</th></tr></thead><tbody>`
+    + rows.map((s) => `<tr><td class="mono">${esc(s.kind)}</td><td>${stateBadge(s.state)}</td><td>${s.count}</td></tr>`).join("")
+    + `</tbody></table>`;
+}
+
+// ---- kinds ----
+async function loadKinds() {
+  const r = await api("GET", "/v0/kinds");
+  if (!r.ok) return;
+  const kinds = r.data.kinds;
+  $("kind-list").innerHTML = kinds.map((k) => `<option value="${esc(k.kind)}">`).join("");
+  if (!kinds.length) { $("kinds-list").innerHTML = `<div class="empty">No kinds registered.</div>`; return; }
+  $("kinds-list").innerHTML = kinds.map((k) =>
+    `<div class="panel" style="background:var(--bg)"><b class="mono">${esc(k.kind)}</b>`
+    + `<div class="muted" style="margin-top:6px">indexed: ${(k.indexedPaths || []).map((p) => `<code>${esc(p.path)}</code>:${esc(p.type)}`).join(", ") || "—"}</div>`
+    + `<div class="muted">sortable: ${(k.sortablePaths || []).map((p) => `<code>${esc(p)}</code>`).join(", ") || "—"}</div></div>`
+  ).join("");
+}
+async function registerKind() {
+  let indexedPaths, sortablePaths;
+  try { indexedPaths = JSON.parse($("k-indexed").value || "[]"); }
+  catch (e) { return note("k-msg", "err", "Indexed paths: invalid JSON"); }
+  sortablePaths = $("k-sortable").value.split(",").map((s) => s.trim()).filter(Boolean);
+  const r = await api("POST", "/v0/kinds", { kind: $("k-name").value.trim(), indexedPaths, sortablePaths });
+  if (r.ok) { note("k-msg", "ok", `Registered “${r.data.kind}”.`); loadKinds(); }
+  else note("k-msg", "err", errText(r));
+}
+
+// ---- put ----
+async function putRecord() {
+  let body;
+  try { body = JSON.parse($("p-body").value); }
+  catch (e) { return note("p-msg", "err", "Body: invalid JSON"); }
+  const idem = $("p-idem").value.trim();
+  const r = await api("POST", "/v0/records", { kind: $("p-kind").value.trim(), body },
+    idem ? { "Idempotency-Key": idem } : {});
+  if (r.ok) note("p-msg", "ok", `Put record ${r.data.id}${idem ? " (key: " + idem + ")" : ""}`);
+  else note("p-msg", "err", errText(r));
+}
+
+// ---- records browser ----
+async function loadRecords() {
+  const kind = $("rec-kind").value.trim();
+  if (!kind) return;
+  const r = await api("POST", "/v0/records/query", { kind, limit: Number($("rec-limit").value) || 50 });
+  if (!r.ok) { $("rec-list").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
+  renderRecordList("rec-list", r.data.records, showDetail);
+}
+function renderRecordList(el, records, onClick) {
+  if (!records.length) { $(el).innerHTML = `<div class="empty">No matching records.</div>`; return; }
+  window._recs = window._recs || {};
+  const rows = records.map((rec) => {
+    window._recs[rec.id] = rec;
+    const preview = esc(JSON.stringify(rec.body)).slice(0, 60);
+    return `<tr class="click" onclick="(${onClick.name})('${rec.id}')"><td class="mono">${esc(rec.id.slice(-8))}</td>`
+      + `<td class="mono muted">${esc(rec.runtimeMeta.createdAt.slice(11, 23))}</td><td class="mono">${preview}</td></tr>`;
+  }).join("");
+  $(el).innerHTML = `<table><thead><tr><th>ID</th><th>Created</th><th>Body</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+async function showDetail(id) {
+  const rec = window._recs[id];
+  const env = await api("GET", "/v0/envelopes/" + encodeURIComponent(id));
+  const e = env.ok ? env.data : null;
+  const lin = await api("GET", "/v0/records/" + encodeURIComponent(id) + "/lineage");
+  let lineageHtml = "";
+  if (lin.ok && lin.data.lineage.length > 1) {
+    lineageHtml = `<b>Lineage (ancestry)</b><div style="margin-top:6px">`
+      + lin.data.lineage.map((n) =>
+        `<div style="padding-left:${n.depth * 16}px" class="mono muted">`
+        + `${n.depth === 0 ? "●" : "└"} ${esc(n.record.id.slice(-8))} <span class="muted">${esc(n.record.kind)}</span></div>`
+      ).join("") + `</div>`;
+  }
+  $("rec-detail").innerHTML =
+    `<div style="margin-bottom:8px">${e ? stateBadge(e.state) : ""} <span class="mono">${esc(id)}</span></div>`
+    + `<b>Body</b><pre>${esc(JSON.stringify(rec.body, null, 2))}</pre>`
+    + `<b>Runtime meta</b><pre>${esc(JSON.stringify(rec.runtimeMeta, null, 2))}</pre>`
+    + (e ? `<b>Envelope</b><pre>${esc(JSON.stringify(e, null, 2))}</pre>` : "")
+    + lineageHtml;
+}
+
+// ---- query ----
+async function runQuery() {
+  let match, orderBy;
+  try { match = $("q-match").value.trim() ? JSON.parse($("q-match").value) : undefined; }
+  catch (e) { return note("q-msg", "err", "Match: invalid JSON"); }
+  try { orderBy = $("q-order").value.trim() ? JSON.parse($("q-order").value) : undefined; }
+  catch (e) { return note("q-msg", "err", "Order by: invalid JSON"); }
+  const r = await api("POST", "/v0/records/query",
+    { kind: $("q-kind").value.trim(), match, orderBy, limit: Number($("q-limit").value) || 50 });
+  if (!r.ok) { note("q-msg", "err", errText(r)); $("q-results").innerHTML = ""; return; }
+  $("q-msg").innerHTML = `<div class="note ok">${r.data.records.length} record(s)</div>`;
+  renderRecordList("q-results", r.data.records, showDetail);
+}
+
+// ---- worker ----
+let heldLease = null;
+async function takeWork() {
+  const kind = $("w-kind").value.trim();
+  const leaseSeconds = Number($("w-lease").value) || 30;
+  const r = await api("POST", "/v0/takes", { template: { kind }, leaseSeconds });
+  if (!r.ok) return note("w-msg", "err", errText(r));
+  if (r.data === null) { note("w-msg", "info", "Nothing claimable for that template."); $("w-holding").style.display = "none"; return; }
+  heldLease = r.data.lease;
+  note("w-msg", "ok", `Claimed record ${r.data.record.id}`);
+  $("w-holding").style.display = "block";
+  $("w-lease-view").innerHTML =
+    `<pre>${esc(JSON.stringify(r.data.record, null, 2))}</pre>`
+    + `<b>Lease</b><pre>${esc(JSON.stringify(heldLease, null, 2))}</pre>`;
+}
+async function settle(op) {
+  if (!heldLease) return;
+  const payload = { lease: heldLease };
+  const headers = {};
+  if (op === "ack") {
+    if ($("w-result").value.trim()) {
+      try { payload.result = { kind: "result", body: JSON.parse($("w-result").value) }; }
+      catch (e) { return note("w-settle", "err", "Result body: invalid JSON"); }
+    }
+    const k = $("w-idem").value.trim();
+    if (k) headers["Idempotency-Key"] = k;
+  }
+  const r = await api("POST", "/v0/leases/" + op, payload, headers);
+  if (!r.ok) return note("w-settle", "err", errText(r));
+  const status = r.data.status;
+  if (status === "lease_lost") note("w-settle", "err", `${op}: lease_lost (fenced — the lease was reassigned or expired)`);
+  else {
+    note("w-settle", "ok", `${op}: ok${r.data.resultId ? " · emitted " + r.data.resultId : ""}`);
+    if (op === "ack" || op === "release" || op === "nack") { heldLease = null; $("w-holding").style.display = "none"; }
+    if (op === "renew" && r.data.lease) heldLease = r.data.lease;
+  }
+}
+
+// ---- feed ----
+let feedSeq = 0, feedTimer = null, feedRows = [];
+async function pollFeed() {
+  const r = await api("GET", "/v0/events?after=" + feedSeq + "&limit=200");
+  if (!r.ok) return;
+  for (const e of r.data.events) { feedSeq = Math.max(feedSeq, e.seq); feedRows.unshift(e); }
+  feedRows = feedRows.slice(0, 300);
+  renderFeed();
+}
+function renderFeed() {
+  if (!feedRows.length) { $("feed-list").innerHTML = `<div class="empty">No events yet.</div>`; return; }
+  $("feed-list").innerHTML =
+    `<table><thead><tr><th>#</th><th>Time</th><th>Op</th><th>Kind</th><th>Record</th><th>State</th><th>Detail</th></tr></thead><tbody>`
+    + feedRows.map((e) =>
+      `<tr><td class="mono muted">${e.seq}</td><td class="mono muted">${esc((e.ts || "").slice(11, 23))}</td>`
+      + `<td><b>${esc(e.operation)}</b></td><td class="mono">${esc(e.kind || "")}</td>`
+      + `<td class="mono">${esc((e.recordId || "").slice(-8))}</td>`
+      + `<td>${e.state ? stateBadge(e.state) : ""}</td>`
+      + `<td class="mono muted">${e.detail ? esc(JSON.stringify(e.detail)) : ""}</td></tr>`
+    ).join("") + `</tbody></table>`;
+}
+function startFeed() { feedSeq = 0; feedRows = []; pollFeed(); if ($("feed-live").checked) feedTimer = setInterval(pollFeed, 2000); }
+function stopFeed() { if (feedTimer) { clearInterval(feedTimer); feedTimer = null; } }
+function toggleLive() { stopFeed(); if ($("feed-live").checked) feedTimer = setInterval(pollFeed, 2000); }
+
+// init
+loadHealth();
+loadStats();
+loadKinds();
+setInterval(loadHealth, 5000);
+</script>
+</body>
+</html>

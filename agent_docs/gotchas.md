@@ -6,9 +6,25 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
 §9.2, §13, and rationale scattered through §2–§8.
 
 ## Contents
+- Findings (diagnosed during implementation)
 - Traps and load-bearing decisions
 - Rejected approaches (do not re-propose without revisiting these)
 - Risk register
+
+## Findings
+
+### `jsr:@db/sqlite` FFI segfaults; use built-in `node:sqlite`
+
+- **Symptom:** the conformance suite and even a standalone `new Database(":memory:")`
+  exited 139 (SIGSEGV) with no output, under Deno 2.9.2 on Linux. First run also required
+  `--allow-env` / `--allow-net` just to download a native `libsqlite3.so`.
+- **Diagnosis:** `jsr:@db/sqlite@0.12.0` loads a prebuilt native library over FFI; that
+  library crashes on load under this Deno build.
+- **Fix:** the M0 SQLite adapter uses Deno's built-in **`node:sqlite`** (`DatabaseSync`)
+  instead — no FFI, no native download, no `--allow-ffi`, and one fewer dependency.
+- **Takeaway:** prefer the runtime's built-in SQLite to an FFI package. It also fits the
+  minimal-deps / platform-independence invariant better. `node:sqlite` is still marked
+  unstable upstream; watch for API changes on Deno upgrades.
 
 ## Traps and load-bearing decisions
 

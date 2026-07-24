@@ -32,14 +32,23 @@ content, not by addressing.
 
 ## Layout
 
-| Path                                    | Role                                                    |
-|-----------------------------------------|--------------------------------------------------------|
-| `README.md`                             | human-facing overview                                  |
-| `agent_docs/`                           | design deep dives, one topic per file (linked below)   |
-| `notes/radia-runtime-outline-v0.3.md`   | origin design outline; provenance, not maintained doc  |
+| Path                                    | Role                                                       |
+|-----------------------------------------|------------------------------------------------------------|
+| `deno.json`                             | tasks (`dev`/`check`/`conformance`/`compile`) + import map |
+| `src/main.ts`                           | `radia` CLI entry; `radia dev` boots an embedded space + dev UI |
+| `src/ui/index.html`                     | self-contained dev web console served at `GET /` (no build, public API only) |
+| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes), `problem.ts` (RFC 9457), `handlers/` (`records.ts` put/read_one/query, `kinds.ts`, `leases.ts`, `dev.ts` stats/kinds-list/envelope) |
+| `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port + compiled-match AST + lease types), `row.ts` (shared row/value mapping) + `pglite.ts`, `sqlite.ts` |
+| `src/core/`                             | storage-agnostic logic: `space.ts` (service, incl. lineage BFS), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order), `kinds.ts` (indexing contract), `take.ts` (claim ranking), `time.ts`, `ids.ts`, `errors.ts` |
+| `conformance/`                          | storage-adapter contract suite (`run.test.ts`, `harness.ts`) |
+| `openapi/radia.yaml`                    | the frozen wire contract (source of truth)                 |
+| `agent_docs/`                           | design deep dives, one topic per file (linked below)       |
+| `notes/radia-runtime-outline-v0.3.md`   | origin design outline; provenance, not maintained doc      |
 
-No source tree yet. As implementation starts, add code paths here and point the
-relevant design/architecture doc into them (file + key symbol).
+Build/run: `deno task dev` (no build step), `deno task conformance` (both adapters),
+`deno task compile` (release binary). Implementation is following
+[agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md) phase by
+phase; that plan's proposed layout is the map for code not yet written.
 
 ## Docs
 

@@ -7,7 +7,7 @@
 ## Goal
 
 Ship `npx radia dev`: an embedded, single-process Radia space with a bundled MCP adapter
-and a minimal web inspector, reachable in under a minute, with the core kernel
+and a friendly dev UI (see "Dev UI"), reachable in under a minute, with the core kernel
 (put/take/ack/nack/release/renew, record+envelope split, fencing, idempotency,
 equality/range matching, transactional event log, dead-letter) behind the frozen wire
 contract. The conformance suite is a storage-adapter contract from the first commit.
@@ -27,10 +27,13 @@ This is a focused prototype (2–3 careful weeks), explicitly **not** production
   kernel is small.
   - **PGlite** (`npm:@electric-sql/pglite`, WASM Postgres) keeps one adapter's SQL dialect
     and take semantics aligned with the M1 Postgres adapter.
-  - **SQLite** (`jsr:@db/sqlite`, FFI) is the lighter, WASM-free adapter and the real test
-    that the port abstracts: SQLite's WAL single-writer concurrency, its JSON path
-    functions, and its lack of Postgres generated-column/expression-index parity differ
-    from PGlite, so any leak of Postgres assumptions into `core/` surfaces here.
+  - **SQLite** (Deno's built-in `node:sqlite` / `DatabaseSync`) is the lighter, WASM-free
+    adapter and the real test that the port abstracts: SQLite's WAL single-writer
+    concurrency, its JSON path functions, and its lack of Postgres
+    generated-column/expression-index parity differ from PGlite, so any leak of Postgres
+    assumptions into `core/` surfaces here. Uses the runtime built-in rather than an FFI
+    package — zero external dependency, no native download (`jsr:@db/sqlite` segfaulted;
+    see [gotchas.md](gotchas.md)).
 - **`SKIP LOCKED` is the Postgres *implementation* of the take contract, not the
   contract** (see [design-storage.md](design-storage.md)). The adapter interface exposes
   an atomic take; both embedded adapters serialize takes in-process (PGlite single
@@ -40,9 +43,10 @@ This is a focused prototype (2–3 careful weeks), explicitly **not** production
   to Postgres generated columns / expression indexes on one adapter and to SQLite
   expression indexes over `json_extract` on the other. `core/matching.ts` speaks the port,
   never a backend dialect. Getting this seam right is the main reason SQLite is in M0.
-- **Dependencies kept tiny and audited:** Deno std (`jsr:@std/ulid`, `jsr:@std/assert`,
-  `jsr:@std/http` helpers as needed) + PGlite + `jsr:@db/sqlite`. No web framework, no ORM.
-  Each further dependency is a cost to justify.
+- **Dependencies kept tiny and audited:** Deno std (`jsr:@std/ulid`, `jsr:@std/assert`)
+  + PGlite (`npm:@electric-sql/pglite`). SQLite uses the runtime built-in `node:sqlite`,
+  so it is not a dependency. No web framework, no ORM. Each further dependency is a cost
+  to justify.
 
 ## OpenAPI freeze policy (M0)
 
@@ -97,7 +101,7 @@ lands.
 deno.json            # tasks + import map; no build for dev
 openapi/radia.yaml   # the frozen wire contract (source of truth)
 src/
-  main.ts            # `radia dev` entry: arg parse, boot space + inspector + MCP
+  main.ts            # `radia dev` entry: arg parse, boot space + dev UI + MCP
   cli.ts             # minimal CLI over the public API only
   server/
     http.ts          # Deno.serve routing; long-poll; SSE
@@ -112,9 +116,9 @@ src/
   storage/
     adapter.ts       # StorageAdapter interface — the port/contract
     pglite.ts        # embedded adapter — WASM Postgres (M0)
-    sqlite.ts        # embedded adapter — SQLite via jsr:@db/sqlite (M0)
+    sqlite.ts        # embedded adapter — SQLite via built-in node:sqlite (M0)
   mcp/               # bundled MCP adapter (credentials outside model context)
-  inspector/         # minimal web inspector (static assets + SSE feed)
+  ui/                # dev UI: one self-contained index.html served at GET / (see "Dev UI")
 sdk/
   ts/                # TS SDK stub (heartbeat + loop harness)
   py/                # Python SDK stub
@@ -139,89 +143,161 @@ conformance/         # storage-adapter contract suite + basic fault cases
 - No automated LLM in the loop; no interactive test output. Per repo conventions, the
   agent writes tests and states how to run them rather than running them here.
 
+## Dev UI (radia dev web console)
+
+A friendly, single-page web console `radia dev` serves at `GET /`, so the space is
+explorable in a browser the moment it boots — this is what makes the under-a-minute
+adoption bar (see [design-storage.md](design-storage.md) "Deployment modes") land, not
+just curl.
+
+**BUILT** (ahead of Phase 7): `src/ui/index.html` served at `GET /`, with all panels
+working — Overview, Records browser (with lineage in detail), Kinds, Put, Query
+playground, Worker, and a live **Feed** tab. Backing endpoints added to support it: `GET
+/v0/stats`, `GET /v0/kinds`, `POST /v0/records/query` (basic list — keyset-cursor `query`
+is still M1), `GET /v0/envelopes/{id}`, `GET /v0/events`, and `GET
+/v0/records/{id}/lineage`. Remaining polish: SSE push for the feed (currently polls;
+proper watches land in M1).
+
+Principles:
+
+- **One self-contained `index.html`** — inline CSS + vanilla JS, no framework, no build
+  step, no external requests. This is the [CLAUDE.md](../CLAUDE.md) minimal-deps /
+  zero-build / platform-independence invariant applied to the UI, and it keeps the demo a
+  single binary. Served from `src/ui/`.
+- **Public API only.** The console calls the same `/v0` endpoints an agent would; it gets
+  no privileged backdoor. If the UI can do it, a client SDK can too.
+- **Friendly by default.** Readable empty states, surfaced RFC 9457 error `detail`
+  (a rejected template says *why*), theme-aware (light/dark), keyboard-navigable.
+- **Built incrementally as backing features land** — each panel ships when its API does,
+  so the UI is useful from Phase 1 onward rather than all-at-once at the end.
+
+Panels (each maps to existing endpoints):
+
+| Panel | Backing API | Lands |
+|-------|-------------|-------|
+| Space overview — backend, DB clock, counts by kind/state | `GET /v0/health` (+ counts) | Phase 1 |
+| Records browser — filter by kind, view body + runtimeMeta + envelope state, follow `parent_ids` | `read_one` / `query` | Phase 1 (richer at M1 query) |
+| Kinds — view + register indexed/sortable paths | `POST /v0/kinds` | Phase 2 |
+| Put a record — kind + JSON body form | `POST /v0/records` | Phase 1 |
+| Query playground — template (match + order_by) with friendly validation errors | `read_one` | Phase 2 |
+| Worker panel — take a record, then renew/ack/nack/release by hand to drive the lifecycle | `takes` + `leases/*` | Phase 3 |
+| Live feed — records/state-transitions/dead-letters streaming in | event log + watches (SSE) | Phase 5 / M1 |
+| Lineage viewer — a record's parent/child DAG | lineage query | Phase 5 (M2 richer) |
+
+Everything above except the live feed and lineage viewer is backed by endpoints that
+already exist (Phases 1–3), so the console can be built now and grow with the runtime.
+
 ## Phases
 
 Ordered by dependency; each is independently verifiable before the next starts.
 
-### Phase 0 — skeleton and contracts
+### Phase 0 — skeleton and contracts — DONE
 
-- [ ] `deno.json` with tasks: `dev`, `test`, `conformance`, `check`, `compile`. No build step for `dev`.
-- [ ] `StorageAdapter` interface in `src/storage/adapter.ts` (the port every backend implements).
-- [ ] OpenAPI skeleton `openapi/radia.yaml` covering the ten operations' shapes, with per-element stability annotations (see freeze policy below).
-- [ ] Conformance harness that runs a suite against a list of adapters; **both PGlite and SQLite stubs wired in**.
-- [ ] `radia dev` boots `Deno.serve` and answers a health endpoint.
+- [x] `deno.json` with tasks: `dev`, `check`, `conformance`, `compile`. No build step for `dev`. Import map for std/ulid, std/assert, @db/sqlite, pglite.
+- [x] `StorageAdapter` interface in `src/storage/adapter.ts` (the port every backend implements) — domain types, `CompiledMatch` neutral form, `now()`/`put`/`readOne` signatures, `notImplemented` marker for later-phase methods.
+- [x] OpenAPI skeleton `openapi/radia.yaml` covering the operations' shapes, with per-element `x-stability`, reserved operators, `/v0` server prefix (see freeze policy above).
+- [x] Conformance harness (`conformance/harness.ts`) runs each suite against a list of adapters; **both PGlite and SQLite wired in** (`conformance/adapters.ts`); Phase 0 smoke suite exercises `now()`.
+- [x] `radia dev` (`src/main.ts` + `src/server/http.ts`) boots `Deno.serve` and answers `GET /v0/health`; `--storage pglite|sqlite` selects the backend.
 
-**Verify:** `deno task dev` serves health; `deno task conformance` runs the (empty) suite
-green against **both** the PGlite and SQLite adapters.
+**Verify:** PASSED. `deno task check` clean; `deno task conformance` green on both
+adapters (`[pglite]` and `[sqlite]` smoke tests pass); `deno task dev --storage
+pglite|sqlite` serves `/v0/health` with the DB clock, and unknown routes return an RFC
+9457 404.
 
-### Phase 1 — record model and storage
+### Phase 1 — record model and storage — DONE
 
-- [ ] `records` (immutable) + `record_runtime` (envelope) schema in **both adapters** (PGlite and SQLite), with `kind`, `deadline_at`, and hot routing fields denormalized into the envelope at commit.
-- [ ] ULID ids; `body_sha256` over plaintext on every record (Web Crypto).
-- [ ] `put(record, idempotency_key)` and `read_one(template)` handlers.
-- [ ] Server-assigned `runtime_meta` (`created_by`, `created_at`, `schema_version`); client cannot set authoritative fields.
+- [x] `records` (immutable) + `record_runtime` (envelope) schema in **both adapters** (`src/storage/pglite.ts`, `src/storage/sqlite.ts`), with `kind`, `deadline_at`, and hot routing fields denormalized into the envelope at commit; the `state='available'` partial claim index created on both.
+- [x] ULID ids (`src/core/ids.ts` `newUlid`); `body_sha256` over plaintext via Web Crypto (`sha256Hex`), computed over the exact serialized body the adapter stores verbatim.
+- [x] `put` and `read_one` — HTTP handlers (`src/server/handlers/records.ts`) over the `Space` service (`src/core/space.ts`); adapter methods `put`/`readOne`; matching oracle `src/core/matching.ts` (equality only; Phase 2 extends).
+- [x] Server-assigned `runtime_meta` in `src/core/record.ts` `buildRecord`; `PutRequest` carries only client-submittable fields and the put handler picks only those, so authoritative fields can never come from the client.
+- [x] Parent-must-exist checked in each adapter's put transaction; self-parenting rejected.
 
-**Verify:** conformance — put returns an id; the record is immutable and cannot be
-rewritten; `body_sha256` present and correct; client-submitted authoritative fields are
-rejected/overwritten; read_one returns the committed record. See
+**Verify:** PASSED. `deno task conformance` green — 16 tests, both adapters: put→id,
+read_one round-trip, `body_sha256` correct, immutability (distinct ids, first untouched),
+metadata split (server `createdBy`/`schemaVersion`, client claims preserved but not
+promoted), boundary enforcement (injected `createdBy:"attacker"` ignored),
+`parent_not_found` on a dangling parent. Live `radia dev` confirmed via curl: put→id,
+read-one match/miss(null), 400 `problem+json` on bad body. See
 [design-data-model.md](design-data-model.md).
 
-### Phase 2 — matching
+### Phase 2 — matching — DONE
 
-- [ ] Per-kind `indexed_paths` (typed) and `sortable_paths` declaration + registration validation (typo'd path = registration error).
-- [ ] Equality and range predicates (`$eq`, `$gt/$gte/$lt/$lte`, `$in`, `$exists`, `$and/$or` depth ≤ 3) on declared indexed paths.
-- [ ] Divergence semantics: missing ≠ null, no type coercion, explicit array quantifiers.
-- [ ] Hot declared paths mapped to generated columns / expression indexes on `record_runtime`.
+- [x] Per-kind `indexed_paths` (typed: keyword/integer/timestamp/array) and `sortable_paths` declaration + registration validation (`src/core/kinds.ts` `KindRegistry`/`validateKindDef`); `POST /v0/kinds` handler. Invalid declarations rejected (`invalid_kind`/`invalid_path`/`invalid_type`/`duplicate_path`/`unsortable_path`).
+- [x] Full operator set in the oracle (`src/core/matching.ts`): `$eq` (implicit), `$gt/$gte/$lt/$lte`, `$in`, `$exists`, `$any/$each`, `$and/$or` (depth ≤ 3). Forbidden (`$regex/$where/$expr`) and deferred (`$ne/$nin/$not/$prefix`) operators rejected at compile.
+- [x] Divergence semantics: missing ≠ null, no type coercion (cross-type = false), explicit array quantifiers (scalar predicates never distribute).
+- [x] Template validation against the kind: predicate paths ⊆ indexed paths, `order_by` ⊆ sortable paths; `unknown_kind`/`undeclared_path`/`unsortable_path`. `order_by` + deterministic record-id tie-break.
+- [~] **Physical expression indexes / predicate pushdown DEFERRED.** M0 `read_one` fetches by kind and filters + orders with the semantic oracle (`matchesRecord`, `firstByOrder`), which *defines* correctness. Per-kind expression indexes and pushing predicates onto them are a matched pair, deferred to when query performance is exercised (M1 keyset query). Noted so it is not mistaken for done.
 
-**Verify:** conformance — the divergence cases (missing ≠ null, cross-type = false,
-`$any/$each` do not silently distribute); predicate on an undeclared path is a
-registration error. See [design-matching.md](design-matching.md).
+**Verify:** PASSED. `deno task conformance` green — 36 tests, both adapters: registration
+validation, undeclared-path/unknown-kind/unsortable-path rejection, forbidden/deferred
+operator rejection, ranges + `$in`, missing ≠ null via `$exists`, no coercion, `$any/$each`
+non-distribution, `$or/$and`, and `order_by` with id tie-break. See
+[design-matching.md](design-matching.md).
 
-### Phase 3 — take, leases, fencing
+### Phase 3 — take, leases, fencing — DONE
 
-- [ ] Atomic `take(template | record_id, lease_s, block, timeout)`: single transaction, envelope → `leased`, epoch bump, returns `{record, lease}`.
-- [ ] `take(record_id=...)` re-verifies template + availability + `claim_until` (selector, not bypass).
-- [ ] `renew`, `ack(result_record?)`, `nack`, `release` presenting `lease_id + epoch`; mismatch → `lease_lost`.
-- [ ] Attempt semantics: `nack` +1, expiry +1, `release` +0; backoff via `available_at`; `dead_letter` after `max_attempts`; max cumulative lease duration per (record, run).
-- [ ] At-least-once + overlap-after-expiry documented in code and SDK.
+- [x] Atomic `take(template | record_id, lease_s)`: one transaction, envelope → `leased`, epoch bump, returns `{record, lease}`. Claim ranking is a pure helper (`src/core/take.ts` `rankClaimable`); the adapter fetches candidates + performs the guarded claim. `POST /v0/takes`.
+- [x] `take(record_id=...)` re-verifies availability (and optional template) — selector, not bypass.
+- [x] `renew`, `ack(result_record?)`, `nack`, `release` present `recordId + lease_id + epoch`; mismatch → `lease_lost` (a non-error 200 status). `POST /v0/leases/{renew,ack,nack,release}`.
+- [x] Attempt semantics: `nack` +1 (backoff via `available_at`), lazy expiry +1 (reclaim at take), `release` +0; `dead_letter` past `max_attempts`; cumulative hard cap via `lease_hard_deadline` (renew past it → `lease_lost`).
+- [x] `ack` is atomic consume-and-emit: consumes the task and inserts the result record (linked via `parentIds`) in one transaction; a fenced `ack` emits nothing.
+- [ ] Long-poll blocking (`block`/`timeout`) deferred to M1; M0 `take` returns immediately (null when nothing claimable).
+- [x] At-least-once + overlap-after-expiry documented in `src/storage/adapter.ts` and the design docs.
 
-**Verify:** conformance — at most one valid lease at a time; a fenced `ack` returns
-`lease_lost`; attempt increments per path; `release` is +0; expiry re-opens the record;
-`max_attempts` reaches `dead_letter`. See [design-api.md](design-api.md).
+**Verify:** PASSED. `deno task conformance` green — 52 tests, both adapters: one valid
+lease at a time, fenced `renew`/`ack` → `lease_lost` (emitting nothing), `nack` +1 /
+`release` +0, lazy expiry +1, `dead_letter` after `max_attempts`, renew hard-cap fencing,
+`take(record_id)` selector. Live `radia dev` confirmed via curl: take → lease, second
+take → null, `ack` with result → `ok`+`resultId`, stale `ack` → `lease_lost`, result
+record carries `parentIds:[task]`. See [design-api.md](design-api.md).
 
-### Phase 4 — idempotency
+> Expiry is exercised deterministically in tests with a negative `leaseSeconds` (puts
+> `leased_until` in the past), avoiding sleeps. Lazy reclaim-at-take stands in for the
+> background sweeper, which lands with durable timers in M2.
 
-- [ ] `(principal, operation, idempotency_key)` store holding request hash + stored response (including generated result IDs).
-- [ ] Lookup runs **before** lease validation; same-key concurrent requests serialize.
-- [ ] Same hash → stored response; different hash → `idempotency_conflict`.
+### Phase 4 — idempotency — DONE
 
-**Verify:** conformance — replaying `ack` after a lost response returns the stored result,
-**not** `lease_lost`; a conflicting payload under the same key returns
-`idempotency_conflict`. This is the load-bearing ordering in [gotchas.md](gotchas.md).
+- [x] `idempotency (principal, operation, idem_key)` table holding request hash + stored response (incl. generated ids), in both adapters.
+- [x] `withIdem` wrapper runs **inside** each op's transaction and checks the stored response **before** the effect (which includes lease validation); the response is written in the same transaction as the effect. Single-connection embedded serializes same-key requests.
+- [x] Same hash → replay stored response; different hash → `idempotency_conflict` (409 at the wire). Applied to `put`, `ack`, `nack`, `release`, `renew` (`take` is exempt — a claim). Wire: `Idempotency-Key` header; request hash computed server-side in `src/core/space.ts` (`idem()`).
 
-### Phase 5 — event log and dead-letter
+**Verify:** PASSED. `deno task conformance` green — 60 tests, both adapters: put replay →
+same id + inserted once, put conflict → `idempotency_conflict`, **ack replay after a lost
+response → stored `ok` + same `resultId`, not `lease_lost`** (with a keyless retry fenced),
+ack conflict → `idempotency_conflict`. Live `radia dev` confirmed via curl (header replay,
+409, ack-replay-vs-fenced). This is the load-bearing ordering in [gotchas.md](gotchas.md).
 
-- [ ] Append-only event table written in the **same transaction** as each mutation, run identity on every event.
-- [ ] Dead-letter state transition preserves `kind`.
-- [ ] Lineage query over `parent_ids` for a record.
+### Phase 5 — event log and dead-letter — DONE
 
-**Verify:** conformance — every state-changing operation emits exactly one event in its
-own transaction (no mutation without an event, no event without the mutation); a
-lineage query returns the ancestry. See [design-observability.md](design-observability.md).
+- [x] Append-only `events` table (monotonic `seq`, id, ts, run_id, operation, record_id, kind, state, detail) written in the **same transaction** as each mutation via `appendEvent`, inside each op's tx. Run identity on every event (M0: creator principal for `put`, lease owner for settlements — real run tokens in Phase 7).
+- [x] One event per successful op: `put`, `take`, `ack` (with `resultId` in detail), `nack`, `release`, and `expire`→`dead_letter`. No-op outcomes (`lease_lost`, idempotency replay) append nothing. `renew` is intentionally not evented (heartbeat noise; it changes no lifecycle state).
+- [x] Dead-letter transition preserves `kind` (Phase 3); event records resulting state.
+- [x] Lineage BFS over `parent_ids` (`src/core/space.ts` `getLineage`, cycle-guarded, node-capped). Endpoints: `GET /v0/events?after=&limit=`, `GET /v0/records/{id}/lineage`.
 
-### Phase 6 — basic fault suite
+**Verify:** PASSED. `deno task conformance` green — 68 tests, both adapters: successful
+ops append one event each in seq order with run identity; `lease_lost` and idempotency
+replay append nothing; nack backoff vs. dead-letter evented with resulting state; lineage
+returns ancestry with correct depths. Live `radia dev` confirmed via curl (event stream
+put/take/ack, lineage child→parent). See [design-observability.md](design-observability.md).
 
-- [ ] Adapter/handler seams that let tests inject failure between: effect and ack, commit and HTTP response, and on retry.
-- [ ] Cases: crash before effect, after effect before ack, after commit before response, duplicate ack, stale ack after reassignment.
+> Dev UI live feed + lineage viewer now BUILT (Feed tab polls `/v0/events`; record detail
+> shows ancestry) — the last two dev-UI panels from the "Dev UI" section.
 
-**Verify:** the M0 fault subset in [plan-validation.md](plan-validation.md) passes; duplicate
-and stale acks resolve via idempotency/fencing, not corruption.
+### Phase 6 — basic fault suite — DONE
+
+- [x] Crashes simulated by **composition**, not test hooks in production code: a crashed worker is one that took a lease and never acked, with its lease forced expired via a negative `leaseSeconds` (deterministic, no sleeps); a lost response is a discarded-and-retried ack. `conformance/suites/faults.ts`.
+- [x] Cases (all on both adapters): crash before effect (reclaimed, runs once, no loss), crash after effect before ack (at-least-once — effect repeats, space stays consistent), crash after commit before response (idempotent ack replay, one result), duplicate ack (keyed replay safe, bare duplicate fenced), stale ack after reassignment (old lease fenced, new one settles).
+
+**Verify:** PASSED. `deno task conformance` green — 78 tests, both adapters. Duplicate and
+stale acks resolve via idempotency/fencing, not corruption; the at-least-once cost is made
+explicit rather than hidden. Fuller matrix (partition, DB failover, cursor storm) needs
+real infra and is deferred past M0 — see [plan-validation.md](plan-validation.md).
 
 ### Phase 7 — surfaces and the demo
 
 - [ ] Auto-provisioned local credentials — **same API shape as production, never "no tokens"** (`src/core/auth.ts`).
 - [ ] Bundled MCP adapter (`src/mcp/`): holds credentials outside the model context, heartbeats internally.
-- [ ] Minimal web inspector (`src/inspector/`): live record/lease view over SSE.
+- [ ] Friendly dev UI (`src/ui/index.html`) served at `GET /` — space overview, records browser, kinds, put form, query playground, and worker panel; live feed + lineage viewer follow their backing APIs (Phase 5 / M1). Self-contained, public-API-only. See "Dev UI" above.
 - [ ] Minimal CLI (`src/cli.ts`) over the public API only.
 - [ ] TS + Python SDK stubs with the hand-written heartbeat (renew at lease/3) and loop harness.
 - [ ] Release wrapping: `deno compile` → per-OS binary → thin `npm` and `pip` shims (the esbuild/uv pattern; can be rough at M0).
@@ -232,9 +308,9 @@ claims a record; one line in an MCP-capable harness config participates without 
 
 ## Open questions
 
-- **SQLite library choice.** `jsr:@db/sqlite` (FFI, mature, needs `--allow-ffi`) is the
-  M0 pick. Deno's built-in `node:sqlite` would be zero-external-dependency but is still
-  unstable; revisit switching to it once it stabilizes.
+- **SQLite library — resolved to `node:sqlite`.** The FFI package `jsr:@db/sqlite`
+  segfaulted under Deno 2.9.2 ([gotchas.md](gotchas.md)), so the adapter uses the built-in
+  `node:sqlite`. It is marked unstable upstream; watch for API changes on Deno upgrades.
 - **npm/pip binary distribution mechanics** (embed vs. download-on-install) — defer the
   polished version to M1; a rough shim is enough for the M0 demo.
 

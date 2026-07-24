@@ -1,0 +1,11 @@
+# Compiled binary from `deno task compile`
+/radia
+
+# Local dev spaces (file-backed embedded storage)
+*.db
+*.db-wal
+*.db-shm
+/.radia/
+
+# Deno
+.deno/

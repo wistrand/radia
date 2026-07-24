@@ -1,0 +1,154 @@
+openapi: 3.1.0
+info:
+  title: Radia
+  version: 0.0.0
+  description: >
+    Content-routed coordination runtime. This is the frozen wire contract.
+    Freeze policy (see agent_docs/plan-m0-implementation.md "OpenAPI freeze policy"):
+    the data-plane core is v0-stable and additive-only; control-plane and auth are
+    experimental. Per-element stability is marked with `x-stability`. SemVer 0.x means
+    the surface may still move; the additive-only rule is what makes the stable subset
+    dependable within 0.x.
+
+servers:
+  - url: /v0
+
+# Deferred matching operators are reserved now so adding them later is not a breaking
+# change: $ne, $nin, $not, $prefix, and full-text. $regex/$where/$expr are never added
+# (templates are data, not code).
+x-reserved-operators: ["$ne", "$nin", "$not", "$prefix", "$text"]
+
+paths:
+  /health:
+    get:
+      operationId: health
+      summary: Liveness + storage backend + DB clock
+      x-stability: stable
+      responses:
+        "200":
+          description: ok
+
+  # --- Data plane: FROZEN v0-stable, additive-only -------------------------------
+  # Shapes land across Phases 1-7; listed here so the contract is visible from Phase 0.
+
+  /records:
+    post:
+      operationId: put
+      summary: Commit an immutable record
+      x-stability: stable
+      x-phase: 1
+      responses:
+        "201": { description: created }
+
+  /records/read-one:
+    post:
+      operationId: readOne
+      summary: First matching record, or null (template in body, never query string)
+      x-stability: stable
+      x-phase: 1
+      responses:
+        "200": { description: record or null }
+
+  /records/query:
+    post:
+      operationId: query
+      summary: Keyset page over immutable sort keys
+      x-stability: stable
+      x-phase: "M1"
+      responses:
+        "200": { description: page }
+
+  /takes:
+    post:
+      operationId: take
+      summary: Atomic admit+claim; returns a fenced lease or null
+      x-stability: stable
+      x-phase: 3
+      responses:
+        "200": { description: "{record, lease} or null" }
+
+  /leases/{leaseId}/ack:
+    post:
+      operationId: ack
+      summary: Settle a lease; optionally emit a result record
+      x-stability: stable
+      x-phase: 3
+      parameters:
+        - { name: leaseId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "ok | lease_lost | idempotency_conflict (non-error body)" }
+
+  /leases/{leaseId}/nack:
+    post:
+      operationId: nack
+      summary: Retryable failure; attempt +1, backoff
+      x-stability: stable
+      x-phase: 3
+      parameters:
+        - { name: leaseId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "ok | lease_lost" }
+
+  /leases/{leaseId}/release:
+    post:
+      operationId: release
+      summary: Cooperative cancel; attempt +0
+      x-stability: stable
+      x-phase: 3
+      parameters:
+        - { name: leaseId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "ok | lease_lost" }
+
+  /leases/{leaseId}/renew:
+    post:
+      operationId: renew
+      summary: Extend a held lease
+      x-stability: stable
+      x-phase: 3
+      parameters:
+        - { name: leaseId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "lease | lease_lost" }
+
+  /watches:
+    post:
+      operationId: watch
+      summary: Open an ephemeral run-scoped watch (SSE cursor via GET /watches/{id}/events)
+      x-stability: stable
+      x-phase: "M1"
+      responses:
+        "201": { description: watch created }
+
+  # --- Control plane + auth: EXPERIMENTAL ----------------------------------------
+  # May change without a major bump until validated (M1-M2).
+
+  /agent-definitions:
+    post:
+      operationId: createAgentDefinition
+      summary: Privileged control plane assigns grants
+      x-stability: experimental
+      responses:
+        "201": { description: created }
+
+  /agent-runs:
+    post:
+      operationId: createAgentRun
+      summary: Definition credential mints a short-lived run token
+      x-stability: experimental
+      responses:
+        "201": { description: created }
+
+components:
+  schemas:
+    Problem:
+      description: RFC 9457 problem+json. FROZEN v0-stable.
+      x-stability: stable
+      type: object
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+    # Record, Envelope, Lease, and status enums (lease_lost, idempotency_conflict,
+    # dead_letter) are FROZEN v0-stable and filled in during Phase 1/3.
