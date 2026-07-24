@@ -17,8 +17,16 @@ import type { ChatMessage, ToolDef } from "./openrouter.ts";
 // change and no per-turn re-query. `discoverTools()` returns the watched cache.
 let toolCache: ToolDef[] = [];
 async function refreshTools(): Promise<void> {
-  const caps = await client.query({ kind: "capability" }, 200);
-  toolCache = caps.map((c) => (c.body as { def: ToolDef }).def);
+  // Latest capability record per tool wins (a changed tool def is a successor record — same
+  // successor-latest pattern as kind_def declarations), so a redefined tool isn't a duplicate.
+  const caps = await client.query({ kind: "capability" }, 500);
+  const latest = new Map<string, { id: string; def: ToolDef }>();
+  for (const c of caps) {
+    const b = c.body as { tool: string; def: ToolDef };
+    const prev = latest.get(b.tool);
+    if (!prev || prev.id < c.id) latest.set(b.tool, { id: c.id, def: b.def });
+  }
+  toolCache = [...latest.values()].map((v) => v.def);
 }
 function arg(name: string): string | undefined {
   const i = Deno.args.indexOf(name);
@@ -191,14 +199,18 @@ console.log(
 console.log(`sandbox: ${roots.join(", ")}`);
 console.log(`space ${url}${spawnedSpace ? " (spawned)" : " (existing)"} — open it and watch the Feed tab. Ctrl-D to quit.`);
 
+// Generic role framing only — NO substrate specifics (kind names, matching patterns, tool usage).
+// The assistant discovers kinds with space_kinds and learns each tool from its own description
+// (published as a capability record). Baking that knowledge here is the anti-pattern the design
+// principle warns against (CLAUDE.md "discover, don't hardcode").
 const SYSTEM_PROMPT =
-  "You are a concise assistant on Radia, a content-routed coordination runtime. Your " +
-  "available tools are the functions provided to you; they are discovered from the space, so " +
-  "the set may change between turns. Do not confuse your tools with record kinds. Everything " +
-  "in Radia is a record — including this conversation (kind 'message', matched by your " +
-  "conversationId) and your own reasoning (llm_call/llm_result) — so your space_* tools can " +
-  "inspect and even remediate the space itself. Use state-changing tools deliberately, and " +
-  "prefer to inspect before acting.\n" +
+  "You are a concise assistant on Radia, a content-routed coordination runtime. Your tools are " +
+  "provided to you (discovered from the space, so the set may change between turns); each tool's " +
+  "description says what it does and how to use it — rely on those, not on assumptions, and do " +
+  "not confuse tools with record kinds. Everything in Radia is a record, including this " +
+  "conversation and your own reasoning, so your space_* tools can inspect and even operate on the " +
+  "space itself (use space_kinds to see what record kinds exist). Use state-changing tools " +
+  "deliberately, and prefer to inspect before acting.\n" +
   (role === "admin"
     ? "This session runs as the OPERATOR: your space_* tools have full access to the space's control plane."
     : "This session runs as a SCOPED USER (agent:chat-user). Use any tool you are given normally — the " +

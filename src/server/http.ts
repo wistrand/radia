@@ -14,7 +14,7 @@ import type { Space } from "../core/space.ts";
 import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
 import { handleCreateDefinition, handleCreateRun, handleStopRun } from "./handlers/agents.ts";
-import { handleAdmin, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleGetRecord, handleGraph, handleLineage, handleStats } from "./handlers/dev.ts";
+import { handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleGetRecord, handleGraph, handleLineage, handleStats } from "./handlers/dev.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem } from "./problem.ts";
 
@@ -109,6 +109,7 @@ function makeHandler(space: Space, ui: string) {
         if (req.method === "GET" && !tail) return await handleGetRecord(space, id);
         if (req.method === "GET" && tail === "envelope") return await handleEnvelope(space, id);
         if (req.method === "GET" && tail === "lineage") return await handleLineage(space, id);
+        if (req.method === "GET" && tail === "children") return await handleChildren(space, id);
         if (req.method === "GET" && tail === "graph") return await handleGraph(space, id, url);
         if (req.method === "POST" && (tail === "reclaim" || tail === "dead-letter" || tail === "requeue")) {
           return await handleAdmin(space, id, tail);

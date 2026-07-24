@@ -43,6 +43,14 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
       return { lineage: lineage.map((n) => ({ depth: n.depth, id: n.record.id, kind: n.record.kind })) };
     },
 
+    space_children: async (a) => {
+      const kind = a.kind ? String(a.kind) : undefined;
+      const limit = Math.min(Number(a.limit ?? 25) || 25, 50);
+      let children = await client.getChildren(String(a.recordId ?? ""));
+      if (kind) children = children.filter((r) => r.kind === kind);
+      return { count: children.length, children: children.slice(0, limit).map(compact) };
+    },
+
     space_events: async (a) => {
       const after = Number(a.after ?? 0) || 0;
       const limit = Math.min(Number(a.limit ?? 20) || 20, 50);
@@ -61,7 +69,8 @@ export const INSPECT_SCHEMAS: ToolDef[] = [
   { type: "function", function: { name: "space_kinds", description: "List the registered record kinds and their indexed/sortable paths.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "space_query", description: "Find records by kind, with an optional match (equality/$gt/$in/$exists/…) and order_by. Returns up to `limit` (default 10, max 25) records with size-capped bodies. The conversation itself is records: kind 'message' with match {conversationId}.", parameters: { type: "object", properties: { kind: { type: "string" }, match: { type: "object" }, orderBy: { type: "array" }, limit: { type: "integer" } }, required: ["kind"] } } },
   { type: "function", function: { name: "space_record", description: "Fetch a single record by id.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
-  { type: "function", function: { name: "space_lineage", description: "The ancestry (parent_ids) of a record, as a list of {depth, id, kind} — how it was derived.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
+  { type: "function", function: { name: "space_lineage", description: "The ANCESTRY (parent_ids, UP) of a record: {depth, id, kind} — how it was derived. A root record (e.g. a conversation) has no ancestors; to find what REFERENCES it, use space_children.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
+  { type: "function", function: { name: "space_children", description: "Records that REFERENCE this record via parent_ids — its children (DOWN, the reverse of lineage), with bodies. Use this to follow links from a root: a conversation's messages (kind:message) and llm_calls, an llm_call's chunks + result, a task's results. Optional `kind` filter (e.g. 'message'). Returns up to `limit` (default 25).", parameters: { type: "object", properties: { recordId: { type: "string" }, kind: { type: "string" }, limit: { type: "integer" } }, required: ["recordId"] } } },
   { type: "function", function: { name: "space_events", description: "Recent event-log entries (put/take/ack/nack/…) after seq `after`. Returns {seq, op, kind, state, recordId}.", parameters: { type: "object", properties: { after: { type: "integer" }, limit: { type: "integer" } } } } },
   { type: "function", function: { name: "space_doctor", description: "A derived health report: counts by state, dead-lettered records, expired-but-stuck leases, and records that have sat available/unclaimed. Use to answer 'is the space healthy / what's stuck?'.", parameters: { type: "object", properties: {} } } },
 ];

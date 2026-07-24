@@ -599,6 +599,24 @@ paths:
                         depth: { type: integer }
         "404": { $ref: "#/components/responses/Problem" }
 
+  /ops/records/{recordId}/children:
+    get:
+      operationId: children
+      summary: Records that reference this one via parent_ids — its children (the reverse of lineage)
+      description: "Lineage walks parent_ids UP (ancestors); this returns records that name this id as a parent (DOWN) — e.g. a conversation's messages, an llm_call's chunks + result."
+      x-stability: experimental
+      parameters:
+        - { name: recordId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: children
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  children: { type: array, items: { $ref: "#/components/schemas/Record" } }
+
   /ops/records/{recordId}/graph:
     get:
       operationId: graph

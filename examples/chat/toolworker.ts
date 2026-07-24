@@ -34,10 +34,18 @@ const tools = { ...makeTools(roots), ...makeInspectTools(spaceClient), ...makeRe
 // Publish this worker's capabilities as `capability` records so agents can DISCOVER the
 // available tools from the space (no hard-coded tool list). In a real system this
 // registration would be grant-gated — an untrusted worker publishing a tool is a threat.
+// Content-keyed idempotency (like `kind_def` records): the SAME def dedups across restarts, a
+// CHANGED def emits a successor record (latest per tool wins on discovery) — never a 409 conflict.
+// The key must be header-safe (an Idempotency-Key is a ByteString), so hash the def rather than
+// embed its JSON — tool descriptions contain Unicode (…, →) that would break the fetch header.
+async function defHash(def: unknown): Promise<string> {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(def)));
+  return [...new Uint8Array(bytes)].slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 const schemas = [...TOOL_SCHEMAS, ...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS];
 for (const name of Object.keys(tools)) {
   const def = schemas.find((s) => s.function.name === name);
-  if (def) await client.put({ kind: "capability", body: { tool: name, def } }, `capability:${name}`);
+  if (def) await client.put({ kind: "capability", body: { tool: name, def } }, `capability:${name}:${await defHash(def)}`);
 }
 
 await agentLoop(client, {

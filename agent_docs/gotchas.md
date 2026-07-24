@@ -32,6 +32,23 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   `parent_ids` JSON text, not an indexed reverse edge. Fine for the dev console at small
   scale; a real reverse index (or an edges table) is the fix before it's a hot path. It
   works because ids are ULIDs (no `%`/`_`), so `like '%"<id>"%'` is safe.
+- **An idempotency key travels as an HTTP header (a ByteString) — hash content into it, never
+  embed it.** `Idempotency-Key` (and any header) must be Latin1; a key built from free-form content
+  can carry Unicode (a tool description with `…`/`→`, a body with an em-dash) and `fetch` throws
+  `Failed to construct 'Request': 'headers' … not a valid ByteString`. Content-keying a record (so a
+  changed def is a successor, not a 409) is right, but the key must be a **hash** of the content, not
+  the content itself. `kindDefKey`/`grant` keys are ASCII by construction (paths, types, principals);
+  the capability publish content-hashes the tool def (`toolworker.ts`). Bit both the 409 fix and then
+  this.
+- **Lineage goes UP; to follow links DOWN you need children, not lineage.** `parent_ids` points
+  from a record to what it was derived from, so `getLineage`/`space_lineage` returns *ancestors* —
+  a **root** record (a `conversation`, a `job`) has none. To find records that *reference* a record
+  (a conversation's messages, an llm_call's chunks/result, a task's results) use `getChildren` /
+  `GET /v0/ops/records/{id}/children` / `space_children` (backed by `childrenOf`). This bit the
+  chatbot: asked to summarize a conversation it called `space_lineage`, got just the conversation
+  back, and wrongly concluded it was empty — the messages are its *children*. The two directions
+  are why the console has both a lineage view and a graph view. (Guidance for the assistant lives
+  in the discovered tool *descriptions*, not the chat's system prompt.)
 - **SSE watch streams detect client disconnect via the response stream's `cancel()`, not
   `req.signal`.** Under `Deno.serve`'s legacy semantics, `request.signal` aborts on a *fully
   delivered response*, not only on client disconnect — using it to gate a long-lived SSE loop

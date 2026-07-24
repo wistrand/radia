@@ -46,6 +46,11 @@ export async function handleLineage(space: Space, recordId: string): Promise<Res
   return Response.json({ lineage });
 }
 
+/** Records that reference this one via parent_ids (its children — the reverse of lineage). */
+export async function handleChildren(space: Space, recordId: string): Promise<Response> {
+  return Response.json({ children: await space.getChildren(recordId) });
+}
+
 export async function handleGetRecord(space: Space, recordId: string): Promise<Response> {
   const rec = await space.getRecord(recordId);
   if (!rec) return problem(404, "not_found", `no record ${recordId}`);

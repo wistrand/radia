@@ -69,13 +69,15 @@ once (linear, not quadratic — no re-embedding), the whole conversation is reco
 from the space (`query` the thread), and every message is a record you can watch in the
 Feed. This is the blackboard shared-memory pattern, not just content-routed dispatch.
 
-**Tools are discovered, not hard-coded.** Each tool-worker publishes its tools as
-`capability` records (`{tool, schema}`); the chatbot keeps a live tool set by *watching* them
-(`watch {kind:capability}`) and dispatches by content (`tool_call{tool}` → whichever worker
-registered it). Add a tool-worker → its capability record streams in and the chatbot gains the
-tool on the next turn, no code or prompt change. This is "no preconfigured routing table" (§7)
-applied to tools — the substrate coordinating its own capabilities. (Kinds work the same way:
-the chatbot's `capability` kind, like every kind, is a `kind_def` record, not a config table.)
+**Tools are discovered, not hard-coded, and their usage lives with them.** Each tool-worker
+publishes its tools as `capability` records (`{tool, def}` — `def` carries the description the LLM
+reads); the chatbot keeps a live tool set by *watching* them (`watch {kind:capability}`) and
+dispatches by content (`tool_call{tool}` → whichever worker registered it). Add a tool-worker → its
+capability record streams in and the chatbot gains the tool on the next turn, no code or prompt
+change; how to *use* a tool is in its description, not the chat's system prompt. Like `kind_def`
+records, a capability is content-keyed and immutable — a redefined tool is a **successor** record,
+latest-per-tool wins on discovery (so re-running never conflicts). This is "no preconfigured
+routing table" (§7) applied to tools — the substrate coordinating its own capabilities.
 
 **Model selection is content-routing, and the routing is delegated to the substrate.** There are
 three capability/cost **tiers** — `fast`, `balanced`, `deep` — each served by its own
@@ -114,9 +116,11 @@ default `examples/chat/sandbox`; `list_files`/`read_file`/`stat` return `size` +
 so size/date questions get ground truth, not guesses), plus `time` and `calc`.
 
 **Inspection tools** (`inspect.ts`) make the chatbot a conversational inspector of its own
-space: `space_stats`, `space_kinds`, `space_query`, `space_record`, `space_lineage`,
+space: `space_stats`, `space_kinds`, `space_query`, `space_record`, `space_lineage` (ancestors,
+UP), `space_children` (records that reference this one, DOWN — e.g. a conversation's messages),
 `space_events`, and `space_doctor` (a derived health report — stuck leases, dead-letters,
-stale-available). Because everything is a record, it can inspect *itself* — ask it "how many
+stale-available). Tool guidance lives in each tool's description (published as a `capability`
+record), not in the chatbot's prompt. Because everything is a record, it can inspect *itself* — ask it "how many
 records are in the space?", "show the lineage of the last summary", "is the space healthy?",
 or "query my conversation thread" (the conversation is `kind:message` with your
 `conversationId`). Output is size-capped so results are LLM-friendly, and each inspection is

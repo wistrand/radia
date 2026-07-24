@@ -6,8 +6,9 @@ the integrity and confidentiality architectures. Origin: outline §9.
 **M0/M1 status:** the **transactional event log** (append-only, same-transaction, run
 identity), **lineage** query, and `body_sha256` are built — event append lives in each
 adapter (`appendEvent`), lineage in `src/core/space.ts` (`getLineage`), read via
-`GET /v0/ops/events` and `GET /v0/ops/records/{id}/lineage`; watches consume the log
-(`src/core/notifier.ts`). The web console surfaces these: a live event **Feed**, and a
+`GET /v0/ops/events` and `GET /v0/ops/records/{id}/lineage` (ancestors, UP) with its reverse
+`GET /v0/ops/records/{id}/children` (records that reference this one, DOWN — `childrenOf`); watches
+consume the log (`src/core/notifier.ts`). The web console surfaces these: a live event **Feed**, and a
 **relationship graph** (`Space.getGraph` over `childrenOf`, `GET /v0/ops/records/{id}/graph`)
 that renders the `parent_ids` DAG around a record. The runtime **envelope** (state/attempt/
 lease — the dimension the content-routing query language deliberately omits) is queryable at

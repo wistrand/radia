@@ -639,6 +639,13 @@ export class Space {
     return out;
   }
 
+  /** Records that reference this record via `parent_ids` — its direct **children** (the reverse of
+   *  lineage). E.g. a conversation's messages/llm_calls, an llm_call's chunks + result, a task's
+   *  results. Lineage goes up (ancestors); this goes down. */
+  getChildren(recordId: string): Promise<RadiaRecord[]> {
+    return this.storage.childrenOf(recordId);
+  }
+
   // ---- watches (M1) ----
 
   /** Create an ephemeral watch. The stream starts from the current event seq. */

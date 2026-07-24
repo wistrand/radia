@@ -42,7 +42,7 @@ content, not by addressing.
 | `deno.json`                             | tasks (`dev`/`check`/`conformance`/`compile`) + import map |
 | `src/main.ts`                           | `radia` CLI entry; `radia dev` boots an embedded space + dev UI |
 | `src/ui/index.html`                     | self-contained dev web console served at `GET /` (no build, public API only) |
-| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes, `resolveAuth` Bearer, ops-plane gate, operator-token injection), `problem.ts` (RFC 9457), `handlers/` (`records.ts` + authorize, `leases.ts`, `agents.ts` = bootstrap chain, `dev.ts` = ops plane: stats/events/lineage/graph/envelope-query/diagnostics/admin/declassify, `watches.ts` SSE) |
+| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes, `resolveAuth` Bearer, ops-plane gate, operator-token injection), `problem.ts` (RFC 9457), `handlers/` (`records.ts` + authorize, `leases.ts`, `agents.ts` = bootstrap chain, `dev.ts` = ops plane: stats/events/lineage/children/graph/envelope-query/diagnostics/admin/declassify, `watches.ts` SSE) |
 | `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port: records/leases/idempotency/events/graph + compiled-match AST; kinds are records, not a port concern), `row.ts` (shared row/value mapping) + `pglite.ts`, `sqlite.ts` |
 | `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + graph, kinds-as-records, envelope query, `authorize`/grants, delegation, taint, bootstrap chain), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order + `combineMatch`), `kinds.ts` (indexing contract + `kind_def`/`grant`/`signal`/`agent_*` reserved kinds), `auth.ts` (`CredentialStore`, token mint/hash), `take.ts` (claim ranking), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts`, `errors.ts` |
 | `sdk/ts/`                               | TS SDK stub: `client.ts` (`RadiaClient` over `/v0`, incl. `watch()` SSE), `loop.ts` (`agentLoop`, event-driven, design §5) |
@@ -113,6 +113,22 @@ out-of-band. Four applications already made:
   `Space.authorize` discovers it by `query`. Authorization state gets the same immutability,
   event-log visibility, and watchability as any record. `signal`/`grant` writes and `/v0/ops/*`
   are the grant-gated boundary — see [agent_docs/design-auth.md](agent_docs/design-auth.md).
+
+**The corollary binds agents, not just the runtime: discover, don't hardcode.** An agent (and
+every example client) learns its tools and models from records (`capability`/`model`), *how* to
+use them from the descriptions those records carry, routes by content, and follows relationships
+by querying (lineage up, `children` down). It must not bake substrate-provided knowledge into
+client code or a system prompt. **Fine:** an app defining and writing its *own* record kinds (the
+chat owns `message`/`llm_call`/…), and a launcher spawning the worker fleet — that's setup.
+**Not fine (all bit the chat example):** a `/command` or client branch that encodes a *decision*
+that should be delegated (the model tier is picked by a router-worker, not the REPL); a hard-coded
+tool list (watch `capability` records); a redeclared capability that 409s instead of a successor
+(content-key it, latest-wins, like `kind_def`); tool-usage hints or kind names taught in the
+system prompt (put usage in the tool's *description*, discover kinds with `space_kinds`). The
+line is **setup vs. behavior**: launching workers is client config; per-turn behavior — which
+tool, which model, how records relate, how a tool is used — is discovered from the substrate or
+delegated to a worker. Symptom to catch in review: a client growing a `switch` on kinds, a
+`/tier`-style command, or a prompt that teaches the substrate.
 
 ## Invariants
 

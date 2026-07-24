@@ -220,6 +220,12 @@ export class RadiaClient {
     return r.lineage;
   }
 
+  /** Records that reference this one via parent_ids — its children (the reverse of lineage). */
+  async getChildren(recordId: string): Promise<RadiaRecord[]> {
+    const r = await this.req("GET", `/v0/ops/records/${encodeURIComponent(recordId)}/children`);
+    return r.children;
+  }
+
   /**
    * Watch a template: an async stream of wakeups (`{seq, recordId, kind}`) for matching
    * records that become available. Reconnects with a cursor on drop; on 410 cursor_expired
