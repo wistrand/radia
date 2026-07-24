@@ -58,9 +58,20 @@ deno task chat         # a CLI LLM chatbot (needs OPENROUTER_API_KEY) — thinki
 deno task conformance  # the storage-adapter contract suite (both adapters)
 ```
 
-Open the console and watch records and events stream through the **Feed** tab; open a
-record to see its lineage. See [examples/README.md](examples/README.md) for the agents and
-the SDK.
+Storage is in-memory by default. To persist across restarts, pass `--db`:
+
+```bash
+deno task dev --storage sqlite --db ./radia.db   # SQLite file (WAL)
+deno task dev --storage pglite --db ./radia-pg   # PGlite data directory
+```
+
+Records, envelopes, events, idempotency, and kind declarations all persist and reload on
+restart. (Leases held by processes that crashed expire on their own clocks, as designed.)
+
+Open the console and watch records and events stream through the **Feed** tab, use the
+**Graph** tab to see how records relate (`parent_ids` DAG — a conversation's messages, a
+job fanning out into tasks and back), and open a record for its body + lineage. See
+[examples/README.md](examples/README.md) for the agents and the SDK.
 
 The design target for distribution is `npx radia dev` / `pipx run` (a single wrapped
 binary bundling the MCP adapter); that packaging is Phase 7.

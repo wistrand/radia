@@ -101,6 +101,10 @@ create table if not exists events (
   state text,
   detail text
 );
+create table if not exists kinds (
+  kind text primary key,
+  def text not null
+);
 `;
 
 export class PgliteAdapter implements StorageAdapter {
@@ -342,6 +346,12 @@ export class PgliteAdapter implements StorageAdapter {
     return res.rows.length ? rowToRecord(res.rows[0]) : null;
   }
 
+  async childrenOf(recordId: string): Promise<RadiaRecord[]> {
+    // parent_ids is a JSON text array of quoted ids; a LIKE on `"<id>"` finds children.
+    const res = await this.db.query<RawRow>("select * from records where parent_ids like $1", [`%"${recordId}"%`]);
+    return res.rows.map(rowToRecord);
+  }
+
   async getEvents(afterSeq: number, limit: number): Promise<SpaceEvent[]> {
     const res = await this.db.query<RawRow>(
       "select seq, id, ts, run_id, operation, record_id, kind, state, detail from events where seq > $1 order by seq asc limit $2",
@@ -353,6 +363,18 @@ export class PgliteAdapter implements StorageAdapter {
   async latestEventSeq(): Promise<number> {
     const res = await this.db.query<{ seq: number }>("select coalesce(max(seq), 0)::int as seq from events");
     return res.rows[0].seq;
+  }
+
+  async putKind(kind: string, defJson: string): Promise<void> {
+    await this.db.query(
+      "insert into kinds (kind, def) values ($1, $2) on conflict (kind) do update set def = excluded.def",
+      [kind, defJson],
+    );
+  }
+
+  async loadKinds(): Promise<string[]> {
+    const res = await this.db.query<{ def: string }>("select def from kinds order by kind");
+    return res.rows.map((r) => r.def);
   }
 
   private async appendEvent(tx: Transaction, e: EventInput, ts: string): Promise<void> {

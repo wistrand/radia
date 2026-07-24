@@ -40,19 +40,44 @@ export function makeTools(roots: string[]): Record<string, Tool> {
       if (!info.isFile) throw new Error(`not a file: ${path}`);
       const bytes = await Deno.readFile(real);
       const truncated = bytes.length > MAX_BYTES;
-      return { path, truncated, content: new TextDecoder().decode(truncated ? bytes.slice(0, MAX_BYTES) : bytes) };
+      return {
+        path,
+        size: info.size,
+        modified: info.mtime?.toISOString() ?? null,
+        truncated,
+        content: new TextDecoder().decode(truncated ? bytes.slice(0, MAX_BYTES) : bytes),
+      };
     },
 
     list_files: async (a) => {
       const dir = a.dir ? String(a.dir) : undefined;
       const targets = dir ? [await resolveInSandbox(roots, dir)] : roots;
-      const files: string[] = [];
+      const files: { name: string; size: number; modified: string | null; dir: boolean }[] = [];
       for (const t of targets) {
         for await (const e of Deno.readDir(t)) {
-          files.push((dir ? dir + "/" : "") + e.name + (e.isDirectory ? "/" : ""));
+          const name = (dir ? dir + "/" : "") + e.name;
+          try {
+            const info = await Deno.stat(join(t, e.name));
+            files.push({ name, size: info.size, modified: info.mtime?.toISOString() ?? null, dir: e.isDirectory });
+          } catch {
+            files.push({ name, size: 0, modified: null, dir: e.isDirectory });
+          }
         }
       }
       return { files };
+    },
+
+    stat: async (a) => {
+      const path = String(a.path ?? "");
+      const real = await resolveInSandbox(roots, path);
+      const info = await Deno.stat(real);
+      return {
+        path,
+        size: info.size,
+        modified: info.mtime?.toISOString() ?? null,
+        isFile: info.isFile,
+        isDirectory: info.isDirectory,
+      };
     },
 
     search_files: async (a) => {
@@ -126,9 +151,10 @@ export function calc(expr: string): number {
 
 /** JSON-schema tool definitions sent to the model. */
 export const TOOL_SCHEMAS: ToolDef[] = [
-  { type: "function", function: { name: "read_file", description: "Read a text file from the allowed sandbox directories.", parameters: { type: "object", properties: { path: { type: "string", description: "path relative to a sandbox root" } }, required: ["path"] } } },
-  { type: "function", function: { name: "list_files", description: "List files in the allowed sandbox directories.", parameters: { type: "object", properties: { dir: { type: "string" } } } } },
+  { type: "function", function: { name: "read_file", description: "Read a text file from the allowed sandbox directories. Returns content plus size (bytes) and modified time.", parameters: { type: "object", properties: { path: { type: "string", description: "path relative to a sandbox root" } }, required: ["path"] } } },
+  { type: "function", function: { name: "list_files", description: "List files in the allowed sandbox directories, each with size (bytes) and modified time. Use this for questions about which file is largest or most recent.", parameters: { type: "object", properties: { dir: { type: "string" } } } } },
+  { type: "function", function: { name: "stat", description: "File metadata: size (bytes), modified time, isFile/isDirectory. Use for size or date questions.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
   { type: "function", function: { name: "search_files", description: "Search text files in the sandbox for a substring.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } } },
   { type: "function", function: { name: "time", description: "Get the current UTC time.", parameters: { type: "object", properties: {} } } },
-  { type: "function", function: { name: "calc", description: "Evaluate a basic arithmetic expression (+ - * / and parentheses).", parameters: { type: "object", properties: { expr: { type: "string" } }, required: ["expr"] } } },
+  { type: "function", function: { name: "calc", description: "Evaluate a basic arithmetic expression: + - * / and parentheses over numbers only. No functions (no len/length) and no strings.", parameters: { type: "object", properties: { expr: { type: "string" } }, required: ["expr"] } } },
 ];

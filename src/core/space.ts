@@ -60,6 +60,20 @@ export interface Watch {
   cursor0: number; // event seq at creation; the stream starts here unless resumed
 }
 
+export interface GraphNode {
+  id: string;
+  kind: string;
+  label: string;
+  createdAt: string;
+}
+
+/** A short, generic label for a graph node — kind plus a common discriminating field. */
+function labelFor(rec: RadiaRecord): string {
+  const b = (rec.body ?? {}) as Record<string, unknown>;
+  const hint = b.role ?? b.op ?? b.tool ?? "";
+  return hint ? `${rec.kind}:${hint}` : rec.kind;
+}
+
 export class Space {
   private readonly kinds = new KindRegistry();
   private readonly ctx: SpaceContext;
@@ -77,9 +91,26 @@ export class Space {
     return this.storage.name;
   }
 
-  /** Declare a kind's indexed/sortable paths. Throws RadiaError on an invalid declaration. */
+  /** Declare a kind (validate + cache in memory). Throws RadiaError on an invalid def.
+   *  Synchronous so direct callers see it immediately; use persistKind to store it durably. */
   registerKind(def: KindDef): void {
     this.kinds.register(def);
+  }
+
+  /** Durably store a (already-validated) kind declaration. */
+  persistKind(def: KindDef): Promise<void> {
+    return this.storage.putKind(def.kind, JSON.stringify(def));
+  }
+
+  /** Load persisted kind declarations into the registry (call once at startup). */
+  async loadKinds(): Promise<void> {
+    for (const defJson of await this.storage.loadKinds()) {
+      try {
+        this.kinds.register(JSON.parse(defJson) as KindDef);
+      } catch {
+        // skip a malformed persisted declaration rather than fail startup
+      }
+    }
   }
 
   /** DB clock passthrough (health, diagnostics). */
@@ -219,6 +250,58 @@ export class Space {
   /** A single record by id. */
   getRecord(recordId: string): Promise<RadiaRecord | null> {
     return this.storage.getRecord(recordId);
+  }
+
+  /**
+   * The relationship graph around a record: BFS over parents (lineage up) and children
+   * (records that reference it), returning nodes + parent→child edges for a diagram.
+   * `excludeKinds` skips noisy kinds (e.g. llm_chunk streaming records).
+   */
+  async getGraph(
+    recordId: string,
+    opts: { maxNodes?: number; excludeKinds?: Set<string> } = {},
+  ): Promise<{ nodes: GraphNode[]; edges: { from: string; to: string }[] }> {
+    const maxNodes = opts.maxNodes ?? 150;
+    const exclude = opts.excludeKinds ?? new Set<string>();
+    const nodes = new Map<string, RadiaRecord>();
+    const edges: { from: string; to: string }[] = [];
+    const edgeSeen = new Set<string>();
+    const addEdge = (from: string, to: string) => {
+      const k = `${from}|${to}`;
+      if (!edgeSeen.has(k)) {
+        edgeSeen.add(k);
+        edges.push({ from, to });
+      }
+    };
+    const seen = new Set<string>();
+    const queue = [recordId];
+    while (queue.length > 0 && nodes.size < maxNodes) {
+      const id = queue.shift()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const rec = await this.storage.getRecord(id);
+      if (!rec || exclude.has(rec.kind)) continue;
+      nodes.set(id, rec);
+      for (const pid of rec.runtimeMeta.parentIds) {
+        addEdge(pid, id);
+        if (!seen.has(pid)) queue.push(pid);
+      }
+      for (const child of await this.storage.childrenOf(id)) {
+        if (exclude.has(child.kind)) continue;
+        addEdge(id, child.id);
+        if (!seen.has(child.id)) queue.push(child.id);
+      }
+    }
+    const nodeIds = new Set(nodes.keys());
+    return {
+      nodes: [...nodes.values()].map((r) => ({
+        id: r.id,
+        kind: r.kind,
+        label: labelFor(r),
+        createdAt: r.runtimeMeta.createdAt,
+      })),
+      edges: edges.filter((e) => nodeIds.has(e.from) && nodeIds.has(e.to)),
+    };
   }
 
   /** Append-only event log after `afterSeq` (0 = from the start). */

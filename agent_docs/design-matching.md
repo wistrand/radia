@@ -6,9 +6,10 @@ Spec and rationale for template matching. Origin: outline §3.
 `$exists`/`$any`/`$each`/`$or` operators with the divergence semantics live in
 `src/core/matching.ts`; the pure evaluator (`matchesRecord`) is the **semantic oracle**
 that defines what a template matches. The per-kind indexing contract is
-`src/core/kinds.ts`. `read_one` fetches by kind and filters + orders with the oracle;
-**pushing predicates onto physical per-kind expression indexes is deferred** (paired with
-the M1 keyset query — see [plan-m0-implementation.md](plan-m0-implementation.md) Phase 2).
+`src/core/kinds.ts` (an in-memory registry backed by a persisted `kinds` table via the
+adapter, reloaded at startup). `read_one`/`query` fetch by kind and filter + order with the
+oracle; **pushing predicates onto physical per-kind expression indexes is deferred** (paired
+with the M1 keyset query — see [plan-m0-implementation.md](plan-m0-implementation.md) Phase 2).
 Any future indexed SQL must agree with the oracle.
 
 ## Contents

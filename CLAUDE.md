@@ -39,19 +39,20 @@ content, not by addressing.
 | `deno.json`                             | tasks (`dev`/`check`/`conformance`/`compile`) + import map |
 | `src/main.ts`                           | `radia` CLI entry; `radia dev` boots an embedded space + dev UI |
 | `src/ui/index.html`                     | self-contained dev web console served at `GET /` (no build, public API only) |
-| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes), `problem.ts` (RFC 9457), `handlers/` (`records.ts`, `kinds.ts`, `leases.ts`, `dev.ts` stats/events/lineage, `watches.ts` SSE) |
-| `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port + compiled-match AST + lease types), `row.ts` (shared row/value mapping) + `pglite.ts`, `sqlite.ts` |
-| `src/core/`                             | storage-agnostic logic: `space.ts` (service, incl. lineage BFS + watches), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order), `kinds.ts` (indexing contract), `take.ts` (claim ranking), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts`, `errors.ts` |
-| `sdk/ts/`                               | TS SDK stub: `client.ts` (`RadiaClient` over `/v0`), `loop.ts` (`agentLoop`, design §5) |
+| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes), `problem.ts` (RFC 9457), `handlers/` (`records.ts`, `kinds.ts`, `leases.ts`, `dev.ts` stats/events/lineage/graph, `watches.ts` SSE) |
+| `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port: records/leases/idempotency/events/kind-persistence/graph + compiled-match AST), `row.ts` (shared row/value mapping) + `pglite.ts`, `sqlite.ts` |
+| `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + relationship graph, kind persistence), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order), `kinds.ts` (indexing contract), `take.ts` (claim ranking), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts`, `errors.ts` |
+| `sdk/ts/`                               | TS SDK stub: `client.ts` (`RadiaClient` over `/v0`, incl. `watch()` SSE), `loop.ts` (`agentLoop`, event-driven, design §5) |
 | `examples/`                             | demo agents + `demo.ts`, and `chat/` — a CLI LLM chatbot (full symmetry: llm + tool calls are records); see `examples/README.md` |
 | `conformance/`                          | storage-adapter contract suite (`run.test.ts`, `harness.ts`) |
 | `openapi/radia.yaml`                    | the frozen wire contract (source of truth)                 |
 | `agent_docs/`                           | design deep dives, one topic per file (linked below)       |
 | `notes/radia-runtime-outline-v0.3.md`   | origin design outline; provenance, not maintained doc      |
 
-Build/run: `deno task dev` (no build step), `deno task conformance` (both adapters),
-`deno task demo` (end-to-end agent demo over HTTP), `deno task compile` (release binary).
-Implementation is following
+Build/run: `deno task dev` (no build step; `--db <path>` persists — SQLite file / PGlite
+dir, in-memory otherwise), `deno task conformance` (both adapters), `deno task demo`
+(end-to-end agent demo over HTTP), `deno task compile` (release binary). Implementation is
+following
 [agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md) phase by
 phase; that plan's proposed layout is the map for code not yet written.
 

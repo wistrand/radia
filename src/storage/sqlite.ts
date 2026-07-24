@@ -109,6 +109,10 @@ create table if not exists events (
   state text,
   detail text
 );
+create table if not exists kinds (
+  kind text primary key,
+  def text not null
+);
 `;
 
 type SqlValue = string | number | null;
@@ -333,6 +337,12 @@ export class SqliteAdapter implements StorageAdapter {
     return Promise.resolve(row ? rowToRecord(row) : null);
   }
 
+  childrenOf(recordId: string): Promise<RadiaRecord[]> {
+    // parent_ids is a JSON text array of quoted ids; a LIKE on `"<id>"` finds children.
+    const rows = this.db.prepare("select * from records where parent_ids like ?").all(`%"${recordId}"%`) as RawRow[];
+    return Promise.resolve(rows.map(rowToRecord));
+  }
+
   getEvents(afterSeq: number, limit: number): Promise<SpaceEvent[]> {
     const rows = this.db.prepare(
       "select seq, id, ts, run_id, operation, record_id, kind, state, detail from events where seq > ? order by seq asc limit ?",
@@ -343,6 +353,17 @@ export class SqliteAdapter implements StorageAdapter {
   latestEventSeq(): Promise<number> {
     const row = this.db.prepare("select coalesce(max(seq), 0) as seq from events").get() as { seq: number };
     return Promise.resolve(Number(row.seq));
+  }
+
+  putKind(kind: string, defJson: string): Promise<void> {
+    this.db.prepare("insert into kinds (kind, def) values (?, ?) on conflict(kind) do update set def = excluded.def")
+      .run(kind, defJson);
+    return Promise.resolve();
+  }
+
+  loadKinds(): Promise<string[]> {
+    const rows = this.db.prepare("select def from kinds order by kind").all() as { def: string }[];
+    return Promise.resolve(rows.map((r) => r.def));
   }
 
   private appendEvent(e: EventInput, ts: string): void {

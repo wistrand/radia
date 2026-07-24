@@ -8,23 +8,26 @@ import type { StorageAdapter } from "./storage/adapter.ts";
 import { Space } from "./core/space.ts";
 import { startServer } from "./server/http.ts";
 
-const USAGE = `radia dev [--port <n>] [--storage pglite|sqlite]`;
+const USAGE = `radia dev [--port <n>] [--storage pglite|sqlite] [--db <path>]`;
 
 async function dev(args: string[]): Promise<void> {
   const port = Number(flag(args, "--port") ?? "7788");
   const backend = flag(args, "--storage") ?? "pglite";
+  // --db persists to disk: a file for sqlite, a data directory for pglite. Omit = in-memory.
+  const dbPath = flag(args, "--db");
 
   let storage: StorageAdapter;
-  if (backend === "pglite") storage = new PgliteAdapter();
-  else if (backend === "sqlite") storage = new SqliteAdapter();
+  if (backend === "pglite") storage = new PgliteAdapter(dbPath);
+  else if (backend === "sqlite") storage = new SqliteAdapter(dbPath); // undefined -> :memory:
   else {
     console.error(`unknown --storage: ${backend} (expected pglite|sqlite)`);
     Deno.exit(2);
   }
 
   await storage.init();
-  console.log(`radia dev: storage=${storage.name}`);
+  console.log(`radia dev: storage=${storage.name} (${dbPath ? `persisted at ${dbPath}` : "in-memory"})`);
   const space = new Space(storage);
+  await space.loadKinds(); // restore persisted kind declarations
   const { finished } = startServer({ port, space });
   await finished;
   await storage.close();

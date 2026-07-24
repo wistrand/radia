@@ -28,6 +28,14 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
 
 ## Traps and load-bearing decisions
 
+- **`childrenOf` (the relationship-graph reverse lookup) is a `LIKE` scan** over the
+  `parent_ids` JSON text, not an indexed reverse edge. Fine for the dev console at small
+  scale; a real reverse index (or an edges table) is the fix before it's a hot path. It
+  works because ids are ULIDs (no `%`/`_`), so `like '%"<id>"%'` is safe.
+- **The graph/lineage viewer excludes nothing by default except what the caller asks**
+  (`?exclude=llm_chunk`): streaming `llm_chunk` records would otherwise dominate a
+  conversation graph. Keep chunk flushing coarse for the same reason (event-log volume).
+
 - **Idempotency is checked before lease validation, and the order is load-bearing.**
   `ack` commits, the HTTP response is lost, the agent retries; the task is now consumed
   and the lease invalid. Validating the lease first would falsely return `lease_lost` for

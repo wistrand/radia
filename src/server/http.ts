@@ -6,7 +6,7 @@ import type { Space } from "../core/space.ts";
 import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleRegisterKind } from "./handlers/kinds.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
-import { handleEnvelope, handleEvents, handleLineage, handleListKinds, handleStats } from "./handlers/dev.ts";
+import { handleEnvelope, handleEvents, handleGetRecord, handleGraph, handleLineage, handleListKinds, handleStats } from "./handlers/dev.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem } from "./problem.ts";
 
@@ -44,6 +44,17 @@ function makeHandler(space: Space, ui: string) {
     if (req.method === "GET" && url.pathname.startsWith("/v0/records/") && url.pathname.endsWith("/lineage")) {
       const id = url.pathname.slice("/v0/records/".length, -"/lineage".length);
       return await handleLineage(space, decodeURIComponent(id));
+    }
+    if (req.method === "GET" && url.pathname.startsWith("/v0/records/") && url.pathname.endsWith("/graph")) {
+      const id = url.pathname.slice("/v0/records/".length, -"/graph".length);
+      return await handleGraph(space, decodeURIComponent(id), url);
+    }
+    if (
+      req.method === "GET" && url.pathname.startsWith("/v0/records/") &&
+      !url.pathname.endsWith("/lineage") && !url.pathname.endsWith("/graph")
+    ) {
+      const id = url.pathname.slice("/v0/records/".length);
+      if (id) return await handleGetRecord(space, decodeURIComponent(id));
     }
     if (req.method === "GET" && url.pathname.startsWith("/v0/watches/") && url.pathname.endsWith("/events")) {
       const id = url.pathname.slice("/v0/watches/".length, -"/events".length);

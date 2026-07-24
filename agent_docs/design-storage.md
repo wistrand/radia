@@ -7,9 +7,12 @@ distribution strategy. Origin: outline §10.
 (`src/storage/adapter.ts`) — `src/storage/pglite.ts` (WASM Postgres) and
 `src/storage/sqlite.ts` (built-in `node:sqlite`) — with the record/envelope tables, the
 partial claim index, and the SQL mapping below; both pass the full conformance suite in CI.
-The `dev` mode is `deno task dev`. **Not implemented:** the standalone **Postgres** adapter
-and `single-node`/`production` modes (M1+), `npm`/`pip` binary wrapping (Phase 7), envelope
-encryption/KMS (M2).
+The `dev` mode is `deno task dev` (in-memory by default; `--db <path>` persists — a file
+for SQLite, a data directory for PGlite; records, envelopes, events, idempotency, and kind
+declarations all survive restart — kinds are stored in a `kinds` table and reloaded into
+the registry at startup via `Space.loadKinds`). **Not implemented:** the standalone
+**Postgres** adapter and `single-node`/`production` modes (M1+), `npm`/`pip` binary
+wrapping (Phase 7), envelope encryption/KMS (M2).
 
 ## Contents
 - Invariants
@@ -38,12 +41,13 @@ encryption/KMS (M2).
 | Claim index  | `CREATE INDEX ON record_runtime (kind, available_at, effective_priority DESC, record_id) WHERE state = 'available'` — single-table partial index; no cross-table join on the hot path |
 | take         | conditional `UPDATE record_runtime ... FOR UPDATE SKIP LOCKED RETURNING`, epoch bump                                                                                               |
 | Fencing      | `lease_id` / `lease_epoch` conditional updates                                                                                                                                     |
-| Idempotency  | (principal, op, key) → request hash + stored response (incl. generated IDs); checked **before** lease validation                                                                   |
-| watch        | LISTEN/NOTIFY wakeups + cursor catch-up; event retention window + 410 on expired cursors                                                                                           |
-| Timers       | `available_at` / `deadline_at` indexes + sweeper (backoff, bid windows, lease resurrection, priority aging)                                                                        |
-| Event log    | append-only table, same transaction                                                                                                                                               |
+| Idempotency  | `idempotency` table: (principal, op, key) → request hash + stored response (incl. generated IDs); checked **before** lease validation                                              |
+| watch        | wakeups (Postgres LISTEN/NOTIFY; embedded: in-process `Notifier`) + event-log cursor catch-up; 410 on expired cursors (dormant until GC)                                           |
+| Timers       | `available_at` / `deadline_at` indexes + sweeper (backoff, bid windows, lease resurrection, priority aging) — **M2**                                                               |
+| Event log    | append-only `events` table (monotonic seq), same transaction as each mutation                                                                                                     |
+| Kinds        | `kinds` table (declaration JSON); reloaded into the in-memory registry at startup (`Space.loadKinds`)                                                                              |
 | Clock        | DB `now()` for all lease/timing math                                                                                                                                              |
-| Blobs        | object store + artifact table (sha256, size, internal URI); runtime-issued download capabilities                                                                                  |
+| Blobs        | object store + artifact table (sha256, size, internal URI); runtime-issued download capabilities — **not implemented (M1)**                                                        |
 
 The single-table partial index is why the hot claim path (`take`) never requires an
 index-assisted join. See [design-api.md](design-api.md) for the take contract this

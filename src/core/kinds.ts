@@ -3,9 +3,10 @@
 // template compilation (core/matching.ts) validates predicates against it: a predicate on
 // an undeclared path, or order_by on a non-sortable path, is a registration error.
 //
-// M0: the registry is in-memory, per Space. Persisting declarations and creating the
-// physical expression indexes for declared paths (predicate pushdown) is a tracked
-// follow-up — the semantic oracle, not an index, defines correctness. See
+// The in-memory registry is a per-Space cache; declarations are persisted via the adapter
+// (`putKind`/`loadKinds`, a `kinds` table) and reloaded at startup by `Space.loadKinds`, so
+// they survive restart. Still deferred: the physical expression indexes for declared paths
+// (predicate pushdown) — the semantic oracle, not an index, defines correctness. See
 // agent_docs/plan-m0-implementation.md Phase 2.
 
 import { RadiaError } from "./errors.ts";

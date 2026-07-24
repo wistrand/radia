@@ -25,7 +25,8 @@ export async function handleRegisterKind(space: Space, req: Request): Promise<Re
   };
 
   try {
-    space.registerKind(def);
+    space.registerKind(def); // validates + caches (throws on invalid)
+    await space.persistKind(def); // durably store the valid declaration
     return new Response(JSON.stringify({ kind: def.kind }), {
       status: 201,
       headers: { "content-type": "application/json" },

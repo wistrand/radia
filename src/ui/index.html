@@ -71,6 +71,8 @@
   .empty { color: var(--muted); padding: 18px; text-align: center; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+  #g-canvas svg text { pointer-events: none; }
+  #g-canvas g:hover rect { fill: var(--code); }
 </style>
 </head>
 <body>
@@ -87,6 +89,7 @@
   <button data-tab="query">Query</button>
   <button data-tab="worker">Worker</button>
   <button data-tab="feed">Feed</button>
+  <button data-tab="graph">Graph</button>
 </nav>
 <main>
   <!-- OVERVIEW -->
@@ -211,6 +214,25 @@
       <div id="feed-list"><div class="empty">No events yet.</div></div>
     </div>
   </section>
+
+  <!-- GRAPH -->
+  <section id="graph">
+    <div class="panel">
+      <h2>Relationship graph</h2>
+      <p class="muted" style="margin-top:0">Pick a record to see its <code>parent_ids</code> graph — how records relate (a conversation and its messages/calls/results, a job fanning out into tasks and back into a summary).</p>
+      <div class="row">
+        <div><label>Kind to pick from</label><input id="g-kind" list="kind-list" value="conversation"></div>
+        <div style="max-width:180px"><label>&nbsp;</label>
+          <label style="font-size:12px;color:var(--muted);display:block"><input type="checkbox" id="g-hidechunks" style="width:auto" checked> hide llm_chunk</label>
+          <label style="font-size:12px;color:var(--muted);display:block"><input type="checkbox" id="g-live" style="width:auto" onchange="toggleGraphLive()"> live</label>
+        </div>
+      </div>
+      <div class="actions"><button class="btn" onclick="loadGraphRoots()">Load</button></div>
+      <div id="g-roots"></div>
+    </div>
+    <div class="panel"><div id="g-canvas"><div class="empty">Pick a record above.</div></div></div>
+    <div class="panel"><h2>Detail</h2><div id="g-detail"><div class="empty">Click a node.</div></div></div>
+  </section>
 </main>
 <datalist id="kind-list"></datalist>
 
@@ -242,9 +264,11 @@ document.querySelectorAll("#nav button").forEach((b) => b.onclick = () => {
   b.classList.add("active");
   $(b.dataset.tab).classList.add("active");
   stopFeed();
+  stopGraphLive();
   if (b.dataset.tab === "overview") { loadHealth(); loadStats(); }
   if (b.dataset.tab === "kinds") loadKinds();
   if (b.dataset.tab === "feed") startFeed();
+  if (b.dataset.tab === "graph") loadGraphRoots();
 });
 
 // ---- health / overview ----
@@ -324,8 +348,13 @@ function renderRecordList(el, records, onClick) {
   }).join("");
   $(el).innerHTML = `<table><thead><tr><th>ID</th><th>Created</th><th>Body</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
-async function showDetail(id) {
-  const rec = window._recs[id];
+async function showDetail(id, target = "rec-detail") {
+  let rec = (window._recs || {})[id];
+  if (!rec) {
+    const r = await api("GET", "/v0/records/" + encodeURIComponent(id));
+    if (r.ok) rec = r.data;
+  }
+  if (!rec) { $(target).innerHTML = `<div class="empty">record not found</div>`; return; }
   const env = await api("GET", "/v0/envelopes/" + encodeURIComponent(id));
   const e = env.ok ? env.data : null;
   const lin = await api("GET", "/v0/records/" + encodeURIComponent(id) + "/lineage");
@@ -337,12 +366,112 @@ async function showDetail(id) {
         + `${n.depth === 0 ? "●" : "└"} ${esc(n.record.id.slice(-8))} <span class="muted">${esc(n.record.kind)}</span></div>`
       ).join("") + `</div>`;
   }
-  $("rec-detail").innerHTML =
+  $(target).innerHTML =
     `<div style="margin-bottom:8px">${e ? stateBadge(e.state) : ""} <span class="mono">${esc(id)}</span></div>`
     + `<b>Body</b><pre>${esc(JSON.stringify(rec.body, null, 2))}</pre>`
     + `<b>Runtime meta</b><pre>${esc(JSON.stringify(rec.runtimeMeta, null, 2))}</pre>`
     + (e ? `<b>Envelope</b><pre>${esc(JSON.stringify(e, null, 2))}</pre>` : "")
     + lineageHtml;
+}
+
+// ---- graph ----
+function graphColor(kind) {
+  let h = 0;
+  for (const c of kind) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return `hsl(${h % 360} 55% 55%)`;
+}
+async function loadGraphRoots() {
+  const kind = $("g-kind").value.trim();
+  if (!kind) return;
+  const r = await api("POST", "/v0/records/query", { kind, limit: 50 });
+  if (!r.ok) { $("g-roots").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
+  const recs = r.data.records;
+  if (!recs.length) { $("g-roots").innerHTML = `<div class="empty">No ${esc(kind)} records.</div>`; return; }
+  window._recs = window._recs || {};
+  $("g-roots").innerHTML = `<div class="muted" style="margin:8px 0 4px">pick one:</div>` + recs.map((rec) => {
+    window._recs[rec.id] = rec;
+    return `<button class="btn ghost" style="margin:0 4px 4px 0" onclick="showGraph('${rec.id}')">${esc(rec.id.slice(-8))}</button>`;
+  }).join("");
+}
+let currentRoot = null, graphTimer = null;
+async function showGraph(id) {
+  currentRoot = id;
+  await refreshGraph();
+  if ($("g-live").checked) startGraphLive();
+}
+async function refreshGraph() {
+  if (!currentRoot) return;
+  const q = $("g-hidechunks").checked ? "?exclude=llm_chunk" : "";
+  const r = await api("GET", `/v0/records/${encodeURIComponent(currentRoot)}/graph${q}`);
+  if (!r.ok) { $("g-canvas").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
+  renderGraph("g-canvas", r.data);
+}
+function startGraphLive() { if (!graphTimer) graphTimer = setInterval(refreshGraph, 1500); }
+function stopGraphLive() { if (graphTimer) { clearInterval(graphTimer); graphTimer = null; } }
+function toggleGraphLive() { if ($("g-live").checked && currentRoot) startGraphLive(); else stopGraphLive(); }
+
+function renderGraph(el, data) {
+  const { nodes, edges } = data;
+  if (!nodes.length) { $(el).innerHTML = `<div class="empty">empty</div>`; return; }
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  // generation = longest path from a root; relax over parent->child edges.
+  const gen = new Map(nodes.map((n) => [n.id, 0]));
+  for (let iter = 0; iter < nodes.length; iter++) {
+    let changed = false;
+    for (const e of edges) {
+      if (byId.has(e.from) && byId.has(e.to) && gen.get(e.from) + 1 > gen.get(e.to)) {
+        gen.set(e.to, gen.get(e.from) + 1);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  const rows = {};
+  nodes.forEach((n) => { (rows[gen.get(n.id)] ??= []).push(n); });
+  const maxGen = Math.max(...Object.keys(rows).map(Number));
+
+  const colW = 150, rowH = 82, padY = 28, padX = 20, nodeW = 122, nodeH = 30;
+  // Wrap wide generations so the graph grows vertically, not off the right edge.
+  const avail = Math.max(($(el).clientWidth || 900) - padX * 2, colW);
+  const maxCols = Math.max(1, Math.floor(avail / colW));
+
+  const pos = new Map();
+  let vrow = 0; // running visual row (a wide generation spans several)
+  let widest = 1;
+  for (let g = 0; g <= maxGen; g++) {
+    const arr = rows[g] || [];
+    if (!arr.length) continue;
+    for (let i = 0; i < arr.length; i += maxCols) {
+      const chunk = arr.slice(i, i + maxCols);
+      widest = Math.max(widest, chunk.length);
+      chunk.forEach((n, j) => pos.set(n.id, { x: padX + j * colW + colW / 2, y: padY + vrow * rowH + nodeH / 2 }));
+      vrow++;
+    }
+  }
+  const width = padX * 2 + widest * colW;
+  const height = padY * 2 + vrow * rowH;
+
+  let s = `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">`;
+  s += `<defs><marker id="arw" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6" fill="var(--muted)"/></marker></defs>`;
+  for (const e of edges) {
+    const a = pos.get(e.from), b = pos.get(e.to);
+    if (a && b) {
+      const my = (a.y + b.y) / 2;
+      s += `<path d="M${a.x},${a.y + nodeH / 2} C${a.x},${my} ${b.x},${my} ${b.x},${b.y - nodeH / 2}" fill="none" stroke="var(--line)" stroke-width="1.5" marker-end="url(#arw)"/>`;
+    }
+  }
+  for (const n of nodes) {
+    const p = pos.get(n.id);
+    if (!p) continue;
+    const c = graphColor(n.kind);
+    s += `<g onclick="showDetail('${n.id}','g-detail')">`
+      + `<rect x="${p.x - nodeW / 2}" y="${p.y - nodeH / 2}" width="${nodeW}" height="${nodeH}" rx="7" fill="var(--panel)" stroke="${c}" stroke-width="2"/>`
+      + `<circle cx="${p.x - nodeW / 2 + 12}" cy="${p.y}" r="4" fill="${c}"/>`
+      + `<text x="${p.x - nodeW / 2 + 22}" y="${p.y + 4}" font-size="11" fill="var(--ink)">${esc(n.label).slice(0, 16)}</text>`
+      + `</g>`;
+  }
+  s += `</svg>`;
+  $(el).innerHTML = `<div style="overflow:auto">${s}</div>`;
 }
 
 // ---- query ----

@@ -118,10 +118,30 @@ console.log(`radia chat — model ${model}`);
 console.log(`sandbox: ${roots.join(", ")}`);
 console.log(`space ${url}${spawnedSpace ? " (spawned)" : " (existing)"} — open it and watch the Feed tab. Ctrl-D to quit.`);
 
-const messages: ChatMessage[] = [{
-  role: "system",
-  content: "You are a concise assistant. You can read, list, and search text files in a sandboxed directory, get the time, and do arithmetic — use the provided tools when helpful.",
-}];
+const SYSTEM_PROMPT =
+  "You are a concise assistant. You can read, list, and search text files in a sandboxed directory, get the time, and do arithmetic — use the provided tools when helpful.";
+
+// The conversation is an append-only thread of `message` records on the space, not a
+// client-held array. The chatbot appends messages (assigning indices) and reads results;
+// the inference-worker reconstructs the context from the thread. So history is stored once
+// (linear, not quadratic), the whole conversation is reconstructible, and every message is
+// a record in the Feed.
+const conversation = await client.put({ kind: "conversation", body: {} });
+const conversationId = conversation.id;
+let nextIndex = 0;
+
+async function appendMessage(
+  msg: { role: string; content?: string | null; tool_calls?: unknown; tool_call_id?: string },
+  parentIds: string[] = [],
+): Promise<void> {
+  await client.put({
+    kind: "message",
+    body: { conversationId, index: nextIndex++, ...msg },
+    parentIds: [conversationId, ...parentIds],
+  });
+}
+
+await appendMessage({ role: "system", content: SYSTEM_PROMPT });
 
 // Read stdin line by line (works for an interactive TTY and for piped input, unlike prompt()).
 const stdin = Deno.stdin.readable.getReader();
@@ -153,7 +173,7 @@ while (true) {
   const line = await nextLine();
   if (line === null) break; // EOF / Ctrl-D
   if (!line.trim()) continue;
-  messages.push({ role: "user", content: line });
+  await appendMessage({ role: "user", content: line });
   try {
     await turn();
   } catch (e) {
@@ -170,9 +190,15 @@ Deno.exit(0);
 async function turn(): Promise<void> {
   for (let round = 0; round < 8; round++) {
     write("\nassistant> ");
-    const { id: callId } = await client.put({ kind: "llm_call", body: { model, messages, tools: TOOL_SCHEMAS } });
+    // The call references the thread by (conversationId, upToIndex) — no embedded history.
+    const upToIndex = nextIndex - 1;
+    const { id: callId } = await client.put({
+      kind: "llm_call",
+      body: { conversationId, upToIndex, model, tools: TOOL_SCHEMAS },
+      parentIds: [conversationId],
+    });
     const { message: msg, finishReason, streamed } = await streamResult(callId);
-    messages.push(msg);
+    await appendMessage({ role: "assistant", content: msg.content ?? null, tool_calls: msg.tool_calls }, [callId]);
 
     if (msg.tool_calls && msg.tool_calls.length > 0) {
       write("\n");
@@ -182,16 +208,15 @@ async function turn(): Promise<void> {
           args = JSON.parse(tc.function.arguments || "{}");
         } catch { /* leave empty */ }
         write(`  · ${tc.function.name}(${trunc(JSON.stringify(args), 60)}) `);
-        const { id: toolCallId } = await client.put({ kind: "tool_call", body: { tool: tc.function.name, args } });
+        const { id: toolCallId } = await client.put({ kind: "tool_call", body: { tool: tc.function.name, args }, parentIds: [conversationId] });
         const result = await pollResult(toolCallId);
         write(`-> ${trunc(JSON.stringify(result.output), 80)}\n`);
-        messages.push({
-          role: "tool",
-          tool_call_id: tc.id,
-          content: JSON.stringify(result.ok ? result.output : { error: result.output }),
-        });
+        await appendMessage(
+          { role: "tool", tool_call_id: tc.id, content: JSON.stringify(result.ok ? result.output : { error: result.output }) },
+          [toolCallId],
+        );
       }
-      continue; // feed tool results back to the model
+      continue; // the model reads the tool results from the thread on the next call
     }
 
     // Final answer. If nothing streamed (an inference error, or a non-streamed reply),

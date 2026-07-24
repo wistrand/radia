@@ -7,9 +7,12 @@ the integrity and confidentiality architectures. Origin: outline §9.
 identity), **lineage** query, and `body_sha256` are built — event append lives in each
 adapter (`appendEvent`), lineage in `src/core/space.ts` (`getLineage`), read via
 `GET /v0/events` and `GET /v0/records/{id}/lineage`; watches consume the log
-(`src/core/notifier.ts`). **Not implemented:** the hash-chained/anchored tamper-evident
-log (§9.1, M1–M2), envelope encryption / crypto-shredding (§9.2, M2), repeated-pattern
-livelock detection (M3), re-execution tooling (M3), and orphan/starvation diagnostics (M1).
+(`src/core/notifier.ts`). The web console surfaces these: a live event **Feed**, and a
+**relationship graph** (`Space.getGraph` over `childrenOf`, `GET /v0/records/{id}/graph`)
+that renders the `parent_ids` DAG around a record. **Not implemented:** the
+hash-chained/anchored tamper-evident log (§9.1, M1–M2), envelope encryption /
+crypto-shredding (§9.2, M2), repeated-pattern livelock detection (M3), re-execution tooling
+(M3), and orphan/starvation diagnostics (M1).
 
 ## Contents
 - Invariants

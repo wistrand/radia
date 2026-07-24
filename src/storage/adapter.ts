@@ -268,11 +268,20 @@ export interface StorageAdapter {
   /** A single record by id (lineage walk, inspector). */
   getRecord(recordId: Ulid): Promise<RadiaRecord | null>;
 
+  /** Records whose parent_ids include this id — the reverse of lineage (relationship graph). */
+  childrenOf(recordId: Ulid): Promise<RadiaRecord[]>;
+
   /** Append-only event log, in seq order, after `afterSeq` (0 = from the start). (Phase 5) */
   getEvents(afterSeq: number, limit: number): Promise<SpaceEvent[]>;
 
   /** The highest event seq so far (0 if none) — a watch's starting cursor. (M1) */
   latestEventSeq(): Promise<number>;
+
+  /** Persist a kind declaration (upsert). `defJson` is an opaque serialized KindDef. */
+  putKind(kind: string, defJson: string): Promise<void>;
+
+  /** All persisted kind declarations as serialized JSON strings (loaded into the registry at startup). */
+  loadKinds(): Promise<string[]>;
 }
 
 /** Marker for port methods a phase has not implemented yet. */

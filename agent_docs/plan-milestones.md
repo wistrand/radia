@@ -20,9 +20,13 @@ SDK. M2/M3 are unbuilt.
 
 ### M0 — semantic kernel prototype, embedded-first — DONE (except MCP adapter + Python SDK)
 
-**Status:** Phases 0–6 built and verified (86 conformance tests on both adapters); web
-console, agent examples, and a CLI LLM chatbot ship too. Remaining M0 items: the bundled
-**MCP adapter** and the **Python SDK** (Phase 7). Full per-phase record in
+**Status:** Phases 0–6 built and verified (88 conformance tests on both adapters); the web
+console (Feed, records browser, kinds, query, worker, and a relationship-**graph** view),
+runnable agent examples, and a CLI LLM chatbot ship too. Enhancements layered on since the
+phases: M1 watches (below), optional on-disk persistence (`--db`, records + envelopes +
+events + idempotency + kind declarations), the chatbot's conversation-as-record-thread
+model, and dev diagnostics (`GET /v0/records/{id}` and `/graph`). Remaining M0 items: the
+bundled **MCP adapter** and the **Python SDK** (Phase 7). Full per-phase record in
 [plan-m0-implementation.md](plan-m0-implementation.md).
 
 Scope note: 2–3 careful weeks for a focused prototype (embedded storage, limited
@@ -56,7 +60,7 @@ two-terminal demo works.
 - [ ] single-node deployment mode with admin-provisioned auth
 - [ ] read_one + keyset query
 - [ ] long-polls
-- [ ] schema version registry
+- [~] schema version registry — kind *declarations* now persist (`kinds` table, reloaded at startup); schema *versioning* + migration still to do
 - [ ] kind- and template-scoped grants
 - [ ] resource limits enforced
 - [ ] hash-chained event log

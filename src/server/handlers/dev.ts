@@ -29,3 +29,17 @@ export async function handleLineage(space: Space, recordId: string): Promise<Res
   if (!lineage.length) return problem(404, "not_found", `no record ${recordId}`);
   return Response.json({ lineage });
 }
+
+export async function handleGetRecord(space: Space, recordId: string): Promise<Response> {
+  const rec = await space.getRecord(recordId);
+  if (!rec) return problem(404, "not_found", `no record ${recordId}`);
+  return Response.json(rec);
+}
+
+export async function handleGraph(space: Space, recordId: string, url: URL): Promise<Response> {
+  const excludeParam = url.searchParams.get("exclude");
+  const excludeKinds = new Set((excludeParam ?? "").split(",").map((s) => s.trim()).filter(Boolean));
+  const graph = await space.getGraph(recordId, { excludeKinds });
+  if (!graph.nodes.length) return problem(404, "not_found", `no record ${recordId}`);
+  return Response.json(graph);
+}

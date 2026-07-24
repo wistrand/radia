@@ -55,10 +55,19 @@ its lineage.
 
 ## CLI chatbot (`chat/`) — a real LLM agent, full symmetry
 
-A CLI chatbot where **both thinking and acting are Radia records**. The chatbot makes no
-external calls — it only reads and writes records. LLM inference (`llm_call → llm_result`,
-streamed as `llm_chunk`) and tools (`tool_call → tool_result`) are both served by
-content-routed workers.
+A CLI chatbot where **the whole conversation lives on the blackboard**. The chatbot makes
+no external calls — it only reads and writes records. LLM inference (`llm_call →
+llm_result`, streamed as `llm_chunk`) and tools (`tool_call → tool_result`) are both served
+by content-routed workers.
+
+The conversation is an **append-only thread of `message` records** anchored to a
+`conversation` record — not a client-held array. The chatbot appends messages (system /
+user / assistant / tool); an `llm_call` references the thread by `{conversationId,
+upToIndex}` and the **inference-worker reconstructs the context by querying the thread**
+(`{kind:message, match:{conversationId}, orderBy:index}`). Consequences: history is stored
+once (linear, not quadratic — no re-embedding), the whole conversation is reconstructible
+from the space (`query` the thread), and every message is a record you can watch in the
+Feed. This is the blackboard shared-memory pattern, not just content-routed dispatch.
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-...          # https://openrouter.ai/keys
@@ -77,14 +86,19 @@ Why subprocesses: permission isolation only holds across processes.
   local space and cannot read secrets, so reading a file can't lead to exfiltrating it.
   Path canonicalization (realpath + allowlist, in `tools.ts`) is defense-in-depth on top.
 
-Tools: `read_file`, `list_files`, `search_files` (sandboxed to `RADIA_CHAT_DIRS`, default
-`examples/chat/sandbox`), plus `time` and `calc`. Config: `OPENROUTER_API_KEY`,
+Tools: `read_file`, `list_files`, `search_files`, `stat` (sandboxed to `RADIA_CHAT_DIRS`,
+default `examples/chat/sandbox`; `list_files`/`read_file`/`stat` return `size` + `modified`
+so size/date questions get ground truth, not guesses), plus `time` and `calc`. Config:
+`OPENROUTER_API_KEY`,
 `RADIA_CHAT_MODEL` (default `openai/gpt-4o-mini`), `RADIA_CHAT_DIRS`, `RADIA_URL`.
 
-Honest edges (documented, not hidden): streaming is coarse chunk-record polling (smooth
-once M1 watches land); a crashed inference retries and can double-spend (at-least-once —
-the gateway is the real fix); file contents become records and flow to the model (taint,
-M3). Not a CI test (non-deterministic); `calc` and the sandbox path checks are unit-testable.
+Honest edges (documented, not hidden): a crashed inference retries and can double-spend
+(at-least-once — the gateway is the real fix); file contents become records and flow to the
+model (taint, M3). The thread model makes Radia storage linear, but re-sending history to
+the provider each call is inherent to stateless chat APIs (prompt caching mitigates it,
+provider-side), and a large single message (e.g. a 64 KB file read) is still one big record
+until **artifacts** (§2.4, M1) let it be stored once and referenced. Not a CI test
+(non-deterministic); `calc` and the sandbox path checks are unit-testable.
 
 ## Files
 
@@ -99,8 +113,9 @@ M3). Not a CI test (non-deterministic); `calc` and the sandbox path checks are u
 | `aggregator.ts` | reads `result`s, emits a `summary` when a job is complete |
 | `coordinator.ts` | seeds a job + a standalone task, reads outcomes |
 | `demo.ts` | orchestrates all of the above in one process (`deno task demo`) |
-| `chat/chat.ts` | CLI chatbot (pure record I/O); spawns scoped workers, runs the REPL |
-| `chat/inference.ts` | inference-worker: `llm_call` → OpenRouter (stream) → `llm_chunk` + `llm_result` |
+| `chat/chat.ts` | CLI chatbot (pure record I/O); appends the `message` thread, spawns scoped workers, runs the REPL |
+| `chat/kinds.ts` | registers `conversation`/`message`/`llm_*`/`tool_*` kinds |
+| `chat/inference.ts` | inference-worker: reconstructs the thread from `message` records → OpenRouter (stream) → `llm_chunk` + `llm_result` |
 | `chat/toolworker.ts` | tool-worker: `tool_call` → sandboxed tool → `tool_result` (scoped perms) |
 | `chat/tools.ts` | tool impls + JSON schemas + sandbox (realpath allowlist, `calc`) |
 | `chat/openrouter.ts` | streaming OpenAI-compatible client (sole API-key holder's dep) |

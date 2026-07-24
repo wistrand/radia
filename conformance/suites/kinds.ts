@@ -57,6 +57,29 @@ export const kindSuites: Suite[] = [
     },
   },
   {
+    name: "kind declarations persist and reload (loadKinds round-trip)",
+    run: async (adapter) => {
+      const def = { kind: "task", indexedPaths: [{ path: "tag", type: "keyword" as const }] };
+      const space = new Space(adapter);
+      space.registerKind(def);
+      await space.persistKind(def);
+
+      // A fresh Space over the same adapter starts with an empty in-memory registry.
+      const reloaded = new Space(adapter);
+      let before: string | undefined;
+      try {
+        await reloaded.readOne({ kind: "task", match: { tag: "x" } });
+      } catch (e) {
+        before = (e as { code?: string }).code;
+      }
+      assertEquals(before, "unknown_kind");
+
+      await reloaded.loadKinds();
+      // now the persisted declaration is back — the predicate query is valid again
+      assertEquals(await reloaded.readOne({ kind: "task", match: { tag: "x" } }), null);
+    },
+  },
+  {
     name: "a predicate on an undeclared path is a registration error",
     run: async (adapter) => {
       const space = new Space(adapter);

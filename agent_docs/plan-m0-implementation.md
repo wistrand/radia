@@ -88,10 +88,20 @@ grant/auth/scheduler shapes that aren't validated until M1–M3.
 
 ## Current state
 
-Phases 0–6 are **DONE** and verified (86 conformance tests on both adapters), plus M1
-watches and the dev console + examples. Remaining: Phase 7 (MCP adapter, Python SDK,
-`npx`/`pipx` packaging). Per-phase records with verify results are in the Phases section
-below.
+Phases 0–6 are **DONE** and verified (88 conformance tests on both adapters), plus M1
+watches, the dev console + examples, and several enhancements (see below). Remaining:
+Phase 7 (MCP adapter, Python SDK, `npx`/`pipx` packaging). Per-phase records with verify
+results are in the Phases section below.
+
+**Enhancements built on top of the phases** (not in the original M0 checklist):
+- On-disk persistence: `deno task dev --db <path>` (SQLite file / PGlite dir); records,
+  envelopes, events, idempotency, and kind declarations (`kinds` table + `Space.loadKinds`)
+  all reload on restart.
+- Relationship **graph** diagnostic: `childrenOf` (reverse of lineage) + `Space.getGraph`,
+  `GET /v0/records/{id}/graph` and `GET /v0/records/{id}`, and a Graph view in the console
+  (layered SVG, wide rows wrap, optional live refresh).
+- The chatbot's conversation is an append-only `message` record thread (blackboard), not a
+  client-held array; the inference-worker reconstructs context from the space.
 
 ## Proposed layout
 
@@ -178,6 +188,7 @@ Panels (each maps to existing endpoints):
 |-------|-------------|-------|
 | Space overview — backend, DB clock, counts by kind/state | `GET /v0/health` (+ counts) | Phase 1 |
 | Records browser — filter by kind, view body + runtimeMeta + envelope state, follow `parent_ids` | `read_one` / `query` | Phase 1 (richer at M1 query) |
+| Graph — the `parent_ids` relationship DAG around a record (conversation/job fan-out) as a layered SVG; wide generations wrap to rows (bounded width), optional live auto-refresh, hide-chunks toggle | `GET /v0/records/{id}/graph` (+ `childrenOf`) | built |
 | Kinds — view + register indexed/sortable paths | `POST /v0/kinds` | Phase 2 |
 | Put a record — kind + JSON body form | `POST /v0/records` | Phase 1 |
 | Query playground — template (match + order_by) with friendly validation errors | `read_one` | Phase 2 |
