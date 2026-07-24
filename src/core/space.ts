@@ -5,6 +5,7 @@
 import type {
   AckResult,
   CompiledMatch,
+  DelegationContext,
   Envelope,
   IdempotencyKey,
   KindStateCount,
@@ -25,6 +26,8 @@ import { addSeconds } from "./time.ts";
 import { buildRecord, type PutRequest } from "./record.ts";
 import { compileTemplate, matchesRecord, type Template } from "./matching.ts";
 import {
+  AGENT_DEFINITION,
+  AGENT_RUN,
   GRANT,
   type GrantDef,
   type GrantOp,
@@ -37,6 +40,7 @@ import {
   validateKindDef,
   WRITE_PROTECTED_KINDS,
 } from "./kinds.ts";
+import { CredentialStore, mintCredential, type ResolvedToken } from "./auth.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
 import { Notifier } from "./notifier.ts";
@@ -51,6 +55,8 @@ export interface SpaceContext {
   maxCumulativeSeconds: number;
   /** The one supervisor agent that, like `human:*`, may write grants/signal and reach `/ops/*`. */
   supervisor: string;
+  /** How long a minted run token stays valid (short-lived; the run refreshes by re-minting). */
+  runTokenSeconds: number;
 }
 
 const DEFAULT_CONTEXT: SpaceContext = {
@@ -62,6 +68,7 @@ const DEFAULT_CONTEXT: SpaceContext = {
   maxAttempts: 5,
   maxCumulativeSeconds: 300,
   supervisor: "agent:supervisor",
+  runTokenSeconds: 900, // 15 min; a live run re-mints before expiry
 };
 
 /** How a caller selects work to take. */
@@ -71,6 +78,8 @@ export type TakeInput =
 
 export interface TakeOptions {
   leaseSeconds?: number;
+  /** Sensitive consumer: skip tainted candidates (taint barrier). */
+  requireUntainted?: boolean;
 }
 
 export interface Watch {
@@ -102,6 +111,7 @@ function labelFor(rec: RadiaRecord): string {
 
 export class Space {
   private readonly kinds = new KindRegistry();
+  private readonly creds = new CredentialStore();
   private readonly ctx: SpaceContext;
   private readonly notifier = new Notifier();
   private readonly watches = new Map<string, Watch>();
@@ -175,34 +185,177 @@ export class Space {
     return body as GrantDef;
   }
 
-  // ---- authorization (M1 slice; the bootstrap chain + tokens + taint are deferred) ----
+  // ---- authorization + the bootstrap chain (M1 slice; taint + delegation still deferred) ----
 
-  /** A privileged principal (`human:*` or the one supervisor agent) has operator access: it
-   *  may reach `/ops/*`, write grants/signal, and perform any coordination op without a grant. */
+  /** The subject grants are checked against: a `run:*` principal inherits its agent definition's
+   *  grants (grants flow down the chain), so it authorizes as `agent:<name>`. Everything else
+   *  authorizes as itself. */
+  private grantSubject(principal: string): string {
+    if (principal.startsWith("run:")) return this.creds.agentForRun(principal) ?? principal;
+    return principal;
+  }
+
+  /** A privileged principal has operator access: `/ops/*`, grant/signal writes, and any op
+   *  without a grant. That is `human:*`, the one supervisor agent (reached directly or via a run
+   *  of it), and the space's OWN configured runtime identity (`ctx.principal`/`ctx.runId`) — the
+   *  trusted in-process/operator plane that unauthenticated dev requests resolve to. */
   isPrivileged(principal: string): boolean {
-    return principal.startsWith("human:") || principal === this.ctx.supervisor;
+    const subject = this.grantSubject(principal);
+    return subject.startsWith("human:") || subject === this.ctx.supervisor ||
+      subject === this.ctx.runId || subject === this.ctx.principal;
   }
 
   /**
    * Authorize `principal` to run coordination `op` on records of `kind`. Throws
-   * RadiaError("forbidden") if denied. Privileged principals pass. Writing a reserved control
-   * kind (grant/signal) requires privilege (grants are assigned, never self-declared). Any
-   * other principal needs a matching **grant record** (kind-scoped, op-scoped) — grants are
-   * discovered through the substrate (a query), not a config table.
+   * RadiaError("forbidden") if denied. Writing a reserved control kind (grant/signal/agent_*)
+   * requires privilege (assigned, never self-declared). Any other principal needs a matching
+   * **grant record** (kind-scoped, op-scoped) — a run inherits its agent definition's grants.
+   *
+   * Returns the **template constraint** for template-scoped grants: `null` when unrestricted
+   * (privileged, or at least one matching grant has no template), or the list of grant templates
+   * (their union) that the request must additionally match — callers AND it in via `combineMatch`
+   * (the effective query is `grant ∧ request`). `put` ignores the constraint (write-side template
+   * scoping is not enforced yet).
    */
-  async authorize(principal: string, op: GrantOp, kind: string): Promise<void> {
-    if (this.isPrivileged(principal)) return;
+  async authorize(principal: string, op: GrantOp, kind: string): Promise<Record<string, unknown>[] | null> {
+    if (this.isPrivileged(principal)) return null;
     if ((op === "put" || op === "take") && WRITE_PROTECTED_KINDS.has(kind)) {
       throw new RadiaError("forbidden", `writing '${kind}' records requires a human or supervisor principal`);
     }
-    // Grants are records: query the ones for this (principal, kind) and check the op.
-    const grants = await this.query({ kind: GRANT, match: { principal, kind } }, 100);
-    const granted = grants.some((g) => {
+    const subject = this.grantSubject(principal);
+    // Grants are records: query the ones for this (subject, kind) and check the op.
+    const grants = await this.query({ kind: GRANT, match: { principal: subject, kind } }, 100);
+    const applicable = grants.filter((g) => {
       const ops = (g.body as Partial<GrantDef>)?.operations;
       return Array.isArray(ops) && ops.includes(op);
     });
-    if (!granted) {
+    if (applicable.length === 0) {
       throw new RadiaError("forbidden", `principal '${principal}' has no '${op}' grant for kind '${kind}'`);
+    }
+    const templates: Record<string, unknown>[] = [];
+    for (const g of applicable) {
+      const t = (g.body as GrantDef).template;
+      if (!t || Object.keys(t).length === 0) return null; // an unrestricted grant widens to the whole kind
+      templates.push(t);
+    }
+    return templates; // constrained: request must additionally match one of these
+  }
+
+  /**
+   * Derive the `delegation_context` for work emitted under a lease owned by `owner`. The authority
+   * comes from the CLAIMED LEASE — `owner` (the record's authoritative `lease_owner`) → its agent
+   * (`grantSubject`) — extending the leased record's own chain. INVARIANT: never derived from
+   * `parent_ids` (data parents grant nothing). Returns undefined for operator/root-owned leases
+   * (privileged): such work carries full authority and no delegation record. The chain is an
+   * audit/authority record; full chain-intersection enforcement composes with taint (M3).
+   */
+  private async deriveDelegation(owner: string, leasedRecordId: string): Promise<DelegationContext | undefined> {
+    if (this.isPrivileged(owner)) return undefined; // root/operator work is not delegated
+    const actor = this.grantSubject(owner); // the agent behind the run — grants live here
+    const parent = await this.storage.getRecord(leasedRecordId);
+    const parentChain = parent?.runtimeMeta.delegationContext?.chain ?? [];
+    return { chain: [...parentChain, actor], origin: leasedRecordId };
+  }
+
+  /** Server-computed taint for a new record: `true` if the client raised it (source attestation)
+   *  or ANY data parent is tainted. Taint propagates along data lineage only; clearing needs a
+   *  privileged declassify (`Space.declassify`). Never lowered by a client. */
+  private async computeTaint(parentIds: string[], clientRaise?: boolean): Promise<boolean> {
+    if (clientRaise === true) return true;
+    for (const pid of parentIds) {
+      const p = await this.storage.getRecord(pid);
+      if (p?.runtimeMeta.taint) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Create an agent definition (operator action): store an `agent_definition` record holding the
+   * sha256 of a freshly minted **definition token**, optionally assign its grants, and return the
+   * token once. The definition token mints runs (`mintRun`); it is never stored in plaintext.
+   */
+  async createAgentDefinition(agent: string, grants: GrantDef[] = []): Promise<{ agent: string; definitionToken: string }> {
+    if (!agent.startsWith("agent:")) {
+      throw new RadiaError("invalid_principal", "an agent definition principal must start with 'agent:'");
+    }
+    const { token, hash } = await mintCredential();
+    await this.putRaw({ kind: AGENT_DEFINITION, body: { agent, tokenHash: hash } });
+    for (const g of grants) {
+      validateGrantDef(g);
+      await this.putRaw({ kind: GRANT, body: g });
+    }
+    this.creds.addDefinition(hash, agent);
+    this.notifier.notify();
+    return { agent, definitionToken: token };
+  }
+
+  /** Mint a short-lived run token for the agent behind `definitionToken`. Records an `agent_run`
+   *  and returns the run principal + token (once). Fails if the token is not a definition token. */
+  async mintRun(definitionToken: string): Promise<{ run: string; agent: string; runToken: string; expiresAt: string }> {
+    const now = await this.storage.now();
+    const resolved = await this.creds.resolve(definitionToken, now);
+    if (!resolved.ok || resolved.kind !== "def") {
+      throw new RadiaError("invalid_credential", "a valid agent-definition token is required to mint a run");
+    }
+    const agent = resolved.agent;
+    const run = `run:${newUlid()}`;
+    const expiresAt = addSeconds(now, this.ctx.runTokenSeconds);
+    const { token, hash } = await mintCredential();
+    await this.putRaw({ kind: AGENT_RUN, body: { run, agent, tokenHash: hash, status: "active", expiresAt } });
+    this.creds.addRun(hash, run, agent, expiresAt);
+    this.notifier.notify();
+    return { run, agent, runToken: token, expiresAt };
+  }
+
+  /**
+   * Stop a run: emit a successor `agent_run` record (status stopped) and invalidate its token so
+   * no new operations resolve. Default (graceful) revocation leaves held leases to expire on
+   * their own clocks. `quarantine: true` is emergency revocation — it additionally force-releases
+   * the run's in-flight leases now (epoch-bumped, so a late ack/renew fences out as `lease_lost`).
+   */
+  async stopRun(run: string, opts: { quarantine?: boolean } = {}): Promise<{ applied: boolean; quarantined: number }> {
+    const agent = this.creds.agentForRun(run);
+    if (agent === undefined) return { applied: false, quarantined: 0 };
+    let quarantined = 0;
+    if (opts.quarantine) {
+      const now = await this.storage.now();
+      quarantined = await this.storage.quarantineLeasesOf(run, now);
+    }
+    await this.putRaw({ kind: AGENT_RUN, body: { run, agent, status: "stopped", quarantined: opts.quarantine ?? false } });
+    this.creds.stopRun(run);
+    this.notifier.notify();
+    return { applied: true, quarantined };
+  }
+
+  /** Resolve a presented bearer token to a principal (DB clock for expiry). */
+  resolveToken(token: string): Promise<ResolvedToken> {
+    return this.storage.now().then((now) => this.creds.resolve(token, now));
+  }
+
+  /** The agent definition a run instantiates, or undefined (for ownership checks). */
+  agentOfRun(run: string): string | undefined {
+    return this.creds.agentForRun(run);
+  }
+
+  /** Rebuild the credential index from agent_definition/agent_run records (call once at startup,
+   *  after loadKinds). Mirrors loadKinds: records are the source of truth, this index is a cache. */
+  async loadCredentials(): Promise<void> {
+    this.creds.clear();
+    for (const rec of await this.storage.query({ kind: AGENT_DEFINITION }, 5000)) {
+      const b = rec.body as { agent?: string; tokenHash?: string } | null;
+      if (b?.agent && b.tokenHash) this.creds.addDefinition(b.tokenHash, b.agent);
+    }
+    // agent_run records in id order: a later (stop) successor overrides the earlier (mint) one.
+    const runs = await this.storage.query({ kind: AGENT_RUN }, 5000);
+    runs.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    for (const rec of runs) {
+      const b = rec.body as { run?: string; agent?: string; tokenHash?: string; status?: string; expiresAt?: string } | null;
+      if (!b?.run || !b.agent) continue;
+      if (b.status === "stopped") {
+        this.creds.stopRun(b.run);
+      } else if (b.tokenHash && b.expiresAt) {
+        this.creds.addRun(b.tokenHash, b.run, b.agent, b.expiresAt);
+      }
     }
   }
 
@@ -228,12 +381,20 @@ export class Space {
     return this.putRaw(req, idempotencyKey);
   }
 
-  private async putRaw(req: PutRequest, idempotencyKey?: string): Promise<{ id: string }> {
+  private async putRaw(
+    req: PutRequest,
+    idempotencyKey?: string,
+    opts: { taint?: boolean } = {},
+  ): Promise<{ id: string }> {
     const now = await this.storage.now(); // INVARIANT: timestamps come from the DB clock
+    // Taint is server-computed data lineage: forced by opts (declassify), else client-raise OR
+    // any data parent tainted. A client can only RAISE taint; clearing needs a privileged declassify.
+    const taint = opts.taint !== undefined ? opts.taint : await this.computeTaint(req.parentIds ?? [], req.taint);
     const { record, bodyJson } = await buildRecord(req, {
       principal: this.ctx.principal,
       schemaVersion: this.ctx.schemaVersion,
       now,
+      taint,
     });
     const idempotency = await this.idem("put", idempotencyKey, {
       kind: req.kind,
@@ -275,14 +436,17 @@ export class Space {
     return this.kinds.list();
   }
 
-  /** Claim work under a fenced lease. Returns the record + lease, or null if none is claimable. */
-  take(sel: TakeInput, opts: TakeOptions = {}): Promise<TakeResult | null> {
+  /** Claim work under a fenced lease. Returns the record + lease, or null if none is claimable.
+   *  The lease is owned by the claiming `principal` (a `run:*`, so a stopped run's leases can be
+   *  quarantined); defaults to the space's run id for in-process/operator callers. */
+  take(sel: TakeInput, opts: TakeOptions = {}, principal?: string): Promise<TakeResult | null> {
     const spec: LeaseSpec = {
       leaseId: newUlid(),
-      ownerRun: this.ctx.runId,
+      ownerRun: principal ?? this.ctx.runId,
       leaseSeconds: opts.leaseSeconds ?? this.ctx.defaultLeaseSeconds,
       maxCumulativeSeconds: this.ctx.maxCumulativeSeconds,
       maxAttempts: this.ctx.maxAttempts,
+      requireUntainted: opts.requireUntainted,
     };
     const selector: TakeSelector = "recordId" in sel
       ? { recordId: sel.recordId, template: sel.template ? this.compile(sel.template) : undefined }
@@ -307,10 +471,23 @@ export class Space {
         lease.recordId,
         ...(result.parentIds ?? []).filter((p) => p !== lease.recordId),
       ];
+      // The authoritative lease owner (from the envelope, not the client-presented lease).
+      const owner = (await this.storage.getEnvelope(lease.recordId))?.leaseOwner;
+      // Emitting a result IS a put: authorize the ACTING principal to put this kind (this closes
+      // the gap where ack-emitted records bypassed put-authorization). Pipeline-friendly — each
+      // agent needs only its own grant. Throws forbidden before anything is consumed.
+      if (owner) await this.authorize(owner, "put", result.kind);
+      // Derive the audit authority chain from the lease (undefined for operator/root owners).
+      const delegationContext = owner ? await this.deriveDelegation(owner, lease.recordId) : undefined;
+      // Taint propagates along data lineage: the leased record is a parent, so a tainted task
+      // yields a tainted result (client may also raise it; never lower it).
+      const taint = await this.computeTaint(parentIds, result.taint);
       const { record, bodyJson } = await buildRecord({ ...result, parentIds }, {
         principal: this.ctx.principal,
         schemaVersion: this.ctx.schemaVersion,
         now,
+        delegationContext,
+        taint,
       });
       resultInput = {
         record,
@@ -551,6 +728,18 @@ export class Space {
     const applied = await this.storage.adminTransition(recordId, ["dead_letter"] as RecordState[], "available", { now });
     if (applied) this.notifier.notify();
     return applied;
+  }
+
+  /**
+   * Privileged declassify: the only way to clear taint. Records are immutable, so this emits a
+   * **clean successor** — same kind + body, taint forced `false` (overriding propagation), with the
+   * tainted original as its data parent (audit trail). Downstream work should consume the successor.
+   * Grant-gated to operators via the `/ops/*` boundary. Returns the successor id, or null if absent.
+   */
+  async declassify(recordId: string): Promise<{ id: string } | null> {
+    const rec = await this.storage.getRecord(recordId);
+    if (!rec) return null;
+    return await this.putRaw({ kind: rec.kind, body: rec.body, parentIds: [recordId] }, undefined, { taint: false });
   }
 
   private compile(template: Template): CompiledMatch {

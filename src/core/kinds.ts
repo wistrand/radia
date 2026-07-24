@@ -24,8 +24,15 @@ export const GRANT = "grant";
 /** Reserved control kind: operator/supervisor broadcasts (grant-management adjacent). */
 export const SIGNAL = "signal";
 
-/** Reserved kinds only a human/supervisor principal may write (assigned, never self-declared). */
-export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL]);
+/** Reserved kind: an agent definition (body {agent, tokenHash}) — mints runs. */
+export const AGENT_DEFINITION = "agent_definition";
+
+/** Reserved kind: an agent run instance (body {run, agent, tokenHash, status, expiresAt}). */
+export const AGENT_RUN = "agent_run";
+
+/** Reserved kinds only a human/supervisor principal may write directly (assigned, never
+ *  self-declared). Runs/definitions are also written internally by the bootstrap endpoints. */
+export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN]);
 
 /** The coordination operations a grant can authorize. */
 export type GrantOp = "put" | "take" | "query" | "read_one";
@@ -36,6 +43,11 @@ export interface GrantDef {
   principal: string; // the principal the grant is FOR (e.g. agent:summarizer, run:...)
   kind: string; // the concrete record kind it applies to — never "*"
   operations: GrantOp[]; // which coordination verbs on that kind
+  /** Optional template-scope: a match object AND-ed into the principal's read/take on this kind
+   *  (the effective query is `grant ∧ request`). Omitted → the whole kind. Applies to
+   *  query/read_one/take; put ignores it. Its paths must be declared indexed paths of the kind
+   *  (validated when a query compiles, not at grant creation — the kind may not exist yet). */
+  template?: Record<string, unknown>;
 }
 
 /** Validate a grant body. Throws RadiaError. Rejects wildcard kinds (kind-scoped invariant). */
@@ -56,6 +68,9 @@ export function validateGrantDef(def: GrantDef): void {
     if (!VALID_OPS.has(op)) {
       throw new RadiaError("invalid_grant", `unknown grant operation '${op}'`);
     }
+  }
+  if (def.template !== undefined && (def.template === null || typeof def.template !== "object" || Array.isArray(def.template))) {
+    throw new RadiaError("invalid_grant", "grant.template must be a match object");
   }
 }
 
@@ -97,6 +112,11 @@ export const META_RESERVED: KindDef[] = [
     indexedPaths: [{ path: "principal", type: "keyword" }, { path: "kind", type: "keyword" }],
   },
   { kind: SIGNAL, indexedPaths: [{ path: "topic", type: "keyword" }] },
+  { kind: AGENT_DEFINITION, indexedPaths: [{ path: "agent", type: "keyword" }] },
+  {
+    kind: AGENT_RUN,
+    indexedPaths: [{ path: "run", type: "keyword" }, { path: "agent", type: "keyword" }],
+  },
 ];
 
 /** A deterministic idempotency key for a declaration, stable across process restarts and

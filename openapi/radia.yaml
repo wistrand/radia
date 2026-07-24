@@ -13,17 +13,19 @@ info:
     `x-stability`. SemVer 0.x means the surface may still move; the additive-only rule is
     what makes the stable subset dependable.
 
-    Authorization (partial M1): kind-scoped grants are reserved `grant` records (assigned by a
-    human/supervisor; discovered by query). The caller principal is resolved from the request —
-    default operator `human:local`, or a dev-only `X-Radia-Principal` header to assume an agent/
-    run principal (insecure stand-in; real run tokens deferred). `put`/`take`/`query`/`read_one`
-    are grant-checked; `/v0/ops/*` and writing `grant`/`signal` records require an operator
-    (`403 forbidden` otherwise).
+    Authorization (M1): kind-scoped grants are reserved `grant` records (assigned by a human/
+    supervisor; discovered by query). Requests authenticate with `Authorization: Bearer
+    <run-token>` minted through the bootstrap chain (agent-definitions → agent-runs → stop); a
+    run:* principal inherits its agent definition's grants. Absent a credential the caller
+    defaults to the operator `human:local`; a dev-only `X-Radia-Principal` header may assume a
+    principal (insecure stand-in). `put`/`take`/`query`/`read_one` are grant-checked; `/v0/ops/*`
+    and writing `grant`/`signal`/`agent_*` records require an operator (`403`); an invalid/
+    expired/stopped bearer token is `401`.
 
-    Implemented through M0 (Phases 0-6) plus M1 watches + kind-scoped grants. Not implemented
-    yet: artifacts, run-tokens/taint/delegation/template-scoped grants, scheduler admission,
-    request/bid/award, keyset query cursor, event-log retention/GC (so 410 cursor_expired is
-    dormant).
+    Implemented through M0 (Phases 0-6) plus M1 watches + grants + the auth bootstrap chain / run
+    tokens. Not implemented yet: artifacts, taint/delegation/template-scoped grants, OIDC,
+    scheduler admission, request/bid/award, keyset query cursor, event-log retention/GC (so 410
+    cursor_expired is dormant).
 
 servers:
   - url: /v0
@@ -151,6 +153,7 @@ paths:
                 template: { $ref: "#/components/schemas/Template" }
                 recordId: { type: string }
                 leaseSeconds: { type: number }
+                requireUntainted: { type: boolean, description: "sensitive consumer: skip tainted candidates (taint barrier)" }
       responses:
         "200":
           description: "{record, lease} or null"
@@ -307,6 +310,90 @@ paths:
         "404": { $ref: "#/components/responses/Problem" }
         "410": { $ref: "#/components/responses/Problem" }
 
+  # --- bootstrap chain (auth): definition -> run token -> stop. EXPERIMENTAL --------------
+  # Requests authenticate with `Authorization: Bearer <run-token>` (a run:* principal that
+  # inherits its agent definition's grants). Absent any credential, the caller defaults to the
+  # operator `human:local`; a dev-only `X-Radia-Principal` header may assume a principal. See
+  # design-auth.md. Definitions/runs are records (agent_definition/agent_run); only the token
+  # HASH is stored — the plaintext token is returned once and never persisted.
+
+  /agent-definitions:
+    post:
+      operationId: createAgentDefinition
+      summary: Create an agent definition and assign its grants (operator only)
+      x-stability: experimental
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent]
+              properties:
+                agent: { type: string, description: "the agent:* principal" }
+                grants: { type: array, items: { $ref: "#/components/schemas/GrantDef" } }
+      responses:
+        "201":
+          description: created (definitionToken shown once)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent: { type: string }
+                  definitionToken: { type: string }
+        "403": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+
+  /agent-runs:
+    post:
+      operationId: createAgentRun
+      summary: Mint a short-lived run token from a definition token
+      description: "Present the definition token as `Authorization: Bearer`. Returns a run:* principal + run token (once)."
+      x-stability: experimental
+      responses:
+        "201":
+          description: run minted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run: { type: string }
+                  agent: { type: string }
+                  runToken: { type: string }
+                  expiresAt: { type: string }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /agent-runs/{runId}/stop:
+    post:
+      operationId: stopAgentRun
+      summary: Stop a run (operator or the run's own definition/run token)
+      description: >
+        The run's token stops resolving. Graceful by default (held leases expire on their own
+        clocks); `{quarantine: true}` is emergency revocation — the run's in-flight leases are
+        force-released now (epoch-bumped), so a late ack/renew fences out as lease_lost.
+      x-stability: experimental
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { quarantine: { type: boolean, default: false } }
+      responses:
+        "200":
+          description: stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { run: { type: string }, status: { type: string }, applied: { type: boolean }, quarantined: { type: integer, description: "leases force-released (0 unless quarantine)" } }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+
   # --- observability/control plane (/ops/*): EXPERIMENTAL --------------------------------
   # /v0/ops/* is the observe-and-operate plane (stats, events, diagnostics, record + envelope
   # introspection, remediation); grant-gated to human/supervisor principals with real auth.
@@ -393,6 +480,28 @@ paths:
                   action: { type: string }
                   recordId: { type: string }
                   applied: { type: boolean }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  /ops/records/{recordId}/declassify:
+    post:
+      operationId: declassify
+      summary: Privileged declassify — clear taint by emitting a clean successor (operator only)
+      description: >
+        Records are immutable, so declassify emits a NEW record with the same kind + body,
+        `taint:false`, and the tainted original as its data parent (audit trail). The only way to
+        clear taint. Grant-gated to operators via the /ops boundary.
+      x-stability: experimental
+      parameters:
+        - { name: recordId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: "{declassifiedFrom, id} — the clean successor's id"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { declassifiedFrom: { type: string }, id: { type: string } }
+        "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
 
   /ops/stats:
@@ -561,6 +670,7 @@ components:
         parentIds: { type: array, items: { type: string }, description: "data lineage; all must exist at commit" }
         deadlineAt: { type: string }
         retentionUntil: { type: string }
+        taint: { type: boolean, description: "source attestation: true RAISES taint (untrusted data); false/absent is ignored — a client can never clear taint" }
 
     Record:
       description: Immutable content half of a record.
@@ -582,9 +692,15 @@ components:
       type: object
       properties:
         createdBy: { type: string }
-        delegationContext: { type: string }
+        delegationContext:
+          type: object
+          nullable: true
+          description: "authority chain, server-derived from the lease (ack-emitted work); absent for direct/root puts"
+          properties:
+            chain: { type: array, items: { type: string }, description: "ordered grant subjects (agents) along the delegation path" }
+            origin: { type: string, description: "the leased record this was delegated from" }
         parentIds: { type: array, items: { type: string } }
-        taint: { type: boolean }
+        taint: { type: boolean, description: "server-computed data-lineage taint; cleared only by a privileged declassify" }
         schemaVersion: { type: integer }
         createdAt: { type: string }
 
@@ -682,6 +798,23 @@ components:
               path: { type: string }
               type: { type: string, enum: [keyword, integer, timestamp, array] }
         sortablePaths: { type: array, items: { type: string } }
+
+    GrantDef:
+      description: >
+        A kind-scoped authorization grant. This is the BODY of a `grant` record (writable only by
+        an operator — human/supervisor). Kind is never wildcard. Optional `template` narrows
+        read/take to `grant ∧ request` (applies to query/read_one/take; put ignores it).
+        EXPERIMENTAL.
+      x-stability: experimental
+      type: object
+      required: [principal, kind, operations]
+      properties:
+        principal: { type: string, description: "the principal the grant is FOR (agent:* or run:*)" }
+        kind: { type: string, description: "a concrete record kind — never '*'" }
+        operations:
+          type: array
+          items: { type: string, enum: [put, take, query, read_one] }
+        template: { type: object, additionalProperties: true, description: "optional match object; the effective query is grant ∧ request" }
 
     Event:
       description: Append-only event log entry. EXPERIMENTAL shape.

@@ -72,6 +72,17 @@ the one declaration defined in code (`META_KIND_DEF`), which breaks the bootstra
 own records can compile. Because they are ordinary records, kind declarations appear in the
 event log and are watchable.
 
+## Template-scoped grants (grant ∧ request)
+
+An authorization grant may carry a `template` (a match object). The effective query for a
+scoped principal is then `grant ∧ request`, **computed server-side**: `combineMatch`
+(`src/core/matching.ts`) ANDs the request match with the union (`$or`) of the principal's grant
+templates, and the combined match compiles + evaluates through the same oracle. Applies to
+`query`/`read_one`/`take` (an unrestricted grant, or a privileged principal, imposes no
+constraint). Because the constraint nests as `$and[request, $or[templates]]`, a grant template
+must stay simple (a flat equality map) — a `$or`/`$and` *inside* one can exceed the depth-3
+limit and be rejected at compile. See [design-auth.md](design-auth.md).
+
 ## Two matching directions
 
 They need different machinery, and only the first ships early:

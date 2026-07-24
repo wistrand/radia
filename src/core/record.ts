@@ -6,7 +6,7 @@
 // responsible for constructing PutRequest by picking only these fields from the wire
 // JSON, so a client that sends `createdBy` or `runtimeMeta` has them ignored.
 
-import type { RadiaRecord } from "../storage/adapter.ts";
+import type { DelegationContext, RadiaRecord } from "../storage/adapter.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
 
@@ -20,12 +20,19 @@ export interface PutRequest {
   parentIds?: string[];
   deadlineAt?: string;
   retentionUntil?: string;
+  /** Source attestation: a client may RAISE taint (`true`) to mark its output as untrusted data.
+   *  `false`/absent is ignored — the server never lets a client clear taint (only declassify does). */
+  taint?: boolean;
 }
 
 export interface BuildContext {
   principal: string; // server-known caller (auto-provisioned locally in M0)
   schemaVersion: number; // post-validation schema version (registry lands in M1)
   now: string; // DB clock, ISO 8601
+  /** Server-derived authority chain — set only for work emitted under a lease (ack). */
+  delegationContext?: DelegationContext;
+  /** Server-computed taint (client-raise OR any data-parent tainted). Defaults untainted. */
+  taint?: boolean;
 }
 
 export interface BuiltRecord {
@@ -61,9 +68,9 @@ export async function buildRecord(
     runtimeMeta: {
       // ---- all server-assigned, never client-editable ----
       createdBy: ctx.principal,
-      delegationContext: undefined, // derived from a lease; N/A for a direct put
+      delegationContext: ctx.delegationContext, // server-derived from the lease (ack); undefined for a direct put
       parentIds,
-      taint: false, // server-computed; full taint model is M3
+      taint: ctx.taint ?? false, // server-computed: client-raise OR any data-parent tainted; cleared only by declassify
       schemaVersion: ctx.schemaVersion,
       createdAt: ctx.now,
     },

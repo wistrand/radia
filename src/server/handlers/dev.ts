@@ -64,6 +64,13 @@ export async function handleDiagnostics(space: Space): Promise<Response> {
   return Response.json(await space.diagnostics());
 }
 
+/** Privileged declassify (operator-gated via the /ops boundary): emit a clean successor. */
+export async function handleDeclassify(space: Space, recordId: string): Promise<Response> {
+  const out = await space.declassify(recordId);
+  if (!out) return problem(404, "not_found", `no record ${recordId}`);
+  return Response.json({ declassifiedFrom: recordId, id: out.id });
+}
+
 /** Control-plane remediation (bypasses lease fencing; grant-gated with real auth). */
 export async function handleAdmin(space: Space, recordId: string, action: string): Promise<Response> {
   let applied: boolean;

@@ -25,10 +25,12 @@ export function rankClaimable(
   candidates: Candidate[],
   match: CompiledMatch | undefined,
   now: string,
+  requireUntainted = false,
 ): RankedCandidate[] {
   const ranked: RankedCandidate[] = [];
   for (const c of candidates) {
     if (match && !matchesRecord(c.record, match)) continue;
+    if (requireUntainted && c.record.runtimeMeta.taint) continue; // sensitive consumer skips tainted work
     const e = c.env;
     if (e.state === "available" && e.availableAt <= now) {
       ranked.push({ ...c, how: "available" });

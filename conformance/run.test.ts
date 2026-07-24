@@ -14,6 +14,7 @@ import { faultSuites } from "./suites/faults.ts";
 import { watchSuites } from "./suites/watches.ts";
 import { adminSuites } from "./suites/admin.ts";
 import { authSuites } from "./suites/auth.ts";
+import { taintSuites } from "./suites/taint.ts";
 
 conformance(adapters, [
   ...smokeSuites,
@@ -27,4 +28,5 @@ conformance(adapters, [
   ...watchSuites,
   ...adminSuites,
   ...authSuites,
+  ...taintSuites,
 ]);

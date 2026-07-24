@@ -169,7 +169,7 @@ export class SqliteAdapter implements StorageAdapter {
     return this.tx(() => {
       const candidates = this.fetchCandidates(selector);
       const template = "template" in selector ? selector.template : undefined;
-      const ranked = rankClaimable(candidates, template, now);
+      const ranked = rankClaimable(candidates, template, now, spec.requireUntainted);
 
       for (const cand of ranked) {
         const id = cand.record.id;
@@ -389,6 +389,31 @@ export class SqliteAdapter implements StorageAdapter {
         detail: { from: fromStates },
       }, opts.now);
       return true;
+    }));
+  }
+
+  quarantineLeasesOf(ownerRun: string, now: string): Promise<number> {
+    return Promise.resolve(this.tx(() => {
+      const held = this.db
+        .prepare("select record_id, kind from record_runtime where state='leased' and lease_owner=?")
+        .all(ownerRun) as { record_id: string; kind: string }[];
+      if (held.length === 0) return 0;
+      this.db.prepare(
+        `update record_runtime set state='available', available_at=?, attempt=attempt+1,
+           lease_epoch=lease_epoch+1, lease_id=null
+         where state='leased' and lease_owner=?`,
+      ).run(now, ownerRun);
+      for (const r of held) {
+        this.appendEvent({
+          runId: "admin",
+          operation: "quarantine",
+          recordId: r.record_id,
+          kind: r.kind,
+          state: "available",
+          detail: { ownerRun },
+        }, now);
+      }
+      return held.length;
     }));
   }
 

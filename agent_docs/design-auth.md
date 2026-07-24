@@ -3,27 +3,64 @@
 Spec and rationale for principals, grants, delegation, taint, revocation, and budgets.
 Origin: outline §8.
 
-**M1 status (partial — grants + enforcement built):** kind-scoped **grants are records**
+**M1 status (grants + bootstrap chain + run tokens built):** kind-scoped **grants are records**
 (reserved `grant` kind; body `{principal, kind, operations}`, indexed on principal+kind, never
 wildcard — `src/core/kinds.ts`). `Space.authorize(principal, op, kind)` enforces them and
 `Space.isPrivileged` marks operators (`human:*` or the one configured supervisor,
 `SpaceContext.supervisor`, default `agent:supervisor`). Enforcement is wired at the HTTP
 boundary (`src/server/http.ts` + the record/take handlers): coordination `put`/`take`/`query`/
 `read_one` call `authorize`; `/v0/ops/*` requires a privileged principal; writing a reserved
-control kind (`grant`/`signal`) requires privilege — grants are **assigned, never
-self-declared**. The caller principal is resolved from the request: default operator
-`human:local` (so unauthenticated dev/UI/examples stay fully open), with a dev-only
-`X-Radia-Principal` header to assume an agent/run principal for testing (SDK: `new
-RadiaClient(url, principal)`, `client.grant(...)`). Conformance: `conformance/suites/auth.ts`.
+control kind (`grant`/`signal`/`agent_*`) requires privilege — grants are **assigned, never
+self-declared**.
 
-**Deferred to later M1–M3 (this slice does not build):** the real bootstrap chain
-(`POST /agent-definitions` / `/agent-runs`) and short-lived **run tokens** — the
-`X-Radia-Principal` header is an insecure dev stand-in, not auth; **template-scoped** grants
-(the `grant ∧ template` intersection — this slice scopes by kind + op only);
-`delegation_context` derivation; **taint** + declassification (records still get `taint:false`,
-no `delegation_context`); **revocation**/quarantine semantics; and **budget** enforcement. The
-examples also run tool-workers as **OS-permission-scoped subprocesses** (`--allow-read`/net, no
-env) — a real but out-of-band isolation layer, complementary to the grant system.
+The **bootstrap chain is built** (`src/core/auth.ts`, `src/server/handlers/agents.ts`):
+`POST /v0/agent-definitions` (operator) creates an `agent_definition` record, optionally
+assigns its grants, and returns a **definition token** (once); `POST /v0/agent-runs` presents
+that definition token (`Authorization: Bearer`) and mints a short-lived **run token** +
+`agent_run` record; `POST /v0/agent-runs/{id}/stop` stops a run. Requests authenticate with
+`Authorization: Bearer <run-token>` → a `run:*` principal that **inherits its agent
+definition's grants** (`Space.grantSubject` maps `run:` → its `agent:`). Tokens are secrets:
+only their sha256 **hash** is stored (in the record body — a hash is not a secret), and the
+credential index is a cache over `agent_definition`/`agent_run` records, rebuilt by
+`Space.loadCredentials` at startup (the same cache-over-records pattern as kinds). Expiry uses
+the DB clock (`SpaceContext.runTokenSeconds`, default 900s). The dev-only `X-Radia-Principal`
+header still assumes a principal for testing without a token. SDK: `new RadiaClient(url,
+{token})` / `.withToken()`, `client.createAgentDefinition/createRun/stopRun/grant`. Conformance:
+`conformance/suites/auth.ts`.
+
+**Per-run lease ownership + revocation (built):** a lease is owned by the claiming principal
+(`take` threads it into `lease_owner`; a run token → `run:*`). A **stopped** run's token stops
+resolving (`run_stopped` → 401) and an **expired** token stops resolving (`token_expired` →
+401) — no new operations. `stopRun` is graceful by default (held leases expire on their own
+clocks); `stopRun({quarantine:true})` (HTTP: `POST /v0/agent-runs/{id}/stop` with
+`{quarantine:true}`) is **emergency revocation** — `StorageAdapter.quarantineLeasesOf` force-
+releases the run's in-flight leases now (epoch-bumped, so a late `ack`/`renew` fences out as
+`lease_lost`).
+
+**Template-scoped grants (built):** a `grant` may carry a `template` (a match object); a
+principal's read/take is then `grant ∧ request`, computed server-side — the handler ANDs the
+grant template(s) into the request via `combineMatch` (`src/core/matching.ts`). Multiple grants
+union (an unrestricted grant widens back to the whole kind); `Space.authorize` returns the
+constraint (`null` = unrestricted, else the template list). Applies to `query`/`read_one`/
+`take`; `put` ignores the template (write-side template scoping is not enforced yet).
+
+**Delegation (built):** work emitted via `ack` under a managed run's lease carries a
+server-derived `delegation_context` `{chain, origin}` (`Space.deriveDelegation`) — the authority
+chain accumulates the acting agents along the delegation path, from the record's authoritative
+`lease_owner`, **never** from `parent_ids`. Emitting a result is authorized as a `put` for the
+acting agent (`Space.ack` calls `authorize(owner, "put", kind)`), closing the gap where
+ack-emitted records bypassed put-authorization. This is pipeline-friendly: each hop needs only
+its own grant, and the chain records the path (see [design-data-model.md](design-data-model.md)).
+
+**Deferred to later M1–M3:** real OIDC for `human:*` and the `agent-definitions` credential
+(the operator boundary is the local default + the dev header, not federated identity); write-
+side (`put`) template scoping; the stricter **chain-intersection** delegation policy (effective
+permission = intersection of the whole chain's grants — rejected as a hard default because it
+breaks legitimate pipelines; it belongs with taint composition); per-principal **trust
+classification** (auto-tainting untrusted principals' puts — the current taint model is
+propagation + client-raise + declassify); and **budget** enforcement. The examples also run
+tool-workers as **OS-permission-scoped subprocesses** (`--allow-read`/net, no env) — a real but
+out-of-band isolation layer, complementary to grants.
 
 ## Contents
 - Invariants
@@ -66,9 +103,16 @@ flowchart TB
 
 ## Bootstrap — grants assigned, never self-declared
 
-- `POST /agent-definitions` — a privileged control plane assigns grants.
-- `POST /agent-runs` — a definition credential mints a short-lived run token.
-- `POST /agent-runs/{id}/stop`.
+- `POST /v0/agent-definitions` — a privileged (operator) control plane creates a definition
+  and assigns its grants; returns a **definition token** (once). **Built.**
+- `POST /v0/agent-runs` — a definition token mints a short-lived **run token** + `agent_run`
+  record. **Built.**
+- `POST /v0/agent-runs/{id}/stop` — stops a run (operator or the run's own token); the token
+  stops resolving. **Built.**
+
+Definitions and runs **are records** (`agent_definition` / `agent_run`), expressed through the
+substrate like grants and kinds — only the token *hash* is stored, never the plaintext. Source:
+`src/core/auth.ts` (`CredentialStore`, `mintCredential`), `src/server/handlers/agents.ts`.
 
 Manifest capability claims are descriptive, not authorization. On k8s, prefer workload
 identity (SPIFFE / projected SA tokens). The MCP adapter keeps credentials out of the
@@ -85,34 +129,52 @@ assigned by a human/supervisor `put`-ing one, discovered by the authorizer via a
 config table or a bespoke endpoint. Another instance of expressing a feature through the
 substrate (see [CLAUDE.md](../CLAUDE.md) "Design principle"): the same immutability, event-log
 visibility, and watchability every record has apply to authorization state. Wildcard kinds are
-rejected at `put` (`wildcard_grant`); the kind + op scoping is enforced in
-`Space.authorize`. Template-scoped intersection is the deferred next step (kind + op ships
-first).
+rejected at `put` (`wildcard_grant`); kind + op scoping is enforced in `Space.authorize`.
+**Template scoping is built:** a grant's optional `template` is AND-ed into the principal's
+read/take (`grant ∧ request`, `combineMatch`); multiple grants union, an unrestricted grant
+widens to the whole kind. See [design-matching.md](design-matching.md).
 
 ## Delegation
 
 `delegation_context` (see [design-data-model.md](design-data-model.md)) is server-derived
-from the claimed lease. Effective permission on delegated work = intersection of the
-*authorization chain's* grants; data parents contribute nothing. It composes with taint:
-taint is untrusted **data** lineage; delegation is **authority** lineage; sensitive
-consumers may constrain both.
+from the claimed lease. **Built (M1):** on `ack`, `Space.deriveDelegation` reads the leased
+record's authoritative `lease_owner`, maps it to its agent, and extends the leased record's own
+chain — `{chain, origin}` accumulates the authority path (never data parents). Emitting the
+result is authorized as the acting agent's `put` for that kind.
+
+Data parents contribute nothing. The design end state is that *effective permission on delegated
+work = intersection of the authorization chain's grants* — but a hard chain-intersection gate is
+**deferred**: it would block legitimate pipelines (a → b, where b legitimately produces a kind a
+cannot), so M1 enforces the acting agent's own `put` grant and keeps the chain as the authority
+record. Intersection composes with taint (M3): taint is untrusted **data** lineage; delegation is
+**authority** lineage; sensitive consumers may constrain both.
 
 ## Taint — server-computed
 
-Derived from principal trust classification, mandatory parent linkage at `ack`, and
-server-side propagation. A direct `put` from applicable principals defaults tainted
-absent source attestation. Clearing requires a privileged **declassify**.
+**Built (M1):** taint is untrusted **data** lineage, server-computed at commit
+(`Space.computeTaint`, used by put and ack): a record is tainted if a client **raised** it
+(`taint:true` — the source attestation) or **any `parent_ids` data parent is tainted**. It
+propagates through `ack` (the leased record is a data parent, so a tainted task → tainted
+result). A client may only *raise* taint; `taint:false` from a client is ignored — clearing
+requires a privileged **declassify** (`POST /v0/ops/records/{id}/declassify`, operator-gated),
+which emits a **clean successor** (same body, `taint:false`, tainted original as its data
+parent). A sensitive consumer avoids tainted work with `take {requireUntainted}` (a claim-time
+taint barrier, `core/take.ts`). See [design-data-model.md](design-data-model.md) "Provenance vs.
+authority". Deferred: per-principal trust classification (auto-tainting untrusted principals'
+puts) and the taint-composed chain-intersection policy (M3).
 
 ## Revocation semantics
 
 Defined explicitly, not implied:
 
 - **Run stopped:** no new operations or renewals; held leases expire on their own clocks
-  (quickly, since renewal has stopped).
+  (quickly, since renewal has stopped). **Built** (`stopRun`, token stops resolving).
 - **Grant revoked:** no new claims; an in-flight `ack` is allowed under the **policy
   version captured at lease issuance** (default), unless quarantined.
 - **Emergency quarantine:** deny all writes from the principal and invalidate its leases
-  immediately; late `ack`s fence out as `lease_lost`.
+  immediately; late `ack`s fence out as `lease_lost`. **Built** for leases
+  (`stopRun({quarantine:true})` → `quarantineLeasesOf`, epoch bump); the blanket write-deny for
+  a still-live principal is subsumed by stopping its run (token stops resolving).
 - **Token expiry mid-task:** the run refreshes via its definition credential; refresh
   failure degrades to "run stopped".
 

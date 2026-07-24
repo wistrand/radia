@@ -69,7 +69,65 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   principal.** An unauthenticated request resolves to `human:local` (privileged) — the UI, demo,
   and examples work with no auth. `X-Radia-Principal` lets a dev client ASSUME an agent/run
   principal to test grants; it is **insecure by construction** (a client must not choose its own
-  identity) and exists only until real run tokens land. Never ship it as production auth.
+  identity) — a dev convenience alongside real run tokens, never production auth.
+- **A presented `Authorization: Bearer` token must resolve; a bad one is 401, never a silent
+  fall-through to the operator.** Only the *absence* of any credential defaults to `human:local`.
+  Precedence is Bearer → `X-Radia-Principal` → operator; `resolveAuth` in `src/server/http.ts`
+  encodes it. `POST /v0/agent-runs` is special — it reads its DEFINITION token directly (a def
+  token is not a coordination principal, so `resolveAuth` returns `invalid_token` for it), which
+  is why that route is dispatched **before** the bad-bearer 401 check.
+- **Only token HASHES are stored; the credential index is a cache over records.** Run/definition
+  tokens are secrets returned once at mint; the `agent_definition`/`agent_run` record bodies hold
+  the sha256 hash (not a secret), and `CredentialStore` is an in-memory index rebuilt by
+  `Space.loadCredentials` at startup — the same cache-over-records pattern as kinds. A run's
+  status change (stop) is a **successor** `agent_run` record (records are immutable), so rebuild
+  takes records in id order and a later stop overrides the earlier mint. Token expiry uses the
+  **DB clock** (fetched only when a token is actually presented, so the no-auth path stays free).
+- **Graceful stop ≠ quarantine.** A lease is owned by the claiming principal (`take` threads it
+  into `lease_owner`; a run token → `run:*`). `stopRun` (default) only stops the token resolving —
+  the run's in-flight leases expire on their own clocks, NOT immediately. `stopRun({quarantine:true})`
+  is the emergency path: `quarantineLeasesOf` force-releases them now with an **epoch bump**, so a
+  late `ack`/`renew` fences out as `lease_lost` (that bump is load-bearing — without it the stale
+  holder could still settle). Don't assume a plain stop kills live leases.
+- **`delegation_context` is derived from the LEASE, never `parent_ids`; and only for managed-run
+  work.** On `ack`, the authority chain comes from the leased record's authoritative `lease_owner`
+  (from the envelope, not the client-presented lease) → its agent → extending the leased record's
+  chain. Data parents contribute no authority (the core invariant). It is set only when the lease
+  owner is **non-privileged** (a managed run) — so operator/root work carries none. This is why
+  `isPrivileged` also covers the space's own `ctx.runId`/`ctx.principal`: in-process callers
+  (conformance, demo, examples) claim under `run:local`, which must count as operator so their
+  ack-emitted results stay root (no delegation, no put-enforcement) and existing tests don't break.
+- **Strict chain-intersection was rejected as the ack gate — it breaks pipelines.** "Effective
+  permission = intersection of the whole chain's grants" (design-auth) sounds right but, enforced
+  on every `ack`, it blocks the fan-out/aggregator pattern: in `a → b`, agent `b` legitimately
+  produces a kind `a` cannot, and intersection would forbid it. M1 instead authorizes the **acting
+  agent's own** `put` grant for the emitted kind (`Space.ack` → `authorize(owner, "put", kind)`) —
+  pipeline-friendly, and it closes the real hole (ack-emitted records previously bypassed put
+  auth). A forbidden ack throws before consuming, so the record stays leased. Full intersection is
+  deferred to compose with taint (M3); don't reinstate it as a hard default.
+- **Taint follows DATA parents; delegation follows the LEASE — never cross them.** `Space.computeTaint`
+  ORs `taint:true` (client raise) with any `parent_ids` parent's taint, on both put and ack (the
+  leased record is a data parent, so taint rides through `ack`). `delegation_context` derives from
+  the lease, never `parent_ids`. Two separate lineages by design — don't compute one from the other.
+- **`taint` is the one authoritative field a client may RAISE (never lower).** `put`'s `taint:true`
+  is honored (source attestation — "my output is untrusted"); `taint:false` from a client is
+  ignored (propagation/declassify decide). This is a deliberate, narrow exception to "clients submit
+  only claims" — the handler maps `taint === true` only. Clearing taint is a **privileged
+  declassify** (`Space.declassify`), which, because records are immutable, emits a **clean successor**
+  (same body, `taint:false`, tainted original as its data parent) rather than mutating anything.
+  Don't add a way for an ordinary agent to write `taint:false`.
+- **`take {requireUntainted}` filters candidates in core, not SQL.** The barrier lives in
+  `rankClaimable` (skips `record.runtimeMeta.taint`), threaded via `LeaseSpec.requireUntainted` — so
+  both adapters get it for free and it stays backend-neutral. It's a claim-time skip, not a query
+  predicate (taint is runtime metadata, not body — the content-routing DSL can't see it, same as the
+  envelope).
+- **Template-scoped grants restrict reads/claims, not writes.** A grant's `template` is AND-ed
+  into `query`/`read_one`/`take` (`grant ∧ request` via `combineMatch`); `put` **ignores** it, so
+  a template-scoped grant still authorizes putting any record of that kind (write-side scoping is
+  deferred). Also: the constraint nests as `$and[request, $or[templates]]`, so a grant template
+  must be a flat equality map — a `$or`/`$and` inside one can exceed the depth-3 compile limit.
+  And a template's paths are validated (indexed-path check) only when a query using it compiles,
+  not at grant creation (the kind may not be registered yet) — a bad path surfaces as a 400 later.
 
 - **The ops query language is body-only by design; the envelope query is the ops exception.**
   The content-routing template DSL matches record *bodies* (for routing) and deliberately can't

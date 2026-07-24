@@ -6,11 +6,15 @@
 //     stats, events, diagnostics, record + envelope introspection (records[/{id}[/envelope|
 //     lineage|graph]]), and remediation (reclaim/dead-letter/requeue). Reading/operating the
 //     space. The prefix split carries both the stability boundary and the (future) auth boundary.
+//   - bootstrap chain: POST /v0/agent-definitions (operator → mint token + grants), POST
+//     /v0/agent-runs (definition token → short-lived run token), POST /v0/agent-runs/{id}/stop.
+//     Requests authenticate with `Authorization: Bearer <run-token>`; see design-auth.md.
 
 import type { Space } from "../core/space.ts";
 import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
-import { handleAdmin, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleGetRecord, handleGraph, handleLineage, handleStats } from "./handlers/dev.ts";
+import { handleCreateDefinition, handleCreateRun, handleStopRun } from "./handlers/agents.ts";
+import { handleAdmin, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleGetRecord, handleGraph, handleLineage, handleStats } from "./handlers/dev.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem } from "./problem.ts";
 
@@ -36,23 +40,49 @@ export function startServer(opts: ServerOptions): { finished: Promise<void> } {
   return { finished: server.finished };
 }
 
+type Auth = { principal: string } | { error: string; detail: string };
+
 /**
- * Resolve the calling principal. M1-minimal, auto-provisioned local auth (NOT production):
- * default is the operator `human:local`, so unauthenticated dev/UI/examples stay fully open.
- * The `X-Radia-Principal` header lets a dev client ASSUME an agent/run principal to exercise
- * grant enforcement — insecure by design (a client shouldn't pick its own identity); real run
- * tokens + the agent-definition/agent-run bootstrap chain are deferred (see design-auth.md).
+ * Resolve the calling principal from a request. Precedence:
+ *  - `Authorization: Bearer <token>` → the token is resolved against the credential store; a
+ *    valid, unexpired RUN token yields its `run:*` principal, and any invalid/expired/stopped
+ *    token is a hard error (never a silent fall-through to operator). Definition tokens do not
+ *    authorize coordination — only `POST /v0/agent-runs` reads those, before this check.
+ *  - `X-Radia-Principal: <p>` → a dev-only header to ASSUME a principal (insecure; testing).
+ *  - neither → the operator `human:local`, so unauthenticated dev/UI/examples stay fully open.
  */
-function resolvePrincipal(req: Request): string {
+async function resolveAuth(req: Request, space: Space): Promise<Auth> {
+  const authz = req.headers.get("Authorization");
+  if (authz?.startsWith("Bearer ")) {
+    const r = await space.resolveToken(authz.slice("Bearer ".length).trim());
+    if (r.ok && r.kind === "run") return { principal: r.principal };
+    if (r.ok && r.kind === "def") return { error: "invalid_token", detail: "a definition token does not authorize coordination; mint a run first" };
+    return { error: r.reason, detail: `bearer token ${r.reason}` };
+  }
   const assumed = req.headers.get("X-Radia-Principal");
-  return assumed && assumed.length > 0 ? assumed : "human:local";
+  if (assumed && assumed.length > 0) return { principal: assumed };
+  return { principal: "human:local" };
 }
 
 function makeHandler(space: Space, ui: string) {
   return async function handler(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const route = `${req.method} ${url.pathname}`;
-    const principal = resolvePrincipal(req);
+
+    // Minting a run reads its DEFINITION token directly (a def token isn't a coordination
+    // principal), so it runs before principal resolution rejects non-run bearer tokens.
+    if (route === "POST /v0/agent-runs") return await handleCreateRun(space, req);
+    // Stop a run: `/v0/agent-runs/{id}/stop` (own token or operator — checked in the handler).
+    if (req.method === "POST" && url.pathname.startsWith("/v0/agent-runs/") && url.pathname.endsWith("/stop")) {
+      const auth = await resolveAuth(req, space);
+      const principal = "principal" in auth ? auth.principal : "";
+      const runId = decodeURIComponent(url.pathname.slice("/v0/agent-runs/".length, -"/stop".length));
+      return await handleStopRun(space, req, principal, runId);
+    }
+
+    const auth = await resolveAuth(req, space);
+    if ("error" in auth) return problem(401, auth.error, auth.detail);
+    const principal = auth.principal;
 
     // The observe-and-operate plane is grant-gated: operator (human/supervisor) only.
     if (url.pathname.startsWith("/v0/ops/") && !space.isPrivileged(principal)) {
@@ -78,6 +108,7 @@ function makeHandler(space: Space, ui: string) {
         if (req.method === "POST" && (tail === "reclaim" || tail === "dead-letter" || tail === "requeue")) {
           return await handleAdmin(space, id, tail);
         }
+        if (req.method === "POST" && tail === "declassify") return await handleDeclassify(space, id);
       }
     }
 
@@ -112,6 +143,10 @@ function makeHandler(space: Space, ui: string) {
         return await handleRelease(space, req);
       case "POST /v0/watches":
         return await handleCreateWatch(space, req);
+
+      // --- bootstrap chain: operator creates a definition (assigns grants + gets a mint token) ---
+      case "POST /v0/agent-definitions":
+        return await handleCreateDefinition(space, req, principal);
 
       // --- observability + control plane (experimental) ---
       case "GET /v0/ops/records":

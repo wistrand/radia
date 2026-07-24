@@ -25,10 +25,20 @@ export type RecordState =
   | "dead_letter"
   | "expired";
 
+/**
+ * The single authorization chain for delegated work — server-derived from the CLAIMED LEASE,
+ * never from `parent_ids` (data parents contribute no authority). Present only on records emitted
+ * via `ack` under a managed run's lease; a direct put or operator-owned work carries none.
+ */
+export interface DelegationContext {
+  chain: Ulid[]; // ordered grant subjects (agents) whose authority this work flows under
+  origin: Ulid; // the leased record it was delegated from (the authorization parent)
+}
+
 /** Server-assigned, authoritative metadata. Never client-editable. */
 export interface RuntimeMeta {
   createdBy: string; // principal id
-  delegationContext?: string; // authorization chain, server-derived from the lease
+  delegationContext?: DelegationContext; // authorization chain, server-derived from the lease
   parentIds: Ulid[]; // data/causality lineage only
   taint: boolean;
   schemaVersion: number;
@@ -175,6 +185,8 @@ export interface LeaseSpec {
   leaseSeconds: number;
   maxCumulativeSeconds: number; // hard cap: a wedged process cannot renew past this
   maxAttempts: number; // beyond this, an expired reclaim dead-letters
+  /** A sensitive consumer claim-filter: skip candidates whose record is tainted. */
+  requireUntainted?: boolean;
 }
 
 /** What a lease holder presents to renew/ack/nack/release. Fencing checks all three. */
@@ -282,6 +294,14 @@ export interface StorageAdapter {
 
   /** Envelopes currently in a given state, capped (diagnostics). */
   envelopesInState(state: RecordState, limit: number): Promise<Envelope[]>;
+
+  /**
+   * Emergency quarantine: force every `leased` record owned by `ownerRun` back to `available`,
+   * bumping the epoch (so a late `ack`/`renew` from that run fences out as `lease_lost`) and the
+   * attempt, and appending a `quarantine` event per record. Returns how many were invalidated.
+   * Not a lease settlement — used when a run is stopped-with-quarantine.
+   */
+  quarantineLeasesOf(ownerRun: string, now: string): Promise<number>;
 
   /**
    * Admin/control-plane forced state transition (bypasses lease fencing — used to remediate

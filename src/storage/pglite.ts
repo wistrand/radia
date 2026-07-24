@@ -178,7 +178,7 @@ export class PgliteAdapter implements StorageAdapter {
     return await this.db.transaction(async (tx) => {
       const candidates = await this.fetchCandidates(tx, selector);
       const template = "template" in selector ? selector.template : undefined;
-      const ranked = rankClaimable(candidates, template, now);
+      const ranked = rankClaimable(candidates, template, now, spec.requireUntainted);
 
       for (const cand of ranked) {
         const id = cand.record.id;
@@ -402,6 +402,33 @@ export class PgliteAdapter implements StorageAdapter {
         detail: { from: fromStates },
       }, opts.now);
       return true;
+    });
+  }
+
+  async quarantineLeasesOf(ownerRun: string, now: string): Promise<number> {
+    return await this.db.transaction(async (tx) => {
+      const held = (await tx.query<{ record_id: string; kind: string }>(
+        "select record_id, kind from record_runtime where state='leased' and lease_owner=$1",
+        [ownerRun],
+      )).rows;
+      if (held.length === 0) return 0;
+      await tx.query(
+        `update record_runtime set state='available', available_at=$1, attempt=attempt+1,
+           lease_epoch=lease_epoch+1, lease_id=null
+         where state='leased' and lease_owner=$2`,
+        [now, ownerRun],
+      );
+      for (const r of held) {
+        await this.appendEvent(tx, {
+          runId: "admin",
+          operation: "quarantine",
+          recordId: r.record_id,
+          kind: r.kind,
+          state: "available",
+          detail: { ownerRun },
+        }, now);
+      }
+      return held.length;
     });
   }
 

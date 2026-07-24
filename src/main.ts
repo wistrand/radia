@@ -28,6 +28,7 @@ async function dev(args: string[]): Promise<void> {
   console.log(`radia dev: storage=${storage.name} (${dbPath ? `persisted at ${dbPath}` : "in-memory"})`);
   const space = new Space(storage);
   await space.loadKinds(); // restore persisted kind declarations
+  await space.loadCredentials(); // rebuild the credential index from agent_definition/agent_run records
   const { finished } = startServer({ port, space });
   await finished;
   await storage.close();

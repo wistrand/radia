@@ -5,8 +5,9 @@ Spec and rationale for Radia's core data model. Origin: outline §2.
 **M0 status (implemented):** the record + `record_runtime` split, ULID ids, `body_sha256`,
 the client-vs-runtime metadata split, and `parent_ids` lineage live in
 `src/core/record.ts` (`buildRecord`), `src/storage/adapter.ts` (types), `src/storage/row.ts`
-(mapping), and the two adapters. Kinds/indexing: `src/core/kinds.ts`. **Not implemented:**
-artifacts / blob storage (§2.4, M1), taint (§2.1, M3), delegation_context (M3).
+(mapping), and the two adapters. Kinds/indexing: `src/core/kinds.ts`. `delegation_context`
+(authority lineage) and `taint` (data lineage) are both built (M1) — see "Provenance vs.
+authority" below. **Not implemented:** artifacts / blob storage (§2.4, M1).
 
 ## Contents
 - Invariants
@@ -94,7 +95,15 @@ Two separate structures, deliberately not merged:
   lineage DAG is **acyclic by construction**.
 - **`delegation_context`** — the authorization chain for this operation,
   server-derived from the claimed task/lease, never freely client-supplied. A result
-  may have many data parents but exactly one authorization context.
+  may have many data parents but exactly one authorization context. **M1 status (built):**
+  set on records emitted via `ack` under a **managed run's** lease (`src/core/space.ts`
+  `deriveDelegation`): `{chain, origin}`, where `chain` accumulates the acting agents along
+  the delegation path (from the record's authoritative `lease_owner` → its agent) and `origin`
+  is the leased record it was delegated from. Derived from the lease, **never** from
+  `parent_ids`. Operator/root-owned work carries none (full authority). Emitting a result is
+  authorized as a `put` for the acting agent (closing the gap where ack-emitted records
+  bypassed put-authorization); the stricter *chain-intersection* policy composes with taint
+  (M3). See [design-auth.md](design-auth.md).
 
 A result may have many data parents but exactly one authorization context:
 
@@ -110,6 +119,15 @@ flowchart TB
 Deriving data from a privileged record grants nothing. Intersecting authority across
 arbitrary data parents is neither meaningful nor attempted. See
 [design-auth.md](design-auth.md) for how `delegation_context` drives permission.
+
+**`taint` is the mirror image — it follows the DATA lineage that authority ignores.** M1
+status (built): a record is tainted if a client raised it (`taint:true`, source attestation)
+or **any `parent_ids` parent is tainted** (`Space.computeTaint`, on put and ack — so a tainted
+task yields a tainted result). A client can only ever *raise* taint; clearing requires a
+privileged **declassify** (`Space.declassify` → a clean successor with the tainted original as
+its data parent). A sensitive consumer skips tainted work with `take {requireUntainted}`. So
+the two lineages are complementary: authority flows down the **lease** (delegation), untrust
+flows down **data parents** (taint), and neither leaks into the other.
 
 ## Kind conventions
 

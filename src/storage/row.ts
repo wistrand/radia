@@ -39,7 +39,7 @@ export function recordInsertValues(input: PutInput): unknown[] {
     r.bodySha256,
     r.clientMeta ? JSON.stringify(r.clientMeta) : null,
     r.runtimeMeta.createdBy,
-    r.runtimeMeta.delegationContext ?? null,
+    r.runtimeMeta.delegationContext ? JSON.stringify(r.runtimeMeta.delegationContext) : null,
     JSON.stringify(r.runtimeMeta.parentIds),
     r.runtimeMeta.taint,
     r.runtimeMeta.schemaVersion,
@@ -78,7 +78,7 @@ export function rowToRecord(row: RawRow): RadiaRecord {
     runtimeMeta: {
       createdBy: String(row.created_by),
       delegationContext: row.delegation_context != null
-        ? String(row.delegation_context)
+        ? JSON.parse(String(row.delegation_context))
         : undefined,
       parentIds: JSON.parse(String(row.parent_ids ?? "[]")),
       taint: Boolean(row.taint),

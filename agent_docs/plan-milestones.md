@@ -57,11 +57,11 @@ two-terminal demo works.
 ### M1 — usable runtime
 
 - [ ] Postgres storage adapter (same conformance + fault suite as embedded)
-- [ ] single-node deployment mode with admin-provisioned auth
+- [~] single-node deployment mode with admin-provisioned auth — **auth bootstrap chain + per-run leases built** (agent definitions → run tokens → stop/quarantine; `Authorization: Bearer`; a run inherits its agent's grants and owns its leases; graceful stop vs. emergency quarantine; credential index is a cache over `agent_definition`/`agent_run` records). OIDC for `human:*`, the deployment mode itself, and federated identity still to do. See [design-auth.md](design-auth.md).
 - [ ] read_one + keyset query
 - [ ] long-polls
 - [~] schema version registry — kind *declarations* now persist (`kinds` table, reloaded at startup); schema *versioning* + migration still to do
-- [~] kind- and template-scoped grants — **kind-scoped grants built** (grants are `grant` records; `Space.authorize` + `isPrivileged`; enforced at the HTTP boundary; `/v0/ops/*` and `grant`/`signal` writes are operator-only; dev principal via `X-Radia-Principal`). **Template-scoped** (`grant ∧ template`), real run tokens/bootstrap chain, delegation, taint, revocation, budgets still to do. See [design-auth.md](design-auth.md).
+- [x] kind- and template-scoped grants — grants are `grant` records; `Space.authorize` + `isPrivileged`; enforced at the HTTP boundary; `/v0/ops/*` and `grant`/`signal` writes operator-only. **Template-scoped** grants (`grant ∧ request` via `combineMatch`) built for query/read_one/take (put ignores the template — write-side scoping deferred). Delegation, taint, budgets still to do. See [design-auth.md](design-auth.md).
 - [ ] resource limits enforced
 - [ ] hash-chained event log
 - [ ] polished Python + TS SDKs
@@ -91,8 +91,8 @@ crypto-shredding deletes a body while the event chain still verifies.
 
 - [ ] scheduler-enforced atomic admission (see [design-scheduler.md](design-scheduler.md))
 - [ ] semantic matching
-- [ ] delegation contexts end-to-end
-- [ ] taint + declassification
+- [~] delegation contexts end-to-end — **built (M1):** `delegation_context` is server-derived from the lease on ack-emitted work (authority chain accumulates per hop; never data parents); ack authorizes the acting agent's `put`. Remaining for M3: the stricter chain-intersection policy composed with taint.
+- [~] taint + declassification — **built (M1):** taint propagates along data parents (put + ack), clients may raise but never clear it, `take {requireUntainted}` is a claim-time barrier, and a privileged `declassify` emits a clean successor. Remaining for M3: per-principal trust classification and taint-composed access checks.
 - [ ] repeated-pattern livelock detection
 - [ ] re-execution tooling
 - [ ] learned scoring after static scoring is measurable

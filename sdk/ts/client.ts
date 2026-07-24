@@ -42,17 +42,33 @@ function defaultBase(): string {
   }
 }
 
+export interface ClientAuth {
+  /** A run token (or definition token, for minting) sent as `Authorization: Bearer`. */
+  token?: string;
+  /** Dev-only: assume a principal via `X-Radia-Principal` (insecure; for testing grants). */
+  principal?: string;
+}
+
 export class RadiaClient {
-  /** @param principal dev-only: assume a principal via `X-Radia-Principal` (to exercise grant
-   *  enforcement). Omit for the default operator. Real run tokens are deferred (see design-auth). */
-  constructor(readonly base: string = defaultBase(), private readonly principal?: string) {}
+  private readonly auth: ClientAuth;
+  /** @param auth a run token (`{token}`) or, dev-only, an assumed `{principal}`. A bare string is
+   *  treated as `{principal}` for back-compat. Omit for the default operator. */
+  constructor(readonly base: string = defaultBase(), auth: ClientAuth | string = {}) {
+    this.auth = typeof auth === "string" ? { principal: auth } : auth;
+  }
+
+  /** A client authenticated with a bearer token (e.g. a minted run token). */
+  withToken(token: string): RadiaClient {
+    return new RadiaClient(this.base, { token });
+  }
 
   private async req(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<any> {
     const res = await fetch(this.base + path, {
       method,
       headers: {
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
-        ...(this.principal ? { "X-Radia-Principal": this.principal } : {}),
+        ...(this.auth.token ? { "Authorization": `Bearer ${this.auth.token}` } : {}),
+        ...(this.auth.principal ? { "X-Radia-Principal": this.auth.principal } : {}),
         ...headers,
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -79,9 +95,38 @@ export class RadiaClient {
   }
 
   /** Assign a kind-scoped grant (a `grant` record — writable only by a human/supervisor
-   *  principal). `operations` are coordination verbs: put | take | query | read_one. */
-  grant(principal: string, kind: string, operations: string[]): Promise<{ id: string }> {
-    return this.put({ kind: "grant", body: { principal, kind, operations } }, `grant:${principal}:${kind}:${[...operations].sort().join(",")}`);
+   *  principal). `operations` are coordination verbs: put | take | query | read_one. An optional
+   *  `template` narrows read/take to `grant ∧ request` (template-scoped grant). */
+  grant(
+    principal: string,
+    kind: string,
+    operations: string[],
+    template?: Record<string, unknown>,
+  ): Promise<{ id: string }> {
+    const body = template ? { principal, kind, operations, template } : { principal, kind, operations };
+    const key = `grant:${principal}:${kind}:${[...operations].sort().join(",")}:${template ? JSON.stringify(template) : ""}`;
+    return this.put({ kind: "grant", body }, key);
+  }
+
+  // ---- bootstrap chain (see design-auth.md) ----
+
+  /** Operator: create an agent definition, optionally assigning its grants. Returns the
+   *  definition token (shown once) used to mint runs. */
+  createAgentDefinition(
+    agent: string,
+    grants: { principal: string; kind: string; operations: string[] }[] = [],
+  ): Promise<{ agent: string; definitionToken: string }> {
+    return this.req("POST", "/v0/agent-definitions", { agent, grants });
+  }
+
+  /** Mint a short-lived run token from a definition token. */
+  createRun(definitionToken: string): Promise<{ run: string; agent: string; runToken: string; expiresAt: string }> {
+    return this.req("POST", "/v0/agent-runs", {}, { "Authorization": `Bearer ${definitionToken}` });
+  }
+
+  /** Stop a run (operator, or the run's own definition/run token if this client carries it). */
+  stopRun(run: string): Promise<{ run: string; status: string; applied: boolean }> {
+    return this.req("POST", `/v0/agent-runs/${encodeURIComponent(run)}/stop`);
   }
 
   readOne(template: Template): Promise<RadiaRecord | null> {
@@ -93,8 +138,8 @@ export class RadiaClient {
     return r.records;
   }
 
-  take(sel: TakeSelector, opts: { leaseSeconds?: number } = {}): Promise<TakeResult | null> {
-    return this.req("POST", "/v0/takes", { ...sel, leaseSeconds: opts.leaseSeconds });
+  take(sel: TakeSelector, opts: { leaseSeconds?: number; requireUntainted?: boolean } = {}): Promise<TakeResult | null> {
+    return this.req("POST", "/v0/takes", { ...sel, leaseSeconds: opts.leaseSeconds, requireUntainted: opts.requireUntainted });
   }
 
   ack(lease: Lease, result?: PutRequest, idempotencyKey?: string): Promise<AckResult> {
@@ -166,6 +211,11 @@ export class RadiaClient {
   /** Control-plane remediation: 'reclaim' | 'dead-letter' | 'requeue'. Returns {applied}. */
   async admin(action: "reclaim" | "dead-letter" | "requeue", recordId: string): Promise<{ applied: boolean }> {
     return await this.req("POST", `/v0/ops/records/${encodeURIComponent(recordId)}/${action}`);
+  }
+
+  /** Privileged declassify (operator): emit a clean (untainted) successor of a tainted record. */
+  declassify(recordId: string): Promise<{ declassifiedFrom: string; id: string }> {
+    return this.req("POST", `/v0/ops/records/${encodeURIComponent(recordId)}/declassify`);
   }
 
   async getLineage(recordId: string): Promise<{ record: RadiaRecord; depth: number }[]> {

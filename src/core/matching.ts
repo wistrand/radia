@@ -35,6 +35,22 @@ export interface Template {
   orderBy?: OrderKey[];
 }
 
+/**
+ * `grant ∧ request`: narrow a requested match by a set of grant templates (their union). Returns
+ * a match object to compile — the request must match AND at least one grant template. Used for
+ * template-scoped grants (server-side, per design-auth). `grantTemplates` must be non-empty; an
+ * empty request means "all", so the result is just the constraint. Grant templates should be
+ * simple (flat) — a nested `$or`/`$and` inside one can exceed the compiler's depth-3 limit.
+ */
+export function combineMatch(
+  requestMatch: Record<string, unknown> | undefined,
+  grantTemplates: Record<string, unknown>[],
+): Record<string, unknown> {
+  const constraint = grantTemplates.length === 1 ? grantTemplates[0] : { $or: grantTemplates };
+  if (!requestMatch || Object.keys(requestMatch).length === 0) return constraint;
+  return { $and: [requestMatch, constraint] };
+}
+
 const MAX_DEPTH = 3;
 const CMP_OPS: Record<string, CmpOp> = {
   $eq: "eq",

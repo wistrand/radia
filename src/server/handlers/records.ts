@@ -7,7 +7,7 @@
 
 import type { Space } from "../../core/space.ts";
 import type { PutRequest } from "../../core/record.ts";
-import type { Template } from "../../core/matching.ts";
+import { combineMatch, type Template } from "../../core/matching.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { problem } from "../problem.ts";
 
@@ -41,6 +41,7 @@ export async function handlePut(space: Space, req: Request, principal: string): 
     parentIds: j.parentIds as string[] | undefined,
     deadlineAt: j.deadlineAt as string | undefined,
     retentionUntil: j.retentionUntil as string | undefined,
+    taint: j.taint === true ? true : undefined, // client may RAISE taint only; never clear it
   };
 
   try {
@@ -69,7 +70,8 @@ export async function handleQuery(space: Space, req: Request, principal: string)
   };
   const limit = typeof j.limit === "number" && j.limit > 0 ? Math.min(j.limit, 500) : 100;
   try {
-    await space.authorize(principal, "query", template.kind);
+    const constraint = await space.authorize(principal, "query", template.kind);
+    if (constraint) template.match = combineMatch(template.match, constraint); // grant ∧ request
     const records = await space.query(template, limit);
     return Response.json({ records });
   } catch (e) {
@@ -91,7 +93,8 @@ export async function handleReadOne(space: Space, req: Request, principal: strin
     orderBy: j.orderBy as Template["orderBy"],
   };
   try {
-    await space.authorize(principal, "read_one", template.kind);
+    const constraint = await space.authorize(principal, "read_one", template.kind);
+    if (constraint) template.match = combineMatch(template.match, constraint); // grant ∧ request
     const record = await space.readOne(template);
     return Response.json(record); // null serializes to `null`
   } catch (e) {
