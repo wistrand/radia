@@ -1,21 +1,25 @@
 openapi: 3.1.0
 info:
   title: Radia
-  version: 0.0.0
+  version: 0.1.0
   description: >
-    Content-routed coordination runtime. This is the frozen wire contract.
-    Freeze policy (see agent_docs/plan-m0-implementation.md "OpenAPI freeze policy"):
-    the data-plane core is v0-stable and additive-only; control-plane and auth are
-    experimental. Per-element stability is marked with `x-stability`. SemVer 0.x means
-    the surface may still move; the additive-only rule is what makes the stable subset
-    dependable within 0.x.
+    Content-routed coordination runtime. This is the frozen wire contract; the runtime
+    implements it (not the reverse). Freeze policy (see
+    agent_docs/plan-m0-implementation.md "OpenAPI freeze policy"): the data-plane core is
+    v0-stable and additive-only; control-plane and the dev/diagnostic endpoints are
+    experimental. Per-element stability is `x-stability`. SemVer 0.x means the surface may
+    still move; the additive-only rule is what makes the stable subset dependable.
+
+    Implemented through M0 (Phases 0-6) plus M1 watches. Not implemented yet: artifacts,
+    grants/run-tokens/taint/delegation, scheduler admission, request/bid/award, keyset
+    query cursor, event-log retention/GC (so 410 cursor_expired is dormant).
 
 servers:
   - url: /v0
 
-# Deferred matching operators are reserved now so adding them later is not a breaking
-# change: $ne, $nin, $not, $prefix, and full-text. $regex/$where/$expr are never added
-# (templates are data, not code).
+# Deferred matching operators are reserved now so adding them later is not breaking:
+# $ne, $nin, $not, $prefix, full-text. $regex/$where/$expr are never added (templates are
+# data, not code).
 x-reserved-operators: ["$ne", "$nin", "$not", "$prefix", "$text"]
 
 paths:
@@ -27,119 +31,401 @@ paths:
       responses:
         "200":
           description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  version: { type: string }
+                  api: { type: string }
+                  storage: { type: string }
+                  now: { type: string }
 
-  # --- Data plane: FROZEN v0-stable, additive-only -------------------------------
-  # Shapes land across Phases 1-7; listed here so the contract is visible from Phase 0.
+  # --- Data plane: FROZEN v0-stable, additive-only ------------------------------------
 
   /records:
     post:
       operationId: put
       summary: Commit an immutable record
+      description: >
+        Server assigns all authoritative metadata (created_by, created_at, schema_version,
+        taint); client-submitted authoritative fields are ignored. `Idempotency-Key` header
+        makes the put replayable (same key -> same id; different request -> 409).
       x-stability: stable
-      x-phase: 1
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PutRequest" }
       responses:
-        "201": { description: created }
+        "201":
+          description: created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { id: { type: string } }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
 
   /records/read-one:
     post:
       operationId: readOne
       summary: First matching record, or null (template in body, never query string)
       x-stability: stable
-      x-phase: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Template" }
       responses:
-        "200": { description: record or null }
+        "200":
+          description: record or null
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { $ref: "#/components/schemas/Record" }
+                  - { type: "null" }
+        "400": { $ref: "#/components/responses/Problem" }
 
   /records/query:
     post:
       operationId: query
-      summary: Keyset page over immutable sort keys
+      summary: Matching records ordered by the template, capped at limit
+      description: >
+        M1 status: a basic ordered list. The keyset-cursor variant (stable pagination over
+        immutable sort keys) is not yet implemented.
       x-stability: stable
-      x-phase: "M1"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - { $ref: "#/components/schemas/Template" }
+                - type: object
+                  properties: { limit: { type: integer, default: 100, maximum: 500 } }
       responses:
-        "200": { description: page }
+        "200":
+          description: page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  records: { type: array, items: { $ref: "#/components/schemas/Record" } }
+        "400": { $ref: "#/components/responses/Problem" }
 
   /takes:
     post:
       operationId: take
-      summary: Atomic admit+claim; returns a fenced lease or null
+      summary: Atomically claim a record for a fenced lease
+      description: >
+        Selector is a template or a specific recordId (a selector, not a bypass — the
+        server re-verifies availability and, if given, the template). Returns
+        {record, lease} or null when nothing is claimable. Long-poll blocking is not
+        implemented in M0.
       x-stability: stable
-      x-phase: 3
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                template: { $ref: "#/components/schemas/Template" }
+                recordId: { type: string }
+                leaseSeconds: { type: number }
       responses:
-        "200": { description: "{record, lease} or null" }
+        "200":
+          description: "{record, lease} or null"
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { $ref: "#/components/schemas/TakeResult" }
+                  - { type: "null" }
+        "400": { $ref: "#/components/responses/Problem" }
 
-  /leases/{leaseId}/ack:
-    post:
-      operationId: ack
-      summary: Settle a lease; optionally emit a result record
-      x-stability: stable
-      x-phase: 3
-      parameters:
-        - { name: leaseId, in: path, required: true, schema: { type: string } }
-      responses:
-        "200": { description: "ok | lease_lost | idempotency_conflict (non-error body)" }
-
-  /leases/{leaseId}/nack:
-    post:
-      operationId: nack
-      summary: Retryable failure; attempt +1, backoff
-      x-stability: stable
-      x-phase: 3
-      parameters:
-        - { name: leaseId, in: path, required: true, schema: { type: string } }
-      responses:
-        "200": { description: "ok | lease_lost" }
-
-  /leases/{leaseId}/release:
-    post:
-      operationId: release
-      summary: Cooperative cancel; attempt +0
-      x-stability: stable
-      x-phase: 3
-      parameters:
-        - { name: leaseId, in: path, required: true, schema: { type: string } }
-      responses:
-        "200": { description: "ok | lease_lost" }
-
-  /leases/{leaseId}/renew:
+  /leases/renew:
     post:
       operationId: renew
-      summary: Extend a held lease
+      summary: Extend a held lease, clamped to the cumulative hard cap
       x-stability: stable
-      x-phase: 3
       parameters:
-        - { name: leaseId, in: path, required: true, schema: { type: string } }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lease]
+              properties:
+                lease: { $ref: "#/components/schemas/Lease" }
+                leaseSeconds: { type: number }
       responses:
-        "200": { description: "lease | lease_lost" }
+        "200":
+          description: "{status: ok, lease} or {status: lease_lost}"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RenewResult" }
+        "409": { $ref: "#/components/responses/Problem" }
+
+  /leases/ack:
+    post:
+      operationId: ack
+      summary: Consume the record and optionally emit a result record (atomic)
+      description: "`lease_lost` and `idempotency_conflict` are distinct outcomes; a fenced ack emits nothing."
+      x-stability: stable
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lease]
+              properties:
+                lease: { $ref: "#/components/schemas/Lease" }
+                result: { $ref: "#/components/schemas/PutRequest" }
+      responses:
+        "200":
+          description: "{status: ok, resultId?} or {status: lease_lost}"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AckResult" }
+        "409": { $ref: "#/components/responses/Problem" }
+
+  /leases/nack:
+    post:
+      operationId: nack
+      summary: Retryable failure; attempt +1, backoff, dead-letter past max
+      x-stability: stable
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lease]
+              properties:
+                lease: { $ref: "#/components/schemas/Lease" }
+                backoffSeconds: { type: number }
+      responses:
+        "200":
+          description: "{status: ok | lease_lost}"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SettleResult" }
+        "409": { $ref: "#/components/responses/Problem" }
+
+  /leases/release:
+    post:
+      operationId: release
+      summary: Cooperative cancel; attempt +0, immediately available
+      x-stability: stable
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lease]
+              properties: { lease: { $ref: "#/components/schemas/Lease" } }
+      responses:
+        "200":
+          description: "{status: ok | lease_lost}"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SettleResult" }
+        "409": { $ref: "#/components/responses/Problem" }
 
   /watches:
     post:
       operationId: watch
-      summary: Open an ephemeral run-scoped watch (SSE cursor via GET /watches/{id}/events)
+      summary: Create an ephemeral, template-scoped watch
+      description: "The stream (below) starts from the event seq at creation. Watches die with the runtime; durable subscriptions are deferred."
       x-stability: stable
       x-phase: "M1"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Template" }
       responses:
-        "201": { description: watch created }
+        "201":
+          description: watch created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { watchId: { type: string } }
+        "400": { $ref: "#/components/responses/Problem" }
 
-  # --- Control plane + auth: EXPERIMENTAL ----------------------------------------
-  # May change without a major bump until validated (M1-M2).
+  /watches/{watchId}/events:
+    get:
+      operationId: watchEvents
+      summary: SSE stream of wakeups for matching, available records
+      description: >
+        text/event-stream. Each event: `id: <seq>` and `data: {seq, recordId, kind}`.
+        Resume with `Last-Event-ID` (or `?cursor=`); delivery continues after that seq.
+        A cursor older than the retained event log returns 410 cursor_expired (dormant
+        until event-log GC lands in M2).
+      x-stability: stable
+      x-phase: "M1"
+      parameters:
+        - { name: watchId, in: path, required: true, schema: { type: string } }
+        - { name: cursor, in: query, required: false, schema: { type: integer } }
+        - { name: Last-Event-ID, in: header, required: false, schema: { type: string } }
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/Problem" }
+        "410": { $ref: "#/components/responses/Problem" }
 
-  /agent-definitions:
+  # --- Control plane + dev/diagnostics: EXPERIMENTAL ----------------------------------
+
+  /kinds:
     post:
-      operationId: createAgentDefinition
-      summary: Privileged control plane assigns grants
+      operationId: registerKind
+      summary: Declare a kind's indexed/sortable paths
+      x-stability: experimental
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KindDef" }
+      responses:
+        "201":
+          description: registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { kind: { type: string } }
+        "422": { $ref: "#/components/responses/Problem" }
+    get:
+      operationId: listKinds
+      summary: Registered kind declarations
       x-stability: experimental
       responses:
-        "201": { description: created }
+        "200":
+          description: kinds
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kinds: { type: array, items: { $ref: "#/components/schemas/KindDef" } }
 
-  /agent-runs:
-    post:
-      operationId: createAgentRun
-      summary: Definition credential mints a short-lived run token
+  /stats:
+    get:
+      operationId: stats
+      summary: Record counts by kind and state (dev console)
       x-stability: experimental
       responses:
-        "201": { description: created }
+        "200":
+          description: stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stats:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        kind: { type: string }
+                        state: { type: string }
+                        count: { type: integer }
+
+  /events:
+    get:
+      operationId: events
+      summary: Append-only event log after a seq (dev console / audit)
+      x-stability: experimental
+      parameters:
+        - { name: after, in: query, required: false, schema: { type: integer, default: 0 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 200, maximum: 500 } }
+      responses:
+        "200":
+          description: events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events: { type: array, items: { $ref: "#/components/schemas/Event" } }
+
+  /envelopes/{recordId}:
+    get:
+      operationId: getEnvelope
+      summary: The mutable runtime envelope for a record (dev console)
+      x-stability: experimental
+      parameters:
+        - { name: recordId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: envelope
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Envelope" }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  /records/{recordId}/lineage:
+    get:
+      operationId: lineage
+      summary: A record and its ancestry via parent_ids (dev console)
+      x-stability: experimental
+      parameters:
+        - { name: recordId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: lineage
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lineage:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        record: { $ref: "#/components/schemas/Record" }
+                        depth: { type: integer }
+        "404": { $ref: "#/components/responses/Problem" }
 
 components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Replay-safe key; checked BEFORE lease validation. Reuse with a different request -> 409.
+      schema: { type: string }
+
+  responses:
+    Problem:
+      description: RFC 9457 problem+json
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+
   schemas:
     Problem:
       description: RFC 9457 problem+json. FROZEN v0-stable.
@@ -150,5 +436,150 @@ components:
         title: { type: string }
         status: { type: integer }
         detail: { type: string }
-    # Record, Envelope, Lease, and status enums (lease_lost, idempotency_conflict,
-    # dead_letter) are FROZEN v0-stable and filled in during Phase 1/3.
+
+    PutRequest:
+      description: The only fields a client may submit. Authoritative metadata is server-assigned.
+      x-stability: stable
+      type: object
+      required: [kind]
+      properties:
+        kind: { type: string }
+        body: {}
+        clientMeta: { type: object, additionalProperties: true, description: "claims (confidence, requested_priority); never trusted" }
+        parentIds: { type: array, items: { type: string }, description: "data lineage; all must exist at commit" }
+        deadlineAt: { type: string }
+        retentionUntil: { type: string }
+
+    Record:
+      description: Immutable content half of a record.
+      x-stability: stable
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string }
+        body: {}
+        bodySha256: { type: string, description: "sha256 over plaintext body" }
+        clientMeta: { type: object, additionalProperties: true }
+        runtimeMeta: { $ref: "#/components/schemas/RuntimeMeta" }
+        deadlineAt: { type: string }
+        retentionUntil: { type: string }
+
+    RuntimeMeta:
+      description: Server-assigned, authoritative. Never client-editable.
+      x-stability: stable
+      type: object
+      properties:
+        createdBy: { type: string }
+        delegationContext: { type: string }
+        parentIds: { type: array, items: { type: string } }
+        taint: { type: boolean }
+        schemaVersion: { type: integer }
+        createdAt: { type: string }
+
+    Envelope:
+      description: Mutable claim-state envelope, one per record.
+      x-stability: stable
+      type: object
+      properties:
+        recordId: { type: string }
+        kind: { type: string }
+        state: { type: string, enum: [available, leased, consumed, dead_letter, expired] }
+        attempt: { type: integer }
+        availableAt: { type: string }
+        claimUntil: { type: string }
+        deadlineAt: { type: string }
+        effectivePriority: { type: integer }
+        leaseId: { type: string }
+        leaseEpoch: { type: integer }
+        leaseOwner: { type: string }
+        leasedUntil: { type: string }
+
+    Lease:
+      description: A fenced lease. Presented (recordId+leaseId+epoch) to settle.
+      x-stability: stable
+      type: object
+      properties:
+        leaseId: { type: string }
+        epoch: { type: integer }
+        ownerRun: { type: string }
+        recordId: { type: string }
+        expiresAt: { type: string }
+
+    TakeResult:
+      x-stability: stable
+      type: object
+      properties:
+        record: { $ref: "#/components/schemas/Record" }
+        lease: { $ref: "#/components/schemas/Lease" }
+
+    SettleResult:
+      description: nack/release outcome. lease_lost is a non-error status.
+      x-stability: stable
+      type: object
+      properties:
+        status: { type: string, enum: [ok, lease_lost] }
+
+    AckResult:
+      x-stability: stable
+      type: object
+      properties:
+        status: { type: string, enum: [ok, lease_lost] }
+        resultId: { type: string }
+
+    RenewResult:
+      x-stability: stable
+      type: object
+      properties:
+        status: { type: string, enum: [ok, lease_lost] }
+        lease: { $ref: "#/components/schemas/Lease" }
+
+    Template:
+      description: >
+        kind + optional match + order_by. `match` values are implicit-$eq scalars or
+        operator objects ($eq, $gt/$gte/$lt/$lte, $in, $exists, $any/$each, $and/$or depth<=3).
+        Divergences: missing != null, no type coercion, explicit array quantifiers. Predicate
+        paths must be declared indexed; order_by paths must be declared sortable.
+      x-stability: stable
+      type: object
+      required: [kind]
+      properties:
+        kind: { type: string }
+        match: { type: object, additionalProperties: true }
+        orderBy:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              dir: { type: string, enum: [asc, desc] }
+
+    KindDef:
+      description: Per-kind indexing contract. EXPERIMENTAL.
+      x-stability: experimental
+      type: object
+      required: [kind, indexedPaths]
+      properties:
+        kind: { type: string }
+        indexedPaths:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              type: { type: string, enum: [keyword, integer, timestamp, array] }
+        sortablePaths: { type: array, items: { type: string } }
+
+    Event:
+      description: Append-only event log entry. EXPERIMENTAL shape.
+      x-stability: experimental
+      type: object
+      properties:
+        seq: { type: integer }
+        id: { type: string }
+        ts: { type: string }
+        runId: { type: string }
+        operation: { type: string }
+        recordId: { type: string }
+        kind: { type: string }
+        state: { type: string }
+        detail: { type: object, additionalProperties: true }

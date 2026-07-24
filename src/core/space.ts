@@ -21,9 +21,10 @@ import type {
   TakeSelector,
 } from "../storage/adapter.ts";
 import { buildRecord, type PutRequest } from "./record.ts";
-import { compileTemplate, type Template } from "./matching.ts";
+import { compileTemplate, matchesRecord, type Template } from "./matching.ts";
 import { type KindDef, KindRegistry } from "./kinds.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
+import { Notifier } from "./notifier.ts";
 
 export interface SpaceContext {
   principal: string;
@@ -54,9 +55,16 @@ export interface TakeOptions {
   leaseSeconds?: number;
 }
 
+export interface Watch {
+  match: CompiledMatch;
+  cursor0: number; // event seq at creation; the stream starts here unless resumed
+}
+
 export class Space {
   private readonly kinds = new KindRegistry();
   private readonly ctx: SpaceContext;
+  private readonly notifier = new Notifier();
+  private readonly watches = new Map<string, Watch>();
 
   constructor(
     private readonly storage: StorageAdapter,
@@ -103,6 +111,7 @@ export class Space {
         effectivePriority: 0, // server-computed; scheduler sets this for real in M3
       },
     });
+    this.notifier.notify(); // wake any watch streams
     return { id: result.id };
   }
 
@@ -137,7 +146,10 @@ export class Space {
     const selector: TakeSelector = "recordId" in sel
       ? { recordId: sel.recordId, template: sel.template ? this.compile(sel.template) : undefined }
       : { template: this.compile(sel.template) };
-    return this.storage.take(selector, spec);
+    return this.storage.take(selector, spec).then((r) => {
+      this.notifier.notify(); // a claim changes state; a nack/release elsewhere may reopen work
+      return r;
+    });
   }
 
   async renew(lease: Lease, opts: TakeOptions = {}, idempotencyKey?: string): Promise<RenewResult> {
@@ -175,22 +187,28 @@ export class Space {
       ...this.ref(lease),
       result: result ? { kind: result.kind, body: result.body } : null,
     });
-    return this.storage.ack(this.ref(lease), resultInput, idem);
+    const r = await this.storage.ack(this.ref(lease), resultInput, idem);
+    this.notifier.notify(); // an emitted result is a new available record to wake on
+    return r;
   }
 
   async nack(lease: Lease, opts: { backoffSeconds?: number } = {}, idempotencyKey?: string): Promise<SettleResult> {
     const idem = await this.idem("nack", idempotencyKey, this.ref(lease));
-    return this.storage.nack(
+    const r = await this.storage.nack(
       this.ref(lease),
       opts.backoffSeconds ?? this.ctx.defaultBackoffSeconds,
       this.ctx.maxAttempts,
       idem,
     );
+    this.notifier.notify(); // record back to available
+    return r;
   }
 
   async release(lease: Lease, idempotencyKey?: string): Promise<SettleResult> {
     const idem = await this.idem("release", idempotencyKey, this.ref(lease));
-    return this.storage.release(this.ref(lease), idem);
+    const r = await this.storage.release(this.ref(lease), idem);
+    this.notifier.notify(); // record back to available
+    return r;
   }
 
   /** The mutable envelope for a record (diagnostics / inspector / tests). */
@@ -229,6 +247,35 @@ export class Space {
       frontier = next;
     }
     return out;
+  }
+
+  // ---- watches (M1) ----
+
+  /** Create an ephemeral watch. The stream starts from the current event seq. */
+  async createWatch(template: Template): Promise<{ watchId: string }> {
+    const match = this.compile(template); // validates the template
+    const cursor0 = await this.storage.latestEventSeq();
+    const watchId = newUlid();
+    this.watches.set(watchId, { match, cursor0 });
+    return { watchId };
+  }
+
+  getWatch(watchId: string): Watch | undefined {
+    return this.watches.get(watchId);
+  }
+
+  /** Does this event signal a record matching the watch that is now claimable/available? */
+  async matchesEvent(match: CompiledMatch, event: SpaceEvent): Promise<boolean> {
+    if (event.state !== "available") return false; // wakeups are for claimable/available records
+    if (!event.recordId || event.kind !== match.kind) return false;
+    if (!match.where) return true; // kind-only wakeup — no record fetch needed
+    const rec = await this.storage.getRecord(event.recordId);
+    return rec ? matchesRecord(rec, match) : false;
+  }
+
+  /** Resolve when a mutation occurs (a watch wakeup) or after timeoutMs (keepalive). */
+  waitForEvents(timeoutMs: number): Promise<void> {
+    return this.notifier.wait(timeoutMs);
   }
 
   private compile(template: Template): CompiledMatch {

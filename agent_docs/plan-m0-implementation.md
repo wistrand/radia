@@ -88,9 +88,10 @@ grant/auth/scheduler shapes that aren't validated until M1–M3.
 
 ## Current state
 
-Nothing built. All behavior is specified in the `design-*` docs linked from
-[CLAUDE.md](../CLAUDE.md). This plan turns the M0 checklist in
-[plan-milestones.md](plan-milestones.md) into ordered, independently-verifiable phases.
+Phases 0–6 are **DONE** and verified (86 conformance tests on both adapters), plus M1
+watches and the dev console + examples. Remaining: Phase 7 (MCP adapter, Python SDK,
+`npx`/`pipx` packaging). Per-phase records with verify results are in the Phases section
+below.
 
 ## Proposed layout
 

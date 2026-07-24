@@ -1,7 +1,15 @@
 # Observability, audit, re-execution (design)
 
 Spec and rationale for the event log, diagnostics, livelock detection, re-execution, and
-the integrity and confidentiality architectures. Origin: outline §9. Not yet implemented.
+the integrity and confidentiality architectures. Origin: outline §9.
+
+**M0/M1 status:** the **transactional event log** (append-only, same-transaction, run
+identity), **lineage** query, and `body_sha256` are built — event append lives in each
+adapter (`appendEvent`), lineage in `src/core/space.ts` (`getLineage`), read via
+`GET /v0/events` and `GET /v0/records/{id}/lineage`; watches consume the log
+(`src/core/notifier.ts`). **Not implemented:** the hash-chained/anchored tamper-evident
+log (§9.1, M1–M2), envelope encryption / crypto-shredding (§9.2, M2), repeated-pattern
+livelock detection (M3), re-execution tooling (M3), and orphan/starvation diagnostics (M1).
 
 ## Contents
 - Invariants

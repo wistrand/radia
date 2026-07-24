@@ -350,6 +350,11 @@ export class PgliteAdapter implements StorageAdapter {
     return res.rows.map(rowToEvent);
   }
 
+  async latestEventSeq(): Promise<number> {
+    const res = await this.db.query<{ seq: number }>("select coalesce(max(seq), 0)::int as seq from events");
+    return res.rows[0].seq;
+  }
+
   private async appendEvent(tx: Transaction, e: EventInput, ts: string): Promise<void> {
     await tx.query(
       "insert into events (id, ts, run_id, operation, record_id, kind, state, detail) values ($1,$2,$3,$4,$5,$6,$7,$8)",

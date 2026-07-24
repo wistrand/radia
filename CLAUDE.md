@@ -3,12 +3,14 @@ Guidance for agents working in this repo. Read this first, then the relevant fil
 
 ## What this is
 
-Radia is a content-routed coordination runtime for LLM agents. This repo is currently
-**design only** — no implementation exists yet. The authoritative design lives in
+Radia is a content-routed coordination runtime for LLM agents. **M0 (Phases 0–6) plus M1
+watches are built** (Deno + TypeScript; embedded PGlite and SQLite adapters; web console;
+runnable agent examples incl. a CLI LLM chatbot). The authoritative design lives in
 `agent_docs/` (structured by topic) and originates from
 [notes/radia-runtime-outline-v0.3.md](notes/radia-runtime-outline-v0.3.md), the v0.3
-functional design outline. When code lands, `design-*` docs describing built subsystems
-get promoted to `architecture-*` docs (see "Doc lifecycle" below).
+functional design outline. The `design-*` docs are spec + rationale; built ones carry an
+"M0/M1 status" note pointing into `src/`. Build/run below; phase-by-phase status in
+[agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md).
 
 The runtime is a coordination substrate: agents exchange immutable JSON **records**
 (tasks, facts, requests, results) through a shared space and claim work by **template
@@ -37,9 +39,9 @@ content, not by addressing.
 | `deno.json`                             | tasks (`dev`/`check`/`conformance`/`compile`) + import map |
 | `src/main.ts`                           | `radia` CLI entry; `radia dev` boots an embedded space + dev UI |
 | `src/ui/index.html`                     | self-contained dev web console served at `GET /` (no build, public API only) |
-| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes), `problem.ts` (RFC 9457), `handlers/` (`records.ts` put/read_one/query, `kinds.ts`, `leases.ts`, `dev.ts` stats/kinds-list/envelope) |
+| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes), `problem.ts` (RFC 9457), `handlers/` (`records.ts`, `kinds.ts`, `leases.ts`, `dev.ts` stats/events/lineage, `watches.ts` SSE) |
 | `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port + compiled-match AST + lease types), `row.ts` (shared row/value mapping) + `pglite.ts`, `sqlite.ts` |
-| `src/core/`                             | storage-agnostic logic: `space.ts` (service, incl. lineage BFS), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order), `kinds.ts` (indexing contract), `take.ts` (claim ranking), `time.ts`, `ids.ts`, `errors.ts` |
+| `src/core/`                             | storage-agnostic logic: `space.ts` (service, incl. lineage BFS + watches), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order), `kinds.ts` (indexing contract), `take.ts` (claim ranking), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts`, `errors.ts` |
 | `sdk/ts/`                               | TS SDK stub: `client.ts` (`RadiaClient` over `/v0`), `loop.ts` (`agentLoop`, design §5) |
 | `examples/`                             | demo agents + `demo.ts`, and `chat/` — a CLI LLM chatbot (full symmetry: llm + tool calls are records); see `examples/README.md` |
 | `conformance/`                          | storage-adapter contract suite (`run.test.ts`, `harness.ts`) |
@@ -124,11 +126,11 @@ live at the top of the relevant `agent_docs/` file, not here.
 
 ## Doc lifecycle
 
-Because nothing is built yet, subsystem docs are `design-*` (spec + rationale for
-intended work). When a subsystem is implemented, rewrite its `design-*` doc into
-`architecture-*` (how the code works now), point it into the source (file + key symbol),
-and note the rename here. Keep `plan-*` docs until their milestones land, marking which
-phases are done.
+Subsystem docs are `design-*` (spec + rationale). Built ones now open with an "M0/M1
+status" note pointing into `src/`; unbuilt ones (scheduler = M3, marketplace = M2, most of
+auth = M1–M3) stay pure design. Full rename to `architecture-*` is deferred to avoid link
+churn — the status note + source pointers serve the same purpose for now. `plan-*` docs
+track milestone progress; `plan-m0-implementation.md` is the phase-by-phase record.
 
 ## Conventions
 

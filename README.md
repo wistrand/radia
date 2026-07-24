@@ -12,9 +12,13 @@ The name honors Radia Perlman, whose Spanning Tree Protocol showed independent n
 building a shared structure with no central controller. In the tradition of Linda, it
 is a lineage homage.
 
-> Status: design only. This repository currently holds the functional design, not an
-> implementation. See [notes/radia-runtime-outline-v0.3.md](notes/radia-runtime-outline-v0.3.md)
-> for the origin design outline (v0.3) and `agent_docs/` for the structured design.
+> Status: M0 kernel built (Phases 0–6) plus M1 watches — put/take/ack/nack/release/renew,
+> record+envelope split, fencing, idempotency, matching, transactional event log +
+> lineage, dead-letter, and SSE watches — running on two storage adapters (embedded
+> PGlite and SQLite) behind the frozen wire contract, with a web console and runnable
+> agent examples. Not production-ready. See `agent_docs/` for the structured design and
+> [notes/radia-runtime-outline-v0.3.md](notes/radia-runtime-outline-v0.3.md) for the origin
+> outline (v0.3).
 
 ## Why it exists
 
@@ -42,16 +46,24 @@ are encouraging and workload-specific, not proof of general superiority. See
 - **Zero-setup start:** `npx radia dev` is intended to bring up a space, a web
   inspector, and a bundled MCP adapter in under a minute.
 
-## Planned quick start
+## Quick start
 
-Not yet implemented. The design target is:
+Requires [Deno](https://deno.com). No build step.
 
 ```bash
-npx radia dev          # embedded space + web inspector + MCP adapter, one process
+deno task dev          # embedded space + web console at http://localhost:7788
+deno task demo         # a coordination demo (planner + workers + aggregator) against it
+deno task chat         # a CLI LLM chatbot (needs OPENROUTER_API_KEY) — thinking and tools
+                       # are both records; watch it in the console Feed tab
+deno task conformance  # the storage-adapter contract suite (both adapters)
 ```
 
-Then a second agent joins from another terminal, or an MCP-capable harness points at
-the bundled adapter.
+Open the console and watch records and events stream through the **Feed** tab; open a
+record to see its lineage. See [examples/README.md](examples/README.md) for the agents and
+the SDK.
+
+The design target for distribution is `npx radia dev` / `pipx run` (a single wrapped
+binary bundling the MCP adapter); that packaging is Phase 7.
 
 ## How it works
 

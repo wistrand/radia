@@ -1,7 +1,13 @@
 # Delivery semantics and core API (design)
 
 Spec and rationale for the delivery guarantee, leases, idempotency, the API surface,
-the wire protocol, and the client agent loop. Origin: outline §4–5. Not yet implemented.
+the wire protocol, and the client agent loop. Origin: outline §4–5.
+
+**M0/M1 status (implemented):** the guarantee, fenced leases, idempotency-before-lease,
+and all ten operations are built — HTTP handlers in `src/server/handlers/`, the service in
+`src/core/space.ts`, lease/settlement in the adapters, claim ranking in `src/core/take.ts`.
+Watches are implemented (see Wire protocol below). **Not implemented:** long-poll blocking
+on `take` (M1) and the keyset-cursor `query` (M1; a basic ordered list ships now).
 
 ## Contents
 - Invariants
@@ -116,7 +122,12 @@ HTTP + JSON, OpenAPI-first; long-poll for blocking ops.
 
 - Watch: `POST /watches` → `GET /watches/{id}/events` (SSE, event cursor, resumption).
   **Cursor older than retained events → 410 `cursor_expired`:** the client performs a
-  catch-up query and opens a new watch.
+  catch-up query and opens a new watch. **M1 status (implemented):** backed by the event
+  log + an in-process `Notifier` (the LISTEN/NOTIFY-equivalent wakeup; `src/core/notifier.ts`);
+  `Space.matchesEvent` filters events to available records matching the watch template
+  (wakeup-by-kind, plus predicates via a record fetch); resumption via `Last-Event-ID` or
+  `?cursor=`. The 410 floor is 0 until event-log GC lands (M2), so it is dormant. SDK:
+  `client.watch()` (async generator); `agentLoop` consumes it (event-driven, poll fallback).
 - Watches are **ephemeral run resources** (die with the run). Durable subscriptions are
   deferred.
 - Templates are never in query strings.

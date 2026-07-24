@@ -1,7 +1,14 @@
 # Identity, authorization, safety (design)
 
 Spec and rationale for principals, grants, delegation, taint, revocation, and budgets.
-Origin: outline §8. Not yet implemented.
+Origin: outline §8.
+
+**M0 status:** mostly **not implemented**. M0 runs with a single auto-provisioned local
+principal (`local:dev`) and run id (`run:local`) in `src/core/space.ts` (`SpaceContext`);
+records get `taint:false` and no `delegation_context`. Grants, run tokens / the control
+plane, taint + declassification, delegation, revocation, and budget enforcement are M1–M3.
+The examples run tool-workers as **OS-permission-scoped subprocesses** (`--allow-read`/net,
+no env) — a real but out-of-band isolation layer, not the grant system described here.
 
 ## Contents
 - Invariants

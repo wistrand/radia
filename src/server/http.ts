@@ -7,6 +7,7 @@ import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleRegisterKind } from "./handlers/kinds.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
 import { handleEnvelope, handleEvents, handleLineage, handleListKinds, handleStats } from "./handlers/dev.ts";
+import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem } from "./problem.ts";
 
 export interface ServerOptions {
@@ -44,10 +45,16 @@ function makeHandler(space: Space, ui: string) {
       const id = url.pathname.slice("/v0/records/".length, -"/lineage".length);
       return await handleLineage(space, decodeURIComponent(id));
     }
+    if (req.method === "GET" && url.pathname.startsWith("/v0/watches/") && url.pathname.endsWith("/events")) {
+      const id = url.pathname.slice("/v0/watches/".length, -"/events".length);
+      return handleWatchEvents(space, decodeURIComponent(id), req);
+    }
 
     switch (route) {
       case "GET /":
         return new Response(ui, { headers: { "content-type": "text/html; charset=utf-8" } });
+      case "POST /v0/watches":
+        return await handleCreateWatch(space, req);
       case "GET /v0/events":
         return await handleEvents(space, url);
       case "GET /v0/health":

@@ -101,4 +101,71 @@ export class RadiaClient {
     const r = await this.req("GET", `/v0/records/${encodeURIComponent(recordId)}/lineage`);
     return r.lineage;
   }
+
+  /**
+   * Watch a template: an async stream of wakeups (`{seq, recordId, kind}`) for matching
+   * records that become available. Reconnects with a cursor on drop; on 410 cursor_expired
+   * it restarts from the beginning (a real client would catch-up-query first). Ends when
+   * `signal` aborts. M0/M1: use a kind-only template for wakeup-by-kind.
+   */
+  async *watch(template: Template, signal?: AbortSignal): AsyncGenerator<Wakeup> {
+    const { watchId } = await this.req("POST", "/v0/watches", template) as { watchId: string };
+    let cursor: number | undefined;
+    while (!signal?.aborted) {
+      let res: Response;
+      try {
+        res = await fetch(`${this.base}/v0/watches/${watchId}/events`, {
+          headers: cursor !== undefined ? { "Last-Event-ID": String(cursor) } : {},
+          signal,
+        });
+      } catch {
+        if (signal?.aborted) return;
+        await sleep(300);
+        continue;
+      }
+      if (res.status === 410) {
+        cursor = 0; // cursor_expired: restart (a real client catches up via query first)
+        continue;
+      }
+      if (!res.ok || !res.body) {
+        await sleep(300);
+        continue;
+      }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let sep: number;
+          while ((sep = buf.indexOf("\n\n")) >= 0) {
+            const frame = buf.slice(0, sep);
+            buf = buf.slice(sep + 2);
+            let id: string | undefined;
+            let data: string | undefined;
+            for (const line of frame.split("\n")) {
+              if (line.startsWith("id:")) id = line.slice(3).trim();
+              else if (line.startsWith("data:")) data = line.slice(5).trim();
+            }
+            if (id !== undefined) cursor = Number(id);
+            if (data) yield JSON.parse(data) as Wakeup;
+          }
+        }
+      } catch {
+        // stream dropped; reconnect below
+      }
+      if (signal?.aborted) return;
+      await sleep(200);
+    }
+  }
 }
+
+export interface Wakeup {
+  seq: number;
+  recordId: string;
+  kind: string;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

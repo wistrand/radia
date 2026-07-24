@@ -270,6 +270,9 @@ export interface StorageAdapter {
 
   /** Append-only event log, in seq order, after `afterSeq` (0 = from the start). (Phase 5) */
   getEvents(afterSeq: number, limit: number): Promise<SpaceEvent[]>;
+
+  /** The highest event seq so far (0 if none) — a watch's starting cursor. (M1) */
+  latestEventSeq(): Promise<number>;
 }
 
 /** Marker for port methods a phase has not implemented yet. */

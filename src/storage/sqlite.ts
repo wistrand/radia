@@ -340,6 +340,11 @@ export class SqliteAdapter implements StorageAdapter {
     return Promise.resolve(rows.map(rowToEvent));
   }
 
+  latestEventSeq(): Promise<number> {
+    const row = this.db.prepare("select coalesce(max(seq), 0) as seq from events").get() as { seq: number };
+    return Promise.resolve(Number(row.seq));
+  }
+
   private appendEvent(e: EventInput, ts: string): void {
     this.db.prepare(
       "insert into events (id, ts, run_id, operation, record_id, kind, state, detail) values (?,?,?,?,?,?,?,?)",

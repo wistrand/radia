@@ -1,7 +1,15 @@
 # Storage, deployment, distribution (design)
 
 Spec and rationale for the Postgres mapping, the three deployment modes, and the
-distribution strategy. Origin: outline §10. Not yet implemented.
+distribution strategy. Origin: outline §10.
+
+**M0 status:** the two **embedded** adapters are built behind the `StorageAdapter` port
+(`src/storage/adapter.ts`) — `src/storage/pglite.ts` (WASM Postgres) and
+`src/storage/sqlite.ts` (built-in `node:sqlite`) — with the record/envelope tables, the
+partial claim index, and the SQL mapping below; both pass the full conformance suite in CI.
+The `dev` mode is `deno task dev`. **Not implemented:** the standalone **Postgres** adapter
+and `single-node`/`production` modes (M1+), `npm`/`pip` binary wrapping (Phase 7), envelope
+encryption/KMS (M2).
 
 ## Contents
 - Invariants

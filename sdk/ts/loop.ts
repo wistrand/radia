@@ -1,8 +1,9 @@
-// agentLoop — the take-based worker harness (design §5). Polls `take` across templates,
-// runs a handler under a fenced lease with a renewal heartbeat, acks the result (with a
-// per-attempt idempotency key so a dropped response is safe), nacks on error, and logs
-// when a lease is fenced (at-least-once: duplicate work is possible). M0 polls because
-// watches (SSE) and long-poll land in M1.
+// agentLoop — the take-based worker harness (design §5), event-driven via watches (M1).
+// Background watchers turn matching-kind wakeups into a signal; the claim loop drains all
+// its templates on each wakeup, then waits for the next one (with a poll fallback so a
+// missed wakeup or a dropped watch can't stall it). Each claim runs the handler under a
+// fenced lease with a renewal heartbeat, acks with a per-attempt idempotency key, nacks on
+// error, and logs when fenced (at-least-once: duplicate work is possible).
 
 import type { PutRequest, RadiaClient, RadiaRecord, Template } from "./client.ts";
 
@@ -10,9 +11,8 @@ export interface LoopOptions {
   name: string;
   templates: Template[];
   leaseSeconds?: number;
-  pollMs?: number;
+  pollMs?: number; // fallback tick when no wakeup arrives
   signal?: AbortSignal;
-  /** Run the work. Return a result record to emit on ack, or void to ack empty. Throw to nack. */
   handle: (record: RadiaRecord, client: RadiaClient) => Promise<PutRequest | void>;
   log?: (msg: string) => void;
 }
@@ -21,8 +21,24 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<void> {
   const leaseSeconds = o.leaseSeconds ?? 30;
-  const pollMs = o.pollMs ?? 250;
+  const fallbackMs = Math.max(o.pollMs ?? 250, 1000);
   const log = o.log ?? (() => {});
+  const kinds = [...new Set(o.templates.map((t) => t.kind))];
+
+  // Background watchers: each matching-kind wakeup resolves a pending idle wait.
+  let wake: (() => void) | null = null;
+  const doWake = () => {
+    const w = wake;
+    wake = null;
+    w?.();
+  };
+  const watchers = kinds.map(async (kind) => {
+    try {
+      for await (const _ of client.watch({ kind }, o.signal)) doWake();
+    } catch (e) {
+      log(`[${o.name}] watch: ${e}`); // fall back to the poll tick
+    }
+  });
 
   while (!o.signal?.aborted) {
     let claimed = null;
@@ -32,10 +48,20 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
         if (claimed) break;
       }
     } catch (e) {
-      log(`[${o.name}] take error: ${e}`); // transient (e.g. space restarting) — back off and retry
+      log(`[${o.name}] take error: ${e}`);
     }
+
     if (!claimed) {
-      await sleep(pollMs);
+      // Idle: wait for a wakeup or the fallback tick, whichever comes first.
+      await new Promise<void>((resolve) => {
+        wake = resolve;
+        setTimeout(() => {
+          if (wake === resolve) {
+            wake = null;
+            resolve();
+          }
+        }, fallbackMs);
+      });
       continue;
     }
 
@@ -56,6 +82,8 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
       hb.stop();
     }
   }
+
+  await Promise.allSettled(watchers);
 }
 
 function startHeartbeat(client: RadiaClient, claimed: { lease: Parameters<RadiaClient["renew"]>[0] }, leaseSeconds: number) {

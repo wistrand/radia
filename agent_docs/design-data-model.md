@@ -1,7 +1,12 @@
 # Data model (design)
 
-Spec and rationale for Radia's core data model. Origin: outline §2. Not yet
-implemented.
+Spec and rationale for Radia's core data model. Origin: outline §2.
+
+**M0 status (implemented):** the record + `record_runtime` split, ULID ids, `body_sha256`,
+the client-vs-runtime metadata split, and `parent_ids` lineage live in
+`src/core/record.ts` (`buildRecord`), `src/storage/adapter.ts` (types), `src/storage/row.ts`
+(mapping), and the two adapters. Kinds/indexing: `src/core/kinds.ts`. **Not implemented:**
+artifacts / blob storage (§2.4, M1), taint (§2.1, M3), delegation_context (M3).
 
 ## Contents
 - Invariants
