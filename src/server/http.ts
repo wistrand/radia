@@ -22,19 +22,26 @@ export interface ServerOptions {
   port: number;
   space: Space;
   signal?: AbortSignal;
+  /** Operator token injected into the served console so it authenticates via `Authorization:
+   *  Bearer` like any client (instead of relying on the no-header operator default). */
+  operatorToken?: string;
 }
 
 /** The dev UI, loaded once at startup. Self-contained single file (see src/ui/index.html). */
-function loadUi(): string {
+function loadUi(operatorToken?: string): string {
+  let html: string;
   try {
-    return Deno.readTextFileSync(new URL("../ui/index.html", import.meta.url));
+    html = Deno.readTextFileSync(new URL("../ui/index.html", import.meta.url));
   } catch {
     return "<!doctype html><title>radia</title><p>dev UI not found (src/ui/index.html).</p>";
   }
+  // Bake the operator token into the page. If absent, the placeholder stays and the console's
+  // guard falls back to the no-header operator default (e.g. UI opened as a static file).
+  return operatorToken ? html.replaceAll("__RADIA_OPERATOR_TOKEN__", operatorToken) : html;
 }
 
 export function startServer(opts: ServerOptions): { finished: Promise<void> } {
-  const handler = makeHandler(opts.space, loadUi());
+  const handler = makeHandler(opts.space, loadUi(opts.operatorToken));
   const server = Deno.serve({ port: opts.port, signal: opts.signal }, handler);
   console.log(`radia dev listening on http://localhost:${opts.port} (web console at /)`);
   return { finished: server.finished };
@@ -43,13 +50,13 @@ export function startServer(opts: ServerOptions): { finished: Promise<void> } {
 type Auth = { principal: string } | { error: string; detail: string };
 
 /**
- * Resolve the calling principal from a request. Precedence:
- *  - `Authorization: Bearer <token>` → the token is resolved against the credential store; a
- *    valid, unexpired RUN token yields its `run:*` principal, and any invalid/expired/stopped
- *    token is a hard error (never a silent fall-through to operator). Definition tokens do not
- *    authorize coordination — only `POST /v0/agent-runs` reads those, before this check.
- *  - `X-Radia-Principal: <p>` → a dev-only header to ASSUME a principal (insecure; testing).
- *  - neither → the operator `human:local`, so unauthenticated dev/UI/examples stay fully open.
+ * Resolve the calling principal from a request. `Authorization: Bearer <run-token>` (minted via
+ * the bootstrap chain) is the ONLY auth channel: a valid, unexpired RUN token yields its `run:*`
+ * principal; any invalid/expired/stopped token is a hard error (never a silent fall-through to
+ * operator). Definition tokens do not authorize coordination — only `POST /v0/agent-runs` reads
+ * those, before this check. With NO Authorization header the caller is the operator `human:local`,
+ * so unauthenticated local dev/UI/examples stay fully open (auto-provisioned local auth). To act
+ * as a scoped principal, mint a real run token — there is no impersonation shortcut.
  */
 async function resolveAuth(req: Request, space: Space): Promise<Auth> {
   const authz = req.headers.get("Authorization");
@@ -59,8 +66,6 @@ async function resolveAuth(req: Request, space: Space): Promise<Auth> {
     if (r.ok && r.kind === "def") return { error: "invalid_token", detail: "a definition token does not authorize coordination; mint a run first" };
     return { error: r.reason, detail: `bearer token ${r.reason}` };
   }
-  const assumed = req.headers.get("X-Radia-Principal");
-  if (assumed && assumed.length > 0) return { principal: assumed };
   return { principal: "human:local" };
 }
 
@@ -124,6 +129,7 @@ function makeHandler(space: Space, ui: string) {
           api: "v0",
           storage: space.storageName,
           now: await space.now(),
+          principal, // the resolved caller (so the console can show who it's authenticated as)
         });
       case "POST /v0/records":
         return await handlePut(space, req, principal);

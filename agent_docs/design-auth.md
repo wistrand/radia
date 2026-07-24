@@ -23,10 +23,15 @@ definition's grants** (`Space.grantSubject` maps `run:` → its `agent:`). Token
 only their sha256 **hash** is stored (in the record body — a hash is not a secret), and the
 credential index is a cache over `agent_definition`/`agent_run` records, rebuilt by
 `Space.loadCredentials` at startup (the same cache-over-records pattern as kinds). Expiry uses
-the DB clock (`SpaceContext.runTokenSeconds`, default 900s). The dev-only `X-Radia-Principal`
-header still assumes a principal for testing without a token. SDK: `new RadiaClient(url,
-{token})` / `.withToken()`, `client.createAgentDefinition/createRun/stopRun/grant`. Conformance:
-`conformance/suites/auth.ts`.
+the DB clock (`SpaceContext.runTokenSeconds`, default 900s). `Authorization: Bearer <token>`
+is the **only** auth channel — with no header the caller is the operator `human:local`, so local
+dev/UI/examples stay open; to act as a scoped principal, mint a real run token (there is no
+impersonation shortcut). The bundled dev console **holds an operator token**: the server mints one
+at startup (`Space.mintOperatorToken` — resolves to `human:local`, server-lifetime, not a record)
+and bakes it into the served page, so the console authenticates via `Authorization: Bearer` like
+any client rather than relying on the no-header default. `GET /v0/health` echoes the resolved
+`principal`. SDK: `new RadiaClient(url, {token})` / `.withToken()`,
+`client.createAgentDefinition/createRun/stopRun/grant`. Conformance: `conformance/suites/auth.ts`.
 
 **Per-run lease ownership + revocation (built):** a lease is owned by the claiming principal
 (`take` threads it into `lease_owner`; a run token → `run:*`). A **stopped** run's token stops
@@ -163,11 +168,8 @@ flowchart TD
     Req[request] --> B{"Authorization: Bearer?"}
     B -->|"valid, active run token"| Prin["principal = run:id"]
     B -->|"invalid / expired / stopped"| E401[["401"]]
-    B -->|"absent"| XH{"X-Radia-Principal header?"}
-    XH -->|"set (dev-only)"| Prin2["principal = that value"]
-    XH -->|"absent"| Oper["principal = human:local (operator)"]
+    B -->|"absent"| Oper["principal = human:local (operator)"]
     Prin --> Ops
-    Prin2 --> Ops
     Oper --> Ops
     Ops{"path under /v0/ops/* ?"} -->|"yes, not privileged"| E403a[["403"]]
     Ops -->|"no, or privileged"| Az["authorize(principal, op, kind)"]

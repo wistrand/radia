@@ -65,15 +65,26 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   from `SpaceContext`, not the resolved caller (per-request `created_by` threading is a deferred
   follow-up; tests pin `created_by === "local:dev"`). Don't "fix" this by moving grant checks
   into `Space` methods without also threading the principal through every call site.
-- **Default principal is the operator, so dev stays open; enforcement only bites an assumed
-  principal.** An unauthenticated request resolves to `human:local` (privileged) — the UI, demo,
-  and examples work with no auth. `X-Radia-Principal` lets a dev client ASSUME an agent/run
-  principal to test grants; it is **insecure by construction** (a client must not choose its own
-  identity) — a dev convenience alongside real run tokens, never production auth.
+- **Default principal is the operator, so dev stays open; enforcement only bites a real token.**
+  An unauthenticated request resolves to `human:local` (privileged) — the UI, demo, and examples
+  work with no auth. To act as a scoped principal you must mint a real run token via the bootstrap
+  chain; there is **no impersonation shortcut** (the old dev-only `X-Radia-Principal` assume-header
+  was removed — a client must never choose its own identity, so a single Bearer channel is the
+  whole story).
+- **The dev console holds an operator token; it's a server-lifetime in-memory bootstrap credential,
+  not a record.** `Space.mintOperatorToken` (startup) registers a hash in `CredentialStore` that
+  resolves to the privileged `human:local`, never expires, and is NOT persisted or cleared on
+  `loadCredentials` rebuild (like the in-code meta-kinds). The server bakes the plaintext into the
+  served `index.html` (replacing `__RADIA_OPERATOR_TOKEN__`); the console's guard falls back to the
+  no-header default if the placeholder is left intact (page opened as a static file). This is
+  additive — the no-header operator default still exists for curl/examples/tests; the console just
+  demonstrates the real Bearer path. Baking a token into served HTML is safe only because the dev
+  API is already open on the local network; a production console would authenticate an operator
+  session and the no-header default would be closed.
 - **A presented `Authorization: Bearer` token must resolve; a bad one is 401, never a silent
-  fall-through to the operator.** Only the *absence* of any credential defaults to `human:local`.
-  Precedence is Bearer → `X-Radia-Principal` → operator; `resolveAuth` in `src/server/http.ts`
-  encodes it. `POST /v0/agent-runs` is special — it reads its DEFINITION token directly (a def
+  fall-through to the operator.** Only the *absence* of any credential defaults to `human:local`;
+  `resolveAuth` in `src/server/http.ts` encodes it (Bearer → run principal, else operator).
+  `POST /v0/agent-runs` is special — it reads its DEFINITION token directly (a def
   token is not a coordination principal, so `resolveAuth` returns `invalid_token` for it), which
   is why that route is dispatched **before** the bad-bearer 401 check.
 - **Only token HASHES are stored; the credential index is a cache over records.** Run/definition

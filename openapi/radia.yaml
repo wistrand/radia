@@ -16,11 +16,11 @@ info:
     Authorization (M1): kind-scoped grants are reserved `grant` records (assigned by a human/
     supervisor; discovered by query). Requests authenticate with `Authorization: Bearer
     <run-token>` minted through the bootstrap chain (agent-definitions → agent-runs → stop); a
-    run:* principal inherits its agent definition's grants. Absent a credential the caller
-    defaults to the operator `human:local`; a dev-only `X-Radia-Principal` header may assume a
-    principal (insecure stand-in). `put`/`take`/`query`/`read_one` are grant-checked; `/v0/ops/*`
-    and writing `grant`/`signal`/`agent_*` records require an operator (`403`); an invalid/
-    expired/stopped bearer token is `401`.
+    run:* principal inherits its agent definition's grants. `Authorization: Bearer` is the only
+    auth channel — absent a credential the caller defaults to the operator `human:local` (act as a
+    scoped principal by minting a real run token). `put`/`take`/`query`/`read_one` are
+    grant-checked; `/v0/ops/*` and writing `grant`/`signal`/`agent_*` records require an operator
+    (`403`); an invalid/expired/stopped bearer token is `401`.
 
     Implemented through M0 (Phases 0-6) plus M1 watches + grants + the auth bootstrap chain / run
     tokens. Not implemented yet: artifacts, taint/delegation/template-scoped grants, OIDC,
@@ -54,6 +54,7 @@ paths:
                   api: { type: string }
                   storage: { type: string }
                   now: { type: string }
+                  principal: { type: string, description: "the resolved caller (from the bearer token, or the operator default)" }
 
   # --- Data plane: FROZEN v0-stable, additive-only ------------------------------------
 
@@ -312,10 +313,10 @@ paths:
 
   # --- bootstrap chain (auth): definition -> run token -> stop. EXPERIMENTAL --------------
   # Requests authenticate with `Authorization: Bearer <run-token>` (a run:* principal that
-  # inherits its agent definition's grants). Absent any credential, the caller defaults to the
-  # operator `human:local`; a dev-only `X-Radia-Principal` header may assume a principal. See
-  # design-auth.md. Definitions/runs are records (agent_definition/agent_run); only the token
-  # HASH is stored — the plaintext token is returned once and never persisted.
+  # inherits its agent definition's grants) — the only auth channel. Absent any credential, the
+  # caller defaults to the operator `human:local` (act as a scoped principal by minting a run
+  # token). See design-auth.md. Definitions/runs are records (agent_definition/agent_run); only the
+  # token HASH is stored — the plaintext token is returned once and never persisted.
 
   /agent-definitions:
     post:

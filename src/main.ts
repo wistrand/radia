@@ -29,7 +29,8 @@ async function dev(args: string[]): Promise<void> {
   const space = new Space(storage);
   await space.loadKinds(); // restore persisted kind declarations
   await space.loadCredentials(); // rebuild the credential index from agent_definition/agent_run records
-  const { finished } = startServer({ port, space });
+  const operatorToken = await space.mintOperatorToken(); // the bundled console authenticates with this
+  const { finished } = startServer({ port, space, operatorToken });
   await finished;
   await storage.close();
 }

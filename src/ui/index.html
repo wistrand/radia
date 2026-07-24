@@ -255,9 +255,17 @@
 <script>
 const $ = (id) => document.getElementById(id);
 
+// The dev server bakes an operator token into this page (Authorization: Bearer), so the console
+// authenticates like any client rather than relying on the no-header operator default. If the
+// page is opened as a static file the placeholder is left intact and we send no token (falling
+// back to that default). The token is server-lifetime and scoped to the local console.
+const OPERATOR_TOKEN = "__RADIA_OPERATOR_TOKEN__";
+const AUTH_TOKEN = OPERATOR_TOKEN.startsWith("__RADIA_") ? null : OPERATOR_TOKEN;
+
 async function api(method, path, body, headers = {}) {
   const h = { ...headers };
   if (body !== undefined) h["content-type"] = "application/json";
+  if (AUTH_TOKEN) h["Authorization"] = "Bearer " + AUTH_TOKEN;
   const res = await fetch(path, {
     method,
     headers: h,
@@ -306,9 +314,11 @@ async function loadHealth() {
   const d = r.data;
   $("health").innerHTML = `<span class="pill">storage: ${esc(d.storage)}</span>`
     + `<span class="pill">api ${esc(d.api)}</span>`
-    + `<span class="pill">v${esc(d.version)}</span>`;
+    + `<span class="pill">v${esc(d.version)}</span>`
+    + `<span class="pill" title="${AUTH_TOKEN ? "authenticated with an operator token (Authorization: Bearer)" : "no token — relying on the operator default"}">as ${esc(d.principal || "?")}${AUTH_TOKEN ? " · token" : ""}</span>`;
   $("overview-health").innerHTML =
-    `<div><b>Storage backend:</b> <span class="mono">${esc(d.storage)}</span></div>`
+    `<div><b>Principal:</b> <span class="mono">${esc(d.principal || "?")}</span>${AUTH_TOKEN ? ` <span class="tag tag-grant">operator token</span>` : ` <span class="muted">(no token — operator default)</span>`}</div>`
+    + `<div><b>Storage backend:</b> <span class="mono">${esc(d.storage)}</span></div>`
     + `<div><b>DB clock:</b> <span class="mono">${esc(d.now)}</span></div>`
     + `<div><b>Version:</b> <span class="mono">${esc(d.version)}</span> · <b>API:</b> ${esc(d.api)}</div>`;
 }

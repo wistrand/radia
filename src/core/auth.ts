@@ -43,11 +43,21 @@ export type ResolvedToken =
 export class CredentialStore {
   #byHash = new Map<string, DefCred | RunCred>();
   #runByPrincipal = new Map<string, RunCred>();
+  // Operator tokens resolve to `human:local` (privileged) and never expire — server-lifetime
+  // bootstrap credentials for the bundled dev console, NOT persisted as records (like the
+  // in-code meta-kinds). Cleared on rebuild; the server re-mints one at startup.
+  #operatorHashes = new Set<string>();
 
-  /** Reset (used before a rebuild from records). */
+  /** Reset run/definition creds (used before a rebuild from records). Operator tokens persist
+   *  for the process lifetime and are re-seeded by the server, so they are not cleared here. */
   clear(): void {
     this.#byHash.clear();
     this.#runByPrincipal.clear();
+  }
+
+  /** Register an operator token hash (resolves to the privileged `human:local`). */
+  addOperator(hash: string): void {
+    this.#operatorHashes.add(hash);
   }
 
   addDefinition(hash: string, agent: string): void {
@@ -78,7 +88,10 @@ export class CredentialStore {
 
   /** Resolve a presented bearer token against the index. `now` is the DB clock (for expiry). */
   async resolve(token: string, now: string): Promise<ResolvedToken> {
-    const cred = this.#byHash.get(await sha256Hex(token));
+    const hash = await sha256Hex(token);
+    // Operator token (bundled console): the privileged local operator, no expiry.
+    if (this.#operatorHashes.has(hash)) return { ok: true, kind: "run", principal: "human:local", agent: "human:local" };
+    const cred = this.#byHash.get(hash);
     if (!cred) return { ok: false, reason: "invalid_token" };
     if (cred.kind === "def") return { ok: true, kind: "def", agent: cred.agent };
     if (cred.stopped) return { ok: false, reason: "run_stopped" };

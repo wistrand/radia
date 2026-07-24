@@ -45,16 +45,14 @@ function defaultBase(): string {
 export interface ClientAuth {
   /** A run token (or definition token, for minting) sent as `Authorization: Bearer`. */
   token?: string;
-  /** Dev-only: assume a principal via `X-Radia-Principal` (insecure; for testing grants). */
-  principal?: string;
 }
 
 export class RadiaClient {
   private readonly auth: ClientAuth;
-  /** @param auth a run token (`{token}`) or, dev-only, an assumed `{principal}`. A bare string is
-   *  treated as `{principal}` for back-compat. Omit for the default operator. */
+  /** @param auth a run token — `{token}` or a bare token string. Omit for the default operator
+   *  (`human:local`). To act as a scoped principal, mint a run token via the bootstrap chain. */
   constructor(readonly base: string = defaultBase(), auth: ClientAuth | string = {}) {
-    this.auth = typeof auth === "string" ? { principal: auth } : auth;
+    this.auth = typeof auth === "string" ? { token: auth } : auth;
   }
 
   /** A client authenticated with a bearer token (e.g. a minted run token). */
@@ -68,7 +66,6 @@ export class RadiaClient {
       headers: {
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
         ...(this.auth.token ? { "Authorization": `Bearer ${this.auth.token}` } : {}),
-        ...(this.auth.principal ? { "X-Radia-Principal": this.auth.principal } : {}),
         ...headers,
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -79,7 +76,7 @@ export class RadiaClient {
     return data;
   }
 
-  health(): Promise<{ storage: string; now: string; version: string }> {
+  health(): Promise<{ storage: string; now: string; version: string; principal: string }> {
     return this.req("GET", "/v0/health");
   }
 

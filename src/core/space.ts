@@ -329,6 +329,15 @@ export class Space {
     return { applied: true, quarantined };
   }
 
+  /** Mint an operator token (resolves to the privileged `human:local`, no expiry) for the bundled
+   *  dev console. Not a record — a server-lifetime bootstrap credential; the server re-mints one
+   *  at startup and injects it into the served UI so the console authenticates like any client. */
+  async mintOperatorToken(): Promise<string> {
+    const { token, hash } = await mintCredential();
+    this.creds.addOperator(hash);
+    return token;
+  }
+
   /** Resolve a presented bearer token to a principal (DB clock for expiry). */
   resolveToken(token: string): Promise<ResolvedToken> {
     return this.storage.now().then((now) => this.creds.resolve(token, now));
