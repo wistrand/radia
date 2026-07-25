@@ -10,6 +10,11 @@
 Show that content-routed coordination (and specifically the agenda scheduler) earns its
 place, and that the durability guarantees hold under failure.
 
+The same "earns its place" bar gates M2's marketplace and durable timers: build them behind a
+measured baseline, not on spec. Durable execution is Temporal's ground — Radia does not
+reimplement it (see [research-positioning.md](research-positioning.md)); the in-scope exception
+is the delayed-visibility sweeper over `available_at` that retry backoff already needs.
+
 ## Baselines
 
 Three, to isolate contributions:

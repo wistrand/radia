@@ -397,12 +397,14 @@ export class Space {
     return this.storage.now();
   }
 
-  async put(req: PutRequest, idempotencyKey?: string): Promise<{ id: string }> {
+  /** `principal` is the RESOLVED caller (server-assigned `created_by` + idempotency scope); it
+   *  defaults to the space's own identity for in-process/operator callers. */
+  async put(req: PutRequest, idempotencyKey?: string, principal?: string): Promise<{ id: string }> {
     // A kind_def record IS a kind declaration: validate its body as a KindDef before commit,
     // so the substrate coordinates its own schema through the normal write path (no side table).
     if (req.kind === KIND_DEF) {
       const def = this.kindDefFromBody(req.body); // throws RadiaError on an invalid declaration
-      const id = await this.putRaw(req, idempotencyKey);
+      const id = await this.putRaw(req, idempotencyKey, { principal });
       this.kinds.register(def); // reflect it in this process's registry (also on idempotent replay)
       return id;
     }
@@ -411,20 +413,20 @@ export class Space {
     if (req.kind === GRANT) {
       validateGrantDef(this.grantDefFromBody(req.body));
     }
-    return this.putRaw(req, idempotencyKey);
+    return this.putRaw(req, idempotencyKey, { principal });
   }
 
   private async putRaw(
     req: PutRequest,
     idempotencyKey?: string,
-    opts: { taint?: boolean } = {},
+    opts: { taint?: boolean; principal?: string } = {},
   ): Promise<{ id: string }> {
     const now = await this.storage.now(); // INVARIANT: timestamps come from the DB clock
     // Taint is server-computed data lineage: forced by opts (declassify), else client-raise OR
     // any data parent tainted. A client can only RAISE taint; clearing needs a privileged declassify.
     const taint = opts.taint !== undefined ? opts.taint : await this.computeTaint(req.parentIds ?? [], req.taint);
     const { record, bodyJson } = await buildRecord(req, {
-      principal: this.ctx.principal,
+      principal: opts.principal ?? this.ctx.principal, // created_by = the resolved caller
       schemaVersion: this.ctx.schemaVersion,
       now,
       taint,
@@ -433,7 +435,7 @@ export class Space {
       kind: req.kind,
       body: req.body,
       parentIds: req.parentIds ?? [],
-    });
+    }, opts.principal);
     const result = await this.storage.put({
       record,
       bodyJson,
@@ -490,13 +492,25 @@ export class Space {
     });
   }
 
-  async renew(lease: Lease, opts: TakeOptions = {}, idempotencyKey?: string): Promise<RenewResult> {
-    const idem = await this.idem("renew", idempotencyKey, this.ref(lease));
+  async renew(lease: Lease, opts: TakeOptions = {}, idempotencyKey?: string, principal?: string): Promise<RenewResult> {
+    const idem = await this.idem("renew", idempotencyKey, this.ref(lease), principal);
     return this.storage.renew(this.ref(lease), opts.leaseSeconds ?? this.ctx.defaultLeaseSeconds, idem);
   }
 
-  /** Consume the leased record, optionally emitting a result record linked to it. */
-  async ack(lease: Lease, result?: PutRequest, idempotencyKey?: string): Promise<AckResult> {
+  /** Consume the leased record, optionally emitting a result record linked to it. `principal` is
+   *  the RESOLVED caller (server-assigned `created_by` on the result + idempotency scope + lease
+   *  ownership check). */
+  async ack(lease: Lease, result?: PutRequest, idempotencyKey?: string, principal?: string): Promise<AckResult> {
+    // The authoritative lease owner (from the envelope, not the client-presented lease).
+    const owner = (await this.storage.getEnvelope(lease.recordId))?.leaseOwner;
+    // Owner-match: a non-operator principal may only settle a lease it OWNS — defense-in-depth on
+    // top of fencing that closes lease-leak impersonation (an ack-emitted result is authorized as,
+    // and carries the delegation chain of, the lease owner). A leaked lease presented by another
+    // principal fences out as lease_lost. In-process/operator callers (no principal / privileged)
+    // skip the check.
+    if (principal && !this.isPrivileged(principal) && owner && principal !== owner) {
+      return { status: "lease_lost" };
+    }
     let resultInput: PutInput | undefined;
     if (result) {
       const now = await this.storage.now();
@@ -504,8 +518,6 @@ export class Space {
         lease.recordId,
         ...(result.parentIds ?? []).filter((p) => p !== lease.recordId),
       ];
-      // The authoritative lease owner (from the envelope, not the client-presented lease).
-      const owner = (await this.storage.getEnvelope(lease.recordId))?.leaseOwner;
       // Emitting a result IS a put: authorize the ACTING principal to put this kind (this closes
       // the gap where ack-emitted records bypassed put-authorization). Pipeline-friendly — each
       // agent needs only its own grant. A template-scoped grant also constrains the result body.
@@ -522,7 +534,7 @@ export class Space {
       // yields a tainted result (client may also raise it; never lower it).
       const taint = await this.computeTaint(parentIds, result.taint);
       const { record, bodyJson } = await buildRecord({ ...result, parentIds }, {
-        principal: this.ctx.principal,
+        principal: principal ?? this.ctx.principal, // created_by = the acking caller
         schemaVersion: this.ctx.schemaVersion,
         now,
         delegationContext,
@@ -543,14 +555,14 @@ export class Space {
     const idem = await this.idem("ack", idempotencyKey, {
       ...this.ref(lease),
       result: result ? { kind: result.kind, body: result.body } : null,
-    });
+    }, principal);
     const r = await this.storage.ack(this.ref(lease), resultInput, idem);
     this.notifier.notify(); // an emitted result is a new available record to wake on
     return r;
   }
 
-  async nack(lease: Lease, opts: { backoffSeconds?: number } = {}, idempotencyKey?: string): Promise<SettleResult> {
-    const idem = await this.idem("nack", idempotencyKey, this.ref(lease));
+  async nack(lease: Lease, opts: { backoffSeconds?: number } = {}, idempotencyKey?: string, principal?: string): Promise<SettleResult> {
+    const idem = await this.idem("nack", idempotencyKey, this.ref(lease), principal);
     const r = await this.storage.nack(
       this.ref(lease),
       opts.backoffSeconds ?? this.ctx.defaultBackoffSeconds,
@@ -561,8 +573,8 @@ export class Space {
     return r;
   }
 
-  async release(lease: Lease, idempotencyKey?: string): Promise<SettleResult> {
-    const idem = await this.idem("release", idempotencyKey, this.ref(lease));
+  async release(lease: Lease, idempotencyKey?: string, principal?: string): Promise<SettleResult> {
+    const idem = await this.idem("release", idempotencyKey, this.ref(lease), principal);
     const r = await this.storage.release(this.ref(lease), idem);
     this.notifier.notify(); // record back to available
     return r;
@@ -804,15 +816,18 @@ export class Space {
     return { recordId: lease.recordId, leaseId: lease.leaseId, epoch: lease.epoch };
   }
 
-  /** Build an idempotency key with a request hash, or undefined when no key was supplied. */
+  /** Build an idempotency key with a request hash, or undefined when no key was supplied. The
+   *  key is scoped to the RESOLVED caller (`principal`), so two agents reusing the same
+   *  Idempotency-Key don't collide; in-process callers default to the space's own identity. */
   private async idem(
     operation: string,
     key: string | undefined,
     request: unknown,
+    principal?: string,
   ): Promise<IdempotencyKey | undefined> {
     if (!key) return undefined;
     return {
-      principal: this.ctx.principal,
+      principal: principal ?? this.ctx.principal,
       operation,
       key,
       requestHash: await sha256Hex(JSON.stringify(request)),

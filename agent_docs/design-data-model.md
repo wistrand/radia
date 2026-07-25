@@ -84,7 +84,10 @@ A hard API split. Server-controlled always: `created_by`, `delegation_context`,
 `created_at`, `schema_version` (post-validation), `taint`, `effective_priority`, all
 lease fields. Clients submit only *claims* (`confidence`, `requested_priority`); the
 runtime decides what they are worth. This is what stops an agent from, e.g., declaring
-its own priority or authorship.
+its own priority or authorship. **`created_by` is the server-RESOLVED caller** (the handler's
+resolved principal — a run token → `run:*`, no header → `human:local`), threaded into
+`put`/`ack`; it also scopes idempotency (per principal) and the event `run_id`. In-process
+callers default to the space's own identity.
 
 ## Provenance vs. authority
 

@@ -119,6 +119,20 @@ export const authSuites: Suite[] = [
     },
   },
   {
+    name: "lease settlement is bound to its owner: another principal's ack fences out (lease_lost)",
+    run: async (adapter) => {
+      const space = newSpace(adapter); // task
+      await space.put({ kind: "task", body: { tag: "t" } });
+      const claimed = await space.take({ template: { kind: "task" } }, {}, "run:a"); // owned by run:a
+      assert(claimed);
+      // a DIFFERENT run presenting the same VALID lease is fenced out (owner-match on top of fencing)
+      assertEquals((await space.ack(claimed!.lease, undefined, undefined, "run:b")).status, "lease_lost");
+      assertEquals((await space.getEnvelope(claimed!.record.id))!.state, "leased"); // not consumed
+      // the owner may settle its own lease
+      assertEquals((await space.ack(claimed!.lease, undefined, undefined, "run:a")).status, "ok");
+    },
+  },
+  {
     name: "an expired run token stops resolving (short-lived tokens)",
     run: async (adapter) => {
       const space = new Space(adapter, { runTokenSeconds: -1 }); // mint already-expired tokens

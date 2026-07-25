@@ -84,37 +84,37 @@ export async function handleTake(space: Space, req: Request, principal: string):
   }
 }
 
-export async function handleAck(space: Space, req: Request): Promise<Response> {
+export async function handleAck(space: Space, req: Request, principal: string): Promise<Response> {
   const j = await body(req);
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
   const lease = parseLease(j);
   if (!lease) return problem(400, "invalid_lease", "missing or malformed lease");
   const result = j.result as PutRequest | undefined;
-  return settle(() => space.ack(lease, result, idemKey(req)));
+  return settle(() => space.ack(lease, result, idemKey(req), principal));
 }
 
-export async function handleNack(space: Space, req: Request): Promise<Response> {
+export async function handleNack(space: Space, req: Request, principal: string): Promise<Response> {
   const j = await body(req);
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
   const lease = parseLease(j);
   if (!lease) return problem(400, "invalid_lease", "missing or malformed lease");
   const backoffSeconds = typeof j.backoffSeconds === "number" ? j.backoffSeconds : undefined;
-  return settle(() => space.nack(lease, { backoffSeconds }, idemKey(req)));
+  return settle(() => space.nack(lease, { backoffSeconds }, idemKey(req), principal));
 }
 
-export async function handleRelease(space: Space, req: Request): Promise<Response> {
+export async function handleRelease(space: Space, req: Request, principal: string): Promise<Response> {
   const j = await body(req);
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
   const lease = parseLease(j);
   if (!lease) return problem(400, "invalid_lease", "missing or malformed lease");
-  return settle(() => space.release(lease, idemKey(req)));
+  return settle(() => space.release(lease, idemKey(req), principal));
 }
 
-export async function handleRenew(space: Space, req: Request): Promise<Response> {
+export async function handleRenew(space: Space, req: Request, principal: string): Promise<Response> {
   const j = await body(req);
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
   const lease = parseLease(j);
   if (!lease) return problem(400, "invalid_lease", "missing or malformed lease");
   const leaseSeconds = typeof j.leaseSeconds === "number" && j.leaseSeconds > 0 ? j.leaseSeconds : undefined;
-  return settle(() => space.renew(lease, { leaseSeconds }, idemKey(req)));
+  return settle(() => space.renew(lease, { leaseSeconds }, idemKey(req), principal));
 }

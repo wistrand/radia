@@ -101,8 +101,37 @@ export const recordSuites: Suite[] = [
 
       const rec = await space.readOne({ kind: "task", match: { tag: "boundary" } });
       assert(rec);
-      assertEquals(rec!.runtimeMeta.createdBy, "local:dev"); // not "attacker"
+      // created_by is the server-RESOLVED caller (the handler's principal), never the client's
+      // claim, and never the space's default when a caller is known.
+      assertEquals(rec!.runtimeMeta.createdBy, "human:local"); // not "attacker", not "local:dev"
       assertEquals(rec!.runtimeMeta.schemaVersion, 1); // not 999
+    },
+  },
+  {
+    name: "idempotency keys are scoped per principal (no cross-principal collision)",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const put = (principal: string, tag: string) =>
+        handlePut(
+          space,
+          new Request("http://x/v0/records", {
+            method: "POST",
+            headers: { "Idempotency-Key": "job-42" },
+            body: JSON.stringify({ kind: "task", body: { tag } }),
+          }),
+          principal,
+        );
+      // two principals reuse the SAME Idempotency-Key with different bodies
+      const a = await put("human:a", "from-a");
+      const b = await put("human:b", "from-b");
+      assertEquals(a.status, 201);
+      assertEquals(b.status, 201); // NOT a 409, and NOT a replay of human:a's stored response
+      const idA = (await a.json()).id, idB = (await b.json()).id;
+      assert(idA !== idB); // distinct records, each attributed to its own caller
+      assertEquals((await space.getRecord(idA))!.runtimeMeta.createdBy, "human:a");
+      assertEquals((await space.getRecord(idB))!.runtimeMeta.createdBy, "human:b");
+      // each principal's OWN replay still dedups (returns its own id)
+      assertEquals((await (await put("human:a", "from-a")).json()).id, idA);
     },
   },
   {

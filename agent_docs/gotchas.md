@@ -74,20 +74,35 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   `kindDefKey`), so restarts don't grow records. Don't reintroduce a `kinds` table or a
   `/v0/kinds` endpoint — that's the side-table-beside-the-substrate this replaced.
 
-- **Authorization is enforced at the HTTP boundary, not inside `Space` methods.** `Space.put`/
-  `take`/`query` stay principal-agnostic (they use the space's own context); the handlers resolve
-  the caller and call `Space.authorize` before dispatching. Consequence: **in-process callers
-  (conformance, examples, `demo.ts`) bypass enforcement** — they exercise the mechanism by
-  calling `authorize` directly (see `conformance/suites/auth.ts`), and `created_by` still comes
-  from `SpaceContext`, not the resolved caller (per-request `created_by` threading is a deferred
-  follow-up; tests pin `created_by === "local:dev"`). Don't "fix" this by moving grant checks
-  into `Space` methods without also threading the principal through every call site.
+- **`created_by` and idempotency scope are the RESOLVED caller — threaded from the handler, not
+  `ctx.principal`.** `put`/`ack`/settle take an optional trailing `principal`; the handlers pass the
+  resolved caller, so `created_by` is the token's principal (or `human:local` for no-auth), the
+  event `run_id` follows it, and idempotency keys are scoped **per principal** (two agents reusing
+  the same `Idempotency-Key` don't collide — that was a real bug). It defaults to the space's own
+  identity, so **in-process callers** (conformance, `demo.ts`) omit it → `created_by = local:dev`,
+  which is why those tests still pin `local:dev` while the handler tests pin the caller. Grant
+  *enforcement* still lives at the HTTP boundary (`Space` verbs don't call `authorize` themselves),
+  so in-process callers bypass enforcement and exercise `authorize`/`bodyMatchesGrant` directly.
+- **Lease settlement is owner-bound, not just fenced.** `ack` (and the other settle verbs, via the
+  threaded principal) reject a non-operator principal that doesn't own the lease (`lease_owner`) —
+  `lease_lost`, on top of the `leaseId`+`epoch` fencing. This closes lease-leak impersonation, which
+  matters because an ack-emitted result is authorized as, and carries the delegation chain of, the
+  lease owner. In-process/operator callers (no principal / privileged) skip the check.
 - **Default principal is the operator, so dev stays open; enforcement only bites a real token.**
   An unauthenticated request resolves to `human:local` (privileged) — the UI, demo, and examples
   work with no auth. To act as a scoped principal you must mint a real run token via the bootstrap
   chain; there is **no impersonation shortcut** (the old dev-only `X-Radia-Principal` assume-header
   was removed — a client must never choose its own identity, so a single Bearer channel is the
   whole story).
+- **The no-header operator default is only safe locally, so the server binds loopback and offers a
+  close switch.** `radia dev` binds `127.0.0.1` by default (not all interfaces) — `--host 0.0.0.0`
+  is an explicit opt-in to expose it. `--auth required` (`ServerOptions.authRequired`) drops the
+  no-header shortcut entirely: no bearer → `401 auth_required`. `GET /` and `GET /v0/health` stay
+  public so the console still bootstraps (it uses its baked operator token thereafter). Residual
+  footgun: `GET /` serves that operator token embedded in the HTML, so `--auth required` over an
+  exposed `--host` still leaks it to anyone who fetches `/` — for a locked-down exposed deployment,
+  proxy-gate `/` or drop the bundled console. The loopback default is what keeps the local case safe
+  without needing either.
 - **The dev console holds an operator token; it's a server-lifetime in-memory bootstrap credential,
   not a record.** `Space.mintOperatorToken` (startup) registers a hash in `CredentialStore` that
   resolves to the privileged `human:local`, never expires, and is NOT persisted or cleared on
@@ -242,3 +257,4 @@ From outline §13. Each risk with its mitigation:
 | Storage-adapter drift      | conformance suite on every adapter in CI — the only guard                                |
 | Naming                     | PyPI as `radia-space`, trademark screen, courtesy note to Perlman, watch Radia Inc.      |
 | Side-effect duplication    | at-least-once is the contract; transactional tool gateway is the mitigation (and possibly the second product) |
+| Temporal encroaches on gap | don't compete on durability (Temporal's decade-hardened home ground); the differentiator is record-scoped classification/containment + content routing, which Temporal has no place for. Watch for a Temporal data-classification / per-step-permission story — the single external event that most narrows the thesis (moderately unlikely: hard to retrofit taint into an opaque-payload, no-record model; but the 2026 a16z Series D funds the attempt). See [research-positioning.md](research-positioning.md). |

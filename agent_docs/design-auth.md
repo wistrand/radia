@@ -24,14 +24,26 @@ only their sha256 **hash** is stored (in the record body — a hash is not a sec
 credential index is a cache over `agent_definition`/`agent_run` records, rebuilt by
 `Space.loadCredentials` at startup (the same cache-over-records pattern as kinds). Expiry uses
 the DB clock (`SpaceContext.runTokenSeconds`, default 900s). `Authorization: Bearer <token>`
-is the **only** auth channel — with no header the caller is the operator `human:local`, so local
-dev/UI/examples stay open; to act as a scoped principal, mint a real run token (there is no
-impersonation shortcut). The bundled dev console **holds an operator token**: the server mints one
-at startup (`Space.mintOperatorToken` — resolves to `human:local`, server-lifetime, not a record)
-and bakes it into the served page, so the console authenticates via `Authorization: Bearer` like
-any client rather than relying on the no-header default. `GET /v0/health` echoes the resolved
-`principal`. SDK: `new RadiaClient(url, {token})` / `.withToken()`,
-`client.createAgentDefinition/createRun/stopRun/grant`. Conformance: `conformance/suites/auth.ts`.
+is the **only** auth channel. In **open mode** (the default) a request with no header is the
+operator `human:local`, so local dev/UI/examples stay open; to act as a scoped principal, mint a
+real run token (there is no impersonation shortcut). The bundled dev console **holds an operator
+token**: the server mints one at startup (`Space.mintOperatorToken` — resolves to `human:local`,
+server-lifetime, not a record) and bakes it into the served page, so the console authenticates via
+`Authorization: Bearer` like any client rather than relying on the no-header default.
+`GET /v0/health` echoes the resolved `principal`. SDK: `new RadiaClient(url, {token})` /
+`.withToken()`, `client.createAgentDefinition/createRun/stopRun/grant`. Conformance:
+`conformance/suites/auth.ts`.
+
+**Bind + auth hardening (`radia dev`):** the server binds **loopback (`127.0.0.1`) by default** —
+the no-header operator shortcut is only safe locally; `--host 0.0.0.0` deliberately exposes it.
+`--auth required` (`src/main.ts` → `ServerOptions.authRequired`) drops the no-header shortcut: a
+request with no bearer token is rejected `401 auth_required` (`resolveAuth` in `src/server/http.ts`).
+`GET /` (the console) and `GET /v0/health` stay public so the console can still bootstrap — it then
+authenticates with its baked operator token, and required mode prints that token at startup for
+`curl` use. Caveat: `GET /` serves the console with the operator token embedded, so `--auth
+required` over an exposed `--host` still hands that token to anyone who fetches `/`; for a genuinely
+locked-down exposed deployment, front `/` with a proxy or run without the bundled console. The
+loopback default keeps the common (local) case safe without either.
 
 **Per-run lease ownership + revocation (built):** a lease is owned by the claiming principal
 (`take` threads it into `lease_owner`; a run token → `run:*`). A **stopped** run's token stops
@@ -40,7 +52,17 @@ resolving (`run_stopped` → 401) and an **expired** token stops resolving (`tok
 clocks); `stopRun({quarantine:true})` (HTTP: `POST /v0/agent-runs/{id}/stop` with
 `{quarantine:true}`) is **emergency revocation** — `StorageAdapter.quarantineLeasesOf` force-
 releases the run's in-flight leases now (epoch-bumped, so a late `ack`/`renew` fences out as
-`lease_lost`).
+`lease_lost`). Settlement is also **owner-bound**: a non-operator principal that presents a lease
+it doesn't own fences out as `lease_lost` (defense-in-depth on the `leaseId`+`epoch` fencing) —
+closing lease-leak impersonation, since an ack-emitted result carries the *owner's* authority and
+delegation chain.
+
+**Provenance is the resolved caller (built):** `created_by`, the event `run_id`, and the
+idempotency scope are the principal the handler resolved (a run token → `run:*`, no header →
+`human:local`), threaded into `put`/`ack`/settle — not the space's static identity. So attribution
+is real, and idempotency keys are **per principal** (two agents reusing one `Idempotency-Key` no
+longer collide). In-process callers (conformance, examples) omit the principal and default to the
+space identity.
 
 **Template-scoped grants (built):** a `grant` may carry a `template` (a match object); a
 principal's read/take is then `grant ∧ request`, computed server-side — the handler ANDs the
@@ -64,10 +86,10 @@ its own grant, and the chain records the path (see [design-data-model.md](design
 stricter **chain-intersection** delegation policy (effective permission = intersection of the
 whole chain's grants — rejected as a hard default because it breaks legitimate pipelines; it
 belongs with taint composition); per-principal **trust classification** (auto-tainting untrusted
-principals' puts — needs the caller threaded into `put`, the same follow-up as per-request
-`created_by`; the current taint model is propagation + client-raise + declassify); and **budget**
-enforcement. The examples also run tool-workers as **OS-permission-scoped subprocesses**
-(`--allow-read`/net, no env) — a real but out-of-band isolation layer, complementary to grants.
+principals' puts — now unblocked, since the resolved caller *is* threaded into `put`/`created_by`;
+the current taint model is propagation + client-raise + declassify); and **budget** enforcement.
+The examples also run tool-workers as **OS-permission-scoped subprocesses** (`--allow-read`/net, no
+env) — a real but out-of-band isolation layer, complementary to grants.
 
 ## Contents
 - Invariants
@@ -172,7 +194,8 @@ flowchart TD
     Req[request] --> B{"Authorization: Bearer?"}
     B -->|"valid, active run token"| Prin["principal = run:id"]
     B -->|"invalid / expired / stopped"| E401[["401"]]
-    B -->|"absent"| Oper["principal = human:local (operator)"]
+    B -->|"absent, auth required"| E401
+    B -->|"absent, open mode"| Oper["principal = human:local (operator)"]
     Prin --> Ops
     Oper --> Ops
     Ops{"path under /v0/ops/* ?"} -->|"yes, not privileged"| E403a[["403"]]

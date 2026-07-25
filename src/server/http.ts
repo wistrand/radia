@@ -22,6 +22,12 @@ export interface ServerOptions {
   port: number;
   space: Space;
   signal?: AbortSignal;
+  /** Bind address. Defaults to loopback (`127.0.0.1`) — the API's no-header operator default is
+   *  only safe locally; pass `0.0.0.0` to deliberately expose it (and prefer `authRequired`). */
+  host?: string;
+  /** When true, a request with no `Authorization` is rejected (`401`) instead of resolving to the
+   *  operator. `GET /` (console) and `GET /v0/health` stay public so the console can bootstrap. */
+  authRequired?: boolean;
   /** Operator token injected into the served console so it authenticates via `Authorization:
    *  Bearer` like any client (instead of relying on the no-header operator default). */
   operatorToken?: string;
@@ -41,9 +47,10 @@ function loadUi(operatorToken?: string): string {
 }
 
 export function startServer(opts: ServerOptions): { finished: Promise<void> } {
-  const handler = makeHandler(opts.space, loadUi(opts.operatorToken));
-  const server = Deno.serve({ port: opts.port, signal: opts.signal }, handler);
-  console.log(`radia dev listening on http://localhost:${opts.port} (web console at /)`);
+  const hostname = opts.host ?? "127.0.0.1"; // loopback by default; --host 0.0.0.0 to expose
+  const handler = makeHandler(opts.space, loadUi(opts.operatorToken), opts.authRequired ?? false);
+  const server = Deno.serve({ port: opts.port, hostname, signal: opts.signal }, handler);
+  console.log(`radia dev listening on http://${hostname}:${opts.port} (web console at /) — auth ${opts.authRequired ? "required" : "open (no-header → operator)"}`);
   return { finished: server.finished };
 }
 
@@ -54,11 +61,12 @@ type Auth = { principal: string } | { error: string; detail: string };
  * the bootstrap chain) is the ONLY auth channel: a valid, unexpired RUN token yields its `run:*`
  * principal; any invalid/expired/stopped token is a hard error (never a silent fall-through to
  * operator). Definition tokens do not authorize coordination — only `POST /v0/agent-runs` reads
- * those, before this check. With NO Authorization header the caller is the operator `human:local`,
- * so unauthenticated local dev/UI/examples stay fully open (auto-provisioned local auth). To act
- * as a scoped principal, mint a real run token — there is no impersonation shortcut.
+ * those, before this check. With NO Authorization header the caller is the operator `human:local`
+ * (open mode), so unauthenticated local dev/UI/examples stay fully open — UNLESS `authRequired`, in
+ * which case a missing header is an error. To act as a scoped principal, mint a real run token —
+ * there is no impersonation shortcut.
  */
-async function resolveAuth(req: Request, space: Space): Promise<Auth> {
+async function resolveAuth(req: Request, space: Space, authRequired: boolean): Promise<Auth> {
   const authz = req.headers.get("Authorization");
   if (authz?.startsWith("Bearer ")) {
     const r = await space.resolveToken(authz.slice("Bearer ".length).trim());
@@ -66,10 +74,11 @@ async function resolveAuth(req: Request, space: Space): Promise<Auth> {
     if (r.ok && r.kind === "def") return { error: "invalid_token", detail: "a definition token does not authorize coordination; mint a run first" };
     return { error: r.reason, detail: `bearer token ${r.reason}` };
   }
+  if (authRequired) return { error: "auth_required", detail: "this space requires Authorization: Bearer <run-token>" };
   return { principal: "human:local" };
 }
 
-function makeHandler(space: Space, ui: string) {
+function makeHandler(space: Space, ui: string, authRequired: boolean) {
   return async function handler(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const route = `${req.method} ${url.pathname}`;
@@ -79,15 +88,18 @@ function makeHandler(space: Space, ui: string) {
     if (route === "POST /v0/agent-runs") return await handleCreateRun(space, req);
     // Stop a run: `/v0/agent-runs/{id}/stop` (own token or operator — checked in the handler).
     if (req.method === "POST" && url.pathname.startsWith("/v0/agent-runs/") && url.pathname.endsWith("/stop")) {
-      const auth = await resolveAuth(req, space);
+      const auth = await resolveAuth(req, space, authRequired);
       const principal = "principal" in auth ? auth.principal : "";
       const runId = decodeURIComponent(url.pathname.slice("/v0/agent-runs/".length, -"/stop".length));
       return await handleStopRun(space, req, principal, runId);
     }
 
-    const auth = await resolveAuth(req, space);
-    if ("error" in auth) return problem(401, auth.error, auth.detail);
-    const principal = auth.principal;
+    const auth = await resolveAuth(req, space, authRequired);
+    // The console (GET /) and health stay public so the console can bootstrap even in required
+    // mode (it authenticates thereafter with its baked operator token); everything else 401s.
+    const isPublic = route === "GET /" || route === "GET /v0/health";
+    if ("error" in auth && !isPublic) return problem(401, auth.error, auth.detail);
+    const principal = "principal" in auth ? auth.principal : "anonymous";
 
     // The observe-and-operate plane is grant-gated: operator (human/supervisor) only.
     if (url.pathname.startsWith("/v0/ops/") && !space.isPrivileged(principal)) {
@@ -141,13 +153,13 @@ function makeHandler(space: Space, ui: string) {
       case "POST /v0/takes":
         return await handleTake(space, req, principal);
       case "POST /v0/leases/renew":
-        return await handleRenew(space, req);
+        return await handleRenew(space, req, principal);
       case "POST /v0/leases/ack":
-        return await handleAck(space, req);
+        return await handleAck(space, req, principal);
       case "POST /v0/leases/nack":
-        return await handleNack(space, req);
+        return await handleNack(space, req, principal);
       case "POST /v0/leases/release":
-        return await handleRelease(space, req);
+        return await handleRelease(space, req, principal);
       case "POST /v0/watches":
         return await handleCreateWatch(space, req);
 

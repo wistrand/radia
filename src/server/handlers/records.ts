@@ -49,7 +49,7 @@ export async function handlePut(space: Space, req: Request, principal: string): 
     if (constraint && !space.bodyMatchesGrant(put.kind, put.body, constraint)) {
       return problem(403, "forbidden", `record body is outside the template scope of your put grant for '${put.kind}'`);
     }
-    const { id } = await space.put(put, req.headers.get("Idempotency-Key") ?? undefined);
+    const { id } = await space.put(put, req.headers.get("Idempotency-Key") ?? undefined, principal);
     return new Response(JSON.stringify({ id }), {
       status: 201,
       headers: { "content-type": "application/json" },

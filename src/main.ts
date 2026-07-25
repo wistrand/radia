@@ -8,13 +8,21 @@ import type { StorageAdapter } from "./storage/adapter.ts";
 import { Space } from "./core/space.ts";
 import { startServer } from "./server/http.ts";
 
-const USAGE = `radia dev [--port <n>] [--storage pglite|sqlite] [--db <path>]`;
+const USAGE = `radia dev [--port <n>] [--host <addr>] [--storage pglite|sqlite] [--db <path>] [--auth open|required]`;
 
 async function dev(args: string[]): Promise<void> {
   const port = Number(flag(args, "--port") ?? "7788");
+  // Loopback by default: the no-header operator default is only safe locally. --host 0.0.0.0 exposes.
+  const host = flag(args, "--host") ?? "127.0.0.1";
   const backend = flag(args, "--storage") ?? "pglite";
   // --db persists to disk: a file for sqlite, a data directory for pglite. Omit = in-memory.
   const dbPath = flag(args, "--db");
+  const authMode = flag(args, "--auth") ?? "open";
+  if (authMode !== "open" && authMode !== "required") {
+    console.error(`unknown --auth: ${authMode} (expected open|required)`);
+    Deno.exit(2);
+  }
+  const authRequired = authMode === "required";
 
   let storage: StorageAdapter;
   if (backend === "pglite") storage = new PgliteAdapter(dbPath);
@@ -30,7 +38,12 @@ async function dev(args: string[]): Promise<void> {
   await space.loadKinds(); // restore persisted kind declarations
   await space.loadCredentials(); // rebuild the credential index from agent_definition/agent_run records
   const operatorToken = await space.mintOperatorToken(); // the bundled console authenticates with this
-  const { finished } = startServer({ port, space, operatorToken });
+  if (authRequired) {
+    // In required mode the no-header shortcut is gone, so hand the operator a credential for curl.
+    // (The bundled console still bootstraps: GET / stays public and carries this token baked in.)
+    console.log(`radia dev: --auth required — operator credential: Authorization: Bearer ${operatorToken}`);
+  }
+  const { finished } = startServer({ port, space, host, authRequired, operatorToken });
   await finished;
   await storage.close();
 }

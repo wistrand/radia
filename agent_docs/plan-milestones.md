@@ -77,8 +77,8 @@ two-terminal demo works.
 
 ### M2 — coordination protocols
 
-- [ ] request/bid/award (see [design-marketplace.md](design-marketplace.md))
-- [ ] durable timers
+- [ ] request/bid/award (see [design-marketplace.md](design-marketplace.md)) — speculative ahead of a first user; gate behind a measured baseline like the scheduler, not build-on-spec (see [plan-validation.md](plan-validation.md))
+- [ ] durable timers — in scope: the delayed-visibility sweeper over the envelope's `available_at` that retry backoff needs anyway. Out of scope: a general workflow-timer / cron / signal library — that is Temporal's ground; Radia does not reimplement durable execution (see [research-positioning.md](research-positioning.md))
 - [ ] transactional budget reservation/settlement
 - [ ] runtime envelope encryption + crypto-shredding
 - [ ] signed, externally-anchored log checkpoints

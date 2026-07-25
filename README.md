@@ -71,6 +71,15 @@ deno task dev --storage pglite --db ./.radia/radia-pg   # PGlite data directory
 Records, envelopes, events, idempotency, and kind declarations all persist and reload on
 restart. (Leases held by processes that crashed expire on their own clocks, as designed.)
 
+The server binds loopback (`127.0.0.1`) by default — the no-header operator shortcut is only
+safe locally. To expose it, pass `--host 0.0.0.0`, and harden with `--auth required` so every
+request needs `Authorization: Bearer <run-token>` (no-header requests get `401`; the console at
+`/` and `/v0/health` stay public, and the operator token is printed at startup for `curl`):
+
+```bash
+deno task dev --host 0.0.0.0 --auth required   # exposed + token-gated
+```
+
 Open the console and watch records and events stream through the **Feed** tab, use the
 **Graph** tab to see how records relate (`parent_ids` DAG — a conversation's messages, a
 job fanning out into tasks and back), and open a record for its body + lineage. See
