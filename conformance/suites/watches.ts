@@ -72,6 +72,29 @@ export const watchSuites: Suite[] = [
     },
   },
   {
+    name: "a record created by ack wakes a watch on the RESULT's kind",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const wantResult = space.getWatch((await space.createWatch({ kind: "result" })).watchId)!.match;
+
+      await space.put({ kind: "task", body: { tag: "x" } });
+      const t = await space.take({ template: { kind: "task" } });
+      assert(t);
+      const acked = await space.ack(t!.lease, { kind: "result", body: { ok: true } });
+      assert(acked.status === "ok");
+
+      // The ack event is `consumed` and carries the parent's kind, so it can never be the
+      // wakeup — the result needs a `put` event of its own or the watcher sleeps forever.
+      const wakeups: SpaceEvent[] = [];
+      for (const e of await eventsOf(space)) {
+        if (await space.matchesEvent(wantResult, e)) wakeups.push(e);
+      }
+      assertEquals(wakeups.length, 1, "expected exactly one wakeup for the result record");
+      assertEquals(wakeups[0].operation, "put");
+      assertEquals(wakeups[0].recordId, acked.resultId);
+    },
+  },
+  {
     name: "a fresh watch starts after existing events (cursor from now)",
     run: async (adapter) => {
       const space = newSpace(adapter);

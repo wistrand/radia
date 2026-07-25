@@ -252,7 +252,22 @@ export class SqliteAdapter implements StorageAdapter {
       this.withIdem(idem, (): AckResult => {
         const row = this.fetchEnvelopeRow(ref.recordId);
         if (!leaseValid(row, ref)) return { status: "lease_lost" };
-        if (result) this.insertRecord(result);
+        if (result) {
+          this.insertRecord(result);
+          // The result is a new record entering the space, so it gets its own `put` event —
+          // same shape as a direct put. Without it the record would exist with no `available`
+          // event of its own kind, and `matchesEvent` would never wake a watcher on that kind
+          // (the ack event below is `consumed` and carries the PARENT's kind). Emitted before
+          // the ack, mirroring the insert-then-consume order of this transaction.
+          this.appendEvent({
+            runId: result.record.runtimeMeta.createdBy,
+            operation: "put",
+            recordId: result.record.id,
+            kind: result.record.kind,
+            state: "available",
+            detail: { ackOf: ref.recordId },
+          }, result.envelope.availableAt);
+        }
         this.run(
           "update record_runtime set state='consumed', lease_id=null where record_id=? and lease_id=? and lease_epoch=?",
           [ref.recordId, ref.leaseId, ref.epoch],

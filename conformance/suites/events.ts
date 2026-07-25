@@ -1,6 +1,8 @@
-// Phase 5 conformance: the transactional event log and lineage. Every successful
-// state-changing op appends exactly one event, in the same transaction as its mutation;
-// no-op outcomes (lease_lost, idempotency replay) append nothing. Runs on every adapter.
+// Phase 5 conformance: the transactional event log and lineage. Every MUTATION appends exactly
+// one event, in the same transaction that performs it; no-op outcomes (lease_lost, idempotency
+// replay) append nothing. Usually one op means one mutation — the exception is `ack` with a
+// result, which both consumes the parent and inserts a new record, so it appends two: the
+// result's `put` then the parent's `ack`. Runs on every adapter.
 
 import { assert, assertEquals } from "@std/assert";
 import type { Suite } from "../harness.ts";
@@ -15,18 +17,27 @@ function newSpace(adapter: StorageAdapter): Space {
 
 export const eventSuites: Suite[] = [
   {
-    name: "each successful op appends one event, in seq order, with run identity",
+    name: "each mutation appends one event, in seq order, with run identity",
     run: async (adapter) => {
       const space = newSpace(adapter);
       await space.put({ kind: "task", body: { tag: "a" } });
       const t = await space.take({ template: { kind: "task" } });
       assert(t);
-      await space.ack(t!.lease, { kind: "result", body: { ok: true } });
+      const acked = await space.ack(t!.lease, { kind: "result", body: { ok: true } });
+      assert(acked.status === "ok");
 
       const ops = (await space.getEvents()).map((e) => e.operation);
-      assertEquals(ops, ["put", "take", "ack"]); // one each, in order
+      // ack-with-result is two mutations: the result enters the space, then the parent is
+      // consumed. The result's put comes first, mirroring the order inside the transaction.
+      assertEquals(ops, ["put", "take", "put", "ack"]);
 
       const events = await space.getEvents();
+      const resultPut = events[2];
+      assertEquals(resultPut.kind, "result"); // its OWN kind, so a watcher on it can wake
+      assertEquals(resultPut.state, "available");
+      assertEquals(resultPut.recordId, acked.resultId);
+      assertEquals((resultPut.detail as { ackOf: string }).ackOf, t!.lease.recordId);
+
       for (const e of events) {
         assert(e.seq > 0 && e.id.length > 0 && e.ts.length > 0, "event missing seq/id/ts");
         assert(e.runId.length > 0, "event missing run identity");

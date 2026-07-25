@@ -266,7 +266,7 @@
         <span class="muted mono" id="space-count"></span>
       </div>
       <div id="space-msg"></div>
-      <bz-graph id="space-graph" incremental level="4" legend edge-mode="lines"
+      <bz-graph id="space-graph" incremental level="4" legend edge-mode="lines" heatmap="density"
                 label-props="label" color-by="group"
                 strengths="group:8,run:5,state:4,label:1"></bz-graph>
     </div>
@@ -724,22 +724,9 @@ async function pollSpace() {
       if (e.operation === "ack" && e.detail && e.detail.resultId) results.push([e.recordId, e.detail.resultId]);
     }
 
-    // A record emitted as an ack result is inserted WITHOUT its own `put` event — the ack event
-    // carries only `detail.resultId` (src/storage/sqlite.ts, pgbase.ts). So the successor is
-    // invisible in the log: fetch it to learn its kind. One request per ack-with-result.
-    for (const [parentId, resultId] of results) {
-      if (!spaceSeen.has(resultId) && !adds.has(resultId)) {
-        const rec = await api("GET", "/v0/ops/records/" + encodeURIComponent(resultId));
-        adds.set(resultId, spaceNodeFor({
-          recordId: resultId,
-          kind: rec.ok && rec.data ? rec.data.kind : "unknown",
-          state: "available",
-          operation: "put",
-          runId: rec.ok && rec.data && rec.data.runtimeMeta ? rec.data.runtimeMeta.createdBy : undefined,
-        }));
-      }
-      edges.push({ src: parentId, dst: resultId });
-    }
+    // A record emitted as an ack result carries its own `put` event, so it is already in `adds`
+    // above; the ack's `detail.resultId` is only needed for the parent -> result edge.
+    for (const [parentId, resultId] of results) edges.push({ src: parentId, dst: resultId });
 
     if (adds.size) {
       const list = [...adds.values()];

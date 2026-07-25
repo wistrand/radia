@@ -300,7 +300,22 @@ export class PgSqlAdapter implements StorageAdapter {
       const now = await this.txNow(tx);
       const row = await this.fetchEnvelopeRow(tx, ref.recordId);
       if (!this.leaseValid(row, ref)) return { status: "lease_lost" };
-      if (result) await this.insertRecord(tx, result);
+      if (result) {
+        await this.insertRecord(tx, result);
+        // The result is a new record entering the space, so it gets its own `put` event — same
+        // shape as a direct put. Without it the record would exist with no `available` event of
+        // its own kind, and `matchesEvent` would never wake a watcher on that kind (the ack
+        // event below is `consumed` and carries the PARENT's kind). Emitted before the ack,
+        // mirroring the insert-then-consume order of this transaction.
+        await this.appendEvent(tx, {
+          runId: result.record.runtimeMeta.createdBy,
+          operation: "put",
+          recordId: result.record.id,
+          kind: result.record.kind,
+          state: "available",
+          detail: { ackOf: ref.recordId },
+        }, result.envelope.availableAt);
+      }
       await tx.query(
         "update record_runtime set state='consumed', lease_id=null where record_id=$1 and lease_id=$2 and lease_epoch=$3",
         [ref.recordId, ref.leaseId, ref.epoch],
