@@ -16,7 +16,8 @@ import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from ".
 import { handleCreateDefinition, handleCreateRun, handleStopRun } from "./handlers/agents.ts";
 import { handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleGetRecord, handleGraph, handleLineage, handleStats } from "./handlers/dev.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
-import { problem } from "./problem.ts";
+import { problem, statusFor } from "./problem.ts";
+import { RadiaError } from "../core/errors.ts";
 
 export interface ServerOptions {
   port: number;
@@ -83,6 +84,7 @@ function makeHandler(space: Space, ui: string, authRequired: boolean) {
     const url = new URL(req.url);
     const route = `${req.method} ${url.pathname}`;
 
+    try {
     // Minting a run reads its DEFINITION token directly (a def token isn't a coordination
     // principal), so it runs before principal resolution rejects non-run bearer tokens.
     if (route === "POST /v0/agent-runs") return await handleCreateRun(space, req);
@@ -179,6 +181,13 @@ function makeHandler(space: Space, ui: string, authRequired: boolean) {
 
       default:
         return problem(404, "not_found", `no route for ${route}`);
+    }
+    } catch (e) {
+      // Any uncaught error becomes problem+json, never a plain-text 500 the client can't parse.
+      // A RadiaError a handler didn't translate maps by its code; anything else is unexpected.
+      if (e instanceof RadiaError) return problem(statusFor(e.code, 422), e.code, e.message);
+      console.error(`unhandled error on ${route}:`, e);
+      return problem(500, "internal", "unexpected server error");
     }
   };
 }

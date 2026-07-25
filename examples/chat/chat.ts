@@ -52,14 +52,16 @@ const write = (s: string) => Deno.stdout.writeSync(enc.encode(s));
 const url = Deno.env.get("RADIA_URL") ?? "http://127.0.0.1:7788";
 const port = new URL(url).port || "7788";
 
+// TODO: use google/gemini-2.5-flash-lite for auto-tier selection
+
 // Three capability/cost tiers, each served by its own inference-worker (model selection is
 // content-routing). Two models across three tiers: fast/balanced use the cheap model, deep the
 // capable one — point `balanced` at a mid-tier model via the env var. The chat does NOT choose a
 // tier: it puts UNTIERED llm_calls; the router-worker classifies each turn and picks the tier.
 const TIERS: Record<string, string> = {
   fast: Deno.env.get("RADIA_CHAT_MODEL_FAST") ?? "openai/gpt-4o-mini",
-  balanced: Deno.env.get("RADIA_CHAT_MODEL_BALANCED") ?? "openai/gpt-4o-mini",
-  deep: Deno.env.get("RADIA_CHAT_MODEL_DEEP") ?? "anthropic/claude-sonnet-5",
+  balanced: Deno.env.get("RADIA_CHAT_MODEL_BALANCED") ?? "anthropic/claude-sonnet-5",
+  deep: Deno.env.get("RADIA_CHAT_MODEL_DEEP") ?? "anthropic/claude-opus-5",
 };
 const apiKey = Deno.env.get("OPENROUTER_API_KEY");
 if (!apiKey) {

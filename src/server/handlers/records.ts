@@ -9,7 +9,7 @@ import type { Space } from "../../core/space.ts";
 import type { PutRequest } from "../../core/record.ts";
 import { combineMatch, type Template } from "../../core/matching.ts";
 import { RadiaError } from "../../core/errors.ts";
-import { problem } from "../problem.ts";
+import { problem, statusFor } from "../problem.ts";
 
 async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   try {
@@ -20,13 +20,6 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   } catch {
     return null;
   }
-}
-
-/** Map a RadiaError to a status: forbidden→403, idempotency_conflict→409, else the fallback. */
-function statusFor(code: string, fallback: number): number {
-  if (code === "forbidden") return 403;
-  if (code === "idempotency_conflict") return 409;
-  return fallback;
 }
 
 export async function handlePut(space: Space, req: Request, principal: string): Promise<Response> {

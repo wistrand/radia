@@ -199,6 +199,23 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   `ack` commits, the HTTP response is lost, the agent retries; the task is now consumed
   and the lease invalid. Validating the lease first would falsely return `lease_lost` for
   a succeeded operation. See [design-api.md](design-api.md).
+- **Concurrent same-key writes race on the idempotency insert — pooled Postgres exposed what
+  single-connection embedded hid.** `withIdem` (`src/storage/pgbase.ts`) does SELECT-then-effect-
+  then-INSERT. On single-connection PGlite/SQLite these serialize, so a duplicate key always hits
+  the SELECT and replays. On the **pooled** Postgres adapter, N requests with the same
+  `(principal, operation, key)` run on different connections, all SELECT empty, and only one can
+  INSERT — the rest hit a unique-violation that aborts the whole transaction (a real 500 the SDK
+  saw as unparseable text). Fix: the INSERT is `ON CONFLICT DO NOTHING`; a loser (0 rows) throws
+  an internal `IdempotencyReplay`, which rolls its attempt back (discarding its effect — the
+  record insert used a fresh id) and `withRetry` re-runs so the SELECT now replays the winner's
+  stored response. The effect is non-idempotent on its own (fresh ULID per call); the idempotency
+  row is the single-winner gate. This bit the chat example: three inference workers share one run
+  principal and each publishes the same content-keyed `capability:escalate` at startup.
+- **Any uncaught handler error must return problem+json, never a plain-text 500.** The SDK does
+  `JSON.parse(body)`, so a bare `Deno.serve` 500 ("Internal Server Error") surfaces as a cryptic
+  `Unexpected token 'I'` that hides the real fault. `makeHandler` wraps the dispatch in a
+  catch-all (`src/server/http.ts`): a `RadiaError` maps by `statusFor`, anything else is a logged
+  500 problem — so clients always get parseable JSON.
 - **At-least-once means external side effects can duplicate.** The space protects its own
   state atomically, not your emails. Side-effecting agents need idempotency at the effect
   boundary, an outbox, or the (candidate) transactional tool gateway. This is the

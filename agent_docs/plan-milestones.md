@@ -59,7 +59,7 @@ two-terminal demo works.
 
 ### M1 — usable runtime
 
-- [ ] Postgres storage adapter (same conformance + fault suite as embedded)
+- [~] Postgres storage adapter (same conformance suite as embedded) — **built:** `src/storage/postgres.ts` (deno-postgres pool) over the shared `src/storage/pgbase.ts` body PGlite also uses, so both speak identical SQL; `take` uses `FOR UPDATE ... SKIP LOCKED` for atomic claims across connections. Runs in the conformance suite when `RADIA_PG_URL` is set (`scripts/pg-conformance.sh`); `--storage postgres` in `radia dev`. **To verify:** run the suite green against a live server in CI (needs a Postgres; not yet run here). Fault suite (partition/failover) still M2.
 - [~] single-node deployment mode with admin-provisioned auth — **auth bootstrap chain + per-run leases built** (agent definitions → run tokens → stop/quarantine; `Authorization: Bearer` is the sole channel; a run inherits its agent's grants and owns its leases; graceful stop vs. emergency quarantine; credential index is a cache over `agent_definition`/`agent_run` records; the dev console holds a server-minted operator token). OIDC for `human:*`, the deployment mode itself, and federated identity still to do. See [design-auth.md](design-auth.md).
 - [ ] read_one + keyset query
 - [ ] long-polls

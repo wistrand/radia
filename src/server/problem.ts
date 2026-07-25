@@ -20,3 +20,11 @@ export function problem(
     headers: { "content-type": "application/problem+json" },
   });
 }
+
+/** Map a RadiaError code to an HTTP status: forbidden→403, idempotency_conflict→409, else the
+ *  fallback. Shared by the record handlers and the top-level catch-all. */
+export function statusFor(code: string, fallback: number): number {
+  if (code === "forbidden") return 403;
+  if (code === "idempotency_conflict") return 409;
+  return fallback;
+}

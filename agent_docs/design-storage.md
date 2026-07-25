@@ -3,22 +3,26 @@
 Spec and rationale for the Postgres mapping, the three deployment modes, and the
 distribution strategy. Origin: outline §10.
 
-**M0 status:** the two **embedded** adapters are built behind the `StorageAdapter` port
-(`src/storage/adapter.ts`) — `src/storage/pglite.ts` (WASM Postgres) and
-`src/storage/sqlite.ts` (built-in `node:sqlite`) — with the record/envelope tables, the
-partial claim index, and the SQL mapping below; both pass the full conformance suite in CI.
-The `dev` mode is `deno task dev` (in-memory by default; `--db <path>` persists — a file
-for SQLite, a data directory for PGlite; records, envelopes, events, idempotency, and kind
-declarations all survive restart — kind declarations are `kind_def` records (no separate
-table), reloaded into the in-memory registry at startup via `Space.loadKinds`). **Not
-implemented:** the standalone
-**Postgres** adapter and `single-node`/`production` modes (M1+), `npm`/`pip` binary
-wrapping (Phase 7), envelope encryption/KMS (M2).
+**M0 status:** three adapters sit behind the `StorageAdapter` port (`src/storage/adapter.ts`).
+The two **embedded** ones — `src/storage/pglite.ts` (WASM Postgres) and `src/storage/sqlite.ts`
+(built-in `node:sqlite`) — with the record/envelope tables, the partial claim index, and the SQL
+mapping below, both pass the full conformance suite in CI. The `dev` mode is `deno task dev`
+(in-memory by default; `--db <path>` persists — a file for SQLite, a data directory for PGlite;
+records, envelopes, events, idempotency, and kind declarations all survive restart — kind
+declarations are `kind_def` records (no separate table), reloaded into the in-memory registry at
+startup via `Space.loadKinds`). **M1 status (built):** the standalone **Postgres** adapter
+(`src/storage/postgres.ts`, deno-postgres pool) shares one Postgres-dialect body with PGlite
+(`src/storage/pgbase.ts` — `PgSqlAdapter`), so they can't drift; `--storage postgres` runs it,
+and it joins the conformance suite when `RADIA_PG_URL` is set (`scripts/pg-conformance.sh`). Its
+green-against-a-live-server CI run is still pending (needs a Postgres). **Not implemented:**
+`single-node`/`production` deployment modes, the multi-instance cache-coherence work (see
+Scaling), `npm`/`pip` binary wrapping (Phase 7), envelope encryption/KMS (M2).
 
 ## Contents
 - Invariants
 - Postgres mapping
 - Deployment modes
+- Scaling and multi-instance operation
 - Why zero-setup dev is architecturally cheap
 - Distribution
 
@@ -28,9 +32,11 @@ wrapping (Phase 7), envelope encryption/KMS (M2).
   fault-injection suite runs against every storage adapter in CI from day one (also in
   [CLAUDE.md](../CLAUDE.md)). This is the only guard against storage-adapter drift (see
   [gotchas.md](gotchas.md) risk register).
-- The runtime is the sole DB client, so all concurrency guarantees live in the runtime
-  process. `SKIP LOCKED` is the *Postgres implementation* of the take contract, not the
-  contract.
+- The runtime is the sole DB client (no non-runtime client speaks SQL; agents speak the
+  protocol) — so the concurrency guarantees are enforced in the runtime's DB transactions,
+  not pushed onto agents, and not held in process-local state on the hot path (which is what
+  lets many instances share one Postgres — see Scaling). `SKIP LOCKED` is the *Postgres
+  implementation* of the take contract, not the contract.
 - The wire contract is frozen, not the implementation or the storage backend.
 - All lease/timing math uses the DB clock (`now()`).
 
@@ -80,6 +86,54 @@ Three modes, one contract:
 | `dev`         | `npx radia dev` (also `pipx run`) | embedded (SQLite/PGlite), 1 proc | auto-provisioned local credentials — **same API shape, never "no tokens"** | event log, hash chain optional              |
 | `single-node` | binary + config                   | Postgres                       | admin-provisioned definitions                                     | hash-chained log                              |
 | `production`  | HA deployment                     | HA Postgres                    | full control plane, workload identity, KMS                        | anchored signed checkpoints, envelope encryption |
+
+For local Postgres-backed dev, `docker/postgres/compose.yaml` brings up a persistent server
+(`docker compose -f docker/postgres/compose.yaml up -d --wait`) and `deno task dev:pg` runs
+`radia dev --storage postgres` against it — tables auto-create on first connect. Distinct from
+the throwaway server `scripts/pg-conformance.sh` starts for the test suite.
+
+## Scaling and multi-instance operation
+
+The `production` row is horizontal: **N runtime instances behind a load balancer over one shared
+(HA) Postgres.** Nothing on the hot path is process-local, so instances never coordinate with
+each other — only with the DB, which is the sole arbiter. The coordination guarantees are
+enforced **in the storage transaction**, which is what makes this safe:
+
+- **Claims** — `UPDATE ... FOR UPDATE SKIP LOCKED RETURNING`: two instances racing for the same
+  record, exactly one wins the row lock.
+- **Fencing** — `lease_id`/`lease_epoch` conditional updates: a stale settle fails the epoch
+  check regardless of which instance issued it.
+- **Idempotency** — the `(principal, op, key)` unique row: a retried write collapses to one
+  effect no matter which instance handles the retry.
+- **Ordering/audit** — the append-only `events` table (monotonic seq) is written in the same
+  transaction as each mutation; every instance reads one truth.
+
+So the invariant "the runtime is the sole DB client" means *no non-runtime client speaks SQL*
+(agents speak the protocol) — **not** one process. Requests carry a Bearer token and hold no
+server session, so any instance can serve any request.
+
+**Process-local caches that must become cross-instance-aware for correct HA.** Each is a
+cache/projection over records (the durable truth is always the records); a write updates the
+handling instance's cache live, but a second instance stays stale until it reloads (today: only
+at startup):
+
+| Cache | Source records | Staleness across instances | Fix |
+|-------|----------------|----------------------------|-----|
+| `CredentialStore` (`src/core/auth.ts`) | `agent_definition` / `agent_run` | a token minted on A doesn't resolve on B → spurious `401` | invalidate on write / short TTL / on-miss DB lookup |
+| kind registry (`Space.loadKinds`)      | `kind_def`                        | a kind declared on A is unknown to B → B can't compile templates for it or index it | refresh on miss / on `kind_def` write |
+| `Notifier` (`src/core/notifier.ts`)    | event log                         | a watch on B doesn't wake for a mutation on A | Postgres `LISTEN/NOTIFY` (already the design — see the watch row) |
+
+Only the `Notifier` gap is self-healing: the event log is the source of truth, so a missed
+cross-instance wakeup **degrades to poll-catchup, never a lost event**. The two caches would
+return wrong answers across instances until refreshed, so both need write-invalidation or a
+bounded TTL before HA is correct. (Open: LISTEN/NOTIFY-driven invalidation vs. bounded TTLs —
+likely both, cache-dependent.)
+
+**Current build:** the standalone **Postgres adapter is built** (`src/storage/postgres.ts`) with
+`FOR UPDATE ... SKIP LOCKED` claims, so the hot path is multi-instance-safe — but real HA still
+needs the three caches above made cross-instance-aware (write-invalidation or bounded TTL), and
+the pg adapter's live-server conformance run in CI. The embedded adapters (SQLite/PGlite) remain
+one-process by nature. Nothing in the design or the wire contract limits Radia to one server.
 
 ## Why zero-setup dev is architecturally cheap
 

@@ -71,6 +71,17 @@ deno task dev --storage pglite --db ./.radia/radia-pg   # PGlite data directory
 Records, envelopes, events, idempotency, and kind declarations all persist and reload on
 restart. (Leases held by processes that crashed expire on their own clocks, as designed.)
 
+For a real Postgres (the multi-instance backend), the compose file under `docker/postgres/`
+brings up a local server:
+
+```bash
+docker compose -f docker/postgres/compose.yaml up -d --wait   # persistent Postgres, waits until healthy
+deno task dev:pg                                               # radia dev against postgres://radia:radia@localhost:5432/radia
+```
+
+Tables are created on first connect (no migration step). `docker compose down` keeps the data
+(named volume); `down -v` wipes it.
+
 The server binds loopback (`127.0.0.1`) by default — the no-header operator shortcut is only
 safe locally. To expose it, pass `--host 0.0.0.0`, and harden with `--auth required` so every
 request needs `Authorization: Bearer <run-token>` (no-header requests get `401`; the console at
