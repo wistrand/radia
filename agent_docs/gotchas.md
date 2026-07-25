@@ -71,6 +71,21 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   DECISION, the absence of the thing you are looking for is not a neutral default — decide what
   "not found" means explicitly.
 
+- **A process that executes model-written code must hold nothing; the process that holds a token
+  must not execute.** Executing inside a worker that has a run token hands hostile code the space
+  itself — `put`/`take` as that agent — which is a better target than the internet. Hence three
+  processes in the chat example: `execworker.ts` (token, space access, `--allow-run`) spawns
+  `deno run -` with NO permissions and talks to it over pipes only. Two consequences to preserve:
+  the sandbox never gets a credential "so code can query" (the worker fetches and pipes data in
+  instead — the confused-deputy rule again), and its emptiness is what makes lease RETRY sound,
+  since a permissionless child has no side effect to double.
+
+- **Deno's `--max-old-space-size` does not bound TypedArrays.** Measured: an object-allocation loop
+  dies in ~0.3s ("Reached heap limit", exit 133), while `while(true) a.push(new Uint8Array(1e7))`
+  runs until the kill timer, because the backing store is external to V8's old space. So the
+  execution *timeout* is the real memory bound, not the flag — keep it short, and reach for
+  `ulimit -v` or a container if that is not good enough.
+
 - **Artifact bytes are served `inline` only for formats a browser cannot execute.** Blob bytes are
   attacker-supplied and served from the space's OWN origin — the origin whose console page carries
   an operator token — so `text/html` rendered inline is a same-origin XSS reachable by anyone

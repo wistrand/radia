@@ -163,6 +163,9 @@ const CLASSIFY_MODEL = Deno.env.get("RADIA_CHAT_CLASSIFY_MODEL") ?? "google/gemi
 // The image model is NOT a tier: it serves the `generate_image` tool, and advertises itself as
 // modalities:["image"] so text routing never dispatches a turn to it. Setup config, like TIERS.
 const IMAGE_MODEL = Deno.env.get("RADIA_CHAT_IMAGE_MODEL") ?? "google/gemini-2.5-flash-image";
+// How long a model-written program may run before it is killed. Short on purpose: it is also the
+// bound on how long a runaway allocation can hold host memory (see sandbox.ts).
+const EXEC_TIMEOUT_MS = Deno.env.get("RADIA_CHAT_EXEC_TIMEOUT_MS") ?? "5000";
 const apiKey = Deno.env.get("OPENROUTER_API_KEY");
 if (!apiKey) {
   console.error("Set OPENROUTER_API_KEY (get one at https://openrouter.ai/keys).");
@@ -224,7 +227,7 @@ if (!await healthy()) {
 // Bootstrap as operator: register kinds, then mint least-privilege run tokens for the workers
 // and (for role=user) the scoped session. The REPL then switches to the session client.
 await registerChatKinds(admin);
-const { inferenceToken, routerToken, toolsToken, imagesToken, sessionToken } = await bootstrap(admin, role);
+const { inferenceToken, routerToken, toolsToken, imagesToken, execToken, sessionToken } = await bootstrap(admin, role);
 client = new RadiaClient(url, sessionToken ? { token: sessionToken } : {});
 
 // Tokens are passed to the subprocess workers as args (a local demo; a real deployment would
@@ -249,6 +252,30 @@ for (const [t, m] of Object.entries(TIERS)) {
 procs.push(
   new Deno.Command("deno", {
     args: ["run", "--allow-net", "--allow-env", "examples/chat/imageworker.ts", "--url", url, "--token", imagesToken, "--model", IMAGE_MODEL],
+    stdout: "null",
+    stderr: "inherit",
+    stdin: "null",
+  }).spawn(),
+);
+// Exec-worker (agent:chat-exec): runs model-written code in a permissionless subprocess. It gets
+// `--allow-run=deno` to spawn that child and net access to the space, and nothing else — no env
+// (so no API key) and no file access. The child it spawns gets no permissions at all, so the
+// dangerous half of this pair can reach neither your files nor your space.
+procs.push(
+  new Deno.Command("deno", {
+    args: [
+      "run",
+      `--allow-net=127.0.0.1:${port}`,
+      "--allow-run=deno",
+      "--allow-env=HOME", // only to give the sandboxed child a module-cache home
+      "examples/chat/execworker.ts",
+      "--url",
+      `http://127.0.0.1:${port}`,
+      "--token",
+      execToken,
+      "--timeout-ms",
+      EXEC_TIMEOUT_MS,
+    ],
     stdout: "null",
     stderr: "inherit",
     stdin: "null",

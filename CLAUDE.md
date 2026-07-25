@@ -56,7 +56,7 @@ content, not by addressing.
 | `sdk/ts/`                               | TS SDK: `client.ts` (`RadiaClient` over `/v0`, incl. `watch()` SSE), `loop.ts` (`agentLoop`, event-driven, design §5) |
 | `sdk/py/radia.py`                       | Python SDK at parity (stdlib only): `RadiaClient`, `watch()`, `agent_loop` with heartbeat |
 | `scripts/build-release.sh`              | `deno compile` per OS + staged npm/pip launcher packages (`deno task release`) |
-| `examples/`                             | demo agents + `demo.ts`, `stress.ts` (wave load generator for the console's Space tab), and `chat/` — a CLI LLM chatbot (full symmetry: llm + tool calls are records); see `examples/README.md` |
+| `examples/`                             | demo agents + `demo.ts`, `stress.ts` (wave load generator for the console's Space tab), and `chat/` — a CLI LLM chatbot (full symmetry: llm + tool calls are records; sandboxed code execution in a permissionless subprocess); see `examples/README.md` |
 | `conformance/`                          | port contract suites — storage adapters and the blob store (`run.test.ts`, `harness.ts`, `suites/`); see the README there for how to add one |
 | `openapi/radia.yaml`                    | the frozen wire contract (source of truth)                 |
 | `agent_docs/`                           | design deep dives, one topic per file (linked below)       |

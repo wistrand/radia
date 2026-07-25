@@ -119,14 +119,18 @@ flowchart TB
     I -.->|"escalate → next tier by rank"| SP
     SP -->|"take {tool_call, tool}"| T["tools<br/>agent:chat-tools<br/>sandboxed reads, no env"]
     SP -->|"take {tool_call, generate_image}"| G["images<br/>agent:chat-images<br/>API key, no files"]
+    SP -->|"take {tool_call, run_code}"| X["exec<br/>agent:chat-exec<br/>--allow-run, no key, no files"]
+    X -->|"program on stdin"| SB["deno run -<br/>NO permissions at all"]
+    SB -->|"stdout / stderr"| X
     T -->|tool_result| SP
     G -->|"artifact + tool_result (a reference)"| SP
+    X -->|"tool_result, tainted"| SP
     G -.-> BL[(blob store)]
     SP -->|"progress · llm_chunk"| U
 ```
 
 Every arrow is a record. The REPL never calls a model, never picks a tier, and never holds a
-key — it writes messages and reads results, and four independently-privileged workers do the rest.
+key — it writes messages and reads results, and five independently-privileged workers do the rest.
 
 The conversation is an **append-only thread of `message` records** anchored to a
 `conversation` record — not a client-held array. The chatbot appends messages (system /
@@ -252,6 +256,46 @@ operation, so the session's existing `query`/`read_one` grants already permit it
 when writing grant sets: a `read_one` grant also confers a stream of wakeups for every matching
 record, though reading each one still needs the grant.
 
+**The assistant can run code, in a process that holds nothing** (`execworker.ts`, `sandbox.ts`).
+`run_code` is a discovered tool like any other; what makes it safe is the shape around it — three
+processes, three blast radii:
+
+```
+execworker.ts     run token · space access · --allow-run     claims work, acks results
+  └── deno run -  NO permissions at all, program on stdin    the actual execution
+```
+
+The worker never executes and the executor never holds anything. This is why it is not a tool in
+`toolworker.ts`: spawning needs `--allow-run` (which that process deliberately lacks), and it holds
+a run token model-written code must never reach — **the local space is a more attractive target
+than the internet**, since code inside a process with a credential could `put` and `take` records
+as that agent.
+
+The sandbox is a `deno` subprocess with no `--allow-*` flags at all, the program arriving on stdin
+(`deno run -`, so no file need be readable), plus `--no-remote` (no `import("https://…")`),
+`--no-prompt` (deny, never wait for a human), a heap cap and a kill timer. Measured against
+adversarial programs — network, local-space fetch, credential read, KEK read, file write, env read,
+process spawn, remote import, infinite loop, allocation storm, output flood, uncaught throw — all
+13 fail in the intended way and the benign case returns its stdout.
+
+Three properties fall out of the substrate rather than being bolted on:
+
+- **The result is tainted, always.** Output of model-written code over possibly-injected input is
+  untrusted by construction; taint propagates through `ack`, and a sensitive consumer can refuse it
+  with `requireUntainted`. Clearing it needs a privileged declassify.
+- **Every program is auditable by query.** The source lives in the `tool_call` body, so
+  `space_query {kind: tool_call, match: {tool: "run_code"}}` is the complete execution log, with
+  each result as its child.
+- **Retry is sound *because* the sandbox is empty.** `tool_call` is claimable work, so an expired
+  lease is retried — safe only because a permissionless child has no side effect to double. Grant
+  the sandbox any capability and you break the delivery guarantee as well as the security story.
+
+Stated rather than papered over: a V8 isolate with Deno permissions stops accidents and ordinary
+malice, not a V8 or Deno 0-day. There is no CPU bound (a `while(true)` spins one core until the
+timeout), and the heap cap only covers V8's old space — a `TypedArray` backing store is external,
+so an allocation storm is bounded by the *timeout*, not the flag. Keep `RADIA_CHAT_EXEC_TIMEOUT_MS`
+short; for anything multi-tenant, wrap this same worker in a container, gVisor or Firecracker.
+
 **The assistant has a second path to its own past.** Every chatbot has exactly one — the context
 window — and confabulating about earlier turns is the standard failure. Here the conversation is
 records, so the model can *look* instead of reconstructing. The prompt carries only the disposition
@@ -369,7 +413,8 @@ Config: `OPENROUTER_API_KEY`, `RADIA_CHAT_ROLE` (`admin`|`user`, or `--role`),
 `RADIA_CHAT_API_BASE` (any OpenAI-compatible endpoint — a local stub for offline testing, or a
 self-hosted gateway), `RADIA_CHAT_WINDOW` (newest messages sent per turn; 0 = whole thread),
 `RADIA_CHAT_IMAGE_MODEL`, `RADIA_CHAT_IMAGE_SAFETY` (provider moderation passthrough,
-`CATEGORY:THRESHOLD,…`), `RADIA_CHAT_IMAGE_DIR` (save generated images locally).
+`CATEGORY:THRESHOLD,…`), `RADIA_CHAT_IMAGE_DIR` (save generated images locally), `RADIA_CHAT_EXEC_TIMEOUT_MS` (code
+execution budget, default 5000).
 (No tier setting — the router dispatches, escalation promotes.)
 
 Honest edges (documented, not hidden): a crashed inference retries and can double-spend
@@ -403,6 +448,8 @@ until **artifacts** (§2.4, M1) let it be stored once and referenced. Not a CI t
 | `chat/router.ts` | router-worker: claims UNTIERED `llm_call`s and re-dispatches to the cheapest advertised tier by `rank` (`replyTo` keeps the result correlated) — routing delegated to the substrate, no classifier; emits `progress` (`routed`) |
 | `chat/inference.ts` | per-tier inference-worker (`--tier`/`--model`/`--rank`): claims `{llm_call, tier}`, advertises a `model` record + the `escalate` capability, reconstructs a WINDOW of the thread (newest N, system kept, orphan tool replies trimmed) → OpenRouter (stream) → `llm_chunk` + `llm_result` with `context: {sent, hidden}`; intercepts an `escalate` call and re-dispatches the turn to the next-stronger tier; emits `progress` (`generating` with tier+model, `escalating`) |
 | `chat/toolworker.ts` | tool-worker: `tool_call` → sandboxed tool → `tool_result` (scoped perms), emits `progress` on claim |
+| `chat/execworker.ts` | exec-worker: `tool_call{run_code}` → permissionless subprocess → **tainted** `tool_result` (holds a run token; never executes anything itself) |
+| `chat/sandbox.ts` | the sandbox: `deno run -` with zero permissions, stdin program, output cap, kill timer |
 | `chat/imageworker.ts` | image-worker: `tool_call{generate_image}` → image model → **artifact** → `tool_result` with the reference (tainted; holds the API key, no file access) |
 | `chat/images.ts` | image API client: `modalities:["image"]` on chat-completions + a normalizer for the seven known response shapes |
 | `chat/tools.ts` | file/compute tool impls + JSON schemas + sandbox (realpath allowlist, `calc`) |

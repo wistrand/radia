@@ -66,6 +66,17 @@ const TOOLS_GRANTS: Grant[] = [
   { kind: "progress", operations: ["put"] }, // reports which tool it is running
 ];
 
+// exec-worker: claims `tool_call{run_code}` and runs the model's program in a permissionless
+// subprocess. It needs --allow-run (to spawn) but holds no API key and reads no files itself; on
+// the space it can do exactly these four things. Note what is ABSENT: no artifact grant, no query
+// of any kind — a code runner has no business reading the conversation.
+const EXEC_GRANTS: Grant[] = [
+  { kind: "tool_call", operations: ["take"] },
+  { kind: "tool_result", operations: ["put"] },
+  { kind: "capability", operations: ["put"] },
+  { kind: "progress", operations: ["put"] },
+];
+
 // plain user (the REPL): may drive a conversation and read its own results, nothing more.
 // Note what's ABSENT: no /ops/* (space_stats/doctor/events/lineage/reclaim/declassify), and
 // query is granted only per-kind — so `space_query {kind: grant}` or {kind: agent_run} is denied.
@@ -97,6 +108,7 @@ export interface Bootstrapped {
   routerToken: string;
   toolsToken: string;
   imagesToken: string;
+  execToken: string;
   /** The REPL/session token: undefined for admin (operator), a scoped run token for user. */
   sessionToken?: string;
 }
@@ -107,6 +119,7 @@ export async function bootstrap(admin: RadiaClient, role: Role): Promise<Bootstr
   const routerToken = await mint(admin, "agent:chat-router", ROUTER_GRANTS);
   const toolsToken = await mint(admin, "agent:chat-tools", TOOLS_GRANTS);
   const imagesToken = await mint(admin, "agent:chat-images", IMAGE_GRANTS);
+  const execToken = await mint(admin, "agent:chat-exec", EXEC_GRANTS);
   const sessionToken = role === "user" ? await mint(admin, "agent:chat-user", USER_GRANTS) : undefined;
-  return { inferenceToken, routerToken, toolsToken, imagesToken, sessionToken };
+  return { inferenceToken, routerToken, toolsToken, imagesToken, execToken, sessionToken };
 }
