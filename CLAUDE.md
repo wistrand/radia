@@ -56,7 +56,7 @@ content, not by addressing.
 | `sdk/ts/`                               | TS SDK: `client.ts` (`RadiaClient` over `/v0`, incl. `watch()` SSE), `loop.ts` (`agentLoop`, event-driven, design §5) |
 | `sdk/py/radia.py`                       | Python SDK at parity (stdlib only): `RadiaClient`, `watch()`, `agent_loop` with heartbeat |
 | `scripts/build-release.sh`              | `deno compile` per OS + staged npm/pip launcher packages (`deno task release`) |
-| `examples/`                             | demo agents + `demo.ts`, and `chat/` — a CLI LLM chatbot (full symmetry: llm + tool calls are records); see `examples/README.md` |
+| `examples/`                             | demo agents + `demo.ts`, `stress.ts` (wave load generator for the console's Space tab), and `chat/` — a CLI LLM chatbot (full symmetry: llm + tool calls are records); see `examples/README.md` |
 | `conformance/`                          | storage-adapter contract suite (`run.test.ts`, `harness.ts`, `suites/`); see the README there for how to add one |
 | `openapi/radia.yaml`                    | the frozen wire contract (source of truth)                 |
 | `agent_docs/`                           | design deep dives, one topic per file (linked below)       |
@@ -144,6 +144,15 @@ line is **setup vs. behavior**: launching workers is client config; per-turn beh
 tool, which model, how records relate, how a tool is used — is discovered from the substrate or
 delegated to a worker. Symptom to catch in review: a client growing a `switch` on kinds, a
 `/tier`-style command, or a prompt that teaches the substrate.
+
+**Two things a prompt may still carry: a disposition and the agent's own identity.** A disposition
+says *when to reach for a tool at all* ("prefer to inspect before acting"; "if unsure what happened
+earlier, retrieve rather than recall") and survives every kind being renamed — a tool description
+cannot do that job, because it is only attended to once the model is already considering that tool.
+Identity is the agent's own handle on itself (the chat tells the assistant its `conversationId`,
+the same category as handing a worker a run token) — without it a disposition is unusable, since
+the agent cannot name the thing it should look up. Neither is substrate knowledge: the mechanism —
+which kind, which match, which order — stays in the tool's description.
 
 ## Invariants
 

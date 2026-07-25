@@ -281,6 +281,29 @@ rejected for stated reasons.
   cost; candidates are incremental and capped. See [design-scheduler.md](design-scheduler.md).
 - **Embedded mode as a weaker cousin.** Rejected: the conformance + fault suite runs on
   every adapter in CI from day one, or the backends drift.
+- **Escalation-only tier routing, with no classifier (chat example).** Tried, then reverted on
+  evidence — the interesting one, because the argument for it was sound and the assumption under
+  it was false. The router's pre-classifier (a cheap `llm_call` served by the fleet, answering
+  with a tier word) was removed in favour of: dispatch every turn to the cheapest advertised tier
+  and let a worker `escalate` when it finds itself out of depth. Rationale: a classifier taxes
+  every turn, in front of the first token, to answer a question that is only in doubt on a
+  minority of them, while escalation pays only on the turns actually misrouted. Cost belongs where
+  the uncertainty is.
+  **What happened:** across a tool-heavy analytical session every turn routed to the cheap tier
+  and *nothing* escalated — the model answered an aggregation question from invented numbers
+  instead. Escalation depends on the cheap model recognizing its own inadequacy, which is the
+  weakest available judge; a model confident enough to confabulate is exactly the one that will
+  not reach for `escalate`. Restored, with the judgment made by a different model than the one
+  being judged. Escalation is kept as the catch for under-routing: two mechanisms for one decision
+  is deliberate here.
+  **Keep from the removal:** no tier name appears in `router.ts` any more. Live tiers come from
+  `model` records by `rank`, the classifier answers with one of those words, and the fallback
+  heuristic picks by *position* in that list, not by name — the original fallback hardcoded
+  `"fast"|"balanced"|"deep"` in the file whose thesis is that tiers are discovered.
+  **Related limit, unresolved:** a `model` record is written once at worker startup and never
+  expires, so it advertises a tier, not a live worker. Routing to a tier whose worker is dead
+  leaves the call `available`; the chat's stall detection reports it rather than the fleet
+  re-probing.
 
 ## Risk register
 

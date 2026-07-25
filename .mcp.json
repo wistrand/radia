@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "radia": {
+      "type": "stdio",
+      "command": "deno",
+      "args": [
+        "run",
+        "--allow-net",
+        "--allow-read",
+        "--allow-env",
+        "src/main.ts",
+        "mcp"
+      ],
+      "env": {}
+    }
+  }
+}

@@ -6,6 +6,7 @@
 
 import { agentLoop } from "../../sdk/ts/loop.ts";
 import { RadiaClient } from "../../sdk/ts/client.ts";
+import { progress } from "./progress.ts";
 import { makeTools, TOOL_SCHEMAS } from "./tools.ts";
 import { INSPECT_SCHEMAS, makeInspectTools } from "./inspect.ts";
 import { makeRemediateTools, REMEDIATE_SCHEMAS } from "./remediate.ts";
@@ -51,9 +52,11 @@ for (const name of Object.keys(tools)) {
 await agentLoop(client, {
   name: "tools",
   templates: Object.keys(tools).map((tool) => ({ kind: "tool_call", match: { tool } })),
-  handle: async (rec) => {
+  handle: async (rec, c) => {
     const callId = rec.id;
-    const b = rec.body as { tool: string; args?: Record<string, unknown> };
+    const b = rec.body as { tool: string; args?: Record<string, unknown>; conversationId?: string };
+    // A file search or a space query can take seconds; say who picked it up and what is running.
+    await progress(c, { conversationId: b.conversationId, callId, stage: "running", by: "agent:chat-tools", note: b.tool }, [callId]);
     try {
       const output = await tools[b.tool](b.args ?? {});
       return { kind: "tool_result", body: { callId, ok: true, output } };

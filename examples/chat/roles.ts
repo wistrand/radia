@@ -31,15 +31,19 @@ const INFERENCE_GRANTS: Grant[] = [
   { kind: "model", operations: ["put", "query"] },
   { kind: "capability", operations: ["put"] },
   { kind: "message", operations: ["query"] },
+  { kind: "progress", operations: ["put"] }, // reports which tier/model is generating
 ];
 
-// router-worker: claims UNTIERED llm_calls, classifies the turn, and re-dispatches a tiered one.
-// Model selection is delegated here (a substrate worker), not decided in the chat client.
+// router-worker: claims UNTIERED llm_calls, classifies the turn with a cheap model, and
+// re-dispatches a tiered one. Model selection is delegated here (a substrate worker), not decided
+// in the chat client. It reads the newest messages (to classify) and its own classifier call's
+// result; it never holds the API key — the classification is itself an llm_call served by the fleet.
 const ROUTER_GRANTS: Grant[] = [
   { kind: "llm_call", operations: ["take", "put"] },
   { kind: "llm_result", operations: ["read_one"] }, // reads its classifier call's result
   { kind: "message", operations: ["query"] },
   { kind: "model", operations: ["query"] },
+  { kind: "progress", operations: ["put"] }, // reports classifying + the tier it picked
 ];
 
 // tool-worker: claims tool_call, emits tool_result, and publishes its capability records.
@@ -47,6 +51,7 @@ const TOOLS_GRANTS: Grant[] = [
   { kind: "tool_call", operations: ["take"] },
   { kind: "tool_result", operations: ["put"] },
   { kind: "capability", operations: ["put"] },
+  { kind: "progress", operations: ["put"] }, // reports which tool it is running
 ];
 
 // plain user (the REPL): may drive a conversation and read its own results, nothing more.
@@ -61,6 +66,7 @@ const USER_GRANTS: Grant[] = [
   { kind: "llm_result", operations: ["read_one"] },
   { kind: "tool_result", operations: ["read_one"] },
   { kind: "capability", operations: ["query"] },
+  { kind: "progress", operations: ["query"] }, // read-only: the session reports no progress of its own
 ];
 
 /** Operator action: define an agent with its grants and mint a short-lived run token. */

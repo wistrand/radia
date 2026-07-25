@@ -47,15 +47,111 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const enc = new TextEncoder();
 const write = (s: string) => Deno.stdout.writeSync(enc.encode(s));
 
+// ---- live turn status, rendered from `progress` records ----
+// The workers publish what they are doing (progress.ts); the chat redraws the current line as
+// `<prefix><dim status>` and wipes the status once real output starts. Only on a TTY — piped
+// output stays byte-identical to the no-status version.
+const tty = Deno.stdout.isTerminal();
+const showStatus = (prefix: string, s: string) => tty && write(`\r\x1b[2K${prefix}\x1b[2m${trunc(s, 100)}\x1b[0m`);
+const endStatus = (prefix: string) => tty && write(`\r\x1b[2K${prefix}`);
+
+// ---- watch-driven wakeups ----
+// The wait loops below are woken by the runtime, not by a fixed poll interval: a background watch
+// per streaming kind turns "a matching record became available" into a signal. The fallback tick
+// keeps a turn moving if a watch is dropped or forbidden, so this is an optimization, never a
+// dependency. Wakeups carry only {seq, recordId, kind} — the loops still read what they need.
+const WAKE_FALLBACK_MS = 250;
+const WAKE_KINDS = ["llm_chunk", "llm_result", "tool_result"];
+const waiters = new Set<() => void>();
+
+function doWake(): void {
+  const pending = [...waiters];
+  waiters.clear();
+  for (const w of pending) w();
+}
+
+function waitWake(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const fire = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      waiters.delete(fire);
+      resolve();
+    }, ms);
+    waiters.add(fire);
+  });
+}
+
+/** Background: one watch per streaming kind, each wakeup releasing whatever turn is waiting. */
+function watchWakeups(signal: AbortSignal): void {
+  for (const kind of WAKE_KINDS) {
+    (async () => {
+      try {
+        for await (const _ of client.watch({ kind }, signal)) doWake();
+      } catch { /* aborted, or no grant to watch this kind: the fallback tick covers it */ }
+    })();
+  }
+}
+
+// ---- waiting on a call: render worker progress, and name the failure when nothing claims it ----
+// Everything the REPL loop below reaches at runtime must be initialized ABOVE it: the loop runs
+// to EOF, so a `const` declared after it stays in the temporal dead zone forever.
+
+// No progress record by now means no worker has CLAIMED the call: the record is sitting
+// available with nobody serving its template. That's a configuration failure, not slowness, so
+// the chat says which one instead of burning its whole timeout in silence.
+const STALL_MS = 2500;
+const PROGRESS_POLL_MS = 400; // slower than the chunk poll; progress changes a few times per call
+
+interface ProgressBody {
+  stage: string;
+  by: string;
+  note?: string;
+}
+
+interface Waiter {
+  prefix: string; // line prefix to redraw the status after
+  seen: Set<string>; // progress record ids already rendered
+  last?: ProgressBody;
+  started: number;
+  nextPoll: number;
+}
+
+function newWaiter(prefix: string): Waiter {
+  return { prefix, seen: new Set(), started: Date.now(), nextPoll: 0 };
+}
+
+/** Poll this call's `progress` records and redraw the status line. No progress at all past
+ *  STALL_MS is what turns a silent hang into a diagnosis. */
+async function pumpStatus(w: Waiter, callId: string, stallHint: string): Promise<void> {
+  const now = Date.now();
+  if (now < w.nextPoll) return;
+  w.nextPoll = now + PROGRESS_POLL_MS;
+  try {
+    const rows = await client.query({ kind: "progress", match: { callId } }, 20);
+    for (const r of rows.sort((a, b) => (a.id < b.id ? -1 : 1))) {
+      if (w.seen.has(r.id)) continue;
+      w.seen.add(r.id);
+      w.last = r.body as ProgressBody; // ULID order = emission order, so the last one wins
+    }
+  } catch { /* no grant to read progress: fall through to the elapsed-only status */ }
+  const secs = Math.round((Date.now() - w.started) / 1000);
+  if (w.last) showStatus(w.prefix, `${w.last.stage}${w.last.note ? ` ${w.last.note}` : ""} (${w.last.by}) · ${secs}s`);
+  else if (Date.now() - w.started > STALL_MS) showStatus(w.prefix, `${stallHint} · ${secs}s`);
+  else showStatus(w.prefix, `waiting · ${secs}s`);
+}
+
 // Default to the same port as `deno task dev` (7788) so, if you have the web console open,
 // the chat's records show up there. Spawns its own space only if none is running.
 const url = Deno.env.get("RADIA_URL") ?? "http://127.0.0.1:7788";
 const port = new URL(url).port || "7788";
 
 // Three capability/cost tiers, each served by its own inference-worker (model selection is
-// content-routing). Two models across three tiers: fast/balanced use the cheap model, deep the
-// capable one — point `balanced` at a mid-tier model via the env var. The chat does NOT choose a
-// tier: it puts UNTIERED llm_calls; the router-worker classifies each turn and picks the tier.
+// content-routing). The chat does NOT choose a tier: it puts UNTIERED llm_calls; a router-worker
+// classifies each turn and picks the tier, and a worker that still finds itself out of depth
+// escalates.
 const TIERS: Record<string, string> = {
   fast: Deno.env.get("RADIA_CHAT_MODEL_FAST") ?? "openai/gpt-4o-mini",
   balanced: Deno.env.get("RADIA_CHAT_MODEL_BALANCED") ?? "anthropic/claude-sonnet-5",
@@ -143,8 +239,8 @@ for (const [t, m] of Object.entries(TIERS)) {
     }).spawn(),
   );
 }
-// Router-worker (agent:chat-router): claims UNTIERED llm_calls and picks the tier per turn, so
-// the chat holds no routing logic. Model selection is delegated to the substrate.
+// Router-worker (agent:chat-router): claims UNTIERED llm_calls, classifies each turn and picks the
+// tier, so the chat holds no routing logic. Model selection is delegated to the substrate.
 procs.push(
   new Deno.Command("deno", {
     args: ["run", "--allow-net", "--allow-env", "examples/chat/router.ts", "--url", url, "--token", routerToken, "--classify-model", CLASSIFY_MODEL],
@@ -178,6 +274,7 @@ procs.push(
 
 const capWatch = new AbortController();
 watchCapabilities(capWatch.signal); // background: keep the tool set live from capability records
+watchWakeups(capWatch.signal); // background: let the runtime push, instead of polling on a timer
 
 function cleanup() {
   capWatch.abort();
@@ -194,7 +291,7 @@ Deno.addSignalListener("SIGINT", () => {
 
 console.log(`radia chat — role ${role}`);
 console.log(`tiers: ${Object.entries(TIERS).map(([t, m]) => `${t}=${m}`).join("  ")}`);
-console.log("routing: automatic — a router-worker classifies each turn and picks the tier (no /commands).");
+console.log("routing: automatic — a router-worker classifies each turn and picks the tier; workers escalate when out of depth (no /commands).");
 console.log(
   role === "admin"
     ? "auth: session runs as the OPERATOR — space_* inspect/remediate tools have full /ops access."
@@ -214,7 +311,10 @@ const SYSTEM_PROMPT =
   "not confuse tools with record kinds. Everything in Radia is a record, including this " +
   "conversation and your own reasoning, so your space_* tools can inspect and even operate on the " +
   "space itself (use space_kinds to see what record kinds exist). Use state-changing tools " +
-  "deliberately, and prefer to inspect before acting.\n" +
+  "deliberately, and prefer to inspect before acting. If you are unsure what happened earlier in " +
+  "this session, retrieve it rather than recall it: your own history is inspectable, and a checked " +
+  "answer is worth a tool call where a remembered one is a guess. Do not spend a call on something " +
+  "you can already see.\n" +
   (role === "admin"
     ? "This session runs as the OPERATOR: your space_* tools have full access to the space's control plane."
     : "This session runs as a SCOPED USER (agent:chat-user). Use any tool you are given normally — the " +
@@ -243,7 +343,13 @@ async function appendMessage(
   });
 }
 
-await appendMessage({ role: "system", content: SYSTEM_PROMPT });
+// The assistant is told its OWN id, not how to use it. Identity is data the agent needs to act on
+// its own behalf — the same category as handing a worker a run token — while the mechanism (which
+// kind, which match, which order) stays in the tool descriptions where it belongs. Without this the
+// disposition above is unusable: the reconstructed thread carries no `conversationId`, the
+// `conversation` record has an empty body and no indexed path, and `role=user` cannot enumerate
+// conversations at all — so the model could not name the thread it is in.
+await appendMessage({ role: "system", content: `${SYSTEM_PROMPT}\nThis conversation's id is ${conversationId}.` });
 
 // Wait for the tool-workers to publish their capabilities (the watch fills the cache).
 for (let i = 0; i < 50 && discoverTools().length === 0; i++) await sleep(200);
@@ -303,8 +409,10 @@ async function turn(): Promise<void> {
       body: { conversationId, upToIndex, tools: discoverTools() },
       parentIds: [conversationId],
     });
-    const { message: msg, finishReason, streamed, tier } = await streamResult(callId);
-    if (tier) write(`  \x1b[2m[routed → ${tier}]\x1b[0m\n`);
+    const { message: msg, finishReason, streamed, tier, context } = await streamResult(callId);
+    // Show the window only when it actually dropped something — otherwise it is noise.
+    const win = context && context.hidden > 0 ? ` · ${context.sent} msgs, ${context.hidden} older not sent` : "";
+    if (tier) write(`  \x1b[2m[routed → ${tier}${win}]\x1b[0m\n`);
     await appendMessage({ role: "assistant", content: msg.content ?? null, tool_calls: msg.tool_calls }, [callId]);
 
     if (msg.tool_calls && msg.tool_calls.length > 0) {
@@ -314,9 +422,16 @@ async function turn(): Promise<void> {
         try {
           args = JSON.parse(tc.function.arguments || "{}");
         } catch { /* leave empty */ }
-        write(`  · ${tc.function.name}(${trunc(JSON.stringify(args), 60)}) `);
-        const { id: toolCallId } = await client.put({ kind: "tool_call", body: { tool: tc.function.name, args }, parentIds: [conversationId] });
-        const result = await pollResult(toolCallId);
+        const prefix = `  · ${tc.function.name}(${trunc(JSON.stringify(args), 60)}) `;
+        write(prefix);
+        // `conversationId` in the body (not just parentIds) so the tool-worker can key its
+        // progress records to this turn — provenance is causality, not a lookup path.
+        const { id: toolCallId } = await client.put({
+          kind: "tool_call",
+          body: { tool: tc.function.name, args, conversationId },
+          parentIds: [conversationId],
+        });
+        const result = await pollResult(toolCallId, prefix, tc.function.name);
         write(`-> ${trunc(JSON.stringify(result.output), 80)}\n`);
         await appendMessage(
           { role: "tool", tool_call_id: tc.id, content: JSON.stringify(result.ok ? result.output : { error: result.output }) },
@@ -343,19 +458,38 @@ interface StreamedResult {
   finishReason: string;
   streamed: boolean;
   tier?: string; // the tier the router chose, stamped by the inference-worker
+  context?: { sent: number; hidden: number }; // what the worker's context window sent vs. omitted
 }
 
 // Poll llm_chunk + llm_result for a call, printing deltas as they arrive.
 async function streamResult(callId: string): Promise<StreamedResult> {
-  let lastIndex = -1;
+  const w = newWaiter("assistant> ");
+  const stall = "no worker claimed this call — is the router/inference fleet running?";
+  let lastIndex = -1; // watermark over ONE monotonic stream: an escalation hands it on, never resets
+  let printed = false; // any visible text on the line yet
   const printNew = async () => {
-    const chunks = await client.query({ kind: "llm_chunk", match: { callId }, orderBy: [{ path: "index" }] }, 1000);
+    // Incremental read: ask for what's past the watermark instead of re-scanning the whole stream
+    // every tick. `index` is an indexed integer on `llm_chunk`, so this is a range scan, and the
+    // batch size is a ceiling on a burst, not on the answer.
+    const chunks = await client.query(
+      { kind: "llm_chunk", match: { callId, index: { $gt: lastIndex } }, orderBy: [{ path: "index" }] },
+      500,
+    );
     for (const ch of chunks) {
-      const b = ch.body as { index: number; delta: string };
-      if (b.index > lastIndex) {
-        write(b.delta);
-        lastIndex = b.index;
+      const b = ch.body as { index: number; delta: string; reset?: boolean };
+      if (b.index <= lastIndex) continue;
+      lastIndex = b.index;
+      if (b.reset) {
+        // A worker escalated mid-stream: everything printed so far came from the attempt it just
+        // threw away. Say so rather than letting the stronger model's answer append to it.
+        if (printed) write(`\n\x1b[2m↩ escalated — restarting on a stronger model\x1b[0m\n`);
+        printed = false;
+        continue;
       }
+      if (!b.delta) continue;
+      if (!printed) endStatus(w.prefix); // first token: drop the status, keep the prompt
+      write(b.delta);
+      printed = true;
     }
   };
   const deadline = Date.now() + 120_000;
@@ -364,22 +498,41 @@ async function streamResult(callId: string): Promise<StreamedResult> {
     const result = await client.readOne({ kind: "llm_result", match: { callId } });
     if (result) {
       await printNew(); // flush any stragglers
-      const body = result.body as { message: ChatMessage; finishReason: string; tier?: string };
-      return { message: body.message, finishReason: body.finishReason, streamed: lastIndex >= 0, tier: body.tier };
+      if (!printed) endStatus(w.prefix); // nothing streamed (tool-call turn / error)
+      const body = result.body as {
+        message: ChatMessage;
+        finishReason: string;
+        tier?: string;
+        context?: { sent: number; hidden: number };
+      };
+      return { message: body.message, finishReason: body.finishReason, streamed: printed, tier: body.tier, context: body.context };
     }
-    await sleep(120);
+    if (!printed) await pumpStatus(w, callId, stall); // status only until output takes the line
+    await waitWake(WAKE_FALLBACK_MS);
   }
-  throw new Error("timed out waiting for inference (is OPENROUTER_API_KEY valid and the model available?)");
+  endStatus(w.prefix);
+  throw new Error(
+    w.last
+      ? `timed out waiting for inference after '${w.last.stage}' (${w.last.by}) — is OPENROUTER_API_KEY valid and the model available?`
+      : `timed out: ${stall}`,
+  );
 }
 
-async function pollResult(callId: string): Promise<{ ok: boolean; output: unknown }> {
+async function pollResult(callId: string, prefix: string, tool: string): Promise<{ ok: boolean; output: unknown }> {
+  const w = newWaiter(prefix);
+  const stall = `no worker serves '${tool}'`;
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     const r = await client.readOne({ kind: "tool_result", match: { callId } });
-    if (r) return r.body as { ok: boolean; output: unknown };
-    await sleep(120);
+    if (r) {
+      endStatus(prefix);
+      return r.body as { ok: boolean; output: unknown };
+    }
+    await pumpStatus(w, callId, stall);
+    await waitWake(WAKE_FALLBACK_MS);
   }
-  throw new Error("timed out waiting for tool_result");
+  endStatus(prefix);
+  throw new Error(w.last ? `timed out waiting for tool_result from ${w.last.by}` : `timed out: ${stall}`);
 }
 
 function trunc(s: string, n: number): string {

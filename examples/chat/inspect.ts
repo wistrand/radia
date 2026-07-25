@@ -38,11 +38,23 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
 
     space_query: async (a) => {
       const limit = Math.min(Number(a.limit ?? 10) || 10, 25);
-      const records = await client.query(
+      // Fetch one past the limit purely to answer "is this all of them?". A page that reports only
+      // its own size reads as a population: the model counts 10 records and states a total. This is
+      // a page, and it says so.
+      const found = await client.query(
         { kind: String(a.kind ?? ""), match: a.match as Record<string, unknown> | undefined, orderBy: normalizeOrderBy(a.orderBy) as never },
-        limit,
+        limit + 1,
       );
-      return { count: records.length, records: records.map(compact) };
+      const records = found.slice(0, limit);
+      const more = found.length > limit;
+      return {
+        count: records.length,
+        more,
+        ...(more
+          ? { warning: `more than ${limit} records match; this is a PAGE, not the total. Do not count or aggregate from it — use space_stats for totals, or narrow the match.` }
+          : {}),
+        records: records.map(compact),
+      };
     },
 
     space_record: async (a) => {
@@ -79,7 +91,7 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
 export const INSPECT_SCHEMAS: ToolDef[] = [
   { type: "function", function: { name: "space_stats", description: "Counts of records by kind and state in the Radia space (a quick overview / health check).", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "space_kinds", description: "List the registered record kinds and their indexed/sortable paths.", parameters: { type: "object", properties: {} } } },
-  { type: "function", function: { name: "space_query", description: "Find records by kind, with an optional match (equality/$gt/$in/$exists/…) and order_by. order_by is an array of {path, dir?} over the kind's SORTABLE paths only (list a kind's sortable paths with space_kinds); omit it to leave records unsorted. Returns up to `limit` (default 10, max 25) records with size-capped bodies. The conversation itself is records: kind 'message' with match {conversationId}, order_by [{path:\"index\"}].", parameters: { type: "object", properties: { kind: { type: "string" }, match: { type: "object" }, orderBy: { type: "array", items: { type: "object", properties: { path: { type: "string" }, dir: { type: "string", enum: ["asc", "desc"] } }, required: ["path"] } }, limit: { type: "integer" } }, required: ["kind"] } } },
+  { type: "function", function: { name: "space_query", description: "Find records by kind, with an optional match (equality/$gt/$in/$exists/…) and order_by. order_by is an array of {path, dir?} over the kind's SORTABLE paths only (list a kind's sortable paths with space_kinds); omit it to leave records unsorted. Returns up to `limit` (default 10, max 25) records with size-capped bodies, plus `more`: true when further records match — the result is then a PAGE, so never count or compute percentages from it (space_stats has per-kind totals). The conversation itself is records: kind 'message' with match {conversationId}, order_by [{path:\"index\"}].", parameters: { type: "object", properties: { kind: { type: "string" }, match: { type: "object" }, orderBy: { type: "array", items: { type: "object", properties: { path: { type: "string" }, dir: { type: "string", enum: ["asc", "desc"] } }, required: ["path"] } }, limit: { type: "integer" } }, required: ["kind"] } } },
   { type: "function", function: { name: "space_record", description: "Fetch a single record by id.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
   { type: "function", function: { name: "space_lineage", description: "The ANCESTRY (parent_ids, UP) of a record: {depth, id, kind} — how it was derived. A root record (e.g. a conversation) has no ancestors; to find what REFERENCES it, use space_children.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
   { type: "function", function: { name: "space_children", description: "Records that REFERENCE this record via parent_ids — its children (DOWN, the reverse of lineage), with bodies. Use this to follow links from a root: a conversation's messages (kind:message) and llm_calls, an llm_call's chunks + result, a task's results. Optional `kind` filter (e.g. 'message'). Returns up to `limit` (default 25).", parameters: { type: "object", properties: { recordId: { type: "string" }, kind: { type: "string" }, limit: { type: "integer" } }, required: ["recordId"] } } },

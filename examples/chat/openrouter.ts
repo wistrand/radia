@@ -33,7 +33,9 @@ export interface StreamResult {
   usage?: Record<string, unknown>;
 }
 
-const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
+// `RADIA_CHAT_API_BASE` points the fleet at any OpenAI-compatible endpoint — a local stub for
+// offline testing (escalation, streaming) or a self-hosted gateway.
+const ENDPOINT = `${Deno.env.get("RADIA_CHAT_API_BASE") ?? "https://openrouter.ai/api/v1"}/chat/completions`;
 
 /**
  * Stream a completion. `onChunk` is called with accumulated content text on a coarse

@@ -5,7 +5,10 @@
 
 import { agentLoop } from "../../sdk/ts/loop.ts";
 import { RadiaClient } from "../../sdk/ts/client.ts";
+import { progress } from "./progress.ts";
 import { type ChatMessage, streamChat, type ToolCall, type ToolDef } from "./openrouter.ts";
+
+const ME = "agent:chat-inference";
 
 function arg(name: string): string | undefined {
   const i = Deno.args.indexOf(name);
@@ -20,7 +23,29 @@ const apiKey = Deno.env.get("OPENROUTER_API_KEY") ?? "";
 const tier = arg("--tier"); // omit → serve ALL tiers (single-worker back-compat)
 const model = arg("--model") ?? Deno.env.get("RADIA_CHAT_MODEL") ?? "openai/gpt-4o-mini";
 const rank = Number(arg("--rank") ?? "0"); // capability rank (cheap→capable); escalation goes up
+// How many of the newest thread messages to send. 0 = the whole thread (pre-windowing behavior).
+// The omitted ones stay retrievable — the assistant knows its own conversation id and can query
+// them — so this bounds per-turn cost without making history unreachable.
+const WINDOW = Number(arg("--window") ?? Deno.env.get("RADIA_CHAT_WINDOW") ?? "40");
+const WINDOW_CAP = 400; // ceiling on the current-turn expansion below, so one runaway turn is bounded
 const client = new RadiaClient(url, token ? { token } : {});
+
+/** A `message` record body as stored by the chat. */
+interface ThreadRow {
+  index: number;
+  role: string;
+  content?: string | null;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+}
+
+function toMessage(m: ThreadRow): ChatMessage {
+  const cm: ChatMessage = { role: m.role };
+  if (m.content !== undefined) cm.content = m.content;
+  if (m.tool_calls) cm.tool_calls = m.tool_calls;
+  if (m.tool_call_id) cm.tool_call_id = m.tool_call_id;
+  return cm;
+}
 
 // The `escalate` tool: the model DISCOVERS it (like any capability) and calls it when it's out of
 // depth; this worker INTERCEPTS the call and re-dispatches the turn to a stronger tier (never
@@ -58,35 +83,91 @@ await agentLoop(client, {
       model?: string;
       tools?: ToolDef[];
       replyTo?: string;
-      messages?: ChatMessage[]; // raw-prompt override (e.g. the router's tier classifier)
+      messages?: ChatMessage[]; // raw-prompt override (a one-off call with its own prompt)
       stream?: boolean; // false → don't emit llm_chunk records (one-off calls)
+      indexOffset?: number; // chunk watermark handed over on escalation (see below)
     };
     // The router re-dispatches under a new id but sets `replyTo` to the ORIGINAL call the chat
     // awaits — key the streamed chunks + result to that, so the chat never sees the indirection.
     const resultKey = body.replyTo ?? callId;
-    let index = 0;
+    // Chunk indices are a single monotonic stream per AWAITED call, not per attempt: an escalating
+    // worker hands its watermark to the next one, so the chat can ask for `index > lastSeen` and
+    // never re-scan or replay. Attempt boundaries are marked in-band (the `reset` chunk below).
+    let index = body.indexOffset ?? 0;
+    // Which model is actually about to run — the piece the chat can't know, since the tier was
+    // chosen by the router. Keyed to resultKey so it lands on the call the chat awaits.
+    const reportModel = body.model ?? model;
+    await progress(c, {
+      conversationId: body.conversationId,
+      callId: resultKey,
+      stage: "generating",
+      by: ME,
+      note: `${tier ?? "any"} · ${reportModel}`,
+    }, [callId]);
     try {
       // A raw-prompt call (e.g. the router's tier classifier) supplies `messages` directly. A
       // conversation turn reconstructs them from the space — the thread lives in `message`
       // records, not in the call body. History is stored once; we read it (not re-embed it).
       let messages: ChatMessage[];
+      let hidden = 0;
       if (body.messages) {
         messages = body.messages;
-      } else {
+      } else if (WINDOW <= 0) {
         const rows = await c.query(
           { kind: "message", match: { conversationId: body.conversationId }, orderBy: [{ path: "index" }] },
           2000,
         );
-        messages = rows
-          .map((r) => r.body as { index: number; role: string; content?: string | null; tool_calls?: ToolCall[]; tool_call_id?: string })
-          .filter((m) => m.index <= body.upToIndex)
-          .map((m) => {
-            const cm: ChatMessage = { role: m.role };
-            if (m.content !== undefined) cm.content = m.content;
-            if (m.tool_calls) cm.tool_calls = m.tool_calls;
-            if (m.tool_call_id) cm.tool_call_id = m.tool_call_id;
-            return cm;
-          });
+        messages = rows.map((r) => toMessage(r.body as ThreadRow)).filter((_, i) => (rows[i].body as ThreadRow).index <= body.upToIndex);
+      } else {
+        // Windowed reconstruction: read the NEWEST `WINDOW` messages as a descending keyset scan
+        // over the sortable `index`, instead of pulling the thread and slicing. Per-turn cost is
+        // bounded by the window, not by conversation length — which is what makes "history is
+        // stored once, read incrementally" true of the CONTEXT and not only of storage.
+        //
+        // Dropping old turns is normally lossy and one-way. Here it isn't: the omitted messages are
+        // still records the assistant can retrieve by this conversation's id, which is why the
+        // notice below can be a pointer rather than a summary.
+        // The window must never evict the CURRENT turn. One tool-heavy turn is a dozen messages on
+        // its own (an assistant tool_calls message plus a reply per call), so a fixed count can cut
+        // away the very question being answered and leave the model summarizing tool output it can
+        // no longer attribute. Expand until the most recent `user` message is inside the window —
+        // that message begins the current turn, so including it includes everything after it.
+        let limit = WINDOW;
+        let tail: ThreadRow[] = [];
+        for (;;) {
+          tail = (await c.query(
+            {
+              kind: "message",
+              match: { conversationId: body.conversationId, index: { $lte: body.upToIndex } },
+              orderBy: [{ path: "index", dir: "desc" }],
+            },
+            limit,
+          )).map((r) => r.body as ThreadRow).reverse();
+          const hasCurrentTurn = tail.some((m) => m.role === "user");
+          const atThreadStart = tail.length === 0 || tail[0].index <= 1;
+          if (hasCurrentTurn || atThreadStart || limit >= WINDOW_CAP) break;
+          limit = Math.min(limit * 4, WINDOW_CAP);
+        }
+        // A `tool` reply whose assistant call fell outside the window is a protocol error for the
+        // API (a tool message must answer a preceding tool_calls message), so trim the orphans at
+        // the leading edge rather than dragging their call back in.
+        while (tail.length > 0 && tail[0].role === "tool") tail.shift();
+        // The system message is the standing instruction set — always sent, never windowed out.
+        const head = tail[0]?.index === 0
+          ? []
+          : (await c.query({ kind: "message", match: { conversationId: body.conversationId, index: 0 } }, 1))
+            .map((r) => r.body as ThreadRow);
+        hidden = head.length > 0 && tail.length > 0 ? Math.max(0, tail[0].index - 1) : 0;
+        const notice: ChatMessage[] = hidden > 0
+          ? [{
+            role: "system",
+            content: hidden === 1
+              ? "[1 earlier message in this conversation is not included here. It is not lost — retrieve it if you need it.]"
+              : `[${hidden} earlier messages in this conversation are not included here. ` +
+                `They are not lost — retrieve them if you need them.]`,
+          }]
+          : [];
+        messages = [...head.map(toMessage), ...notice, ...tail.map(toMessage)];
       }
 
       // Can this turn escalate? Find the next-higher-rank tier from the `model` records (the
@@ -99,18 +180,49 @@ await agentLoop(client, {
       const { message, finishReason, usage } = await streamChat(
         { apiKey, model: body.model ?? model, messages, tools },
         body.stream === false
-          ? () => Promise.resolve() // raw-prompt/classify calls don't emit chunk records
+          ? () => Promise.resolve() // raw-prompt one-off calls don't emit chunk records
           : async (delta) => {
             await c.put({ kind: "llm_chunk", body: { callId: resultKey, index: index++, delta }, parentIds: [callId] });
           },
       );
       // Self-escalation: the model asked for a stronger model and one exists → re-dispatch the turn
-      // to that tier (result stays keyed to the original call). A tool-call turn streams no text, so
-      // nothing was shown. The stronger worker re-decides, so the cascade terminates at the top tier.
+      // to that tier (result stays keyed to the original call). The stronger worker re-decides, so
+      // the cascade terminates at the top tier.
       if (higher && message.tool_calls?.some((tc) => tc.function.name === "escalate")) {
-        return { kind: "llm_call", body: { conversationId: body.conversationId, upToIndex: body.upToIndex, tools: body.tools, tier: higher.tier, replyTo: resultKey, escalatedFrom: tier } };
+        // A model may emit text BEFORE calling escalate, and those chunks are already on the user's
+        // screen — this attempt's work is being discarded, so say so IN the stream: an empty-delta
+        // `reset` chunk marks the boundary, and `indexOffset` carries the watermark so the next
+        // worker continues one monotonic sequence instead of replaying indices from zero.
+        if (body.stream !== false) {
+          await c.put({ kind: "llm_chunk", body: { callId: resultKey, index: index++, delta: "", reset: true }, parentIds: [callId] });
+        }
+        await progress(c, {
+          conversationId: body.conversationId,
+          callId: resultKey,
+          stage: "escalating",
+          by: ME,
+          note: `${tier} → ${higher.tier}`,
+        }, [callId]);
+        return {
+          kind: "llm_call",
+          body: {
+            conversationId: body.conversationId,
+            upToIndex: body.upToIndex,
+            tools: body.tools,
+            tier: higher.tier,
+            replyTo: resultKey,
+            escalatedFrom: tier,
+            indexOffset: index,
+          },
+        };
       }
-      return { kind: "llm_result", body: { callId: resultKey, message, finishReason, usage, tier } };
+      // `context` makes the window observable: what was sent, what was left behind. Measurable
+      // without instrumentation — it is a record, so `space_query {kind: llm_result}` answers
+      // "did windowing change how often the assistant reaches for its own history?".
+      return {
+        kind: "llm_result",
+        body: { callId: resultKey, message, finishReason, usage, tier, context: { sent: messages.length, hidden } },
+      };
     } catch (e) {
       // Don't nack (that retries and double-spends); surface the error as the result.
       return {

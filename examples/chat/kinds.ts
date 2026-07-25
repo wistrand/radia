@@ -34,4 +34,12 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   });
   await client.registerKind({ kind: "tool_call", indexedPaths: [{ path: "tool", type: "keyword" }] });
   await client.registerKind({ kind: "tool_result", indexedPaths: [{ path: "callId", type: "keyword" }], claimable: false });
+  // `progress` = what a worker is doing right now, keyed to the call the chat awaits. Turn
+  // feedback is a record like everything else (see progress.ts): the chat renders the stream,
+  // and its ABSENCE tells the chat nobody claimed the work.
+  await client.registerKind({
+    kind: "progress",
+    indexedPaths: [{ path: "callId", type: "keyword" }, { path: "conversationId", type: "keyword" }],
+    claimable: false,
+  });
 }

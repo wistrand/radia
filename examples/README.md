@@ -53,6 +53,49 @@ deno run --allow-net --allow-env examples/coordinator.ts "hello there world"  # 
 Watch it unfold live in the web console's **Feed** tab, and open a `summary` record to see
 its lineage.
 
+## Stress generator (`stress.ts`) — watch the Space tab develop
+
+```bash
+deno task dev                                            # terminal 1 — open http://localhost:7788
+deno task stress                                         # terminal 2 — one wave
+deno task stress -- --waves 3 --tasks 600 --rate 150 --workers 6
+```
+
+Fills a space with a **wave** of coordinated activity so the console's **Space** tab (the
+property-similarity map) has something to develop. Each run is a new wave: a fresh wave tag,
+**freshly minted agents** (so every run adds its own `run` clusters), a randomized op/topic mix,
+and jittered volumes. Nothing is overwritten — re-run it and the map keeps growing.
+
+Position in that view is a pure function of a record's **properties** — kind, envelope state,
+owning run (`spaceNodeFor` in `src/ui/index.html`), never its links — so the generator varies all
+three deliberately rather than only pushing volume:
+
+- **kind** — `stress_job` (fanned out), `stress_task` (claimed by content), `stress_result`,
+  `stress_fact` (never claimed: a pure `available` cluster), `stress_summary` (rolling fan-in).
+- **run** — one agent per role plus **one per op**, each with its own run token, so the event log
+  attributes every record to a distinct run. Workers hold a **template-scoped grant**
+  (`take stress_task` narrowed to `{op, wave}`), so content routing is enforced by authorization,
+  not just by the template a worker happens to send.
+- **state** — acked work lands `consumed`; **poison** records are nacked repeatedly (attempt +1,
+  back to `available`, reclaimed) until the runtime **dead-letters** them past `maxAttempts`; a
+  chaos agent claims a few tasks under a 900s lease and walks away, leaving them **`leased`**
+  after the run — a stuck-lease cluster for `space_doctor` and the remediation tools to find.
+
+The retry churn is the most animated part: records flicker `leased → available` before settling.
+
+| flag | default | effect |
+|-------------|--------|------------------------------------------------|
+| `--waves N` | 1 | waves per run, each with its own tag and agents |
+| `--tasks N` | 240 | work items per wave (jittered ±25%) |
+| `--facts N` | 120 | never-claimed records per wave |
+| `--workers N` | 4 | worker agents, one op each (max 8) |
+| `--rate N` | 60 | producer records/sec — pacing is what makes it animate |
+| `--chaos PCT` | 12 | share of tasks that go poison or get abandoned |
+| `--once` | off | tear down a spawned space at the end (CI) |
+
+It prints per-wave counters and then the space's own totals by kind and state. The Space tab keeps
+the newest 3000 records (`SPACE_CAP`), so heavy waves roll the oldest nodes off the map.
+
 ## CLI chatbot (`chat/`) — a real LLM agent, full symmetry
 
 A CLI chatbot where **the whole conversation lives on the blackboard**. The chatbot makes
@@ -64,10 +107,10 @@ The conversation is an **append-only thread of `message` records** anchored to a
 `conversation` record — not a client-held array. The chatbot appends messages (system /
 user / assistant / tool); an `llm_call` references the thread by `{conversationId,
 upToIndex}` and the **inference-worker reconstructs the context by querying the thread**
-(`{kind:message, match:{conversationId}, orderBy:index}`). Consequences: history is stored
-once (linear, not quadratic — no re-embedding), the whole conversation is reconstructible
-from the space (`query` the thread), and every message is a record you can watch in the
-Feed. This is the blackboard shared-memory pattern, not just content-routed dispatch.
+(`{kind:message, match:{conversationId}, orderBy:index}`, newest-first and bounded — see
+windowing below). Consequences: history is stored once (linear, not quadratic — no re-embedding)
+and *read* incrementally, the whole conversation stays reconstructible from the space (`query` the
+thread), and every message is a record you can watch in the Feed. This is the blackboard shared-memory pattern, not just content-routed dispatch.
 
 **Tools are discovered, not hard-coded, and their usage lives with them.** Each tool-worker
 publishes its tools as `capability` records (`{tool, def}` — `def` carries the description the LLM
@@ -82,28 +125,46 @@ routing table" (§7) applied to tools — the substrate coordinating its own cap
 **Model selection is content-routing, and the routing is delegated to the substrate.** There are
 three capability/cost **tiers** — `fast`, `balanced`, `deep` — each served by its own
 inference-worker that claims only its tier's calls (`take {kind:llm_call, match:{tier}}`) and
-advertises a `model` record. **The chat holds no routing logic:** it puts an *untiered* `llm_call`.
-A **router-worker** (`chat/router.ts`) claims untiered calls (`match:{tier:{$exists:false}}`),
-classifies the turn with a **cheap classifier model** — itself a model-overridden `llm_call` served
-by the inference fleet (`--classify-model`, default `google/gemini-2.5-flash-lite`), so the API key
-stays isolated in the workers and classification routes through the substrate like any other call;
-a regex heuristic is the fallback on error/timeout — and re-dispatches a *tiered* `llm_call`; the
-matching inference-worker serves it and supplies the
-concrete model. The result stays keyed to the original call (`replyTo`), so the chat is oblivious
-to the indirection — it just sees `[routed → deep]`. So both model-serving *and* the model-choice
-are content-routed steps in the substrate; add a tier-worker → a new model is live, no orchestrator
-change. Two models across three tiers by default (`fast`/`balanced` → `openai/gpt-4o-mini`, `deep`
-→ `anthropic/claude-sonnet-5`); override per tier with `RADIA_CHAT_MODEL_{FAST,BALANCED,DEEP}` (e.g.
-point `balanced` at a mid-tier model).
+advertises a `model` record carrying its `rank` (cheap → capable). **The chat holds no routing
+logic:** it puts an *untiered* `llm_call`. A **router-worker** (`chat/router.ts`) claims untiered
+calls (`match:{tier:{$exists:false}}`), classifies the turn with a **cheap classifier model** —
+itself a model-overridden `llm_call` served by the inference fleet (`--classify-model`, default
+`google/gemini-2.5-flash-lite`), so the API key stays isolated in the workers and classification
+routes through the substrate like any other call — and re-dispatches a *tiered* `llm_call`. The
+result stays keyed to the original call (`replyTo`), so the chat is oblivious to the indirection —
+it just sees `[routed → deep]`. Add a tier-worker → a new model is live, no orchestrator change.
+Defaults: `fast` → `openai/gpt-4o-mini`, `balanced` → `anthropic/claude-sonnet-5`, `deep` →
+`anthropic/claude-opus-5`; override per tier with `RADIA_CHAT_MODEL_{FAST,BALANCED,DEEP}`.
+
+**No tier name appears in the router.** Live tiers come from the `model` records ordered by `rank`;
+the classifier is asked to answer with one of *those* words; and when it errors or times out the
+fallback heuristic picks by **position** in that list (cheapest / middle / most capable), never by
+name. So "add a tier-worker and it is routable" holds on both the classifier path and the fallback.
+
+Why a classifier when escalation exists — the two mechanisms judge the same thing, and that is a
+deliberate trade. The classifier was **removed once** on the argument that escalation pays for
+routing only on the turns that were misrouted, while a classifier taxes every turn in front of the
+first token. That argument assumes the cheap model can recognize it is out of depth. It does not:
+across a tool-heavy analytical session the cheap tier escalated on *nothing* and answered from
+invented numbers instead. Self-assessment is the weakest available judge, so the judgment is made
+by a different model, at roughly 0.5-1.2s before the first token. Escalation stays as the catch for
+what the classifier under-routes. See `agent_docs/gotchas.md`.
 
 **Cheap-first, escalate on demand.** On top of routing there's a cost **cascade**: the model is
 offered an `escalate` capability (a discovered tool — guidance in its description), and when it's
 out of depth it calls `escalate`. The inference-worker *intercepts* that call and re-dispatches the
 turn to the next-stronger tier (ordered by the `rank` on each `model` record), keyed to the same
-original call — so the chat only ever sees the final answer and `[routed → deep]`. The top tier has
-no escalation target (the tool is stripped, so it just answers), which terminates the cascade. So
-the router *pre*-routes each turn and escalation *catches* an under-routed one; both are worker
-behavior, and the chat is unchanged (it still puts an untiered call and reads one result).
+original call. The top tier has no escalation target (the tool is stripped, so it just answers),
+which terminates the cascade. This is the *only* mechanism that judges difficulty, and it judges it
+where the information actually is — in the worker that has read the turn and found itself out of
+depth — rather than in a classifier guessing up front.
+
+A model may stream text *before* it calls `escalate`, and that text is already on the user's screen
+when the attempt is discarded. So the boundary is marked **in the stream**: the escalating worker
+puts a final `llm_chunk` with an empty delta and `reset: true`, and hands its index watermark to the
+next worker via `indexOffset`. Chunk indices therefore form one monotonic sequence per awaited call
+across every attempt — the chat prints `↩ escalated — restarting on a stronger model`, drops what it
+had, and keeps reading forward. Nothing is replayed and no two attempts interleave.
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-...          # https://openrouter.ai/keys
@@ -142,6 +203,82 @@ an expired lease), `space_dead_letter`, `space_requeue` — control-plane operat
 bypass lease fencing (fixing another worker's stuck record), so they're privileged (grant-
 gated with real auth). Pair with `space_doctor`: "find what's stuck and fix it," in chat.
 
+**The chat is woken by the runtime, not by a timer.** A background `watch` per streaming kind
+(`llm_chunk`, `llm_result`, `tool_result`) turns "a matching record became available" into a
+wakeup, and the wait loops block on that with a 250 ms fallback tick — so a dropped or forbidden
+watch degrades to polling instead of stalling a turn. Reads are incremental: the chat asks for
+`{callId, index: {$gt: lastSeen}}` rather than re-scanning the whole stream every tick, which is
+what makes wakeup-per-chunk affordable (a burst still batches into one range read). No grant
+changes were needed for this — `authorizeWatch` requires *a* grant on the kind, not a `watch`
+operation, so the session's existing `query`/`read_one` grants already permit it. Worth knowing
+when writing grant sets: a `read_one` grant also confers a stream of wakeups for every matching
+record, though reading each one still needs the grant.
+
+**The assistant has a second path to its own past.** Every chatbot has exactly one — the context
+window — and confabulating about earlier turns is the standard failure. Here the conversation is
+records, so the model can *look* instead of reconstructing. The prompt carries only the disposition
+("if you are unsure what happened earlier, retrieve it rather than recall it") and the assistant's
+own `conversationId`; the mechanism stays in `space_query`'s description, which already spells out
+`kind 'message'`, `match {conversationId}`, `order_by index`. Identity in the prompt is not
+substrate knowledge — it's the agent's handle on itself, like a run token — and it is what makes
+the disposition usable: the reconstructed thread strips `conversationId`, the `conversation` record
+has an empty body and no indexed path, and `role=user` cannot enumerate conversations, so without
+being told the id the model could not name the thread it is in.
+
+**Which is what makes windowing safe.** The inference-worker sends the newest `RADIA_CHAT_WINDOW`
+messages (default 40), not the whole thread: a descending keyset read over the sortable `index`,
+so per-turn cost is bounded by the window rather than by conversation length — "stored once, read
+incrementally" now holds for the *context*, not only for storage. Dropping old turns is normally
+lossy and one-way; here the omitted messages are still records, and the assistant knows its own
+conversation id, so the notice it gets can be a pointer rather than a summary:
+
+```
+[3 earlier messages in this conversation are not included here. They are not lost —
+ retrieve them if you need them.]
+```
+
+The system message is never windowed out (it is the standing instruction set), and a `tool` reply
+whose assistant call fell outside the window is trimmed rather than left orphaned — an unanswered
+`tool` message is a protocol error for the API. The window also **never evicts the current turn**:
+one tool-heavy turn is easily a dozen messages (an assistant `tool_calls` message plus a reply per
+call), so the read expands until the most recent `user` message is inside it. Without that, a fixed
+count cuts away the question being answered and the model summarizes tool output it can no longer
+attribute — which is exactly how it fails, not gracefully. Set `RADIA_CHAT_WINDOW=0` for the old
+whole-thread behaviour. Each `llm_result` carries `context: {sent, hidden}`, so the cost of the
+window and the assistant's response to it are both queryable: `space_query {kind: llm_result}`
+answers "how often does it go back for history?" with no instrumentation.
+
+Beyond recall, the second channel earns its keep on *structure* — lineage/children, another
+agent's records, what a worker actually did — none of which is in the context window at any
+length.
+
+**Turn progress is a record, not a spinner** (`progress.ts`). Between putting an `llm_call` and
+the first streamed token, several workers act — the router claims and dispatches it, an
+inference-worker claims the re-dispatched tiered call — and none of it is visible to the client:
+watches only wake on *available* records, and claim/ack transitions live in the grant-gated event
+log. So each worker publishes what it is doing as a **`progress` record** (`{conversationId,
+callId, stage, by, note}`, keyed to the call the chat awaits — `replyTo`, not the re-dispatched
+id), and the chat renders the latest as a live status line:
+
+```
+you> what's 17+156223
+  · calc({"expr":"17+156223"}) running (agent:chat-tools) · 1s
+assistant> routed → deep (agent:chat-router) · 2s
+```
+
+Stages: `routed` (router), `generating` with the tier and model it resolved, `escalating`
+when a worker hands the turn up a tier, `running` (tool-worker). The status line is wiped as soon
+as real output takes the line, and is TTY-only — piped output is unchanged. Progress records carry
+a `retentionUntil` (they're chatter, not history) and any client sees the same stream, including
+the console Feed.
+
+**Absence of progress is the stall signal.** A call nobody claimed produces no `progress` record,
+which is how a configuration failure is told apart from a slow model: past ~2.5s with nothing, the
+chat says `no worker serves 'search_files'` or `no worker claimed this call — is the
+router/inference fleet running?` instead of sitting silent until its timeout, and the timeout error
+names the last stage reached. This works for a scoped session too (a `progress` query grant), with
+no `/ops/*` access.
+
 **Run it with auth (`roles.ts`).** The launcher is the OPERATOR of its local space, so it
 bootstraps the chain (design-auth): it registers kinds and, as operator, mints **least-privilege
 run tokens** for the two workers (`agent:chat-inference` = take `llm_call`, put
@@ -161,8 +298,10 @@ is the same enforcement the conformance suite covers, exercised by a real agent:
 least-privileged, the user is scoped, and the operator is the only principal on the control plane.
 
 Config: `OPENROUTER_API_KEY`, `RADIA_CHAT_ROLE` (`admin`|`user`, or `--role`),
-`RADIA_CHAT_MODEL_{FAST,BALANCED,DEEP}` (per-tier model overrides), `RADIA_CHAT_DIRS`, `RADIA_URL`.
-(No tier setting — the router-worker picks the tier per turn.)
+`RADIA_CHAT_MODEL_{FAST,BALANCED,DEEP}` (per-tier model overrides), `RADIA_CHAT_DIRS`, `RADIA_URL`,
+`RADIA_CHAT_API_BASE` (any OpenAI-compatible endpoint — a local stub for offline testing, or a
+self-hosted gateway), `RADIA_CHAT_WINDOW` (newest messages sent per turn; 0 = whole thread).
+(No tier setting — the router dispatches, escalation promotes.)
 
 Honest edges (documented, not hidden): a crashed inference retries and can double-spend
 (at-least-once — the gateway is the real fix); file contents become records and flow to the
@@ -187,12 +326,14 @@ until **artifacts** (§2.4, M1) let it be stored once and referenced. Not a CI t
 | `aggregator.ts` | reads `result`s, emits a `summary` when a job is complete |
 | `coordinator.ts` | seeds a job + a standalone task, reads outcomes |
 | `demo.ts` | orchestrates all of the above in one process (`deno task demo`) |
+| `stress.ts` | wave load generator (`deno task stress`): per-op worker agents, poison → `dead_letter`, abandoned leases → `leased`, for the Space tab |
 | `chat/chat.ts` | CLI chatbot (pure record I/O); appends the `message` thread, spawns scoped workers, runs the REPL |
-| `chat/kinds.ts` | registers `conversation`/`message`/`llm_*` (llm_call indexed on `tier`)/`tool_*`/`capability`/`model` kinds |
+| `chat/kinds.ts` | registers `conversation`/`message`/`llm_*` (llm_call indexed on `tier`)/`tool_*`/`capability`/`model`/`progress` kinds |
+| `chat/progress.ts` | `progress` records: a worker publishes what it is doing, keyed to the call the chat awaits (best-effort, `retentionUntil`) |
 | `chat/roles.ts` | least-privilege grant sets + bootstrap (mint worker/session run tokens; admin vs user) |
-| `chat/router.ts` | router-worker: claims UNTIERED `llm_call`s, classifies the turn, re-dispatches a tiered call (`replyTo` keeps the result correlated) — routing delegated to the substrate |
-| `chat/inference.ts` | per-tier inference-worker (`--tier`/`--model`/`--rank`): claims `{llm_call, tier}`, advertises a `model` record + the `escalate` capability, reconstructs the thread → OpenRouter (stream) → `llm_chunk` + `llm_result`; intercepts an `escalate` call and re-dispatches the turn to the next-stronger tier |
-| `chat/toolworker.ts` | tool-worker: `tool_call` → sandboxed tool → `tool_result` (scoped perms) |
+| `chat/router.ts` | router-worker: claims UNTIERED `llm_call`s and re-dispatches to the cheapest advertised tier by `rank` (`replyTo` keeps the result correlated) — routing delegated to the substrate, no classifier; emits `progress` (`routed`) |
+| `chat/inference.ts` | per-tier inference-worker (`--tier`/`--model`/`--rank`): claims `{llm_call, tier}`, advertises a `model` record + the `escalate` capability, reconstructs a WINDOW of the thread (newest N, system kept, orphan tool replies trimmed) → OpenRouter (stream) → `llm_chunk` + `llm_result` with `context: {sent, hidden}`; intercepts an `escalate` call and re-dispatches the turn to the next-stronger tier; emits `progress` (`generating` with tier+model, `escalating`) |
+| `chat/toolworker.ts` | tool-worker: `tool_call` → sandboxed tool → `tool_result` (scoped perms), emits `progress` on claim |
 | `chat/tools.ts` | file/compute tool impls + JSON schemas + sandbox (realpath allowlist, `calc`) |
 | `chat/inspect.ts` | space-inspection tools (`space_stats`/`query`/`lineage`/`events`/`doctor`, …) |
 | `chat/remediate.ts` | remediation tools (`space_reclaim`/`dead_letter`/`requeue`) over the admin endpoints |
