@@ -10,7 +10,7 @@
     "demo": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/demo.ts",
     "demo:ci": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/demo.ts --once",
     "chat": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/chat/chat.ts",
-    "compile": "deno compile --allow-net --allow-read --allow-write --allow-env --include src/ui/index.html --output radia src/main.ts"
+    "compile": "deno compile --allow-net --allow-read --allow-write --allow-env --include src/ui/index.html --include src/ui/vendor/blitzoom.bundle.js --output radia src/main.ts"
   },
   "imports": {
     "@std/ulid": "jsr:@std/ulid@^1.0.0",

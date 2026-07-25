@@ -34,7 +34,8 @@ export interface ServerOptions {
   operatorToken?: string;
 }
 
-/** The dev UI, loaded once at startup. Self-contained single file (see src/ui/index.html). */
+/** The dev UI, loaded once at startup. Single file (see src/ui/index.html); the only asset it
+ *  pulls is the vendored bundle below, lazily, when the Space tab is first opened. */
 function loadUi(operatorToken?: string): string {
   let html: string;
   try {
@@ -45,6 +46,17 @@ function loadUi(operatorToken?: string): string {
   // Bake the operator token into the page. If absent, the placeholder stays and the console's
   // guard falls back to the no-header operator default (e.g. UI opened as a static file).
   return operatorToken ? html.replaceAll("__RADIA_OPERATOR_TOKEN__", operatorToken) : html;
+}
+
+/** Vendored browser assets served under `/ui/` (see src/ui/vendor/README.md). Prebuilt and
+ *  checked in — no build step. Loaded once at startup; empty string if the file is missing
+ *  (the Space tab then reports the asset as unavailable and the rest of the console works). */
+function loadVendor(name: string): string {
+  try {
+    return Deno.readTextFileSync(new URL(`../ui/vendor/${name}`, import.meta.url));
+  } catch {
+    return "";
+  }
 }
 
 export function startServer(opts: ServerOptions): { finished: Promise<void> } {
@@ -79,6 +91,9 @@ async function resolveAuth(req: Request, space: Space, authRequired: boolean): P
   return { principal: "human:local" };
 }
 
+/** Vendored console JS, read on first request (never on import) and held for the process life. */
+let blitzoomJs: string | null = null;
+
 function makeHandler(space: Space, ui: string, authRequired: boolean) {
   return async function handler(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -99,7 +114,7 @@ function makeHandler(space: Space, ui: string, authRequired: boolean) {
     const auth = await resolveAuth(req, space, authRequired);
     // The console (GET /) and health stay public so the console can bootstrap even in required
     // mode (it authenticates thereafter with its baked operator token); everything else 401s.
-    const isPublic = route === "GET /" || route === "GET /v0/health";
+    const isPublic = route === "GET /" || route === "GET /v0/health" || route === "GET /ui/blitzoom.bundle.js";
     if ("error" in auth && !isPublic) return problem(401, auth.error, auth.detail);
     const principal = "principal" in auth ? auth.principal : "anonymous";
 
@@ -135,6 +150,16 @@ function makeHandler(space: Space, ui: string, authRequired: boolean) {
     switch (route) {
       case "GET /":
         return new Response(ui, { headers: { "content-type": "text/html; charset=utf-8" } });
+
+      // Vendored console asset, loaded lazily by the Space tab. Immutable: the bundle is a
+      // checked-in build artifact pinned to an upstream commit (src/ui/vendor/README.md).
+      case "GET /ui/blitzoom.bundle.js": {
+        blitzoomJs ??= loadVendor("blitzoom.bundle.js");
+        if (!blitzoomJs) return problem(404, "not_found", "vendored asset blitzoom.bundle.js not found");
+        return new Response(blitzoomJs, {
+          headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=31536000, immutable" },
+        });
+      }
 
       // --- coordination plane (frozen v0-stable) ---
       case "GET /v0/health":

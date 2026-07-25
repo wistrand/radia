@@ -79,6 +79,12 @@
   @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
   #g-canvas svg text { pointer-events: none; }
   #g-canvas g:hover rect { fill: var(--code); }
+  /* Space tab — BlitZoom <bz-graph> (vendored, see src/ui/vendor/README.md) */
+  bz-graph:not(:defined) { visibility: hidden; }
+  #space-graph { display: block; width: 100%; height: 620px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; --bz-bg: var(--bg); }
+  .space-bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; font-size: 12px; }
+  .space-bar select, .space-bar input[type=number] { width: auto; }
+  .space-bar label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -96,6 +102,7 @@
   <button data-tab="worker">Worker</button>
   <button data-tab="feed">Feed</button>
   <button data-tab="graph">Graph</button>
+  <button data-tab="space">Space</button>
   <button data-tab="auth">Auth</button>
 </nav>
 <main>
@@ -241,6 +248,31 @@
     <div class="panel"><h2>Detail</h2><div id="g-detail"><div class="empty">Click a node.</div></div></div>
   </section>
 
+  <!-- SPACE -->
+  <section id="space">
+    <div class="panel">
+      <h2>Space</h2>
+      <p class="muted" style="margin-top:0">Every record placed by <b>what it is</b> — kind, envelope state, owning run — not by what it links to. Proximity approximates template matchability: two records sitting together are two records one template would likely both match. Streamed live from the ops event log; layout is deterministic, so the same events always give the same picture. Scroll to zoom (levels aggregate into supernodes), drag to pan, click a record for detail, <code>r</code>/<code>R</code> for the compass and control panels.</p>
+      <div class="space-bar">
+        <label><input type="checkbox" id="space-live" style="width:auto" checked onchange="toggleSpaceLive()"> live</label>
+        <label>colour by
+          <select id="space-colorby" onchange="setSpaceColorBy()">
+            <option value="group">kind</option>
+            <option value="state">state</option>
+            <option value="run">run</option>
+          </select>
+        </label>
+        <button class="btn ghost" onclick="resetSpace()">Reset</button>
+        <span class="muted mono" id="space-count"></span>
+      </div>
+      <div id="space-msg"></div>
+      <bz-graph id="space-graph" incremental level="4" legend edge-mode="lines"
+                label-props="label" color-by="group"
+                strengths="group:8,run:5,state:4,label:1"></bz-graph>
+    </div>
+    <div class="panel"><h2>Detail</h2><div id="space-detail"><div class="empty">Click a record.</div></div></div>
+  </section>
+
   <!-- AUTH -->
   <section id="auth">
     <div class="panel">
@@ -282,19 +314,22 @@ function errText(r) { return (r.data && r.data.detail) ? `${r.data.title}: ${r.d
 function stateBadge(s) { return `<span class="badge st-${s}">${s}</span>`; }
 
 // ---- nav ----
-document.querySelectorAll("#nav button").forEach((b) => b.onclick = () => {
+function selectTab(b) {
   document.querySelectorAll("#nav button").forEach((x) => x.classList.remove("active"));
   document.querySelectorAll("main section").forEach((x) => x.classList.remove("active"));
   b.classList.add("active");
   $(b.dataset.tab).classList.add("active");
   stopFeed();
   stopGraphLive();
+  stopSpace();
   if (b.dataset.tab === "overview") { loadHealth(); loadStats(); }
   if (b.dataset.tab === "kinds") loadKinds();
   if (b.dataset.tab === "feed") startFeed();
   if (b.dataset.tab === "graph") loadGraphRoots();
+  if (b.dataset.tab === "space") startSpace();
   if (b.dataset.tab === "auth") loadAuth();
-});
+}
+document.querySelectorAll("#nav button").forEach((b) => b.onclick = () => selectTab(b));
 
 // ---- taint + delegation badges (shared by the records list, detail, and graph) ----
 function metaFlags(rec) {
@@ -617,6 +652,162 @@ function startFeed() { feedSeq = "0"; feedRows = []; pollFeed(); if ($("feed-liv
 function stopFeed() { if (feedTimer) { clearInterval(feedTimer); feedTimer = null; } }
 function toggleLive() { stopFeed(); if ($("feed-live").checked) feedTimer = setInterval(pollFeed, 1000); }
 
+// ---- space (BlitZoom property-similarity view of the whole space) ----
+// Position is derived from a record's *properties* (kind, envelope state, owning run), never
+// from its links — the visual analogue of content routing. The layout is a pure function of
+// those properties (MinHash -> fixed Gaussian projection -> uint16 grid), so insertion never
+// displaces what is already on screen and the same event log always renders the same picture.
+// Everything here is a consumer of GET /v0/ops/events; no new server surface.
+
+const SPACE_CAP = 3000;      // visible records; oldest are dropped past this (see pruneSpace)
+const SPACE_BATCH = 500;     // events per poll
+let spaceScript = null;      // Promise for the lazily-injected vendor bundle
+let spaceCursor = "0";
+let spaceTimer = null;
+let spacePolling = false;
+const spaceSeen = new Map(); // recordId -> last node props pushed (drives add-vs-update)
+const spaceOrder = [];       // recordIds in arrival order, for pruning
+
+/** Inject the vendored BlitZoom bundle on first use, so the default console load stays small. */
+function loadBlitzoom() {
+  if (spaceScript) return spaceScript;
+  spaceScript = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.type = "module";
+    s.src = "/ui/blitzoom.bundle.js";
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("could not load /ui/blitzoom.bundle.js"));
+    document.head.appendChild(s);
+  });
+  return spaceScript;
+}
+
+/** Runs are `run:<agent>:<ulid>`; the tail is noise for clustering, the agent is the signal. */
+function shortRun(runId) {
+  if (!runId) return "unknown";
+  const p = String(runId).split(":");
+  return p.length > 2 ? p.slice(0, 2).join(":") : String(runId);
+}
+
+/**
+ * One event -> one node. The property set is FIXED: BlitZoom derives its property groups from
+ * the first batch it receives and never extends them, so every node must carry every key.
+ */
+function spaceNodeFor(e) {
+  return {
+    id: e.recordId,
+    group: e.kind || "unknown",
+    label: `${e.kind || "?"} ${String(e.recordId).slice(-6)}`,
+    state: e.state || "available",
+    op: e.operation || "put",
+    run: shortRun(e.runId),
+  };
+}
+
+async function pollSpace() {
+  const g = $("space-graph");
+  if (!g || !g.view || spacePolling) return;
+  spacePolling = true;
+  try {
+    const r = await api("GET", "/v0/ops/events?after=" + encodeURIComponent(spaceCursor) + "&limit=" + SPACE_BATCH);
+    if (!r.ok) { note("space-msg", "err", errText(r)); return; }
+    $("space-msg").innerHTML = "";
+    const evs = r.data.events;
+    if (!evs.length) return;
+    spaceCursor = String(evs[evs.length - 1].cursor ?? evs[evs.length - 1].seq);
+
+    const adds = new Map(), updates = new Map(), edges = [], results = [];
+    for (const e of evs) {
+      if (!e.recordId) continue;
+      const n = spaceNodeFor(e);
+      (spaceSeen.has(e.recordId) ? updates : adds).set(e.recordId, n);
+      if (e.operation === "ack" && e.detail && e.detail.resultId) results.push([e.recordId, e.detail.resultId]);
+    }
+
+    // A record emitted as an ack result is inserted WITHOUT its own `put` event — the ack event
+    // carries only `detail.resultId` (src/storage/sqlite.ts, pgbase.ts). So the successor is
+    // invisible in the log: fetch it to learn its kind. One request per ack-with-result.
+    for (const [parentId, resultId] of results) {
+      if (!spaceSeen.has(resultId) && !adds.has(resultId)) {
+        const rec = await api("GET", "/v0/ops/records/" + encodeURIComponent(resultId));
+        adds.set(resultId, spaceNodeFor({
+          recordId: resultId,
+          kind: rec.ok && rec.data ? rec.data.kind : "unknown",
+          state: "available",
+          operation: "put",
+          runId: rec.ok && rec.data && rec.data.runtimeMeta ? rec.data.runtimeMeta.createdBy : undefined,
+        }));
+      }
+      edges.push({ src: parentId, dst: resultId });
+    }
+
+    if (adds.size) {
+      const list = [...adds.values()];
+      for (const n of list) { spaceSeen.set(n.id, n); spaceOrder.push(n.id); }
+      await g.addNodes(list, edges.filter((x) => spaceSeen.has(x.src) && spaceSeen.has(x.dst)), { animate: false });
+    }
+    if (updates.size) {
+      const list = [...updates.values()];
+      for (const n of list) spaceSeen.set(n.id, n);
+      // A state change moves the record slightly (state is a layout property), so animate it.
+      await g.updateNodes(list, { animate: true, animMs: 300 });
+    }
+    await pruneSpace(g);
+    $("space-count").textContent = `${spaceSeen.size} records`;
+  } finally {
+    spacePolling = false;
+  }
+}
+
+/** Bound the working set. Records are ULID-ordered, so arrival order is close enough to age. */
+async function pruneSpace(g) {
+  if (spaceOrder.length <= SPACE_CAP) return;
+  const drop = spaceOrder.splice(0, spaceOrder.length - SPACE_CAP);
+  for (const id of drop) spaceSeen.delete(id);
+  await g.removeNodes(drop, { animate: false });
+}
+
+async function startSpace() {
+  const g = $("space-graph");
+  try {
+    await loadBlitzoom();
+    await customElements.whenDefined("bz-graph");
+    await g.ready;
+  } catch (e) {
+    note("space-msg", "err", String(e.message || e));
+    return;
+  }
+  // bz-graph does not forward the canvas's `onSelect` option, so wire the callback directly.
+  if (!g._radiaSelectWired) {
+    g._radiaSelectWired = true;
+    g.view._onSelect = (hit) => {
+      if (hit && hit.type === "node") showDetail(hit.item.id, "space-detail");
+    };
+  }
+  setSpaceColorBy();
+  await pollSpace();
+  if ($("space-live").checked && !spaceTimer) spaceTimer = setInterval(pollSpace, 1000);
+}
+
+function stopSpace() { if (spaceTimer) { clearInterval(spaceTimer); spaceTimer = null; } }
+function toggleSpaceLive() { stopSpace(); if ($("space-live").checked) spaceTimer = setInterval(pollSpace, 1000); }
+function setSpaceColorBy() {
+  const g = $("space-graph");
+  if (g && g.view) { g.view.colorBy = $("space-colorby").value; g.view.render(); }
+}
+/** Drop everything and replay the retained event log from the start. */
+async function resetSpace() {
+  const g = $("space-graph");
+  if (!g || !g.view) return;
+  stopSpace();
+  if (spaceOrder.length) await g.removeNodes([...spaceOrder], { animate: false });
+  spaceOrder.length = 0;
+  spaceSeen.clear();
+  spaceCursor = "0";
+  $("space-count").textContent = "";
+  await startSpace();
+}
+
 // ---- auth (the bootstrap chain, read from records: agent_definition -> agent_run -> grant) ----
 async function loadAuth() {
   const [defs, grants, runs] = await Promise.all([
@@ -683,6 +874,12 @@ loadHealth();
 loadStats();
 loadKinds();
 setInterval(loadHealth, 5000);
+// Deep link: /?tab=space opens a tab directly (handy for sharing a view, and for screenshots).
+const wantTab = new URLSearchParams(location.search).get("tab");
+if (wantTab) {
+  const b = document.querySelector(`#nav button[data-tab="${CSS.escape(wantTab)}"]`);
+  if (b) selectTab(b);
+}
 </script>
 </body>
 </html>

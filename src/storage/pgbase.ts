@@ -78,7 +78,11 @@ const CANDIDATE_COLS =
 export const NOW_SQL =
   "select to_char(now() at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') as now";
 
-/** Schema DDL, portable across PGlite and Postgres. Idempotent (`if not exists`). */
+/** Schema DDL, portable across PGlite and Postgres. Idempotent — but note that `create table if
+ *  not exists` only ever creates: it does NOT reshape a table that already exists. Any column
+ *  added after the initial schema therefore also needs an `alter table ... add column if not
+ *  exists` in the migrations block at the end, or databases created by an older build keep the
+ *  old shape and fail at query time. */
 export const DDL = `
 create table if not exists records (
   id text primary key,
@@ -134,6 +138,15 @@ create table if not exists events (
   state text,
   detail text
 );
+
+-- migrations: columns added after the initial schema. No-ops on a database the CREATEs above
+-- just built, so the only path that needs them is a database from an older build.
+-- events.xid is the gap-safe watch cursor. Without it every getEvents (watch SSE and
+-- /v0/ops/events) fails with 'column "xid" does not exist'. The default is volatile, so
+-- Postgres rewrites the table and stamps all pre-existing rows with this ALTER's own xid:
+-- they sort before every later event, keeping their relative seq order, which is the
+-- correct history.
+alter table events add column if not exists xid xid8 not null default pg_current_xact_id();
 `;
 
 /** Internal signal: a concurrent op committed the same idempotency key first. Caught by

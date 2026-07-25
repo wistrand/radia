@@ -79,7 +79,12 @@ class PostgresBackend implements SqlBackend {
   async exec(ddl: string): Promise<void> {
     // deno-postgres uses the extended protocol, which forbids multiple statements per query,
     // so split the DDL and run each statement on one connection (in-schema via search_path).
-    const statements = ddl.split(";").map((s) => s.trim()).filter((s) => s.length > 0);
+    // Strip `--` line comments FIRST: the split is naive, so a semicolon inside a comment would
+    // otherwise cut it in half and feed the tail to the parser as SQL. (Assumes no `--` appears
+    // inside a string literal in the DDL, which holds — see DDL in pgbase.ts.)
+    const statements = ddl
+      .replace(/--[^\n]*/g, "")
+      .split(";").map((s) => s.trim()).filter((s) => s.length > 0);
     await this.withConn(async (c) => {
       for (const stmt of statements) await c.queryArray(stmt);
     });
