@@ -110,6 +110,42 @@ export function moduleRelative(url: string, path: string): URL {
 }
 
 // ---------------------------------------------------------------------------
+// Binary files (artifact blobs)
+//
+// The ONLY async, request-path file I/O in the seam, and the exception to the sync rule
+// above: artifact bytes can be megabytes and are read while serving a request. Downloads
+// stream (never materialize a blob in memory); writes take a whole buffer, because the
+// upload is size-capped before it reaches here and Web Crypto has no incremental digest,
+// so the bytes are held once either way.
+// ---------------------------------------------------------------------------
+
+/** Write bytes to a path, creating parent directories. Overwrites. */
+export async function writeBinaryFile(path: string, bytes: Uint8Array): Promise<void> {
+  await Deno.writeFile(path, bytes);
+}
+
+/** A path's byte size, or undefined if it does not exist. */
+export function fileSize(path: string): number | undefined {
+  try {
+    const st = Deno.statSync(path);
+    return st.isFile ? st.size : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Stream a file's bytes, or undefined if it does not exist. The caller owns the stream and
+ *  cancelling it closes the underlying handle. */
+export async function readBinaryStream(path: string): Promise<ReadableStream<Uint8Array> | undefined> {
+  try {
+    const file = await Deno.open(path, { read: true });
+    return file.readable;
+  } catch {
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Standard streams
 // ---------------------------------------------------------------------------
 

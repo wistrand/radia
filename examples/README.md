@@ -265,6 +265,35 @@ Beyond recall, the second channel earns its keep on *structure* — lineage/chil
 agent's records, what a worker actually did — none of which is in the context window at any
 length.
 
+**Image generation is a discovered tool whose result is a reference** (`imageworker.ts`,
+`images.ts`). A fourth worker serves `generate_image`: it calls an image model, stores the bytes as
+an **artifact**, and acks a `tool_result` carrying `{artifactId, mediaType, size, prompt}` — never
+the image data. A base64 image inside a record would land in the message thread, be re-sent every
+turn and swamp the Feed; the record carries the reference, the blob store holds the payload. The
+chat mints a short-lived download capability and prints a URL the console renders inline (set
+`RADIA_CHAT_IMAGE_DIR` to also save the file). Lineage comes out as `artifact → tool_call →
+conversation`.
+
+Four things worth knowing, all of which the provider forces:
+
+- **There is no images API.** Generation goes to the same `/chat/completions` endpoint with
+  `modalities: ["image"]` on the request, non-streamed. So the wait is silent for 5-20s, which is
+  what the `drawing` progress stage covers.
+- **The response has seven shapes** (`extractImage` in `images.ts`): `content[].image_url`,
+  `content[].inline_data` (Gemini), `images[]` in three sub-forms, a bare data-URL string, a
+  markdown link needing a second fetch, and DALL-E's `data[].b64_json` / `data[].url`. Five are
+  provider quirks; a client handling only the documented one breaks on a model swap. Two hand back
+  a URL the *model* chose — those are fetched https-only, and the stored artifact is **tainted**,
+  because provider bytes are untrusted and an image is a prompt-injection vector the moment
+  anything reads it back.
+- **The image model is not a tier.** It advertises `modalities: ["image"]` in its `model` record,
+  and the router and the escalation ladder both filter to text-capable tiers — otherwise the
+  classifier would happily dispatch a conversation turn to a model that only draws. A record with
+  no `modalities` counts as text, so older workers still route.
+- **It is its own process** with the API key and egress but **no file access** — the same split as
+  the inference-worker. Putting a key and outbound network into the sandboxed tool-worker would
+  collapse the containment the example exists to demonstrate.
+
 **Turn progress is a record, not a spinner** (`progress.ts`). Between putting an `llm_call` and
 the first streamed token, several workers act — the router claims and dispatches it, an
 inference-worker claims the re-dispatched tiered call — and none of it is visible to the client:
@@ -313,7 +342,9 @@ least-privileged, the user is scoped, and the operator is the only principal on 
 Config: `OPENROUTER_API_KEY`, `RADIA_CHAT_ROLE` (`admin`|`user`, or `--role`),
 `RADIA_CHAT_MODEL_{FAST,BALANCED,DEEP}` (per-tier model overrides), `RADIA_CHAT_DIRS`, `RADIA_URL`,
 `RADIA_CHAT_API_BASE` (any OpenAI-compatible endpoint — a local stub for offline testing, or a
-self-hosted gateway), `RADIA_CHAT_WINDOW` (newest messages sent per turn; 0 = whole thread).
+self-hosted gateway), `RADIA_CHAT_WINDOW` (newest messages sent per turn; 0 = whole thread),
+`RADIA_CHAT_IMAGE_MODEL`, `RADIA_CHAT_IMAGE_SAFETY` (provider moderation passthrough,
+`CATEGORY:THRESHOLD,…`), `RADIA_CHAT_IMAGE_DIR` (save generated images locally).
 (No tier setting — the router dispatches, escalation promotes.)
 
 Honest edges (documented, not hidden): a crashed inference retries and can double-spend
@@ -347,6 +378,8 @@ until **artifacts** (§2.4, M1) let it be stored once and referenced. Not a CI t
 | `chat/router.ts` | router-worker: claims UNTIERED `llm_call`s and re-dispatches to the cheapest advertised tier by `rank` (`replyTo` keeps the result correlated) — routing delegated to the substrate, no classifier; emits `progress` (`routed`) |
 | `chat/inference.ts` | per-tier inference-worker (`--tier`/`--model`/`--rank`): claims `{llm_call, tier}`, advertises a `model` record + the `escalate` capability, reconstructs a WINDOW of the thread (newest N, system kept, orphan tool replies trimmed) → OpenRouter (stream) → `llm_chunk` + `llm_result` with `context: {sent, hidden}`; intercepts an `escalate` call and re-dispatches the turn to the next-stronger tier; emits `progress` (`generating` with tier+model, `escalating`) |
 | `chat/toolworker.ts` | tool-worker: `tool_call` → sandboxed tool → `tool_result` (scoped perms), emits `progress` on claim |
+| `chat/imageworker.ts` | image-worker: `tool_call{generate_image}` → image model → **artifact** → `tool_result` with the reference (tainted; holds the API key, no file access) |
+| `chat/images.ts` | image API client: `modalities:["image"]` on chat-completions + a normalizer for the seven known response shapes |
 | `chat/tools.ts` | file/compute tool impls + JSON schemas + sandbox (realpath allowlist, `calc`) |
 | `chat/inspect.ts` | space-inspection tools (`space_stats`/`query`/`lineage`/`events`/`doctor`, …) |
 | `chat/remediate.ts` | remediation tools (`space_reclaim`/`dead_letter`/`requeue`) over the admin endpoints |

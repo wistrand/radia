@@ -40,9 +40,14 @@ const classifyModel = arg("--classify-model") ?? Deno.env.get("RADIA_CHAT_CLASSI
 const client = new RadiaClient(url, token ? { token } : {});
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** The live tiers, cheapest → most capable, discovered from what the fleet advertises. */
+/** The live tiers, cheapest → most capable, discovered from what the fleet advertises. Only tiers
+ *  that serve TEXT are routing candidates: the fleet also advertises image models (`modalities:
+ *  ["image"]`), and a conversation turn dispatched to one would never come back. A record with no
+ *  `modalities` is text, so this stays backward compatible with workers that predate the field. */
 async function liveTiers(c: RadiaClient): Promise<string[]> {
-  const models = (await c.query({ kind: "model" }, 100)).map((m) => m.body as { tier: string; rank?: number });
+  const models = (await c.query({ kind: "model" }, 100))
+    .map((m) => m.body as { tier: string; rank?: number; modalities?: string[] })
+    .filter((m) => !m.modalities || m.modalities.includes("text"));
   return [...new Set(models.sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0)).map((m) => m.tier))];
 }
 

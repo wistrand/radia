@@ -4,8 +4,8 @@
   "exports": "./src/main.ts",
   "tasks": {
     "dev": "deno run --allow-net --allow-read --allow-write --allow-env src/main.ts dev",
-    "dev:pg": "deno run --allow-net --allow-read --allow-write --allow-env src/main.ts dev --storage postgres --db postgres://radia:radia@localhost:5432/radia",
-    "check": "deno check src/main.ts conformance/run.test.ts examples/demo.ts examples/chat/chat.ts examples/chat/inference.ts examples/chat/toolworker.ts examples/chat/router.ts examples/stress.ts",
+    "dev:pg": "deno run --allow-net --allow-read --allow-write --allow-env src/main.ts dev --storage postgres --db postgres://radia:radia@localhost:5432/radia --blobs .radia-blobs",
+    "check": "deno check src/main.ts conformance/run.test.ts examples/demo.ts examples/chat/chat.ts examples/chat/inference.ts examples/chat/toolworker.ts examples/chat/router.ts examples/chat/imageworker.ts examples/stress.ts",
     "conformance": "deno test --allow-read --allow-write --allow-env --allow-net conformance/",
     "demo": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/demo.ts",
     "demo:ci": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/demo.ts --once",

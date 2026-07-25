@@ -46,6 +46,18 @@ const ROUTER_GRANTS: Grant[] = [
   { kind: "progress", operations: ["put"] }, // reports classifying + the tier it picked
 ];
 
+// image-worker: claims `tool_call{tool:generate_image}`, calls an image model, stores the bytes as
+// an ARTIFACT and acks a reference to it. Holds the API key (its own process, no file access), so
+// it needs egress — but on the space it can only do these five things.
+const IMAGE_GRANTS: Grant[] = [
+  { kind: "tool_call", operations: ["take"] },
+  { kind: "tool_result", operations: ["put"] },
+  { kind: "artifact", operations: ["put"] }, // the bytes; the record carries only a reference
+  { kind: "capability", operations: ["put"] },
+  { kind: "model", operations: ["put"] }, // advertises itself as modalities:["image"]
+  { kind: "progress", operations: ["put"] },
+];
+
 // tool-worker: claims tool_call, emits tool_result, and publishes its capability records.
 const TOOLS_GRANTS: Grant[] = [
   { kind: "tool_call", operations: ["take"] },
@@ -67,6 +79,7 @@ const USER_GRANTS: Grant[] = [
   { kind: "tool_result", operations: ["read_one"] },
   { kind: "capability", operations: ["query"] },
   { kind: "progress", operations: ["query"] }, // read-only: the session reports no progress of its own
+  { kind: "artifact", operations: ["read_one"] }, // read generated images + mint a download capability
 ];
 
 /** Operator action: define an agent with its grants and mint a short-lived run token. */
@@ -83,6 +96,7 @@ export interface Bootstrapped {
   inferenceToken: string;
   routerToken: string;
   toolsToken: string;
+  imagesToken: string;
   /** The REPL/session token: undefined for admin (operator), a scoped run token for user. */
   sessionToken?: string;
 }
@@ -92,6 +106,7 @@ export async function bootstrap(admin: RadiaClient, role: Role): Promise<Bootstr
   const inferenceToken = await mint(admin, "agent:chat-inference", INFERENCE_GRANTS);
   const routerToken = await mint(admin, "agent:chat-router", ROUTER_GRANTS);
   const toolsToken = await mint(admin, "agent:chat-tools", TOOLS_GRANTS);
+  const imagesToken = await mint(admin, "agent:chat-images", IMAGE_GRANTS);
   const sessionToken = role === "user" ? await mint(admin, "agent:chat-user", USER_GRANTS) : undefined;
-  return { inferenceToken, routerToken, toolsToken, sessionToken };
+  return { inferenceToken, routerToken, toolsToken, imagesToken, sessionToken };
 }

@@ -28,6 +28,8 @@ import { compileTemplate, matchesRecord, type Template } from "./matching.ts";
 import {
   AGENT_DEFINITION,
   AGENT_RUN,
+  ARTIFACT,
+  type ArtifactDef,
   GRANT,
   type GrantDef,
   type GrantOp,
@@ -37,11 +39,13 @@ import {
   kindDefKey,
   KindRegistry,
   META_RESERVED,
+  validateArtifactDef,
   validateGrantDef,
   validateKindDef,
   WRITE_PROTECTED_KINDS,
 } from "./kinds.ts";
 import { CredentialStore, hashToken, mintCredential, type ResolvedToken } from "./auth.ts";
+import { type BlobStore, isDigest, MemoryBlobStore } from "../storage/blobs.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
 import { Notifier } from "./notifier.ts";
@@ -60,6 +64,11 @@ export interface SpaceContext {
   runTokenSeconds: number;
   /** Age past which an unclaimed *claimable* record counts as stale in diagnostics (starvation). */
   diagnosticsStaleSeconds: number;
+  /** Hard ceiling on one artifact's bytes (design-data-model §2 resource limits). */
+  maxArtifactBytes: number;
+  /** Lifetime of a download capability — the short-lived, single-artifact grant that lets a
+   *  browser fetch bytes it cannot attach an Authorization header to. */
+  downloadCapabilitySeconds: number;
 }
 
 const DEFAULT_CONTEXT: SpaceContext = {
@@ -73,6 +82,8 @@ const DEFAULT_CONTEXT: SpaceContext = {
   supervisor: "agent:supervisor",
   runTokenSeconds: 900, // 15 min; a live run re-mints before expiry
   diagnosticsStaleSeconds: 60,
+  maxArtifactBytes: 32 * 1024 * 1024,
+  downloadCapabilitySeconds: 300,
 };
 
 /** How a caller selects work to take. */
@@ -124,10 +135,17 @@ export class Space {
   private readonly ctx: SpaceContext;
   private readonly notifier = new Notifier();
   private readonly watches = new Map<string, Watch>();
+  /** Live download capabilities: token -> the one artifact it opens, and when it lapses. In
+   *  memory and short-lived by design — a capability is a delegation of a read the caller already
+   *  held, not a credential, and it must not outlive the process that issued it. */
+  private readonly downloadCaps = new Map<string, { recordId: string; expiresAt: number }>();
 
   constructor(
     private readonly storage: StorageAdapter,
     ctx: Partial<SpaceContext> = {},
+    /** Where artifact BYTES live. Defaults to memory, so an ephemeral space stays ephemeral;
+     *  a persisted space passes a FileBlobStore (see main.ts). */
+    private readonly blobs: BlobStore = new MemoryBlobStore(),
   ) {
     this.ctx = { ...DEFAULT_CONTEXT, ...ctx };
     // Bootstrap: the reserved control kinds (kind_def, grant, signal) are defined in code so
@@ -510,6 +528,92 @@ export class Space {
     });
     this.notifier.notify(); // wake any watch streams
     return { id: result.id };
+  }
+
+  // ---- artifacts (design-data-model §2.4) --------------------------------------------------
+  //
+  // An artifact is a RECORD whose body describes bytes held in the blob store. Everything that
+  // makes records useful — grants, taint, lineage, the event log, retention — therefore applies
+  // to it with no new machinery, and only the payload sits outside. The reference clients hold is
+  // the record id: stable, immutable, and never a signed URL (which would expire inside a record
+  // that cannot be rewritten).
+
+  get maxArtifactBytes(): number {
+    return this.ctx.maxArtifactBytes;
+  }
+
+  get blobStoreName(): string {
+    return this.blobs.name;
+  }
+
+  /** Store bytes and commit the `artifact` record that references them. The digest and size are
+   *  computed here, never taken from the client — they are runtime-authoritative like any other
+   *  server-assigned field. */
+  async putArtifact(
+    bytes: Uint8Array,
+    meta: { mediaType: string; filename?: string; parentIds?: string[]; retentionUntil?: string; taint?: boolean },
+    idempotencyKey?: string,
+    principal?: string,
+  ): Promise<{ id: string; digest: string; size: number }> {
+    if (bytes.byteLength > this.ctx.maxArtifactBytes) {
+      throw new RadiaError("artifact_too_large", `artifact exceeds the ${this.ctx.maxArtifactBytes}-byte limit`);
+    }
+    validateArtifactDef({ digest: "", mediaType: meta.mediaType, size: 0, filename: meta.filename });
+    const ref = await this.blobs.put(bytes);
+    const body: ArtifactDef = { digest: ref.digest, mediaType: meta.mediaType, size: ref.size };
+    if (meta.filename) body.filename = meta.filename;
+    const { id } = await this.put(
+      {
+        kind: ARTIFACT,
+        body,
+        parentIds: meta.parentIds,
+        retentionUntil: meta.retentionUntil,
+        taint: meta.taint,
+      },
+      idempotencyKey,
+      principal,
+    );
+    return { id, digest: ref.digest, size: ref.size };
+  }
+
+  /** The artifact record plus a byte stream, or null if the id is not an artifact / the blob is
+   *  gone. Callers authorize FIRST — this is the read itself, not the check. */
+  async readArtifact(recordId: string): Promise<{ record: RadiaRecord; def: ArtifactDef; stream: ReadableStream<Uint8Array> } | null> {
+    const record = await this.storage.getRecord(recordId);
+    if (!record || record.kind !== ARTIFACT) return null;
+    const def = record.body as ArtifactDef;
+    if (!def || !isDigest(def.digest)) return null;
+    const stream = await this.blobs.get(def.digest);
+    return stream ? { record, def, stream } : null;
+  }
+
+  /** Mint a short-lived capability to download ONE artifact. The caller must already be authorized
+   *  to read it; this delegates that read to a context that cannot send an Authorization header
+   *  (an `<img src>` in the console), which is why the design specifies capabilities rather than
+   *  putting a bearer token in a URL. */
+  mintDownloadCapability(recordId: string): { capability: string; expiresAt: string } {
+    const capability = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
+    const expiresAt = Date.now() + this.ctx.downloadCapabilitySeconds * 1000;
+    this.downloadCaps.set(capability, { recordId, expiresAt });
+    this.sweepCapabilities();
+    return { capability, expiresAt: new Date(expiresAt).toISOString() };
+  }
+
+  /** Does this capability open this artifact, right now? Scoped to one record on purpose: a
+   *  leaked capability is one object for a few minutes, not an identity. */
+  checkDownloadCapability(capability: string, recordId: string): boolean {
+    const cap = this.downloadCaps.get(capability);
+    if (!cap) return false;
+    if (cap.expiresAt <= Date.now()) {
+      this.downloadCaps.delete(capability);
+      return false;
+    }
+    return cap.recordId === recordId;
+  }
+
+  private sweepCapabilities(): void {
+    const now = Date.now();
+    for (const [token, cap] of this.downloadCaps) if (cap.expiresAt <= now) this.downloadCaps.delete(token);
   }
 
   readOne(template: Template): Promise<RadiaRecord | null> {

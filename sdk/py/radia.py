@@ -26,6 +26,7 @@ import os
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
@@ -162,6 +163,67 @@ class RadiaClient:
             if prev is None or prev[0] < rec["id"]:
                 latest[name] = (rec["id"], body)
         return [v[1] for v in latest.values()]
+
+    # -- artifacts (design-data-model 2.4) --
+
+    def put_artifact(
+        self,
+        data: bytes,
+        media_type: str = "application/octet-stream",
+        filename: Optional[str] = None,
+        parent_ids: Optional[List[str]] = None,
+        taint: bool = False,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Store bytes and get back the ``artifact`` record that references them.
+
+        The payload never travels inside a record body: the record carries
+        ``{digest, mediaType, size}`` and routes like anything else.
+        """
+        hdrs = {"Content-Type": media_type}
+        if filename:
+            hdrs["X-Radia-Filename"] = filename
+        if parent_ids:
+            hdrs["X-Radia-Parent-Ids"] = ",".join(parent_ids)
+        if taint:
+            hdrs["X-Radia-Taint"] = "true"
+        if idempotency_key:
+            hdrs["Idempotency-Key"] = idempotency_key
+        if self.token:
+            hdrs["Authorization"] = f"Bearer {self.token}"
+        req = urllib.request.Request(self.base + "/v0/artifacts", data=data, headers=hdrs, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as res:
+                return json.loads(res.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            text = e.read().decode("utf-8")
+            try:
+                problem = json.loads(text)
+            except ValueError:
+                problem = {}
+            raise RadiaError(e.code, problem.get("title", "error"), problem.get("detail", text)) from None
+
+    def get_artifact(self, record_id: str) -> bytes:
+        """An artifact's bytes by record id."""
+        hdrs = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        req = urllib.request.Request(
+            self.base + "/v0/artifacts/" + urllib.parse.quote(record_id), headers=hdrs, method="GET"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as res:
+                return res.read()
+        except urllib.error.HTTPError as e:
+            text = e.read().decode("utf-8")
+            try:
+                problem = json.loads(text)
+            except ValueError:
+                problem = {}
+            raise RadiaError(e.code, problem.get("title", "error"), problem.get("detail", text)) from None
+
+    def artifact_capability(self, record_id: str) -> Dict[str, Any]:
+        """A short-lived, single-artifact download capability, for a context that cannot send an
+        Authorization header (an ``<img src>``). Returns ``{capability, expiresAt, url}``."""
+        return self._req("POST", "/v0/artifacts/" + urllib.parse.quote(record_id) + "/capability")
 
     # -- records --
 

@@ -160,6 +160,9 @@ const TIERS: Record<string, string> = {
 // The router classifies each turn with this cheap, fast model (a model-overridden llm_call served
 // by the inference fleet — the router never holds the API key). Setup config, like TIERS.
 const CLASSIFY_MODEL = Deno.env.get("RADIA_CHAT_CLASSIFY_MODEL") ?? "google/gemini-2.5-flash-lite";
+// The image model is NOT a tier: it serves the `generate_image` tool, and advertises itself as
+// modalities:["image"] so text routing never dispatches a turn to it. Setup config, like TIERS.
+const IMAGE_MODEL = Deno.env.get("RADIA_CHAT_IMAGE_MODEL") ?? "google/gemini-2.5-flash-image";
 const apiKey = Deno.env.get("OPENROUTER_API_KEY");
 if (!apiKey) {
   console.error("Set OPENROUTER_API_KEY (get one at https://openrouter.ai/keys).");
@@ -221,7 +224,7 @@ if (!await healthy()) {
 // Bootstrap as operator: register kinds, then mint least-privilege run tokens for the workers
 // and (for role=user) the scoped session. The REPL then switches to the session client.
 await registerChatKinds(admin);
-const { inferenceToken, routerToken, toolsToken, sessionToken } = await bootstrap(admin, role);
+const { inferenceToken, routerToken, toolsToken, imagesToken, sessionToken } = await bootstrap(admin, role);
 client = new RadiaClient(url, sessionToken ? { token: sessionToken } : {});
 
 // Tokens are passed to the subprocess workers as args (a local demo; a real deployment would
@@ -239,6 +242,18 @@ for (const [t, m] of Object.entries(TIERS)) {
     }).spawn(),
   );
 }
+// Image-worker (agent:chat-images): same privilege shape as inference — holds the API key and can
+// reach the provider, but has NO file access. It serves the `generate_image` capability, which the
+// assistant discovers like any other tool; the picture is stored as an artifact and the record
+// carries only its id.
+procs.push(
+  new Deno.Command("deno", {
+    args: ["run", "--allow-net", "--allow-env", "examples/chat/imageworker.ts", "--url", url, "--token", imagesToken, "--model", IMAGE_MODEL],
+    stdout: "null",
+    stderr: "inherit",
+    stdin: "null",
+  }).spawn(),
+);
 // Router-worker (agent:chat-router): claims UNTIERED llm_calls, classifies each turn and picks the
 // tier, so the chat holds no routing logic. Model selection is delegated to the substrate.
 procs.push(
@@ -433,6 +448,7 @@ async function turn(): Promise<void> {
         });
         const result = await pollResult(toolCallId, prefix, tc.function.name);
         write(`-> ${trunc(JSON.stringify(result.output), 80)}\n`);
+        await showArtifact(result.output);
         await appendMessage(
           { role: "tool", tool_call_id: tc.id, content: JSON.stringify(result.ok ? result.output : { error: result.output }) },
           [toolCallId],
@@ -533,6 +549,28 @@ async function pollResult(callId: string, prefix: string, tool: string): Promise
   }
   endStatus(prefix);
   throw new Error(w.last ? `timed out waiting for tool_result from ${w.last.by}` : `timed out: ${stall}`);
+}
+
+/** A tool result that references an artifact is a payload the terminal cannot draw. Mint a
+ *  short-lived download capability and print a URL the console (or a browser) can open — and, if
+ *  RADIA_CHAT_IMAGE_DIR is set, save the bytes there too. */
+async function showArtifact(output: unknown): Promise<void> {
+  const ref = output as { artifactId?: string; mediaType?: string; size?: number } | null;
+  if (!ref || typeof ref !== "object" || typeof ref.artifactId !== "string") return;
+  try {
+    const cap = await client.artifactCapability(ref.artifactId);
+    write(`    \x1b[2m${ref.mediaType ?? "artifact"} · ${Math.round((ref.size ?? 0) / 1024)} KB · ${url}${cap.url}\x1b[0m\n`);
+    const dir = Deno.env.get("RADIA_CHAT_IMAGE_DIR");
+    if (dir) {
+      const bytes = await client.getArtifact(ref.artifactId);
+      const ext = (ref.mediaType ?? "image/png").split("/")[1] ?? "png";
+      const path = `${dir}/${ref.artifactId}.${ext}`;
+      await Deno.writeFile(path, bytes);
+      write(`    \x1b[2msaved ${path}\x1b[0m\n`);
+    }
+  } catch (e) {
+    write(`    \x1b[2m(artifact ${ref.artifactId}: ${e})\x1b[0m\n`);
+  }
 }
 
 function trunc(s: string, n: number): string {

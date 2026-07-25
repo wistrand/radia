@@ -23,7 +23,7 @@ info:
     (`403`); an invalid/expired/stopped bearer token is `401`.
 
     Implemented through M0 (Phases 0-6) plus M1 watches + grants + the auth bootstrap chain / run
-    tokens. Not implemented yet: artifacts, taint/delegation/template-scoped grants, OIDC,
+    tokens + artifacts (blob storage, unencrypted in v1). Not implemented yet: OIDC,
     scheduler admission, request/bid/award, keyset query cursor, event-log retention/GC (so 410
     cursor_expired is dormant).
 
@@ -265,6 +265,92 @@ paths:
               schema: { $ref: "#/components/schemas/SettleResult" }
         "409": { $ref: "#/components/responses/Problem" }
 
+  /artifacts:
+    post:
+      operationId: putArtifact
+      summary: Store bytes and commit the artifact record that references them
+      description: |
+        The body is the raw payload; `Content-Type` becomes the artifact's media type. The bytes go
+        to the blob store (content-addressed by sha256 of the plaintext) and an `artifact` record is
+        committed carrying `{digest, mediaType, size, filename?}` — the record routes, the payload
+        does not travel inside it. `digest` and `size` are server-computed, never client-submitted.
+        Authorized as a `put` on the reserved `artifact` kind; a template-scoped grant is matched
+        against the metadata body (so a grant can be limited to one media type).
+      x-stability: stable
+      x-phase: "M1"
+      parameters:
+        - { name: Idempotency-Key, in: header, required: false, schema: { type: string } }
+        - { name: X-Radia-Filename, in: header, required: false, schema: { type: string }, description: "Advisory download name; never used as a path." }
+        - { name: X-Radia-Parent-Ids, in: header, required: false, schema: { type: string }, description: "Comma-separated data lineage parents." }
+        - { name: X-Radia-Taint, in: header, required: false, schema: { type: string, enum: ["true"] }, description: "Raise taint (a client may raise it, never clear it)." }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: stored
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, digest, size]
+                properties:
+                  id: { type: string, description: "the artifact record id — the stable reference" }
+                  digest: { type: string, description: "sha256 hex of the plaintext bytes" }
+                  size: { type: integer }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "413": { description: "artifact_too_large", $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+  /artifacts/{id}:
+    get:
+      operationId: getArtifact
+      summary: An artifact's bytes
+      description: |
+        Authorized as `read_one` on the `artifact` kind, or by a `capability` query parameter
+        (below) for callers that cannot set an Authorization header. The id is a stable record id,
+        never a signed URL — a URL would expire inside an immutable record.
+      x-stability: stable
+      x-phase: "M1"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: capability, in: query, required: false, schema: { type: string }, description: "A short-lived, single-artifact download capability." }
+      responses:
+        "200":
+          description: the bytes
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /artifacts/{id}/capability:
+    post:
+      operationId: artifactCapability
+      summary: Mint a short-lived download capability for one artifact
+      description: |
+        For contexts that cannot attach an Authorization header — an `<img src>` in a browser. The
+        capability is scoped to a single artifact, expires in minutes, and is minted only for a
+        caller already authorized to read it. It is a delegation of that read, not a credential.
+      x-stability: stable
+      x-phase: "M1"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "201":
+          description: minted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [capability, expiresAt, url]
+                properties:
+                  capability: { type: string }
+                  expiresAt: { type: string, format: date-time }
+                  url: { type: string, description: "space-relative download URL carrying the capability" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
   /watches:
     post:
       operationId: watch

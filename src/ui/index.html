@@ -458,9 +458,27 @@ async function showDetail(id, target = "rec-detail") {
     + `<div>taint: ${m.taint ? `<span class="tag tag-taint">tainted</span> <span class="muted">untrusted data lineage</span>` : `<span class="muted">clean</span>`}</div>`
     + `<div>delegation: ${dc ? `<span class="tag tag-deleg">${esc(dc.chain.join(" → "))}</span> <span class="muted">from lease ${esc((dc.origin || "").slice(-8))}</span>` : `<span class="muted">none (root / operator authority)</span>`}</div>`
     + `<div>created_by: <span class="muted">${esc(m.createdBy || "")}</span></div></div>`;
+  // An artifact record describes bytes held outside it. Preview them inline — and note HOW: the
+  // console cannot put an Authorization header on an <img>, so it mints a short-lived, single-
+  // artifact download capability and puts that in the URL. That constraint is why capabilities
+  // exist at all (design-data-model 2.4).
+  let artifactHtml = "";
+  if (rec.kind === "artifact" && rec.body && rec.body.digest) {
+    const cap = await api("POST", "/v0/artifacts/" + encodeURIComponent(id) + "/capability");
+    if (cap.ok) {
+      const src = cap.data.url;
+      const isImage = String(rec.body.mediaType || "").startsWith("image/");
+      artifactHtml = `<b>Payload</b><div class="mono muted" style="margin:6px 0">`
+        + `${esc(rec.body.mediaType || "")} · ${fmtBytes(rec.body.size || 0)} · sha256 ${esc(String(rec.body.digest).slice(0, 12))}…</div>`
+        + (isImage
+          ? `<img src="${esc(src)}" alt="artifact ${esc(id)}" style="max-width:100%;border:1px solid var(--line);border-radius:6px;margin-bottom:10px">`
+          : `<div style="margin-bottom:10px"><a href="${esc(src)}" download>download ${esc(rec.body.filename || "payload")}</a></div>`);
+    }
+  }
   $(target).innerHTML =
     `<div style="margin-bottom:8px">${e ? stateBadge(e.state) : ""} <span class="mono">${esc(id)}</span> <span class="mono muted">${esc(rec.kind)}</span></div>`
     + authHtml
+    + artifactHtml
     + `<b>Body</b><pre>${esc(JSON.stringify(rec.body, null, 2))}</pre>`
     + `<b>Runtime meta</b><pre>${esc(JSON.stringify(rec.runtimeMeta, null, 2))}</pre>`
     + (e ? `<b>Envelope</b><pre>${esc(JSON.stringify(e, null, 2))}</pre>` : "")
@@ -468,6 +486,12 @@ async function showDetail(id, target = "rec-detail") {
 }
 
 // ---- graph ----
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function graphColor(kind) {
   let h = 0;
   for (const c of kind) h = (h * 31 + c.charCodeAt(0)) >>> 0;

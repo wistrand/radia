@@ -15,6 +15,7 @@ import type { Space } from "../core/space.ts";
 import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
 import { handleCreateDefinition, handleCreateRun, handleStopRun } from "./handlers/agents.ts";
+import { handleGetArtifact, handleMintCapability, handlePutArtifact } from "./handlers/artifacts.ts";
 import { handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleGetRecord, handleGraph, handleLineage, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem, statusFor } from "./problem.ts";
@@ -107,6 +108,19 @@ function makeHandler(space: Space, ui: string, authRequired: boolean) {
       return await handleStopRun(space, req, principal, runId);
     }
 
+    // --- artifact bytes by CAPABILITY: the one authenticated path that carries no token ---
+    // A browser cannot put an Authorization header on `<img src>`, so a short-lived, single-artifact
+    // capability stands in for the read grant its holder already had. Checked before token
+    // resolution because there is deliberately no token to resolve.
+    const capability = url.searchParams.get("capability");
+    if (req.method === "GET" && capability && url.pathname.startsWith("/v0/artifacts/")) {
+      const id = decodeURIComponent(url.pathname.slice("/v0/artifacts/".length));
+      if (!space.checkDownloadCapability(capability, id)) {
+        return problem(403, "forbidden", "download capability is invalid, expired, or for another artifact");
+      }
+      return await handleGetArtifact(space, id, null);
+    }
+
     const auth = await resolveAuth(req, space, authRequired);
     // The console (GET /) and health stay public so the console can bootstrap even in required
     // mode (it authenticates thereafter with its baked operator token); everything else 401s.
@@ -117,6 +131,16 @@ function makeHandler(space: Space, ui: string, authRequired: boolean) {
     // The observe-and-operate plane is grant-gated: operator (human/supervisor) only.
     if (url.pathname.startsWith("/v0/ops/") && !space.isPrivileged(principal)) {
       return problem(403, "forbidden", `principal '${principal}' may not access the ops plane`);
+    }
+
+    // --- coordination plane, path-param: artifact bytes + capability minting ---
+    if (url.pathname.startsWith("/v0/artifacts/")) {
+      const parts = url.pathname.slice("/v0/artifacts/".length).split("/");
+      const id = decodeURIComponent(parts[0] ?? "");
+      if (id) {
+        if (req.method === "GET" && !parts[1]) return await handleGetArtifact(space, id, principal);
+        if (req.method === "POST" && parts[1] === "capability") return await handleMintCapability(space, id, principal);
+      }
     }
 
     // --- coordination plane, path-param: watch SSE stream ---
@@ -167,6 +191,8 @@ function makeHandler(space: Space, ui: string, authRequired: boolean) {
           now: await space.now(),
           principal, // the resolved caller (so the console can show who it's authenticated as)
         });
+      case "POST /v0/artifacts":
+        return await handlePutArtifact(space, req, principal);
       case "POST /v0/records":
         return await handlePut(space, req, principal);
       case "POST /v0/records/read-one":

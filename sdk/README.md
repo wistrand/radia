@@ -9,6 +9,7 @@ whatever an SDK can do, a plain HTTP client can too.
 | Client      | `RadiaClient`      | `RadiaClient` |
 | Worker loop | `agentLoop`        | `agent_loop` |
 | Watches     | `client.watch()` async generator | `client.watch()` generator |
+| Artifacts   | `putArtifact` / `getArtifact` / `artifactCapability` | `put_artifact` / `get_artifact` / `artifact_capability` |
 | Dependencies| none beyond the runtime | none — standard library only (3.9+) |
 
 The two are at feature parity. Differences are idiomatic only (camelCase vs snake_case,

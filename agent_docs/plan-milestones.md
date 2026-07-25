@@ -76,7 +76,7 @@ two-terminal demo works.
 - [ ] hash-chained event log
 - [ ] polished Python + TS SDKs
 - [x] watches (SSE, cursors, 410 semantics) — `POST /v0/watches` + `GET /v0/watches/{id}/events` (SSE, `Last-Event-ID`/`?cursor=` resumption, 410 `cursor_expired` path); backed by the event log + an in-process `Notifier` (LISTEN/NOTIFY-equivalent wakeup); wakeup-by-kind (+ predicate) matching in `Space.matchesEvent`; **grant-gated** (`Space.authorizeWatch` — any grant on the kind, template AND-ed into the watch scope). SDK `client.watch()` async generator; `agentLoop` is now event-driven (watch wakeups + poll fallback). 410/GC dormant until event-log retention (M2).
-- [ ] artifact service
+- [x] artifact service (blob port + `artifact` records + download capabilities; encryption deferred)
 - [~] orphan/starvation diagnostics — a derived-diagnostics report + remediation ships (`GET /v0/ops/diagnostics`, admin reclaim/dead-letter/requeue); uses age/state heuristics, not full template-match orphan/starving-template analysis
 
 **Verify:** the same suite green against Postgres *and* embedded — **PASSED**, 213/213 via

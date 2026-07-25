@@ -4,6 +4,9 @@
 # Release staging from scripts/build-release.sh (binaries + npm/pip shims)
 /dist/
 
+# Artifact blobs for a local dev space (bytes, not source)
+/.radia-blobs/
+
 # Local dev spaces (file-backed embedded storage)
 *.db
 *.db-wal

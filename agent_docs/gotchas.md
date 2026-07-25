@@ -292,6 +292,19 @@ rejected for stated reasons.
   `effective_priority` is mutable under aging, so it can't be a cursor key.
 - **Eager (records × agents) candidate materialization in the scheduler.** Rejected for
   cost; candidates are incremental and capped. See [design-scheduler.md](design-scheduler.md).
+- **Artifact keys derived from the caller's token.** Rejected. The runtime stores only
+  `sha256(token)` (`core/auth.ts`) precisely so a leaked DB yields no usable credential, so it
+  cannot re-derive such a key without keeping the token at rest — trading the strongest part of
+  the auth model for the weakest kind of encryption. Three more, any one fatal: run tokens expire
+  while records are permanent (the blob would die with the run); an artifact exists to be consumed
+  by a *different* principal, so a producer-keyed blob needs per-recipient rewrapping, which is the
+  federation-gated recipient-keyed scheme; and since the runtime must decrypt for any grant-holder,
+  the key must live where the runtime reaches it anyway — which is exactly what a space KEK gives,
+  without the other three problems. A token authorizes the *ask* (that is what download capabilities
+  are); it is not key material. The planned scheme is per-artifact random DEK + AES-GCM, DEK wrapped
+  by a space KEK from env/keyring, behind the `BlobStore` port. Token-keyed encryption only makes
+  sense client-side (confidentiality layer 3), where it is incompatible with the point of the
+  feature: an image the runtime cannot read is one it cannot validate, taint, or route.
 - **Embedded mode as a weaker cousin.** Rejected: the conformance + fault suite runs on
   every adapter in CI from day one, or the backends drift.
 - **Escalation-only tier routing, with no classifier (chat example).** Tried, then reverted on

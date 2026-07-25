@@ -1,7 +1,7 @@
 // Entry point for `deno task conformance`. Registers all suites against all adapters.
 // Add each phase's suite to the array as it lands.
 
-import { conformance } from "./harness.ts";
+import { blobConformance, conformance } from "./harness.ts";
 import { adapters } from "./adapters.ts";
 import { smokeSuites } from "./suites/smoke.ts";
 import { recordSuites } from "./suites/records.ts";
@@ -15,6 +15,8 @@ import { watchSuites } from "./suites/watches.ts";
 import { adminSuites } from "./suites/admin.ts";
 import { authSuites } from "./suites/auth.ts";
 import { taintSuites } from "./suites/taint.ts";
+import { blobSuites } from "./suites/blobs.ts";
+import { FileBlobStore, MemoryBlobStore } from "../src/storage/blobs.ts";
 
 conformance(adapters, [
   ...smokeSuites,
@@ -30,3 +32,9 @@ conformance(adapters, [
   ...authSuites,
   ...taintSuites,
 ]);
+
+// The blob port (artifact bytes) runs the same drift guard: every implementation, same suite.
+blobConformance([
+  { name: "memory", create: () => new MemoryBlobStore() },
+  { name: "file", create: () => new FileBlobStore(Deno.makeTempDirSync({ prefix: "radia-blobs-" })) },
+], blobSuites);

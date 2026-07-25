@@ -7,7 +7,8 @@ the client-vs-runtime metadata split, and `parent_ids` lineage live in
 `src/core/record.ts` (`buildRecord`), `src/storage/adapter.ts` (types), `src/storage/row.ts`
 (mapping), and the two adapters. Kinds/indexing: `src/core/kinds.ts`. `delegation_context`
 (authority lineage) and `taint` (data lineage) are both built (M1) — see "Provenance vs.
-authority" below. **Not implemented:** artifacts / blob storage (§2.4, M1).
+authority" below. **Artifacts / blob storage (§2.4) are built (M1), unencrypted in v1** — see the
+section below for what landed and what did not.
 
 ## Contents
 - Invariants
@@ -147,9 +148,49 @@ per run · slow-lane time and row-scan budgets · SSE buffer/backpressure limits
 
 ## Artifact references
 
+**M1 status: built.** `src/storage/blobs.ts` (the `BlobStore` port + memory/filesystem impls),
+`src/core/kinds.ts` (`ARTIFACT`, `validateArtifactDef`), `Space.putArtifact`/`readArtifact`/
+`mintDownloadCapability`, `src/server/handlers/artifacts.ts`, `conformance/suites/blobs.ts`.
+
 Large payloads live in blob storage. Records carry **stable internal artifact IDs**,
 never temporary signed URLs (they would expire inside immutable records). Retrieval is
 authorized through the runtime, which issues short-lived download capabilities.
 
-Artifact policy: sha256 verification, MIME/size validation, encryption, reference-aware
-GC, taint propagation, and access checks independent of possession of the record JSON.
+**An artifact is a record.** The reserved `artifact` kind's body is `{digest, mediaType, size,
+filename?}` — the metadata, never the bytes — so grants, taint, lineage, the event log, retention
+and template-scoped scoping all apply with no new machinery, and only the payload sits outside.
+Indexed on `digest` (every record referencing the same bytes) and `mediaType` (a worker claims
+`{mediaType: "image/png"}` — content routing, not a routing table). `digest` and `size` are
+server-computed; a client cannot assert them.
+
+Blobs are **content-addressed** by sha256 of the plaintext: an object verifies itself, identical
+bytes are stored once, and re-upload is free. Client-facing identity stays the record id, so
+dedup never merges two artifacts into one reference.
+
+**Download capabilities** (`POST /v0/artifacts/{id}/capability`) exist for one concrete reason: a
+browser cannot attach an `Authorization` header to `<img src>`. A capability is scoped to a single
+artifact, expires in minutes, lives in memory, and is minted only for a caller already authorized
+to read that artifact — a delegation of a read, not a credential. It is checked before token
+resolution (there is deliberately no token) and opens nothing else: `/v0/records` and `/v0/ops/*`
+still 401 with a capability attached under `--auth required`.
+
+**Only raster images, audio and video are served `inline`; everything else downloads.** Artifact
+bytes are attacker-supplied and served from the space's OWN origin — the origin whose console page
+carries an operator token — so `text/html` (or `image/svg+xml`, which is why the allowlist names
+raster formats rather than `image/`) rendered inline would be a same-origin XSS reachable by anyone
+holding an `artifact: put` grant. Responses also carry `X-Content-Type-Options: nosniff` and
+`Content-Security-Policy: default-src 'none'; sandbox`.
+
+Artifact policy, as built: sha256 verification, media-type and filename validation *before* the
+body is read, a size ceiling (`maxArtifactBytes`, 32 MB) enforced against the stream rather than
+the declared `Content-Length`, taint propagation (a client may raise it via `X-Radia-Taint`), and
+access checks independent of possession of the record JSON.
+
+**Not in v1, deliberately:** encryption at rest, and reference-aware GC (blobs are permanent;
+`retention_until` on the artifact record is the hook). When encryption lands it is a per-artifact
+random DEK under AES-GCM, the DEK wrapped by a space KEK from env or keyring, entirely behind the
+`BlobStore` port. Two constraints for whoever builds it: the digest stays over **plaintext** (the
+event chain and integrity survive crypto-shredding), and the wrapped DEK must live in **destroyable**
+state — a blob sidecar or key table — never in the immutable artifact record, because shredding
+means deleting it. Recipient-keyed / token-derived keys stay out; see
+[gotchas.md](gotchas.md).

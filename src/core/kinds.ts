@@ -30,6 +30,11 @@ export const AGENT_DEFINITION = "agent_definition";
 /** Reserved kind: an agent run instance (body {run, agent, tokenHash, status, expiresAt}). */
 export const AGENT_RUN = "agent_run";
 
+/** Reserved kind: a reference to bytes held in the blob store (body = an ArtifactDef). The RECORD
+ *  is the artifact as far as coordination is concerned — it routes, carries taint and lineage, and
+ *  is grant-gated like anything else; only the payload lives outside. */
+export const ARTIFACT = "artifact";
+
 /** Reserved kinds only a human/supervisor principal may write directly (assigned, never
  *  self-declared). Runs/definitions are also written internally by the bootstrap endpoints. */
 export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN]);
@@ -116,6 +121,29 @@ export const META_KIND_DEF: KindDef = {
 /** Declarations of the reserved control kinds, registered in code (bootstrap) so their own
  *  records can be queried. `grant` is indexed on principal+kind so the authorizer can look up
  *  a principal's grants for a kind directly. */
+/** The body of an `artifact` record: what the bytes are, never the bytes. */
+export interface ArtifactDef {
+  digest: string; // sha256 of the plaintext bytes — integrity, and the blob store's address
+  mediaType: string; // validated against MEDIA_TYPE_RE on write
+  size: number; // bytes
+  filename?: string; // advisory, for downloads; never used as a path
+}
+
+/** A conservative `type/subtype` with optional suffix/parameters stripped by the caller. Keeps a
+ *  client-supplied string out of response headers unchecked. */
+const MEDIA_TYPE_RE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$/i;
+
+/** Validate an artifact body. Throws RadiaError. The digest/size are server-assigned (the blob
+ *  store computes them), so this guards the client-supplied parts. */
+export function validateArtifactDef(def: ArtifactDef): void {
+  if (typeof def.mediaType !== "string" || !MEDIA_TYPE_RE.test(def.mediaType)) {
+    throw new RadiaError("invalid_artifact", `artifact.mediaType must be a simple type/subtype, got '${def.mediaType}'`);
+  }
+  if (def.filename !== undefined && (typeof def.filename !== "string" || def.filename.length > 255 || /[\r\n"\\/]/.test(def.filename))) {
+    throw new RadiaError("invalid_artifact", "artifact.filename must be a short name without path separators or quotes");
+  }
+}
+
 export const META_RESERVED: KindDef[] = [
   META_KIND_DEF,
   {
@@ -130,6 +158,13 @@ export const META_RESERVED: KindDef[] = [
   {
     kind: AGENT_RUN,
     indexedPaths: [{ path: "run", type: "keyword" }, { path: "agent", type: "keyword" }, { path: "tokenHash", type: "keyword" }],
+    claimable: false,
+  },
+  // Indexed on digest (find every record referencing the same bytes) and mediaType (route by what
+  // it is — an image worker claims `{mediaType: "image/png"}` without a routing table).
+  {
+    kind: ARTIFACT,
+    indexedPaths: [{ path: "digest", type: "keyword" }, { path: "mediaType", type: "keyword" }],
     claimable: false,
   },
 ];

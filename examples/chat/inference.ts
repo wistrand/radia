@@ -174,7 +174,11 @@ await agentLoop(client, {
       // Can this turn escalate? Find the next-higher-rank tier from the `model` records (the
       // ordering is discovered, not hard-coded). Offer `escalate` only if a stronger tier exists;
       // otherwise strip it so the top model just answers (and can't emit an unhandled escalate).
-      const fleet = (await c.query({ kind: "model" }, 100)).map((m) => m.body as { tier: string; rank: number });
+      // Same filter as the router: an image tier is in the fleet but is not somewhere a text turn
+      // can escalate TO. Absent `modalities` means text (workers that predate the field).
+      const fleet = (await c.query({ kind: "model" }, 100))
+        .map((m) => m.body as { tier: string; rank: number; modalities?: string[] })
+        .filter((m) => !m.modalities || m.modalities.includes("text"));
       const higher = fleet.filter((m) => (m.rank ?? 0) > rank).sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))[0];
       const tools = higher ? body.tools : (body.tools ?? []).filter((t) => t.function.name !== "escalate");
 

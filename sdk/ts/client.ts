@@ -226,6 +226,51 @@ export class RadiaClient {
     return r.children;
   }
 
+  // ---- artifacts (design-data-model §2.4) ----
+
+  /** Store bytes and get back the `artifact` record that references them. The payload never
+   *  travels inside a record body; the record carries {digest, mediaType, size} and routes. */
+  async putArtifact(
+    bytes: Uint8Array,
+    opts: { mediaType?: string; filename?: string; parentIds?: string[]; taint?: boolean; idempotencyKey?: string } = {},
+  ): Promise<{ id: string; digest: string; size: number }> {
+    const headers: Record<string, string> = { "content-type": opts.mediaType ?? "application/octet-stream" };
+    if (opts.filename) headers["x-radia-filename"] = opts.filename;
+    if (opts.parentIds?.length) headers["x-radia-parent-ids"] = opts.parentIds.join(",");
+    if (opts.taint) headers["x-radia-taint"] = "true";
+    if (opts.idempotencyKey) headers["Idempotency-Key"] = opts.idempotencyKey;
+    if (this.auth.token) headers["Authorization"] = `Bearer ${this.auth.token}`;
+    // The cast works around a Deno lib typing quirk: `Uint8Array<ArrayBufferLike>` is a valid
+    // request body at runtime but does not match the `BodyInit` union as declared.
+    const res = await fetch(`${this.base}/v0/artifacts`, { method: "POST", headers, body: bytes as unknown as BodyInit });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!res.ok) throw new RadiaClientError(res.status, data?.title ?? "error", data?.detail ?? text);
+    return data as { id: string; digest: string; size: number };
+  }
+
+  /** An artifact's bytes by record id. */
+  async getArtifact(recordId: string): Promise<Uint8Array> {
+    const headers: Record<string, string> = {};
+    if (this.auth.token) headers["Authorization"] = `Bearer ${this.auth.token}`;
+    const res = await fetch(`${this.base}/v0/artifacts/${encodeURIComponent(recordId)}`, { headers });
+    if (!res.ok) {
+      const text = await res.text();
+      let data: { title?: string; detail?: string } | null = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch { /* not a problem document */ }
+      throw new RadiaClientError(res.status, data?.title ?? "error", data?.detail ?? text);
+    }
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  /** A short-lived, single-artifact download capability — for contexts that cannot send an
+   *  Authorization header (an `<img src>`). The returned `url` is relative to the space. */
+  artifactCapability(recordId: string): Promise<{ capability: string; expiresAt: string; url: string }> {
+    return this.req("POST", `/v0/artifacts/${encodeURIComponent(recordId)}/capability`);
+  }
+
   /**
    * Watch a template: an async stream of wakeups (`{seq, recordId, kind}`) for matching
    * records that become available. Reconnects with a cursor on drop; on 410 cursor_expired

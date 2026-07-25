@@ -4,6 +4,7 @@
 // adapters from the first commit is what keeps that guard real rather than aspirational.
 
 import type { StorageAdapter } from "../src/storage/adapter.ts";
+import type { BlobStore } from "../src/storage/blobs.ts";
 
 export interface AdapterFactory {
   name: string;
@@ -27,6 +28,34 @@ export function conformance(factories: AdapterFactory[], suites: Suite[]): void 
         } finally {
           await adapter.close();
         }
+      });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Blob port
+//
+// Artifact bytes live behind a SECOND port (src/storage/blobs.ts), so it gets the same
+// treatment as the record store: every implementation runs the same suite, from the first
+// commit, or the in-memory and filesystem paths drift the way embedded/hosted would.
+// ---------------------------------------------------------------------------
+
+export interface BlobFactory {
+  name: string;
+  create: () => BlobStore;
+}
+
+export interface BlobSuite {
+  name: string;
+  run: (store: BlobStore) => Promise<void>;
+}
+
+export function blobConformance(factories: BlobFactory[], suites: BlobSuite[]): void {
+  for (const f of factories) {
+    for (const s of suites) {
+      Deno.test(`[blobs:${f.name}] ${s.name}`, async () => {
+        await s.run(f.create());
       });
     }
   }
