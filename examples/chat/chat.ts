@@ -52,8 +52,6 @@ const write = (s: string) => Deno.stdout.writeSync(enc.encode(s));
 const url = Deno.env.get("RADIA_URL") ?? "http://127.0.0.1:7788";
 const port = new URL(url).port || "7788";
 
-// TODO: use google/gemini-2.5-flash-lite for auto-tier selection
-
 // Three capability/cost tiers, each served by its own inference-worker (model selection is
 // content-routing). Two models across three tiers: fast/balanced use the cheap model, deep the
 // capable one — point `balanced` at a mid-tier model via the env var. The chat does NOT choose a
@@ -63,6 +61,9 @@ const TIERS: Record<string, string> = {
   balanced: Deno.env.get("RADIA_CHAT_MODEL_BALANCED") ?? "anthropic/claude-sonnet-5",
   deep: Deno.env.get("RADIA_CHAT_MODEL_DEEP") ?? "anthropic/claude-opus-5",
 };
+// The router classifies each turn with this cheap, fast model (a model-overridden llm_call served
+// by the inference fleet — the router never holds the API key). Setup config, like TIERS.
+const CLASSIFY_MODEL = Deno.env.get("RADIA_CHAT_CLASSIFY_MODEL") ?? "google/gemini-2.5-flash-lite";
 const apiKey = Deno.env.get("OPENROUTER_API_KEY");
 if (!apiKey) {
   console.error("Set OPENROUTER_API_KEY (get one at https://openrouter.ai/keys).");
@@ -146,7 +147,7 @@ for (const [t, m] of Object.entries(TIERS)) {
 // the chat holds no routing logic. Model selection is delegated to the substrate.
 procs.push(
   new Deno.Command("deno", {
-    args: ["run", "--allow-net", "--allow-env", "examples/chat/router.ts", "--url", url, "--token", routerToken],
+    args: ["run", "--allow-net", "--allow-env", "examples/chat/router.ts", "--url", url, "--token", routerToken, "--classify-model", CLASSIFY_MODEL],
     stdout: "null",
     stderr: "inherit",
     stdin: "null",

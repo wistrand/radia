@@ -84,8 +84,11 @@ three capability/cost **tiers** — `fast`, `balanced`, `deep` — each served b
 inference-worker that claims only its tier's calls (`take {kind:llm_call, match:{tier}}`) and
 advertises a `model` record. **The chat holds no routing logic:** it puts an *untiered* `llm_call`.
 A **router-worker** (`chat/router.ts`) claims untiered calls (`match:{tier:{$exists:false}}`),
-classifies the turn (a heuristic here — swap it for a classifier model without touching the chat),
-and re-dispatches a *tiered* `llm_call`; the matching inference-worker serves it and supplies the
+classifies the turn with a **cheap classifier model** — itself a model-overridden `llm_call` served
+by the inference fleet (`--classify-model`, default `google/gemini-2.5-flash-lite`), so the API key
+stays isolated in the workers and classification routes through the substrate like any other call;
+a regex heuristic is the fallback on error/timeout — and re-dispatches a *tiered* `llm_call`; the
+matching inference-worker serves it and supplies the
 concrete model. The result stays keyed to the original call (`replyTo`), so the chat is oblivious
 to the indirection — it just sees `[routed → deep]`. So both model-serving *and* the model-choice
 are content-routed steps in the substrate; add a tier-worker → a new model is live, no orchestrator

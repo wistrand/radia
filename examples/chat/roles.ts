@@ -37,6 +37,7 @@ const INFERENCE_GRANTS: Grant[] = [
 // Model selection is delegated here (a substrate worker), not decided in the chat client.
 const ROUTER_GRANTS: Grant[] = [
   { kind: "llm_call", operations: ["take", "put"] },
+  { kind: "llm_result", operations: ["read_one"] }, // reads its classifier call's result
   { kind: "message", operations: ["query"] },
   { kind: "model", operations: ["query"] },
 ];

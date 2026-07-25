@@ -52,28 +52,42 @@ await agentLoop(client, {
   leaseSeconds: 60, // inference can be slow; the heartbeat keeps the lease alive
   handle: async (rec, c) => {
     const callId = rec.id;
-    const body = rec.body as { conversationId: string; upToIndex: number; model?: string; tools?: ToolDef[]; replyTo?: string };
+    const body = rec.body as {
+      conversationId: string;
+      upToIndex: number;
+      model?: string;
+      tools?: ToolDef[];
+      replyTo?: string;
+      messages?: ChatMessage[]; // raw-prompt override (e.g. the router's tier classifier)
+      stream?: boolean; // false → don't emit llm_chunk records (one-off calls)
+    };
     // The router re-dispatches under a new id but sets `replyTo` to the ORIGINAL call the chat
     // awaits — key the streamed chunks + result to that, so the chat never sees the indirection.
     const resultKey = body.replyTo ?? callId;
     let index = 0;
     try {
-      // Reconstruct the context from the space — the thread lives in `message` records,
-      // not in the call body. History is stored once; we read it (not re-embed it).
-      const rows = await c.query(
-        { kind: "message", match: { conversationId: body.conversationId }, orderBy: [{ path: "index" }] },
-        2000,
-      );
-      const messages: ChatMessage[] = rows
-        .map((r) => r.body as { index: number; role: string; content?: string | null; tool_calls?: ToolCall[]; tool_call_id?: string })
-        .filter((m) => m.index <= body.upToIndex)
-        .map((m) => {
-          const cm: ChatMessage = { role: m.role };
-          if (m.content !== undefined) cm.content = m.content;
-          if (m.tool_calls) cm.tool_calls = m.tool_calls;
-          if (m.tool_call_id) cm.tool_call_id = m.tool_call_id;
-          return cm;
-        });
+      // A raw-prompt call (e.g. the router's tier classifier) supplies `messages` directly. A
+      // conversation turn reconstructs them from the space — the thread lives in `message`
+      // records, not in the call body. History is stored once; we read it (not re-embed it).
+      let messages: ChatMessage[];
+      if (body.messages) {
+        messages = body.messages;
+      } else {
+        const rows = await c.query(
+          { kind: "message", match: { conversationId: body.conversationId }, orderBy: [{ path: "index" }] },
+          2000,
+        );
+        messages = rows
+          .map((r) => r.body as { index: number; role: string; content?: string | null; tool_calls?: ToolCall[]; tool_call_id?: string })
+          .filter((m) => m.index <= body.upToIndex)
+          .map((m) => {
+            const cm: ChatMessage = { role: m.role };
+            if (m.content !== undefined) cm.content = m.content;
+            if (m.tool_calls) cm.tool_calls = m.tool_calls;
+            if (m.tool_call_id) cm.tool_call_id = m.tool_call_id;
+            return cm;
+          });
+      }
 
       // Can this turn escalate? Find the next-higher-rank tier from the `model` records (the
       // ordering is discovered, not hard-coded). Offer `escalate` only if a stronger tier exists;
@@ -84,9 +98,11 @@ await agentLoop(client, {
 
       const { message, finishReason, usage } = await streamChat(
         { apiKey, model: body.model ?? model, messages, tools },
-        async (delta) => {
-          await c.put({ kind: "llm_chunk", body: { callId: resultKey, index: index++, delta }, parentIds: [callId] });
-        },
+        body.stream === false
+          ? () => Promise.resolve() // raw-prompt/classify calls don't emit chunk records
+          : async (delta) => {
+            await c.put({ kind: "llm_chunk", body: { callId: resultKey, index: index++, delta }, parentIds: [callId] });
+          },
       );
       // Self-escalation: the model asked for a stronger model and one exists → re-dispatch the turn
       // to that tier (result stays keyed to the original call). A tool-call turn streams no text, so
