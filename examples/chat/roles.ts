@@ -62,17 +62,21 @@ const IMAGE_GRANTS: Grant[] = [
 const TOOLS_GRANTS: Grant[] = [
   { kind: "tool_call", operations: ["take"] },
   { kind: "tool_result", operations: ["put"] },
+  { kind: "artifact", operations: ["put"] }, // save_content: WRITE only, it never reads one back
   { kind: "capability", operations: ["put"] },
   { kind: "progress", operations: ["put"] }, // reports which tool it is running
 ];
 
 // exec-worker: claims `tool_call{run_code}` and runs the model's program in a permissionless
 // subprocess. It needs --allow-run (to spawn) but holds no API key and reads no files itself; on
-// the space it can do exactly these four things. Note what is ABSENT: no artifact grant, no query
-// of any kind — a code runner has no business reading the conversation.
+// the space it can do exactly these five things. `artifact: put` lets it store a program's output
+// (WRITE only — it can save what the sandbox produced, never read a stored artifact). Note what is
+// still ABSENT: no query of any kind, because a code runner has no business reading the
+// conversation.
 const EXEC_GRANTS: Grant[] = [
   { kind: "tool_call", operations: ["take"] },
   { kind: "tool_result", operations: ["put"] },
+  { kind: "artifact", operations: ["put"] },
   { kind: "capability", operations: ["put"] },
   { kind: "progress", operations: ["put"] },
 ];

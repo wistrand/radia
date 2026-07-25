@@ -29,7 +29,14 @@ async function walk(root: string, dir: string, fn: (real: string, rel: string) =
   }
 }
 
-export type Tool = (args: Record<string, unknown>) => Promise<unknown>;
+/** What a tool knows about the call it is serving, beyond its arguments. Optional so the file and
+ *  compute tools can ignore it; the ones that WRITE records use `callId` for lineage. */
+export interface ToolContext {
+  callId: string;
+  conversationId?: string;
+}
+
+export type Tool = (args: Record<string, unknown>, ctx?: ToolContext) => Promise<unknown>;
 
 export function makeTools(roots: string[]): Record<string, Tool> {
   return {

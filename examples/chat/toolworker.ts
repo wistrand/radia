@@ -10,6 +10,7 @@ import { progress } from "./progress.ts";
 import { makeTools, TOOL_SCHEMAS } from "./tools.ts";
 import { INSPECT_SCHEMAS, makeInspectTools } from "./inspect.ts";
 import { makeRemediateTools, REMEDIATE_SCHEMAS } from "./remediate.ts";
+import { makeSaveTools, SAVE_SCHEMAS } from "./save.ts";
 
 function arg(name: string): string | undefined {
   const i = Deno.args.indexOf(name);
@@ -30,7 +31,10 @@ const client = new RadiaClient(url, token ? { token } : {}); // claims tool_call
 // for role=admin (full /ops access), the scoped agent:chat-user for role=user (so /ops calls 403).
 const spaceClient = new RadiaClient(url, sessionToken ? { token: sessionToken } : {});
 // File/compute tools (sandboxed, no client) + space inspection + remediation (session-scoped).
-const tools = { ...makeTools(roots), ...makeInspectTools(spaceClient), ...makeRemediateTools(spaceClient) };
+// `save_content` writes artifacts as the WORKER (its own token, `artifact: put`), not as the
+// session: storing a file is the worker's own action, unlike the space_* tools, which act as the
+// session principal so a scoped user cannot launder /ops access through a privileged worker.
+const tools = { ...makeTools(roots), ...makeInspectTools(spaceClient), ...makeRemediateTools(spaceClient), ...makeSaveTools(client) };
 
 // Publish this worker's capabilities as `capability` records so agents can DISCOVER the
 // available tools from the space (no hard-coded tool list). In a real system this
@@ -43,7 +47,7 @@ async function defHash(def: unknown): Promise<string> {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(def)));
   return [...new Uint8Array(bytes)].slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-const schemas = [...TOOL_SCHEMAS, ...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS];
+const schemas = [...TOOL_SCHEMAS, ...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS, ...SAVE_SCHEMAS];
 for (const name of Object.keys(tools)) {
   const def = schemas.find((s) => s.function.name === name);
   if (def) await client.put({ kind: "capability", body: { tool: name, def } }, `capability:${name}:${await defHash(def)}`);
@@ -58,7 +62,7 @@ await agentLoop(client, {
     // A file search or a space query can take seconds; say who picked it up and what is running.
     await progress(c, { conversationId: b.conversationId, callId, stage: "running", by: "agent:chat-tools", note: b.tool }, [callId]);
     try {
-      const output = await tools[b.tool](b.args ?? {});
+      const output = await tools[b.tool](b.args ?? {}, { callId, conversationId: b.conversationId });
       return { kind: "tool_result", body: { callId, ok: true, output } };
     } catch (e) {
       return { kind: "tool_result", body: { callId, ok: false, output: String(e) } };
