@@ -5,6 +5,7 @@
 
 import type { StorageAdapter } from "../src/storage/adapter.ts";
 import type { BlobStore } from "../src/storage/blobs.ts";
+import type { BlobCipher } from "../src/storage/crypto.ts";
 
 export interface AdapterFactory {
   name: string;
@@ -58,5 +59,19 @@ export function blobConformance(factories: BlobFactory[], suites: BlobSuite[]): 
         await s.run(f.create());
       });
     }
+  }
+}
+
+/** Crypto-specific blob properties: they need the cipher and the raw key, not just a store. */
+export interface BlobCryptoSuite {
+  name: string;
+  run: (ctx: { cipher: BlobCipher; kek: Uint8Array; tempDir: () => string }) => Promise<void>;
+}
+
+export function blobCryptoConformance(cipher: BlobCipher, kek: Uint8Array, suites: BlobCryptoSuite[]): void {
+  for (const s of suites) {
+    Deno.test(`[blobs:crypto] ${s.name}`, async () => {
+      await s.run({ cipher, kek, tempDir: () => Deno.makeTempDirSync({ prefix: "radia-blobs-crypto-" }) });
+    });
   }
 }

@@ -186,11 +186,36 @@ body is read, a size ceiling (`maxArtifactBytes`, 32 MB) enforced against the st
 the declared `Content-Length`, taint propagation (a client may raise it via `X-Radia-Taint`), and
 access checks independent of possession of the record JSON.
 
-**Not in v1, deliberately:** encryption at rest, and reference-aware GC (blobs are permanent;
-`retention_until` on the artifact record is the hook). When encryption lands it is a per-artifact
-random DEK under AES-GCM, the DEK wrapped by a space KEK from env or keyring, entirely behind the
-`BlobStore` port. Two constraints for whoever builds it: the digest stays over **plaintext** (the
-event chain and integrity survive crypto-shredding), and the wrapped DEK must live in **destroyable**
-state — a blob sidecar or key table — never in the immutable artifact record, because shredding
-means deleting it. Recipient-keyed / token-derived keys stay out; see
+**Encryption at rest is built and opt-in** (`src/storage/crypto.ts`): a per-blob random DEK under
+**AES-GCM-256**, the DEK wrapped under a space **KEK** (AES-KW) that comes from `RADIA_BLOB_KEK`
+(base64, 32 bytes) or `--blob-kek <file>`. No key configured → blobs stay plaintext, and the
+startup line says which you got. This is confidentiality layer 2 of
+[design-observability.md](design-observability.md): it covers backups, snapshots and a copied data
+directory — what disk encryption does not — and it is what makes deletion-by-key-destruction real.
+It does **not** defend against a compromised runtime or anyone holding the KEK, since the runtime
+decrypts for every principal with a read grant.
+
+Four properties, each with a reason:
+
+- **The DEK is per BLOB, not per record.** The store is content-addressed by the plaintext digest,
+  so identical bytes are one blob that several artifact records share — and share a key. Dedup
+  survives encryption; shredding a blob shreds it for every record referencing it, which is correct
+  because there is one payload.
+- **The plaintext digest is the AAD**, so ciphertext moved to another address fails to open: the
+  content address is authenticated, not merely conventional.
+- **Storage paths are HMAC(KEK, digest).** A content-addressed encrypted store whose filenames are
+  plaintext hashes still answers "do you hold this exact file?" to whoever steals the disk.
+- **The wrapped DEK lives in a sidecar beside the blob**, never in the artifact record: records are
+  immutable and crypto-shredding means *deleting* the key. Delete the sidecar and the payload is
+  gone while the record, its digest and the event chain remain verifiable.
+
+Enabling encryption on an existing store does not orphan what is already there: a blob with no
+sidecar is read as plaintext, while new writes are sealed. Two consequences worth knowing — an
+encrypted read cannot stream (AES-GCM verifies its tag over the whole ciphertext, so the payload is
+decrypted in memory, bounded by `maxArtifactBytes`), and a space started **without** the KEK cannot
+even address its sealed blobs, so reads are `404` while the records remain intact.
+
+**Still not in v1:** reference-aware GC (blobs are permanent; `retention_until` on the artifact
+record is the hook), and KEK rotation (rewrapping every DEK, and renaming every path, since the
+name is derived from the key). Recipient-keyed / token-derived keys stay out; see
 [gotchas.md](gotchas.md).

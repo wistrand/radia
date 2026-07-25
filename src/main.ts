@@ -8,6 +8,7 @@ import { SqliteAdapter } from "./storage/sqlite.ts";
 import { PostgresAdapter } from "./storage/postgres.ts";
 import type { StorageAdapter } from "./storage/adapter.ts";
 import { FileBlobStore, MemoryBlobStore } from "./storage/blobs.ts";
+import { BlobCipher, loadKek } from "./storage/crypto.ts";
 import { Space } from "./core/space.ts";
 import { startServer } from "./server/http.ts";
 import { clearCredential, saveCredential } from "./credentials.ts";
@@ -18,7 +19,8 @@ import { args as argv, env, exit, onShutdown, UsageError } from "./platform.ts";
 
 const USAGE = `radia <command>
 
-  dev [--port <n>] [--host <addr>] [--storage pglite|sqlite|postgres] [--db <path|url>] [--blobs <dir>] [--auth open|required]
+  dev [--port <n>] [--host <addr>] [--storage pglite|sqlite|postgres] [--db <path|url>]
+      [--blobs <dir>] [--blob-kek <file>] [--auth open|required]
       Run an embedded space + web console.
   mcp [--url <base>]
       Serve the space to an MCP-capable harness over stdio.
@@ -60,8 +62,14 @@ async function dev(args: string[]): Promise<void> {
   // in memory otherwise — an ephemeral space must not leave blobs behind on disk. `--blobs` is what
   // a postgres deployment uses, since its --db is a connection URL with no local home.
   const blobDir = flag(args, "--blobs") ?? (backend !== "postgres" && dbPath ? `${dbPath}-blobs` : undefined);
-  const blobs = blobDir ? new FileBlobStore(blobDir) : new MemoryBlobStore();
-  console.log(`radia dev: blobs=${blobs.name}${blobDir ? ` (${blobDir})` : " (in-memory)"}`);
+  // Encryption at rest is OPT-IN and only as strong as where the key lives: `RADIA_BLOB_KEK`
+  // (base64, 32 bytes) is the real deployment path; `--blob-kek <file>` generates one on first use
+  // for local work. A key file inside the blob directory protects nothing against someone who
+  // copies the directory, so say so rather than implying otherwise.
+  const kek = loadKek({ env: env("RADIA_BLOB_KEK"), file: flag(args, "--blob-kek") });
+  const cipher = kek ? await BlobCipher.fromKey(kek.key) : undefined;
+  const blobs = blobDir ? new FileBlobStore(blobDir, cipher) : new MemoryBlobStore(cipher);
+  console.log(`radia dev: blobs=${blobs.name}${blobDir ? ` (${blobDir})` : " (in-memory)"}${kek ? ` — encrypted, KEK from ${kek.source}` : ""}`);
   const space = new Space(storage, {}, blobs);
   await space.loadKinds(); // restore persisted kind declarations
   await space.loadCredentials(); // rebuild the credential index from agent_definition/agent_run records

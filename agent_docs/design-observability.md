@@ -137,10 +137,12 @@ flowchart TB
 
 1. **Infrastructure encryption** (disk/TDE, TLS, object-store SSE): a deployment
    prerequisite, stated as such; not a runtime feature.
-2. **Runtime-managed envelope encryption — required, not optional.** The crypto-shredding
-   commitment *is* application-layer encryption: deletion-by-key-destruction requires
-   bodies and artifact blobs encrypted under destroyable data keys (per kind / tenant /
-   data-subject grouping, KMS-wrapped). This also covers the realistic leak vectors —
+2. **Runtime-managed envelope encryption — required, not optional.** *(M1: built for artifact
+   BLOBS — `src/storage/crypto.ts`, per-blob AES-GCM DEK wrapped under a space KEK, opt-in via
+   `RADIA_BLOB_KEK` / `--blob-kek`. Record bodies are still plaintext; KMS wrapping and rotation
+   are open.)* The crypto-shredding commitment *is* application-layer encryption:
+   deletion-by-key-destruction requires bodies and artifact blobs encrypted under destroyable data
+   keys (per kind / tenant / data-subject grouping, KMS-wrapped). This also covers the realistic leak vectors —
    backups, snapshots, misconfigured replicas — that disk encryption does not. The
    runtime decrypts on read, so matching is unaffected. `body_sha256` and the event chain
    hash plaintext, so verifiability survives shredding (a retained hash is irreversible).

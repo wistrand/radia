@@ -134,6 +134,16 @@ export function fileSize(path: string): number | undefined {
   }
 }
 
+/** A file's bytes, or undefined if it does not exist. Used where the whole payload is needed at
+ *  once (an encrypted blob: AES-GCM verifies its tag over the complete ciphertext). */
+export async function readBinaryFile(path: string): Promise<Uint8Array | undefined> {
+  try {
+    return await Deno.readFile(path);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Stream a file's bytes, or undefined if it does not exist. The caller owns the stream and
  *  cancelling it closes the underlying handle. */
 export async function readBinaryStream(path: string): Promise<ReadableStream<Uint8Array> | undefined> {

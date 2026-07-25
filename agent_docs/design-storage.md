@@ -59,7 +59,7 @@ Scaling), envelope encryption/KMS (M2). `npm`/`pip` binary wrapping is BUILT but
 | Event log    | append-only `events` table (monotonic seq), same transaction as each mutation                                                                                                     |
 | Kinds        | `kind_def` **records** (no table); the in-memory registry is a cache rebuilt at startup by querying them (`Space.loadKinds`)                                                        |
 | Clock        | DB `now()` for all lease/timing math                                                                                                                                              |
-| Blobs        | the `BlobStore` port (`src/storage/blobs.ts`): content-addressed by sha256, memory + filesystem impls, one conformance suite for both; the "artifact table" is the reserved `artifact` **record** kind; runtime-issued short-lived download capabilities — **built (M1), unencrypted in v1**                                                        |
+| Blobs        | the `BlobStore` port (`src/storage/blobs.ts`): content-addressed by sha256, memory + filesystem impls, one conformance suite for both; the "artifact table" is the reserved `artifact` **record** kind; runtime-issued short-lived download capabilities; optional **encryption at rest** (per-blob AES-GCM DEK, AES-KW-wrapped under a space KEK, HMAC-named paths, key in a destroyable sidecar) — **built (M1)**                                                        |
 
 The single-table partial index is why the hot claim path (`take`) never requires an
 index-assisted join. See [design-api.md](design-api.md) for the take contract this
