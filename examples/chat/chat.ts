@@ -551,15 +551,20 @@ async function pollResult(callId: string, prefix: string, tool: string): Promise
   throw new Error(w.last ? `timed out waiting for tool_result from ${w.last.by}` : `timed out: ${stall}`);
 }
 
-/** A tool result that references an artifact is a payload the terminal cannot draw. Mint a
- *  short-lived download capability and print a URL the console (or a browser) can open — and, if
- *  RADIA_CHAT_IMAGE_DIR is set, save the bytes there too. */
+/** A tool result that references an artifact is a payload the terminal cannot draw, so print a link
+ *  to it — and, if RADIA_CHAT_IMAGE_DIR is set, save the bytes too.
+ *
+ *  The link is the STABLE artifact URL, deliberately not a capability URL. A capability is
+ *  short-lived and in-memory: correct for the console, which mints one per `<img>` render, and
+ *  wrong for terminal scrollback, where the URL outlives the token and later reads as broken (and
+ *  where a token in the transcript is a small leak besides). On a default local space an
+ *  unauthenticated GET resolves to the operator, so this opens in a browser as-is; under
+ *  `--auth required` a browser cannot authenticate, and the console is the way to view it. */
 async function showArtifact(output: unknown): Promise<void> {
   const ref = output as { artifactId?: string; mediaType?: string; size?: number } | null;
   if (!ref || typeof ref !== "object" || typeof ref.artifactId !== "string") return;
   try {
-    const cap = await client.artifactCapability(ref.artifactId);
-    write(`    \x1b[2m${ref.mediaType ?? "artifact"} · ${Math.round((ref.size ?? 0) / 1024)} KB · ${url}${cap.url}\x1b[0m\n`);
+    write(`    \x1b[2m${ref.mediaType ?? "artifact"} · ${Math.round((ref.size ?? 0) / 1024)} KB · ${url}/v0/artifacts/${ref.artifactId}\x1b[0m\n`);
     const dir = Deno.env.get("RADIA_CHAT_IMAGE_DIR");
     if (dir) {
       const bytes = await client.getArtifact(ref.artifactId);

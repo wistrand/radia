@@ -116,7 +116,13 @@ function makeHandler(space: Space, ui: string, authRequired: boolean) {
     if (req.method === "GET" && capability && url.pathname.startsWith("/v0/artifacts/")) {
       const id = decodeURIComponent(url.pathname.slice("/v0/artifacts/".length));
       if (!space.checkDownloadCapability(capability, id)) {
-        return problem(403, "forbidden", "download capability is invalid, expired, or for another artifact");
+        return problem(
+          403,
+          "forbidden",
+          `download capability is invalid, for another artifact, or expired — capabilities last ` +
+            `${space.downloadCapabilitySeconds}s and do not survive a restart. The artifact id is stable; ` +
+            `re-open it from the console, or GET /v0/artifacts/{id} with a token.`,
+        );
       }
       return await handleGetArtifact(space, id, null);
     }

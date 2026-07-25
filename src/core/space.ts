@@ -542,6 +542,10 @@ export class Space {
     return this.ctx.maxArtifactBytes;
   }
 
+  get downloadCapabilitySeconds(): number {
+    return this.ctx.downloadCapabilitySeconds;
+  }
+
   get blobStoreName(): string {
     return this.blobs.name;
   }
