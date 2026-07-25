@@ -143,6 +143,7 @@ radia take job --lease 30 --json > claim.json # claim work
 radia ack - --result-kind job_result --result '{"ok":true}' < claim.json
 radia watch job                               # stream wakeups
 radia doctor                                  # dead-letters, stuck leases, stale work
+radia reclaim --all --drain                   # un-stick every expired lease
 ```
 
 Every command goes through the public `/v0` API — the CLI has no privileged backdoor. The

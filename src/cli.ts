@@ -39,8 +39,21 @@ Coordinate
   nack <lease-json> [--backoff <seconds>]
   release <lease-json>
 
+Remediate (operator)
+  reclaim <record-id>                 un-stick ONE expired lease
+  reclaim --all [--limit <n>] [--drain]      every expired lease
+  dead-letter <record-id>             give up on ONE record
+  dead-letter --all [--stale <secs>] [--limit <n>] [--drain]
+  requeue <record-id>                 return ONE dead-lettered record to available
+  requeue --all [--limit <n>] [--drain]
+
 \`take\` prints the claimed record together with its lease; pass that lease object straight back
-to \`ack\`/\`nack\`/\`release\` (as a JSON string, or - to read it from stdin).`;
+to \`ack\`/\`nack\`/\`release\` (as a JSON string, or - to read it from stdin).
+
+The \`--all\` forms take an envelope SELECTOR rather than an id — the same one \`doctor\` reports on —
+so draining a backlog is one call per page instead of one per record. \`--drain\` repeats until
+nothing matches; without it a single page runs (default 200) and the output says whether more
+remain.`;
 
 interface Ctx {
   client: RadiaClient;
@@ -111,6 +124,47 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         if (d.staleAvailable?.count) lines.push(`stale available: ${d.staleAvailable.count}`);
         if (lines.length === 1) lines.push("no dead-letters, stuck leases, or stale work");
         return lines.join("\n");
+      });
+    }
+
+    // Remediation. Each verb takes EITHER one record id or `--all` with a selector. The selector
+    // is the same shape `doctor` reports on, so "what is wrong" and "fix it" share a vocabulary;
+    // per-id stays for surgical cases. Every transition is state-guarded, so re-running is safe
+    // and a worker that comes back mid-drain simply keeps its record.
+    case "reclaim":
+    case "dead-letter":
+    case "requeue": {
+      const action = cmd as "reclaim" | "dead-letter" | "requeue";
+      const [recordId] = positional(argv, 1);
+      if (recordId && !has(argv, "--all")) {
+        const r = await client.admin(action, recordId);
+        return out(ctx, r, () => `${action} ${recordId}: ${r.applied ? "applied" : "no change (already moved on)"}`);
+      }
+      if (!has(argv, "--all")) {
+        console.error(`error: ${action} needs a <record-id>, or --all to remediate by selector`);
+        return 2;
+      }
+      // Defaults chosen so the common intent is the short command: reclaiming and dead-lettering
+      // target lapsed leases, requeue targets the dead-letter queue.
+      const stale = flag(argv, "--stale");
+      const selector = {
+        state: action === "requeue" ? "dead_letter" : stale !== undefined ? "available" : "leased",
+        expired: action !== "requeue" && stale === undefined,
+        ...(stale !== undefined ? { stale: Number(stale) } : {}),
+        ...(flag(argv, "--limit") ? { limit: Number(flag(argv, "--limit")) } : {}),
+      };
+      const pages: { matched: number; applied: number; more: boolean }[] = [];
+      for (;;) {
+        const page = await client.remediate(action, selector);
+        pages.push(page);
+        if (!page.more || !has(argv, "--drain")) break;
+      }
+      const applied = pages.reduce((n, p) => n + p.applied, 0);
+      const matched = pages.reduce((n, p) => n + p.matched, 0);
+      const more = pages[pages.length - 1].more;
+      return out(ctx, { action, selector, pages: pages.length, matched, applied, more }, () => {
+        const head = `${action}: ${applied} applied of ${matched} matched, in ${pages.length} call${pages.length === 1 ? "" : "s"}`;
+        return more ? `${head}\nmore remain — re-run with --drain (or a larger --limit)` : head;
       });
     }
 

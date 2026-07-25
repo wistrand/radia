@@ -67,8 +67,13 @@ query is one (the envelope filter); what genuinely can't stays a derived capabil
 
 **Remediation shares the diagnostic's selector.** `POST /v0/ops/remediate` takes the same envelope
 selector as `GET /v0/ops/records` (`{state, expired, stale, limit}`), so "what is wrong" and "fix
-it" are one query language. Per-id remediation remains for surgical cases; a backlog is one call
-per page, not one call per record.
+it" are one query language — `radia reclaim --all --drain` is the CLI spelling. Per-id remediation
+remains for surgical cases; a backlog is one call per page, not one call per record.
+
+One guard is not optional: a selector on `state: available` **excludes `claimable:false` kinds**.
+Reference records (the kind registry itself, grants, agent runs, facts) sit available forever by
+design, so the broadest selector would otherwise sweep them into `dead_letter` and break the space.
+`dead_letter` is deliberately not filtered — that is the recovery path.
 
 **There is no `expired` record state.** A lapsed lease leaves the record `leased` — a later take
 reclaims it, bumping the attempt — so nothing ever writes `expired`, and diagnostics deliberately

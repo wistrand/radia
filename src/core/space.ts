@@ -947,7 +947,16 @@ export class Space {
     selector: { state: RecordState; expired?: boolean; staleSeconds?: number; limit?: number },
   ): Promise<{ action: string; matched: number; applied: number; more: boolean; sample: string[] }> {
     const limit = Math.min(Math.max(selector.limit ?? 200, 1), 2000);
-    const rows = await this.queryEnvelopes({ ...selector, limit });
+    // Remediation acts on WORK. A `claimable:false` kind — kind_def, grant, agent_run, facts,
+    // history — sits `available` forever by design, so a broad `{state:"available"}` selector would
+    // otherwise sweep the kind registry and the grants into dead_letter and break the space. The
+    // starvation check excludes them for the same reason; here it is not a heuristic but a guard.
+    // `dead_letter` is NOT filtered: that is the recovery path, and a reference record that
+    // somehow landed there must stay requeueable.
+    const excludeKinds = selector.state === "available"
+      ? this.kinds.list().filter((d) => !isClaimable(d)).map((d) => d.kind)
+      : undefined;
+    const rows = await this.queryEnvelopes({ ...selector, limit, excludeKinds });
     let applied = 0;
     for (const row of rows) {
       const id = row.envelope.recordId;

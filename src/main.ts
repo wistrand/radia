@@ -25,8 +25,7 @@ const USAGE = `radia <command>
   mcp [--url <base>]
       Serve the space to an MCP-capable harness over stdio.
   <cli command>
-      health | stats | doctor | kinds | put | query | get | take | ack | nack | release
-      | events | watch | lineage | children     (run \`radia help\` for details)`;
+      Everything else is a verb over the public /v0 API — listed below.`;
 
 async function dev(args: string[]): Promise<void> {
   const port = Number(flag(args, "--port") ?? "7788");
@@ -119,8 +118,12 @@ async function main(argsIn: string[]): Promise<number> {
       case "help":
       case "--help":
       case "-h":
+        // Print BOTH: the launcher's commands and the CLI verbs. `help` used to stop here, which
+        // left the CLI's own help — the only place the verbs and their flags are documented —
+        // unreachable behind a pointer back to this text.
         console.log(USAGE);
-        return 0;
+        console.log("");
+        return await runCli("help", rest);
       default:
         // Everything else is a CLI verb over the public API.
         return await runCli(cmd, rest);

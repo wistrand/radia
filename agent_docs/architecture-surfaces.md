@@ -146,11 +146,13 @@ an external client can too" currently holds in one direction only for payloads. 
 put/get` pair would close it; base64 in an MCP tool result would not (it would put the payload
 back inside a record, which is the thing artifacts exist to avoid).
 
-Known gap: the adapter exposes `space_doctor` (diagnosis) but no remediation verbs
-(`reclaim`/`dead-letter`/`requeue`/`declassify`) — and neither does the CLI, whose `radia doctor`
-likewise only diagnoses. That gap grew in one sense and shrank in another: remediation is now
-selector-driven (`POST /v0/ops/remediate` fixes every record matching an envelope selector, so a
-backlog is one call per page), which makes a CLI verb cheap to add and more worth having. Those sit behind `/v0/ops/*` and are grant-gated,
+The CLI has the full set: `radia reclaim|dead-letter|requeue` take either a record id or `--all`
+with an envelope selector (`--stale`, `--limit`, `--drain`), so draining a backlog is one call per
+page rather than one per record.
+
+Known gap: the MCP adapter still exposes `space_doctor` (diagnosis) but no remediation verbs
+(`reclaim`/`dead-letter`/`requeue`/`declassify`). Those sit behind `/v0/ops/*` and are grant-gated,
+so exposing them to a model is a deliberate decision rather than an oversight. Those sit behind `/v0/ops/*` and are grant-gated,
 so exposing them is a deliberate decision rather than an oversight — but it does mean a model can
 report a stuck lease and do nothing about it.
 

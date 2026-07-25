@@ -155,6 +155,30 @@ export const remediateSuites: Suite[] = [
     },
   },
   {
+    name: "remediate: a broad available selector never touches reference kinds",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      space.registerKind({ kind: "fact", indexedPaths: [], claimable: false });
+      const work = await space.put({ kind: "task", body: { tag: "work" } });
+      const fact = await space.put({ kind: "fact", body: {} });
+
+      // `{state:"available"}` is the broadest selector there is. A `claimable:false` kind sits
+      // available forever by design, so sweeping it into dead_letter would break the space — the
+      // kind registry and the grants are themselves records of such kinds.
+      const out = await space.remediate("dead-letter", { state: "available" });
+      assertEquals(out.applied, 1, "only the claimable record should be remediated");
+      assertEquals((await space.getEnvelope(work.id))?.state, "dead_letter");
+      assertEquals((await space.getEnvelope(fact.id))?.state, "available", "a reference record must be left alone");
+
+      // …but the recovery path is not filtered: a reference record that somehow landed in
+      // dead_letter must still be requeueable.
+      await space.forceDeadLetter(fact.id);
+      const back = await space.remediate("requeue", { state: "dead_letter" });
+      assert(back.applied >= 1);
+      assertEquals((await space.getEnvelope(fact.id))?.state, "available");
+    },
+  },
+  {
     name: "diagnostics: no `expired` count (expiry is implicit), and a capped scan says so",
     run: async (adapter) => {
       const space = newSpace(adapter);

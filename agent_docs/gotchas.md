@@ -65,6 +65,15 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   This is correct behaviour (reclaiming lapsed work is what take is for), but it makes "claim
   several, let them expire" a trap when building fixtures.
 
+- **A selector on `state: available` must exclude reference kinds.** `claimable:false` records —
+  the `kind_def` registry, `grant`s, `agent_run`s, plain facts — sit available forever by design.
+  The first version of selector-driven remediation did not filter them, so
+  `dead-letter --all --stale 0` swept the kind registry and the grants into `dead_letter`: the
+  space's own control records, remediated as if they were stuck work. Caught by running the CLI
+  verb against a real space, not by reading it. The starvation check had excluded them all along
+  for the same reason; in remediation it is a guard, not a heuristic. `dead_letter` stays
+  unfiltered so a reference record that lands there is still requeueable.
+
 - **There is no `expired` record STATE.** It exists in the `RecordState` union and nothing ever
   writes it: a lapsed lease leaves the record `leased`, and a later take reclaims it. Diagnostics
   therefore reports no `expired` count — it would be a confident zero beside hundreds of
