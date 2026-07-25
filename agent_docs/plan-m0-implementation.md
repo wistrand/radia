@@ -1,6 +1,6 @@
 # Plan: M0 implementation
 
-> Status: Phases 0–6 DONE (130 conformance tests on both adapters), plus M1 watches, the M1
+> Status: Phases 0–6 DONE (142 conformance tests across both adapters), plus M1 watches, the M1
 > **authorization stack** (grants, run tokens, delegation, taint — see below), and a range of
 > enhancements (see "Current state" and "Enhancements" below). Remaining M0: Phase 7
 > (MCP adapter, Python SDK, packaging). This is the buildable, phase-by-phase plan for M0
@@ -91,11 +91,21 @@ grant/auth/scheduler shapes that aren't validated until M1–M3.
 
 ## Current state
 
-Phases 0–6 are **DONE** and verified (130 conformance tests on both adapters), plus M1
-watches, the M1 **authorization stack** (grants, run-token bootstrap chain, per-run leases,
-delegation, taint — see the Enhancements note below), the dev console + examples, and several
-enhancements. Remaining M0: Phase 7 (MCP adapter, Python SDK, `npx`/`pipx` packaging). Per-phase
-records with verify results are in the Phases section below.
+**All M0 phases (0–7) are DONE**, verified (142 conformance tests across both adapters), plus M1
+watches and the M1 **authorization stack** (grants, run-token bootstrap chain, per-run leases,
+delegation, taint — see the Enhancements note below), the dev console, examples, and several
+enhancements. Per-phase records with verify results are in the Phases section below.
+
+The one thing M0 claims that has not been executed end to end is `npx radia dev` / `pipx run`:
+the binaries compile and the shim packages are staged by `deno task release`, but nothing has
+been published to a registry, so the install path itself is unexercised.
+
+Two post-Phase fixes worth knowing about, both in storage (`src/storage/`):
+- `ack` with a result appends the successor's own `put` event. Without it the record existed
+  with no `available` event of its kind, so a watch on that kind never woke. See Phase 5.
+- `DDL` gained a migrations block. `create table if not exists` only ever creates, so a
+  database from a build predating `events.xid` kept the old shape and failed every
+  `getEvents`. `PostgresBackend.exec` also strips `--` comments before its naive split on `;`.
 
 **Enhancements built on top of the phases** (not in the original M0 checklist):
 - On-disk persistence: `deno task dev --db <path>` (SQLite file / PGlite dir); records,
@@ -193,10 +203,13 @@ proper watches land in M1).
 
 Principles:
 
-- **One self-contained `index.html`** — inline CSS + vanilla JS, no framework, no build
-  step, no external requests. This is the [CLAUDE.md](../CLAUDE.md) minimal-deps /
-  zero-build / platform-independence invariant applied to the UI, and it keeps the demo a
-  single binary. Served from `src/ui/`.
+- **One `index.html`** — inline CSS + vanilla JS, no framework, no build step, no external
+  requests. This is the [CLAUDE.md](../CLAUDE.md) minimal-deps / zero-build /
+  platform-independence invariant applied to the UI, and it keeps the demo a single binary.
+  Served from `src/ui/`. One exception since the Space tab: the prebuilt BlitZoom bundle in
+  `src/ui/vendor/`, served from the same origin at `GET /ui/blitzoom.bundle.js` and injected
+  lazily on first use. Checked in as an artifact, so there is still no build step and still no
+  external request; `deno task compile` `--include`s it.
 - **Public API only.** The console calls the same `/v0` endpoints an agent would; it gets
   no privileged backdoor. If the UI can do it, a client SDK can too.
 - **Friendly by default.** Readable empty states, surfaced RFC 9457 error `detail`
@@ -217,6 +230,7 @@ Panels (each maps to existing endpoints):
 | Worker panel — take a record, then renew/ack/nack/release by hand to drive the lifecycle | `takes` + `leases/*` | Phase 3 |
 | Live feed — records/state-transitions/dead-letters streaming in | event log + watches (SSE) | Phase 5 / M1 |
 | Lineage viewer — a record's parent/child DAG | lineage query | Phase 5 (M2 richer) |
+| Space — every record placed by property similarity (kind, envelope state, owning run), streamed from the event log; hierarchical zoom aggregates into supernodes. Layout is a pure function of the properties, so insertion never displaces what is on screen. Vendored BlitZoom `<bz-graph>` | `GET /v0/ops/events` (+ `GET /v0/ops/records/{id}` for detail) | built |
 
 Everything above except the live feed and lineage viewer is backed by endpoints that
 already exist (Phases 1–3), so the console can be built now and grow with the runtime.
@@ -224,6 +238,10 @@ already exist (Phases 1–3), so the console can be built now and grow with the 
 ## Phases
 
 Ordered by dependency; each is independently verifiable before the next starts.
+
+Each phase's **Verify** line records the suite total *at the moment that phase went green*
+(16 → 36 → 52 → 60 → 68 → 78), so the numbers climb and are deliberately never back-filled —
+they are a history, not a current count. Only the two Status lines above track today's total.
 
 ### Phase 0 — skeleton and contracts — DONE
 
@@ -304,7 +322,7 @@ ack conflict → `idempotency_conflict`. Live `radia dev` confirmed via curl (he
 ### Phase 5 — event log and dead-letter — DONE
 
 - [x] Append-only `events` table (monotonic `seq`, id, ts, run_id, operation, record_id, kind, state, detail) written in the **same transaction** as each mutation via `appendEvent`, inside each op's tx. Run identity on every event (creator principal for `put`, lease owner for settlements — real run tokens now built, M1).
-- [x] One event per successful op: `put`, `take`, `ack` (with `resultId` in detail), `nack`, `release`, and `expire`→`dead_letter`. No-op outcomes (`lease_lost`, idempotency replay) append nothing. `renew` is intentionally not evented (heartbeat noise; it changes no lifecycle state).
+- [x] One event per **mutation**: `put`, `take`, `ack` (with `resultId` in detail), `nack`, `release`, and `expire`→`dead_letter`. No-op outcomes (`lease_lost`, idempotency replay) append nothing. `renew` is intentionally not evented (heartbeat noise; it changes no lifecycle state). Usually one op is one mutation; `ack` **with a result** is the exception — it consumes the parent *and* inserts a record, so it appends two: the result's own `put` (its own kind, `state: available`, `detail.ackOf` = parent) then the parent's `ack`. Without that `put` the successor would be unwatchable: `matchesEvent` needs an `available` event carrying the record's own kind, and the `ack` event is `consumed` and carries the parent's. Fixed after Phase 5 was marked done; regression cases in `conformance/suites/{events,watches}.ts`.
 - [x] Dead-letter transition preserves `kind` (Phase 3); event records resulting state.
 - [x] Lineage BFS over `parent_ids` (`src/core/space.ts` `getLineage`, cycle-guarded, node-capped). Endpoints: `GET /v0/ops/events?after=&limit=`, `GET /v0/ops/records/{id}/lineage`.
 
@@ -327,18 +345,32 @@ stale acks resolve via idempotency/fencing, not corruption; the at-least-once co
 explicit rather than hidden. Fuller matrix (partition, DB failover, cursor storm) needs
 real infra and is deferred past M0 — see [plan-validation.md](plan-validation.md).
 
-### Phase 7 — surfaces and the demo
+### Phase 7 — surfaces and the demo — DONE
 
-- [ ] Auto-provisioned local credentials — **same API shape as production, never "no tokens"** (`src/core/auth.ts`).
-- [ ] Bundled MCP adapter (`src/mcp/`): holds credentials outside the model context, heartbeats internally.
-- [ ] Friendly dev UI (`src/ui/index.html`) served at `GET /` — space overview, records browser, kinds, put form, query playground, and worker panel; live feed + lineage viewer follow their backing APIs (Phase 5 / M1). Self-contained, public-API-only. See "Dev UI" above.
-- [ ] Minimal CLI (`src/cli.ts`) over the public API only.
-- [~] TS SDK stub BUILT ahead of schedule (`sdk/ts/client.ts` + `loop.ts` — `RadiaClient` over `/v0`, `agentLoop` with heartbeat at lease/3, per-attempt idempotency key). Demo agents in `examples/` (worker/planner/aggregator/coordinator) + `deno task demo` exercise it end-to-end over HTTP. Remaining: Python SDK parity, polish.
-- [ ] Release wrapping: `deno compile` → per-OS binary → thin `npm` and `pip` shims (the esbuild/uv pattern; can be rough at M0).
+- [x] Auto-provisioned local credentials — **same API shape as production, never "no tokens"**. `radia dev` mints an operator token and writes it to `$XDG_STATE_HOME/radia/credentials.json` (`%APPDATA%`/`~/.radia` elsewhere), mode 0600, keyed by base URL; removed on clean shutdown, since operator tokens die with the process. The CLI, MCP adapter, and Python SDK all resolve it the same way (`RADIA_TOKEN` overrides). Implemented in `src/credentials.ts` rather than `src/core/auth.ts`: `core/` is storage- and IO-agnostic, and this touches the filesystem. The no-header operator default still exists for `curl` and the browser console, but nothing radia ships depends on it.
+- [x] Bundled MCP adapter (`src/mcp/`): newline-delimited JSON-RPC 2.0 over stdio, 15 tools. **Credentials outside the model context** — the token is attached by the adapter and appears in no schema, result, or error. **Heartbeats internally** — `space_take` returns an opaque `claimId`; the fenced lease stays in the adapter and is renewed at lease/3, so a model that thinks for minutes keeps its claim and cannot forge, replay, or leak a lease. Kinds are discovered through `space_kinds`, never hardcoded; tool descriptions carry the usage guidance rather than a system prompt teaching the substrate.
+- [x] Friendly dev UI (`src/ui/index.html`) served at `GET /` — BUILT ahead of schedule: space overview, records browser, kinds, put form, query playground, worker panel, live feed, lineage, graph, auth, and the Space map. Public-API-only; single file plus one vendored, same-origin asset (`src/ui/vendor/`). See "Dev UI" above. Remaining polish: SSE push for the feed (still polls).
+- [x] Minimal CLI (`src/cli.ts`) over the public API only: `health stats doctor kinds get lineage children events watch put query read-one take ack nack release`, `--json` on every verb. `take --json` emits the claim; pipe it back to `ack -`/`nack -`/`release -`. Discovery-first — `kinds` is a query for `kind_def` records; no verb carries a table of known kinds.
+- [x] TS SDK (`sdk/ts/client.ts` + `loop.ts` — `RadiaClient` over `/v0`, `agentLoop` with heartbeat at lease/3, per-attempt idempotency key). Demo agents in `examples/` + `deno task demo` exercise it end-to-end over HTTP.
+- [x] **Python SDK at parity** (`sdk/py/radia.py`): `RadiaClient` (records, claims, watches with SSE reconnect + opaque cursor, ops reads), `agent_loop` with background watchers, heartbeat, per-attempt idempotency key, and the same permanent-403-on-watch handling as the TS loop. **Standard library only** — `urllib` + `threading`, nothing to install, Python 3.9+.
+- [x] Release wrapping: `scripts/build-release.sh` (`deno task release`) — `deno compile` for 5 targets, then stages the esbuild/uv shape: `dist/npm/radia` (launcher + `optionalDependencies` on per-platform packages) and `dist/pypi` (wheel source with a launcher that `execv`s the bundled binary; `exec` matters so `radia mcp`'s stdio stays a direct pipe). `/dist/` is gitignored. Publishing is manual and unexercised — see Verify.
 
-**Verify:** the under-a-minute demo — `npx radia dev` (or `pipx run`) brings up the space
-+ inspector + MCP adapter in one process; a second terminal joins as an agent and
-claims a record; one line in an MCP-capable harness config participates without SDK code.
+**Verify:** PASSED for everything runnable locally. Against a live space: `radia dev` provisions
+the credential (0600) and the CLI presents it — proven by a bogus `RADIA_TOKEN` 401ing on an
+ops-plane call while the provisioned one succeeds; full `put → query → take → ack(result)`
+round trip through the CLI; the MCP adapter driven over real stdio JSON-RPC through
+`initialize → tools/list → space_kinds → space_put → space_take → space_ack`, with the token
+absent from every stdout frame and stderr, a double-settle returning `isError` instead of
+killing the session, and a 6-second lease held for 15 seconds still acking `ok` (the internal
+heartbeat, proven — without it that ack fences out); the Python SDK against the same space for
+kinds/put/query, a three-record `agent_loop` drain emitting results, a live watch wakeup, and
+credential resolution at parity with `RADIA_TOKEN` precedence; and the compiled binary serving
+the console, the vendored bundle, and its own CLI.
+
+**Not verified:** `npx radia dev` / `pipx run radia dev` end to end — that needs a publish (or a
+local registry), and installing packages is out of scope here. Cross-compilation for the four
+non-host targets is likewise unrun; only the host target was built. The staged package metadata
+is therefore best-effort until someone publishes once.
 
 ## Open questions
 

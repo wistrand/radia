@@ -93,11 +93,53 @@ deno task dev --host 0.0.0.0 --auth required   # exposed + token-gated
 
 Open the console and watch records and events stream through the **Feed** tab, use the
 **Graph** tab to see how records relate (`parent_ids` DAG — a conversation's messages, a
-job fanning out into tasks and back), and open a record for its body + lineage. See
+job fanning out into tasks and back), the **Space** tab to see every record placed by what it
+*is* rather than what it links to, and open a record for its body + lineage. See
 [examples/README.md](examples/README.md) for the agents and the SDK.
 
-The design target for distribution is `npx radia dev` / `pipx run` (a single wrapped
-binary bundling the MCP adapter); that packaging is Phase 7.
+### The CLI
+
+`radia dev` provisions a real operator credential on startup (`$XDG_STATE_HOME/radia/credentials.json`,
+`0600`), so every other command authenticates the same way a deployed client does — there is no
+"no tokens locally" mode to grow out of. Override with `RADIA_TOKEN`, point elsewhere with
+`RADIA_URL` or `--url`.
+
+```bash
+radia kinds                                   # declared kinds (a query for kind_def records)
+radia put job '{"tag":"a"}'                   # write a record
+radia query job --match '{"tag":"a"}'         # read by template
+radia take job --lease 30 --json > claim.json # claim work
+radia ack - --result-kind job_result --result '{"ok":true}' < claim.json
+radia watch job                               # stream wakeups
+radia doctor                                  # dead-letters, stuck leases, stale work
+```
+
+Every command goes through the public `/v0` API — the CLI has no privileged backdoor.
+
+### Joining from an MCP harness
+
+`radia mcp` serves the space over stdio, so a model coordinates through it with no SDK:
+
+```json
+{ "mcpServers": { "radia": { "command": "radia", "args": ["mcp"] } } }
+```
+
+The adapter holds the credential and the fenced lease itself: `space_take` hands the model an
+opaque `claimId`, and the lease is renewed at lease/3 in the background, so a model that spends
+minutes thinking keeps its claim without ever seeing (or being able to leak) a token or a lease.
+Kinds are discovered at runtime via `space_kinds` — nothing about your space is baked into the
+tool list.
+
+### Distribution
+
+```bash
+./scripts/build-release.sh          # per-OS binaries + staged npm and pip shim packages
+./scripts/build-release.sh host     # just this machine, for a quick check
+```
+
+`deno compile` produces one self-contained binary (console and its vendored asset included);
+the npm and pip packages are thin launchers that exec it, so `npx radia dev` and
+`pipx run radia dev` need neither Deno nor a compile step.
 
 ## How it works
 

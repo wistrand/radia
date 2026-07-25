@@ -1,6 +1,9 @@
 # Compiled binary from `deno task compile`
 /radia
 
+# Release staging from scripts/build-release.sh (binaries + npm/pip shims)
+/dist/
+
 # Local dev spaces (file-backed embedded storage)
 *.db
 *.db-wal

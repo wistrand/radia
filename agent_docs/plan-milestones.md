@@ -1,6 +1,6 @@
 # Plan: milestones
 
-> Status: M0 (Phases 0–6) + M1 watches built and verified; M2/M3 unbuilt. Origin: outline §11.
+> Status: M0 (Phases 0–7) + M1 watches built and verified; M2/M3 unbuilt. Origin: outline §11.
 
 ## Goal
 
@@ -14,21 +14,26 @@ conformance + fault-injection suite against every storage adapter (see
 M0 (Phases 0–6) plus M1 watches and the M1 **authorization stack** (grants, run-token bootstrap
 chain, per-run leases with stop/quarantine, delegation, taint) are built and verified; see
 [plan-m0-implementation.md](plan-m0-implementation.md) for the per-phase record and the
-`design-*` docs for spec + rationale + source pointers. Remaining M0: MCP adapter + Python
-SDK. The rest of M2/M3 is unbuilt.
+`design-*` docs for spec + rationale + source pointers. M0 is complete through Phase 7 (CLI,
+MCP adapter, Python SDK, release wrapping); only the registry publish itself is unexercised.
+The rest of M2/M3 is unbuilt.
 
 ## Phases
 
-### M0 — semantic kernel prototype, embedded-first — DONE (except MCP adapter + Python SDK)
+### M0 — semantic kernel prototype, embedded-first — DONE
 
-**Status:** Phases 0–6 built and verified (130 conformance tests on both adapters); the web
+**Status:** Phases 0–7 built and verified (142 conformance tests across both adapters); the web
 console (Feed, records browser, kinds, query, worker, relationship-**graph**, and an **Auth**
 view), runnable agent examples, and a CLI LLM chatbot (runnable with real auth roles) ship too.
 Enhancements layered on since the phases: M1 watches (below), the M1 **authorization stack**
 (grants, run tokens, per-run leases, delegation, taint), optional on-disk persistence (`--db`,
 records + envelopes + events + idempotency + kind declarations), the chatbot's
 conversation-as-record-thread model, and dev diagnostics (`GET /v0/ops/records/{id}` and
-`/graph`). Remaining M0 items: the bundled **MCP adapter** and the **Python SDK** (Phase 7).
+`/graph`), the **Space** map in the console, and Phase 7's surfaces: the `radia` CLI, the
+bundled **MCP adapter** (stdio JSON-RPC; credential and fenced lease held outside the model
+context, lease renewed internally), the **Python SDK** at parity (stdlib only), auto-provisioned
+local credentials, and `deno task release` (per-OS binaries + npm/pip launcher packages).
+`npx radia dev` / `pipx run` are staged but unpublished, so that install path is unexercised.
 Full per-phase record in
 [plan-m0-implementation.md](plan-m0-implementation.md).
 
@@ -40,7 +45,7 @@ explicitly **not** production-readiness.
 > embedded storage, ordered phases with verify steps) is in
 > [plan-m0-implementation.md](plan-m0-implementation.md).
 
-- [~] `deno task dev` — embedded storage (PGlite/SQLite), single process, **web console** (dev UI). Bundled **MCP adapter** not built (Phase 7); distribution is `deno task dev`, not `npx` yet.
+- [x] `deno task dev` — embedded storage (PGlite/SQLite), single process, **web console** (dev UI), bundled **MCP adapter** (`radia mcp`). Distribution staged by `deno task release` (binaries + npm/pip shims); `npx radia dev` awaits a publish.
 - [x] put / take / ack / nack / release / renew
 - [x] record + envelope split with denormalized routing columns
 - [x] `body_sha256` on every record
@@ -51,8 +56,8 @@ explicitly **not** production-readiness.
 - [x] transactional event log
 - [x] dead-letter state
 - [x] conformance suite as a storage-adapter contract from the first commit
-- [~] TS SDK stub built (`sdk/ts/`); **Python SDK** not built (Phase 7)
-- [x] minimal CLI (`radia dev`)
+- [x] TS SDK (`sdk/ts/`) and **Python SDK** (`sdk/py/radia.py`, stdlib only) at parity — client, watches, and an `agent_loop` with heartbeat in both
+- [x] minimal CLI — `radia dev`/`mcp` plus the public-API verbs in `src/cli.ts`
 
 **Verify:** conformance suite green against the embedded adapter; the under-a-minute
 two-terminal demo works.

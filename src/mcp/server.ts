@@ -1,0 +1,311 @@
+// Bundled MCP adapter (Phase 7). `radia mcp` serves the space to an MCP-capable harness over
+// stdio, so a model participates in coordination with one line of harness config and no SDK.
+//
+// Two properties the plan calls for, and why they matter:
+//
+// 1. **Credentials stay outside the model context.** The adapter resolves a token from the
+//    environment or the file `radia dev` provisioned (src/credentials.ts) and attaches it to
+//    every request itself. No token appears in a tool schema, a tool result, or an error — a
+//    model driving this cannot read, log, or leak the credential it is acting under.
+//
+// 2. **Leases heartbeat internally.** `space_take` hands the model an opaque `claimId`, never
+//    the fenced lease. The adapter holds the real lease and renews it at lease/3 in the
+//    background, so a model that spends two minutes thinking does not lose its claim. Settling
+//    by `claimId` stops the heartbeat. The model cannot forge, replay, or hand off a lease it
+//    never sees.
+//
+// Everything else is discovered, not hardcoded: `space_kinds` queries `kind_def` records, so a
+// kind declared after startup is immediately usable. There is no table of known kinds here.
+//
+// Transport: newline-delimited JSON-RPC 2.0 on stdin/stdout. stdout carries protocol frames
+// ONLY — every log line goes to stderr, or the harness sees a corrupt stream.
+
+import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
+import { defaultBase, resolveToken } from "../credentials.ts";
+import type { Lease, RadiaRecord } from "../storage/adapter.ts";
+import type { Template } from "../core/matching.ts";
+import { TOOLS } from "./tools.ts";
+
+const SERVER_INFO = { name: "radia", version: "0.0.0" };
+/** Echoed back to the client when it asks for a version we know; otherwise we answer with this. */
+const DEFAULT_PROTOCOL = "2025-06-18";
+const KNOWN_PROTOCOLS = new Set(["2024-11-05", "2025-03-26", DEFAULT_PROTOCOL]);
+
+interface Claim {
+  lease: Lease;
+  record: RadiaRecord;
+  timer: ReturnType<typeof setInterval>;
+}
+
+export async function runMcp(argv: string[]): Promise<void> {
+  const base = flag(argv, "--url") ?? defaultBase();
+  const token = resolveToken(base);
+  const client = new RadiaClient(base, token ?? {});
+  const claims = new Map<string, Claim>();
+
+  log(`radia mcp: space=${base} auth=${token ? "bearer token" : "none (open local space)"}`);
+  if (!token) {
+    log("radia mcp: no credential found — start `radia dev` (auto-provisions one) or set RADIA_TOKEN.");
+  }
+
+  for await (const msg of frames(Deno.stdin.readable)) {
+    const res = await handle(msg, client, claims, base);
+    if (res) write(res);
+  }
+  // Stdin closed: the harness is gone. Release anything still held rather than making the space
+  // wait out every lease.
+  for (const [, c] of claims) {
+    clearInterval(c.timer);
+    await client.release(c.lease).catch(() => {});
+  }
+}
+
+// ---- JSON-RPC plumbing ----
+
+interface Req {
+  jsonrpc?: string;
+  id?: string | number | null;
+  method?: string;
+  params?: Record<string, unknown>;
+}
+
+async function handle(
+  req: Req,
+  client: RadiaClient,
+  claims: Map<string, Claim>,
+  base: string,
+): Promise<unknown | null> {
+  const { id, method } = req;
+  // A notification (no id) never gets a reply, per JSON-RPC.
+  const isNotification = id === undefined || id === null;
+
+  switch (method) {
+    case "initialize": {
+      const want = String((req.params?.protocolVersion as string) ?? "");
+      return reply(id, {
+        protocolVersion: KNOWN_PROTOCOLS.has(want) ? want : DEFAULT_PROTOCOL,
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: SERVER_INFO,
+        instructions:
+          `A Radia coordination space at ${base}. Agents exchange immutable JSON records and claim ` +
+          `work by template matching, not by addressing. Start with space_kinds to discover what ` +
+          `record kinds exist and how each is indexed — nothing about this space is implied by the ` +
+          `tool list. Claim work with space_take and settle it with space_ack; the lease is held ` +
+          `and renewed for you.`,
+      });
+    }
+
+    case "notifications/initialized":
+    case "notifications/cancelled":
+      return null;
+
+    case "ping":
+      return isNotification ? null : reply(id, {});
+
+    case "tools/list":
+      return reply(id, { tools: TOOLS });
+
+    case "tools/call": {
+      const name = String(req.params?.name ?? "");
+      const args = (req.params?.arguments ?? {}) as Record<string, unknown>;
+      try {
+        const text = await call(name, args, client, claims);
+        return reply(id, { content: [{ type: "text", text }] });
+      } catch (e) {
+        // Tool-level failures are results with isError, not JSON-RPC errors — the model should
+        // see them and adapt (a rejected template says why), not have the call disappear.
+        return reply(id, { content: [{ type: "text", text: errorText(e) }], isError: true });
+      }
+    }
+
+    default:
+      if (isNotification) return null;
+      return { jsonrpc: "2.0", id, error: { code: -32601, message: `unknown method: ${method}` } };
+  }
+}
+
+function reply(id: unknown, result: unknown) {
+  return { jsonrpc: "2.0", id, result };
+}
+
+/** Never surfaces the credential: RadiaClientError carries the server's RFC 9457 detail only. */
+function errorText(e: unknown): string {
+  if (e instanceof RadiaClientError) return `${e.code}: ${e.message.replace(/^[^:]*:\s*/, "")}`;
+  return (e as Error).message ?? String(e);
+}
+
+// ---- tool dispatch ----
+
+async function call(
+  name: string,
+  a: Record<string, unknown>,
+  client: RadiaClient,
+  claims: Map<string, Claim>,
+): Promise<string> {
+  switch (name) {
+    case "space_health":
+      return pretty(await client.health());
+
+    case "space_kinds":
+      return pretty(await client.listKinds());
+
+    case "space_stats":
+      return pretty(await client.getStats());
+
+    case "space_doctor":
+      return pretty(await client.diagnostics());
+
+    case "space_put": {
+      const r = await client.put({
+        kind: str(a, "kind"),
+        body: obj(a, "body"),
+        parentIds: Array.isArray(a.parentIds) ? a.parentIds as string[] : undefined,
+      }, a.idempotencyKey ? String(a.idempotencyKey) : undefined);
+      return pretty(r);
+    }
+
+    case "space_query":
+      return pretty(await client.query(tpl(a), num(a, "limit") ?? 50));
+
+    case "space_read_one":
+      return pretty(await client.readOne(tpl(a)));
+
+    case "space_get":
+      return pretty(await client.getRecord(str(a, "recordId")));
+
+    case "space_lineage":
+      return pretty(await client.getLineage(str(a, "recordId")));
+
+    case "space_children":
+      return pretty(await client.getChildren(str(a, "recordId")));
+
+    case "space_events":
+      return pretty(await client.getEvents(a.after ? String(a.after) : "0", num(a, "limit") ?? 50));
+
+    case "space_take": {
+      const leaseSeconds = num(a, "leaseSeconds") ?? 60;
+      const claimed = await client.take({ template: tpl(a) }, {
+        leaseSeconds,
+        requireUntainted: a.requireUntainted === true || undefined,
+      });
+      if (!claimed) return "nothing available for that template";
+      // The model gets a handle; the fenced lease never leaves this process.
+      const claimId = `claim-${claimed.record.id}-${claimed.lease.epoch}`;
+      const timer = setInterval(() => {
+        client.renew(claimed.lease, { leaseSeconds }).catch(() => {});
+      }, Math.max(1000, (leaseSeconds / 3) * 1000));
+      claims.set(claimId, { lease: claimed.lease, record: claimed.record, timer });
+      return pretty({
+        claimId,
+        record: claimed.record,
+        note: "Lease held and renewed for you. Settle with space_ack (done), space_nack (retry) " +
+          "or space_release (give it back).",
+      });
+    }
+
+    case "space_ack": {
+      const c = takeClaim(claims, a);
+      const kind = a.resultKind ? String(a.resultKind) : undefined;
+      const result = kind ? { kind, body: (a.resultBody ?? {}) as Record<string, unknown> } : undefined;
+      // Per-attempt idempotency key: a retried ack after a dropped response is not double work.
+      const r = await client.ack(c.lease, result, `ack:${c.record.id}:${c.lease.epoch}`);
+      return pretty(r);
+    }
+
+    case "space_nack": {
+      const c = takeClaim(claims, a);
+      const backoff = num(a, "backoffSeconds");
+      return pretty(await client.nack(c.lease, backoff !== undefined ? { backoffSeconds: backoff } : {}));
+    }
+
+    case "space_release": {
+      const c = takeClaim(claims, a);
+      return pretty(await client.release(c.lease));
+    }
+
+    default:
+      throw new Error(`unknown tool: ${name}`);
+  }
+}
+
+/** Resolve a claimId to its lease and stop its heartbeat — settling ends the claim either way. */
+function takeClaim(claims: Map<string, Claim>, a: Record<string, unknown>): Claim {
+  const id = str(a, "claimId");
+  const c = claims.get(id);
+  if (!c) throw new Error(`unknown claimId '${id}' — it was already settled, or this adapter never held it`);
+  clearInterval(c.timer);
+  claims.delete(id);
+  return c;
+}
+
+// ---- argument coercion ----
+
+function str(a: Record<string, unknown>, k: string): string {
+  const v = a[k];
+  if (typeof v !== "string" || !v) throw new Error(`'${k}' is required and must be a string`);
+  return v;
+}
+
+function obj(a: Record<string, unknown>, k: string): Record<string, unknown> {
+  const v = a[k];
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error(`'${k}' is required and must be a JSON object`);
+  return v as Record<string, unknown>;
+}
+
+function num(a: Record<string, unknown>, k: string): number | undefined {
+  const v = a[k];
+  if (v === undefined || v === null) return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n)) throw new Error(`'${k}' must be a number`);
+  return n;
+}
+
+function tpl(a: Record<string, unknown>): Template {
+  return {
+    kind: str(a, "kind"),
+    match: (a.match ?? undefined) as Record<string, unknown> | undefined,
+    orderBy: (a.orderBy ?? undefined) as Template["orderBy"],
+  };
+}
+
+function pretty(v: unknown): string {
+  return JSON.stringify(v, null, 2);
+}
+
+// ---- stdio transport ----
+
+/** Newline-delimited JSON frames from stdin. Malformed lines are reported and skipped rather
+ *  than killing the session — a harness that sends one bad frame should not lose the space. */
+async function* frames(stream: ReadableStream<Uint8Array>): AsyncGenerator<Req> {
+  const dec = new TextDecoder();
+  let buf = "";
+  for await (const chunk of stream) {
+    buf += dec.decode(chunk, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      try {
+        yield JSON.parse(line) as Req;
+      } catch {
+        write({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } });
+      }
+    }
+  }
+}
+
+const enc = new TextEncoder();
+function write(msg: unknown): void {
+  // Synchronous so frames can never interleave. stdout is protocol-only.
+  Deno.stdout.writeSync(enc.encode(JSON.stringify(msg) + "\n"));
+}
+
+function log(msg: string): void {
+  Deno.stderr.writeSync(enc.encode(msg + "\n"));
+}
+
+function flag(argv: string[], name: string): string | undefined {
+  const i = argv.indexOf(name);
+  return i >= 0 && i + 1 < argv.length ? argv[i + 1] : undefined;
+}
