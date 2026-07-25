@@ -920,7 +920,9 @@ export class Space {
     const now = await this.storage.now();
     let envs = await this.storage.envelopesInState(q.state, q.limit ?? 100, q.excludeKinds);
     if (q.expired) envs = envs.filter((e) => e.leasedUntil !== undefined && e.leasedUntil < now);
-    if (q.staleSeconds !== undefined) {
+    // Ignore a non-finite window rather than computing an Invalid Date from it: in-process callers
+    // bypass the HTTP validation, and `addSeconds(now, -NaN)` throws deep in date formatting.
+    if (q.staleSeconds !== undefined && Number.isFinite(q.staleSeconds)) {
       const before = addSeconds(now, -q.staleSeconds);
       envs = envs.filter((e) => e.attempt === 0 && e.availableAt < before);
     }

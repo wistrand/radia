@@ -114,13 +114,13 @@ export class FileBlobStore implements BlobStore {
   /** Where an EXISTING blob actually is. Encrypted name first, then the plaintext-digest name —
    *  turning encryption on must not orphan blobs written before it, so a store can hold both and
    *  reads keep working while new writes are sealed. */
-  private async findPath(digest: string): Promise<{ path: string; key?: SealedKey } | null> {
+  private async findPath(digest: string): Promise<{ path: string; key?: SealedKey; sealed: boolean } | null> {
     if (this.cipher) {
-      const sealed = this.path(await this.cipher.storageName(digest));
-      if (fileSize(sealed) !== undefined) return { path: sealed, key: this.readKey(sealed) };
+      const sealedPath = this.path(await this.cipher.storageName(digest));
+      if (fileSize(sealedPath) !== undefined) return { path: sealedPath, key: this.readKey(sealedPath), sealed: true };
     }
     const plain = this.path(digest);
-    return fileSize(plain) === undefined ? null : { path: plain, key: this.readKey(plain) };
+    return fileSize(plain) === undefined ? null : { path: plain, key: this.readKey(plain), sealed: false };
   }
 
   async put(bytes: Uint8Array): Promise<BlobRef> {
@@ -130,14 +130,22 @@ export class FileBlobStore implements BlobStore {
     // Same bytes, same address: an existing object is already correct, so skip the write. Under
     // encryption this is also what keeps DEDUP working — a second put reuses the stored ciphertext
     // and its DEK rather than sealing the same payload under a second key.
-    if (fileSize(path) === undefined) {
+    //
+    // "Already stored" means BOTH parts exist. Checking only the payload would make a half-written
+    // object permanent: a re-put would see the file and skip, so the pair could never heal.
+    const stored = fileSize(path) !== undefined && (!this.cipher || this.readKey(path) !== undefined);
+    if (!stored) {
       mkdirp(dir);
       if (this.cipher) {
         const { ciphertext, key } = await this.cipher.seal(digest, bytes);
-        await writeBinaryFile(path, ciphertext);
+        // KEY FIRST, then the payload. The reverse order has a crash window that corrupts
+        // silently: ciphertext with no sidecar reads as a plaintext blob, so the raw ciphertext
+        // would be served as if it were the artifact. This way an interrupted write leaves a key
+        // with no payload — an honest miss, and self-healing on the next put.
         // The wrapped DEK sits beside the payload, NOT in the artifact record: shredding a blob
         // means deleting this file, and records are immutable.
         writeTextFile(`${path}.key`, JSON.stringify(key));
+        await writeBinaryFile(path, ciphertext);
       } else {
         await writeBinaryFile(path, bytes);
       }
@@ -149,8 +157,10 @@ export class FileBlobStore implements BlobStore {
     if (!isDigest(digest)) return null; // never let a caller-supplied name reach the filesystem
     const found = await this.findPath(digest);
     if (!found) return null;
-    // No sidecar means the blob is plaintext (written before encryption was enabled, or by a store
-    // that never had a cipher): stream it as-is rather than failing to open it.
+    // A blob at the ENCRYPTED name with no sidecar is damage, not legacy — serving it would hand
+    // back raw ciphertext as if it were the payload. Only a blob at the plaintext-digest name may
+    // be read as plaintext (written before encryption was enabled, or by a store with no cipher).
+    if (!found.key && found.sealed) return null;
     if (!found.key || !this.cipher) return (await readBinaryStream(found.path)) ?? null;
     const ciphertext = await readBinaryFile(found.path);
     if (!ciphertext) return null;
@@ -167,6 +177,7 @@ export class FileBlobStore implements BlobStore {
     if (!isDigest(digest)) return null;
     const found = await this.findPath(digest);
     if (!found) return null;
+    if (!found.key && found.sealed) return null; // half-written: `get` cannot serve it either
     // Report the PLAINTEXT length: the sidecar records it, because ciphertext carries a 16-byte tag.
     return { digest, size: found.key ? found.key.size : (fileSize(found.path) ?? 0) };
   }

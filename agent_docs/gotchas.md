@@ -65,6 +65,30 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   This is correct behaviour (reclaiming lapsed work is what take is for), but it makes "claim
   several, let them expire" a trap when building fixtures.
 
+- **A cast is a promise to the type checker, not a check.** Handlers used to build a `PutRequest`
+  by casting wire JSON (`j.parentIds as string[]`), so `parentIds: 42`, `deadlineAt: {}`, an
+  `orderBy` string, a `template: []`, or a JSON `null` body sailed past the boundary and failed
+  deep inside matching or the adapter — a malformed request answered with a 500 instead of a 400.
+  Found by fuzzing every field of every endpoint with wrong types; fixed by validating shapes at
+  the boundary (`pickPut`/`pickResult` in `handlers/records.ts`, template and numeric query-param
+  checks in `handlers/leases.ts` and `handlers/ops.ts`) and, for `order_by`, in `compileOrderBy`
+  itself so in-process callers are covered too. Keep the rule: if it came off the wire, check it.
+
+- **Writing a payload and its key is two operations, so order them for the crash.** The encrypted
+  blob store wrote ciphertext first and the wrapped DEK second. A crash between them left
+  ciphertext with no sidecar, which the reader treated as a *plaintext* blob — so raw ciphertext
+  was served as the artifact, and a re-upload never healed it because the content-address guard saw
+  the file and skipped. Now: key first, payload second (an interrupted write is an honest miss);
+  the "already stored" guard requires BOTH parts; and a blob at the ENCRYPTED name with no sidecar
+  is damage, never legacy plaintext. Only the plaintext-digest name may be read as plaintext.
+
+- **`esc()` must escape quotes, because record data reaches HTML attributes.** The console escaped
+  `& < >` only. A grant's `template` is rendered as JSON inside `title="…"` — and JSON always
+  contains `"` — so every template-scoped grant broke out of the attribute, and a crafted template
+  or kind name (validated only as "a non-empty string") could inject an event handler into the
+  page that carries an operator token. Escaping now covers `"` and `'`; the fix belongs in `esc`
+  rather than at each call site, since new call sites keep appearing.
+
 - **A selector on `state: available` must exclude reference kinds.** `claimable:false` records —
   the `kind_def` registry, `grant`s, `agent_run`s, plain facts — sit available forever by design.
   The first version of selector-driven remediation did not filter them, so

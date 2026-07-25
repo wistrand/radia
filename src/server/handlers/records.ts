@@ -22,13 +22,29 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   }
 }
 
-export async function handlePut(space: Space, req: Request, principal: string): Promise<Response> {
-  const j = await readJson(req);
-  if (!j) return problem(400, "invalid_body", "expected a JSON object");
-
-  // Pick only client-submittable fields. Authoritative fields are never read from input.
-  const put: PutRequest = {
-    kind: j.kind as string,
+/**
+ * Build a `PutRequest` from wire JSON: pick only client-submittable fields, and VALIDATE their
+ * types rather than casting. A cast is a promise to the type checker, not a check — `parentIds: 42`
+ * or `deadlineAt: {}` used to sail through and fail deep in the adapter, turning a malformed
+ * request into a 500. Returns a problem message instead of throwing so the caller can answer 400.
+ */
+function pickPut(j: Record<string, unknown>): PutRequest | string {
+  if (typeof j.kind !== "string" || j.kind.length === 0) return "kind must be a non-empty string";
+  if (j.parentIds !== undefined) {
+    if (!Array.isArray(j.parentIds) || j.parentIds.some((p) => typeof p !== "string")) {
+      return "parentIds must be an array of record ids";
+    }
+  }
+  for (const field of ["deadlineAt", "retentionUntil"] as const) {
+    const v = j[field];
+    if (v === undefined) continue;
+    if (typeof v !== "string" || Number.isNaN(Date.parse(v))) return `${field} must be an ISO-8601 timestamp`;
+  }
+  if (j.clientMeta !== undefined && (typeof j.clientMeta !== "object" || j.clientMeta === null || Array.isArray(j.clientMeta))) {
+    return "clientMeta must be an object";
+  }
+  return {
+    kind: j.kind,
     body: j.body,
     clientMeta: j.clientMeta as Record<string, unknown> | undefined,
     parentIds: j.parentIds as string[] | undefined,
@@ -36,6 +52,21 @@ export async function handlePut(space: Space, req: Request, principal: string): 
     retentionUntil: j.retentionUntil as string | undefined,
     taint: j.taint === true ? true : undefined, // client may RAISE taint only; never clear it
   };
+}
+
+/** The same validation for a result record emitted with `ack` — it is a PutRequest too. */
+export function pickResult(v: unknown): PutRequest | string | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "object" || Array.isArray(v)) return "result must be an object";
+  return pickPut(v as Record<string, unknown>);
+}
+
+export async function handlePut(space: Space, req: Request, principal: string): Promise<Response> {
+  const j = await readJson(req);
+  if (!j) return problem(400, "invalid_body", "expected a JSON object");
+
+  const put = pickPut(j);
+  if (typeof put === "string") return problem(400, "invalid_body", put);
 
   try {
     const constraint = await space.authorize(principal, "put", put.kind);

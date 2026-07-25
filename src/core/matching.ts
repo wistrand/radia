@@ -169,7 +169,18 @@ function compileElem(spec: unknown): ElemPred {
 }
 
 function compileOrderBy(orderBy: OrderKey[] | undefined, ctx: Ctx): OrderBy[] | undefined {
-  if (!orderBy || orderBy.length === 0) return undefined;
+  if (orderBy === undefined || orderBy === null) return undefined;
+  // Validate the SHAPE here rather than trusting the caller's cast: a client sending
+  // `orderBy: "index"` would otherwise reach `.map` on a string and turn a bad request into a 500.
+  if (!Array.isArray(orderBy)) {
+    throw new RadiaError("invalid_template", "order_by must be an array of {path, dir?}");
+  }
+  if (orderBy.length === 0) return undefined;
+  for (const k of orderBy) {
+    if (!k || typeof k !== "object" || typeof (k as OrderKey).path !== "string") {
+      throw new RadiaError("invalid_template", "each order_by entry must be an object with a string `path`");
+    }
+  }
   return orderBy.map((k) => {
     if (!ctx.registered) {
       throw new RadiaError("unknown_kind", `kind '${ctx.kind}' is not registered`);

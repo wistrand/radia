@@ -6,6 +6,7 @@ import { assert, assertEquals } from "@std/assert";
 import type { Suite } from "../harness.ts";
 import type { RadiaRecord } from "../../src/storage/adapter.ts";
 import { Space } from "../../src/core/space.ts";
+import type { RadiaError } from "../../src/core/errors.ts";
 
 /** Read a body field (body is typed `unknown`). */
 function bf(rec: RadiaRecord | null, key: string): unknown {
@@ -29,6 +30,29 @@ function newSpace(adapter: Parameters<Suite["run"]>[0]): Space {
 }
 
 export const matchingSuites: Suite[] = [
+  {
+    name: "order_by shape is validated, not trusted (a wrong type is a bad request, not a crash)",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({ kind: "task", indexedPaths: [{ path: "n", type: "integer" }], sortablePaths: ["n"] });
+      await space.put({ kind: "task", body: { n: 1 } });
+      // A handler casts wire JSON to a type; a cast is a promise, not a check. `"n"` instead of
+      // [{path:"n"}] used to reach `.map` on a string and surface as a 500.
+      for (const bad of ["n", 42, {}, [null], [{}], [{ path: 1 }]] as unknown[]) {
+        let threw = false;
+        try {
+          await space.query({ kind: "task", orderBy: bad as never });
+        } catch (e) {
+          threw = true;
+          assertEquals((e as RadiaError).code, "invalid_template", `wrong code for ${JSON.stringify(bad)}`);
+        }
+        assert(threw, `order_by ${JSON.stringify(bad)} must be rejected`);
+      }
+      // …and the valid shape still works.
+      assertEquals((await space.query({ kind: "task", orderBy: [{ path: "n" }] })).length, 1);
+    },
+  },
+
   {
     name: "range operators and $in",
     run: async (adapter) => {

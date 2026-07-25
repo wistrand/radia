@@ -308,7 +308,13 @@ async function api(method, path, body, headers = {}) {
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   return { ok: res.ok, status: res.status, data };
 }
-function esc(s) { return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+// Escapes for BOTH text and attribute contexts. Quotes matter: record-derived values reach
+// attributes (a grant's template is JSON, which always contains `"`, and a kind name is validated
+// only as a non-empty string), so escaping `& < >` alone lets a value close the attribute and
+// inject a new one — an XSS into the origin whose page carries an operator token.
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
 function note(el, kind, msg) { $(el).innerHTML = `<div class="note ${kind}">${esc(msg)}</div>`; }
 function errText(r) { return (r.data && r.data.detail) ? `${r.data.title}: ${r.data.detail}` : `HTTP ${r.status}`; }
 function stateBadge(s) { return `<span class="badge st-${s}">${s}</span>`; }
@@ -878,7 +884,7 @@ async function loadAuth() {
   for (const rl of runLatest.values()) (runsByAgent[rl.agent] ??= []).push(rl);
 
   const grantChips = (gs) => gs.length
-    ? gs.map((g) => `<span class="tag tag-grant" title="${g.template ? "template-scoped: " + esc(JSON.stringify(g.template)) : "kind-scoped"}">${esc(g.kind)}: ${esc((g.operations || []).join(", "))}${g.template ? " ⋔" : ""}</span>`).join(" ")
+    ? gs.map((g) => `<span class="tag tag-grant" title="${esc(g.template ? "template-scoped: " + JSON.stringify(g.template) : "kind-scoped")}">${esc(g.kind)}: ${esc((g.operations || []).join(", "))}${g.template ? " ⋔" : ""}</span>`).join(" ")
     : `<span class="muted">none</span>`;
   const runLines = (rs) => rs.length
     ? rs.map((r) => `<div class="mono" style="font-size:12px;margin-top:3px">${esc(r.run.slice(0, 22))}… `

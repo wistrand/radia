@@ -177,6 +177,36 @@ export const blobCryptoSuites: BlobCryptoSuite[] = [
     },
   },
   {
+    name: "a half-written encrypted blob is a miss, never raw ciphertext, and heals on re-put",
+    run: async ({ cipher, tempDir }) => {
+      const parts = (dir: string) => {
+        let key = "", blob = "";
+        for (const sh of Deno.readDirSync(dir)) {
+          for (const f of Deno.readDirSync(`${dir}/${sh.name}`)) {
+            const p = `${dir}/${sh.name}/${f.name}`;
+            if (f.name.endsWith(".key")) key = p;
+            else blob = p;
+          }
+        }
+        return { key, blob };
+      };
+      // Writing the payload and its key is two operations; a crash between them must not leave
+      // something that reads as a DIFFERENT valid object. Ciphertext with no sidecar previously
+      // took the plaintext path and was served as the artifact.
+      for (const drop of ["key", "blob"] as const) {
+        const dir = tempDir();
+        const store = new FileBlobStore(dir, cipher);
+        const ref = await store.put(SECRET);
+        Deno.removeSync(parts(dir)[drop]);
+        assertEquals(await store.get(ref.digest), null, `dropping the ${drop} must yield a miss`);
+        assertEquals(await store.stat(ref.digest), null, "stat must agree with get");
+        // …and a re-put repairs it, rather than seeing a file and skipping the write.
+        await store.put(SECRET);
+        assertEquals(await drain(await store.get(ref.digest)), SECRET, `re-put must heal a dropped ${drop}`);
+      }
+    },
+  },
+  {
     name: "crypto-shredding: destroying the key destroys the data, ciphertext or not",
     run: async ({ cipher, tempDir }) => {
       const dir = tempDir();

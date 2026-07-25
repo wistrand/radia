@@ -7,6 +7,7 @@ import type { Lease } from "../../storage/adapter.ts";
 import type { PutRequest } from "../../core/record.ts";
 import { combineMatch, type Template } from "../../core/matching.ts";
 import { RadiaError } from "../../core/errors.ts";
+import { pickResult } from "./records.ts";
 import { problem } from "../problem.ts";
 
 async function body(req: Request): Promise<Record<string, unknown> | null> {
@@ -56,7 +57,17 @@ export async function handleTake(space: Space, req: Request, principal: string):
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
 
   const recordId = typeof j.recordId === "string" ? j.recordId : undefined;
-  let template = (j.template && typeof j.template === "object") ? j.template as Template : undefined;
+  // `typeof [] === "object"`, so the old shape check let `template: []` and `template: {}` through
+  // to the matcher with no kind — a 500 for what is plainly a bad request. Present-but-invalid is
+  // rejected rather than silently ignored: dropping it would claim a different record than asked.
+  let template: Template | undefined;
+  if (j.template !== undefined && j.template !== null) {
+    const t = j.template as Record<string, unknown>;
+    if (typeof t !== "object" || Array.isArray(t) || typeof t.kind !== "string" || t.kind.length === 0) {
+      return problem(400, "invalid_template", "template.kind must be a non-empty string");
+    }
+    template = t as unknown as Template;
+  }
   if (!recordId && !template) {
     return problem(400, "invalid_selector", "take requires `template` or `recordId`");
   }
@@ -89,7 +100,10 @@ export async function handleAck(space: Space, req: Request, principal: string): 
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
   const lease = parseLease(j);
   if (!lease) return problem(400, "invalid_lease", "missing or malformed lease");
-  const result = j.result as PutRequest | undefined;
+  // The ack result is a PutRequest, so it needs the same type checking as a direct put — without
+  // it a malformed result record fails inside the adapter as a 500 instead of a 400.
+  const result = pickResult(j.result);
+  if (typeof result === "string") return problem(400, "invalid_body", result);
   return settle(() => space.ack(lease, result, idemKey(req), principal));
 }
 

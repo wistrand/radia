@@ -26,9 +26,18 @@ export async function handleEnvelopeQuery(space: Space, url: URL): Promise<Respo
     return problem(400, "invalid_state", `state must be one of ${[...valid].join(", ")}`);
   }
   const expired = url.searchParams.get("expired") === "1" || url.searchParams.get("expired") === "true";
+  // A query parameter is a string, so every numeric one needs a finiteness check: `Number("abc")`
+  // is NaN, and a NaN `stale` reached date arithmetic and turned a bad request into a 500.
   const staleParam = url.searchParams.get("stale");
-  const staleSeconds = staleParam ? Number(staleParam) : undefined;
-  const limit = Math.min(Number(url.searchParams.get("limit") ?? "100") || 100, 500);
+  let staleSeconds: number | undefined;
+  if (staleParam !== null && staleParam !== "") {
+    staleSeconds = Number(staleParam);
+    if (!Number.isFinite(staleSeconds) || staleSeconds < 0) {
+      return problem(400, "invalid_stale", `stale must be a non-negative number of seconds, got '${staleParam}'`);
+    }
+  }
+  const limitParam = Number(url.searchParams.get("limit") ?? "100");
+  const limit = Math.min(Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 100, 500);
   // deno-lint-ignore no-explicit-any
   const rows = await space.queryEnvelopes({ state: state as any, expired, staleSeconds, limit });
   return Response.json({ records: rows });
@@ -89,7 +98,12 @@ export async function handleDeclassify(space: Space, recordId: string): Promise<
 export async function handleRemediate(space: Space, req: Request): Promise<Response> {
   let j: Record<string, unknown>;
   try {
-    j = await req.json() as Record<string, unknown>;
+    const parsed = await req.json();
+    // `null` and `[]` are valid JSON but not objects — without this the field reads below throw.
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return problem(400, "invalid_body", "expected a JSON object");
+    }
+    j = parsed as Record<string, unknown>;
   } catch {
     return problem(400, "invalid_body", "expected a JSON object");
   }
@@ -104,7 +118,7 @@ export async function handleRemediate(space: Space, req: Request): Promise<Respo
   const out = await space.remediate(action, {
     state: state as RecordState,
     expired: j.expired === true,
-    staleSeconds: typeof j.stale === "number" ? j.stale : undefined,
+    staleSeconds: typeof j.stale === "number" && Number.isFinite(j.stale) && j.stale >= 0 ? j.stale : undefined,
     limit: typeof j.limit === "number" ? j.limit : undefined,
   });
   return Response.json(out);
