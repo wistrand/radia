@@ -12,6 +12,7 @@
 // clean shutdown. A stale entry simply fails to resolve, which is a 401, not a silent downgrade.
 
 import { dirname, join } from "@std/path";
+import { env, mkdirp, readTextFile, removeFile, restrictToOwner, writeTextFile } from "./platform.ts";
 
 export interface StoredCredential {
   token: string;
@@ -38,20 +39,14 @@ export function credentialsPath(): string {
   return join(".", ".radia-credentials.json");
 }
 
-function env(name: string): string | undefined {
-  try {
-    return Deno.env.get(name);
-  } catch {
-    return undefined; // no --allow-env: behave as if unset
-  }
-}
-
 function read(path: string): CredentialFile {
+  const text = readTextFile(path);
+  if (text === undefined) return {};
   try {
-    const parsed = JSON.parse(Deno.readTextFileSync(path));
+    const parsed = JSON.parse(text);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as CredentialFile : {};
   } catch {
-    return {}; // missing or corrupt: start clean rather than fail the command
+    return {}; // corrupt: start clean rather than fail the command
   }
 }
 
@@ -70,12 +65,11 @@ export function baseKey(base: string): string {
 export function saveCredential(base: string, cred: StoredCredential): { path: string; ok: boolean; error?: string } {
   const path = credentialsPath();
   try {
-    Deno.mkdirSync(dirname(path), { recursive: true });
+    mkdirp(dirname(path));
     const all = read(path);
     all[baseKey(base)] = cred;
-    Deno.writeTextFileSync(path, JSON.stringify(all, null, 2) + "\n");
-    // Owner-only. Not supported on Windows, where the per-user AppData path is the protection.
-    if (Deno.build.os !== "windows") Deno.chmodSync(path, 0o600);
+    writeTextFile(path, JSON.stringify(all, null, 2) + "\n");
+    restrictToOwner(path);
     return { path, ok: true };
   } catch (e) {
     return { path, ok: false, error: (e as Error).message };
@@ -88,8 +82,8 @@ export function clearCredential(base: string): void {
   try {
     const all = read(path);
     delete all[baseKey(base)];
-    if (Object.keys(all).length === 0) Deno.removeSync(path);
-    else Deno.writeTextFileSync(path, JSON.stringify(all, null, 2) + "\n");
+    if (Object.keys(all).length === 0) removeFile(path);
+    else writeTextFile(path, JSON.stringify(all, null, 2) + "\n");
   } catch { /* nothing to clean up */ }
 }
 

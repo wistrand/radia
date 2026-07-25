@@ -1,0 +1,47 @@
+// Command-line flag parsing, shared by the entry point, the CLI verbs, and the MCP adapter.
+// Six copies of the same four-line `flag()` had accumulated across `src/` and `examples/`;
+// this is the one implementation.
+//
+// Deliberately tiny: `--name value` pairs, repeatable flags, boolean switches, and positionals.
+// No sub-parsers, no schema, no dependency. If radia ever needs more than this, that is a signal
+// the CLI surface has grown past what a coordination runtime should expose, not that this file
+// needs a framework.
+
+/** Switches that take no value, so positional scanning does not swallow the next token. */
+export const VALUELESS = new Set(["--json", "--untainted", "--help", "-h"]);
+
+/** The value of `--name`, or undefined. Last occurrence does not win — first does, which keeps
+ *  a wrapper script's defaults overridable by appending, the usual shell expectation. */
+export function flag(argv: string[], name: string): string | undefined {
+  const i = argv.indexOf(name);
+  return i >= 0 && i + 1 < argv.length ? argv[i + 1] : undefined;
+}
+
+/** Every value of a repeatable flag: `--parent a --parent b` → `["a", "b"]`. */
+export function flags(argv: string[], name: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length - 1; i++) if (argv[i] === name) out.push(argv[i + 1]);
+  return out;
+}
+
+/** Whether a boolean switch is present. */
+export function has(argv: string[], name: string): boolean {
+  return argv.includes(name);
+}
+
+/**
+ * The first `n` positional arguments, skipping flags and the values they consume.
+ * `valueless` names the switches that take no value; anything else starting with `--` is assumed
+ * to consume the following token.
+ */
+export function positional(argv: string[], n: number, valueless: Set<string> = VALUELESS): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length && out.length < n; i++) {
+    if (argv[i].startsWith("--")) {
+      if (!valueless.has(argv[i])) i++;
+      continue;
+    }
+    out.push(argv[i]);
+  }
+  return out;
+}

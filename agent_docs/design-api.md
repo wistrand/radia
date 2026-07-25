@@ -156,6 +156,10 @@ content-routing) rather than as scattered endpoints — see [CLAUDE.md](../CLAUD
 - SDKs hand-write the heartbeat (renew at lease/3; stop when work dies) and the loop
   harness; Python + TS polished, others generated. The MCP adapter holds credentials
   outside the model context and heartbeats internally.
+- **BUILT (M0 Phase 7).** TS and Python SDKs at parity (`sdk/`), the CLI (`src/cli.ts`), and
+  the MCP adapter (`src/mcp/`) all ship. See
+  [architecture-surfaces.md](architecture-surfaces.md) for how each one works and what the
+  credential/lease containment actually buys.
 
 ## Agent loop (client contract)
 

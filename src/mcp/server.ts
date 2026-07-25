@@ -25,6 +25,8 @@ import { defaultBase, resolveToken } from "../credentials.ts";
 import type { Lease, RadiaRecord } from "../storage/adapter.ts";
 import type { Template } from "../core/matching.ts";
 import { TOOLS } from "./tools.ts";
+import { flag } from "../flags.ts";
+import { stdin, writeStderr, writeStdout } from "../platform.ts";
 
 const SERVER_INFO = { name: "radia", version: "0.0.0" };
 /** Echoed back to the client when it asks for a version we know; otherwise we answer with this. */
@@ -48,7 +50,7 @@ export async function runMcp(argv: string[]): Promise<void> {
     log("radia mcp: no credential found — start `radia dev` (auto-provisions one) or set RADIA_TOKEN.");
   }
 
-  for await (const msg of frames(Deno.stdin.readable)) {
+  for await (const msg of frames(stdin())) {
     const res = await handle(msg, client, claims, base);
     if (res) write(res);
   }
@@ -295,17 +297,11 @@ async function* frames(stream: ReadableStream<Uint8Array>): AsyncGenerator<Req> 
   }
 }
 
-const enc = new TextEncoder();
 function write(msg: unknown): void {
   // Synchronous so frames can never interleave. stdout is protocol-only.
-  Deno.stdout.writeSync(enc.encode(JSON.stringify(msg) + "\n"));
+  writeStdout(JSON.stringify(msg) + "\n");
 }
 
 function log(msg: string): void {
-  Deno.stderr.writeSync(enc.encode(msg + "\n"));
-}
-
-function flag(argv: string[], name: string): string | undefined {
-  const i = argv.indexOf(name);
-  return i >= 0 && i + 1 < argv.length ? argv[i + 1] : undefined;
+  writeStderr(msg + "\n");
 }

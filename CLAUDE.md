@@ -45,30 +45,38 @@ content, not by addressing.
 | `src/cli.ts`                            | the CLI verbs (health/stats/doctor/kinds/put/query/take/ack/watch/…), public `/v0` only |
 | `src/mcp/`                              | MCP adapter over stdio: `server.ts` (JSON-RPC, credential + lease held outside the model, internal heartbeat), `tools.ts` (tool defs; descriptions ARE the docs) |
 | `src/credentials.ts`                    | auto-provisioned local credential — `radia dev` writes it, CLI/MCP/Python SDK read it |
+| `src/platform.ts`                       | **the platform seam** — every host operation (process/files/streams/signals/serve) in one file; nothing else in `src/` touches `Deno.*` |
+| `src/flags.ts`                          | shared CLI flag parsing (`flag`/`flags`/`has`/`positional`) |
 | `src/ui/index.html`                     | dev web console served at `GET /` (no build, public API only); the **Space** tab streams the ops event log into a property-similarity map |
 | `src/ui/vendor/`                        | prebuilt browser assets served under `/ui/` — `blitzoom.bundle.js` (`<bz-graph>`, layout for the Space tab), pinned to an upstream commit; see the README there |
-| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes, `resolveAuth` Bearer, ops-plane gate, operator-token injection), `problem.ts` (RFC 9457), `handlers/` (`records.ts` + authorize, `leases.ts`, `agents.ts` = bootstrap chain, `dev.ts` = ops plane: stats/events/lineage/children/graph/envelope-query/diagnostics/admin/declassify, `watches.ts` SSE = grant-gated `authorizeWatch`) |
+| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes, `resolveAuth` Bearer, ops-plane gate, operator-token injection), `problem.ts` (RFC 9457), `handlers/` (`records.ts` + authorize, `leases.ts`, `agents.ts` = bootstrap chain, `ops.ts` = ops plane: stats/events/lineage/children/graph/envelope-query/diagnostics/admin/declassify, `watches.ts` SSE = grant-gated `authorizeWatch`) |
 | `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port: records/leases/idempotency/events/graph + compiled-match AST; kinds are records, not a port concern), `row.ts` (shared row/value mapping), `pgbase.ts` (shared Postgres-dialect body over a minimal SQL port) + `pglite.ts`, `postgres.ts` (both bind their driver to `pgbase`), `sqlite.ts` (own dialect) |
 | `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + graph, kinds-as-records, envelope query, `authorize`/grants, delegation, taint, bootstrap chain), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order + `combineMatch`), `kinds.ts` (indexing contract + `kind_def`/`grant`/`signal`/`agent_*` reserved kinds), `auth.ts` (`CredentialStore`, token mint/hash), `take.ts` (claim ranking), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts`, `errors.ts` |
+| `sdk/README.md`                         | SDK overview + parity table (TS and Python) — start here for client work |
 | `sdk/ts/`                               | TS SDK: `client.ts` (`RadiaClient` over `/v0`, incl. `watch()` SSE), `loop.ts` (`agentLoop`, event-driven, design §5) |
 | `sdk/py/radia.py`                       | Python SDK at parity (stdlib only): `RadiaClient`, `watch()`, `agent_loop` with heartbeat |
 | `scripts/build-release.sh`              | `deno compile` per OS + staged npm/pip launcher packages (`deno task release`) |
 | `examples/`                             | demo agents + `demo.ts`, and `chat/` — a CLI LLM chatbot (full symmetry: llm + tool calls are records); see `examples/README.md` |
-| `conformance/`                          | storage-adapter contract suite (`run.test.ts`, `harness.ts`) |
+| `conformance/`                          | storage-adapter contract suite (`run.test.ts`, `harness.ts`, `suites/`); see the README there for how to add one |
 | `openapi/radia.yaml`                    | the frozen wire contract (source of truth)                 |
 | `agent_docs/`                           | design deep dives, one topic per file (linked below)       |
 | `notes/radia-runtime-outline-v0.3.md`   | origin design outline; provenance, not maintained doc      |
 
 Build/run: `deno task dev` (no build step; `--db <path>` persists — SQLite file / PGlite
 dir, in-memory otherwise), `deno task conformance` (both adapters), `deno task demo`
-(end-to-end agent demo over HTTP), `deno task compile` (release binary). Implementation is
-following
-[agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md) phase by
-phase; that plan's proposed layout is the map for code not yet written.
+(end-to-end agent demo over HTTP), `deno task compile` (single binary), `deno task release`
+(per-OS binaries + npm/pip launcher packages). All of M0 is built;
+[agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md) holds the
+per-phase record, and [agent_docs/plan-milestones.md](agent_docs/plan-milestones.md) tracks
+what remains in M1–M3.
 
 ## Docs
 
-Design docs (spec + rationale for subsystems not yet built):
+Subsystem docs. `architecture-*` describes what is built; `design-*` is spec + rationale, and a
+built one carries an "M0/M1 status" note pointing into `src/`. Code wins over any doc on a
+conflict about current behavior:
+
+- [agent_docs/architecture-surfaces.md](agent_docs/architecture-surfaces.md): the CLI, the MCP adapter, auto-provisioned credentials, the `platform.ts` host seam, and release packaging — how anything reaches a space other than raw HTTP.
 
 - [agent_docs/design-data-model.md](agent_docs/design-data-model.md): records vs. runtime envelope, kinds, timing fields, provenance vs. authority, resource limits, artifacts (§2).
 - [agent_docs/design-matching.md](agent_docs/design-matching.md): the template query language, its divergences from Mongo, per-kind indexing contract, semantic matching (§3).
@@ -196,9 +204,12 @@ track milestone progress; `plan-m0-implementation.md` is the phase-by-phase reco
 
 ## Conventions
 
-- No implementation in this pass. Design docs only until the milestone plan says
-  otherwise.
-- When code exists, docs point into the source: file path plus key symbol, not restated
+- Never reach for `Deno.*` outside `src/platform.ts`. That file is the platform seam; if an
+  operation is missing, add it there. Two documented exceptions: the conformance harness
+  (`Deno.test`) and the deno-postgres socket patch in `src/storage/postgres.ts`.
+- Never call `exit` outside `src/main.ts`. Return a status or throw `UsageError`; the entry
+  point is the only place that terminates the process.
+- Docs point into the source: file path plus key symbol, not restated
   logic. Code wins over docs on any conflict about current behavior; fix the doc.
 - Update the relevant doc in the same change that alters a design decision. After a
   large or cross-cutting change, ask the agent to "update the docs" for a reconciliation

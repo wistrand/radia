@@ -1,5 +1,10 @@
-// Read-only handlers backing the dev UI overview: space stats, registered kinds, and a
-// single record's envelope. All use the public Space surface; no privileged backdoor.
+// Handlers for the observe-and-operate plane, `/v0/ops/*`: stats, the event log, record and
+// envelope introspection, lineage/children/graph, derived diagnostics, and control-plane
+// remediation (reclaim / dead-letter / requeue / declassify).
+//
+// All of it goes through the public `Space` surface — no privileged backdoor. The dev console
+// is a consumer of this plane, not its owner (the file was once called `dev.ts`, which read as
+// "console support code" and undersold what lives here).
 
 import type { Space } from "../../core/space.ts";
 import { problem } from "../problem.ts";

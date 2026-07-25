@@ -1,0 +1,60 @@
+# Radia SDKs
+
+Client libraries for talking to a Radia space. Both wrap the public `/v0` API and nothing else —
+whatever an SDK can do, a plain HTTP client can too.
+
+| | TypeScript | Python |
+|-|------------|--------|
+| Path        | [`ts/`](ts/) — `client.ts`, `loop.ts` | [`py/radia.py`](py/radia.py) |
+| Client      | `RadiaClient`      | `RadiaClient` |
+| Worker loop | `agentLoop`        | `agent_loop` |
+| Watches     | `client.watch()` async generator | `client.watch()` generator |
+| Dependencies| none beyond the runtime | none — standard library only (3.9+) |
+
+The two are at feature parity. Differences are idiomatic only (camelCase vs snake_case,
+`AbortSignal` vs `threading.Event`).
+
+## Credentials
+
+Neither SDK asks you to pass a token in the common case. `radia dev` provisions one; the Python
+SDK reads it via `resolve_token()`, and the CLI and MCP adapter do the same through
+`src/credentials.ts`. `RADIA_TOKEN` overrides, `RADIA_URL` picks the space. See
+[agent_docs/architecture-surfaces.md](../agent_docs/architecture-surfaces.md).
+
+The TS client resolves `RADIA_URL` through a guarded `globalThis.Deno?.env` read so it still
+works in a worker without `--allow-env`, and does not depend on the runtime's platform seam — it
+is meant to ship standalone.
+
+## The worker loop
+
+Both loops implement the same contract (design §5, [agent_docs/design-api.md](../agent_docs/design-api.md)):
+watch-driven with a poll fallback, a renewal heartbeat at lease/3 while a handler runs, a
+per-attempt idempotency key on ack, and a nack on any handler failure.
+
+Delivery is **at-least-once**. A handler with side effects must be idempotent at the effect
+boundary — a fenced worker keeps running until it observes `lease_lost`, so physical execution can
+overlap.
+
+A `403` on a watch is treated as permanent (the run has no grant for that kind): both loops log it
+loudly once and fall back to polling, rather than retrying forever. "Silently slow" would be a
+worse failure than "loudly wrong".
+
+## Usage
+
+TypeScript — see [`examples/`](../examples/) for runnable agents; every one of them imports only
+from `sdk/ts/`, which is the boundary that keeps them honest about what an external author can do.
+
+Python:
+
+```python
+from radia import RadiaClient, agent_loop
+
+client = RadiaClient()                    # $RADIA_URL, credential auto-resolved
+client.register_kind({"kind": "job", "indexedPaths": [{"path": "tag", "type": "keyword"}]})
+client.put({"kind": "job", "body": {"tag": "a"}})
+
+def handle(record, c):
+    return {"kind": "job_result", "body": {"ok": True}}
+
+agent_loop(client, name="worker", templates=[{"kind": "job"}], handle=handle)
+```

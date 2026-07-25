@@ -12,14 +12,15 @@ The name honors Radia Perlman, whose Spanning Tree Protocol showed independent n
 building a shared structure with no central controller. In the tradition of Linda, it
 is a lineage homage.
 
-> Status: M0 kernel built (Phases 0–6) plus a growing M1 slice — put/take/ack/nack/release/renew,
+> Status: all of M0 built (Phases 0–7) plus a growing M1 slice — put/take/ack/nack/release/renew,
 > record+envelope split, fencing, idempotency, matching, transactional event log +
 > lineage, dead-letter, and SSE watches, plus the **authorization stack**: kind- and
 > template-scoped grants (as records), the run-token bootstrap chain, per-run leases with
-> stop/quarantine, `delegation_context`, and `taint` + declassify — running on two storage
-> adapters (embedded PGlite and SQLite) behind the frozen wire contract, with a web console
-> and runnable agent examples (including a CLI chatbot that runs with real auth roles). Not
-> production-ready. See `agent_docs/` for the structured design and
+> stop/quarantine, `delegation_context`, and `taint` + declassify. Running on three storage
+> adapters (embedded PGlite and SQLite, plus real Postgres) behind the frozen wire contract,
+> with a web console, TS and Python SDKs, a CLI, a bundled MCP adapter, and runnable agent
+> examples (including a CLI chatbot that runs with real auth roles). Not production-ready.
+> See `agent_docs/` for the structured design and
 > [notes/radia-runtime-outline-v0.3.md](notes/radia-runtime-outline-v0.3.md) for the origin
 > outline (v0.3).
 
@@ -46,8 +47,9 @@ are encouraging and workload-specific, not proof of general superiority. See
   optional cost-aware scheduler decide what runs and what it may touch.
 - **Language-neutral:** one HTTP + JSON protocol (OpenAPI-first) behind SDKs, an MCP
   adapter, and a CLI. Agents can be implemented in any stack.
-- **Zero-setup start:** `npx radia dev` is intended to bring up a space, a web
-  inspector, and a bundled MCP adapter in under a minute.
+- **Zero-setup start:** `deno task dev` brings up a space, a web inspector, and a bundled
+  MCP adapter in one process. The wrapped `npx radia dev` / `pipx run` packaging is built
+  (`deno task release`) but not yet published to a registry.
 
 ## Quick start
 
@@ -114,7 +116,8 @@ radia watch job                               # stream wakeups
 radia doctor                                  # dead-letters, stuck leases, stale work
 ```
 
-Every command goes through the public `/v0` API — the CLI has no privileged backdoor.
+Every command goes through the public `/v0` API — the CLI has no privileged backdoor. The
+list above is a taste; `radia help` prints the authoritative one.
 
 ### Joining from an MCP harness
 

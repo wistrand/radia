@@ -9,6 +9,8 @@
 
 import { RadiaClient, RadiaClientError } from "../sdk/ts/client.ts";
 import { defaultBase, resolveToken } from "./credentials.ts";
+import { flag, flags, has, positional } from "./flags.ts";
+import { onShutdown, stdin } from "./platform.ts";
 import type { Lease } from "./storage/adapter.ts";
 
 const HELP = `radia <command> [options]
@@ -194,7 +196,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       if (!kind) return usage("watch <kind> [--match <json>]");
       const ac = new AbortController();
       // Ctrl-C ends the stream cleanly rather than killing mid-frame.
-      Deno.addSignalListener("SIGINT", () => ac.abort());
+      onShutdown(() => ac.abort());
       for await (const w of client.watch(template(kind, argv), ac.signal)) {
         console.log(ctx.json ? JSON.stringify(w) : `${w.seq}  ${w.kind}  ${w.recordId}`);
       }
@@ -253,36 +255,6 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
 
 // ---- argument helpers ----
 
-function flag(argv: string[], name: string): string | undefined {
-  const i = argv.indexOf(name);
-  return i >= 0 && i + 1 < argv.length ? argv[i + 1] : undefined;
-}
-
-/** All values of a repeatable flag (`--parent a --parent b`). */
-function flags(argv: string[], name: string): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < argv.length - 1; i++) if (argv[i] === name) out.push(argv[i + 1]);
-  return out;
-}
-
-function has(argv: string[], name: string): boolean {
-  return argv.includes(name);
-}
-
-/** Positional arguments, skipping flags and their values. */
-function positional(argv: string[], n: number): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < argv.length && out.length < n; i++) {
-    if (argv[i].startsWith("--")) {
-      // Value-less switches take no argument; everything else consumes the next token.
-      if (!["--json", "--untainted"].includes(argv[i])) i++;
-      continue;
-    }
-    out.push(argv[i]);
-  }
-  return out;
-}
-
 function json(text: string, what: string): Record<string, unknown> {
   try {
     return JSON.parse(text);
@@ -305,7 +277,7 @@ function template(kind: string, argv: string[]) {
 async function leaseArg(argv: string[]): Promise<Lease | undefined> {
   const [arg] = positional(argv, 1);
   if (!arg) return undefined;
-  const text = arg === "-" ? new TextDecoder().decode(await readAll(Deno.stdin.readable)) : arg;
+  const text = arg === "-" ? new TextDecoder().decode(await readAll(stdin())) : arg;
   const parsed = JSON.parse(text);
   // Accept either a bare lease or the whole `take` output, so a pipeline can pass either.
   return (parsed.lease ?? parsed) as Lease;

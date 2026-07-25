@@ -1,4 +1,5 @@
-// HTTP surface. Deno.serve, no framework (minimal-deps invariant). Two planes under /v0:
+// HTTP surface. No framework (minimal-deps invariant); the server binding lives behind
+// `src/platform.ts`. Two planes under /v0:
 //   - coordination (frozen v0-stable): records (put/read_one/query), takes, leases, watches,
 //     health — what agents use to do work. Kinds are declared THROUGH this plane: a kind is a
 //     kind_def record (POST /v0/records), discovered by query — no dedicated kinds endpoint.
@@ -14,10 +15,11 @@ import type { Space } from "../core/space.ts";
 import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
 import { handleCreateDefinition, handleCreateRun, handleStopRun } from "./handlers/agents.ts";
-import { handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleGetRecord, handleGraph, handleLineage, handleStats } from "./handlers/dev.ts";
+import { handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleGetRecord, handleGraph, handleLineage, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem, statusFor } from "./problem.ts";
 import { RadiaError } from "../core/errors.ts";
+import { moduleRelative, readTextFile, serve } from "../platform.ts";
 
 export interface ServerOptions {
   port: number;
@@ -37,10 +39,8 @@ export interface ServerOptions {
 /** The dev UI, loaded once at startup. Single file (see src/ui/index.html); the only asset it
  *  pulls is the vendored bundle below, lazily, when the Space tab is first opened. */
 function loadUi(operatorToken?: string): string {
-  let html: string;
-  try {
-    html = Deno.readTextFileSync(new URL("../ui/index.html", import.meta.url));
-  } catch {
+  const html = readTextFile(moduleRelative(import.meta.url, "../ui/index.html"));
+  if (html === undefined) {
     return "<!doctype html><title>radia</title><p>dev UI not found (src/ui/index.html).</p>";
   }
   // Bake the operator token into the page. If absent, the placeholder stays and the console's
@@ -52,19 +52,15 @@ function loadUi(operatorToken?: string): string {
  *  checked in — no build step. Loaded once at startup; empty string if the file is missing
  *  (the Space tab then reports the asset as unavailable and the rest of the console works). */
 function loadVendor(name: string): string {
-  try {
-    return Deno.readTextFileSync(new URL(`../ui/vendor/${name}`, import.meta.url));
-  } catch {
-    return "";
-  }
+  return readTextFile(moduleRelative(import.meta.url, `../ui/vendor/${name}`)) ?? "";
 }
 
 export function startServer(opts: ServerOptions): { finished: Promise<void> } {
   const hostname = opts.host ?? "127.0.0.1"; // loopback by default; --host 0.0.0.0 to expose
   const handler = makeHandler(opts.space, loadUi(opts.operatorToken), opts.authRequired ?? false);
-  const server = Deno.serve({ port: opts.port, hostname, signal: opts.signal }, handler);
+  const { finished } = serve({ port: opts.port, hostname, signal: opts.signal }, handler);
   console.log(`radia dev listening on http://${hostname}:${opts.port} (web console at /) — auth ${opts.authRequired ? "required" : "open (no-header → operator)"}`);
-  return { finished: server.finished };
+  return { finished };
 }
 
 type Auth = { principal: string } | { error: string; detail: string };

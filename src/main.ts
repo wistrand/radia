@@ -1,6 +1,7 @@
-// `radia` CLI entry. M0 ships one command: `dev` — an embedded, single-process space.
-// Storage backend selectable via --storage (default: pglite); both embedded adapters are
-// wired so the dev space can run on either.
+// `radia` entry point. Dispatches to `dev` (embedded space + console), `mcp` (stdio adapter),
+// or a CLI verb over the public API. This is the ONLY module in `src/` that terminates the
+// process: everything below it returns a status or throws `UsageError`, so nothing is
+// untestable or able to kill a caller mid-operation. Platform access goes through `host.ts`.
 
 import { PgliteAdapter } from "./storage/pglite.ts";
 import { SqliteAdapter } from "./storage/sqlite.ts";
@@ -11,6 +12,8 @@ import { startServer } from "./server/http.ts";
 import { clearCredential, saveCredential } from "./credentials.ts";
 import { runCli } from "./cli.ts";
 import { runMcp } from "./mcp/server.ts";
+import { flag } from "./flags.ts";
+import { args as argv, env, exit, onShutdown, UsageError } from "./platform.ts";
 
 const USAGE = `radia <command>
 
@@ -32,8 +35,7 @@ async function dev(args: string[]): Promise<void> {
   const dbPath = flag(args, "--db");
   const authMode = flag(args, "--auth") ?? "open";
   if (authMode !== "open" && authMode !== "required") {
-    console.error(`unknown --auth: ${authMode} (expected open|required)`);
-    Deno.exit(2);
+    throw new UsageError(`unknown --auth: ${authMode} (expected open|required)`);
   }
   const authRequired = authMode === "required";
 
@@ -41,15 +43,13 @@ async function dev(args: string[]): Promise<void> {
   if (backend === "pglite") storage = new PgliteAdapter(dbPath);
   else if (backend === "sqlite") storage = new SqliteAdapter(dbPath); // undefined -> :memory:
   else if (backend === "postgres") {
-    const url = dbPath ?? Deno.env.get("RADIA_PG_URL");
+    const url = dbPath ?? env("RADIA_PG_URL");
     if (!url) {
-      console.error("--storage postgres needs a connection URL: --db postgres://… or RADIA_PG_URL");
-      Deno.exit(2);
+      throw new UsageError("--storage postgres needs a connection URL: --db postgres://… or RADIA_PG_URL");
     }
     storage = new PostgresAdapter(url);
   } else {
-    console.error(`unknown --storage: ${backend} (expected pglite|sqlite|postgres)`);
-    Deno.exit(2);
+    throw new UsageError(`unknown --storage: ${backend} (expected pglite|sqlite|postgres)`);
   }
 
   await storage.init();
@@ -72,17 +72,15 @@ async function dev(args: string[]): Promise<void> {
   }
   // Shut down on a signal instead of being killed mid-flight, so the cleanup below actually runs.
   // Without this, Ctrl-C or SIGTERM leaves a dead token on disk and the next CLI call 401s with
-  // no explanation. SIGTERM is not available on Windows; SIGINT is.
+  // no explanation.
   const stopping = new AbortController();
-  const stop = () => stopping.abort();
-  const signals: Deno.Signal[] = Deno.build.os === "windows" ? ["SIGINT"] : ["SIGINT", "SIGTERM"];
-  for (const sig of signals) Deno.addSignalListener(sig, stop);
+  const unlisten = onShutdown(() => stopping.abort());
 
   try {
     const { finished } = startServer({ port, space, host, authRequired, operatorToken, signal: stopping.signal });
     await finished;
   } finally {
-    for (const sig of signals) Deno.removeSignalListener(sig, stop);
+    unlisten();
     // The token dies with the process (operator tokens are never persisted as records), so leaving
     // it on disk would only mislead the next CLI invocation into a 401.
     clearCredential(base);
@@ -90,26 +88,35 @@ async function dev(args: string[]): Promise<void> {
   }
 }
 
-function flag(args: string[], name: string): string | undefined {
-  const i = args.indexOf(name);
-  return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
+/** Dispatch one command, returning its exit code. Kept separate from the exit below so the whole
+ *  entry point is callable from a test or an embedding process without terminating it. */
+async function main(argsIn: string[]): Promise<number> {
+  const [cmd, ...rest] = argsIn;
+  try {
+    switch (cmd) {
+      case "dev":
+        await dev(rest);
+        return 0;
+      case "mcp":
+        await runMcp(rest);
+        return 0;
+      case undefined:
+      case "help":
+      case "--help":
+      case "-h":
+        console.log(USAGE);
+        return 0;
+      default:
+        // Everything else is a CLI verb over the public API.
+        return await runCli(cmd, rest);
+    }
+  } catch (e) {
+    if (e instanceof UsageError) {
+      console.error(`error: ${e.message}`);
+      return 2;
+    }
+    throw e;
+  }
 }
 
-const [cmd, ...rest] = Deno.args;
-switch (cmd) {
-  case "dev":
-    await dev(rest);
-    break;
-  case "mcp":
-    await runMcp(rest);
-    break;
-  case undefined:
-  case "help":
-  case "--help":
-  case "-h":
-    console.log(USAGE);
-    break;
-  default:
-    // Everything else is a CLI verb over the public API. Unknown verbs exit non-zero from there.
-    Deno.exit(await runCli(cmd, rest));
-}
+exit(await main(argv()));

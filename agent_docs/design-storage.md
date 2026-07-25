@@ -19,7 +19,8 @@ green-against-a-live-server CI run is still pending (needs a Postgres). Perf: th
 delayed-ACK; see [gotchas.md](gotchas.md)) and the shared body folds the clock read into each
 settle transaction and checks parents in one query. **Not implemented:**
 `single-node`/`production` deployment modes, the multi-instance cache-coherence work (see
-Scaling), `npm`/`pip` binary wrapping (Phase 7), envelope encryption/KMS (M2).
+Scaling), envelope encryption/KMS (M2). `npm`/`pip` binary wrapping is BUILT but unpublished
+(`deno task release` — see [architecture-surfaces.md](architecture-surfaces.md)).
 
 ## Contents
 - Invariants
@@ -184,3 +185,8 @@ plan.
 The `dev` command bundles the MCP adapter and inspector: the sharpest onboarding path is
 `npx radia dev`, one line in an MCP-capable harness config (e.g. Claude Code), and a real
 agent participating before any SDK code is written.
+
+**Status (M0 Phase 7):** `radia dev`, `radia mcp`, and the per-OS binaries are built, and
+`deno task release` stages the npm and pip launcher packages (`scripts/build-release.sh`).
+The `npx`/`pipx` path itself is unexercised — it needs a registry publish. See
+[architecture-surfaces.md](architecture-surfaces.md) "Distribution".
