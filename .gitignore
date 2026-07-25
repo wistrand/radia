@@ -12,3 +12,7 @@
 
 # Deno
 .deno/
+
+# Python bytecode (sdk/py)
+__pycache__/
+*.py[cod]

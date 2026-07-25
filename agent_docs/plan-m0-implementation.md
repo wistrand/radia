@@ -1,9 +1,9 @@
 # Plan: M0 implementation
 
-> Status: Phases 0–6 DONE (142 conformance tests across both adapters), plus M1 watches, the M1
-> **authorization stack** (grants, run tokens, delegation, taint — see below), and a range of
-> enhancements (see "Current state" and "Enhancements" below). Remaining M0: Phase 7
-> (MCP adapter, Python SDK, packaging). This is the buildable, phase-by-phase plan for M0
+> Status: Phases 0–7 DONE (142 conformance tests across the embedded adapters, 213 including a
+> live Postgres), plus M1 watches, the M1 **authorization stack** (grants, run tokens,
+> delegation, taint — see below), and a range of enhancements (see "Current state" and
+> "Enhancements" below). This is the buildable, phase-by-phase plan for M0
 > (the semantic kernel prototype). Milestone scope and the M1–M3 outline live in
 > [plan-milestones.md](plan-milestones.md); this doc is the technical *how* for M0 only.
 
@@ -91,7 +91,8 @@ grant/auth/scheduler shapes that aren't validated until M1–M3.
 
 ## Current state
 
-**All M0 phases (0–7) are DONE**, verified (142 conformance tests across both adapters), plus M1
+**All M0 phases (0–7) are DONE**, verified (142 conformance tests across the embedded adapters;
+213 including a live Postgres via `scripts/pg-conformance.sh`), plus M1
 watches and the M1 **authorization stack** (grants, run-token bootstrap chain, per-run leases,
 delegation, taint — see the Enhancements note below), the dev console, examples, and several
 enhancements. Per-phase records with verify results are in the Phases section below.

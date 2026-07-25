@@ -1,6 +1,7 @@
 # Plan: milestones
 
-> Status: M0 (Phases 0–7) + M1 watches built and verified; M2/M3 unbuilt. Origin: outline §11.
+> Status: M0 (Phases 0–7) built and verified; M1 partly built (watches, authorization stack,
+> Postgres adapter); M2/M3 unbuilt. Origin: outline §11.
 
 ## Goal
 
@@ -11,8 +12,9 @@ conformance + fault-injection suite against every storage adapter (see
 
 ## Current state
 
-M0 (Phases 0–6) plus M1 watches and the M1 **authorization stack** (grants, run-token bootstrap
-chain, per-run leases with stop/quarantine, delegation, taint) are built and verified; see
+M0 (Phases 0–7) plus M1 watches, the M1 **authorization stack** (grants, run-token bootstrap
+chain, per-run leases with stop/quarantine, delegation, taint), and the M1 **Postgres adapter**
+(conformance-verified against a live server) are built; see
 [plan-m0-implementation.md](plan-m0-implementation.md) for the per-phase record and the
 `design-*` docs for spec + rationale + source pointers. M0 is complete through Phase 7 (CLI,
 MCP adapter, Python SDK, release wrapping); only the registry publish itself is unexercised.
@@ -22,8 +24,8 @@ The rest of M2/M3 is unbuilt.
 
 ### M0 — semantic kernel prototype, embedded-first — DONE
 
-**Status:** Phases 0–7 built and verified (142 conformance tests across both adapters); the web
-console (Feed, records browser, kinds, query, worker, relationship-**graph**, and an **Auth**
+**Status:** Phases 0–7 built and verified (142 conformance tests across the embedded
+adapters, 213 including a live Postgres); the web console (Feed, records browser, kinds, query, worker, relationship-**graph**, and an **Auth**
 view), runnable agent examples, and a CLI LLM chatbot (runnable with real auth roles) ship too.
 Enhancements layered on since the phases: M1 watches (below), the M1 **authorization stack**
 (grants, run tokens, per-run leases, delegation, taint), optional on-disk persistence (`--db`,
@@ -64,7 +66,7 @@ two-terminal demo works.
 
 ### M1 — usable runtime
 
-- [~] Postgres storage adapter (same conformance suite as embedded) — **built:** `src/storage/postgres.ts` (deno-postgres pool) over the shared `src/storage/pgbase.ts` body PGlite also uses, so both speak identical SQL; `take` uses `FOR UPDATE ... SKIP LOCKED` for atomic claims across connections. Runs in the conformance suite when `RADIA_PG_URL` is set (`scripts/pg-conformance.sh`); `--storage postgres` in `radia dev`. **To verify:** run the suite green against a live server in CI (needs a Postgres; not yet run here). Fault suite (partition/failover) still M2.
+- [x] Postgres storage adapter (same conformance suite as embedded) — `src/storage/postgres.ts` (deno-postgres pool) over the shared `src/storage/pgbase.ts` body PGlite also uses, so both speak identical SQL; `take` uses `FOR UPDATE ... SKIP LOCKED` for atomic claims across connections. `--storage postgres` in `radia dev`. **VERIFIED:** `scripts/pg-conformance.sh` green against a live Postgres 16 — **213 passed, 0 failed** (142 sqlite + pglite, 71 postgres), each test in an ephemeral schema. This is the first run of the pool-only paths: `SKIP LOCKED` claims across connections, and the `xid8` watermark in `getEvents` that keeps watch cursors gap-free when transactions commit out of seq order. Still to do: the same run in CI (it is manual today), and the partition/failover fault suite (M2).
 - [~] single-node deployment mode with admin-provisioned auth — **auth bootstrap chain + per-run leases built** (agent definitions → run tokens → stop/quarantine; `Authorization: Bearer` is the sole channel; a run inherits its agent's grants and owns its leases; graceful stop vs. emergency quarantine; credential index is a cache over `agent_definition`/`agent_run` records; the dev console holds a server-minted operator token). OIDC for `human:*`, the deployment mode itself, and federated identity still to do. See [design-auth.md](design-auth.md).
 - [ ] read_one + keyset query
 - [ ] long-polls
@@ -77,8 +79,12 @@ two-terminal demo works.
 - [ ] artifact service
 - [~] orphan/starvation diagnostics — a derived-diagnostics report + remediation ships (`GET /v0/ops/diagnostics`, admin reclaim/dead-letter/requeue); uses age/state heuristics, not full template-match orphan/starving-template analysis
 
-**Verify:** the same suite green against Postgres *and* embedded; watch resumption and
-410 `cursor_expired` behave per [design-api.md](design-api.md).
+**Verify:** the same suite green against Postgres *and* embedded — **PASSED**, 213/213 via
+`scripts/pg-conformance.sh` (sqlite, pglite, and a live Postgres 16). Watch resumption and 410
+`cursor_expired` per [design-api.md](design-api.md) are still only partly covered: `createWatch`,
+`matchesEvent`, and start-cursor semantics are in the suite, but SSE reconnection and the 410
+path are exercised by an HTTP smoke rather than conformance, and 410 stays dormant until
+event-log retention lands (M2).
 
 ### M2 — coordination protocols
 
