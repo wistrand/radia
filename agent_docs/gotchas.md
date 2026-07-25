@@ -119,13 +119,18 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   `POST /v0/agent-runs` is special — it reads its DEFINITION token directly (a def
   token is not a coordination principal, so `resolveAuth` returns `invalid_token` for it), which
   is why that route is dispatched **before** the bad-bearer 401 check.
-- **Only token HASHES are stored; the credential index is a cache over records.** Run/definition
-  tokens are secrets returned once at mint; the `agent_definition`/`agent_run` record bodies hold
-  the sha256 hash (not a secret), and `CredentialStore` is an in-memory index rebuilt by
-  `Space.loadCredentials` at startup — the same cache-over-records pattern as kinds. A run's
-  status change (stop) is a **successor** `agent_run` record (records are immutable), so rebuild
-  takes records in id order and a later stop overrides the earlier mint. Token expiry uses the
-  **DB clock** (fetched only when a token is actually presented, so the no-auth path stays free).
+- **Only token HASHES are stored; the credential index is a cache over records — the records are
+  the authority.** Run/definition tokens are secrets returned once at mint; the
+  `agent_definition`/`agent_run` record bodies hold the sha256 hash (not a secret), and
+  `CredentialStore` is an in-memory index rebuilt by `Space.loadCredentials` at startup — the same
+  cache-over-records pattern as kinds. A run's status change (stop) is a **successor** `agent_run`
+  record (records are immutable), so rebuild takes records in id order and a later stop overrides the
+  earlier mint. **The cache is not the source of truth:** on a miss, `Space.resolveToken` hydrates the
+  one credential from the records by `tokenHash` (indexed on `agent_*`, honoring a stop successor)
+  and retries — so a token minted on another instance, or one the startup load's `LIMIT` capped,
+  resolves instead of a spurious `401`. The miss path is guarded by a token-shape regex so garbage
+  tokens don't trigger a scan, and costs a per-kind fetch until read pushdown lands. Token expiry
+  uses the **DB clock** (fetched only when a token is actually presented, so the no-auth path stays free).
 - **Graceful stop ≠ quarantine.** A lease is owned by the claiming principal (`take` threads it
   into `lease_owner`; a run token → `run:*`). `stopRun` (default) only stops the token resolving —
   the run's in-flight leases expire on their own clocks, NOT immediately. `stopRun({quarantine:true})`

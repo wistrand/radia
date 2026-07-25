@@ -41,7 +41,7 @@ import {
   validateKindDef,
   WRITE_PROTECTED_KINDS,
 } from "./kinds.ts";
-import { CredentialStore, mintCredential, type ResolvedToken } from "./auth.ts";
+import { CredentialStore, hashToken, mintCredential, type ResolvedToken } from "./auth.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
 import { Notifier } from "./notifier.ts";
@@ -317,7 +317,7 @@ export class Space {
    *  and returns the run principal + token (once). Fails if the token is not a definition token. */
   async mintRun(definitionToken: string): Promise<{ run: string; agent: string; runToken: string; expiresAt: string }> {
     const now = await this.storage.now();
-    const resolved = await this.creds.resolve(definitionToken, now);
+    const resolved = await this.resolveCredential(definitionToken, now); // hydrates a cross-instance def token
     if (!resolved.ok || resolved.kind !== "def") {
       throw new RadiaError("invalid_credential", "a valid agent-definition token is required to mint a run");
     }
@@ -360,9 +360,44 @@ export class Space {
     return token;
   }
 
-  /** Resolve a presented bearer token to a principal (DB clock for expiry). */
-  resolveToken(token: string): Promise<ResolvedToken> {
-    return this.storage.now().then((now) => this.creds.resolve(token, now));
+  /** Resolve a presented bearer token to a principal (DB clock for expiry). On a cache MISS (not an
+   *  expired/stopped token) — a token minted on another instance, or one whose record was never
+   *  loaded because `loadCredentials` capped — hydrate that one credential from the durable records
+   *  and retry, so the in-memory index is a cache, never the authority. */
+  async resolveToken(token: string): Promise<ResolvedToken> {
+    return this.resolveCredential(token, await this.storage.now());
+  }
+
+  /** Cache lookup with an on-miss hydration from records. Shared by `resolveToken` (run tokens on
+   *  the request path) and `mintRun` (definition tokens), so both resolve cross-instance / capped
+   *  tokens identically. */
+  private async resolveCredential(token: string, now: string): Promise<ResolvedToken> {
+    const r = await this.creds.resolve(token, now);
+    if (r.ok || r.reason !== "invalid_token") return r; // hit, or a definitive expired/stopped
+    if (!/^[0-9a-f]{48}$/.test(token)) return r; // not a mintable token shape — don't scan on garbage
+    if (await this.hydrateCredential(await hashToken(token))) return this.creds.resolve(token, now);
+    return r;
+  }
+
+  /** Populate the credential cache for one token hash from the durable agent_definition/agent_run
+   *  records (honoring a later stop successor for a run). Returns whether anything was found. Cost:
+   *  a per-kind fetch on the miss path (no read pushdown yet) — rare and self-healing once cached. */
+  private async hydrateCredential(hash: string): Promise<boolean> {
+    const def = (await this.query({ kind: AGENT_DEFINITION, match: { tokenHash: hash } }, 1))[0]?.body as
+      | { agent?: string }
+      | undefined;
+    if (def?.agent) {
+      this.creds.addDefinition(hash, def.agent);
+      return true;
+    }
+    const mint = (await this.query({ kind: AGENT_RUN, match: { tokenHash: hash } }, 1))[0]?.body as
+      | { run?: string; agent?: string; expiresAt?: string }
+      | undefined;
+    if (!mint?.run || !mint.agent || !mint.expiresAt) return false;
+    const runRecs = await this.query({ kind: AGENT_RUN, match: { run: mint.run } }, 100);
+    const stopped = runRecs.some((r) => (r.body as { status?: string }).status === "stopped");
+    this.creds.addRun(hash, mint.run, mint.agent, mint.expiresAt, stopped);
+    return true;
   }
 
   /** The agent definition a run instantiates, or undefined (for ownership checks). */
@@ -493,6 +528,7 @@ export class Space {
   }
 
   async renew(lease: Lease, opts: TakeOptions = {}, idempotencyKey?: string, principal?: string): Promise<RenewResult> {
+    if (!(await this.ownerGuard(lease.recordId, principal, "renew")).ok) return { status: "lease_lost" };
     const idem = await this.idem("renew", idempotencyKey, this.ref(lease), principal);
     return this.storage.renew(this.ref(lease), opts.leaseSeconds ?? this.ctx.defaultLeaseSeconds, idem);
   }
@@ -501,16 +537,9 @@ export class Space {
    *  the RESOLVED caller (server-assigned `created_by` on the result + idempotency scope + lease
    *  ownership check). */
   async ack(lease: Lease, result?: PutRequest, idempotencyKey?: string, principal?: string): Promise<AckResult> {
-    // The authoritative lease owner (from the envelope, not the client-presented lease).
-    const owner = (await this.storage.getEnvelope(lease.recordId))?.leaseOwner;
-    // Owner-match: a non-operator principal may only settle a lease it OWNS — defense-in-depth on
-    // top of fencing that closes lease-leak impersonation (an ack-emitted result is authorized as,
-    // and carries the delegation chain of, the lease owner). A leaked lease presented by another
-    // principal fences out as lease_lost. In-process/operator callers (no principal / privileged)
-    // skip the check.
-    if (principal && !this.isPrivileged(principal) && owner && principal !== owner) {
-      return { status: "lease_lost" };
-    }
+    const guard = await this.ownerGuard(lease.recordId, principal, "ack");
+    if (!guard.ok) return { status: "lease_lost" };
+    const owner = guard.owner; // authoritative lease owner (envelope), used for authority derivation
     let resultInput: PutInput | undefined;
     if (result) {
       const now = await this.storage.now();
@@ -562,6 +591,7 @@ export class Space {
   }
 
   async nack(lease: Lease, opts: { backoffSeconds?: number } = {}, idempotencyKey?: string, principal?: string): Promise<SettleResult> {
+    if (!(await this.ownerGuard(lease.recordId, principal, "nack")).ok) return { status: "lease_lost" };
     const idem = await this.idem("nack", idempotencyKey, this.ref(lease), principal);
     const r = await this.storage.nack(
       this.ref(lease),
@@ -574,10 +604,44 @@ export class Space {
   }
 
   async release(lease: Lease, idempotencyKey?: string, principal?: string): Promise<SettleResult> {
+    if (!(await this.ownerGuard(lease.recordId, principal, "release")).ok) return { status: "lease_lost" };
     const idem = await this.idem("release", idempotencyKey, this.ref(lease), principal);
     const r = await this.storage.release(this.ref(lease), idem);
     this.notifier.notify(); // record back to available
     return r;
+  }
+
+  /**
+   * Owner-match guard for lease settlement (ack/nack/release/renew). A non-operator principal may
+   * settle only a lease it OWNS — defense-in-depth on top of fencing. It closes lease-leak
+   * IMPERSONATION (ack, whose emitted result carries the owner's authority + delegation chain) and
+   * lease-leak DoS (nack/release/renew driving someone else's task to available/dead-letter). A
+   * stranger presenting a leaked lease gets the SAME opaque `lease_lost` fencing returns — never a
+   * distinguishable error, which would leak lease existence. In-process/operator callers (no
+   * principal / privileged) skip the check. Returns the authoritative `lease_owner` on success (ack
+   * needs it to derive authority).
+   *
+   * The mismatch is logged: the caller only ever sees `lease_lost`, which the SDK's agentLoop treats
+   * as ordinary fencing ("duplicate work possible") and retries forever — so a misconfigured agent
+   * presenting the wrong identity would spin silently. The server-side warn makes that diagnosable.
+   *
+   * Ordering: this reads `lease_owner`, NOT the `lease_id`/epoch fencing check, and runs before the
+   * idempotency check inside storage. It does NOT violate the "idempotency is checked before lease
+   * validation" invariant: `lease_owner` is not cleared on settle, so a legitimate owner's retry of
+   * an already-succeeded op still matches here and replays via idempotency; a non-owner never had a
+   * stored response to replay. No succeeded op can be turned into a false `lease_lost`.
+   */
+  private async ownerGuard(
+    recordId: string,
+    principal: string | undefined,
+    op: string,
+  ): Promise<{ ok: true; owner?: string } | { ok: false }> {
+    const owner = (await this.storage.getEnvelope(recordId))?.leaseOwner;
+    if (principal && !this.isPrivileged(principal) && owner && principal !== owner) {
+      console.warn(`[radia] owner-match: ${op} on ${recordId} by '${principal}' rejected (lease owned by '${owner}') -> lease_lost`);
+      return { ok: false };
+    }
+    return { ok: true, owner };
   }
 
   /** The mutable envelope for a record (diagnostics / inspector / tests). */

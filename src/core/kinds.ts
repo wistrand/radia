@@ -124,10 +124,12 @@ export const META_RESERVED: KindDef[] = [
     claimable: false,
   },
   { kind: SIGNAL, indexedPaths: [{ path: "topic", type: "keyword" }], claimable: false },
-  { kind: AGENT_DEFINITION, indexedPaths: [{ path: "agent", type: "keyword" }], claimable: false },
+  // `tokenHash` is indexed so a credential cache-miss can hydrate one record by hash from storage
+  // (see Space.resolveToken fallback) instead of failing.
+  { kind: AGENT_DEFINITION, indexedPaths: [{ path: "agent", type: "keyword" }, { path: "tokenHash", type: "keyword" }], claimable: false },
   {
     kind: AGENT_RUN,
-    indexedPaths: [{ path: "run", type: "keyword" }, { path: "agent", type: "keyword" }],
+    indexedPaths: [{ path: "run", type: "keyword" }, { path: "agent", type: "keyword" }, { path: "tokenHash", type: "keyword" }],
     claimable: false,
   },
 ];

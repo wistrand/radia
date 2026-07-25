@@ -22,7 +22,11 @@ that definition token (`Authorization: Bearer`) and mints a short-lived **run to
 definition's grants** (`Space.grantSubject` maps `run:` → its `agent:`). Tokens are secrets:
 only their sha256 **hash** is stored (in the record body — a hash is not a secret), and the
 credential index is a cache over `agent_definition`/`agent_run` records, rebuilt by
-`Space.loadCredentials` at startup (the same cache-over-records pattern as kinds). Expiry uses
+`Space.loadCredentials` at startup (the same cache-over-records pattern as kinds). The records are
+the **authority**, not the cache: on a cache MISS `Space.resolveToken` hydrates the one credential
+from the records by token hash (`agent_*` indexed on `tokenHash`, honoring a later stop successor)
+and retries — so a token minted on another instance, or one the startup load capped, still resolves
+instead of failing. Expiry uses
 the DB clock (`SpaceContext.runTokenSeconds`, default 900s). `Authorization: Bearer <token>`
 is the **only** auth channel. In **open mode** (the default) a request with no header is the
 operator `human:local`, so local dev/UI/examples stay open; to act as a scoped principal, mint a
@@ -53,9 +57,13 @@ clocks); `stopRun({quarantine:true})` (HTTP: `POST /v0/agent-runs/{id}/stop` wit
 `{quarantine:true}`) is **emergency revocation** — `StorageAdapter.quarantineLeasesOf` force-
 releases the run's in-flight leases now (epoch-bumped, so a late `ack`/`renew` fences out as
 `lease_lost`). Settlement is also **owner-bound**: a non-operator principal that presents a lease
-it doesn't own fences out as `lease_lost` (defense-in-depth on the `leaseId`+`epoch` fencing) —
-closing lease-leak impersonation, since an ack-emitted result carries the *owner's* authority and
-delegation chain.
+it doesn't own fences out as `lease_lost` on **every** settle verb — `ack`/`nack`/`release`/`renew`
+(`Space.ownerGuard`, defense-in-depth on the `leaseId`+`epoch` fencing). This closes lease-leak
+impersonation (an ack-emitted result carries the *owner's* authority + delegation chain) and
+lease-leak DoS (a stranger driving another agent's task to available/dead-letter). The rejection is
+the same opaque `lease_lost` fencing returns (never a distinguishable error — that would leak lease
+existence), but is logged server-side so a misconfigured agent — which would otherwise see only
+"fenced" and retry forever — is diagnosable.
 
 **Provenance is the resolved caller (built):** `created_by`, the event `run_id`, and the
 idempotency scope are the principal the handler resolved (a run token → `run:*`, no header →

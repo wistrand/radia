@@ -119,15 +119,19 @@ export const authSuites: Suite[] = [
     },
   },
   {
-    name: "lease settlement is bound to its owner: another principal's ack fences out (lease_lost)",
+    name: "lease settlement is bound to its owner: another principal's ack/nack/release/renew fences out",
     run: async (adapter) => {
       const space = newSpace(adapter); // task
       await space.put({ kind: "task", body: { tag: "t" } });
       const claimed = await space.take({ template: { kind: "task" } }, {}, "run:a"); // owned by run:a
       assert(claimed);
-      // a DIFFERENT run presenting the same VALID lease is fenced out (owner-match on top of fencing)
+      // a DIFFERENT run presenting the same VALID lease is fenced out on EVERY settle verb — not
+      // just ack (impersonation) but nack/release/renew (DoS on someone else's task).
       assertEquals((await space.ack(claimed!.lease, undefined, undefined, "run:b")).status, "lease_lost");
-      assertEquals((await space.getEnvelope(claimed!.record.id))!.state, "leased"); // not consumed
+      assertEquals((await space.nack(claimed!.lease, {}, undefined, "run:b")).status, "lease_lost");
+      assertEquals((await space.release(claimed!.lease, undefined, "run:b")).status, "lease_lost");
+      assertEquals((await space.renew(claimed!.lease, {}, undefined, "run:b")).status, "lease_lost");
+      assertEquals((await space.getEnvelope(claimed!.record.id))!.state, "leased"); // still owned by run:a
       // the owner may settle its own lease
       assertEquals((await space.ack(claimed!.lease, undefined, undefined, "run:a")).status, "ok");
     },
@@ -307,22 +311,30 @@ export const authSuites: Suite[] = [
     },
   },
   {
-    name: "credentials rebuild from records (loadCredentials round-trip); a bad token is invalid",
+    name: "credentials resolve from records: fallback hydration + loadCredentials; stopped/bad tokens rejected",
     run: async (adapter) => {
       const space = newSpace(adapter);
       const { definitionToken } = await space.createAgentDefinition("agent:w");
       const { runToken } = await space.mintRun(definitionToken);
 
-      // a fresh Space over the same adapter has an empty credential index until it reloads
-      const reloaded = new Space(adapter);
-      const before = await reloaded.resolveToken(runToken);
-      assert(!before.ok && before.reason === "invalid_token");
+      // A fresh Space has an empty in-memory index, but the durable records are the authority:
+      // resolveToken hydrates the one credential from storage on the miss (no loadCredentials).
+      const viaFallback = await (new Space(adapter)).resolveToken(runToken);
+      assert(viaFallback.ok && viaFallback.kind === "run", "fallback should resolve a minted run token");
+      const runPrincipal = viaFallback.ok && viaFallback.kind === "run" ? viaFallback.principal : "";
 
+      // Bulk rebuild also resolves it.
+      const reloaded = new Space(adapter);
       await reloaded.loadCredentials();
       const after = await reloaded.resolveToken(runToken);
       assert(after.ok && after.kind === "run");
 
-      // a token that was never minted is invalid
+      // A stop on one Space is honored by a fresh Space via the fallback (the stop successor record).
+      await space.stopRun(runPrincipal);
+      const afterStop = await (new Space(adapter)).resolveToken(runToken);
+      assert(!afterStop.ok && afterStop.reason === "run_stopped", "fallback must honor a stop successor");
+
+      // A token that was never minted is invalid.
       const bogus = await space.resolveToken("deadbeef");
       assert(!bogus.ok && bogus.reason === "invalid_token");
     },

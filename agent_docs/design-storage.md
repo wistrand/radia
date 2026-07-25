@@ -123,16 +123,18 @@ at startup):
 
 | Cache | Source records | Staleness across instances | Fix |
 |-------|----------------|----------------------------|-----|
-| `CredentialStore` (`src/core/auth.ts`) | `agent_definition` / `agent_run` | a token minted on A doesn't resolve on B → spurious `401` | invalidate on write / short TTL / on-miss DB lookup |
-| kind registry (`Space.loadKinds`)      | `kind_def`                        | a kind declared on A is unknown to B → B can't compile templates for it or index it | refresh on miss / on `kind_def` write |
+| `CredentialStore` (`src/core/auth.ts`) | `agent_definition` / `agent_run` | ~~a token minted on A doesn't resolve on B~~ | **fixed:** `Space.resolveToken` hydrates on cache miss from the records by `tokenHash` (honoring a stop successor), so a cross-instance / cap-evicted token resolves. Miss-path cost is a per-kind fetch until read pushdown |
+| kind registry (`Space.loadKinds`)      | `kind_def`                        | a kind declared on A is unknown to B → B can't compile templates for it or index it | refresh on miss / on `kind_def` write (same pattern as the credential fallback now uses) |
 | `Notifier` (`src/core/notifier.ts`)    | event log                         | a watch on B doesn't wake for a mutation on A | Postgres `LISTEN/NOTIFY` (already the design — see the watch row) |
 
 Only the `Notifier` gap is self-healing: the event log is the source of truth, so a missed
 cross-instance wakeup **degrades to poll-catchup, never a lost event** — *given a gap-free event
 cursor* (see "Watch delivery under concurrency" below; before that fix the SSE cursor itself could
-drop events on a single pooled instance). The two caches would return wrong answers across
-instances until refreshed, so both need write-invalidation or a bounded TTL before HA is correct.
-(Open: LISTEN/NOTIFY-driven invalidation vs. bounded TTLs — likely both, cache-dependent.)
+drop events on a single pooled instance). The **credential** cache now self-heals too, via the
+on-miss hydration above. The remaining gap is the **kind registry**: a kind declared on another
+instance is unknown until reload, so it needs the same on-miss/on-write refresh before HA is correct.
+(Open: LISTEN/NOTIFY-driven invalidation vs. bounded TTLs vs. the on-miss-hydrate pattern — likely a
+mix, cache-dependent.)
 
 ## Watch delivery under concurrency
 
