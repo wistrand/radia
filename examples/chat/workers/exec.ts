@@ -1,13 +1,13 @@
 // Code-execution worker. Claims `tool_call{tool:"run_code"}` and runs the model's program in a
-// permissionless subprocess (sandbox.ts), then acks the output as a TAINTED `tool_result`.
+// permissionless subprocess (tools/exec-sandbox.ts), then acks the output as a TAINTED `tool_result`.
 //
 // Three processes, three blast radii — the worker never executes, the executor never holds
 // anything:
 //
-//   execworker.ts   run token + space access + --allow-run     claims work, acks results
-//     └── deno run -   NO permissions, program on stdin        the actual execution
+//   workers/exec.ts   run token + space access + --allow-run   claims work, acks results
+//     └── deno run -    NO permissions, program on stdin       the actual execution (tools/exec-sandbox.ts)
 //
-// This is why it is a separate worker rather than a tool in `toolworker.ts`: spawning needs
+// This is why it is a separate worker rather than a tool in `workers/tools.ts`: spawning needs
 // `--allow-run` (which that process deliberately lacks), and it holds a run token that model-written
 // code must never reach. Code running inside a process with a credential could `put`/`take` records
 // as that agent — the local space is a more attractive target than the internet.
@@ -22,18 +22,17 @@
 // write, post, or spend. Granting the sandbox any capability would break the at-least-once
 // guarantee as well as the security story.
 
-import { agentLoop } from "../../sdk/ts/loop.ts";
-import { RadiaClient } from "../../sdk/ts/client.ts";
-import { runCode } from "./sandbox.ts";
-import { progress } from "./progress.ts";
-import type { ToolDef } from "./openrouter.ts";
+import { agentLoop } from "../../../sdk/ts/loop.ts";
+import { RadiaClient } from "../../../sdk/ts/client.ts";
+import { runCode } from "../tools/exec-sandbox.ts";
+import { progress } from "../space/progress.ts";
+import { arg, argAll } from "../util.ts";
+import { publishCapability } from "../space/capability.ts";
+import { bytesFrom, mediaTypeFor } from "../util.ts";
+import type { ToolDef } from "../provider/openrouter.ts";
 
 const ME = "agent:chat-exec";
 
-function arg(name: string): string | undefined {
-  const i = Deno.args.indexOf(name);
-  return i >= 0 ? Deno.args[i + 1] : undefined;
-}
 
 const url = arg("--url") ?? "http://127.0.0.1:7788";
 const token = arg("--token"); // agent:chat-exec run token
@@ -41,11 +40,6 @@ const timeoutMs = Number(arg("--timeout-ms") ?? "5000");
 // Roots the sandboxed program may READ, given by the launcher (repeatable `--dir`). Empty = no
 // filesystem, which is the default. Deliberately a SEPARATE setting from the file tools' roots:
 // widening what `read_file` can see must not silently widen what executed code can see.
-function argAll(name: string): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < Deno.args.length; i++) if (Deno.args[i] === name) out.push(Deno.args[i + 1]);
-  return out;
-}
 const readRoots = argAll("--dir").filter(Boolean);
 // Denied even if a root would otherwise cover them: the space's blob key and its operator
 // credential. `--deny-read` beats `--allow-read`, so pointing `--dir` at a directory containing
@@ -97,45 +91,7 @@ const RUN_CODE: ToolDef = {
   },
 };
 
-/** Media type from a filename, for the common things code writes. Unknown extensions stay
- *  text/plain — the server validates the type, and anything scriptable downloads rather than
- *  rendering inline (see design-data-model §2.4). */
-function mediaTypeFor(filename: string | undefined): string {
-  const ext = (filename ?? "").toLowerCase().split(".").pop() ?? "";
-  return ({
-    svg: "image/svg+xml",
-    png: "image/png",
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    gif: "image/gif",
-    webp: "image/webp",
-    json: "application/json",
-    csv: "text/csv",
-    tsv: "text/tab-separated-values",
-    md: "text/markdown",
-    txt: "text/plain",
-    html: "text/html",
-    js: "text/javascript",
-    ts: "text/plain",
-    xml: "application/xml",
-    pdf: "application/pdf",
-    zip: "application/zip",
-  } as Record<string, string>)[ext] ?? "text/plain";
-}
-
-function toBytes(text: string, encoding: string | undefined): Uint8Array {
-  if (encoding !== "base64") return new TextEncoder().encode(text);
-  const binary = atob(text.trim().replace(/\s+/g, ""));
-  const out = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
-  return out;
-}
-
-async function defHash(def: unknown): Promise<string> {
-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(def)));
-  return [...new Uint8Array(bytes)].slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-await client.put({ kind: "capability", body: { tool: "run_code", def: RUN_CODE } }, `capability:run_code:${await defHash(RUN_CODE)}`);
+await publishCapability(client, RUN_CODE);
 
 await agentLoop(client, {
   name: "exec",
@@ -163,7 +119,7 @@ await agentLoop(client, {
     if (r.stdout.length > 0 && (wantSave || r.stdout.length > INLINE_MAX)) {
       try {
         const mediaType = args?.media_type ?? mediaTypeFor(args?.save_as);
-        const a = await c.putArtifact(toBytes(r.stdout, args?.encoding), {
+        const a = await c.putArtifact(bytesFrom(r.stdout, args?.encoding), {
           mediaType,
           filename: args?.save_as,
           parentIds: [callId], // lineage: conversation -> tool_call -> artifact

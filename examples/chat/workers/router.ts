@@ -23,22 +23,18 @@
 // list (cheapest / middle / most capable). Adding a tier-worker changes routing on both paths with
 // no code change here.
 
-import { agentLoop } from "../../sdk/ts/loop.ts";
-import { RadiaClient } from "../../sdk/ts/client.ts";
-import { progress } from "./progress.ts";
-import type { ChatMessage } from "./openrouter.ts";
+import { agentLoop } from "../../../sdk/ts/loop.ts";
+import { RadiaClient } from "../../../sdk/ts/client.ts";
+import { progress } from "../space/progress.ts";
+import { arg, sleep } from "../util.ts";
+import type { ChatMessage } from "../provider/openrouter.ts";
 
 const ME = "agent:chat-router";
 
-function arg(name: string): string | undefined {
-  const i = Deno.args.indexOf(name);
-  return i >= 0 ? Deno.args[i + 1] : undefined;
-}
 const url = arg("--url") ?? "http://127.0.0.1:7788";
 const token = arg("--token"); // agent:chat-router run token
 const classifyModel = arg("--classify-model") ?? Deno.env.get("RADIA_CHAT_CLASSIFY_MODEL") ?? "google/gemini-2.5-flash-lite";
 const client = new RadiaClient(url, token ? { token } : {});
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** The live tiers, cheapest → most capable, discovered from what the fleet advertises. Only tiers
  *  that serve TEXT are routing candidates: the fleet also advertises image models (`modalities:

@@ -11,40 +11,10 @@
 // matching, template scoping, windowing and the Feed all stop working. Payloads go out of line;
 // the conversation itself does not.
 
-import type { RadiaClient } from "../../sdk/ts/client.ts";
-import type { Tool, ToolContext } from "./tools.ts";
-import type { ToolDef } from "./openrouter.ts";
-
-/** Same table as the exec worker's: what a filename implies about its bytes. */
-function mediaTypeFor(filename: string | undefined): string {
-  const ext = (filename ?? "").toLowerCase().split(".").pop() ?? "";
-  return ({
-    svg: "image/svg+xml",
-    png: "image/png",
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    gif: "image/gif",
-    webp: "image/webp",
-    json: "application/json",
-    csv: "text/csv",
-    tsv: "text/tab-separated-values",
-    md: "text/markdown",
-    txt: "text/plain",
-    html: "text/html",
-    js: "text/javascript",
-    xml: "application/xml",
-    yaml: "application/yaml",
-    yml: "application/yaml",
-  } as Record<string, string>)[ext] ?? "text/plain";
-}
-
-function toBytes(text: string, encoding: unknown): Uint8Array {
-  if (encoding !== "base64") return new TextEncoder().encode(text);
-  const binary = atob(String(text).trim().replace(/\s+/g, ""));
-  const out = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
-  return out;
-}
+import type { RadiaClient } from "../../../sdk/ts/client.ts";
+import type { Tool, ToolContext } from "./files.ts";
+import type { ToolDef } from "../provider/openrouter.ts";
+import { bytesFrom, mediaTypeFor } from "../util.ts";
 
 export function makeSaveTools(client: RadiaClient): Record<string, Tool> {
   return {
@@ -53,7 +23,7 @@ export function makeSaveTools(client: RadiaClient): Record<string, Tool> {
       if (!content) return { error: "save_content needs `content`" };
       const filename = typeof a.filename === "string" ? a.filename : undefined;
       const mediaType = typeof a.media_type === "string" ? a.media_type : mediaTypeFor(filename);
-      const { id, size } = await client.putArtifact(toBytes(content, a.encoding), {
+      const { id, size } = await client.putArtifact(bytesFrom(content, a.encoding), {
         mediaType,
         filename,
         // Lineage: conversation -> tool_call -> artifact, so a stored file can be traced back to

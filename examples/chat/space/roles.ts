@@ -11,7 +11,7 @@
 // The two workers are ALWAYS scoped agents (least privilege), regardless of role — each holds
 // only the grants it needs to do its job.
 
-import { RadiaClient } from "../../sdk/ts/client.ts";
+import { RadiaClient } from "../../../sdk/ts/client.ts";
 
 export type Role = "admin" | "user";
 

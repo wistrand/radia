@@ -7,9 +7,9 @@
 // Note the observer effect: each inspection is itself a tool_call/tool_result (and the
 // wrapping llm_call/message), so calling space_stats slightly changes the stats.
 
-import type { RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
-import type { Tool } from "./tools.ts";
-import type { ToolDef } from "./openrouter.ts";
+import type { RadiaClient, RadiaRecord } from "../../../sdk/ts/client.ts";
+import type { Tool } from "./files.ts";
+import type { ToolDef } from "../provider/openrouter.ts";
 
 /** A record trimmed for the prompt: id, kind, createdAt, and a size-capped body. */
 function compact(rec: RadiaRecord): unknown {
@@ -113,4 +113,23 @@ export const INSPECT_SCHEMAS: ToolDef[] = [
   { type: "function", function: { name: "space_children", description: "Records that REFERENCE this record via parent_ids — its children (DOWN, the reverse of lineage), with bodies. Use this to follow links from a root: a conversation's messages (kind:message) and llm_calls, an llm_call's chunks + result, a task's results. Optional `kind` filter (e.g. 'message'). Returns up to `limit` (default 25).", parameters: { type: "object", properties: { recordId: { type: "string" }, kind: { type: "string" }, limit: { type: "integer" } }, required: ["recordId"] } } },
   { type: "function", function: { name: "space_events", description: "Recent event-log entries (put/take/ack/nack/…) after seq `after`. Returns {seq, op, kind, state, recordId}.", parameters: { type: "object", properties: { after: { type: "integer" }, limit: { type: "integer" } } } } },
   { type: "function", function: { name: "space_doctor", description: "A derived health report: counts by state, dead-lettered records, expired-but-stuck leases, and records that have sat available/unclaimed. Use to answer 'is the space healthy / what's stuck?'.", parameters: { type: "object", properties: {} } } },
+];
+
+// ---- remediation: the control-plane half ----
+//
+// `space_doctor` diagnoses; these fix. They bypass lease fencing (that is the point — they repair
+// another worker's stuck record), so they are operator-gated and act as the SESSION principal.
+
+export function makeRemediateTools(client: RadiaClient): Record<string, Tool> {
+  return {
+    space_reclaim: (a) => client.admin("reclaim", String(a.recordId ?? "")),
+    space_dead_letter: (a) => client.admin("dead-letter", String(a.recordId ?? "")),
+    space_requeue: (a) => client.admin("requeue", String(a.recordId ?? "")),
+  };
+}
+
+export const REMEDIATE_SCHEMAS: ToolDef[] = [
+  { type: "function", function: { name: "space_reclaim", description: "Un-stick an EXPIRED lease: force the record back to available (attempt +1) so a worker can re-take it. No effect on a valid (unexpired) lease. Returns {applied}.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
+  { type: "function", function: { name: "space_dead_letter", description: "Give up on a record: force it to dead_letter (from available or leased). Returns {applied}.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
+  { type: "function", function: { name: "space_requeue", description: "Retry a dead-lettered record: force it back to available. Returns {applied}.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
 ];

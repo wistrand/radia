@@ -3,17 +3,15 @@
 // usage). This is the ONLY process holding OPENROUTER_API_KEY; it has no file-read access.
 // Launched by chat.ts with --allow-net --allow-env.
 
-import { agentLoop } from "../../sdk/ts/loop.ts";
-import { RadiaClient } from "../../sdk/ts/client.ts";
-import { progress } from "./progress.ts";
-import { type ChatMessage, streamChat, type ToolCall, type ToolDef } from "./openrouter.ts";
+import { agentLoop } from "../../../sdk/ts/loop.ts";
+import { RadiaClient } from "../../../sdk/ts/client.ts";
+import { progress } from "../space/progress.ts";
+import { arg } from "../util.ts";
+import { publishCapability } from "../space/capability.ts";
+import { type ChatMessage, streamChat, type ToolCall, type ToolDef } from "../provider/openrouter.ts";
 
 const ME = "agent:chat-inference";
 
-function arg(name: string): string | undefined {
-  const i = Deno.args.indexOf(name);
-  return i >= 0 ? Deno.args[i + 1] : undefined;
-}
 
 const url = arg("--url") ?? Deno.env.get("RADIA_URL") ?? "http://127.0.0.1:7788";
 const token = arg("--token"); // agent:chat-inference run token (scoped grants)
@@ -60,15 +58,10 @@ const ESCALATE: ToolDef = {
     parameters: { type: "object", properties: { reason: { type: "string" } } },
   },
 };
-// Content-key (hashed → header-safe) so a changed def is a successor, not a 409.
-async function defHash(def: unknown): Promise<string> {
-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(def)));
-  return [...new Uint8Array(bytes)].slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
 
 if (tier) {
   await client.put({ kind: "model", body: { tier, model, rank } }, `model:${tier}:${model}:${rank}`);
-  await client.put({ kind: "capability", body: { tool: "escalate", def: ESCALATE } }, `capability:escalate:${await defHash(ESCALATE)}`);
+  await publishCapability(client, ESCALATE);
 }
 
 await agentLoop(client, {

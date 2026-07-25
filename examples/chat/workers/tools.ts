@@ -4,23 +4,16 @@
 // files cannot reach the network beyond the local space and cannot read secrets — reading
 // a file can't lead to exfiltrating it. Config comes via args, not env (it has no env access).
 
-import { agentLoop } from "../../sdk/ts/loop.ts";
-import { RadiaClient } from "../../sdk/ts/client.ts";
-import { progress } from "./progress.ts";
-import { makeTools, TOOL_SCHEMAS } from "./tools.ts";
-import { INSPECT_SCHEMAS, makeInspectTools } from "./inspect.ts";
-import { makeRemediateTools, REMEDIATE_SCHEMAS } from "./remediate.ts";
-import { makeSaveTools, SAVE_SCHEMAS } from "./save.ts";
+import { agentLoop } from "../../../sdk/ts/loop.ts";
+import { RadiaClient } from "../../../sdk/ts/client.ts";
+import { progress } from "../space/progress.ts";
+import { makeTools, TOOL_SCHEMAS } from "../tools/files.ts";
+import { INSPECT_SCHEMAS, makeInspectTools } from "../tools/space.ts";
+import { makeRemediateTools, REMEDIATE_SCHEMAS } from "../tools/space.ts";
+import { makeSaveTools, SAVE_SCHEMAS } from "../tools/save.ts";
+import { arg, argAll } from "../util.ts";
+import { publishCapability } from "../space/capability.ts";
 
-function arg(name: string): string | undefined {
-  const i = Deno.args.indexOf(name);
-  return i >= 0 ? Deno.args[i + 1] : undefined;
-}
-function argAll(name: string): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < Deno.args.length; i++) if (Deno.args[i] === name) out.push(Deno.args[i + 1]);
-  return out;
-}
 
 const url = arg("--url") ?? "http://127.0.0.1:7788";
 const token = arg("--token"); // agent:chat-tools run token — the worker's own identity
@@ -39,18 +32,10 @@ const tools = { ...makeTools(roots), ...makeInspectTools(spaceClient), ...makeRe
 // Publish this worker's capabilities as `capability` records so agents can DISCOVER the
 // available tools from the space (no hard-coded tool list). In a real system this
 // registration would be grant-gated — an untrusted worker publishing a tool is a threat.
-// Content-keyed idempotency (like `kind_def` records): the SAME def dedups across restarts, a
-// CHANGED def emits a successor record (latest per tool wins on discovery) — never a 409 conflict.
-// The key must be header-safe (an Idempotency-Key is a ByteString), so hash the def rather than
-// embed its JSON — tool descriptions contain Unicode (…, →) that would break the fetch header.
-async function defHash(def: unknown): Promise<string> {
-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(def)));
-  return [...new Uint8Array(bytes)].slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
 const schemas = [...TOOL_SCHEMAS, ...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS, ...SAVE_SCHEMAS];
 for (const name of Object.keys(tools)) {
   const def = schemas.find((s) => s.function.name === name);
-  if (def) await client.put({ kind: "capability", body: { tool: name, def } }, `capability:${name}:${await defHash(def)}`);
+  if (def) await publishCapability(client, def);
 }
 
 await agentLoop(client, {

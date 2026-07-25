@@ -2,7 +2,7 @@
 // matchable — that is what lets a worker claim `{kind:task, match:{op}}` and the
 // aggregator group results by job.
 
-import type { RadiaClient } from "../sdk/ts/client.ts";
+import type { RadiaClient } from "../../sdk/ts/client.ts";
 
 export async function registerDemoKinds(client: RadiaClient): Promise<void> {
   await client.registerKind({ kind: "job", indexedPaths: [] });

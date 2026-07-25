@@ -56,7 +56,7 @@ content, not by addressing.
 | `sdk/ts/`                               | TS SDK: `client.ts` (`RadiaClient` over `/v0`, incl. `watch()` SSE), `loop.ts` (`agentLoop`, event-driven, design §5) |
 | `sdk/py/radia.py`                       | Python SDK at parity (stdlib only): `RadiaClient`, `watch()`, `agent_loop` with heartbeat |
 | `scripts/build-release.sh`              | `deno compile` per OS + staged npm/pip launcher packages (`deno task release`) |
-| `examples/`                             | demo agents + `demo.ts`, `stress.ts` (wave load generator for the console's Space tab), and `chat/` — a CLI LLM chatbot (full symmetry: llm + tool calls are records; image generation, artifact saving, and code execution in a permissionless subprocess — `sandbox.ts`/`execworker.ts`); see `examples/README.md` |
+| `examples/`                             | one directory per example, each with its own README: `pipeline/` (planner + workers + aggregator, `deno task demo`), `stress/` (wave load generator for the Space tab), `chat/` (the full LLM agent — llm + tool calls, images, artifacts and sandboxed code execution, all as records) — see [examples/README.md](examples/README.md) |
 | `conformance/`                          | port contract suites — storage adapters and the blob store (`run.test.ts`, `harness.ts`, `suites/`); see the README there for how to add one |
 | `openapi/radia.yaml`                    | the frozen wire contract (source of truth)                 |
 | `agent_docs/`                           | design deep dives, one topic per file (linked below)       |
@@ -75,6 +75,10 @@ what remains in M1–M3.
 Subsystem docs. `architecture-*` describes what is built; `design-*` is spec + rationale, and a
 built one carries an "M0/M1 status" note pointing into `src/`. Code wins over any doc on a
 conflict about current behavior:
+
+Each example carries its own README: [examples/pipeline/](examples/pipeline/) (coordination, no
+key), [examples/stress/](examples/stress/) (load, for the Space tab), [examples/chat/](examples/chat/)
+(the full LLM agent — `client/`, `workers/`, `tools/`, `space/`, `provider/`).
 
 - [agent_docs/architecture-surfaces.md](agent_docs/architecture-surfaces.md): the CLI, the MCP adapter, auto-provisioned credentials, the `platform.ts` host seam, and release packaging — how anything reaches a space other than raw HTTP.
 

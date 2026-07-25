@@ -8,7 +8,7 @@
 // The absence of a progress record is itself the signal the chat uses: a call nobody has claimed
 // produces no progress, which is how "no worker serves this" is distinguished from "still thinking".
 
-import type { RadiaClient } from "../../sdk/ts/client.ts";
+import type { RadiaClient } from "../../../sdk/ts/client.ts";
 
 /** Progress is ephemeral chatter — mark it GC-eligible rather than keeping it forever.
  *  (Retention GC lands in M2; `retentionUntil` is stored today, not yet swept.) */

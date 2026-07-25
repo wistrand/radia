@@ -125,7 +125,8 @@ Open the console and watch records and events stream through the **Feed** tab, u
 **Graph** tab to see how records relate (`parent_ids` DAG — a conversation's messages, a
 job fanning out into tasks and back), the **Space** tab to see every record placed by what it
 *is* rather than what it links to, and open a record for its body + lineage. See
-[examples/README.md](examples/README.md) for the agents and the SDK.
+[examples/README.md](examples/README.md) for the three examples — a keyless coordination
+pipeline, a load generator, and the full LLM agent — each with its own directory and README.
 
 ### The CLI
 

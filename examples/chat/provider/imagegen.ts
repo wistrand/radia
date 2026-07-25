@@ -8,7 +8,7 @@
 // (melker/src/ai/image-extract.ts); five of the branches are provider quirks nobody would predict.
 //
 // Unlike the text path this is NOT streamed — one POST, one JSON response — so a caller has
-// nothing to show for 5-20s. That is what `progress` records are for (see imageworker.ts).
+// nothing to show for 5-20s. That is what `progress` records are for (see workers/images.ts).
 
 import { API_BASE } from "./openrouter.ts";
 
@@ -147,7 +147,7 @@ async function toBytes(url: string, signal?: AbortSignal): Promise<ImageBytes> {
     return { bytes, mediaType: asData[1] };
   }
   // Two of the seven formats hand back a URL the MODEL chose, so this is an outbound fetch to a
-  // host the provider picked: https only, and the stored artifact is tainted (imageworker.ts).
+  // host the provider picked: https only, and the stored artifact is tainted (workers/images.ts).
   if (!url.startsWith("https://")) throw new Error(`refusing to fetch a non-https image URL: ${url.slice(0, 60)}`);
   const res = await fetch(url, signal ? { signal } : undefined);
   if (!res.ok) throw new Error(`image fetch failed: ${res.status}`);

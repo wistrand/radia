@@ -7,7 +7,7 @@
 // up so you can open it (Ctrl-C to stop). Pass `--once` to spawn an ephemeral space, run,
 // and exit — the self-contained integration smoke test used in CI.
 
-import { RadiaClient } from "../sdk/ts/client.ts";
+import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerDemoKinds } from "./kinds.ts";
 import { plannerLoop } from "./planner.ts";
 import { workerLoop } from "./worker.ts";

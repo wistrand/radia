@@ -4,7 +4,7 @@
 // reconstructs the context by querying the messages. So history is stored once (linear,
 // not quadratic) and the whole conversation is reconstructible from the space.
 
-import type { RadiaClient } from "../../sdk/ts/client.ts";
+import type { RadiaClient } from "../../../sdk/ts/client.ts";
 
 export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // A `capability` record = a tool a worker serves ({tool, def}). The chatbot DISCOVERS its

@@ -11,8 +11,8 @@
 // through the output the user is already shown. Net, write, env and run remain denied always.
 //
 // Why a subprocess and not a Worker: hostile code should not share a heap with the thing holding
-// a run token. Why not the tool-worker: spawning needs `--allow-run`, which that process
-// deliberately lacks, and it holds a credential this code must never reach.
+// a run token. Why not the tool-worker (`workers/tools.ts`): spawning needs `--allow-run`, which that
+// process deliberately lacks, and it holds a credential this code must never reach.
 //
 // What this IS: a boundary against accidents and ordinary malice — exfiltration, snooping,
 // clobbering, runaway loops. What it is NOT: a hard boundary against a V8 or Deno 0-day. For a

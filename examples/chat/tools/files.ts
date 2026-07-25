@@ -5,7 +5,7 @@
 // on top of that OS-level sandbox.
 
 import { isAbsolute, join, SEPARATOR } from "@std/path";
-import type { ToolDef } from "./openrouter.ts";
+import type { ToolDef } from "../provider/openrouter.ts";
 
 const MAX_BYTES = 64 * 1024;
 

@@ -4,8 +4,8 @@
 //
 //   deno run --allow-net --allow-env examples/planner.ts
 
-import { agentLoop } from "../sdk/ts/loop.ts";
-import { RadiaClient, type RadiaRecord } from "../sdk/ts/client.ts";
+import { agentLoop } from "../../sdk/ts/loop.ts";
+import { RadiaClient, type RadiaRecord } from "../../sdk/ts/client.ts";
 import { tools } from "./tools.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

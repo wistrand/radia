@@ -17,7 +17,7 @@
 //
 // Flags: --waves N --tasks N --facts N --workers N --rate N --chaos PCT --once
 
-import { RadiaClient } from "../sdk/ts/client.ts";
+import { RadiaClient } from "../../sdk/ts/client.ts";
 
 // ---- knobs ----
 function num(name: string, def: number): number {

@@ -10,18 +10,16 @@
 // message thread, be re-sent on every turn, and swamp the Feed. The record carries a reference; the
 // bytes live in the blob store (design-data-model §2.4).
 
-import { agentLoop } from "../../sdk/ts/loop.ts";
-import { RadiaClient } from "../../sdk/ts/client.ts";
-import { generateImage } from "./images.ts";
-import { progress } from "./progress.ts";
-import type { ToolDef } from "./openrouter.ts";
+import { agentLoop } from "../../../sdk/ts/loop.ts";
+import { RadiaClient } from "../../../sdk/ts/client.ts";
+import { generateImage } from "../provider/imagegen.ts";
+import { progress } from "../space/progress.ts";
+import { arg } from "../util.ts";
+import { publishCapability } from "../space/capability.ts";
+import type { ToolDef } from "../provider/openrouter.ts";
 
 const ME = "agent:chat-images";
 
-function arg(name: string): string | undefined {
-  const i = Deno.args.indexOf(name);
-  return i >= 0 ? Deno.args[i + 1] : undefined;
-}
 
 const url = arg("--url") ?? "http://127.0.0.1:7788";
 const token = arg("--token"); // agent:chat-images run token
@@ -55,15 +53,11 @@ const GENERATE_IMAGE: ToolDef = {
   },
 };
 
-async function defHash(def: unknown): Promise<string> {
-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(def)));
-  return [...new Uint8Array(bytes)].slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
 
 // Advertise the tool (discovery, like any capability) and the model (fleet inventory). `modalities`
 // is what keeps this out of TEXT routing: the router and the escalation ladder select tiers that
 // serve text, and this one does not — the same array the request sends as `modalities: ["image"]`.
-await client.put({ kind: "capability", body: { tool: "generate_image", def: GENERATE_IMAGE } }, `capability:generate_image:${await defHash(GENERATE_IMAGE)}`);
+await publishCapability(client, GENERATE_IMAGE);
 await client.put(
   { kind: "model", body: { tier: "image", model, rank: 0, modalities: ["image"] } },
   `model:image:${model}:0`,

@@ -4,7 +4,7 @@
 //
 //   deno run --allow-net --allow-env examples/coordinator.ts
 
-import { RadiaClient, type RadiaRecord } from "../sdk/ts/client.ts";
+import { RadiaClient, type RadiaRecord } from "../../sdk/ts/client.ts";
 import { registerDemoKinds } from "./kinds.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

@@ -38,7 +38,7 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   `Failed to construct 'Request': 'headers' … not a valid ByteString`. Content-keying a record (so a
   changed def is a successor, not a 409) is right, but the key must be a **hash** of the content, not
   the content itself. `kindDefKey`/`grant` keys are ASCII by construction (paths, types, principals);
-  the capability publish content-hashes the tool def (`toolworker.ts`). Bit both the 409 fix and then
+  the capability publish content-hashes the tool def (`examples/chat/space/capability.ts`). Bit both the 409 fix and then
   this.
 - **Lineage goes UP; to follow links DOWN you need children, not lineage.** `parent_ids` points
   from a record to what it was derived from, so `getLineage`/`space_lineage` returns *ancestors* —
@@ -74,7 +74,7 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
 - **A process that executes model-written code must hold nothing; the process that holds a token
   must not execute.** Executing inside a worker that has a run token hands hostile code the space
   itself — `put`/`take` as that agent — which is a better target than the internet. Hence three
-  processes in the chat example: `execworker.ts` (token, space access, `--allow-run`) spawns
+  processes in the chat example: `workers/exec.ts` (token, space access, `--allow-run`) spawns
   `deno run -` with NO permissions and talks to it over pipes only. Two consequences to preserve:
   the sandbox never gets a credential "so code can query" (the worker fetches and pipes data in
   instead — the confused-deputy rule again), and its emptiness is what makes lease RETRY sound,
