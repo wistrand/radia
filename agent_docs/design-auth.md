@@ -250,6 +250,20 @@ work = intersection of the authorization chain's grants* — but a hard chain-in
 cannot), so M1 enforces the acting agent's own `put` grant and keeps the chain as the authority
 record. Intersection composes with taint (M3): sensitive consumers may constrain both lineages.
 
+## Download capabilities — a delegated read, not a credential
+
+Artifact bytes need one authorization shape the rest of the API does not: a browser cannot attach
+an `Authorization` header to `<img src>`. `POST /v0/artifacts/{id}/capability` mints a token that
+is deliberately the weakest thing that solves it — **scoped to one artifact**, valid for minutes,
+held in memory (so it dies with the process), and issued only to a caller who could already read
+that artifact. It grants no operation, names no principal, and opens nothing else: with a
+capability attached, `/v0/records` and `/v0/ops/*` still `401` under `--auth required`.
+
+Read it as *delegation of a read the holder already had*, in the same family as
+`delegation_context` — authority that narrows as it travels, never widens. The record id in the
+URL stays stable forever; only the capability expires, which is why a client that needs a durable
+link should print the plain artifact URL and let the viewer authenticate normally.
+
 ## Taint — server-computed
 
 **Built (M1):** taint is untrusted **data** lineage, server-computed at commit

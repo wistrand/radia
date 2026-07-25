@@ -6,8 +6,9 @@ the wire protocol, and the client agent loop. Origin: outline §4–5.
 **M0/M1 status (implemented):** the guarantee, fenced leases, idempotency-before-lease,
 and all ten operations are built — HTTP handlers in `src/server/handlers/`, the service in
 `src/core/space.ts`, lease/settlement in the adapters, claim ranking in `src/core/take.ts`.
-Watches are implemented (see Wire protocol below). **Not implemented:** long-poll blocking
-on `take` (M1) and the keyset-cursor `query` (M1; a basic ordered list ships now).
+Watches are implemented (see Wire protocol below), as is the artifact payload plane (below).
+**Not implemented:** long-poll blocking on `take` (M1) and the keyset-cursor `query` (M1; a basic
+ordered list ships now).
 
 ## Contents
 - Invariants
@@ -103,6 +104,13 @@ renew(lease) -> lease' | lease_lost
 watch(template) -> watch_id / event stream
 control-plane ops (kinds, templates, definitions, runs — see design-auth.md)
 ```
+
+**Artifacts are a payload plane beside these verbs, not an eleventh one.** `POST /v0/artifacts`,
+`GET /v0/artifacts/{id}` and `POST /v0/artifacts/{id}/capability` move BYTES; the coordination
+still happens through `put`/`take`/`query` on the `artifact` *record* they produce. This is why
+there is no `put_artifact` verb in the list above — an artifact is a record with its payload
+stored out of line, so nothing about matching, leasing or authorization is special-cased for it.
+See [design-data-model.md](design-data-model.md) §2.4.
 
 - **`take(record_id=...)` is only an efficient selector, never a bypass.** The server
   re-verifies: a registered template of this run matches the record; grants permit the

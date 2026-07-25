@@ -71,6 +71,22 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   DECISION, the absence of the thing you are looking for is not a neutral default — decide what
   "not found" means explicitly.
 
+- **Artifact bytes are served `inline` only for formats a browser cannot execute.** Blob bytes are
+  attacker-supplied and served from the space's OWN origin — the origin whose console page carries
+  an operator token — so `text/html` rendered inline is a same-origin XSS reachable by anyone
+  holding an `artifact: put` grant. The allowlist names raster image, audio and video types
+  explicitly rather than `image/*`, because `image/svg+xml` is scriptable; PDF is excluded for the
+  same reason. Everything else downloads. `X-Content-Type-Options: nosniff` and
+  `Content-Security-Policy: default-src 'none'; sandbox` back it up. Don't widen the list to
+  "anything that looks like media" (`src/server/handlers/artifacts.ts`).
+
+- **A download capability belongs in an `<img>`, not in a transcript.** Capabilities are minutes
+  long and in-memory, so a URL carrying one is broken by the next restart and by the clock. The
+  console mints one per render and uses it immediately — correct. Printing one into terminal
+  scrollback (the chat example did) produces a link that looks permanent, fails later, and leaves
+  a token in the user's history. Print the stable `/v0/artifacts/{id}` URL instead and let the
+  viewer authenticate.
+
 - **The graph/lineage viewer excludes nothing by default except what the caller asks**
   (`?exclude=llm_chunk`): streaming `llm_chunk` records would otherwise dominate a
   conversation graph. Keep chunk flushing coarse for the same reason (event-log volume).

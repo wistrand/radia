@@ -683,14 +683,21 @@ function toggleLive() { stopFeed(); if ($("feed-live").checked) feedTimer = setI
 // displaces what is already on screen and the same event log always renders the same picture.
 // Everything here is a consumer of GET /v0/ops/events; no new server surface.
 
-const SPACE_CAP = 3000;      // visible records; oldest are dropped past this (see pruneSpace)
+const SPACE_CAP = 3000;      // visible records; the least interesting are dropped past this
 const SPACE_BATCH = 500;     // events per poll
 let spaceScript = null;      // Promise for the lazily-injected vendor bundle
 let spaceCursor = "0";
 let spaceTimer = null;
 let spacePolling = false;
-const spaceSeen = new Map(); // recordId -> last node props pushed (drives add-vs-update)
-const spaceOrder = [];       // recordIds in arrival order, for pruning
+// recordId -> last node props pushed (drives add-vs-update) AND the eviction order: a Map iterates
+// in insertion order, so re-inserting on every event makes this least-recently-ACTIVE first.
+// Arrival order would be wrong for the case you actually watch — a busy space — because a record's
+// rank would freeze at first sighting, so a lease renewed twenty times would be evicted before
+// newer records that have done nothing since.
+const spaceSeen = new Map();
+// A record in a terminal state is finished history; one that is available or leased is live work.
+// Pruning spends its budget on the finished ones first, whatever their age.
+const TERMINAL_STATES = new Set(["consumed", "dead_letter"]);
 
 /** Inject the vendored BlitZoom bundle on first use, so the default console load stays small. */
 function loadBlitzoom() {
@@ -754,12 +761,13 @@ async function pollSpace() {
 
     if (adds.size) {
       const list = [...adds.values()];
-      for (const n of list) { spaceSeen.set(n.id, n); spaceOrder.push(n.id); }
+      for (const n of list) spaceSeen.set(n.id, n);
       await g.addNodes(list, edges.filter((x) => spaceSeen.has(x.src) && spaceSeen.has(x.dst)), { animate: false });
     }
     if (updates.size) {
       const list = [...updates.values()];
-      for (const n of list) spaceSeen.set(n.id, n);
+      // delete + set moves the entry to the END of the Map: activity refreshes eviction rank.
+      for (const n of list) { spaceSeen.delete(n.id); spaceSeen.set(n.id, n); }
       // A state change moves the record slightly (state is a layout property), so animate it.
       await g.updateNodes(list, { animate: true, animMs: 300 });
     }
@@ -770,10 +778,28 @@ async function pollSpace() {
   }
 }
 
-/** Bound the working set. Records are ULID-ordered, so arrival order is close enough to age. */
+/**
+ * Bound the working set, evicting what you are least likely to be looking at: finished records
+ * (consumed / dead-lettered) in least-recently-active order first, and only then live ones. In a
+ * busy space the interesting nodes are the ones still moving, so activity — not arrival — sets the
+ * rank, and a record that keeps being taken, renewed and acked keeps its place.
+ */
 async function pruneSpace(g) {
-  if (spaceOrder.length <= SPACE_CAP) return;
-  const drop = spaceOrder.splice(0, spaceOrder.length - SPACE_CAP);
+  const excess = spaceSeen.size - SPACE_CAP;
+  if (excess <= 0) return;
+  const drop = [];
+  // Pass 1: finished records, oldest activity first (Map order).
+  for (const [id, n] of spaceSeen) {
+    if (drop.length >= excess) break;
+    if (TERMINAL_STATES.has(n.state)) drop.push(id);
+  }
+  // Pass 2: still not enough room — take the least-recently-active live ones.
+  if (drop.length < excess) {
+    for (const id of spaceSeen.keys()) {
+      if (drop.length >= excess) break;
+      if (!drop.includes(id)) drop.push(id);
+    }
+  }
   for (const id of drop) spaceSeen.delete(id);
   await g.removeNodes(drop, { animate: false });
 }
@@ -811,8 +837,7 @@ async function resetSpace() {
   const g = $("space-graph");
   if (!g || !g.view) return;
   stopSpace();
-  if (spaceOrder.length) await g.removeNodes([...spaceOrder], { animate: false });
-  spaceOrder.length = 0;
+  if (spaceSeen.size) await g.removeNodes([...spaceSeen.keys()], { animate: false });
   spaceSeen.clear();
   spaceCursor = "0";
   $("space-count").textContent = "";

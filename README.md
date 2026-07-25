@@ -14,15 +14,32 @@ is a lineage homage.
 
 > Status: all of M0 built (Phases 0–7) plus a growing M1 slice — put/take/ack/nack/release/renew,
 > record+envelope split, fencing, idempotency, matching, transactional event log +
-> lineage, dead-letter, and SSE watches, plus the **authorization stack**: kind- and
+> lineage, dead-letter, and SSE watches; the **authorization stack**: kind- and
 > template-scoped grants (as records), the run-token bootstrap chain, per-run leases with
-> stop/quarantine, `delegation_context`, and `taint` + declassify. Running on three storage
-> adapters (embedded PGlite and SQLite, plus real Postgres) behind the frozen wire contract,
-> with a web console, TS and Python SDKs, a CLI, a bundled MCP adapter, and runnable agent
-> examples (including a CLI chatbot that runs with real auth roles). Not production-ready.
+> stop/quarantine, `delegation_context`, and `taint` + declassify; and **artifacts** — a
+> content-addressed blob port with `artifact` records, short-lived download capabilities, and
+> optional encryption at rest (per-blob AES-GCM key wrapped under a space KEK). Running on three
+> storage adapters (embedded PGlite and SQLite, plus real Postgres) behind the frozen wire
+> contract, with a web console, TS and Python SDKs, a CLI, a bundled MCP adapter, and runnable
+> agent examples (including a CLI chatbot with real auth roles and image generation). Not
+> production-ready.
 > See `agent_docs/` for the structured design and
 > [notes/radia-runtime-outline-v0.3.md](notes/radia-runtime-outline-v0.3.md) for the origin
 > outline (v0.3).
+
+```mermaid
+flowchart LR
+    A[agent A] -->|put record| S[(space)]
+    S -->|matches B's template| B[agent B]
+    B -->|take → fenced lease| S
+    B -->|ack result| S
+    S -->|matches C's template| C[agent C]
+    S -.->|bytes too big for a body| BL[(blob store<br/>artifacts)]
+```
+
+Nobody addressed anyone. B claimed the work because it *described* what it can handle, and the
+result B acked is itself a record C can match — so work flows by content, through one durable,
+authorized, observable place.
 
 ## Why it exists
 
@@ -45,6 +62,9 @@ are encouraging and workload-specific, not proof of general superiority. See
   at-least-once execution; crashed agents don't lose work.
 - **Policy-aware:** agent-scoped grants, provenance lineage, taint tracking, and an
   optional cost-aware scheduler decide what runs and what it may touch.
+- **Payload-aware:** anything too large for a JSON body (an image, an audio clip) is an
+  **artifact** — a small record that routes, plus content-addressed bytes in a blob store,
+  optionally encrypted at rest under a destroyable per-blob key.
 - **Language-neutral:** one HTTP + JSON protocol (OpenAPI-first) behind SDKs, an MCP
   adapter, and a CLI. Agents can be implemented in any stack.
 - **Zero-setup start:** `deno task dev` brings up a space, a web inspector, and a bundled
@@ -60,7 +80,8 @@ deno task dev          # embedded space + web console at http://localhost:7788
 deno task demo         # a coordination demo (planner + workers + aggregator) against it
 deno task chat         # a CLI LLM chatbot (needs OPENROUTER_API_KEY) — thinking and tools
                        # are both records; watch it in the console Feed tab
-deno task conformance  # the storage-adapter contract suite (both adapters)
+deno task stress       # fill a space with waves of activity to watch in the Space tab
+deno task conformance  # the port contract suites (storage adapters + the blob store)
 ```
 
 Storage is in-memory by default. To persist across restarts, pass `--db`:
@@ -72,6 +93,13 @@ deno task dev --storage pglite --db ./.radia/radia-pg   # PGlite data directory
 
 Records, envelopes, events, idempotency, and kind declarations all persist and reload on
 restart. (Leases held by processes that crashed expire on their own clocks, as designed.)
+
+Artifact *bytes* live beside them, in a directory rather than the database — derived from `--db`,
+or set explicitly with `--blobs <dir>` (which is what a Postgres deployment needs, since its
+`--db` is a connection URL). Without one, blobs are in-memory and do not survive a restart.
+Encryption at rest is opt-in: `--blob-kek <file>` (generated on first use) or `RADIA_BLOB_KEK`
+(base64, 32 bytes). The startup line reports which you got — `blobs=file+aes-gcm (…)` versus
+`blobs=memory (in-memory)`.
 
 For a real Postgres (the multi-instance backend), the compose file under `docker/postgres/`
 brings up a local server:

@@ -47,7 +47,7 @@ content, not by addressing.
 | `src/credentials.ts`                    | auto-provisioned local credential — `radia dev` writes it, CLI/MCP/Python SDK read it |
 | `src/platform.ts`                       | **the platform seam** — every host operation (process/files/streams/signals/serve) in one file; nothing else in `src/` touches `Deno.*` |
 | `src/flags.ts`                          | shared CLI flag parsing (`flag`/`flags`/`has`/`positional`) |
-| `src/ui/index.html`                     | dev web console served at `GET /` (no build, public API only); the **Space** tab streams the ops event log into a property-similarity map |
+| `src/ui/index.html`                     | dev web console served at `GET /` (no build, public API only); the **Space** tab streams the ops event log into a property-similarity map (bounded, evicting finished records before live ones) |
 | `src/ui/vendor/`                        | prebuilt browser assets served under `/ui/` — `blitzoom.bundle.js` (`<bz-graph>`, layout for the Space tab), pinned to an upstream commit; see the README there |
 | `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes, `resolveAuth` Bearer, ops-plane gate, operator-token injection), `problem.ts` (RFC 9457), `handlers/` (`records.ts` + authorize, `leases.ts`, `agents.ts` = bootstrap chain, `artifacts.ts` = bytes in/out + download capabilities, `ops.ts` = ops plane: stats/events/lineage/children/graph/envelope-query/diagnostics/admin/declassify, `watches.ts` SSE = grant-gated `authorizeWatch`) |
 | `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port: records/leases/idempotency/events/graph + compiled-match AST; kinds are records, not a port concern), `blobs.ts` (the `BlobStore` port: artifact bytes, content-addressed; memory + filesystem impls), `crypto.ts` (optional blob encryption: per-blob AES-GCM DEK wrapped under a space KEK), `row.ts` (shared row/value mapping), `pgbase.ts` (shared Postgres-dialect body over a minimal SQL port) + `pglite.ts`, `postgres.ts` (both bind their driver to `pgbase`), `sqlite.ts` (own dialect) |
@@ -188,9 +188,17 @@ live at the top of the relevant `agent_docs/` file, not here.
   writable only by `human:*` and one supervisor agent.
 - **Taint clears only via privileged declassify.** Ordinary agents cannot write
   `taint: false`.
+- **Artifact bytes never travel inside a record.** A payload too large for a body lives in the
+  blob store; the record carries `{digest, mediaType, size}` and routes. A base64 payload in a
+  record body defeats matching, windowing, the Feed, and every size assumption downstream.
+- **A blob's digest is over plaintext, and its key is destroyable.** Encryption is optional, but
+  when it is on the content address still hashes the plaintext (so integrity and the event chain
+  survive crypto-shredding), and the wrapped DEK lives beside the blob — never in the immutable
+  record, because shredding means deleting it.
 - **Embedded mode is never a semantically weaker cousin of Postgres.** The full
-  conformance + fault-injection suite runs against every storage adapter in CI from day
-  one. This is the only guard against storage-adapter drift.
+  conformance + fault-injection suite runs against every implementation of every port
+  (storage adapters AND the blob store, encrypted or not) in CI from day one. This is the only
+  guard against drift.
 - **The wire contract is what's frozen, not the implementation.** OpenAPI-first;
   implementation language and storage backend can change behind the stable protocol.
 - **Minimal dependencies, maximal platform independence, zero or near-zero build steps.**

@@ -9,6 +9,22 @@ where credentials come from, and how any of it reaches a machine. The wire proto
 speak is [design-api.md](design-api.md); the authorization model is
 [design-auth.md](design-auth.md).
 
+```mermaid
+flowchart TB
+    H[a human typing] --> CLI[radia CLI]
+    M[a model calling tools] --> MCP[MCP adapter]
+    A[agent code] --> SDK["SDK (TS · Python)"]
+    B[a browser] --> UI[web console]
+    CLI --> API["/v0 — the frozen wire contract"]
+    MCP --> API
+    SDK --> API
+    UI --> API
+    API --> SPACE[(space)]
+```
+
+Every surface is a client of the same public API — none reaches past it. If the CLI can do it, so
+can anything else.
+
 ## The layering rule that shapes all of it
 
 ```
@@ -31,8 +47,13 @@ privileged shortcut would be evidence of a missing API, not a reason to add a ba
 
 Every non-portable host operation lives in one file: process (`args`, `exit`, `env`, `osName`),
 files (`readTextFile`, `writeTextFile`, `mkdirp`, `removeFile`, `restrictToOwner`,
-`moduleRelative`), standard streams (`stdin`, `writeStdout`, `writeStderr`), signals
+`moduleRelative`), **binary files** for artifact blobs (`writeBinaryFile`, `readBinaryFile`,
+`readBinaryStream`, `fileSize`), standard streams (`stdin`, `writeStdout`, `writeStderr`), signals
 (`onShutdown`), and HTTP (`serve`).
+
+The binary group is the seam's one exception to its own sync rule, documented there: artifact
+payloads are megabyte-scale and read while serving a request, so downloads stream instead of
+materializing a blob in memory.
 
 Why: the CLAUDE.md invariant is *maximal platform independence*. `Deno.exit` and
 `Deno.readTextFileSync` scattered through `src/` bind every module to one runtime for operations
@@ -118,6 +139,12 @@ worker blocks a record for an hour) and a model that loses its claim constantly.
 Tool descriptions in `tools.ts` are the documentation — a model learns *how* to use a tool from
 its description, never from a system prompt that teaches the substrate. Kinds are discovered via
 `space_kinds`, so a kind declared after startup is immediately usable.
+
+Known gap: neither the CLI nor the MCP adapter has artifact verbs. Bytes are reachable only over
+HTTP (`POST /v0/artifacts`, `GET /v0/artifacts/{id}`) or through an SDK, so "if the CLI can do it,
+an external client can too" currently holds in one direction only for payloads. A `radia artifact
+put/get` pair would close it; base64 in an MCP tool result would not (it would put the payload
+back inside a record, which is the thing artifacts exist to avoid).
 
 Known gap: the adapter exposes `space_doctor` (diagnosis) but no remediation verbs
 (`reclaim`/`dead-letter`/`requeue`/`declassify`). Those sit behind `/v0/ops/*` and are grant-gated,

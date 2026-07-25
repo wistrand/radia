@@ -24,7 +24,7 @@ The rest of M2/M3 is unbuilt.
 
 ### M0 — semantic kernel prototype, embedded-first — DONE
 
-**Status:** Phases 0–7 built and verified (142 conformance tests across the embedded
+**Status:** Phases 0–7 built and verified (177 conformance tests across the embedded
 adapters, 213 including a live Postgres); the web console (Feed, records browser, kinds, query, worker, relationship-**graph**, and an **Auth**
 view), runnable agent examples, and a CLI LLM chatbot (runnable with real auth roles) ship too.
 Enhancements layered on since the phases: M1 watches (below), the M1 **authorization stack**
@@ -76,7 +76,7 @@ two-terminal demo works.
 - [ ] hash-chained event log
 - [ ] polished Python + TS SDKs
 - [x] watches (SSE, cursors, 410 semantics) — `POST /v0/watches` + `GET /v0/watches/{id}/events` (SSE, `Last-Event-ID`/`?cursor=` resumption, 410 `cursor_expired` path); backed by the event log + an in-process `Notifier` (LISTEN/NOTIFY-equivalent wakeup); wakeup-by-kind (+ predicate) matching in `Space.matchesEvent`; **grant-gated** (`Space.authorizeWatch` — any grant on the kind, template AND-ed into the watch scope). SDK `client.watch()` async generator; `agentLoop` is now event-driven (watch wakeups + poll fallback). 410/GC dormant until event-log retention (M2).
-- [x] artifact service (blob port + `artifact` records + download capabilities; encryption deferred)
+- [x] artifact service — the `BlobStore` port (content-addressed, memory + filesystem impls) + reserved `artifact` records + short-lived download capabilities + **optional encryption at rest** (per-blob AES-GCM DEK, AES-KW-wrapped under a space KEK). See [design-data-model.md](design-data-model.md) §2.4. Open: reference-aware GC and KEK rotation.
 - [~] orphan/starvation diagnostics — a derived-diagnostics report + remediation ships (`GET /v0/ops/diagnostics`, admin reclaim/dead-letter/requeue); uses age/state heuristics, not full template-match orphan/starving-template analysis
 
 **Verify:** the same suite green against Postgres *and* embedded — **PASSED**, 213/213 via
@@ -91,7 +91,7 @@ event-log retention lands (M2).
 - [ ] request/bid/award (see [design-marketplace.md](design-marketplace.md)) — speculative ahead of a first user; gate behind a measured baseline like the scheduler, not build-on-spec (see [plan-validation.md](plan-validation.md))
 - [ ] durable timers — in scope: the delayed-visibility sweeper over the envelope's `available_at` that retry backoff needs anyway. Out of scope: a general workflow-timer / cron / signal library — that is Temporal's ground; Radia does not reimplement durable execution (see [research-positioning.md](research-positioning.md))
 - [ ] transactional budget reservation/settlement
-- [ ] runtime envelope encryption + crypto-shredding
+- [~] runtime envelope encryption + crypto-shredding — **built for artifact blobs** (`src/storage/crypto.ts`: per-blob DEK, wrapped under a space KEK from env/keyring, destroyable sidecar so deleting the key destroys the payload while the record and its digest stay verifiable). Record *bodies* are still plaintext, and KMS wrapping + rotation are open.
 - [ ] signed, externally-anchored log checkpoints
 - [ ] lineage viewer
 - [ ] run-scoped short-lived credentials

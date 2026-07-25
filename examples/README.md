@@ -93,8 +93,10 @@ The retry churn is the most animated part: records flicker `leased → available
 | `--chaos PCT` | 12 | share of tasks that go poison or get abandoned |
 | `--once` | off | tear down a spawned space at the end (CI) |
 
-It prints per-wave counters and then the space's own totals by kind and state. The Space tab keeps
-the newest 3000 records (`SPACE_CAP`), so heavy waves roll the oldest nodes off the map.
+It prints per-wave counters and then the space's own totals by kind and state. The Space tab holds
+3000 records (`SPACE_CAP`); past that it evicts finished ones (consumed, dead-lettered) in
+least-recently-active order first, then live ones — so a heavy wave rolls off settled history
+while work that is still moving stays on the map.
 
 ## CLI chatbot (`chat/`) — a real LLM agent, full symmetry
 
@@ -102,6 +104,29 @@ A CLI chatbot where **the whole conversation lives on the blackboard**. The chat
 no external calls — it only reads and writes records. LLM inference (`llm_call →
 llm_result`, streamed as `llm_chunk`) and tools (`tool_call → tool_result`) are both served
 by content-routed workers.
+
+```mermaid
+flowchart TB
+    subgraph REPL["chat.ts — the REPL (no routing logic, no tool list, no API key)"]
+        U[you]
+    end
+    U -->|"put message + UNTIERED llm_call"| SP[(space)]
+    SP -->|"take {tier: absent}"| R["router<br/>agent:chat-router"]
+    R -->|"classify (a cheap llm_call of its own)"| SP
+    R -->|"put llm_call {tier}"| SP
+    SP -->|"take {llm_call, tier}"| I["inference ×3<br/>agent:chat-inference<br/>holds the API key"]
+    I -->|"llm_chunk · llm_result"| SP
+    I -.->|"escalate → next tier by rank"| SP
+    SP -->|"take {tool_call, tool}"| T["tools<br/>agent:chat-tools<br/>sandboxed reads, no env"]
+    SP -->|"take {tool_call, generate_image}"| G["images<br/>agent:chat-images<br/>API key, no files"]
+    T -->|tool_result| SP
+    G -->|"artifact + tool_result (a reference)"| SP
+    G -.-> BL[(blob store)]
+    SP -->|"progress · llm_chunk"| U
+```
+
+Every arrow is a record. The REPL never calls a model, never picks a tier, and never holds a
+key — it writes messages and reads results, and four independently-privileged workers do the rest.
 
 The conversation is an **append-only thread of `message` records** anchored to a
 `conversation` record — not a client-held array. The chatbot appends messages (system /

@@ -7,8 +7,8 @@ the client-vs-runtime metadata split, and `parent_ids` lineage live in
 `src/core/record.ts` (`buildRecord`), `src/storage/adapter.ts` (types), `src/storage/row.ts`
 (mapping), and the two adapters. Kinds/indexing: `src/core/kinds.ts`. `delegation_context`
 (authority lineage) and `taint` (data lineage) are both built (M1) — see "Provenance vs.
-authority" below. **Artifacts / blob storage (§2.4) are built (M1), unencrypted in v1** — see the
-section below for what landed and what did not.
+authority" below. **Artifacts / blob storage (§2.4) are built (M1), with optional encryption at
+rest** — see the section below for what landed and what did not.
 
 ## Contents
 - Invariants
@@ -155,6 +155,17 @@ per run · slow-lane time and row-scan budgets · SSE buffer/backpressure limits
 Large payloads live in blob storage. Records carry **stable internal artifact IDs**,
 never temporary signed URLs (they would expire inside immutable records). Retrieval is
 authorized through the runtime, which issues short-lived download capabilities.
+
+```mermaid
+flowchart LR
+    W[worker] -->|POST /v0/artifacts<br/>bytes| RT[runtime]
+    RT -->|sha256 of PLAINTEXT| BS[(blob store<br/>content-addressed)]
+    RT -->|commits| AR["artifact record<br/>{digest, mediaType, size}"]
+    AR -->|"routes, taints, has lineage,<br/>is grant-gated — like any record"| SP[(space)]
+    C[consumer] -->|"GET /v0/artifacts/{record id}"| RT
+    BR["browser &lt;img&gt;<br/>cannot send a header"] -->|"?capability=… (minutes, one artifact)"| RT
+    RT -.->|"AES-GCM under a per-blob DEK,<br/>DEK wrapped by the space KEK"| BS
+```
 
 **An artifact is a record.** The reserved `artifact` kind's body is `{digest, mediaType, size,
 filename?}` — the metadata, never the bytes — so grants, taint, lineage, the event log, retention
