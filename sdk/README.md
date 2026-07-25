@@ -10,10 +10,14 @@ whatever an SDK can do, a plain HTTP client can too.
 | Worker loop | `agentLoop`        | `agent_loop` |
 | Watches     | `client.watch()` async generator | `client.watch()` generator |
 | Artifacts   | `putArtifact` / `getArtifact` / `artifactCapability` | `put_artifact` / `get_artifact` / `artifact_capability` |
+| Remediation | `admin(action, id)` / `remediate(action, selector)` | `admin(action, id)` / `remediate(action, state=…, expired=…)` |
+| Ops queries | `queryEnvelopes` / `diagnostics` / `getStats` / `getEvents` | `query_envelopes` / `diagnostics` / `get_stats` / `get_events` |
+| Bootstrap   | `grant` / `createAgentDefinition` / `createRun` / `stopRun` | `grant` / `create_agent_definition` / `create_run` / `stop_run` |
 | Dependencies| none beyond the runtime | none — standard library only (3.9+) |
 
-The two are at feature parity. Differences are idiomatic only (camelCase vs snake_case,
-`AbortSignal` vs `threading.Event`).
+The two are at feature parity — checked, not assumed: every public method on `RadiaClient` in
+`ts/client.ts` has a snake_case peer in `py/radia.py`. Differences are idiomatic only (camelCase vs
+snake_case, `AbortSignal` vs `threading.Event`).
 
 ## Credentials
 

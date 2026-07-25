@@ -23,7 +23,7 @@ flowchart LR
 ```
 
 ```bash
-deno task conformance                     # sqlite + pglite + the blob port   (177 tests)
+deno task conformance                     # sqlite + pglite + the blob port   (185 tests)
 scripts/pg-conformance.sh                 # + a live Postgres                 (adds ~71)
 RADIA_PG_URL=postgres://… scripts/pg-conformance.sh   # against your own server
 ```
@@ -39,7 +39,7 @@ the blob suites existed; its storage half is what a live server adds.)
 |------|------|
 | `run.test.ts` | entry point: enumerates implementations, registers every suite against each |
 | `harness.ts`  | the `Suite` / `BlobSuite` / `BlobCryptoSuite` types and setup/teardown. The only `Deno.test` binding in the repo |
-| `suites/`     | one file per behavior area (records, matching, leases, idempotency, events, watches, faults, auth, taint, admin, blobs) |
+| `suites/`     | one file per behavior area (records, matching, leases, idempotency, events, watches, faults, auth, taint, admin + selector-driven remediation, blobs + encryption) |
 
 ## Writing a suite
 

@@ -115,7 +115,7 @@ export interface Diagnostics {
   now: string;
   counts: Record<string, number>;
   deadLetter: { count: number; sample: unknown[] };
-  stuckLeases: { count: number; sampledFrom: number; sample: unknown[] };
+  stuckLeases: { count: number; atLeast: boolean; sampledFrom: number; sample: unknown[] };
   /** Unclaimed *claimable* (work) records older than the threshold — a starvation signal.
    *  Reference kinds (`claimable:false`: facts, config, grants, history) are excluded: they sit
    *  available forever by design and are not stale. */
@@ -929,6 +929,38 @@ export class Space {
     return rows;
   }
 
+  /**
+   * Remediate every record matching an envelope SELECTOR, not one id at a time.
+   *
+   * Remediation used to be strictly per-record (`POST /v0/ops/records/{id}/{action}`), which meant
+   * draining 500 stuck leases took 500 calls preceded by 50 diagnostics calls just to learn the
+   * ids — and the diagnostics report only samples ten. The selector here is deliberately the SAME
+   * shape `queryEnvelopes` accepts, so "what is wrong" and "fix it" are one query language rather
+   * than two: `{state:"leased", expired:true}` is the stuck-lease set in both.
+   *
+   * Every transition is state-guarded per record, so this is safe to re-run and safe to race with
+   * a worker that comes back: a record that moved on is simply not applied. Bounded by `limit`;
+   * `more` says the page was full, so a caller draining a backlog loops until it is false.
+   */
+  async remediate(
+    action: "reclaim" | "dead-letter" | "requeue",
+    selector: { state: RecordState; expired?: boolean; staleSeconds?: number; limit?: number },
+  ): Promise<{ action: string; matched: number; applied: number; more: boolean; sample: string[] }> {
+    const limit = Math.min(Math.max(selector.limit ?? 200, 1), 2000);
+    const rows = await this.queryEnvelopes({ ...selector, limit });
+    let applied = 0;
+    for (const row of rows) {
+      const id = row.envelope.recordId;
+      const ok = action === "reclaim"
+        ? await this.reclaim(id)
+        : action === "dead-letter"
+        ? await this.forceDeadLetter(id)
+        : await this.requeue(id);
+      if (ok) applied++;
+    }
+    return { action, matched: rows.length, applied, more: rows.length >= limit, sample: rows.slice(0, 5).map((r) => r.envelope.recordId) };
+  }
+
   /** A derived health report, composed from queryEnvelopes + stats: counts by state,
    *  dead-letters, expired-but-stuck leases, and available records that have sat unclaimed. */
   async diagnostics(): Promise<Diagnostics> {
@@ -949,16 +981,22 @@ export class Space {
 
     return {
       now,
+      // No `expired` count: expiry is IMPLICIT. A lease that lapses leaves the record in state
+      // `leased` (a later take reclaims it, bumping the attempt), so nothing ever writes the
+      // `expired` state and reporting it would always be a confident zero next to hundreds of
+      // demonstrably lapsed leases. The real number is `stuckLeases` below.
       counts: {
         available: total("available"),
         leased: total("leased"),
         consumed: total("consumed"),
         dead_letter: total("dead_letter"),
-        expired: total("expired"),
       },
       deadLetter: { count: total("dead_letter"), sample: deadLetter.slice(0, 10).map((r) => ({ recordId: env(r).recordId, kind: env(r).kind, attempt: env(r).attempt })) },
       stuckLeases: {
         count: stuck.length,
+        // The scan is capped, so a full page means "at least this many" — otherwise a reader (or a
+        // model) reports a cap as if it were a census.
+        atLeast: stuck.length >= SAMPLE,
         sampledFrom: Math.min(total("leased"), SAMPLE),
         sample: stuck.slice(0, 10).map((r) => ({ recordId: env(r).recordId, kind: env(r).kind, leaseId: env(r).leaseId, leasedUntil: env(r).leasedUntil, attempt: env(r).attempt })),
       },

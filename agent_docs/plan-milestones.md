@@ -24,7 +24,7 @@ The rest of M2/M3 is unbuilt.
 
 ### M0 — semantic kernel prototype, embedded-first — DONE
 
-**Status:** Phases 0–7 built and verified (177 conformance tests across the embedded
+**Status:** Phases 0–7 built and verified (185 conformance tests across the embedded
 adapters, 213 including a live Postgres); the web console (Feed, records browser, kinds, query, worker, relationship-**graph**, and an **Auth**
 view), runnable agent examples, and a CLI LLM chatbot (runnable with real auth roles) ship too.
 Enhancements layered on since the phases: M1 watches (below), the M1 **authorization stack**
@@ -77,7 +77,7 @@ two-terminal demo works.
 - [ ] polished Python + TS SDKs
 - [x] watches (SSE, cursors, 410 semantics) — `POST /v0/watches` + `GET /v0/watches/{id}/events` (SSE, `Last-Event-ID`/`?cursor=` resumption, 410 `cursor_expired` path); backed by the event log + an in-process `Notifier` (LISTEN/NOTIFY-equivalent wakeup); wakeup-by-kind (+ predicate) matching in `Space.matchesEvent`; **grant-gated** (`Space.authorizeWatch` — any grant on the kind, template AND-ed into the watch scope). SDK `client.watch()` async generator; `agentLoop` is now event-driven (watch wakeups + poll fallback). 410/GC dormant until event-log retention (M2).
 - [x] artifact service — the `BlobStore` port (content-addressed, memory + filesystem impls) + reserved `artifact` records + short-lived download capabilities + **optional encryption at rest** (per-blob AES-GCM DEK, AES-KW-wrapped under a space KEK). See [design-data-model.md](design-data-model.md) §2.4. Open: reference-aware GC and KEK rotation.
-- [~] orphan/starvation diagnostics — a derived-diagnostics report + remediation ships (`GET /v0/ops/diagnostics`, admin reclaim/dead-letter/requeue); uses age/state heuristics, not full template-match orphan/starving-template analysis
+- [~] orphan/starvation diagnostics — a derived-diagnostics report + remediation ships (`GET /v0/ops/diagnostics`; reclaim/dead-letter/requeue per record OR by envelope selector via `POST /v0/ops/remediate`, so draining a backlog is one call per page rather than one per record); uses age/state heuristics, not full template-match orphan/starving-template analysis
 
 **Verify:** the same suite green against Postgres *and* embedded — **PASSED**, 213/213 via
 `scripts/pg-conformance.sh` (sqlite, pglite, and a live Postgres 16). Watch resumption and 410

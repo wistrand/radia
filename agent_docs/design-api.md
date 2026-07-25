@@ -103,6 +103,7 @@ release(lease, reason) -> ok | lease_lost       # cooperative cancel, attempt +0
 renew(lease) -> lease' | lease_lost
 watch(template) -> watch_id / event stream
 control-plane ops (kinds, templates, definitions, runs — see design-auth.md)
+ops plane      (stats, events, envelope query, diagnostics, remediation — see design-observability.md)
 ```
 
 **Artifacts are a payload plane beside these verbs, not an eleventh one.** `POST /v0/artifacts`,

@@ -7,6 +7,7 @@
 // "console support code" and undersold what lives here).
 
 import type { Space } from "../../core/space.ts";
+import type { RecordState } from "../../storage/adapter.ts";
 import { problem } from "../problem.ts";
 
 export async function handleStats(space: Space): Promise<Response> {
@@ -82,6 +83,33 @@ export async function handleDeclassify(space: Space, recordId: string): Promise<
 }
 
 /** Control-plane remediation (bypasses lease fencing; grant-gated with real auth). */
+/** Selector-driven remediation: fix everything matching, instead of one id at a time. The body is
+ *  the same envelope selector `GET /v0/ops/records` takes, so diagnosing and fixing share one
+ *  vocabulary. */
+export async function handleRemediate(space: Space, req: Request): Promise<Response> {
+  let j: Record<string, unknown>;
+  try {
+    j = await req.json() as Record<string, unknown>;
+  } catch {
+    return problem(400, "invalid_body", "expected a JSON object");
+  }
+  const action = String(j.action ?? "");
+  if (action !== "reclaim" && action !== "dead-letter" && action !== "requeue") {
+    return problem(400, "invalid_action", `action must be reclaim | dead-letter | requeue, got '${action}'`);
+  }
+  const state = String(j.state ?? "");
+  if (!["available", "leased", "consumed", "dead_letter"].includes(state)) {
+    return problem(400, "invalid_state", `state must be available | leased | consumed | dead_letter, got '${state}'`);
+  }
+  const out = await space.remediate(action, {
+    state: state as RecordState,
+    expired: j.expired === true,
+    staleSeconds: typeof j.stale === "number" ? j.stale : undefined,
+    limit: typeof j.limit === "number" ? j.limit : undefined,
+  });
+  return Response.json(out);
+}
+
 export async function handleAdmin(space: Space, recordId: string, action: string): Promise<Response> {
   let applied: boolean;
   if (action === "reclaim") applied = await space.reclaim(recordId);

@@ -123,7 +123,9 @@ class RadiaClient:
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             hdrs["Content-Type"] = "application/json"
-        if self.token:
+        # A caller-supplied Authorization wins: minting a run authenticates with the DEFINITION
+        # token, not this client's run token, so the client's credential must not overwrite it.
+        if self.token and "Authorization" not in hdrs:
             hdrs["Authorization"] = f"Bearer {self.token}"
         req = urllib.request.Request(self.base + path, data=data, headers=hdrs, method=method)
         try:
@@ -189,7 +191,9 @@ class RadiaClient:
             hdrs["X-Radia-Taint"] = "true"
         if idempotency_key:
             hdrs["Idempotency-Key"] = idempotency_key
-        if self.token:
+        # A caller-supplied Authorization wins: minting a run authenticates with the DEFINITION
+        # token, not this client's run token, so the client's credential must not overwrite it.
+        if self.token and "Authorization" not in hdrs:
             hdrs["Authorization"] = f"Bearer {self.token}"
         req = urllib.request.Request(self.base + "/v0/artifacts", data=data, headers=hdrs, method="POST")
         try:
@@ -224,6 +228,44 @@ class RadiaClient:
         """A short-lived, single-artifact download capability, for a context that cannot send an
         Authorization header (an ``<img src>``). Returns ``{capability, expiresAt, url}``."""
         return self._req("POST", "/v0/artifacts/" + urllib.parse.quote(record_id) + "/capability")
+
+    # -- authorization: grants and the bootstrap chain (design-auth) --
+
+    def grant(
+        self,
+        principal: str,
+        kind: str,
+        operations: List[str],
+        template: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, str]:
+        """Assign a kind-scoped grant. A grant IS a record, writable only by a human/supervisor
+        principal; ``template`` narrows read/take to ``grant AND request``."""
+        body: Dict[str, Any] = {"principal": principal, "kind": kind, "operations": operations}
+        if template:
+            body["template"] = template
+        key = "grant:{}:{}:{}:{}".format(
+            principal, kind, ",".join(sorted(operations)),
+            json.dumps(template, sort_keys=True, separators=(",", ":")) if template else "",
+        )
+        return self.put({"kind": "grant", "body": body}, idempotency_key=key)
+
+    def create_agent_definition(
+        self,
+        agent: str,
+        grants: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, str]:
+        """Operator: define an agent with its grants. Returns the definition token, shown once."""
+        return self._req("POST", "/v0/agent-definitions", {"agent": agent, "grants": grants or []})
+
+    def create_run(self, definition_token: str) -> Dict[str, Any]:
+        """Mint a short-lived run token from a definition token."""
+        return self._req("POST", "/v0/agent-runs", {}, {"Authorization": f"Bearer {definition_token}"})
+
+    def stop_run(self, run: str) -> Dict[str, Any]:
+        """Stop a run: its token stops resolving and its in-flight leases are invalidated."""
+        from urllib.parse import quote
+
+        return self._req("POST", f"/v0/agent-runs/{quote(run)}/stop")
 
     # -- records --
 
@@ -310,6 +352,76 @@ class RadiaClient:
 
     def diagnostics(self) -> Dict[str, Any]:
         return self._req("GET", "/v0/ops/diagnostics")
+
+    def query_envelopes(
+        self,
+        state: str,
+        expired: bool = False,
+        stale: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Records filtered by runtime ENVELOPE state — the dimension the content-routing query
+        language deliberately omits, since that one matches record bodies for routing.
+
+        ``expired`` keeps only leased rows whose lease has lapsed; ``stale`` keeps only
+        first-attempt rows that have sat available that many seconds.
+        """
+        from urllib.parse import urlencode
+
+        q: Dict[str, Any] = {"state": state}
+        if expired:
+            q["expired"] = "1"
+        if stale is not None:
+            q["stale"] = stale
+        if limit is not None:
+            q["limit"] = limit
+        return self._req("GET", "/v0/ops/records?" + urlencode(q))["records"]
+
+    # -- remediation (operator) --
+
+    def admin(self, action: str, record_id: str) -> Dict[str, Any]:
+        """Remediate ONE record: ``reclaim`` | ``dead-letter`` | ``requeue``."""
+        from urllib.parse import quote
+
+        return self._req("POST", f"/v0/ops/records/{quote(record_id)}/{action}")
+
+    def remediate(
+        self,
+        action: str,
+        state: str,
+        expired: bool = False,
+        stale: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Remediate EVERY record matching an envelope selector — the same selector
+        :meth:`query_envelopes` takes, so diagnosing and fixing use one vocabulary.
+
+        Fixing a backlog one id at a time is a call per record, preceded by diagnostics calls just
+        to learn the ids (and that report only samples ten). Returns ``{matched, applied, more}``;
+        loop while ``more`` is true to drain a backlog::
+
+            while True:
+                r = client.remediate("reclaim", state="leased", expired=True)
+                if not r["more"]:
+                    break
+
+        Every transition is state-guarded per record, so this is safe to re-run and safe to race a
+        worker that comes back: a record that moved on is simply not applied.
+        """
+        body: Dict[str, Any] = {"action": action, "state": state}
+        if expired:
+            body["expired"] = True
+        if stale is not None:
+            body["stale"] = stale
+        if limit is not None:
+            body["limit"] = limit
+        return self._req("POST", "/v0/ops/remediate", body)
+
+    def declassify(self, record_id: str) -> Dict[str, Any]:
+        """Privileged: emit a clean (untainted) successor of a tainted record."""
+        from urllib.parse import quote
+
+        return self._req("POST", f"/v0/ops/records/{quote(record_id)}/declassify")
 
     # -- watches --
 

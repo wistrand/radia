@@ -351,6 +351,50 @@ paths:
                   url: { type: string, description: "space-relative download URL carrying the capability" }
         "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+  /ops/remediate:
+    post:
+      operationId: remediate
+      summary: Remediate every record matching an envelope selector
+      description: |
+        Selector-driven remediation, as opposed to `POST /ops/records/{id}/{action}` one id at a
+        time. The selector is the same shape `GET /ops/records` accepts, so diagnosing and fixing
+        share one vocabulary: `{state: leased, expired: true}` is the stuck-lease set in both.
+
+        Every transition is state-guarded per record, so this is safe to re-run and safe to race
+        with a worker that returns — a record that has moved on is simply not applied. Bounded by
+        `limit`; `more` reports that the page was full, so a caller draining a backlog repeats
+        until it is false.
+      x-stability: experimental
+      x-phase: "M1"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, state]
+              properties:
+                action: { type: string, enum: [reclaim, dead-letter, requeue] }
+                state: { type: string, enum: [available, leased, consumed, dead_letter] }
+                expired: { type: boolean, description: "With state=leased: only leases that have lapsed." }
+                stale: { type: integer, description: "With state=available: only first-attempt records unclaimed for this many seconds." }
+                limit: { type: integer, default: 200, description: "Max records to act on (max 2000)." }
+      responses:
+        "200":
+          description: applied
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [action, matched, applied, more]
+                properties:
+                  action: { type: string }
+                  matched: { type: integer }
+                  applied: { type: integer, description: "matched minus those a guard skipped (already moved on)" }
+                  more: { type: boolean }
+                  sample: { type: array, items: { type: string } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
   /watches:
     post:
       operationId: watch

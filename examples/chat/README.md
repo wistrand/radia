@@ -167,10 +167,21 @@ now returns `more: true` with a warning that the result is a page, and **`space_
 "how many" directly (exact up to the server's 500-row query cap, and says so when it isn't). A page
 answers *show me some*; an aggregation question needs *how many*, and the tool set now has both.
 
-**Remediation tools** (`tools/space.ts`) turn it into an operator: `space_reclaim` (un-stick
+**Remediation tools** (`tools/space.ts`) turn it into an operator, in bulk: `space_reclaim` (un-stick
 an expired lease), `space_dead_letter`, `space_requeue` — control-plane operations that
 bypass lease fencing (fixing another worker's stuck record), so they're privileged (grant-
 gated with real auth). Pair with `space_doctor`: "find what's stuck and fix it," in chat.
+
+Each takes **either one record id or a selector**. Called with no id, `space_reclaim` un-sticks
+every expired lease in one call and reports `{matched, applied, more}`; repeat while `more` is
+true. That matters at real scale: draining 500 stuck leases per-id is 500 calls preceded by ~50
+`space_doctor` calls just to learn the ids, because the report samples ten. The selector is the
+same one the envelope query takes, so the model diagnoses and fixes in one vocabulary.
+
+Two related honesty fixes in `space_doctor`: it no longer reports an `expired` count (a lapsed
+lease leaves the record `leased`, so that number was always a confident zero next to hundreds of
+demonstrably lapsed leases), and `stuckLeases` now carries `atLeast` when its scan hit the sample
+cap — a bounded scan must not read as a census.
 
 **The chat is woken by the runtime, not by a timer.** A background `watch` per streaming kind
 (`llm_chunk`, `llm_result`, `tool_result`) turns "a matching record became available" into a

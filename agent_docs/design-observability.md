@@ -65,6 +65,16 @@ aggregation (stats), and DAG-traversal (lineage/graph) are first-class ops capab
 than template queries — pushing them into the body-match DSL would corrupt it. What *can* be a
 query is one (the envelope filter); what genuinely can't stays a derived capability.
 
+**Remediation shares the diagnostic's selector.** `POST /v0/ops/remediate` takes the same envelope
+selector as `GET /v0/ops/records` (`{state, expired, stale, limit}`), so "what is wrong" and "fix
+it" are one query language. Per-id remediation remains for surgical cases; a backlog is one call
+per page, not one call per record.
+
+**There is no `expired` record state.** A lapsed lease leaves the record `leased` — a later take
+reclaims it, bumping the attempt — so nothing ever writes `expired`, and diagnostics deliberately
+does not report a count for it. The real number is `stuckLeases`, which carries `atLeast` when its
+scan hit the sample cap: a bounded scan must not present itself as a census.
+
 The **stale-available** (starvation) check counts only **claimable** kinds — a record of a
 `claimable:false` reference kind (facts, config, grants, history) sitting `available` forever is
 normal, not stale, so it is excluded at the query level (`excludeKinds`, before the sample cap, so

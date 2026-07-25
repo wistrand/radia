@@ -121,15 +121,27 @@ export const INSPECT_SCHEMAS: ToolDef[] = [
 // another worker's stuck record), so they are operator-gated and act as the SESSION principal.
 
 export function makeRemediateTools(client: RadiaClient): Record<string, Tool> {
+  // Each tool takes EITHER one record id or a selector. Draining a backlog one id at a time means
+  // a call per record preceded by diagnostics calls just to learn the ids — and the report only
+  // samples ten of them. The selector form fixes everything matching in one call.
+  const fix = (action: "reclaim" | "dead-letter" | "requeue", defaultState: string) => async (a: Record<string, unknown>) => {
+    if (typeof a.recordId === "string" && a.recordId) return await client.admin(action, a.recordId);
+    return await client.remediate(action, {
+      state: typeof a.state === "string" ? a.state : defaultState,
+      expired: a.expired !== false && defaultState === "leased",
+      stale: typeof a.stale === "number" ? a.stale : undefined,
+      limit: typeof a.limit === "number" ? a.limit : undefined,
+    });
+  };
   return {
-    space_reclaim: (a) => client.admin("reclaim", String(a.recordId ?? "")),
-    space_dead_letter: (a) => client.admin("dead-letter", String(a.recordId ?? "")),
-    space_requeue: (a) => client.admin("requeue", String(a.recordId ?? "")),
+    space_reclaim: fix("reclaim", "leased"),
+    space_dead_letter: fix("dead-letter", "leased"),
+    space_requeue: fix("requeue", "dead_letter"),
   };
 }
 
 export const REMEDIATE_SCHEMAS: ToolDef[] = [
-  { type: "function", function: { name: "space_reclaim", description: "Un-stick an EXPIRED lease: force the record back to available (attempt +1) so a worker can re-take it. No effect on a valid (unexpired) lease. Returns {applied}.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
+  { type: "function", function: { name: "space_reclaim", description: "Un-stick EXPIRED leases: force records back to available (attempt +1) so a worker can re-take them. Called with NO recordId it fixes EVERY expired lease (up to `limit`, default 200) in one call and returns {matched, applied, more} — prefer that for a backlog instead of one id at a time; repeat while `more` is true. Pass recordId only to fix exactly one. No effect on a valid (unexpired) lease.", parameters: { type: "object", properties: { recordId: { type: "string", description: "Fix just this record. Omit to fix all matching." }, limit: { type: "integer", description: "Max records per call (default 200, max 2000)." } } } } },
   { type: "function", function: { name: "space_dead_letter", description: "Give up on a record: force it to dead_letter (from available or leased). Returns {applied}.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
   { type: "function", function: { name: "space_requeue", description: "Retry a dead-lettered record: force it back to available. Returns {applied}.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
 ];

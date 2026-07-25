@@ -16,7 +16,7 @@ import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
 import { handleCreateDefinition, handleCreateRun, handleStopRun } from "./handlers/agents.ts";
 import { handleGetArtifact, handleMintCapability, handlePutArtifact } from "./handlers/artifacts.ts";
-import { handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleGetRecord, handleGraph, handleLineage, handleStats } from "./handlers/ops.ts";
+import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleGetRecord, handleGraph, handleLineage, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem, statusFor } from "./problem.ts";
 import { RadiaError } from "../core/errors.ts";
@@ -223,6 +223,8 @@ function makeHandler(space: Space, ui: string, authRequired: boolean) {
         return await handleCreateDefinition(space, req, principal);
 
       // --- observability + control plane (experimental) ---
+      case "POST /v0/ops/remediate":
+        return await handleRemediate(space, req);
       case "GET /v0/ops/records":
         return await handleEnvelopeQuery(space, url);
       case "GET /v0/ops/stats":

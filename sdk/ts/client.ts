@@ -210,6 +210,16 @@ export class RadiaClient {
     return await this.req("POST", `/v0/ops/records/${encodeURIComponent(recordId)}/${action}`);
   }
 
+  /** Remediate every record matching an envelope selector — the same selector `queryEnvelopes`
+   *  takes, so diagnosing and fixing use one vocabulary. Returns how many matched and were
+   *  applied, and `more` when the page was full (loop until it is false to drain a backlog). */
+  remediate(
+    action: "reclaim" | "dead-letter" | "requeue",
+    selector: { state: string; expired?: boolean; stale?: number; limit?: number },
+  ): Promise<{ action: string; matched: number; applied: number; more: boolean; sample: string[] }> {
+    return this.req("POST", "/v0/ops/remediate", { action, ...selector });
+  }
+
   /** Privileged declassify (operator): emit a clean (untainted) successor of a tainted record. */
   declassify(recordId: string): Promise<{ declassifiedFrom: string; id: string }> {
     return this.req("POST", `/v0/ops/records/${encodeURIComponent(recordId)}/declassify`);

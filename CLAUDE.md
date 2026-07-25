@@ -49,7 +49,7 @@ content, not by addressing.
 | `src/flags.ts`                          | shared CLI flag parsing (`flag`/`flags`/`has`/`positional`) |
 | `src/ui/index.html`                     | dev web console served at `GET /` (no build, public API only); the **Space** tab streams the ops event log into a property-similarity map (bounded, evicting finished records before live ones) |
 | `src/ui/vendor/`                        | prebuilt browser assets served under `/ui/` — `blitzoom.bundle.js` (`<bz-graph>`, layout for the Space tab), pinned to an upstream commit; see the README there |
-| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes, `resolveAuth` Bearer, ops-plane gate, operator-token injection), `problem.ts` (RFC 9457), `handlers/` (`records.ts` + authorize, `leases.ts`, `agents.ts` = bootstrap chain, `artifacts.ts` = bytes in/out + download capabilities, `ops.ts` = ops plane: stats/events/lineage/children/graph/envelope-query/diagnostics/admin/declassify, `watches.ts` SSE = grant-gated `authorizeWatch`) |
+| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes, `resolveAuth` Bearer, ops-plane gate, operator-token injection), `problem.ts` (RFC 9457), `handlers/` (`records.ts` + authorize, `leases.ts`, `agents.ts` = bootstrap chain, `artifacts.ts` = bytes in/out + download capabilities, `ops.ts` = ops plane: stats/events/lineage/children/graph/envelope-query/diagnostics/admin/remediate/declassify, `watches.ts` SSE = grant-gated `authorizeWatch`) |
 | `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port: records/leases/idempotency/events/graph + compiled-match AST; kinds are records, not a port concern), `blobs.ts` (the `BlobStore` port: artifact bytes, content-addressed; memory + filesystem impls), `crypto.ts` (optional blob encryption: per-blob AES-GCM DEK wrapped under a space KEK), `row.ts` (shared row/value mapping), `pgbase.ts` (shared Postgres-dialect body over a minimal SQL port) + `pglite.ts`, `postgres.ts` (both bind their driver to `pgbase`), `sqlite.ts` (own dialect) |
 | `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + graph, kinds-as-records, envelope query, `authorize`/grants, delegation, taint, bootstrap chain), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order + `combineMatch`), `kinds.ts` (indexing contract + `kind_def`/`grant`/`signal`/`agent_*`/`artifact` reserved kinds), `auth.ts` (`CredentialStore`, token mint/hash), `take.ts` (claim ranking), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts`, `errors.ts` |
 | `sdk/README.md`                         | SDK overview + parity table (TS and Python) — start here for client work |
@@ -119,7 +119,9 @@ out-of-band. Four applications already made:
   diagnostics, record + envelope introspection, remediation) lives under `/v0/ops/*`, one
   prefix that is also the (future) auth boundary. Push what *can* be a query onto a query:
   the envelope (runtime state) is queryable at `GET /v0/ops/records?state=…`, and diagnostics
-  is a *composition* of those queries, not hand-rolled scans. What genuinely can't be a
+  is a *composition* of those queries, not hand-rolled scans — and remediation takes the SAME
+  selector (`POST /v0/ops/remediate` with `{state:"leased", expired:true}`), so diagnosing and
+  fixing are one vocabulary instead of a report plus a loop over ids. What genuinely can't be a
   body-match query stays a derived capability by design — the content-routing query language
   matches record *bodies* (for routing), so aggregation (stats), DAG-traversal (lineage/graph),
   and get-by-id are legitimately first-class, not endpoints pretending to be queries.

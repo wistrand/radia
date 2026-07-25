@@ -90,3 +90,82 @@ export const adminSuites: Suite[] = [
     },
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Selector-driven remediation
+//
+// Fixing a backlog one id at a time is a call per record, preceded by diagnostics calls just to
+// learn the ids — and the report only samples ten. `remediate` takes the SAME envelope selector
+// the ops query takes, so "what is wrong" and "fix it" share one vocabulary.
+// ---------------------------------------------------------------------------
+
+export const remediateSuites: Suite[] = [
+  {
+    name: "remediate: reclaims every expired lease, and is bounded by limit with `more`",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      // Claim BY ID: a template take also ranks expired-lease records as candidates, so repeated
+      // template takes would keep re-claiming the same lapsed record instead of stranding seven.
+      const ids: string[] = [];
+      for (let i = 0; i < 7; i++) ids.push((await space.put({ kind: "task", body: { tag: "x" } })).id);
+      for (const recordId of ids) await space.take({ recordId }, { leaseSeconds: -1 });
+
+      const first = await space.remediate("reclaim", { state: "leased", expired: true, limit: 3 });
+      assertEquals(first.applied, 3);
+      assertEquals(first.more, true, "a full page must say there is more");
+
+      let drained = first.applied;
+      for (let guard = 0; guard < 10; guard++) {
+        const next = await space.remediate("reclaim", { state: "leased", expired: true, limit: 3 });
+        drained += next.applied;
+        if (!next.more) break;
+      }
+      assertEquals(drained, 7);
+      const after = await space.diagnostics();
+      assertEquals(after.stuckLeases.count, 0, "no stuck leases should remain");
+    },
+  },
+  {
+    name: "remediate: a VALID lease is never reclaimed by the expired selector",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      await space.put({ kind: "task", body: { tag: "live" } });
+      const claimed = await space.take({ template: { kind: "task" } }, { leaseSeconds: 300 });
+      assert(claimed, "expected a claim");
+
+      const out = await space.remediate("reclaim", { state: "leased", expired: true });
+      assertEquals(out.matched, 0, "an unexpired lease must not match");
+      const env = await space.getEnvelope(claimed!.record.id);
+      assertEquals(env?.state, "leased", "the live worker keeps its lease");
+    },
+  },
+  {
+    name: "remediate: requeues every dead-lettered record",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      for (let i = 0; i < 4; i++) await space.put({ kind: "task", body: { tag: "poison" } });
+      const dead = await space.remediate("dead-letter", { state: "available" });
+      assertEquals(dead.applied, 4);
+
+      const back = await space.remediate("requeue", { state: "dead_letter" });
+      assertEquals(back.applied, 4);
+      const d = await space.diagnostics();
+      assertEquals(d.counts.dead_letter, 0);
+      assert(d.counts.available >= 4);
+    },
+  },
+  {
+    name: "diagnostics: no `expired` count (expiry is implicit), and a capped scan says so",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      await space.put({ kind: "task", body: { tag: "a" } });
+      await space.take({ template: { kind: "task" } }, { leaseSeconds: -1 });
+      const d = await space.diagnostics();
+      // A lapsed lease leaves the record in state `leased`; nothing ever writes `expired`, so
+      // reporting that count would always be a confident zero beside real stuck leases.
+      assertEquals((d.counts as Record<string, number>).expired, undefined);
+      assertEquals(d.stuckLeases.count, 1);
+      assertEquals(d.stuckLeases.atLeast, false, "an uncapped scan is an exact count");
+    },
+  },
+];

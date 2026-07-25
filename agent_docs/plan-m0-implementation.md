@@ -1,6 +1,6 @@
 # Plan: M0 implementation
 
-> Status: Phases 0–7 DONE (177 conformance tests across the embedded adapters and the blob port, 213 including a
+> Status: Phases 0–7 DONE (185 conformance tests across the embedded adapters and the blob port, 213 including a
 > live Postgres), plus M1 watches, the M1 **authorization stack** (grants, run tokens,
 > delegation, taint — see below), and a range of enhancements (see "Current state" and
 > "Enhancements" below). This is the buildable, phase-by-phase plan for M0
@@ -91,7 +91,7 @@ grant/auth/scheduler shapes that aren't validated until M1–M3.
 
 ## Current state
 
-**All M0 phases (0–7) are DONE**, verified (177 conformance tests across the embedded adapters and the blob port;
+**All M0 phases (0–7) are DONE**, verified (185 conformance tests across the embedded adapters and the blob port;
 213 including a live Postgres via `scripts/pg-conformance.sh`), plus M1
 watches and the M1 **authorization stack** (grants, run-token bootstrap chain, per-run leases,
 delegation, taint — see the Enhancements note below), the dev console, examples, and several

@@ -12,7 +12,7 @@ import { idempotencySuites } from "./suites/idempotency.ts";
 import { eventSuites } from "./suites/events.ts";
 import { faultSuites } from "./suites/faults.ts";
 import { watchSuites } from "./suites/watches.ts";
-import { adminSuites } from "./suites/admin.ts";
+import { adminSuites, remediateSuites } from "./suites/admin.ts";
 import { authSuites } from "./suites/auth.ts";
 import { taintSuites } from "./suites/taint.ts";
 import { blobCryptoSuites, blobSuites } from "./suites/blobs.ts";
@@ -30,6 +30,7 @@ conformance(adapters, [
   ...faultSuites,
   ...watchSuites,
   ...adminSuites,
+  ...remediateSuites,
   ...authSuites,
   ...taintSuites,
 ]);

@@ -58,6 +58,27 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   the keepalive wait against a wake promise so disconnect cleanup is prompt. Don't reintroduce
   `req.signal` here.
 
+- **`take` also ranks EXPIRED-lease records as candidates, so repeated template takes re-claim the
+  same record.** Bit two test setups in a row: seven puts followed by seven `take({template})` with
+  a lapsed lease leaves ONE stranded record (each take reclaims the previous one, bumping its
+  attempt) and six still available — not seven stuck leases. To strand N records, take them BY ID.
+  This is correct behaviour (reclaiming lapsed work is what take is for), but it makes "claim
+  several, let them expire" a trap when building fixtures.
+
+- **There is no `expired` record STATE.** It exists in the `RecordState` union and nothing ever
+  writes it: a lapsed lease leaves the record `leased`, and a later take reclaims it. Diagnostics
+  therefore reports no `expired` count — it would be a confident zero beside hundreds of
+  demonstrably lapsed leases, which is exactly how a reader (or a model) concludes the report is
+  broken. The real number is `stuckLeases`, which carries `atLeast` when its scan hit the sample
+  cap, because a bounded scan must not present itself as a census.
+
+- **Client-supplied headers must win over the SDK's own credential.** The Python `_req` set
+  `Authorization` from the client's token *after* merging caller headers, silently clobbering
+  them. It surfaced only when `create_run` landed — the one call that authenticates with a
+  DIFFERENT credential (the agent-definition token, not the client's run token). The TS client
+  spreads caller headers last, so it was always correct; the two now agree. Any future
+  "authenticate this one call differently" API depends on that precedence.
+
 - **A bounded newest-first read of a thread must expand until the turn's start is in view.** Bit
   twice, in two files, within one change. A tool-heavy round is a dozen messages (one assistant
   `tool_calls` message plus a reply per call), so "read the newest N messages" can land entirely
