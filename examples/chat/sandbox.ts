@@ -1,9 +1,14 @@
 // The sandbox: run model-written JavaScript with nothing.
 //
-// A fresh `deno` subprocess with ZERO permissions — no `--allow-net`, `--allow-read`,
+// A fresh `deno` subprocess with (by default) ZERO permissions — no `--allow-net`, `--allow-read`,
 // `--allow-env`, `--allow-run`, nothing — so every capability check inside it fails. The program
 // arrives on stdin (`deno run -`), which is also why no file needs to be readable. The only thing
 // that crosses back is bytes on stdout/stderr.
+//
+// READ access to explicit roots is the one grantable capability (`readRoots`), because "look at
+// this data" is a common, useful request and is a different risk from "change it" or "send it
+// somewhere": with no network and no write, a program that reads can only return what it read
+// through the output the user is already shown. Net, write, env and run remain denied always.
 //
 // Why a subprocess and not a Worker: hostile code should not share a heap with the thing holding
 // a run token. Why not the tool-worker: spawning needs `--allow-run`, which that process
@@ -29,6 +34,13 @@ export interface RunOptions {
   timeoutMs?: number;
   maxOutputBytes?: number;
   memoryMb?: number;
+  /** Absolute paths the program may READ. Empty (the default) means no filesystem at all. Granting
+   *  a root grants everything under it, so this is an operator decision made at launch — never
+   *  something the model can widen per call. */
+  readRoots?: string[];
+  /** Paths denied even inside a granted root. `--deny-read` beats `--allow-read` in Deno, so this
+   *  is a hard exclusion, not a convention. */
+  denyRead?: string[];
 }
 
 export interface RunResult {
@@ -81,6 +93,8 @@ async function readCapped(stream: ReadableStream<Uint8Array>, cap: number): Prom
 
 export async function runCode(source: string, opts: RunOptions = {}): Promise<RunResult> {
   const { timeoutMs, maxOutputBytes, memoryMb } = { ...DEFAULTS, ...opts };
+  const readRoots = opts.readRoots ?? [];
+  const denyRead = opts.denyRead ?? [];
   const started = Date.now();
   const child = new Deno.Command("deno", {
     args: [
@@ -90,9 +104,14 @@ export async function runCode(source: string, opts: RunOptions = {}): Promise<Ru
       "--quiet",
       "--ext=js", // stdin has no filename, so the dialect must be stated
       `--v8-flags=--max-old-space-size=${memoryMb}`,
+      // READ is the one capability that can be granted, and only to explicit roots. Write, net,
+      // env and run stay denied whatever happens here — reading data is a different risk from
+      // being able to change it or send it anywhere.
+      ...(readRoots.length ? [`--allow-read=${readRoots.join(",")}`] : []),
+      ...(denyRead.length ? [`--deny-read=${denyRead.join(",")}`] : []),
       "-", // the program comes from stdin: no file needs to be readable
     ],
-    // No --allow-* at all: net, read, write, env, run, ffi and sys are all denied.
+    // Nothing else is granted: net, write, env, run, ffi and sys are all denied.
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",

@@ -122,10 +122,12 @@ flowchart TB
     SP -->|"take {tool_call, run_code}"| X["exec<br/>agent:chat-exec<br/>--allow-run, no key, no files"]
     X -->|"program on stdin"| SB["deno run -<br/>NO permissions at all"]
     SB -->|"stdout / stderr"| X
-    T -->|tool_result| SP
+    T -->|"tool_result · artifact (save_content)"| SP
     G -->|"artifact + tool_result (a reference)"| SP
-    X -->|"tool_result, tainted"| SP
+    X -->|"tool_result (tainted) · artifact (save_as)"| SP
     G -.-> BL[(blob store)]
+    T -.-> BL
+    X -.-> BL
     SP -->|"progress · llm_chunk"| U
 ```
 
@@ -208,20 +210,31 @@ deno task dev                                # optional: open http://localhost:7
 deno task chat                               # connects to 7788 (or spawns its own space)
 ```
 
-`deno task chat` connects to (or spawns) a space and launches two **scoped subprocess**
+`deno task chat` connects to (or spawns) a space and launches six **scoped subprocess**
 workers, then gives you a REPL. Watch every thought and action stream into the Feed tab.
 
-Why subprocesses: permission isolation only holds across processes.
+Why subprocesses: permission isolation only holds across processes. Each worker gets the
+narrowest set that lets it do its job, and no two dangerous capabilities meet in one process.
 
-- **inference-worker** — `--allow-net --allow-env`; holds `OPENROUTER_API_KEY`; no file access.
-- **tool-worker** — `--allow-read=<sandbox dirs>` and `--allow-net=127.0.0.1:<port>` only,
-  **no `--allow-env`**. The process that can read files cannot reach the network beyond the
-  local space and cannot read secrets, so reading a file can't lead to exfiltrating it.
-  Path canonicalization (realpath + allowlist, in `tools.ts`) is defense-in-depth on top.
+| process | permissions | holds | notes |
+|---|---|---|---|
+| **inference** ×3 | `--allow-net --allow-env` | `OPENROUTER_API_KEY` | no file access |
+| **router** | `--allow-net --allow-env` | — | dispatches; never calls a model directly |
+| **images** | `--allow-net --allow-env` | `OPENROUTER_API_KEY` | no file access |
+| **tools** | `--allow-read=<sandbox dirs>`, `--allow-net=127.0.0.1:<port>` | — | **no `--allow-env`** |
+| **exec** | `--allow-run=deno`, `--allow-net=127.0.0.1:<port>`, `--allow-env=HOME` | run token | never executes anything itself |
+| ↳ **the sandbox** | *nothing* (optionally `--allow-read=<exec dirs>`) | — | spawned per call, killed on timeout |
+
+The two that matter most: the process that can read files (**tools**) cannot reach the network
+beyond the local space and cannot read secrets, so reading a file can't lead to exfiltrating it;
+and the process that runs model-written code (**the sandbox**) holds no credential at all, so a
+full compromise of it yields a process that can print bytes to its parent. Path canonicalization
+(realpath + allowlist, in `tools.ts`) is defense-in-depth on top.
 
 Tools: `read_file`, `list_files`, `search_files`, `stat` (sandboxed to `RADIA_CHAT_DIRS`,
 default `examples/chat/sandbox`; `list_files`/`read_file`/`stat` return `size` + `modified`
-so size/date questions get ground truth, not guesses), plus `time` and `calc`.
+so size/date questions get ground truth, not guesses), `time`, `calc`, `save_content` (store
+text as an artifact), `run_code` (sandboxed execution), and `generate_image`.
 
 **Inspection tools** (`inspect.ts`) make the chatbot a conversational inspector of its own
 space: `space_stats`, `space_kinds`, `space_query`, `space_count`, `space_record`, `space_lineage` (ancestors,
@@ -310,6 +323,22 @@ Three properties fall out of the substrate rather than being bolted on:
 - **Retry is sound *because* the sandbox is empty.** `tool_call` is claimable work, so an expired
   lease is retried — safe only because a permissionless child has no side effect to double. Grant
   the sandbox any capability and you break the delivery guarantee as well as the security story.
+
+**Read access is the one grantable capability, and it is off by default.** `RADIA_CHAT_EXEC_DIRS`
+lists directories the sandboxed program may read; unset (the default) means no filesystem at all,
+and the startup banner says which you have. Net, write, env and run stay denied whatever you set —
+"look at this data" is a different risk from "change it" or "send it somewhere", and with no
+network a program that reads can only return what it read through output you are already shown.
+
+It is deliberately a **separate** setting from `RADIA_CHAT_DIRS`, which bounds the file *tools*.
+Widening what `read_file` can see must not silently widen what executed code can see: the tools
+return one file per call, in the open, while a program can walk a whole tree and fold it into a
+single line of output. Roots are realpath'd (a symlink cannot smuggle the grant elsewhere), and the
+blob KEK and the operator credential are passed as `--deny-read`, which beats `--allow-read` in
+Deno — so pointing a root at a directory containing them still does not expose them.
+
+Verified with the grant on: reads inside the root work (files, nested files, directory listings);
+reads outside it, `..` escapes, the denied KEK, writes inside the root, network and env all fail.
 
 Stated rather than papered over: a V8 isolate with Deno permissions stops accidents and ordinary
 malice, not a V8 or Deno 0-day. There is no CPU bound (a `while(true)` spins one core until the
@@ -430,12 +459,14 @@ is the same enforcement the conformance suite covers, exercised by a real agent:
 least-privileged, the user is scoped, and the operator is the only principal on the control plane.
 
 Config: `OPENROUTER_API_KEY`, `RADIA_CHAT_ROLE` (`admin`|`user`, or `--role`),
-`RADIA_CHAT_MODEL_{FAST,BALANCED,DEEP}` (per-tier model overrides), `RADIA_CHAT_DIRS`, `RADIA_URL`,
+`RADIA_CHAT_MODEL_{FAST,BALANCED,DEEP}` (per-tier model overrides), `RADIA_CHAT_CLASSIFY_MODEL`
+(the router's classifier), `RADIA_CHAT_DIRS`, `RADIA_URL`,
 `RADIA_CHAT_API_BASE` (any OpenAI-compatible endpoint — a local stub for offline testing, or a
 self-hosted gateway), `RADIA_CHAT_WINDOW` (newest messages sent per turn; 0 = whole thread),
 `RADIA_CHAT_IMAGE_MODEL`, `RADIA_CHAT_IMAGE_SAFETY` (provider moderation passthrough,
 `CATEGORY:THRESHOLD,…`), `RADIA_CHAT_IMAGE_DIR` (save generated images locally), `RADIA_CHAT_EXEC_TIMEOUT_MS` (code
-execution budget, default 5000).
+execution budget, default 5000), `RADIA_CHAT_EXEC_DIRS` (read-only roots for executed code;
+unset = no filesystem, and separate from `RADIA_CHAT_DIRS` on purpose).
 (No tier setting — the router dispatches, escalation promotes.)
 
 Honest edges (documented, not hidden): a crashed inference retries and can double-spend

@@ -166,6 +166,10 @@ const IMAGE_MODEL = Deno.env.get("RADIA_CHAT_IMAGE_MODEL") ?? "google/gemini-2.5
 // How long a model-written program may run before it is killed. Short on purpose: it is also the
 // bound on how long a runaway allocation can hold host memory (see sandbox.ts).
 const EXEC_TIMEOUT_MS = Deno.env.get("RADIA_CHAT_EXEC_TIMEOUT_MS") ?? "5000";
+// Directories the SANDBOXED CODE may read. Off by default, and separate from RADIA_CHAT_DIRS on
+// purpose: the file tools return one file per call, in the open, while a program can read a whole
+// tree and fold it into one output — so widening the tools' view must not widen the sandbox's.
+const EXEC_DIRS_RAW = Deno.env.get("RADIA_CHAT_EXEC_DIRS") ?? "";
 const apiKey = Deno.env.get("OPENROUTER_API_KEY");
 if (!apiKey) {
   console.error("Set OPENROUTER_API_KEY (get one at https://openrouter.ai/keys).");
@@ -185,6 +189,17 @@ for (const d of dirsRaw.split(/[:,]/).filter(Boolean)) {
 if (roots.length === 0) {
   console.error("No readable sandbox directories.");
   Deno.exit(1);
+}
+
+// Resolve the (optional) roots the code sandbox may read, the same way: realpath first, so a
+// symlink cannot smuggle the grant somewhere else.
+const execRoots: string[] = [];
+for (const d of EXEC_DIRS_RAW.split(/[:,]/).filter(Boolean)) {
+  try {
+    execRoots.push(await Deno.realPath(d));
+  } catch {
+    console.error(`RADIA_CHAT_EXEC_DIRS: not found, skipping: ${d}`);
+  }
 }
 
 // `admin` is the OPERATOR client used to bootstrap (register kinds, assign grants, mint run
@@ -275,6 +290,10 @@ procs.push(
       execToken,
       "--timeout-ms",
       EXEC_TIMEOUT_MS,
+      ...execRoots.flatMap((r) => ["--dir", r]),
+      // Never readable, whatever the roots say: the blob KEK decrypts every artifact, and the
+      // credential is an operator token for this space.
+      ...(execRoots.length ? ["--deny-dir", `${Deno.cwd()}/.radia-kek.json`, "--deny-dir", `${Deno.env.get("HOME")}/.radia`] : []),
     ],
     stdout: "null",
     stderr: "inherit",
@@ -340,6 +359,11 @@ console.log(
     : "auth: session runs as scoped agent:chat-user — it can converse, but space_* /ops tools will 403 (try 'is the space healthy?').",
 );
 console.log(`sandbox: ${roots.join(", ")}`);
+console.log(
+  execRoots.length
+    ? `code execution: readable roots ${execRoots.join(", ")} (still no network, no write, no env)`
+    : "code execution: no filesystem (set RADIA_CHAT_EXEC_DIRS to grant read-only roots)",
+);
 console.log(`space ${url}${spawnedSpace ? " (spawned)" : " (existing)"} — open it and watch the Feed tab. Ctrl-D to quit.`);
 
 // Generic role framing only — NO substrate specifics (kind names, matching patterns, tool usage).

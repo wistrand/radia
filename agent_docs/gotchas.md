@@ -80,6 +80,16 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   instead — the confused-deputy rule again), and its emptiness is what makes lease RETRY sound,
   since a permissionless child has no side effect to double.
 
+- **Read access for executed code is granted separately from the file tools' roots.** Both bound
+  "which files", but the exposure differs: a tool returns one file per call, visibly, while a
+  program can walk a whole tree and fold it into one line of output. So `RADIA_CHAT_EXEC_DIRS` is
+  its own setting rather than reusing `RADIA_CHAT_DIRS` — widening the tools must not silently
+  widen the sandbox. Two properties to keep if this is touched: roots are realpath'd before being
+  granted (a symlink must not smuggle the grant elsewhere), and the blob KEK plus the operator
+  credential are passed as `--deny-read`, which beats `--allow-read` in Deno, so pointing a root at
+  a directory containing them still does not expose them. Write, net, env and run stay denied
+  whatever is configured.
+
 - **Deno's `--max-old-space-size` does not bound TypedArrays.** Measured: an object-allocation loop
   dies in ~0.3s ("Reached heap limit", exit 133), while `while(true) a.push(new Uint8Array(1e7))`
   runs until the kill timer, because the backing store is external to V8's old space. So the

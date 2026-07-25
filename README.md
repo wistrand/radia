@@ -21,8 +21,8 @@ is a lineage homage.
 > optional encryption at rest (per-blob AES-GCM key wrapped under a space KEK). Running on three
 > storage adapters (embedded PGlite and SQLite, plus real Postgres) behind the frozen wire
 > contract, with a web console, TS and Python SDKs, a CLI, a bundled MCP adapter, and runnable
-> agent examples (including a CLI chatbot with real auth roles and image generation). Not
-> production-ready.
+> agent examples (including a CLI chatbot with real auth roles, image generation, and code
+> execution in a permissionless sandbox). Not production-ready.
 > See `agent_docs/` for the structured design and
 > [notes/radia-runtime-outline-v0.3.md](notes/radia-runtime-outline-v0.3.md) for the origin
 > outline (v0.3).
@@ -78,8 +78,8 @@ Requires [Deno](https://deno.com). No build step.
 ```bash
 deno task dev          # embedded space + web console at http://localhost:7788
 deno task demo         # a coordination demo (planner + workers + aggregator) against it
-deno task chat         # a CLI LLM chatbot (needs OPENROUTER_API_KEY) — thinking and tools
-                       # are both records; watch it in the console Feed tab
+deno task chat         # a CLI LLM chatbot (needs OPENROUTER_API_KEY) — thinking, tools, images
+                       # and sandboxed code execution are all records; watch the Feed tab
 deno task stress       # fill a space with waves of activity to watch in the Space tab
 deno task conformance  # the port contract suites (storage adapters + the blob store)
 ```
