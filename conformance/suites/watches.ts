@@ -1,6 +1,6 @@
 // M1 conformance: the Space-level watch primitives that back the SSE endpoint —
 // createWatch (validates the template), matchesEvent (wakeup semantics: available records
-// matching the template), and latestEventSeq (the starting cursor). The SSE transport and
+// matching the template), and latestCursor (the starting cursor). The SSE transport and
 // resumption are covered by an HTTP smoke, not here. Runs on every adapter.
 
 import { assert, assertEquals } from "@std/assert";
@@ -15,7 +15,7 @@ function newSpace(adapter: StorageAdapter): Space {
 }
 
 async function eventsOf(space: Space): Promise<SpaceEvent[]> {
-  return await space.getEvents(0, 500);
+  return await space.getEvents("0", 500);
 }
 
 export const watchSuites: Suite[] = [

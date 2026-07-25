@@ -14,7 +14,10 @@ startup via `Space.loadKinds`). **M1 status (built):** the standalone **Postgres
 (`src/storage/postgres.ts`, deno-postgres pool) shares one Postgres-dialect body with PGlite
 (`src/storage/pgbase.ts` — `PgSqlAdapter`), so they can't drift; `--storage postgres` runs it,
 and it joins the conformance suite when `RADIA_PG_URL` is set (`scripts/pg-conformance.sh`). Its
-green-against-a-live-server CI run is still pending (needs a Postgres). **Not implemented:**
+green-against-a-live-server CI run is still pending (needs a Postgres). Perf: the adapter enables
+`TCP_NODELAY` (deno-postgres omits it — otherwise every parameterized query eats a ~40ms
+delayed-ACK; see [gotchas.md](gotchas.md)) and the shared body folds the clock read into each
+settle transaction and checks parents in one query. **Not implemented:**
 `single-node`/`production` deployment modes, the multi-instance cache-coherence work (see
 Scaling), `npm`/`pip` binary wrapping (Phase 7), envelope encryption/KMS (M2).
 
@@ -23,6 +26,7 @@ Scaling), `npm`/`pip` binary wrapping (Phase 7), envelope encryption/KMS (M2).
 - Postgres mapping
 - Deployment modes
 - Scaling and multi-instance operation
+- Watch delivery under concurrency
 - Why zero-setup dev is architecturally cheap
 - Distribution
 
@@ -124,10 +128,31 @@ at startup):
 | `Notifier` (`src/core/notifier.ts`)    | event log                         | a watch on B doesn't wake for a mutation on A | Postgres `LISTEN/NOTIFY` (already the design — see the watch row) |
 
 Only the `Notifier` gap is self-healing: the event log is the source of truth, so a missed
-cross-instance wakeup **degrades to poll-catchup, never a lost event**. The two caches would
-return wrong answers across instances until refreshed, so both need write-invalidation or a
-bounded TTL before HA is correct. (Open: LISTEN/NOTIFY-driven invalidation vs. bounded TTLs —
-likely both, cache-dependent.)
+cross-instance wakeup **degrades to poll-catchup, never a lost event** — *given a gap-free event
+cursor* (see "Watch delivery under concurrency" below; before that fix the SSE cursor itself could
+drop events on a single pooled instance). The two caches would return wrong answers across
+instances until refreshed, so both need write-invalidation or a bounded TTL before HA is correct.
+(Open: LISTEN/NOTIFY-driven invalidation vs. bounded TTLs — likely both, cache-dependent.)
+
+## Watch delivery under concurrency
+
+The event log's `seq` is a `bigint … identity`, assigned at INSERT time inside each mutation's
+transaction. On a **single connection** (embedded) transactions commit in seq order, so a watcher
+consuming `seq > cursor` never skips. On the **pooled** Postgres adapter, transactions commit out
+of seq order: a watcher can read seq 11 (committed), advance its cursor past 11, and then seq 10
+commits and is skipped forever by `seq > 11`. That silently drops watch/SSE deliveries — felt as
+chat "slowness" because the affected hop waits for the worker's `take()` poll fallback instead of
+the instant wakeup.
+
+Fix (`src/storage/pgbase.ts`): the watch cursor is the inserting **transaction id** (`xid`), not
+`seq`, and `getEvents` withholds events until they are below the snapshot watermark
+`pg_snapshot_xmin(pg_current_snapshot())` — i.e. no older transaction can still commit a lower-
+ordered event. Ordering by `(xid, seq)` under that watermark is gap-free: each `xid` enters exactly
+one `(cursor, watermark]` window as the watermark advances, so a late-committing straggler is
+delivered then, not skipped. The cursor is **opaque** end-to-end (`SpaceEvent.cursor: string`, the
+SSE `id:` / `Last-Event-ID`) — the transport only echoes it; each adapter interprets it (embedded:
+`seq`; Postgres: `xid`). Embedded keeps `cursor == seq` and is unaffected. Verified by a
+concurrent-writer test (a watcher polling while N puts commit over the pool misses none).
 
 **Current build:** the standalone **Postgres adapter is built** (`src/storage/postgres.ts`) with
 `FOR UPDATE ... SKIP LOCKED` claims, so the hot path is multi-instance-safe — but real HA still

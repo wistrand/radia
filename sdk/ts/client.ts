@@ -155,8 +155,8 @@ export class RadiaClient {
     return this.req("POST", "/v0/leases/renew", { lease, ...opts });
   }
 
-  async getEvents(after = 0, limit = 200): Promise<SpaceEvent[]> {
-    const r = await this.req("GET", `/v0/ops/events?after=${after}&limit=${limit}`);
+  async getEvents(after = "0", limit = 200): Promise<SpaceEvent[]> {
+    const r = await this.req("GET", `/v0/ops/events?after=${encodeURIComponent(after)}&limit=${limit}`);
     return r.events;
   }
 
@@ -234,12 +234,12 @@ export class RadiaClient {
    */
   async *watch(template: Template, signal?: AbortSignal): AsyncGenerator<Wakeup> {
     const { watchId } = await this.req("POST", "/v0/watches", template) as { watchId: string };
-    let cursor: number | undefined;
+    let cursor: string | undefined; // opaque resume token (Last-Event-ID), never parsed
     while (!signal?.aborted) {
       let res: Response;
       try {
         res = await fetch(`${this.base}/v0/watches/${watchId}/events`, {
-          headers: cursor !== undefined ? { "Last-Event-ID": String(cursor) } : {},
+          headers: cursor !== undefined ? { "Last-Event-ID": cursor } : {},
           signal,
         });
       } catch {
@@ -248,7 +248,7 @@ export class RadiaClient {
         continue;
       }
       if (res.status === 410) {
-        cursor = 0; // cursor_expired: restart (a real client catches up via query first)
+        cursor = "0"; // cursor_expired: restart (a real client catches up via query first)
         continue;
       }
       if (!res.ok || !res.body) {
@@ -273,7 +273,7 @@ export class RadiaClient {
               if (line.startsWith("id:")) id = line.slice(3).trim();
               else if (line.startsWith("data:")) data = line.slice(5).trim();
             }
-            if (id !== undefined) cursor = Number(id);
+            if (id !== undefined) cursor = id; // opaque; echo back verbatim on reconnect
             if (data) yield JSON.parse(data) as Wakeup;
           }
         }

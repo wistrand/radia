@@ -52,7 +52,7 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
     },
 
     space_events: async (a) => {
-      const after = Number(a.after ?? 0) || 0;
+      const after = a.after != null ? String(a.after) : "0"; // opaque cursor
       const limit = Math.min(Number(a.limit ?? 20) || 20, 50);
       const events = await client.getEvents(after, limit);
       return {

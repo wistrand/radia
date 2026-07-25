@@ -9,9 +9,33 @@
 // which spins up an ephemeral schema per adapter and drops it on close.
 
 import { Pool, type PoolClient } from "@db/postgres";
-import { PgSqlAdapter, type Sql, type SqlBackend, type SqlResult } from "./pgbase.ts";
+import { NOW_SQL, PgSqlAdapter, type Sql, type SqlBackend, type SqlResult } from "./pgbase.ts";
 import type { RawRow } from "./row.ts";
 import { newUlid } from "../core/ids.ts";
+
+// deno-postgres (0.19.x) does not set TCP_NODELAY, so its extended-protocol (parameterized)
+// queries send several small packets and hit Nagle + delayed-ACK — ~40ms PER query, which is
+// catastrophic for a chatty coordination workload (measured 42ms → 0.18ms with NODELAY). The
+// driver connects via `Deno.connect` and exposes no socket hook, so enable NODELAY by wrapping
+// `Deno.connect` once. Only raw TCP connects are affected — radia's other I/O is `Deno.serve` and
+// `fetch` (native HTTP client, not `Deno.connect`) — and NODELAY on a Postgres socket is
+// unconditionally correct. Remove if deno-postgres starts setting it. Idempotent.
+let noDelayEnabled = false;
+function enableTcpNoDelay(): void {
+  if (noDelayEnabled) return;
+  noDelayEnabled = true;
+  const original = Deno.connect.bind(Deno);
+  Object.defineProperty(Deno, "connect", {
+    configurable: true,
+    value: async (opts: Deno.ConnectOptions | Deno.UnixConnectOptions): Promise<Deno.Conn> => {
+      const conn = await original(opts as Deno.ConnectOptions);
+      try {
+        (conn as Deno.TcpConn).setNoDelay(true);
+      } catch { /* not a TCP connection */ }
+      return conn;
+    },
+  });
+}
 
 export interface PostgresOptions {
   /** Confine all tables to this schema (set as `search_path` on every connection). */
@@ -30,6 +54,7 @@ class PostgresBackend implements SqlBackend {
   readonly #poolSize: number;
 
   constructor(private readonly url: string, opts: PostgresOptions = {}) {
+    enableTcpNoDelay(); // before any connection is opened
     this.#schema = opts.schema;
     this.#ephemeral = opts.ephemeral ?? false;
     this.#poolSize = opts.poolSize ?? 8;
@@ -89,9 +114,7 @@ class PostgresBackend implements SqlBackend {
   }
 
   async now(): Promise<string> {
-    const r = await this.query<{ now: string }>(
-      "select to_char(now() at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') as now",
-    );
+    const r = await this.query<{ now: string }>(NOW_SQL);
     return r.rows[0].now;
   }
 

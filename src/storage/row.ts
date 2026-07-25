@@ -10,6 +10,8 @@ export type RawRow = Record<string, unknown>;
 export function rowToEvent(row: RawRow): SpaceEvent {
   return {
     seq: Number(row.seq),
+    cursor: String(row.cursor ?? row.seq), // opaque; pg aliases the xid watermark as `cursor`, sqlite → seq
+
     id: String(row.id),
     ts: String(row.ts),
     runId: String(row.run_id),

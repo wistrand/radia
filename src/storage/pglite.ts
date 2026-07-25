@@ -4,7 +4,7 @@
 // in-process — the embedded equivalent of `FOR UPDATE SKIP LOCKED`.
 
 import { PGlite } from "@electric-sql/pglite";
-import { PgSqlAdapter, type Sql, type SqlBackend, type SqlResult } from "./pgbase.ts";
+import { NOW_SQL, PgSqlAdapter, type Sql, type SqlBackend, type SqlResult } from "./pgbase.ts";
 import type { RawRow } from "./row.ts";
 
 /** Wrap PGlite to the SqlBackend port. PGlite's result shape ({rows, affectedRows}) and
@@ -46,9 +46,7 @@ class PgliteBackend implements SqlBackend {
   }
 
   async now(): Promise<string> {
-    const r = await this.db.query<{ now: string }>(
-      "select to_char(now() at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') as now",
-    );
+    const r = await this.db.query<{ now: string }>(NOW_SQL);
     return r.rows[0].now;
   }
 

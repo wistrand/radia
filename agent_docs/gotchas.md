@@ -211,6 +211,23 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   stored response. The effect is non-idempotent on its own (fresh ULID per call); the idempotency
   row is the single-winner gate. This bit the chat example: three inference workers share one run
   principal and each publishes the same content-keyed `capability:escalate` at startup.
+- **The watch/event cursor is the inserting `xid` (opaque), not the `seq` — do not "simplify" it
+  back to seq.** `events.seq` (identity) is assigned at insert but transactions on the pooled
+  Postgres adapter commit out of seq order, so a watcher consuming `seq > cursor` skips a low-seq
+  event that commits after a higher one it already passed — silent dropped deliveries (felt as
+  chat slowness via the poll fallback). `getEvents` orders by `xid` under the watermark
+  `xid < pg_snapshot_xmin(pg_current_snapshot())`; `SpaceEvent.cursor` is an opaque string (seq on
+  embedded, xid on pg) that the transport only echoes. See
+  [design-storage.md](design-storage.md) "Watch delivery under concurrency".
+- **The Postgres driver needs TCP_NODELAY or every parameterized query costs ~40ms.** deno-postgres
+  (0.19.x) does not set `TCP_NODELAY`, so its extended-protocol (parameterized) queries send several
+  small packets and hit Nagle + delayed-ACK — measured **42ms per query vs 0.18ms** with NODELAY, a
+  230× hit that made pg-backed chat feel broken (a put+take+ack cycle went 602ms → 10ms). Simple
+  (unparameterized) queries don't show it, so it hides in microbenchmarks. The driver connects via
+  `Deno.connect` and exposes no socket option, so `src/storage/postgres.ts` enables NODELAY by
+  wrapping `Deno.connect` once (only raw TCP connects are affected; `fetch`/`Deno.serve` use a
+  different path). Remove the wrapper if deno-postgres starts setting it. Not docker-specific —
+  reproduced identically via the published port and the container IP.
 - **Any uncaught handler error must return problem+json, never a plain-text 500.** The SDK does
   `JSON.parse(body)`, so a bare `Deno.serve` 500 ("Internal Server Error") surfaces as a cryptic
   `Unexpected token 'I'` that hides the real fault. `makeHandler` wraps the dispatch in a

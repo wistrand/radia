@@ -339,16 +339,18 @@ export class SqliteAdapter implements StorageAdapter {
     return Promise.resolve(rows.map(rowToRecord));
   }
 
-  getEvents(afterSeq: number, limit: number): Promise<SpaceEvent[]> {
+  getEvents(afterCursor: string, limit: number): Promise<SpaceEvent[]> {
+    // Single-connection → commit order == seq order, so the cursor IS the seq (no watermark needed).
+    const after = Number(afterCursor) || 0;
     const rows = this.db.prepare(
       "select seq, id, ts, run_id, operation, record_id, kind, state, detail from events where seq > ? order by seq asc limit ?",
-    ).all(afterSeq, limit) as RawRow[];
+    ).all(after, limit) as RawRow[];
     return Promise.resolve(rows.map(rowToEvent));
   }
 
-  latestEventSeq(): Promise<number> {
+  latestCursor(): Promise<string> {
     const row = this.db.prepare("select coalesce(max(seq), 0) as seq from events").get() as { seq: number };
-    return Promise.resolve(Number(row.seq));
+    return Promise.resolve(String(row.seq));
   }
 
   envelopesInState(state: string, limit: number, excludeKinds?: string[]): Promise<Envelope[]> {

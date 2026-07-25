@@ -131,7 +131,13 @@ export interface EventInput {
 }
 
 export interface SpaceEvent extends EventInput {
-  seq: number; // monotonic
+  seq: number; // unique per-event identity (display / dedup)
+  // Gap-safe resume cursor — OPAQUE to callers (transport echoes it via SSE id / Last-Event-ID;
+  // only the adapter interprets it). On single-connection backends it is the seq; on pooled
+  // Postgres it is the inserting transaction id (xid), and `getEvents` only returns events below
+  // the snapshot watermark — so a watcher advancing by `cursor` never skips an event that
+  // committed out of seq order (see agent_docs/design-storage.md "Watch delivery under concurrency").
+  cursor: string;
   id: Ulid;
   ts: string; // DB clock
 }
@@ -283,11 +289,13 @@ export interface StorageAdapter {
   /** Records whose parent_ids include this id — the reverse of lineage (relationship graph). */
   childrenOf(recordId: Ulid): Promise<RadiaRecord[]>;
 
-  /** Append-only event log, in seq order, after `afterSeq` (0 = from the start). (Phase 5) */
-  getEvents(afterSeq: number, limit: number): Promise<SpaceEvent[]>;
+  /** Append-only event log, in cursor order, after the opaque `afterCursor` ("0"/"" = from the
+   *  start). The cursor is adapter-defined and opaque to callers (see SpaceEvent.cursor). (Phase 5) */
+  getEvents(afterCursor: string, limit: number): Promise<SpaceEvent[]>;
 
-  /** The highest event seq so far (0 if none) — a watch's starting cursor. (M1) */
-  latestEventSeq(): Promise<number>;
+  /** The current high-water cursor — a fresh watch's starting point, so only future events are
+   *  delivered. Opaque; pass it back to getEvents. (M1) */
+  latestCursor(): Promise<string>;
 
   // Kind declarations are NOT a storage concern: they are kind_def records, written via put()
   // and read via query() like any record (see core/space.ts loadKinds). No kinds table.

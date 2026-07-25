@@ -73,6 +73,11 @@ const CANDIDATE_COLS =
   "rt.effective_priority, rt.lease_id, rt.lease_epoch, rt.lease_owner, rt.leased_until, " +
   "rt.lease_hard_deadline";
 
+/** The DB clock as ISO 8601 UTC. Shared so the backends' `now()` and the in-transaction
+ *  `txNow` read it identically. */
+export const NOW_SQL =
+  "select to_char(now() at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') as now";
+
 /** Schema DDL, portable across PGlite and Postgres. Idempotent (`if not exists`). */
 export const DDL = `
 create table if not exists records (
@@ -119,6 +124,7 @@ create table if not exists idempotency (
 );
 create table if not exists events (
   seq bigint generated always as identity primary key,
+  xid xid8 not null default pg_current_xact_id(),
   id text not null,
   ts text not null,
   run_id text not null,
@@ -197,8 +203,8 @@ export class PgSqlAdapter implements StorageAdapter {
   }
 
   async take(selector: TakeSelector, spec: LeaseSpec): Promise<TakeResult | null> {
-    const now = await this.now();
     return await this.sql.transaction(async (tx) => {
+      const now = await this.txNow(tx);
       const candidates = await this.fetchCandidates(tx, selector);
       const template = "template" in selector ? selector.template : undefined;
       const ranked = rankClaimable(candidates, template, now, spec.requireUntainted);
@@ -257,8 +263,8 @@ export class PgSqlAdapter implements StorageAdapter {
   }
 
   async renew(ref: LeaseRef, leaseSeconds: number, idem?: IdempotencyKey): Promise<RenewResult> {
-    const now = await this.now();
     return await this.txIdem(idem, async (tx): Promise<RenewResult> => {
+      const now = await this.txNow(tx);
       const row = await this.fetchEnvelopeRow(tx, ref.recordId);
       if (!this.leaseValid(row, ref)) return { status: "lease_lost" };
       const hard = row!.lease_hard_deadline != null ? String(row!.lease_hard_deadline) : undefined;
@@ -277,8 +283,8 @@ export class PgSqlAdapter implements StorageAdapter {
   }
 
   async ack(ref: LeaseRef, result?: PutInput, idem?: IdempotencyKey): Promise<AckResult> {
-    const now = await this.now();
     return await this.txIdem(idem, async (tx): Promise<AckResult> => {
+      const now = await this.txNow(tx);
       const row = await this.fetchEnvelopeRow(tx, ref.recordId);
       if (!this.leaseValid(row, ref)) return { status: "lease_lost" };
       if (result) await this.insertRecord(tx, result);
@@ -299,8 +305,8 @@ export class PgSqlAdapter implements StorageAdapter {
   }
 
   async nack(ref: LeaseRef, backoffSeconds: number, maxAttempts: number, idem?: IdempotencyKey): Promise<SettleResult> {
-    const now = await this.now();
     return await this.txIdem(idem, async (tx): Promise<SettleResult> => {
+      const now = await this.txNow(tx);
       const row = await this.fetchEnvelopeRow(tx, ref.recordId);
       if (!this.leaseValid(row, ref)) return { status: "lease_lost" };
       const newAttempt = Number(row!.attempt) + 1;
@@ -328,8 +334,8 @@ export class PgSqlAdapter implements StorageAdapter {
   }
 
   async release(ref: LeaseRef, idem?: IdempotencyKey): Promise<SettleResult> {
-    const now = await this.now();
     return await this.txIdem(idem, async (tx): Promise<SettleResult> => {
+      const now = await this.txNow(tx);
       const row = await this.fetchEnvelopeRow(tx, ref.recordId);
       if (!this.leaseValid(row, ref)) return { status: "lease_lost" };
       await tx.query(
@@ -363,17 +369,30 @@ export class PgSqlAdapter implements StorageAdapter {
     return res.rows.map(rowToRecord);
   }
 
-  async getEvents(afterSeq: number, limit: number): Promise<SpaceEvent[]> {
+  async getEvents(afterCursor: string, limit: number): Promise<SpaceEvent[]> {
+    // Cursor is the inserting xid (as a decimal string), not seq. The watermark
+    // `xid < pg_snapshot_xmin(...)` withholds events whose transaction (or any older one) may
+    // still be in flight, so ordering by (xid, seq) is gap-free: every xid falls in exactly one
+    // (cursor, watermark] window as the watermark advances, and a low-seq/high-xid straggler that
+    // commits late is delivered then, not skipped.
+    const after = afterCursor && afterCursor.length > 0 ? afterCursor : "0";
     const res = await this.sql.query<RawRow>(
-      "select seq, id, ts, run_id, operation, record_id, kind, state, detail from events where seq > $1 order by seq asc limit $2",
-      [afterSeq, limit],
+      `select seq, xid::text as cursor, id, ts, run_id, operation, record_id, kind, state, detail
+       from events
+       where xid > $1::text::xid8 and xid < pg_snapshot_xmin(pg_current_snapshot())
+       order by xid, seq asc limit $2`,
+      [after, limit],
     );
     return res.rows.map(rowToEvent);
   }
 
-  async latestEventSeq(): Promise<number> {
-    const res = await this.sql.query<{ seq: number }>("select coalesce(max(seq), 0)::int as seq from events");
-    return Number(res.rows[0].seq);
+  async latestCursor(): Promise<string> {
+    // Fresh-watch cursor: the current watermark, so only future events are delivered. Everything
+    // already committed (xid < xmin) is "already happened" and excluded by `xid > cursor`.
+    const res = await this.sql.query<{ cursor: string }>(
+      "select (pg_snapshot_xmin(pg_current_snapshot())::text::numeric - 1)::text as cursor",
+    );
+    return String(res.rows[0].cursor);
   }
 
   async envelopesInState(state: string, limit: number, excludeKinds?: string[]): Promise<Envelope[]> {
@@ -483,9 +502,14 @@ export class PgSqlAdapter implements StorageAdapter {
   }
 
   private async insertRecord(tx: Sql, input: PutInput): Promise<void> {
-    for (const pid of input.record.runtimeMeta.parentIds) {
-      const res = await tx.query("select 1 from records where id = $1", [pid]);
-      if (res.rows.length === 0) throw new RadiaError("parent_not_found", `parent ${pid} does not exist`);
+    const parents = input.record.runtimeMeta.parentIds;
+    if (parents.length > 0) {
+      // One round-trip regardless of parent count (was one SELECT per parent).
+      const res = await tx.query<{ id: string }>("select id from records where id = any($1::text[])", [parents]);
+      const found = new Set(res.rows.map((r) => String(r.id)));
+      for (const pid of parents) {
+        if (!found.has(pid)) throw new RadiaError("parent_not_found", `parent ${pid} does not exist`);
+      }
     }
     await tx.query(
       `insert into records (${RECORD_COLUMNS}) values (${pgPlaceholders(RECORD_COLUMN_COUNT)})`,
@@ -502,6 +526,13 @@ export class PgSqlAdapter implements StorageAdapter {
   // Run a state-changing op in a transaction with idempotency + concurrent-insert replay.
   private txIdem<T>(idem: IdempotencyKey | undefined, body: (tx: Sql) => Promise<T>): Promise<T> {
     return this.withRetry(() => this.sql.transaction((tx) => this.withIdem(tx, idem, () => body(tx))));
+  }
+
+  // The DB clock, read on the transaction's OWN connection — so a settle op is one connection and
+  // one round-trip is saved versus a separate pre-transaction `now()` acquire.
+  private async txNow(tx: Sql): Promise<string> {
+    const r = await tx.query<{ now: string }>(NOW_SQL);
+    return r.rows[0].now;
   }
 
   // Idempotency wrapper. Runs INSIDE the op's transaction and checks the stored response

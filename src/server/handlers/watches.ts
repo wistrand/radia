@@ -31,21 +31,16 @@ export async function handleCreateWatch(space: Space, req: Request): Promise<Res
   }
 }
 
-const EVENT_FLOOR = 0; // smallest fully-serviceable cursor; rises when event-log GC lands (M2)
-
 export function handleWatchEvents(space: Space, watchId: string, req: Request): Response {
   const watch = space.getWatch(watchId);
   if (!watch) return problem(404, "not_found", `no watch ${watchId}`);
 
   const url = new URL(req.url);
   const raw = req.headers.get("Last-Event-ID") ?? url.searchParams.get("cursor");
-  let cursor = raw != null ? Number(raw) : watch.cursor0;
-  if (!Number.isFinite(cursor) || cursor < 0) {
-    return problem(400, "invalid_cursor", "cursor must be a non-negative integer");
-  }
-  if (cursor < EVENT_FLOOR) {
-    return problem(410, "cursor_expired", "cursor is older than the retained event log; catch up with a query and re-watch");
-  }
+  // The cursor is an opaque, adapter-issued token (a seq or an xid watermark) — the transport
+  // only echoes it, never interprets it. Resume from it verbatim, else the watch's start cursor.
+  // Cursor-expiry (410 cursor_expired) validation returns with event-log GC (M2).
+  let cursor = raw != null && raw.length > 0 ? raw : watch.cursor0;
 
   const enc = new TextEncoder();
   // Detect client disconnect via the stream's cancel() callback (Deno invokes it when the
@@ -70,9 +65,9 @@ export function handleWatchEvents(space: Space, watchId: string, req: Request): 
         }
         for (const e of events) {
           if (closed) break;
-          cursor = e.seq;
+          cursor = e.cursor; // gap-safe resume key (xid on pooled pg; seq on embedded)
           if (await space.matchesEvent(watch.match, e)) {
-            send(`id: ${e.seq}\ndata: ${JSON.stringify({ seq: e.seq, recordId: e.recordId, kind: e.kind })}\n\n`);
+            send(`id: ${e.cursor}\ndata: ${JSON.stringify({ seq: e.seq, recordId: e.recordId, kind: e.kind })}\n\n`);
           }
         }
         if (closed) break;

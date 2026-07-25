@@ -35,7 +35,7 @@ export async function handleEnvelope(space: Space, recordId: string): Promise<Re
 }
 
 export async function handleEvents(space: Space, url: URL): Promise<Response> {
-  const after = Number(url.searchParams.get("after") ?? "0") || 0;
+  const after = url.searchParams.get("after") ?? "0"; // opaque cursor, passed through
   const limit = Math.min(Number(url.searchParams.get("limit") ?? "200") || 200, 500);
   return Response.json({ events: await space.getEvents(after, limit) });
 }

@@ -590,11 +590,14 @@ async function settle(op) {
 }
 
 // ---- feed ----
-let feedSeq = 0, feedTimer = null, feedRows = [];
+let feedSeq = "0", feedTimer = null, feedRows = [];
 async function pollFeed() {
-  const r = await api("GET", "/v0/ops/events?after=" + feedSeq + "&limit=200");
+  const r = await api("GET", "/v0/ops/events?after=" + encodeURIComponent(feedSeq) + "&limit=200");
   if (!r.ok) return;
-  for (const e of r.data.events) { feedSeq = Math.max(feedSeq, e.seq); feedRows.unshift(e); }
+  const evs = r.data.events;
+  // Cursor is opaque; events are returned ascending, so the last one is the new high-water.
+  if (evs.length) feedSeq = String(evs[evs.length - 1].cursor ?? evs[evs.length - 1].seq);
+  for (const e of evs) feedRows.unshift(e);
   feedRows = feedRows.slice(0, 300);
   renderFeed();
 }
@@ -610,7 +613,7 @@ function renderFeed() {
       + `<td class="mono muted">${e.detail ? esc(JSON.stringify(e.detail)) : ""}</td></tr>`
     ).join("") + `</tbody></table>`;
 }
-function startFeed() { feedSeq = 0; feedRows = []; pollFeed(); if ($("feed-live").checked) feedTimer = setInterval(pollFeed, 1000); }
+function startFeed() { feedSeq = "0"; feedRows = []; pollFeed(); if ($("feed-live").checked) feedTimer = setInterval(pollFeed, 1000); }
 function stopFeed() { if (feedTimer) { clearInterval(feedTimer); feedTimer = null; } }
 function toggleLive() { stopFeed(); if ($("feed-live").checked) feedTimer = setInterval(pollFeed, 1000); }
 

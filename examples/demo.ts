@@ -88,7 +88,7 @@ try {
   console.log("");
   console.log(summary ? `RESULT: "${(summary.body as { text: string }).text}"` : "RESULT: (timed out)");
 
-  const events = await client.getEvents(0, 200);
+  const events = await client.getEvents("0", 200);
   console.log(`\nEVENT LOG (${events.length} events) — also visible in the Feed tab:`);
   for (const e of events) {
     console.log(`  ${String(e.seq).padStart(2)} ${e.operation.padEnd(8)} ${(e.kind ?? "").padEnd(8)} ${e.state ?? ""}`);

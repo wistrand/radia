@@ -88,7 +88,7 @@ export interface TakeOptions {
 
 export interface Watch {
   match: CompiledMatch;
-  cursor0: number; // event seq at creation; the stream starts here unless resumed
+  cursor0: string; // opaque high-water cursor at creation; the stream starts here unless resumed
 }
 
 export interface GraphNode {
@@ -644,9 +644,9 @@ export class Space {
     };
   }
 
-  /** Append-only event log after `afterSeq` (0 = from the start). */
-  getEvents(afterSeq = 0, limit = 200): Promise<SpaceEvent[]> {
-    return this.storage.getEvents(afterSeq, limit);
+  /** Append-only event log after the opaque `afterCursor` ("0"/"" = from the start). */
+  getEvents(afterCursor = "0", limit = 200): Promise<SpaceEvent[]> {
+    return this.storage.getEvents(afterCursor, limit);
   }
 
   /**
@@ -681,10 +681,10 @@ export class Space {
 
   // ---- watches (M1) ----
 
-  /** Create an ephemeral watch. The stream starts from the current event seq. */
+  /** Create an ephemeral watch. The stream starts from the current high-water cursor. */
   async createWatch(template: Template): Promise<{ watchId: string }> {
     const match = this.compile(template); // validates the template
-    const cursor0 = await this.storage.latestEventSeq();
+    const cursor0 = await this.storage.latestCursor();
     const watchId = newUlid();
     this.watches.set(watchId, { match, cursor0 });
     return { watchId };
