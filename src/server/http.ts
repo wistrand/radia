@@ -163,7 +163,7 @@ function makeHandler(space: Space, ui: string, authRequired: boolean) {
       case "POST /v0/leases/release":
         return await handleRelease(space, req, principal);
       case "POST /v0/watches":
-        return await handleCreateWatch(space, req);
+        return await handleCreateWatch(space, req, principal);
 
       // --- bootstrap chain: operator creates a definition (assigns grants + gets a mint token) ---
       case "POST /v0/agent-definitions":

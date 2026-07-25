@@ -311,6 +311,23 @@ export const authSuites: Suite[] = [
     },
   },
   {
+    name: "watch authorization: any grant on the kind allows a watch; none is forbidden; template scopes it",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({ kind: "task", indexedPaths: [{ path: "op", type: "keyword" }] });
+      // no grant → forbidden (the last unguarded coordination verb is now guarded)
+      assertEquals(await denied(() => space.authorizeWatch("agent:w", "task")), "forbidden");
+      // a take-only grant (like the agentLoop) is enough — watch is participation, not tied to query
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "task", operations: ["take"], template: { op: "up" } } });
+      assertEquals(await space.authorizeWatch("agent:w", "task"), [{ op: "up" }]); // scopes the watch
+      // privileged → unrestricted
+      assertEquals(await space.authorizeWatch("human:local", "task"), null);
+      // a second, unrestricted grant widens back to the whole kind (null wins)
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "task", operations: ["read_one"] } });
+      assertEquals(await space.authorizeWatch("agent:w", "task"), null);
+    },
+  },
+  {
     name: "credentials resolve from records: fallback hydration + loadCredentials; stopped/bad tokens rejected",
     run: async (adapter) => {
       const space = newSpace(adapter);

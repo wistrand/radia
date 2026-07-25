@@ -141,7 +141,11 @@ content-routing) rather than as scattered endpoints — see [CLAUDE.md](../CLAUD
   `Space.matchesEvent` filters events to available records matching the watch template
   (wakeup-by-kind, plus predicates via a record fetch); resumption via `Last-Event-ID` or
   `?cursor=`. The 410 floor is 0 until event-log GC lands (M2), so it is dormant. SDK:
-  `client.watch()` (async generator); `agentLoop` consumes it (event-driven, poll fallback).
+  `client.watch()` (async generator); `agentLoop` consumes it (event-driven, poll fallback). Watch
+  creation is **grant-gated** (`Space.authorizeWatch`, `403 forbidden` without a grant on the kind);
+  `agentLoop` treats a `403` as a permanent config error — it logs it loudly and relies on the poll
+  fallback — while a transient watch drop is retried. (For the `agentLoop` pattern this never fires:
+  the loop watches the kinds it `take`s, and the required `take` grant already authorizes the watch.)
 - Watches are **ephemeral run resources** (die with the run). Durable subscriptions are
   deferred.
 - Templates are never in query strings.

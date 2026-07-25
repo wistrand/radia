@@ -8,10 +8,13 @@ Origin: outline §8.
 wildcard — `src/core/kinds.ts`). `Space.authorize(principal, op, kind)` enforces them and
 `Space.isPrivileged` marks operators (`human:*` or the one configured supervisor,
 `SpaceContext.supervisor`, default `agent:supervisor`). Enforcement is wired at the HTTP
-boundary (`src/server/http.ts` + the record/take handlers): coordination `put`/`take`/`query`/
-`read_one` call `authorize`; `/v0/ops/*` requires a privileged principal; writing a reserved
-control kind (`grant`/`signal`/`agent_*`) requires privilege — grants are **assigned, never
-self-declared**.
+boundary (`src/server/http.ts` + the record/take/watch handlers): coordination `put`/`take`/
+`query`/`read_one` call `authorize`, and **`watch`** calls `Space.authorizeWatch` (a watch is
+allowed if the principal holds ANY grant on the kind — it is a participant — and the grant
+template is AND-ed into the watch match, so it wakes only on records inside its scope; no grant →
+`forbidden`). `/v0/ops/*` requires a privileged principal; writing a reserved control kind
+(`grant`/`signal`/`agent_*`) requires privilege — grants are **assigned, never self-declared**.
+Every coordination verb is now grant-gated; there is no unauthenticated observe path.
 
 The **bootstrap chain is built** (`src/core/auth.ts`, `src/server/handlers/agents.ts`):
 `POST /v0/agent-definitions` (operator) creates an `agent_definition` record, optionally

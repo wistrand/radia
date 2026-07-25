@@ -5,6 +5,7 @@
 // fenced lease with a renewal heartbeat, acks with a per-attempt idempotency key, nacks on
 // error, and logs when fenced (at-least-once: duplicate work is possible).
 
+import { RadiaClientError } from "./client.ts";
 import type { PutRequest, RadiaClient, RadiaRecord, Template } from "./client.ts";
 
 export interface LoopOptions {
@@ -33,10 +34,23 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
     w?.();
   };
   const watchers = kinds.map(async (kind) => {
-    try {
-      for await (const _ of client.watch({ kind }, o.signal)) doWake();
-    } catch (e) {
-      log(`[${o.name}] watch: ${e}`); // fall back to the poll tick
+    while (!o.signal?.aborted) {
+      try {
+        for await (const _ of client.watch({ kind }, o.signal)) doWake();
+        return; // generator ended (signal aborted) — clean stop
+      } catch (e) {
+        // A 403 on watch is PERMANENT — this run has no grant to watch this kind, and retrying
+        // can't change that. Log it loudly ONCE and stop watching; the poll fallback keeps the loop
+        // correct, just without wakeups. "Silently slow" becomes "loudly wrong" — fix the grant.
+        if (e instanceof RadiaClientError && e.status === 403) {
+          log(`[${o.name}] watch on '${kind}' FORBIDDEN (${e.code}) — no grant to watch it; using the poll fallback. Grant this run a '${kind}' grant to get wakeups.`);
+          return;
+        }
+        // Transient (network / server hiccup at watch creation): retry after a short backoff rather
+        // than killing the watcher for the loop's lifetime.
+        log(`[${o.name}] watch on '${kind}' dropped: ${e} — retrying`);
+        await sleep(1000);
+      }
     }
   });
 

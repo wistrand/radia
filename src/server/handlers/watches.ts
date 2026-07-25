@@ -6,11 +6,11 @@
 // source of truth; the Notifier is only a wakeup.
 
 import type { Space } from "../../core/space.ts";
-import type { Template } from "../../core/matching.ts";
+import { combineMatch, type Template } from "../../core/matching.ts";
 import { RadiaError } from "../../core/errors.ts";
-import { problem } from "../problem.ts";
+import { problem, statusFor } from "../problem.ts";
 
-export async function handleCreateWatch(space: Space, req: Request): Promise<Response> {
+export async function handleCreateWatch(space: Space, req: Request, principal: string): Promise<Response> {
   let j: Record<string, unknown> | null;
   try {
     const parsed = await req.json();
@@ -23,10 +23,14 @@ export async function handleCreateWatch(space: Space, req: Request): Promise<Res
   }
   const template: Template = { kind: j.kind, match: j.match as Record<string, unknown> | undefined, orderBy: undefined };
   try {
+    // Authorize like a read: the principal must hold a grant on the kind, and a template-scoped
+    // grant confines the watch to records it could observe (grant ∧ request), same as query/take.
+    const constraint = await space.authorizeWatch(principal, template.kind);
+    if (constraint) template.match = combineMatch(template.match, constraint);
     const { watchId } = await space.createWatch(template);
     return new Response(JSON.stringify({ watchId }), { status: 201, headers: { "content-type": "application/json" } });
   } catch (e) {
-    if (e instanceof RadiaError) return problem(400, e.code, e.message);
+    if (e instanceof RadiaError) return problem(statusFor(e.code, 400), e.code, e.message);
     throw e;
   }
 }

@@ -251,6 +251,31 @@ export class Space {
     return templates; // constrained: request must additionally match one of these
   }
 
+  /**
+   * Authorize a watch on `kind`. A watch OBSERVES matching records (its SSE payload is record
+   * existence + ids + kind + timing), so it is allowed if the principal holds ANY grant on the kind
+   * — it is a participant — regardless of op (a watcher may hold only `take`, like the agentLoop, or
+   * only `read_one`, like a result consumer). Returns the UNION of those grants' templates to AND
+   * into the watch match (`null` = unrestricted / privileged), so a watcher only wakes on records
+   * inside its grant scope — the same content-scoping `query`/`take` get. Throws `forbidden` if the
+   * principal has no grant for the kind (closing the last unguarded coordination verb).
+   */
+  async authorizeWatch(principal: string, kind: string): Promise<Record<string, unknown>[] | null> {
+    if (this.isPrivileged(principal)) return null;
+    const subject = this.grantSubject(principal);
+    const grants = await this.query({ kind: GRANT, match: { principal: subject, kind } }, 100);
+    if (grants.length === 0) {
+      throw new RadiaError("forbidden", `principal '${principal}' has no grant to watch kind '${kind}'`);
+    }
+    const templates: Record<string, unknown>[] = [];
+    for (const g of grants) {
+      const t = (g.body as GrantDef).template;
+      if (!t || Object.keys(t).length === 0) return null; // an unrestricted grant widens to the whole kind
+      templates.push(t);
+    }
+    return templates;
+  }
+
   /** Write-side template scoping: does `body` (of `kind`) satisfy at least one grant `template`?
    *  A template-scoped `put` grant lets a principal write only records inside its template (the
    *  union across grants). Compiles each template against the kind (so its paths must be declared
