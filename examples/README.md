@@ -141,6 +141,13 @@ the classifier is asked to answer with one of *those* words; and when it errors 
 fallback heuristic picks by **position** in that list (cheapest / middle / most capable), never by
 name. So "add a tier-worker and it is routable" holds on both the classifier path and the fallback.
 
+Routing happens **per round**, not per turn — every `llm_call` is classified, including the rounds
+that come back after tool results. So the classifier is told how many tool calls the turn has
+already made ("weigh that, not just the wording"), runs at `temperature: 0` so one question does
+not land on different tiers across rounds, and the router expands its read of the thread until the
+user's message is in view. Without that last part the later rounds classify an empty string, which
+routes the synthesis round — the hardest one — to the cheapest model.
+
 Why a classifier when escalation exists — the two mechanisms judge the same thing, and that is a
 deliberate trade. The classifier was **removed once** on the argument that escalation pays for
 routing only on the turns that were misrouted, while a classifier taxes every turn in front of the
@@ -188,7 +195,7 @@ default `examples/chat/sandbox`; `list_files`/`read_file`/`stat` return `size` +
 so size/date questions get ground truth, not guesses), plus `time` and `calc`.
 
 **Inspection tools** (`inspect.ts`) make the chatbot a conversational inspector of its own
-space: `space_stats`, `space_kinds`, `space_query`, `space_record`, `space_lineage` (ancestors,
+space: `space_stats`, `space_kinds`, `space_query`, `space_count`, `space_record`, `space_lineage` (ancestors,
 UP), `space_children` (records that reference this one, DOWN — e.g. a conversation's messages),
 `space_events`, and `space_doctor` (a derived health report — stuck leases, dead-letters,
 stale-available). Tool guidance lives in each tool's description (published as a `capability`
@@ -197,6 +204,12 @@ records are in the space?", "show the lineage of the last summary", "is the spac
 or "query my conversation thread" (the conversation is `kind:message` with your
 `conversationId`). Output is size-capped so results are LLM-friendly, and each inspection is
 itself a `tool_call` (a small observer effect).
+
+Two of those exist because of a specific failure: asked for a percentage breakdown, the assistant
+counted the 10 records a query happened to return and reported it as the population. `space_query`
+now returns `more: true` with a warning that the result is a page, and **`space_count`** answers
+"how many" directly (exact up to the server's 500-row query cap, and says so when it isn't). A page
+answers *show me some*; an aggregation question needs *how many*, and the tool set now has both.
 
 **Remediation tools** (`remediate.ts`) turn it into an operator: `space_reclaim` (un-stick
 an expired lease), `space_dead_letter`, `space_requeue` — control-plane operations that

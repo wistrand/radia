@@ -25,6 +25,7 @@ export interface StreamOpts {
   model: string;
   messages: ChatMessage[];
   tools?: ToolDef[];
+  temperature?: number; // set 0 for decisions that must not vary run to run (e.g. tier routing)
 }
 
 export interface StreamResult {
@@ -56,6 +57,7 @@ export async function streamChat(opts: StreamOpts, onChunk: (text: string) => Pr
       messages: opts.messages,
       tools: opts.tools,
       tool_choice: opts.tools ? "auto" : undefined,
+      temperature: opts.temperature,
       stream: true,
       stream_options: { include_usage: true },
     }),

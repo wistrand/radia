@@ -47,21 +47,56 @@ async function liveTiers(c: RadiaClient): Promise<string[]> {
 }
 
 /** Fallback for a classifier error/timeout: choose by POSITION in the discovered list, so a renamed
- *  or added tier still routes. Hard/analytical → most capable, small talk → cheapest, else middle. */
-function heuristicIndex(text: string, n: number): number {
+ *  or added tier still routes. Hard/analytical → most capable, small talk → cheapest, else middle.
+ *  An UNKNOWN question is never scored as small talk — a zero-length string used to look like "hi"
+ *  and route the hardest round of a turn to the cheapest model. */
+function heuristicIndex(text: string, n: number, toolCalls: number): number {
   const t = text.toLowerCase();
+  if (!text.trim()) return toolCalls > 0 ? n - 1 : Math.floor((n - 1) / 2);
   if (
     /```|traceback|stack trace|refactor|architect|analy[sz]|prove|derive|debug|optimi|percent|aggregate|how many|design (a|the)/.test(t) ||
-    text.length > 400
+    text.length > 400 ||
+    toolCalls >= 3 // a synthesis round after this much tool work is not the turn the question looked like
   ) return n - 1;
   if (text.length <= 40 && !/\b(code|explain|compare|design|plan|why|count|list)\b/.test(t)) return 0;
   return Math.floor((n - 1) / 2);
 }
 
+/** The turn being routed: the newest `user` message, and how much tool work has happened since it.
+ *  Expands the read until that message is in view — a tool-heavy round pushes it far back, and a
+ *  fixed peek at the newest messages silently classifies an EMPTY question. Every round of a turn
+ *  is a separate llm_call and is classified independently, so this runs per round. */
+async function currentTurn(
+  c: RadiaClient,
+  conversationId: string | undefined,
+  upToIndex: number,
+): Promise<{ text: string; toolCalls: number }> {
+  let limit = 8;
+  for (;;) {
+    const rows = (await c.query(
+      {
+        kind: "message",
+        match: { conversationId, index: { $lte: upToIndex } },
+        orderBy: [{ path: "index", dir: "desc" }],
+      },
+      limit,
+    )).map((r) => r.body as { index: number; role: string; content?: string | null });
+    const at = rows.findIndex((m) => m.role === "user"); // rows are newest-first
+    if (at >= 0) {
+      return { text: rows[at].content ?? "", toolCalls: rows.slice(0, at).filter((m) => m.role === "tool").length };
+    }
+    const atThreadStart = rows.length === 0 || rows[rows.length - 1].index <= 1;
+    if (atThreadStart || limit >= 200) {
+      return { text: "", toolCalls: rows.filter((m) => m.role === "tool").length };
+    }
+    limit = Math.min(limit * 4, 200);
+  }
+}
+
 /** Ask a cheap model which tier this turn needs. Returns a LIVE tier, or null on timeout/parse
  *  failure so the caller falls back. The call is `stream:false` — no chunk records for a routing
  *  decision — and carries `model`, which overrides whichever tier-worker picks it up. */
-async function classifyLLM(text: string, tiers: string[], c: RadiaClient): Promise<string | null> {
+async function classifyLLM(text: string, toolCalls: number, tiers: string[], c: RadiaClient): Promise<string | null> {
   if (!text.trim() || tiers.length === 0) return null;
   const live = new Set(tiers);
   const system = `You are a routing classifier for an LLM chat. Choose the CHEAPEST capability tier ` +
@@ -69,8 +104,19 @@ async function classifyLLM(text: string, tiers: string[], c: RadiaClient): Promi
     `Reply with EXACTLY one tier word, nothing else. Guide: cheapest tier for greetings/small talk/` +
     `simple lookups; a middle tier for moderate explanation or planning; the most capable tier for ` +
     `hard reasoning, analysis, math/proofs, multi-step tool work, or non-trivial code.`;
-  const messages: ChatMessage[] = [{ role: "system", content: system }, { role: "user", content: text }];
-  const { id } = await c.put({ kind: "llm_call", body: { tier: tiers[0], model: classifyModel, messages, tools: [], stream: false } });
+  // The turn is routed per round, so a later round must be judged on the work done so far, not on
+  // the bare question: the round that synthesizes a dozen tool results is the hard one, however
+  // simple the question looked.
+  const context = toolCalls > 0
+    ? `\n\n(The assistant has already made ${toolCalls} tool call${toolCalls === 1 ? "" : "s"} on this turn ` +
+      `and must now interpret the results. Weigh that, not just the wording.)`
+    : "";
+  const messages: ChatMessage[] = [{ role: "system", content: system }, { role: "user", content: text + context }];
+  // temperature 0: the same question must not land on different tiers across rounds of one turn.
+  const { id } = await c.put({
+    kind: "llm_call",
+    body: { tier: tiers[0], model: classifyModel, messages, tools: [], stream: false, temperature: 0 },
+  });
   for (let i = 0; i < 60; i++) { // ~6s budget, then the heuristic
     const result = await c.readOne({ kind: "llm_result", match: { callId: id } });
     if (result) {
@@ -93,18 +139,8 @@ await agentLoop(client, {
     await progress(c, { conversationId: body.conversationId, callId: rec.id, stage: "routing", by: ME }, [rec.id]);
     const tiers = await liveTiers(c);
     if (tiers.length === 0) throw new Error("no `model` record advertised yet");
-    // The turn to classify is the newest user message. Read it as a bounded descending scan, not by
-    // pulling the thread: the router needs one message, not the conversation.
-    const recent = (await c.query(
-      {
-        kind: "message",
-        match: { conversationId: body.conversationId, index: { $lte: body.upToIndex ?? 0 } },
-        orderBy: [{ path: "index", dir: "desc" }],
-      },
-      8,
-    )).map((r) => r.body as { role: string; content?: string | null });
-    const text = recent.find((m) => m.role === "user")?.content ?? "";
-    const tier = (await classifyLLM(text, tiers, c)) ?? tiers[heuristicIndex(text, tiers.length)];
+    const { text, toolCalls } = await currentTurn(c, body.conversationId, body.upToIndex ?? 0);
+    const tier = (await classifyLLM(text, toolCalls, tiers, c)) ?? tiers[heuristicIndex(text, tiers.length, toolCalls)];
     await progress(c, { conversationId: body.conversationId, callId: rec.id, stage: "routed", by: ME, note: `→ ${tier}` }, [rec.id]);
     return { kind: "llm_call", body: { ...body, tier, replyTo: rec.id } };
   },

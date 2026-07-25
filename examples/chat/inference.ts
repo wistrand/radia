@@ -85,6 +85,7 @@ await agentLoop(client, {
       replyTo?: string;
       messages?: ChatMessage[]; // raw-prompt override (a one-off call with its own prompt)
       stream?: boolean; // false → don't emit llm_chunk records (one-off calls)
+      temperature?: number; // caller-pinned sampling (the router's classifier sends 0)
       indexOffset?: number; // chunk watermark handed over on escalation (see below)
     };
     // The router re-dispatches under a new id but sets `replyTo` to the ORIGINAL call the chat
@@ -178,7 +179,7 @@ await agentLoop(client, {
       const tools = higher ? body.tools : (body.tools ?? []).filter((t) => t.function.name !== "escalate");
 
       const { message, finishReason, usage } = await streamChat(
-        { apiKey, model: body.model ?? model, messages, tools },
+        { apiKey, model: body.model ?? model, messages, tools, temperature: body.temperature },
         body.stream === false
           ? () => Promise.resolve() // raw-prompt one-off calls don't emit chunk records
           : async (delta) => {

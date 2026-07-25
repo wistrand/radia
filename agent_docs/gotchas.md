@@ -58,6 +58,19 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   the keepalive wait against a wake promise so disconnect cleanup is prompt. Don't reintroduce
   `req.signal` here.
 
+- **A bounded newest-first read of a thread must expand until the turn's start is in view.** Bit
+  twice, in two files, within one change. A tool-heavy round is a dozen messages (one assistant
+  `tool_calls` message plus a reply per call), so "read the newest N messages" can land entirely
+  inside the tool replies and miss the `user` message that began the turn. In the inference-worker
+  that produced a context window with no question in it (the model summarizes tool output it can no
+  longer attribute); in the router it produced an EMPTY question, which the length heuristic scored
+  as small talk and routed to the CHEAPEST tier — so the synthesis round, the one that most needs
+  capability, systematically got the weakest model. Both now expand the descending read until a
+  `user` message is included (`inference.ts` windowing, `router.ts` `currentTurn`), and the router's
+  heuristic never scores an empty string as small talk. General rule: when a bounded read feeds a
+  DECISION, the absence of the thing you are looking for is not a neutral default — decide what
+  "not found" means explicitly.
+
 - **The graph/lineage viewer excludes nothing by default except what the caller asks**
   (`?exclude=llm_chunk`): streaming `llm_chunk` records would otherwise dominate a
   conversation graph. Keep chunk flushing coarse for the same reason (event-log volume).
