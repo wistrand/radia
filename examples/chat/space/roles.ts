@@ -15,6 +15,11 @@ import { RadiaClient } from "../../../sdk/ts/client.ts";
 
 export type Role = "admin" | "user";
 
+/** The scoped principal a `user`-role session runs as. Exported because the REPL grants TO it when
+ *  a human approves a request — the subject comes from what this process minted, never from the
+ *  request record, so an approval cannot be redirected by anything the model wrote. */
+export const CHAT_USER = "agent:chat-user";
+
 interface Grant {
   kind: string;
   operations: string[];
@@ -107,6 +112,10 @@ const USER_GRANTS: Grant[] = [
   // `save_procedure` call it actually ran — so "the assistant saved a procedure" always means code
   // that went through the sandbox's own path.
   { kind: "procedure", operations: ["query"] },
+  // ASK for authority, never take it. The session may write a grant_request and read its own; it
+  // has no grant on `grant` itself, so the escalation path ends at a human. This is the whole
+  // point of the split: least privilege by default, with a visible, auditable way to ask.
+  { kind: "grant_request", operations: ["put", "query"] },
   { kind: "progress", operations: ["query"] }, // read-only: the session reports no progress of its own
   { kind: "artifact", operations: ["read_one"] }, // read generated images + mint a download capability
 ];
@@ -138,6 +147,6 @@ export async function bootstrap(admin: RadiaClient, role: Role): Promise<Bootstr
   const toolsToken = await mint(admin, "agent:chat-tools", TOOLS_GRANTS);
   const imagesToken = await mint(admin, "agent:chat-images", IMAGE_GRANTS);
   const execToken = await mint(admin, "agent:chat-exec", EXEC_GRANTS);
-  const sessionToken = role === "user" ? await mint(admin, "agent:chat-user", USER_GRANTS) : undefined;
+  const sessionToken = role === "user" ? await mint(admin, CHAT_USER, USER_GRANTS) : undefined;
   return { inferenceToken, routerToken, toolsToken, imagesToken, execToken, sessionToken };
 }

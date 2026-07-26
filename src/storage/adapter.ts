@@ -113,6 +113,19 @@ export interface OrderBy {
   dir: "asc" | "desc";
 }
 
+/**
+ * Restricts an aggregate to a subset of the space. Both fields are ANDed, and both are applied in
+ * SQL rather than after the fact.
+ *
+ * `createdBy` holds PRINCIPALS as stored on the record (`run:…` for a token-bearing session), not
+ * agent names: what "my records" means is resolved by the runtime before it gets here, because the
+ * run → agent mapping lives in the credential index and not in any column.
+ */
+export interface StatsScope {
+  createdBy?: string[];
+  kinds?: string[];
+}
+
 export interface KindStateCount {
   kind: string;
   state: RecordState;
@@ -259,7 +272,9 @@ export interface StorageAdapter {
   put(input: PutInput): Promise<PutResult>;
 
   /** First matching record, or null. (Phase 1) */
-  readOne(match: CompiledMatch): Promise<RadiaRecord | null>;
+  /** `scope.createdBy` restricts reads to records written by those principals — how a self-scoped
+   *  grant narrows the coordination plane, not only the ops plane. */
+  readOne(match: CompiledMatch, scope?: StatsScope): Promise<RadiaRecord | null>;
 
   /**
    * Matching records, ordered by the template, capped at `limit`.
@@ -273,10 +288,19 @@ export interface StorageAdapter {
    * `dir: "desc"` is what makes "the newest N" expressible at all. Without it a limit always
    * returns the OLDEST matches, because the deterministic tie-break is ascending id.
    */
-  query(match: CompiledMatch, limit: number, page?: Page): Promise<RadiaRecord[]>;
+  query(match: CompiledMatch, limit: number, page?: Page, scope?: StatsScope): Promise<RadiaRecord[]>;
 
   /** Record counts grouped by kind and state (dev UI overview / diagnostics). */
-  stats(): Promise<KindStateCount[]>;
+  /**
+   * Counts by kind and state.
+   *
+   * `scope` makes this a GENUINE aggregate over a subset, not a whole-space total filtered
+   * afterwards — the difference matters because a wrongly-filtered count is invisible in the
+   * output, it just looks plausible. `createdBy` is a set of principals (an agent's run
+   * principals, resolved by the runtime; the run → agent mapping is not a column), `kinds` limits
+   * which kinds are counted at all.
+   */
+  stats(scope?: StatsScope): Promise<KindStateCount[]>;
 
   /**
    * Atomically claim a record for a fenced lease. Selects an eligible record (available,
@@ -319,8 +343,15 @@ export interface StorageAdapter {
    */
   getRecords(ids: Ulid[]): Promise<RadiaRecord[]>;
 
-  /** Records whose parent_ids include this id — the reverse of lineage (relationship graph). */
-  childrenOf(recordId: Ulid): Promise<RadiaRecord[]>;
+  /**
+   * Records whose parent_ids include this id — the reverse of lineage (relationship graph).
+   *
+   * BOUNDED, and paged by the same keyset contract as `query`: `page.after` is the last child id of
+   * the previous page. Fan-out is unbounded in principle — a conversation accumulates a child per
+   * message, a task per result — so an unlimited read here materializes a whole subtree to answer
+   * "who references this", and a caller that walks the graph would do it per node.
+   */
+  childrenOf(recordId: Ulid, limit: number, page?: Page): Promise<RadiaRecord[]>;
 
   /** Append-only event log, in cursor order, after the opaque `afterCursor` ("0"/"" = from the
    *  start). The cursor is adapter-defined and opaque to callers (see SpaceEvent.cursor). (Phase 5) */
@@ -335,7 +366,12 @@ export interface StorageAdapter {
 
   /** Envelopes currently in a given state, capped (diagnostics). `excludeKinds` filters them out
    *  at the query level (before the cap) — used to skip reference kinds in the starvation check. */
-  envelopesInState(state: RecordState, limit: number, excludeKinds?: string[]): Promise<Envelope[]>;
+  envelopesInState(
+    state: RecordState,
+    limit: number,
+    excludeKinds?: string[],
+    scope?: StatsScope,
+  ): Promise<Envelope[]>;
 
   /**
    * Emergency quarantine: force every `leased` record owned by `ownerRun` back to `available`,

@@ -751,10 +751,17 @@ paths:
     get:
       operationId: children
       summary: Records that reference this one via parent_ids — its children (the reverse of lineage)
-      description: "Lineage walks parent_ids UP (ancestors); this returns records that name this id as a parent (DOWN) — e.g. a conversation's messages, an llm_call's chunks + result."
+      description: >
+        Lineage walks parent_ids UP (ancestors); this returns records that name this id as a parent
+        (DOWN) — e.g. a conversation's messages, an llm_call's chunks + result. BOUNDED and keyset-
+        paged, by the same contract as the record query: fan-out is unbounded in principle (a child
+        per message, a result per task), so this is a PAGE. `after` is the last child id of the
+        previous one, and `nextAfter` is absent on the last page.
       x-stability: experimental
       parameters:
         - { name: recordId, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
+        - { name: after, in: query, schema: { type: string }, description: Exclusive child-id cursor. }
       responses:
         "200":
           description: children
@@ -764,6 +771,7 @@ paths:
                 type: object
                 properties:
                   children: { type: array, items: { $ref: "#/components/schemas/Record" } }
+                  nextAfter: { type: string, description: Cursor for the next page; absent on the last. }
 
   /ops/records/{recordId}/graph:
     get:

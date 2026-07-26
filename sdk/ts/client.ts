@@ -16,11 +16,12 @@ import type { Template } from "../../src/core/matching.ts";
 import type { Page } from "../../src/storage/adapter.ts";
 import { activeByKey } from "../../src/core/registry.ts";
 import type { PutRequest } from "../../src/core/record.ts";
-import { KIND_DEF, type KindDef, kindDefKey } from "../../src/core/kinds.ts";
+import { KIND_DEF, type KindDef, kindDefKey, RESERVED_KINDS } from "../../src/core/kinds.ts";
+export { RESERVED_KINDS };
 // Re-exported because every client that reads a registry (capabilities, models, kinds, an app's
 // own kinds) needs the SAME latest-wins-minus-retired rule the runtime uses. Six hand-rolled
 // copies of this loop existed before it was shared, and the failure mode is silent.
-export { activeByKey, activeSet, isRetired, newestByKey, RETIRED } from "../../src/core/registry.ts";
+export { activeByKey, activeSet, grantKey, isRetired, newestByKey, RETIRED } from "../../src/core/registry.ts";
 
 export type { AckResult, KindDef, Lease, Page, PutRequest, RadiaRecord, SpaceEvent, Template };
 
@@ -178,9 +179,31 @@ export class RadiaClient {
     return this.req("POST", "/v0/leases/renew", { lease, ...opts });
   }
 
+  /**
+   * One page of the event log plus the cursor to continue from.
+   *
+   * Prefer this over `getEvents` when paging: for a SCOPED caller the server withholds events it
+   * may not see, so a page can be empty (or short) while the log continues — and `nextAfter` is
+   * the only way to advance past what was withheld. `undefined` means the end.
+   */
+  async getEventsPage(
+    after = "0",
+    limit = 200,
+  ): Promise<{ events: SpaceEvent[]; nextAfter?: string; scope?: unknown; withheld?: number }> {
+    const r = await this.req("GET", `/v0/ops/events?after=${encodeURIComponent(after)}&limit=${limit}`);
+    return { events: r.events, nextAfter: r.nextAfter, scope: r.scope, withheld: r.withheld };
+  }
+
   async getEvents(after = "0", limit = 200): Promise<SpaceEvent[]> {
     const r = await this.req("GET", `/v0/ops/events?after=${encodeURIComponent(after)}&limit=${limit}`);
     return r.events;
+  }
+
+  /** Stats plus, for a SCOPED caller, what the answer was narrowed to. Prefer this when the result
+   *  will be shown to someone (or something) that could read an empty list as an empty space. */
+  async getStatsReport(): Promise<{ stats: KindStateCount[]; scope?: { self: boolean; kinds: string[]; note: string } }> {
+    const r = await this.req("GET", "/v0/ops/stats");
+    return { stats: r.stats, scope: r.scope };
   }
 
   async getStats(): Promise<KindStateCount[]> {
@@ -191,7 +214,9 @@ export class RadiaClient {
   /** All declared kinds — the latest kind_def record per kind name (a redeclaration is a
    *  successor record). Discovery through the substrate: a plain query, no kinds endpoint. */
   async listKinds(): Promise<KindDef[]> {
-    const records = await this.query({ kind: KIND_DEF }, 1000);
+    // Newest-first: a capped page returns the OLDEST, so a space with more kind_def records than
+    // this would rebuild its view from declarations that have since been superseded.
+    const records = await this.query({ kind: KIND_DEF }, 1000, { dir: "desc" });
     const latest = activeByKey<KindDef>(records, (def) => (typeof def?.kind === "string" ? def.kind : undefined));
     return [...latest.values()].map((r) => r.body as KindDef);
   }
@@ -247,10 +272,22 @@ export class RadiaClient {
     return r.lineage;
   }
 
-  /** Records that reference this one via parent_ids — its children (the reverse of lineage). */
-  async getChildren(recordId: string): Promise<RadiaRecord[]> {
-    const r = await this.req("GET", `/v0/ops/records/${encodeURIComponent(recordId)}/children`);
-    return r.children;
+  /** Records that reference this one via parent_ids — its children (the reverse of lineage).
+   *  BOUNDED: fan-out is unbounded in principle, so this is a page. Use `getChildrenPage` to walk. */
+  async getChildren(recordId: string, limit = 100): Promise<RadiaRecord[]> {
+    return (await this.getChildrenPage(recordId, limit)).children;
+  }
+
+  /** One page of children plus the cursor for the next; `nextAfter` is undefined on the last. */
+  async getChildrenPage(
+    recordId: string,
+    limit = 100,
+    after?: string,
+  ): Promise<{ children: RadiaRecord[]; nextAfter?: string }> {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (after) q.set("after", after);
+    const r = await this.req("GET", `/v0/ops/records/${encodeURIComponent(recordId)}/children?${q}`);
+    return { children: r.children, nextAfter: r.nextAfter };
   }
 
   // ---- artifacts (design-data-model §2.4) ----

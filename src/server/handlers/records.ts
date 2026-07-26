@@ -110,7 +110,10 @@ export async function handleQuery(space: Space, req: Request, principal: string)
   try {
     const constraint = await space.authorize(principal, "query", template.kind);
     if (constraint) template.match = combineMatch(template.match, constraint); // grant ∧ request
-    const records = await space.query(template, limit, page);
+    // A self-scoped grant narrows the coordination plane too. Without this, approving "only its own
+    // records" scoped the ops plane while `query` still returned every record of the kind.
+    const authors = await space.authorScope(principal, "query", template.kind);
+    const records = await space.query(template, limit, page, authors ? { createdBy: authors } : undefined);
     // The cursor for the NEXT page is the last id of this one — echoed so a caller never has to
     // know that the cursor happens to be a record id.
     return Response.json({ records, nextAfter: records.length === limit ? records[records.length - 1]?.id : undefined });
@@ -135,7 +138,8 @@ export async function handleReadOne(space: Space, req: Request, principal: strin
   try {
     const constraint = await space.authorize(principal, "read_one", template.kind);
     if (constraint) template.match = combineMatch(template.match, constraint); // grant ∧ request
-    const record = await space.readOne(template);
+    const authors = await space.authorScope(principal, "read_one", template.kind);
+    const record = await space.readOne(template, authors ? { createdBy: authors } : undefined);
     return Response.json(record); // null serializes to `null`
   } catch (e) {
     // Template validation failures (undeclared_path, unknown_kind, ...) are client errors.

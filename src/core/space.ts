@@ -19,6 +19,7 @@ import type {
   RenewResult,
   SettleResult,
   SpaceEvent,
+  StatsScope,
   StorageAdapter,
   TakeResult,
   TakeSelector,
@@ -131,6 +132,27 @@ function labelFor(rec: RadiaRecord): string {
   return hint ? `${rec.kind}:${hint}` : rec.kind;
 }
 
+/**
+ * Grants are read NEWEST-FIRST, and that is load-bearing rather than tidy.
+ *
+ * A capped page returns the OLDEST matches, and grant records ACCUMULATE: re-bootstrapping an agent
+ * writes a fresh record for every grant it holds, so a long-lived principal crosses 100 records in
+ * ordinary use. Reading the oldest page then breaks authorization in both directions — measured: a
+ * legitimately granted principal was DENIED once its 101st record arrived, and, worse, a REVOCATION
+ * written as the newest record was invisible, so the revoked grant kept working. Fail-open on
+ * revocation is the one that matters.
+ */
+const GRANTS_NEWEST_FIRST = { dir: "desc" } as const;
+
+/** How many grant records one authorization read examines. Generous because the cost of truncating
+ *  is silent misauthorization, and grant writes are now content-keyed so the normal case is a
+ *  handful of records per principal — this bound only absorbs history written before that. */
+const GRANT_PAGE = 500;
+
+/** How many children of ONE record a graph walk follows. The walk's node cap bounds the picture;
+ *  this bounds the reading, so a record with a huge fan-out cannot dominate a single step. */
+const GRAPH_FANOUT = 200;
+
 export class Space {
   private readonly kinds = new KindRegistry();
   private readonly creds = new CredentialStore();
@@ -177,7 +199,10 @@ export class Space {
   /** Rebuild the registry from kind_def records (call once at startup). A kind's latest
    *  declaration wins (records are immutable; a redeclaration is a successor, not a mutation). */
   async loadKinds(): Promise<void> {
-    const records = await this.storage.query({ kind: KIND_DEF }, 1000);
+    // Newest first: a limited query returns the OLDEST matches, so a space with more kind_def
+    // records than this cap would rebuild its registry from declarations that have since been
+    // superseded — see design-matching.md, "Template properties".
+    const records = await this.storage.query({ kind: KIND_DEF }, 1000, { dir: "desc" });
     // Latest-wins per kind name, with retired declarations dropped — the shared registry
     // projection (`core/registry.ts`), not a loop local to this method.
     const latest = activeByKey<{ kind?: unknown }>(
@@ -260,7 +285,7 @@ export class Space {
     // leaving the others in force. Projecting by (principal, kind) instead would let a single
     // revocation silently take every grant on the kind with it.
     const grants = activeSet(
-      await this.query({ kind: GRANT, match: { principal: subject, kind } }, 100),
+      await this.query({ kind: GRANT, match: { principal: subject, kind } }, GRANT_PAGE, GRANTS_NEWEST_FIRST),
       grantKey,
     );
     const applicable = grants.filter((g) => {
@@ -280,6 +305,49 @@ export class Space {
   }
 
   /**
+   * The author restriction a principal's grants impose on READS of `kind`, or `undefined` for none.
+   *
+   * A self-scoped grant (`scope: {createdBy: "self"}`) has to narrow the coordination plane too,
+   * not only the ops plane — otherwise approving "its own records of that kind" hands over every
+   * record of that kind through `query`, which is the plane an agent actually reads records
+   * through. That gap was live: a session granted self-scoped `message` access saw its own 98
+   * records in `ops/stats` and all 308 through `query`.
+   *
+   * Applied only when EVERY applicable grant is self-scoped. Grants union — a record is readable if
+   * any grant permits it — so one unscoped grant already permits other authors' records, and
+   * filtering by author would then deny something granted. Mixed sets therefore keep today's
+   * behaviour, which is the permissive-but-consistent reading of a union.
+   */
+  async authorScope(principal: string, op: GrantOp, kind: string): Promise<string[] | undefined> {
+    if (this.isPrivileged(principal)) return undefined;
+    const subject = this.grantSubject(principal);
+    // Only grants that permit THIS operation are relevant. A `put`-only grant says nothing about
+    // reads, and counting it as "an unscoped grant on this kind" lifted the read restriction —
+    // which happened the moment narrowing a read grant left the write grant behind, exactly as
+    // intended.
+    const grants = activeSet(await this.query({ kind: GRANT, match: { principal: subject, kind } }, GRANT_PAGE, GRANTS_NEWEST_FIRST), grantKey)
+      .map((g) => g.body as GrantDef & { scope?: { createdBy?: string } })
+      .filter((g) => Array.isArray(g.operations) && g.operations.includes(op));
+    if (grants.length === 0 || !grants.every((g) => g.scope?.createdBy === "self")) return undefined;
+    return await this.runPrincipalsOf(subject, principal);
+  }
+
+  /**
+   * Every principal whose records count as "mine": the agent itself, the presented principal, and
+   * the agent's RUNS — read from the space rather than from the credential index.
+   *
+   * The index is a bounded cache of credentials that can still be PRESENTED, so it ages out old
+   * runs by design. A self scope needs the opposite: the historical run principals an agent wrote
+   * records under, or "what did I create" silently shrinks as the space ages. `agent` is a declared
+   * indexed path on `agent_run`, so this is one indexed query per authorization rather than a scan.
+   */
+  private async runPrincipalsOf(subject: string, principal: string): Promise<string[]> {
+    const runs = await this.query({ kind: AGENT_RUN, match: { agent: subject } }, 1000, { dir: "desc" });
+    const ids = runs.map((r) => (r.body as { run?: string }).run).filter((r): r is string => typeof r === "string");
+    return [...new Set([...ids, subject, principal])];
+  }
+
+  /**
    * Authorize a watch on `kind`. A watch OBSERVES matching records (its SSE payload is record
    * existence + ids + kind + timing), so it is allowed if the principal holds ANY grant on the kind
    * — it is a participant — regardless of op (a watcher may hold only `take`, like the agentLoop, or
@@ -294,7 +362,7 @@ export class Space {
     // Retracted grants are subtracted here too. A watch observes records, so a revocation that
     // stopped `query` but left `watch` standing would revoke nothing that matters.
     const grants = activeSet(
-      await this.query({ kind: GRANT, match: { principal: subject, kind } }, 100),
+      await this.query({ kind: GRANT, match: { principal: subject, kind } }, GRANT_PAGE, GRANTS_NEWEST_FIRST),
       grantKey,
     );
     if (grants.length === 0) {
@@ -364,7 +432,13 @@ export class Space {
     await this.putRaw({ kind: AGENT_DEFINITION, body: { agent, tokenHash: hash } });
     for (const g of grants) {
       validateGrantDef(g);
-      await this.putRaw({ kind: GRANT, body: g });
+      // CONTENT-KEYED, so re-defining an agent with the same grants writes nothing new. Without
+      // this, every bootstrap appended a fresh record per grant and a long-lived principal
+      // accumulated hundreds — which then outran the bounded page every authorization read takes,
+      // silently. Unlike a worker republishing a capability, this key does dedup across restarts:
+      // agent definitions are an OPERATOR action, and an idempotency key is scoped to the acting
+      // principal, which here is stable.
+      await this.putRaw({ kind: GRANT, body: g }, `grant:${await sha256Hex(grantKey(g) ?? "")}`);
     }
     this.creds.addDefinition(hash, agent);
     this.notifier.notify();
@@ -467,12 +541,22 @@ export class Space {
    *  after loadKinds). Mirrors loadKinds: records are the source of truth, this index is a cache. */
   async loadCredentials(): Promise<void> {
     this.creds.clear();
-    for (const rec of await this.storage.query({ kind: AGENT_DEFINITION }, 5000)) {
+    // NEWEST-first, both kinds. These records accumulate — a definition per re-definition, a run per
+    // mint, and a live run re-mints on a timer — so a bounded ASCENDING read eventually returns only
+    // ancient history. Measured on 5202 run records: after a restart, a STOPPED run's token still
+    // resolved, because the stop is a successor and successors are the newest thing on the space.
+    // Fail-open on a stop is the same shape as fail-open on a revocation.
+    //
+    // Newest-first is sound here in a way it is not for grants: a run token is short-lived, so the
+    // newest window covers every credential that can still be presented, and anything outside it is
+    // expired anyway. What ages out of this index is HISTORY, which only `runsForAgent` wants — and
+    // that reads the space directly rather than this cache.
+    for (const rec of await this.storage.query({ kind: AGENT_DEFINITION }, 5000, { dir: "desc" })) {
       const b = rec.body as { agent?: string; tokenHash?: string } | null;
       if (b?.agent && b.tokenHash) this.creds.addDefinition(b.tokenHash, b.agent);
     }
     // agent_run records in id order: a later (stop) successor overrides the earlier (mint) one.
-    const runs = await this.storage.query({ kind: AGENT_RUN }, 5000);
+    const runs = await this.storage.query({ kind: AGENT_RUN }, 5000, { dir: "desc" });
     runs.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     for (const rec of runs) {
       const b = rec.body as { run?: string; agent?: string; tokenHash?: string; status?: string; expiresAt?: string } | null;
@@ -635,8 +719,8 @@ export class Space {
     for (const [token, cap] of this.downloadCaps) if (cap.expiresAt <= now) this.downloadCaps.delete(token);
   }
 
-  readOne(template: Template): Promise<RadiaRecord | null> {
-    return this.storage.readOne(this.compile(template));
+  readOne(template: Template, scope?: StatsScope): Promise<RadiaRecord | null> {
+    return this.storage.readOne(this.compile(template), scope);
   }
 
   /**
@@ -649,7 +733,7 @@ export class Space {
    * the whole sort key plus the oracle's type rules, so combining them is rejected rather than
    * silently resolved one way.
    */
-  query(template: Template, limit = 100, page?: Page): Promise<RadiaRecord[]> {
+  query(template: Template, limit = 100, page?: Page, scope?: StatsScope): Promise<RadiaRecord[]> {
     const compiled = this.compile(template);
     if (page && (page.after || page.dir) && compiled.orderBy?.length) {
       throw new RadiaError(
@@ -657,12 +741,41 @@ export class Space {
         "a keyset page (after/dir) is only defined for the natural id order — drop order_by, or page without a cursor",
       );
     }
-    return this.storage.query(compiled, limit, page);
+    return this.storage.query(compiled, limit, page, scope);
   }
 
-  /** Record counts by kind and state (dev UI overview). */
-  stats(): Promise<KindStateCount[]> {
-    return this.storage.stats();
+  /** Record counts by kind and state (dev UI overview). `scope` makes it a genuine self-aggregate
+   *  — computed over the subset, never a whole-space total filtered afterwards. */
+  stats(scope?: StatsScope): Promise<KindStateCount[]> {
+    return this.storage.stats(scope);
+  }
+
+  /**
+   * What a principal may see of the ops plane, or `null` for unrestricted (operator).
+   *
+   * Ops access stays KIND-SCOPED: a non-operator reaches the plane for exactly the kinds where it
+   * holds a `query` grant carrying `scope.createdBy: "self"`, and only for its own records of those
+   * kinds. There is no ops pseudo-kind, because that would be a wildcard wearing a different hat.
+   *
+   * "Its own records" resolves through the AGENT, not the presented run: `created_by` stores
+   * `run:<ulid>`, run tokens are re-minted, and comparing to the current run would silently hide
+   * the same agent's earlier work. Throws `forbidden` when nothing is scoped to it — the same
+   * answer the plane gave before, for a principal with no such grant.
+   */
+  async opsScope(principal: string): Promise<StatsScope | null> {
+    if (this.isPrivileged(principal)) return null;
+    const subject = this.grantSubject(principal);
+    const grants = activeSet(await this.query({ kind: GRANT, match: { principal: subject } }, GRANT_PAGE, GRANTS_NEWEST_FIRST), grantKey);
+    const kinds = grants
+      .map((g) => g.body as GrantDef & { scope?: { createdBy?: string } })
+      .filter((g) => g.scope?.createdBy === "self" && Array.isArray(g.operations) && g.operations.includes("query"))
+      .map((g) => g.kind);
+    if (kinds.length === 0) {
+      throw new RadiaError("forbidden", `principal '${principal}' may not access the ops plane`);
+    }
+    // An agent with no runs on record would scope to the empty set and see nothing; include the
+    // principal itself so a direct (non-run) principal still matches its own records.
+    return { createdBy: await this.runPrincipalsOf(subject, principal), kinds: [...new Set(kinds)] };
   }
 
   /** Registered kind declarations (dev UI). */
@@ -852,7 +965,9 @@ export class Space {
         addEdge(pid, id);
         if (!seen.has(pid)) queue.push(pid);
       }
-      for (const child of await this.storage.childrenOf(id)) {
+      // Bounded per node: the node cap below limits how many records the graph SHOWS, not how many
+      // this reads, so an unbounded fan-out here would materialize a whole subtree to enqueue it.
+      for (const child of await this.storage.childrenOf(id, GRAPH_FANOUT)) {
         if (exclude.has(child.kind)) continue;
         addEdge(id, child.id);
         if (!seen.has(child.id)) queue.push(child.id);
@@ -908,8 +1023,8 @@ export class Space {
   /** Records that reference this record via `parent_ids` — its direct **children** (the reverse of
    *  lineage). E.g. a conversation's messages/llm_calls, an llm_call's chunks + result, a task's
    *  results. Lineage goes up (ancestors); this goes down. */
-  getChildren(recordId: string): Promise<RadiaRecord[]> {
-    return this.storage.childrenOf(recordId);
+  getChildren(recordId: string, limit = 100, page?: Page): Promise<RadiaRecord[]> {
+    return this.storage.childrenOf(recordId, Math.min(limit, 500), page);
   }
 
   // ---- watches (M1) ----
@@ -951,10 +1066,17 @@ export class Space {
    * it rather than hand-rolling the same scans. All time math uses the DB clock.
    */
   async queryEnvelopes(
-    q: { state: RecordState; expired?: boolean; staleSeconds?: number; limit?: number; excludeKinds?: string[] },
+    q: {
+      state: RecordState;
+      expired?: boolean;
+      staleSeconds?: number;
+      limit?: number;
+      excludeKinds?: string[];
+      scope?: StatsScope;
+    },
   ): Promise<{ record: RadiaRecord | null; envelope: Envelope }[]> {
     const now = await this.storage.now();
-    let envs = await this.storage.envelopesInState(q.state, q.limit ?? 100, q.excludeKinds);
+    let envs = await this.storage.envelopesInState(q.state, q.limit ?? 100, q.excludeKinds, q.scope);
     if (q.expired) envs = envs.filter((e) => e.leasedUntil !== undefined && e.leasedUntil < now);
     // Ignore a non-finite window rather than computing an Invalid Date from it: in-process callers
     // bypass the HTTP validation, and `addSeconds(now, -NaN)` throws deep in date formatting.
@@ -1010,9 +1132,12 @@ export class Space {
 
   /** A derived health report, composed from queryEnvelopes + stats: counts by state,
    *  dead-letters, expired-but-stuck leases, and available records that have sat unclaimed. */
-  async diagnostics(): Promise<Diagnostics> {
+  async diagnostics(scope?: StatsScope): Promise<Diagnostics> {
     const now = await this.storage.now();
-    const stats = await this.storage.stats();
+    // Every component below carries the scope, so a scoped report is computed over that subset
+    // rather than assembled from the whole space and trimmed. A count filtered after the fact is
+    // the dangerous failure here: it is invisible in the output, it just looks plausible.
+    const stats = await this.storage.stats(scope);
     const total = (state: string) => stats.filter((s) => s.state === state).reduce((a, s) => a + s.count, 0);
     const SAMPLE = 500;
     const STALE_S = this.ctx.diagnosticsStaleSeconds;
@@ -1021,9 +1146,9 @@ export class Space {
     // (filtered in the query, before the sample cap, so real stale work is never crowded out).
     const referenceKinds = this.kinds.list().filter((d) => !isClaimable(d)).map((d) => d.kind);
 
-    const deadLetter = await this.queryEnvelopes({ state: "dead_letter", limit: 50 });
-    const stuck = await this.queryEnvelopes({ state: "leased", expired: true, limit: SAMPLE });
-    const stale = await this.queryEnvelopes({ state: "available", staleSeconds: STALE_S, limit: SAMPLE, excludeKinds: referenceKinds });
+    const deadLetter = await this.queryEnvelopes({ state: "dead_letter", limit: 50, scope });
+    const stuck = await this.queryEnvelopes({ state: "leased", expired: true, limit: SAMPLE, scope });
+    const stale = await this.queryEnvelopes({ state: "available", staleSeconds: STALE_S, limit: SAMPLE, excludeKinds: referenceKinds, scope });
     const env = (r: { envelope: Envelope }) => r.envelope;
 
     return {

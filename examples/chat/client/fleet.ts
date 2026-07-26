@@ -19,7 +19,7 @@
 // Tokens travel as argv, which `ps` can see. Fine for a local demo, wrong for a deployment — a
 // real one would use a secret channel.
 
-import { CLASSIFY_MODEL, EXEC_TIMEOUT_MS, execRoots, IMAGE_MODEL, port, TIERS, toolRoots, url } from "./config.ts";
+import { CLASSIFY_MODEL, EXEC_TIMEOUT_MS, execRoots, IMAGE_MODEL, port, spaceDb, TIERS, toolRoots, url } from "./config.ts";
 import type { Bootstrapped } from "../space/roles.ts";
 
 const local = `http://127.0.0.1:${port}`;
@@ -106,7 +106,23 @@ export function launchFleet(tokens: Bootstrapped): Deno.ChildProcess[] {
 /** Start a space of our own when none is running. */
 export function spawnSpace(): Deno.ChildProcess {
   return new Deno.Command("deno", {
-    args: ["run", "--allow-net", "--allow-read", "--allow-write", "--allow-env", "src/main.ts", "dev", "--port", port, "--storage", "sqlite"],
+    // `--db` is what makes a restart resumable at all: without it the space is in-memory and the
+    // conversation, its saved procedures and its artifacts die with the process.
+    args: [
+      "run",
+      "--allow-net",
+      "--allow-read",
+      "--allow-write",
+      "--allow-env",
+      "src/main.ts",
+      "dev",
+      "--port",
+      port,
+      "--storage",
+      "sqlite",
+      "--db",
+      spaceDb,
+    ],
     stdout: "null",
     stderr: "null",
     stdin: "null",

@@ -14,6 +14,15 @@ export const port = new URL(url).port || "7788";
 
 export const role: Role = (arg("--role") ?? Deno.env.get("RADIA_CHAT_ROLE")) === "user" ? "user" : "admin";
 
+/** Where a chat-spawned space keeps its data. A space with no `--db` is IN-MEMORY, so without this
+ *  every restart lost the conversation, the saved procedures and the artifacts — the thread lives
+ *  on the space, which only helps if the space outlives the process. Blobs land beside it. */
+export const spaceDb = Deno.env.get("RADIA_CHAT_DB") ?? ".radia-chat-space.db";
+
+/** Reattach to an existing conversation instead of starting one: a conversation id, or `last` for
+ *  the most recent. Empty = start fresh. */
+export const resume = arg("--conversation") ?? Deno.env.get("RADIA_CHAT_RESUME") ?? "";
+
 /** Three capability/cost tiers, cheap → capable in insertion order (the order sets escalation
  *  rank). Add one here and a new model is live: the router discovers it from the `model` records
  *  its worker advertises, and nothing in this client changes. */

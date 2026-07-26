@@ -111,6 +111,7 @@ env) — a real but out-of-band isolation layer, complementary to grants.
 - Delegation
 - Taint
 - Revocation semantics
+- Self-scoped ops grants (specified, unbuilt)
 - Budgets
 - Deferred
 
@@ -306,6 +307,138 @@ stateDiagram-v2
   a still-live principal is subsumed by stopping its run (token stops resolving).
 - **Token expiry mid-task:** the run refreshes via its definition credential; refresh
   failure degrades to "run stopped".
+
+## Self-scoped ops grants — SPECIFIED, UNBUILT
+
+The asymmetry this closes: **every reflexive capability is currently reserved to the outside.**
+Reading your own process state needs operator privilege, so a participant can be observed and
+interrupted but cannot observe or interrupt itself
+([research-self-modeling.md](research-self-modeling.md)). A scoped session asked "what did I create
+in this space" and got three 403s.
+
+It is deliberately **not** template-scoped grants extended. A grant `template` narrows a **body**
+match, and the fields a self-scope needs — `created_by`, envelope state, attempt counts — are
+precisely what the routing language is forbidden to see. That prohibition is load-bearing (it is
+what keeps templates analyzable data), so this adds a **second, closed vocabulary beside it**
+rather than a placeholder inside it.
+
+### What "self" resolves to
+
+Server-derived from the caller's token, never a body field, never client-supplied.
+
+| Anchor  | Resolves to | Use |
+|---------|-------------|-----|
+| `agent` | `grantSubject(principal)` — the agent behind the run | durable identity: "records I authored", across token re-mints |
+| `run`   | the presented run principal | this process: "leases I hold right now" |
+
+**`agent` is the default, and the reason is a real trap.** `created_by` stores `ctx.principal`,
+which for a token-bearing session is `run:<ulid>` — and run tokens are short-lived and re-minted.
+String-comparing `created_by` to the caller would answer "what did I create" with *only what this
+token created*, silently omitting the same agent's earlier work. So the comparison is
+`agentForRun(created_by) == agentForRun(caller)`, not `created_by == caller`.
+
+### The vocabulary
+
+A closed set, extended only when a real failure names the field it needs — the discipline
+[research-self-modeling.md](research-self-modeling.md) asks for, since designing the selector first
+is guessing. Two entries, each justified by an observed failure:
+
+| Selector | Meaning | Evidence it is needed |
+|---|---|---|
+| `createdBy: "self"` | records whose author resolves to my agent | "what did I create in this space" → 403 |
+| `leaseOwner: "self"` | records my RUN currently holds | a worker reporting its own stuck work (build order step 3/5) |
+
+Deferred until something needs them: `delegatedBy` (work emitted under my lease — needs the
+`delegation_context` shape settled), and any envelope *value* predicate (`state`, `attempt`), which
+the existing ops selectors already express and which a self-scope only has to intersect with.
+
+### Where it lives on the record
+
+A sibling field, not a magic value inside `template`:
+
+```json
+{"principal": "agent:chat-user", "kind": "artifact", "operations": ["query"],
+ "scope": {"createdBy": "self"}}
+```
+
+`template` stays body-only and keeps compiling through the same oracle; `scope` is enum-valued data
+that only authorization reads. Nothing new enters the matching language, so `compileTemplate`,
+`matchesRecord` and the pushdown contract are untouched.
+
+### Where it is enforced
+
+**The ops plane first, and only there.** That is what the name means, it is where the failure was,
+and it keeps the change off the hot claim path. `/v0/ops/*` is gated today by a single
+`isPrivileged` check (`src/server/http.ts`); it becomes "privileged **or** the principal holds a
+`scope`d grant for what this request touches", with the scope ANDed into the handler's selector.
+
+Per-endpoint disposition, because they do not all behave the same:
+
+| Endpoint | Self-scopable | Why |
+|---|---|---|
+| `ops/records` (envelope query), `ops/records/{id}`, `/envelope`, `/lineage`, `/children`, `/graph` | yes | per-record; the scope filters or refuses |
+| `ops/events` | yes, filtered by `runId` — events the caller CAUSED | under-returns on purpose: an event another agent caused on your record is not shown, because resolving each event's record to check its author is a lookup per event on the busiest read in the plane. Note that filtering breaks cursor paging — an empty page is how callers detect the end of the log — so the handler scans forward across raw pages and reports `nextAfter` from the last RAW event examined |
+| `ops/stats`, `ops/diagnostics` | yes, as a GENUINE self-aggregate | not a filtered whole-space total — the aggregate is *computed over the scope*. A filtered-after total would leak other agents' activity as counts, and a whole-space total answered to a scoped caller is simply wrong |
+| `ops/remediate`, `ops/admin`, `ops/declassify` | **no** | these are the interrupt half (build order step 5) and a write. Declassify especially: taint clears only via privileged declassify — a self-scope must never reach it |
+
+**The coordination plane is narrowed for READS** (`query`/`read_one`), because that is the plane an
+agent actually reads records through — scoping only the ops plane meant an approval promising "its
+own records" still returned every record of the kind. `take` stays excluded: post-filtering a claim
+would mean claiming a record and then rejecting it, which is not a filter.
+
+Because grants **union**, the author restriction applies only when EVERY applicable grant on the
+kind is self-scoped. One unscoped grant already permits other authors' records, so filtering would
+deny something granted — and, practically, a narrow grant added beside a broad one accomplishes
+nothing, which is why an approval that offers "own records only" has to withdraw the wider grant.
+
+### Which grant authorizes ops access
+
+Ops access is **still kind-scoped** — there is no `ops` pseudo-kind, because that is a wildcard
+wearing a different hat. A non-operator reaches the ops plane for exactly the kinds where it holds
+a `query` grant carrying a self `scope`, and sees only its own records of those kinds:
+
+```json
+{"principal": "agent:chat-user", "kind": "artifact", "operations": ["query"],
+ "scope": {"createdBy": "self"}}
+```
+
+So `ops/stats` for that principal returns counts for `artifact` and nothing else, over its own
+records only. Grant a second kind, and a second row appears. The aggregate's *shape* therefore
+carries no information the caller was not already entitled to.
+
+### How the aggregate is computed
+
+"Records whose author resolves to my agent" cannot be evaluated in SQL — the run → agent mapping
+lives in the runtime's credential index, not in a column. So the runtime resolves the agent's run
+principals FIRST (`CredentialStore.runsForAgent`) and pushes `created_by IN (…)` down, which is
+exact and indexable. The alternative, denormalizing an `agent` column onto every record, was
+rejected for now: it duplicates authority-adjacent data onto immutable records and needs a
+migration, for a lookup the credential index already answers.
+
+That choice makes one constraint explicit, and it is cheap now and awkward later: **`agent_run`
+records must be treated as durable by retention GC.** They are the only thing that maps an old
+`created_by` back to its agent, so sweeping them would make a record invisible to its own author.
+
+### Non-goals
+
+- Not a way to see another agent's records, in aggregate or otherwise.
+- Not authority inheritance. Reading what you authored grants nothing further: **provenance is not
+  authority**, and `created_by` is provenance.
+- Not the interrupt half. Quarantining yourself needs step 5 or a non-privileged alarm kind.
+
+### Known risks
+
+- **Resolution depends on the credential index.** Decided above: `agent_run` records are durable,
+  and retention GC must not sweep them. The fallback if that ever changes is a stored agent stamp
+  on the record.
+- **A scoped aggregate is cheaper to get wrong than a scoped list.** A filter applied after
+  aggregation is invisible in the output — the number just looks plausible. The conformance case
+  for this asserts a scoped principal's counts against a space containing another agent's records,
+  which is the only way the difference shows.
+- **Not every 403 is self-scope material.** In the observed transcript, `space_stats` and
+  `space_children` were ops denials, but `space_kinds` was an ordinary coordination-plane denial
+  (`kind_def: query`) — kind declarations are nobody's "own". Those need a normal grant, which is
+  what `grant_request` is for. Conflating the two would over-scope the fix.
 
 ## Budgets
 

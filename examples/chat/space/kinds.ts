@@ -16,7 +16,15 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   await client.registerKind({ kind: "conversation", indexedPaths: [], claimable: false });
   await client.registerKind({
     kind: "message",
-    indexedPaths: [{ path: "conversationId", type: "keyword" }, { path: "index", type: "integer" }],
+    // `role` is indexed because it is the dimension anyone aggregating a conversation reaches for
+    // ("how many user turns, how many tool results") and every message body carries it. Without it
+    // that question degrades into fetching pages and counting by hand — a worse answer, computed
+    // from a page rather than the population.
+    indexedPaths: [
+      { path: "conversationId", type: "keyword" },
+      { path: "index", type: "integer" },
+      { path: "role", type: "keyword" },
+    ],
     sortablePaths: ["index"],
     claimable: false,
   });
@@ -44,6 +52,17 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     indexedPaths: [{ path: "tool", type: "keyword" }, { path: "conversationId", type: "keyword" }],
   });
   await client.registerKind({ kind: "tool_result", indexedPaths: [{ path: "callId", type: "keyword" }], claimable: false });
+  // A `grant_request` = the assistant asking for authority it does not have. Grants are
+  // "assigned, never self-declared" (CLAUDE.md), so an agent that hits a 403 cannot fix it — but it
+  // CAN say what it needs and why, as a record, and let a human decide. The request is written by
+  // the SESSION principal, so `created_by` names the asker authoritatively rather than a body field
+  // anyone could set. Indexed on conversationId because the approver is the person in that
+  // conversation; `kind` so a request can be found by what it asks for.
+  await client.registerKind({
+    kind: "grant_request",
+    indexedPaths: [{ path: "conversationId", type: "keyword" }, { path: "kind", type: "keyword" }],
+    claimable: false,
+  });
   // A `procedure` = code the ASSISTANT wrote and named, so it can be run again without being
   // re-typed into a tool call. Deliberately its own kind rather than a `capability`: a capability
   // is what a worker serves and is global, while a procedure belongs to the conversation that

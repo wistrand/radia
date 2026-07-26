@@ -17,8 +17,25 @@ async function defHash(def: unknown): Promise<string> {
   return [...new Uint8Array(bytes)].slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Advertise one tool. Safe to call on every startup. */
+/**
+ * Advertise one tool. Safe to call on every startup — and now actually cheap to.
+ *
+ * The content key does NOT make this idempotent across restarts, which is the trap: an
+ * idempotency key is scoped `(principal, operation, key)`, and a worker's principal is a fresh
+ * `run:<ulid>` every launch. So the same unchanged definition wrote a NEW record on every start,
+ * and a long-lived space grew by the whole fleet's tool count per restart — until discovery's
+ * bounded page no longer reached the newest tool. Read first, and write only on a real change.
+ */
 export async function publishCapability(client: RadiaClient, def: ToolDef): Promise<void> {
   const tool = def.function.name;
-  await client.put({ kind: "capability", body: { tool, def } }, `capability:${tool}:${await defHash(def)}`);
+  const hash = await defHash(def);
+  try {
+    // Newest first: the current advertisement is the latest record, not the earliest.
+    const existing = await client.query({ kind: "capability", match: { tool } }, 1, { dir: "desc" });
+    const current = existing[0]?.body as { def?: ToolDef } | undefined;
+    if (current?.def && await defHash(current.def) === hash) return; // unchanged — nothing to say
+  } catch {
+    // No grant to read capabilities (or an older server): fall through and publish.
+  }
+  await client.put({ kind: "capability", body: { tool, def } }, `capability:${tool}:${hash}`);
 }

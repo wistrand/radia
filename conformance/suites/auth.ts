@@ -28,6 +28,36 @@ async function denied(fn: () => Promise<unknown>): Promise<string | undefined> {
 
 export const authSuites: Suite[] = [
   {
+    name: "a stopped run stays stopped after a restart, however busy the space",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      space.registerKind({ kind: "task", indexedPaths: [] });
+      const { definitionToken } = await space.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "task", operations: ["query"] },
+      ]);
+      const { run, runToken } = await space.mintRun(definitionToken);
+
+      // Runs accumulate: one per mint, and a live run re-mints on a timer. The credential index is
+      // rebuilt from a BOUNDED page of them, and a stop is a successor — so it is always among the
+      // newest records. Reading the oldest page made a stopped token keep resolving across a
+      // restart, which is fail-open on revocation.
+      for (let i = 0; i < 600; i++) {
+        await space.put({
+          kind: "agent_run",
+          body: { run: `run:filler${i}`, agent: "agent:other", tokenHash: `h${i}`, expiresAt: "2099-01-01T00:00:00Z" },
+        });
+      }
+      await space.stopRun(run);
+
+      const restarted = newSpace(adapter);
+      await restarted.loadKinds();
+      await restarted.loadCredentials();
+      const resolved = await restarted.resolveToken(runToken);
+      assert(!resolved.ok, "a stopped run's token must not resolve after a restart");
+    },
+  },
+
+  {
     name: "privileged principals (human:* and the supervisor) have operator access",
     run: async (adapter) => {
       const space = newSpace(adapter);

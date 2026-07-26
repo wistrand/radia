@@ -20,6 +20,7 @@ import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleD
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem, statusFor } from "./problem.ts";
 import { RadiaError } from "../core/errors.ts";
+import type { StatsScope } from "../storage/adapter.ts";
 import { moduleRelative, readTextFile, serve } from "../platform.ts";
 
 export interface ServerOptions {
@@ -55,6 +56,12 @@ function loadUi(operatorToken?: string): string {
 function loadVendor(name: string): string {
   return readTextFile(moduleRelative(import.meta.url, `../ui/vendor/${name}`)) ?? "";
 }
+
+/** The ops paths a SELF-SCOPED (non-operator) principal may reach: reads only. Everything else on
+ *  the plane — remediate, reclaim/dead-letter/requeue, declassify — is the interrupt half and stays
+ *  operator-only. */
+const READ_ONLY_OPS =
+  /^\/v0\/ops\/(stats|events|diagnostics|records(\/[^/]+(\/(envelope|lineage|children|graph))?)?)$/;
 
 export function startServer(opts: ServerOptions): { finished: Promise<void> } {
   const hostname = opts.host ?? "127.0.0.1"; // loopback by default; --host 0.0.0.0 to expose
@@ -134,9 +141,25 @@ function makeHandler(space: Space, ui: string, authRequired: boolean) {
     if ("error" in auth && !isPublic) return problem(401, auth.error, auth.detail);
     const principal = "principal" in auth ? auth.principal : "anonymous";
 
-    // The observe-and-operate plane is grant-gated: operator (human/supervisor) only.
-    if (url.pathname.startsWith("/v0/ops/") && !space.isPrivileged(principal)) {
-      return problem(403, "forbidden", `principal '${principal}' may not access the ops plane`);
+    // The observe-and-operate plane is grant-gated. Operator (human/supervisor) sees everything;
+    // anyone else sees the plane only through a SELF SCOPE — the kinds they hold a
+    // `scope.createdBy:"self"` grant on, restricted to their own records. `opsScope` throws
+    // `forbidden` when nothing is scoped to them, which is the answer the plane gave before.
+    //
+    // A scope does NOT open the whole plane: the write half (remediate/admin/declassify) stays
+    // operator-only below, because those are the interrupt half and taint clears only via
+    // privileged declassify.
+    let opsScope: StatsScope | null = null;
+    if (url.pathname.startsWith("/v0/ops/")) {
+      try {
+        opsScope = await space.opsScope(principal);
+      } catch (e) {
+        if (e instanceof RadiaError) return problem(403, e.code, e.message);
+        throw e;
+      }
+      if (opsScope && !READ_ONLY_OPS.test(url.pathname)) {
+        return problem(403, "forbidden", `principal '${principal}' may only READ the ops plane, and only its own records`);
+      }
     }
 
     // --- coordination plane, path-param: artifact bytes + capability minting ---
@@ -161,11 +184,11 @@ function makeHandler(space: Space, ui: string, authRequired: boolean) {
       const id = decodeURIComponent(parts[0] ?? "");
       const tail = parts[1];
       if (id) {
-        if (req.method === "GET" && !tail) return await handleGetRecord(space, id);
-        if (req.method === "GET" && tail === "envelope") return await handleEnvelope(space, id);
-        if (req.method === "GET" && tail === "lineage") return await handleLineage(space, id);
-        if (req.method === "GET" && tail === "children") return await handleChildren(space, id);
-        if (req.method === "GET" && tail === "graph") return await handleGraph(space, id, url);
+        if (req.method === "GET" && !tail) return await handleGetRecord(space, id, opsScope);
+        if (req.method === "GET" && tail === "envelope") return await handleEnvelope(space, id, opsScope);
+        if (req.method === "GET" && tail === "lineage") return await handleLineage(space, id, opsScope);
+        if (req.method === "GET" && tail === "children") return await handleChildren(space, id, opsScope, url);
+        if (req.method === "GET" && tail === "graph") return await handleGraph(space, id, url, opsScope);
         if (req.method === "POST" && (tail === "reclaim" || tail === "dead-letter" || tail === "requeue")) {
           return await handleAdmin(space, id, tail);
         }
@@ -226,13 +249,13 @@ function makeHandler(space: Space, ui: string, authRequired: boolean) {
       case "POST /v0/ops/remediate":
         return await handleRemediate(space, req);
       case "GET /v0/ops/records":
-        return await handleEnvelopeQuery(space, url);
+        return await handleEnvelopeQuery(space, url, opsScope);
       case "GET /v0/ops/stats":
-        return await handleStats(space);
+        return await handleStats(space, opsScope);
       case "GET /v0/ops/events":
-        return await handleEvents(space, url);
+        return await handleEvents(space, url, opsScope);
       case "GET /v0/ops/diagnostics":
-        return await handleDiagnostics(space);
+        return await handleDiagnostics(space, opsScope);
 
       default:
         return problem(404, "not_found", `no route for ${route}`);

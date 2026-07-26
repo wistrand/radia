@@ -32,7 +32,36 @@ function normalizeOrderBy(raw: unknown): { path: string; dir?: "desc" }[] | unde
 
 export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
   return {
-    space_stats: () => client.getStats().then((stats) => ({ stats })),
+    /**
+     * Ask a human for authority this session does not have.
+     *
+     * The one escalation path an agent gets, and it deliberately stops at a person. Grants are
+     * "assigned, never self-declared", so this writes a REQUEST — as the session principal, so the
+     * record's server-assigned `created_by` names the asker and no body field has to be trusted.
+     * The REPL shows it to the human, who approves or refuses; nothing here can grant anything.
+     */
+    request_grant: async (a, ctx) => {
+      const kind = String(a.kind ?? "");
+      const ops = Array.isArray(a.operations) ? a.operations.map(String) : [];
+      const why = String(a.why ?? "");
+      if (!kind || ops.length === 0) return { ok: false, error: "request_grant needs `kind` and `operations`" };
+      if (!why.trim()) return { ok: false, error: "request_grant needs `why` — a human is going to read it" };
+      // The conversation comes from the CALL, not from a launch flag: the worker starts before any
+      // conversation exists, and the approver is the person in this one.
+      await client.put({
+        kind: "grant_request",
+        body: { conversationId: ctx?.conversationId, kind, operations: ops, why },
+      });
+      return {
+        ok: true,
+        requested: { kind, operations: ops },
+        note: "asked the human in this conversation; they decide. Retry the operation once they answer.",
+      };
+    },
+
+    // Passing `scope` through matters: a scoped session reading `stats: []` once told its user
+    // "the space is empty and healthy". The scope is what makes that unsayable.
+    space_stats: () => client.getStatsReport(),
 
     space_kinds: () => client.listKinds().then((kinds) => ({ kinds })),
 
@@ -85,17 +114,33 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
     space_children: async (a) => {
       const kind = a.kind ? String(a.kind) : undefined;
       const limit = Math.min(Number(a.limit ?? 25) || 25, 50);
-      let children = await client.getChildren(String(a.recordId ?? ""));
-      if (kind) children = children.filter((r) => r.kind === kind);
-      return { count: children.length, children: children.slice(0, limit).map(compact) };
+      // One past the limit, so "is this all of them?" is answerable. A count taken from a page
+      // reads as a population — the same trap `space_query` warns about, and fan-out is exactly
+      // where it bites: a conversation has a child per message.
+      const page = await client.getChildrenPage(String(a.recordId ?? ""), limit + 1);
+      const filtered = kind ? page.children.filter((r) => r.kind === kind) : page.children;
+      const more = page.children.length > limit;
+      return {
+        count: filtered.slice(0, limit).length,
+        more,
+        ...(more
+          ? { warning: `more children exist; this is a PAGE, not the total. Narrow with \`kind\`, or count with space_count.` }
+          : {}),
+        children: filtered.slice(0, limit).map(compact),
+      };
     },
 
     space_events: async (a) => {
       const after = a.after != null ? String(a.after) : "0"; // opaque cursor
       const limit = Math.min(Number(a.limit ?? 20) || 20, 50);
-      const events = await client.getEvents(after, limit);
+      const page = await client.getEventsPage(after, limit);
       return {
-        events: events.map((e) => ({ seq: e.seq, op: e.operation, kind: e.kind, state: e.state, recordId: e.recordId })),
+        events: page.events.map((e) => ({ seq: e.seq, op: e.operation, kind: e.kind, state: e.state, recordId: e.recordId })),
+        // `nextAfter` because a scoped page can be empty while the log continues; `scope` because
+        // an empty page must not read as an empty space.
+        nextAfter: page.nextAfter,
+        ...(page.scope ? { scope: page.scope } : {}),
+        ...(page.withheld ? { withheld: page.withheld } : {}),
       };
     },
 
@@ -104,6 +149,7 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
 }
 
 export const INSPECT_SCHEMAS: ToolDef[] = [
+  { type: "function", function: { name: "request_grant", description: "Ask the human for permission this session lacks. `kind` must be a RECORD KIND — the kinds records are stored under, like 'message' or 'artifact' — never a tool name: 'space_events' is a tool, and there is no record kind called that. If you cannot list the kinds, ask for what you actually want to read (the records) rather than naming the tool that reads them. When a space_* call fails with 'forbidden', that is not a bug and not something to work around — this session runs under a scoped identity, and the missing authority has to be granted by a person. Call this with the kind and operations you need and a plain-language reason; the human sees the request and decides. You cannot grant yourself anything, so do not retry the failed call until they answer. Say what you asked for in your reply so the human knows what they are approving.", parameters: { type: "object", properties: { kind: { type: "string", description: "The record kind you need access to, e.g. 'kind_def' or 'artifact'." }, operations: { type: "array", items: { type: "string", enum: ["put", "query", "read_one", "take"] }, description: "The coordination verbs you need on that kind." }, why: { type: "string", description: "Why you need it, in one sentence, for the human deciding." } }, required: ["kind", "operations", "why"] } } },
   { type: "function", function: { name: "space_stats", description: "Counts of records by kind and state in the Radia space (a quick overview / health check).", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "space_kinds", description: "List the registered record kinds and their indexed/sortable paths.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "space_query", description: "Find records by kind, with an optional match (equality/$gt/$in/$exists/…) and order_by. order_by is an array of {path, dir?} over the kind's SORTABLE paths only (list a kind's sortable paths with space_kinds), and only over fields in the record BODY — when a record was created is not a body field, so there is no way to sort by time. Without order_by, records come back in ascending record-id order; that is stable, not arbitrary, but it means a `limit` gives you the OLDEST matches, never the newest. So this is the wrong tool for 'the most recent X': use space_events (the event log is in time order) or narrow the match instead. Returns up to `limit` (default 10, max 25) records with size-capped bodies, plus `more`: true when further records match — the result is then a PAGE, so never count or compute percentages from it (space_stats has per-kind totals). The conversation itself is records: kind 'message' with match {conversationId}, order_by [{path:\"index\"}].", parameters: { type: "object", properties: { kind: { type: "string" }, match: { type: "object" }, orderBy: { type: "array", items: { type: "object", properties: { path: { type: "string" }, dir: { type: "string", enum: ["asc", "desc"] } }, required: ["path"] } }, limit: { type: "integer" } }, required: ["kind"] } } },

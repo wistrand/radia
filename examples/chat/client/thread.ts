@@ -21,6 +21,7 @@ export interface OutgoingMessage {
 
 export class Thread {
   private nextIndex = 0;
+  private startedAt = 0;
 
   private constructor(private readonly client: RadiaClient, readonly id: string) {}
 
@@ -35,6 +36,41 @@ export class Thread {
     // role=user cannot enumerate conversations at all.
     await thread.append({ role: "system", content: `${systemPrompt(role)}\nThis conversation's id is ${id}.` });
     return thread;
+  }
+
+  /**
+   * Reattach to an existing conversation.
+   *
+   * `nextIndex` is the only state this class holds, so resuming is entirely a matter of recovering
+   * it — the transcript itself was never in the process. The highest existing index gives it in one
+   * query, which is exactly what `index` being a declared SORTABLE path is for.
+   *
+   * A fresh system message is appended rather than inheriting the old one. The prompt is a record
+   * written at creation and the inference-worker always sends it, never windowing it out — so a
+   * resumed conversation would otherwise keep running under whatever disposition was current
+   * months ago. Two system messages in the thread is the lesser problem: the model reads the later
+   * one as the standing instructions, and the earlier is honest history.
+   */
+  static async resume(client: RadiaClient, id: string, role: Role): Promise<Thread> {
+    const last = await client.query(
+      { kind: "message", match: { conversationId: id }, orderBy: [{ path: "index", dir: "desc" }] },
+      1,
+    );
+    if (last.length === 0) throw new Error(`no conversation ${id} on this space (or no grant to read it)`);
+    const thread = new Thread(client, id);
+    thread.nextIndex = Number((last[0].body as { index?: number }).index ?? 0) + 1;
+    thread.startedAt = thread.nextIndex;
+    await thread.append({
+      role: "system",
+      content: `${systemPrompt(role)}\nThis conversation's id is ${id}.\n` +
+        `This conversation was resumed; everything above happened in an earlier session.`,
+    });
+    return thread;
+  }
+
+  /** How many messages precede this session — 0 for a fresh conversation. */
+  get resumedFrom(): number {
+    return this.startedAt;
   }
 
   /** The index the next `llm_call` should read up to. */
@@ -71,6 +107,9 @@ function systemPrompt(role: Role): string {
       : "This session runs as a SCOPED USER (agent:chat-user). Use any tool you are given normally — the " +
         "file, compute, and conversation tools all work. Some space_* tools touch the control plane and the " +
         "space may refuse them for this principal. ALWAYS call the tool the task needs; never refuse or skip " +
-        "a tool without calling it. Only if a call returns a forbidden/403 error, tell the user plainly that " +
-        "you lack the grant for that operation.");
+        "a tool without calling it. A forbidden/403 is NOT a dead end and not something to work around: it " +
+        "means a human has to grant you that authority, so ask for it with request_grant and say in your " +
+        "reply what you asked for. Do not substitute a weaker approach that answers a narrower question — " +
+        "reconstructing by hand what a refused call would have told you produces a worse answer AND hides " +
+        "that a grant was needed. Do not retry the refused call until the human has answered.");
 }

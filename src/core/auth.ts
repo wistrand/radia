@@ -82,6 +82,20 @@ export class CredentialStore {
     return this.#runByPrincipal.get(principal)?.agent;
   }
 
+  /**
+   * Every run principal that belongs to `agent`, including finished ones.
+   *
+   * This is what makes "records I created" answerable: `created_by` stores the RUN
+   * (`run:<ulid>`), run tokens are short-lived and re-minted, so an agent's own history is spread
+   * across many run principals. SQL cannot do this join — the mapping lives here — so the runtime
+   * resolves the set first and pushes it down as a value list.
+   */
+  runsForAgent(agent: string): string[] {
+    const out: string[] = [];
+    for (const [principal, run] of this.#runByPrincipal) if (run.agent === agent) out.push(principal);
+    return out;
+  }
+
   runExists(principal: string): boolean {
     return this.#runByPrincipal.has(principal);
   }

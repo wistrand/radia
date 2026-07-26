@@ -26,3 +26,7 @@
 # Python bytecode (sdk/py)
 __pycache__/
 *.py[cod]
+
+# Persisted space for the chat example (`deno task chat`), so a restart can resume
+/.radia-chat-space.db*
+/.radia-chat-space.db-blobs/

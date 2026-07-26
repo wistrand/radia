@@ -24,6 +24,7 @@ import {
   type RenewResult,
   type SettleResult,
   type SpaceEvent,
+  type StatsScope,
   type StorageAdapter,
   type TakeResult,
   type TakeSelector,
@@ -362,7 +363,7 @@ export class PgSqlAdapter implements StorageAdapter {
    * oracle's order is `x.id < y.id`, its deterministic tie-break, which `order by id asc` matches
    * exactly. Any other case fetches everything and lets the oracle sort — see `Pushed.exact`.
    */
-  private async candidateRows(match: CompiledMatch, want?: number, page?: Page): Promise<RawRow[]> {
+  private async candidateRows(match: CompiledMatch, want?: number, page?: Page, scope?: StatsScope): Promise<RawRow[]> {
     const d = new PgJson(1); // $1 is the kind
     const filter = pushdown(match.where, d);
     const where = isTrivial(filter) ? "" : ` and ${filter.sql}`;
@@ -377,6 +378,12 @@ export class PgSqlAdapter implements StorageAdapter {
       params.push(page.after);
       cursor = ` and id collate "C" ${dir === "desc" ? "<" : ">"} $${params.length}`;
     }
+    // The author restriction is an exact column predicate, so it never needs the oracle's help and
+    // never blocks the pushed limit.
+    if (scope?.createdBy) {
+      params.push(scope.createdBy);
+      cursor += ` and created_by = any($${params.length}::text[])`;
+    }
     const bounded = want !== undefined && filter.exact && !match.orderBy?.length;
     if (bounded) params.push(want);
     const res = await this.sql.query<RawRow>(
@@ -387,21 +394,40 @@ export class PgSqlAdapter implements StorageAdapter {
     return res.rows;
   }
 
-  async readOne(match: CompiledMatch): Promise<RadiaRecord | null> {
+  async readOne(match: CompiledMatch, scope?: StatsScope): Promise<RadiaRecord | null> {
     // SQL narrows; the core oracle decides. `pushdown` is a sound over-approximation, so this
     // filter never removes a record `matchesRecord` would have accepted.
-    const matches = (await this.candidateRows(match, 1)).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
+    const matches = (await this.candidateRows(match, 1, undefined, scope)).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
     return firstByOrder(matches, match.orderBy);
   }
 
-  async query(match: CompiledMatch, limit: number, page?: Page): Promise<RadiaRecord[]> {
-    const matches = (await this.candidateRows(match, limit, page)).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
+  async query(match: CompiledMatch, limit: number, page?: Page, scope?: StatsScope): Promise<RadiaRecord[]> {
+    const matches = (await this.candidateRows(match, limit, page, scope)).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
     return pageRecords(matches, match.orderBy, limit, page);
   }
 
-  async stats(): Promise<KindStateCount[]> {
+  async stats(scope?: StatsScope): Promise<KindStateCount[]> {
+    // Scoped counts JOIN records, because `created_by` lives there. Unscoped stays a pure
+    // record_runtime aggregate — the common path pays nothing for the scoped one.
+    const params: unknown[] = [];
+    const conds: string[] = [];
+    if (scope?.createdBy) {
+      params.push(scope.createdBy);
+      conds.push(`r.created_by = any($${params.length}::text[])`);
+    }
+    if (scope?.kinds) {
+      params.push(scope.kinds);
+      conds.push(`rt.kind = any($${params.length}::text[])`);
+    }
+    const scoped = conds.length > 0;
     const res = await this.sql.query<RawRow>(
-      "select kind, state, count(*)::int as count from record_runtime group by kind, state order by kind, state",
+      scoped
+        ? `select rt.kind, rt.state, count(*)::int as count from record_runtime rt
+             join records r on r.id = rt.record_id
+            where ${conds.join(" and ")}
+            group by rt.kind, rt.state order by rt.kind, rt.state`
+        : "select kind, state, count(*)::int as count from record_runtime group by kind, state order by kind, state",
+      params,
     );
     return res.rows.map((r) => ({
       kind: String(r.kind),
@@ -613,14 +639,23 @@ export class PgSqlAdapter implements StorageAdapter {
     return res.rows.length ? rowToRecord(res.rows[0]) : null;
   }
 
-  async childrenOf(recordId: string): Promise<RadiaRecord[]> {
+  async childrenOf(recordId: string, limit: number, page?: Page): Promise<RadiaRecord[]> {
     // Indexed lookup through the reverse edge table. This used to be
     // `parent_ids like '%"<id>"%'` — correct (ids are ULIDs, so they carry no LIKE wildcards) but
     // a scan of every record in the space to find a handful of children.
+    const dir = page?.dir === "desc" ? "desc" : "asc";
+    const params: unknown[] = [recordId];
+    let cursor = "";
+    if (page?.after) {
+      params.push(page.after);
+      cursor = ` and r.id collate "C" ${dir === "desc" ? "<" : ">"} $${params.length}`;
+    }
+    params.push(limit);
     const res = await this.sql.query<RawRow>(
       `select ${RECORD_COLS_R} from record_edges e join records r on r.id = e.child_id
-        where e.parent_id = $1 order by r.id`,
-      [recordId],
+        where e.parent_id = $1${cursor}
+        order by r.id collate "C" ${dir} limit $${params.length}`,
+      params,
     );
     return res.rows.map(rowToRecord);
   }
@@ -660,17 +695,33 @@ export class PgSqlAdapter implements StorageAdapter {
     return String(res.rows[0].cursor);
   }
 
-  async envelopesInState(state: string, limit: number, excludeKinds?: string[]): Promise<Envelope[]> {
+  async envelopesInState(
+    state: string,
+    limit: number,
+    excludeKinds?: string[],
+    scope?: StatsScope,
+  ): Promise<Envelope[]> {
     const params: unknown[] = [state];
-    let where = "state = $1";
+    let where = "rt.state = $1";
     if (excludeKinds && excludeKinds.length > 0) {
       const ph = excludeKinds.map((_, i) => `$${params.length + i + 1}`).join(", ");
-      where += ` and kind not in (${ph})`;
+      where += ` and rt.kind not in (${ph})`;
       params.push(...excludeKinds);
+    }
+    if (scope?.kinds) {
+      params.push(scope.kinds);
+      where += ` and rt.kind = any($${params.length}::text[])`;
+    }
+    // The scope is applied BEFORE the cap, like `excludeKinds` — a limit taken first and filtered
+    // after would return a short page and read as "that is all of them".
+    const join = scope?.createdBy ? " join records r on r.id = rt.record_id" : "";
+    if (scope?.createdBy) {
+      params.push(scope.createdBy);
+      where += ` and r.created_by = any($${params.length}::text[])`;
     }
     params.push(limit);
     const res = await this.sql.query<RawRow>(
-      `select * from record_runtime where ${where} order by available_at limit $${params.length}`,
+      `select rt.* from record_runtime rt${join} where ${where} order by rt.available_at limit $${params.length}`,
       params,
     );
     return res.rows.map(rowToEnvelope);

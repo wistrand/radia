@@ -8,11 +8,65 @@ Nothing here talks to a model except the workers that hold the key.
 export OPENROUTER_API_KEY=sk-or-...
 deno task dev      # optional: open http://localhost:7788 and watch the Feed tab
 deno task chat
+deno task chat -- --conversation last    # …or pick up where you left off
 ```
+
+**Conversations survive a restart, because they were never in the process.** The thread is
+`message` records on the space, so resuming is just recovering the one piece of client-held state
+(`nextIndex`) — one query, since `index` is a declared sortable path. Two things had to be true for
+that to work: a chat-spawned space now runs with `--db` (`RADIA_CHAT_DB`, default
+`.radia-chat-space.db`), because a space without one is in-memory and takes the conversation, its
+saved procedures and its artifacts down with it; and `--conversation <id>|last` reattaches instead
+of opening a new thread. Resuming restores more than the transcript — saved procedures are
+conversation-scoped, so the tools come back too.
+
+`last` is resolved with the OPERATOR credential the REPL already holds, not by the session:
+enumerating conversations would otherwise need a `conversation: query` grant on a scoped user, and
+that would let it list every conversation on the space to save a keystroke.
+
+A resumed thread appends a CURRENT system message rather than inheriting the old one, and the
+inference-worker treats the NEWEST system message in the thread as the standing instructions —
+otherwise a conversation resumed later keeps running under whatever disposition was written when it
+started. That has a protocol consequence worth knowing: providers reject a `system` role anywhere
+but the front ("system must follow a user or assistant message"), and a resumed thread has one
+mid-conversation by construction. `provider/context.ts` assembles exactly one leading system
+message, drops older ones from the body, and folds the windowing notice into it — that notice used
+to be its own system message straight after the head, which was the same violation waiting for a
+conversation long enough to drop messages. It is a pure function precisely because this is where
+the context bugs have been (`deno run -A examples/chat/smoke-context.ts`).
 
 `chat.ts` opens with a map of the tree; the areas are `client/` (the REPL), `workers/` (the five
 agent processes), `tools/` (what they do), `space/` (how the app uses Radia) and `provider/` (the
 outside world).
+
+## Testing it without a model
+
+```bash
+deno task chat-test              # all five suites, ~11s
+deno task chat-test longthread   # one by name
+```
+
+This app is where bugs surface first — and most of them turned out to be in the app's own handling
+of ACCUMULATED STATE rather than in the runtime: a resumed thread with a system message
+mid-conversation (rejected by every provider), a capability page that no longer reached the newest
+tool, a grant narrowed in a way that removed a write permission, a NUL in a message body that no
+longer fit the storage layer's JSON type. None needed a model to reproduce, and none were caught by
+reading the code.
+
+That is possible because a tool call is a record, a conversation is records, and the context path
+is a function over rows — so the suites drive the real queries, the real window expansion and the
+real assembly, with no API key:
+
+| Suite | What it holds down |
+|---|---|
+| `context` | provider payload rules: exactly one leading system message, no orphaned tool reply, the windowing notice folded in |
+| `longthread` | a deliberately awkward 58-message thread — two resumes, a tool-heavy turn wider than the window, empty/null/20k/unicode bodies — with the invariants checked at EVERY position in it |
+| `procedures` | save → call by name → read back → retire → revive, conversation scoping, name shadowing, result provenance |
+| `resume` | reattaching across a genuine process restart (the space is killed and restarted on the same `--db`) |
+| `selfgrant` | forbidden → request → human approval → self-scoped reads, on both the ops and coordination planes |
+
+The long thread is the one that pays for itself: bugs here come from the SHAPE of accumulated
+state, which is cheap to construct as records and nearly impossible to hit reliably by chatting.
 
 A CLI chatbot where **the whole conversation lives on the blackboard**. The chatbot makes
 no external calls — it only reads and writes records. LLM inference (`llm_call →
@@ -263,9 +317,10 @@ Three details carry the weight:
   thread, so provenance costs no context tokens. This exists because a model, asked whether it had
   used a saved procedure, said yes, had not, and invented a reason for the mismatch.
 
-`deno run -A examples/chat/smoke-procedures.ts` exercises save → call → re-save → read back →
-cross-conversation refusal against a throwaway space. No API key: a tool call is just a record, so
-the whole path is reachable without a model.
+```bash
+deno task chat-test              # all five suites, ~11s, no API key
+deno task chat-test longthread   # one by name
+```
 
 **Saving works from both directions.** `save_content` (`tools/save.ts`) stores text the assistant
 *wrote* — an SVG it drew in prose, a drafted config, a summary — and `run_code`'s `save_as` stores

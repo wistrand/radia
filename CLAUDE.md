@@ -40,7 +40,7 @@ content, not by addressing.
 
 | Path                                    | Role                                                       |
 |-----------------------------------------|------------------------------------------------------------|
-| `deno.json`                             | tasks (`dev`/`check`/`conformance`/`compile`) + import map |
+| `deno.json`                             | tasks (`dev`/`check`/`conformance`/`chat-test`/`bench`/`compile`) + import map |
 | `src/main.ts`                           | `radia` entry: `dev` (embedded space + console), `mcp`, else a CLI verb |
 | `src/cli.ts`                            | the CLI verbs (health/stats/doctor/kinds/put/query/take/ack/watch/…), public `/v0` only |
 | `src/mcp/`                              | MCP adapter over stdio: `server.ts` (JSON-RPC, credential + lease held outside the model, internal heartbeat), `tools.ts` (tool defs; descriptions ARE the docs) |
@@ -56,7 +56,7 @@ content, not by addressing.
 | `sdk/ts/`                               | TS SDK: `client.ts` (`RadiaClient` over `/v0`, incl. `watch()` SSE), `loop.ts` (`agentLoop`, event-driven, design §5) |
 | `sdk/py/radia.py`                       | Python SDK at parity (stdlib only): `RadiaClient`, `watch()`, `agent_loop` with heartbeat |
 | `scripts/build-release.sh`              | `deno compile` per OS + staged npm/pip launcher packages (`deno task release`) |
-| `examples/`                             | one directory per example, each with its own README: `pipeline/` (planner + workers + aggregator, `deno task demo`), `stress/` (wave load generator for the Space tab), `chat/` (the full LLM agent — llm + tool calls, images, artifacts and sandboxed code execution, all as records) — see [examples/README.md](examples/README.md) |
+| `examples/`                             | one directory per example, each with its own README: `pipeline/` (planner + workers + aggregator, `deno task demo`), `stress/` (wave load generator for the Space tab), `chat/` (the full LLM agent — llm + tool calls, images, artifacts and sandboxed code execution, all as records; `deno task chat-test` runs its five suites with NO API key — this app is where bugs surface first, so it has its own harness) — see [examples/README.md](examples/README.md) |
 | `bench/`                                | benchmark suite (`deno task bench`): throughput, latency percentiles, scaling curves per adapter. Nothing asserts — see the README there for what the numbers mean and what the first run found |
 | `conformance/`                          | port contract suites — storage adapters and the blob store (`run.test.ts`, `harness.ts`, `suites/`); see the README there for how to add one |
 | `openapi/radia.yaml`                    | the frozen wire contract (source of truth)                 |
@@ -64,7 +64,7 @@ content, not by addressing.
 | `notes/radia-runtime-outline-v0.3.md`   | origin design outline; provenance, not maintained doc      |
 
 Build/run: `deno task dev` (no build step; `--db <path>` persists — SQLite file / PGlite
-dir, in-memory otherwise), `deno task conformance` (both adapters), `deno task bench` (hotspots + scaling), `deno task demo`
+dir, in-memory otherwise), `deno task conformance` (both adapters), `deno task chat-test` (the chat example, no API key), `deno task bench` (hotspots + scaling), `deno task demo`
 (end-to-end agent demo over HTTP), `deno task compile` (single binary), `deno task release`
 (per-OS binaries + npm/pip launcher packages). All of M0 is built;
 [agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md) holds the

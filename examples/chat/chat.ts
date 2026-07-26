@@ -32,17 +32,19 @@
 //
 //   provider/     the outside world
 //     openrouter.ts (chat completions) · imagegen.ts (image generation)
+//     context.ts (thread records → provider payload; pure, and where the context bugs live)
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./space/kinds.ts";
-import { bootstrap } from "./space/roles.ts";
-import { apiKey, execRoots, role, TIERS, toolRoots, url } from "./client/config.ts";
+import { bootstrap, CHAT_USER } from "./space/roles.ts";
+import { apiKey, execRoots, resume, role, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
 import { launchFleet, spawnSpace } from "./client/fleet.ts";
 import { ToolSet } from "./client/turn.ts";
 import { Thread } from "./client/thread.ts";
 import { runTurn } from "./client/turn.ts";
 import { watchWakeups } from "./client/waiting.ts";
 import { lineReader, write } from "./client/terminal.ts";
+import { reviewGrantRequests } from "./client/grants.ts";
 import { sleep } from "./util.ts";
 
 if (!apiKey) {
@@ -120,9 +122,42 @@ console.log(
     ? `code execution: readable roots ${execRoots.join(", ")} (still no network, no write, no env)`
     : "code execution: no filesystem (set RADIA_CHAT_EXEC_DIRS to grant read-only roots)",
 );
-console.log(`space ${url}${usingRunning ? " (existing)" : " (spawned)"} — open it and watch the Feed tab. Ctrl-D to quit.`);
+console.log(
+  `space ${url}${usingRunning ? " (existing)" : ` (spawned, persisted at ${spaceDb})`} — open it and watch the Feed tab. Ctrl-D to quit.`,
+);
 
-const thread = await Thread.open(session, role);
+// Resume, or start fresh. `last` is resolved with the OPERATOR client on purpose: enumerating
+// conversations would otherwise need a `conversation: query` grant on the scoped session, which
+// would let a user session list every conversation on the space — a real widening to save a
+// keystroke. The REPL already holds the operator credential it bootstrapped with.
+async function openThread(): Promise<Thread> {
+  if (!resume) return await Thread.open(session, role);
+  let id = resume;
+  if (resume === "last") {
+    // Newest first — the keyset direction, which is the only way to ask for the most recent.
+    const recent = await admin.query({ kind: "conversation" }, 1, { dir: "desc" });
+    if (recent.length === 0) {
+      write("no conversation to resume; starting a new one\n");
+      return await Thread.open(session, role);
+    }
+    id = recent[0].id;
+  }
+  return await Thread.resume(session, id, role);
+}
+
+let thread: Thread;
+try {
+  thread = await openThread();
+} catch (e) {
+  console.error(`could not resume: ${e}`);
+  cleanup();
+  Deno.exit(1);
+}
+if (thread.resumedFrom > 0) {
+  console.log(`resumed conversation ${thread.id} — ${thread.resumedFrom} earlier messages are in context`);
+} else {
+  console.log(`conversation ${thread.id} — resume it later with --conversation ${thread.id} (or --conversation last)`);
+}
 // Procedures belong to a conversation, so the tool set can only be complete once there is one.
 await tools.scopeTo(thread.id);
 
@@ -140,6 +175,15 @@ while (true) {
     await runTurn(session, thread, tools);
   } catch (e) {
     write(`\n[error] ${e}\n`);
+  }
+  // Between turns, so it owns the terminal: if the assistant hit a `forbidden` and asked for
+  // authority, the person in the conversation decides now. `admin` is the operator credential this
+  // process bootstrapped with — the session itself cannot write a grant, which is the point.
+  try {
+    await reviewGrantRequests(session, admin, CHAT_USER, thread.id, nextLine);
+    await tools.scopeTo(thread.id); // a new grant may have changed what is reachable
+  } catch (e) {
+    write(`\n[grant review failed] ${e}\n`);
   }
 }
 

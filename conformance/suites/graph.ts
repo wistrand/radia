@@ -64,6 +64,51 @@ export const graphSuites: Suite[] = [
     },
   },
   {
+    name: "children are BOUNDED and pageable, so fan-out cannot be unbounded",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const { id: root } = await space.put({ kind: "task", body: { tag: "root" } });
+      const kids: string[] = [];
+      for (let i = 0; i < 30; i++) {
+        kids.push((await space.put({ kind: "task", body: { tag: `k${i}` }, parentIds: [root] })).id);
+      }
+      kids.sort();
+
+      assertEquals((await space.getChildren(root, 10)).map((r) => r.id), kids.slice(0, 10), "a limit is a limit");
+
+      // Paged by the same keyset contract as `query`: `after` is the last child id of the page.
+      const walked: string[] = [];
+      let after: string | undefined;
+      for (let guard = 0; guard < 10; guard++) {
+        const page = await space.getChildren(root, 7, after ? { after } : undefined);
+        if (page.length === 0) break;
+        walked.push(...page.map((r) => r.id));
+        after = page[page.length - 1].id;
+      }
+      assertEquals(walked, kids, "every child exactly once, in id order");
+
+      assertEquals(
+        (await space.getChildren(root, 5, { dir: "desc" })).map((r) => r.id),
+        [...kids].reverse().slice(0, 5),
+        "and newest-first when asked",
+      );
+    },
+  },
+  {
+    name: "a graph walk does not read an unbounded fan-out",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const { id: root } = await space.put({ kind: "task", body: { tag: "hub" } });
+      for (let i = 0; i < 60; i++) await space.put({ kind: "task", body: { i }, parentIds: [root] });
+
+      // The node cap bounds what the graph SHOWS; the fan-out bound is what stops one step reading
+      // a whole subtree to enqueue it. Both hold, and the walk still terminates with a sane picture.
+      const graph = await space.getGraph(root, { maxNodes: 25 });
+      assert(graph.nodes.length <= 25, `node cap held: ${graph.nodes.length}`);
+      assert(graph.nodes.some((n) => n.id === root), "the root is in the graph");
+    },
+  },
+  {
     name: "lineage walks ancestors by depth, deduping a diamond",
     run: async (adapter) => {
       const space = newSpace(adapter);

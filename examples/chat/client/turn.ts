@@ -243,17 +243,27 @@ export class ToolSet {
    *  it, and a saved name that collided would silently change what a call does. */
   private async refresh(): Promise<void> {
     // Capabilities first: what the workers serve, one per tool name.
+    // `dir: "desc"` is load-bearing, not a flourish. A limited query returns the OLDEST matches,
+    // and a busy space accumulates capability records faster than it has tools — so an ascending
+    // page of 500 on a space with 505 records showed every tool EXCEPT the one published most
+    // recently. The chat then ran without a tool it had been given, and the model correctly
+    // reported it did not have it.
     const caps = activeByKey<{ tool: string; def: ToolDef }>(
-      await this.client.query({ kind: "capability" }, 500),
+      await this.client.query({ kind: "capability" }, 500, { dir: "desc" }),
       (b) => b.tool,
     );
-    const tools = [...caps.values()].map((r) => (r.body as { def: ToolDef }).def);
+    // A capability whose `def` is not a tool definition is skipped rather than passed on. One
+    // malformed record would otherwise break EVERY turn — the whole list goes to the model — and
+    // publishing is only as trustworthy as the workers holding a `capability: put` grant.
+    const tools = [...caps.values()]
+      .map((r) => (r.body as { def?: ToolDef }).def)
+      .filter((d): d is ToolDef => typeof d?.function?.name === "string");
 
     if (this.conversationId) {
       // `activeByKey`, not `newestByKey`: retirement is dropped by the shared projection, so this
       // loop never has to remember to check the flag.
       const procs = activeByKey<ProcedureBody>(
-        await this.client.query({ kind: "procedure", match: { conversationId: this.conversationId } }, 200),
+        await this.client.query({ kind: "procedure", match: { conversationId: this.conversationId } }, 200, { dir: "desc" }),
         (b) => b.name,
       );
       for (const [name, rec] of procs) {

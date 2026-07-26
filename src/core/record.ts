@@ -10,6 +10,10 @@ import type { DelegationContext, RadiaRecord } from "../storage/adapter.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
 
+/** A genuine U+0000 escape in serialized JSON: an EVEN number of preceding backslashes. The literal
+ *  six-character text that spells the escape has an odd run and must stay storable. */
+const NUL_ESCAPE = /(?<!\\)(?:\\\\)*\\u0000/;
+
 /** The only fields a client may submit. Claims, not authority. */
 export interface PutRequest {
   kind: string;
@@ -51,6 +55,20 @@ export async function buildRecord(
 
   const id = newUlid();
   const bodyJson = JSON.stringify(req.body ?? null);
+  // U+0000 is valid in a JSON string and CANNOT be represented in Postgres `jsonb`. Bodies used to
+  // be stored as opaque text, so it round-tripped; once a parsed `body_jsonb` column existed for
+  // predicate pushdown, the same body became unstorable — and failed as a 500 from deep inside the
+  // driver, on Postgres and PGlite but not SQLite. Rejected here, in core, so every adapter agrees
+  // and the caller gets an answer instead of an internal error.
+  //
+  // The pattern matches a genuine NUL ESCAPE: an even number of preceding backslashes. The literal
+  // six-character text that spells the escape serializes with a doubled backslash and stays storable.
+  if (NUL_ESCAPE.test(bodyJson)) {
+    throw new RadiaError(
+      "invalid_body",
+      "record bodies may not contain U+0000 (NUL): valid JSON, but it has no representation in the storage layer's JSON type",
+    );
+  }
   const bodySha256 = await sha256Hex(bodyJson);
 
   const parentIds = req.parentIds ?? [];

@@ -52,6 +52,101 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   fans out and on a networked Postgres, where a round trip is latency rather than work. Worth
   remembering before attributing a speedup to the change you meant to make.
 
+- **Fan-out needs a bound even when the caller has one.** `childrenOf` returned EVERY child, which
+  was fine as a `LIKE` scan nobody used at scale and became a materialize-the-subtree once it was an
+  indexed edge lookup people walk. Two separate limits were needed: the endpoint pages by keyset over
+  child id (same contract as `query`, `nextAfter` and all), and the graph walk bounds children PER
+  NODE — its `maxNodes` cap bounds what the picture SHOWS, not what the walk reads, so a single hub
+  record could still drag in an arbitrary number of rows to enqueue them. A client-side `.slice()`
+  is not a bound: the rows were already fetched by then, which is what the chat's `space_children`
+  was doing.
+- **The credential index is rebuilt from a bounded page too, and a run STOP is a successor.**
+  `loadCredentials` read the oldest 5000 `agent_definition`/`agent_run` records. Both accumulate —
+  one definition per re-definition, one run per mint, and a live run re-mints on a timer — so on a
+  busy space the window held only ancient history. Measured on 5202 run records: after a restart a
+  STOPPED run's token still resolved. Fail-open on a stop, exactly like fail-open on a revocation.
+  Both reads are now newest-first, which is sound HERE in a way it is not for grants: a run token is
+  short-lived, so the newest window covers everything that can still be presented and what ages out
+  is expired anyway.
+  One consequence had to be handled separately. `runsForAgent` was reading that same index to answer
+  "which principals count as me" for a self scope — but that question wants HISTORY, not live
+  credentials, so it would have shrunk as the space aged and quietly narrowed "what did I create".
+  It now queries `agent_run` by `agent` (a declared indexed path) instead of reading the cache.
+- **Every grant read is a bounded page over records that ACCUMULATE, and truncation misauthorizes
+  silently.** Re-defining an agent used to append a fresh record per grant on every boot, so a
+  long-lived principal crossed the page cap in ordinary use — and `authorize`/`authorizeWatch`/
+  `authorScope`/`opsScope` all read a capped page. Measured both directions: at 101 records a
+  legitimately granted principal was DENIED, and at 122 a REVOCATION written as the newest record
+  was invisible, so the revoked grant kept working. Fail-open on revocation is the one that matters.
+  Three parts to the fix, and the first is the only structural one: grant writes are now
+  CONTENT-KEYED, so re-defining an agent with unchanged grants writes nothing (this key does dedup
+  across restarts, unlike a worker republishing a capability, because agent definitions are an
+  operator action and an idempotency key is scoped to the acting principal); reads take the NEWEST
+  page; and the bound is generous, because the cost of truncating is silent misauthorization. Note
+  what does NOT work: reading newest-first alone. An old-but-live grant then falls off the other end
+  — no single page direction is correct over a set larger than the page.
+- **A NUL is invisible in source and lethal in Postgres.** `grantKey` joined its parts with `\0`,
+  which was fine while it was only an in-memory Map key and became `invalid byte sequence for
+  encoding "UTF8": 0x00` the moment that key was used as an idempotency key. Two lessons: build
+  composite keys by ENCODING the parts (`JSON.stringify([...])`) rather than joining with a
+  separator no value can contain, since the encoded form is both unambiguous and printable; and
+  `grep -P "\x00"` will NOT find these — grep suppresses binary matches, so scan with something
+  that reads bytes.
+- **A self scope must narrow the plane the agent actually READS through, and grants UNION.** Two
+  mistakes, one live incident. First, `scope: {createdBy: "self"}` narrowed only the ops plane while
+  ordinary `query`/`read_one` returned every record of the kind — so an approval promising "only its
+  own records" handed over all of them, and a session reported 98 records from `ops/stats` and 308
+  from `space_count` in the same breath. `Space.authorScope` now applies the restriction to the
+  coordination plane too (reads only — `take` is excluded, because claiming a record and then
+  rejecting it is not a filter). Second, and subtler: grants union, so a narrow grant added BESIDE a
+  broad one changes nothing. The chat's session starts with an unscoped `message: query` grant, so
+  approving the self-scoped version was powerless until the approval also RETIRED the wider grant.
+  The union rule is why `authorScope` only restricts when EVERY applicable grant is self-scoped:
+  filtering by author while an unscoped grant applies would deny something that grant permits — and
+  "applicable" means PERMITTING THAT OPERATION, since a `put`-only grant says nothing about reads and
+  counting it lifted the restriction the moment narrowing reads left the write grant behind.
+  Narrowing must also be per-OPERATION. The first version retired the whole overlapping grant, so
+  narrowing `query` on `message` took the bootstrap `{put, query}` grant with it and the session
+  could no longer write its own messages: the chat died on the next turn with "no 'put' grant for
+  kind 'message'". A grant carrying operations that were not being narrowed is now replaced by one
+  that keeps them.
+- **`listKinds()` does not list every kind.** It reads `kind_def` RECORDS, and six kinds are defined
+  in code instead (`kind_def`, `grant`, `signal`, `agent_definition`, `agent_run`, `artifact` —
+  `RESERVED_KINDS`). Anything answering "does this kind exist" must add them, or it will report that
+  `artifact` is not a kind while the caller is successfully counting artifacts.
+- **A scoped answer must SAY it is scoped, or an empty one reads as an empty space.** A session
+  granted ops access on one kind read `stats: []`, `events: []` and an all-zero diagnostics, and
+  told its user "the space is empty and healthy". Every number was correct; the claim was wrong, and
+  nothing in the response contradicted it. Scoped responses now carry
+  `scope: {self, kinds, note}` (`describeScope` in `handlers/ops.ts`), and the chat's tools pass it
+  through rather than projecting it away — which they were doing, so even a fixed server would not
+  have reached the model. The general form: a narrowed result is only safe to publish alongside a
+  statement of the narrowing, because the consumer cannot infer it from the data and an aggregate
+  gives it no other clue.
+- **Filtering a cursor-paged endpoint breaks paging unless the cursor is reported separately.** The
+  self-scoped `/v0/ops/events` withholds events the caller may not see — and an empty page is how
+  every caller detects the end of a log, so a page whose events were all withheld reads as "nothing
+  further". A scoped caller could never page PAST a run of foreign events to reach its own: measured
+  as 0 visible events on a space whose first 500 were someone else's. Two things were needed, and
+  the second is the one that is easy to skip: scan forward across raw pages instead of filtering
+  one, and report `nextAfter` from the last RAW event examined (`getEventsPage` in the SDK) so a
+  caller can advance past what it cannot see. The same shape applies to any future filtered feed.
+- **A bounded page over a registry must be read NEWEST-first, or a busy space hides the newest
+  entry.** Discovery reads a capped page (`query {kind: capability}` limit 500), and a limited query
+  returns the OLDEST matches — so a space holding more capability records than that cap shows every
+  tool EXCEPT the ones published most recently. That is not hypothetical: a live session reported
+  "I don't have a request_grant tool" for a tool that was published, granted and working, because
+  the chat's discovery page never reached it. Every registry projection over a capped page now
+  passes `{dir: "desc"}` (`ToolSet.refresh`, `Space.loadKinds`).
+  Two contributing causes worth separating. The page cap is only reached because **capability
+  publication was not idempotent across restarts**: the content key makes the put idempotent, but an
+  idempotency key is scoped `(principal, operation, key)` and a worker's principal is a fresh
+  `run:<ulid>` every launch — so an unchanged definition wrote a NEW record on every start, and a
+  long-lived space grew by the whole fleet's tool count per restart (measured: 24 records per chat
+  restart, so ~21 restarts to cross 500). `publishCapability` now reads the current advertisement
+  first and writes only on a real change. And the chat's startup wait was "until any tool appears",
+  which returns as soon as the FIRST worker publishes — fine on an empty space, meaningless on one
+  where records already exist.
 - **A registry is a projection, and `retired: true` is how you withdraw from one.** Declared kinds,
   assigned grants, advertised capabilities, live models and saved procedures are all mutable-looking
   tables derived from an append-only record stream, so "remove" cannot be a delete. It is a

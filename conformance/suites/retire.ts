@@ -11,7 +11,7 @@
 import { assert, assertEquals } from "@std/assert";
 import type { Suite } from "../harness.ts";
 import { Space } from "../../src/core/space.ts";
-import { KIND_DEF } from "../../src/core/kinds.ts";
+import { type GrantDef, KIND_DEF } from "../../src/core/kinds.ts";
 import type { RadiaError } from "../../src/core/errors.ts";
 
 /** A fresh Space that reloads its registry from the records already on the adapter. */
@@ -132,6 +132,46 @@ export const retireSuites: Suite[] = [
       // a watch observes the records it was meant to lose sight of.
       await space.put({ kind: "grant", body: { ...grant, retired: true } });
       assert(await forbidden(() => space.authorizeWatch("agent:w", "task")));
+    },
+  },
+  {
+    name: "re-defining an agent does not accumulate grant records",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({ kind: "task", indexedPaths: [] });
+      const grants: GrantDef[] = [
+        { principal: "agent:w", kind: "task", operations: ["query"] },
+        { principal: "agent:w", kind: "task", operations: ["put"] },
+      ];
+      // Every restart re-defines its agents. Unchecked, that appended a fresh record per grant per
+      // boot, and a long-lived principal outran the bounded page each authorization read takes —
+      // which fails SILENTLY, in both directions: a live grant denied, or worse, a revocation
+      // invisible so the revoked grant kept working.
+      for (let boot = 0; boot < 10; boot++) await space.createAgentDefinition("agent:w", grants);
+
+      const records = await space.query({ kind: "grant", match: { principal: "agent:w" } }, 500);
+      assertEquals(records.length, 2, "one record per distinct grant, however many boots");
+      assertEquals(await space.authorize("agent:w", "query", "task"), null);
+    },
+  },
+  {
+    name: "a revocation applies even with a long history of grant records",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({ kind: "task", indexedPaths: [] });
+      const query = { principal: "agent:w", kind: "task", operations: ["query"] };
+      const put = { principal: "agent:w", kind: "task", operations: ["put"] };
+      // History written before grant writes were content-keyed: the same two grants, over and over,
+      // interleaved as a boot loop produces them.
+      for (let i = 0; i < 60; i++) {
+        await space.put({ kind: "grant", body: query });
+        await space.put({ kind: "grant", body: put });
+      }
+      assertEquals(await space.authorize("agent:w", "query", "task"), null, "granted");
+
+      await space.put({ kind: "grant", body: { ...query, retired: true } });
+      assert(await forbidden(() => space.authorize("agent:w", "query", "task")), "the revocation is seen");
+      assertEquals(await space.authorize("agent:w", "put", "task"), null, "the other grant survives");
     },
   },
   {

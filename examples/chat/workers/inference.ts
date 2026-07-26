@@ -4,6 +4,7 @@
 // Launched by chat.ts with --allow-net --allow-env.
 
 import { agentLoop } from "../../../sdk/ts/loop.ts";
+import { assembleContext, selectWindow, type ThreadRow, toMessage } from "../provider/context.ts";
 import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { progress } from "../space/progress.ts";
 import { arg } from "../util.ts";
@@ -29,21 +30,7 @@ const WINDOW_CAP = 400; // ceiling on the current-turn expansion below, so one r
 const client = new RadiaClient(url, token ? { token } : {});
 
 /** A `message` record body as stored by the chat. */
-interface ThreadRow {
-  index: number;
-  role: string;
-  content?: string | null;
-  tool_calls?: ToolCall[];
-  tool_call_id?: string;
-}
 
-function toMessage(m: ThreadRow): ChatMessage {
-  const cm: ChatMessage = { role: m.role };
-  if (m.content !== undefined) cm.content = m.content;
-  if (m.tool_calls) cm.tool_calls = m.tool_calls;
-  if (m.tool_call_id) cm.tool_call_id = m.tool_call_id;
-  return cm;
-}
 
 // The `escalate` tool: the model DISCOVERS it (like any capability) and calls it when it's out of
 // depth; this worker INTERCEPTS the call and re-dispatches the turn to a stronger tier (never
@@ -126,42 +113,26 @@ await agentLoop(client, {
         // away the very question being answered and leave the model summarizing tool output it can
         // no longer attribute. Expand until the most recent `user` message is inside the window —
         // that message begins the current turn, so including it includes everything after it.
-        let limit = WINDOW;
-        let tail: ThreadRow[] = [];
-        for (;;) {
-          tail = (await c.query(
-            {
+        const tail = await selectWindow(
+          async (limit) =>
+            (await c.query({
               kind: "message",
               match: { conversationId: body.conversationId, index: { $lte: body.upToIndex } },
               orderBy: [{ path: "index", dir: "desc" }],
-            },
-            limit,
-          )).map((r) => r.body as ThreadRow).reverse();
-          const hasCurrentTurn = tail.some((m) => m.role === "user");
-          const atThreadStart = tail.length === 0 || tail[0].index <= 1;
-          if (hasCurrentTurn || atThreadStart || limit >= WINDOW_CAP) break;
-          limit = Math.min(limit * 4, WINDOW_CAP);
-        }
-        // A `tool` reply whose assistant call fell outside the window is a protocol error for the
-        // API (a tool message must answer a preceding tool_calls message), so trim the orphans at
-        // the leading edge rather than dragging their call back in.
-        while (tail.length > 0 && tail[0].role === "tool") tail.shift();
-        // The system message is the standing instruction set — always sent, never windowed out.
-        const head = tail[0]?.index === 0
-          ? []
-          : (await c.query({ kind: "message", match: { conversationId: body.conversationId, index: 0 } }, 1))
-            .map((r) => r.body as ThreadRow);
-        hidden = head.length > 0 && tail.length > 0 ? Math.max(0, tail[0].index - 1) : 0;
-        const notice: ChatMessage[] = hidden > 0
-          ? [{
-            role: "system",
-            content: hidden === 1
-              ? "[1 earlier message in this conversation is not included here. It is not lost — retrieve it if you need it.]"
-              : `[${hidden} earlier messages in this conversation are not included here. ` +
-                `They are not lost — retrieve them if you need them.]`,
-          }]
-          : [];
-        messages = [...head.map(toMessage), ...notice, ...tail.map(toMessage)];
+            }, limit)).map((r) => r.body as ThreadRow),
+          { window: WINDOW, cap: WINDOW_CAP },
+        );
+        // The standing instructions are the NEWEST system message, not index 0 — that is what lets a
+        // RESUMED conversation run under a current disposition instead of whatever was written when
+        // it started. One indexed query, because `role` is a declared indexed path.
+        const newestSystem = (await c.query({
+          kind: "message",
+          match: { conversationId: body.conversationId, role: "system", index: { $lte: body.upToIndex } },
+          orderBy: [{ path: "index", dir: "desc" }],
+        }, 1)).map((r) => r.body as ThreadRow)[0];
+        const built = assembleContext(newestSystem, tail);
+        messages = built.messages;
+        hidden = built.hidden;
       }
 
       // Can this turn escalate? Find the next-higher-rank tier from the `model` records (the

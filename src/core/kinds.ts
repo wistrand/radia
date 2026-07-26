@@ -43,11 +43,19 @@ export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL, AGENT_DEFIN
 export type GrantOp = "put" | "take" | "query" | "read_one";
 const VALID_OPS = new Set<GrantOp>(["put", "take", "query", "read_one"]);
 
+/** The envelope-side selectors a grant may carry. Closed by design — extended only when a real
+ *  failure names the field it needs (see design-auth.md, "Self-scoped ops grants"). */
+const VALID_SCOPE_KEYS = new Set(["createdBy", "leaseOwner"]);
+
 /** A kind-scoped authorization grant. Never wildcard; assigned by a privileged writer. */
 export interface GrantDef {
   principal: string; // the principal the grant is FOR (e.g. agent:summarizer, run:...)
   kind: string; // the concrete record kind it applies to — never "*"
   operations: GrantOp[]; // which coordination verbs on that kind
+  /** Envelope-side self scope, e.g. `{createdBy: "self"}` — see design-auth.md. Distinct from
+   *  `template`, which is a BODY match: the fields a self-scope needs are precisely the ones the
+   *  routing language is forbidden to see. */
+  scope?: Record<string, "self">;
   /** Optional template-scope: a match object AND-ed into the principal's read/take on this kind
    *  (the effective query is `grant ∧ request`). Omitted → the whole kind. Applies to
    *  query/read_one/take; put ignores it. Its paths must be declared indexed paths of the kind
@@ -76,6 +84,25 @@ export function validateGrantDef(def: GrantDef): void {
   }
   if (def.template !== undefined && (def.template === null || typeof def.template !== "object" || Array.isArray(def.template))) {
     throw new RadiaError("invalid_grant", "grant.template must be a match object");
+  }
+  // `scope` is the ENVELOPE-side selector (self-scoped ops), a closed vocabulary deliberately kept
+  // out of `template` — which stays a body match compiled by the same oracle. Validated strictly
+  // rather than ignored: an unknown key or value here fails closed (the grant simply opens
+  // nothing), and a silent no-op on an authorization record is exactly the thing that gets
+  // mistaken for a working grant.
+  if (def.scope !== undefined) {
+    const scope = def.scope as Record<string, unknown>;
+    if (scope === null || typeof scope !== "object" || Array.isArray(scope)) {
+      throw new RadiaError("invalid_grant", "grant.scope must be an object");
+    }
+    for (const [key, value] of Object.entries(scope)) {
+      if (!VALID_SCOPE_KEYS.has(key)) {
+        throw new RadiaError("invalid_grant", `unknown grant scope '${key}' (expected ${[...VALID_SCOPE_KEYS].join(", ")})`);
+      }
+      if (value !== "self") {
+        throw new RadiaError("invalid_grant", `grant.scope.${key} must be "self"`);
+      }
+    }
   }
 }
 
@@ -143,6 +170,10 @@ export function validateArtifactDef(def: ArtifactDef): void {
     throw new RadiaError("invalid_artifact", "artifact.filename must be a short name without path separators or quotes");
   }
 }
+
+/** Kinds defined in CODE, not as `kind_def` records — so they never appear in `listKinds()`, which
+ *  reads those records. Anything asking "does this kind exist" must consider these too. */
+export const RESERVED_KINDS = [KIND_DEF, GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, ARTIFACT];
 
 export const META_RESERVED: KindDef[] = [
   META_KIND_DEF,

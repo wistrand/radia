@@ -28,6 +28,7 @@ import {
   type RenewResult,
   type SettleResult,
   type SpaceEvent,
+  type StatsScope,
   type StorageAdapter,
   type TakeResult,
   type TakeSelector,
@@ -466,14 +467,16 @@ export class SqliteAdapter implements StorageAdapter {
     return Promise.resolve(row ? rowToRecord(row) : null);
   }
 
-  childrenOf(recordId: string): Promise<RadiaRecord[]> {
+  childrenOf(recordId: string, limit: number, page?: Page): Promise<RadiaRecord[]> {
     // Indexed lookup through the reverse edge table. This used to be
     // `parent_ids like '%"<id>"%'` — correct (ids are ULIDs, so they carry no LIKE wildcards) but
     // a scan of every record in the space to find a handful of children.
+    const dir = page?.dir === "desc" ? "desc" : "asc";
+    const cursor = page?.after ? ` and r.id ${dir === "desc" ? "<" : ">"} ?` : "";
     const rows = this.db.prepare(
       `select r.* from record_edges e join records r on r.id = e.child_id
-        where e.parent_id = ? order by r.id`,
-    ).all(recordId) as RawRow[];
+        where e.parent_id = ?${cursor} order by r.id ${dir} limit ?`,
+    ).all(recordId, ...(page?.after ? [page.after] : []), limit) as RawRow[];
     return Promise.resolve(rows.map(rowToRecord));
   }
 
@@ -505,13 +508,33 @@ export class SqliteAdapter implements StorageAdapter {
     return Promise.resolve(String(row.seq));
   }
 
-  envelopesInState(state: string, limit: number, excludeKinds?: string[]): Promise<Envelope[]> {
-    const exclude = excludeKinds && excludeKinds.length > 0
-      ? ` and kind not in (${excludeKinds.map(() => "?").join(", ")})`
-      : "";
+  envelopesInState(
+    state: string,
+    limit: number,
+    excludeKinds?: string[],
+    scope?: StatsScope,
+  ): Promise<Envelope[]> {
+    const params: SqlParam[] = [state];
+    let where = "rt.state = ?";
+    if (excludeKinds && excludeKinds.length > 0) {
+      where += ` and rt.kind not in (${qmarks(excludeKinds.length)})`;
+      params.push(...excludeKinds);
+    }
+    if (scope?.kinds) {
+      where += ` and rt.kind in (${qmarks(scope.kinds.length)})`;
+      params.push(...scope.kinds);
+    }
+    // The scope is applied BEFORE the cap, like `excludeKinds` — a limit taken first and filtered
+    // after would return a short page and read as "that is all of them".
+    const join = scope?.createdBy ? " join records r on r.id = rt.record_id" : "";
+    if (scope?.createdBy) {
+      where += ` and r.created_by in (${qmarks(scope.createdBy.length)})`;
+      params.push(...scope.createdBy);
+    }
+    params.push(limit);
     const rows = this.db
-      .prepare(`select * from record_runtime where state = ?${exclude} order by available_at limit ?`)
-      .all(state, ...(excludeKinds ?? []), limit) as RawRow[];
+      .prepare(`select rt.* from record_runtime rt${join} where ${where} order by rt.available_at limit ?`)
+      .all(...params) as RawRow[];
     return Promise.resolve(rows.map(rowToEnvelope));
   }
 
@@ -589,7 +612,7 @@ export class SqliteAdapter implements StorageAdapter {
    * oracle's order is `x.id < y.id`, its deterministic tie-break, which `order by id asc` matches
    * exactly. Any other case fetches everything and lets the oracle sort — see `Pushed.exact`.
    */
-  private candidateRows(match: CompiledMatch, want?: number, page?: Page): RawRow[] {
+  private candidateRows(match: CompiledMatch, want?: number, page?: Page, scope?: StatsScope): RawRow[] {
     const d = new SqliteJson();
     const filter = pushdown(match.where, d);
     const where = isTrivial(filter) ? "" : ` and ${filter.sql}`;
@@ -597,34 +620,60 @@ export class SqliteAdapter implements StorageAdapter {
     // would have to re-check, and it applies whether or not the body filter could be pushed.
     const dir = page?.dir === "desc" ? "desc" : "asc";
     const cursor = page?.after ? ` and id ${dir === "desc" ? "<" : ">"} ?` : "";
+    // The author restriction is an exact column predicate, so it never needs the oracle's help and
+    // never blocks the pushed limit.
+    const author = scope?.createdBy ? ` and created_by in (${qmarks(scope.createdBy.length)})` : "";
     const bounded = want !== undefined && filter.exact && !match.orderBy?.length;
-    const params = [match.kind, ...d.params, ...(page?.after ? [page.after] : []), ...(bounded ? [want] : [])];
+    const params = [
+      match.kind,
+      ...d.params,
+      ...(page?.after ? [page.after] : []),
+      ...(scope?.createdBy ?? []),
+      ...(bounded ? [want] : []),
+    ];
     return this.db
       .prepare(
-        `select * from records where kind = ?${where}${cursor}` +
+        `select * from records where kind = ?${where}${cursor}${author}` +
           (bounded ? ` order by id ${dir} limit ?` : ""),
       )
       .all(...params) as RawRow[];
   }
 
-  readOne(match: CompiledMatch): Promise<RadiaRecord | null> {
+  readOne(match: CompiledMatch, scope?: StatsScope): Promise<RadiaRecord | null> {
     // SQL narrows; the core oracle decides. `pushdown` is a sound over-approximation, so this
     // filter never removes a record `matchesRecord` would have accepted.
-    const matches = this.candidateRows(match, 1)
+    const matches = this.candidateRows(match, 1, undefined, scope)
       .map(rowToRecord)
       .filter((rec) => matchesRecord(rec, match));
     return Promise.resolve(firstByOrder(matches, match.orderBy));
   }
 
-  query(match: CompiledMatch, limit: number, page?: Page): Promise<RadiaRecord[]> {
-    const matches = this.candidateRows(match, limit, page).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
+  query(match: CompiledMatch, limit: number, page?: Page, scope?: StatsScope): Promise<RadiaRecord[]> {
+    const matches = this.candidateRows(match, limit, page, scope).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
     return Promise.resolve(pageRecords(matches, match.orderBy, limit, page));
   }
 
-  stats(): Promise<KindStateCount[]> {
+  stats(scope?: StatsScope): Promise<KindStateCount[]> {
+    // Scoped counts JOIN records, because `created_by` lives there. Unscoped stays a pure
+    // record_runtime aggregate — the common path pays nothing for the scoped one.
+    const params: SqlParam[] = [];
+    const conds: string[] = [];
+    if (scope?.createdBy) {
+      conds.push(`r.created_by in (${qmarks(scope.createdBy.length)})`);
+      params.push(...scope.createdBy);
+    }
+    if (scope?.kinds) {
+      conds.push(`rt.kind in (${qmarks(scope.kinds.length)})`);
+      params.push(...scope.kinds);
+    }
     const rows = this.db.prepare(
-      "select kind, state, count(*) as count from record_runtime group by kind, state order by kind, state",
-    ).all() as RawRow[];
+      conds.length > 0
+        ? `select rt.kind, rt.state, count(*) as count from record_runtime rt
+             join records r on r.id = rt.record_id
+            where ${conds.join(" and ")}
+            group by rt.kind, rt.state order by rt.kind, rt.state`
+        : "select kind, state, count(*) as count from record_runtime group by kind, state order by kind, state",
+    ).all(...params) as RawRow[];
     return Promise.resolve(rows.map((r) => ({
       kind: String(r.kind),
       state: String(r.state) as KindStateCount["state"],
