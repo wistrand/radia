@@ -558,6 +558,7 @@ export class Space {
     await this.putRaw({ kind: AGENT_DEFINITION, body: { agent, tokenHash: hash } });
     for (const g of grants) {
       validateGrantDef(g);
+      this.checkGrantTemplate(g);
       // CONTENT-KEYED, so re-defining an agent with the same grants writes nothing new. Without
       // this, every bootstrap appended a fresh record per grant and a long-lived principal
       // accumulated hundreds — which then outran the bounded page every authorization read takes,
@@ -565,9 +566,41 @@ export class Space {
       // agent definitions are an OPERATOR action, and an idempotency key is scoped to the acting
       // principal, which here is stable.
       await this.putRaw({ kind: GRANT, body: g }, `grant:${await sha256Hex(grantKey(g) ?? "")}`);
+      await this.supersedeWiderGrant(g);
     }
     this.notifier.notify();
     return { agent, definitionToken: token };
+  }
+
+  /**
+   * Retire the UNRESTRICTED twin of a grant this definition just declared.
+   *
+   * A grant's identity includes its scope and template, so declaring a narrower version of an
+   * existing grant creates a SECOND grant rather than replacing the first — and grants union, so
+   * the narrower one changes nothing. Tightening an agent definition was therefore inert on any
+   * space that already had the looser grant: fine on a fresh space, silent on a real one. It was
+   * found exactly that way, by tightening the chat's session grants to one conversation and
+   * watching a live session keep reading every conversation on a space that predated the change.
+   *
+   * TEMPLATE only, and that is not an oversight: `grantKey` deliberately excludes `scope`, so a
+   * self-scoped grant already replaces its unscoped twin in place — the projection does that work.
+   * Including scope here made this retire the very grant it had just written, since the two share a
+   * key. Template is the one dimension that mints a separate identity, so it is the one that needs
+   * superseding.
+   *
+   * Deliberately narrow in the other direction too: only a grant identical in principal, kind and
+   * operations, carrying no template, is retired. Anything a human assigned separately — different
+   * operations, or an already-templated grant — is left alone, because an agent definition is a
+   * statement about the grants IT declares, not authority over every grant the principal holds.
+   */
+  private async supersedeWiderGrant(g: GrantDef): Promise<void> {
+    if (!g.template) return; // scope narrows in place; only a template mints a second identity
+    const wider: GrantDef = { principal: g.principal, kind: g.kind, operations: g.operations };
+    const key = grantKey(wider);
+    const live = [...(await this.registry(GRANT, grantKey, { principal: g.principal })).entries.values()]
+      .find((rec) => grantKey(rec.body) === key);
+    if (!live) return;
+    await this.putRaw({ kind: GRANT, body: { ...wider, retired: true } }, `grant-retire:${await sha256Hex(key ?? "")}`);
   }
 
   /** Mint a short-lived run token for the agent behind `definitionToken`. Records an `agent_run`

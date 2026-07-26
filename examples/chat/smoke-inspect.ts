@@ -198,6 +198,24 @@ const kindDef = (after.kinds ?? []).find((k) => k.kind === "kind_def");
 check("a newly granted kind shows up immediately", Boolean(kindDef));
 check("…and says the read is narrowed to its own records", kindDef?.readsScopedToSelf === true);
 
+// ---- a guessed kind is corrected IN THE TURN, not discovered a round later ----
+// A session that cannot list kinds guesses, and the guess is usually a tool name — `space_event`
+// for the `space_events` tool, twice in consecutive sessions. Approving it produced a grant that
+// authorized nothing and the assistant only found out by using it. The decision now carries the
+// real names back to the asker.
+const guessed = await askAndAnswer(
+  { kind: "space_event", operations: ["query"], why: "to read the activity log", scope: "all" },
+  "y",
+);
+const guessedOut = guessed.result as { ok: boolean; decision?: string; kindsOnThisSpace?: string[]; note?: string };
+check("a guessed kind comes back as no_such_kind, not as success", guessedOut.decision === "no_such_kind", guessedOut.decision ?? "?");
+check("…and the answer is not ok, so the caller cannot read it as authority", guessedOut.ok === false);
+check(
+  "…and it names the kinds that DO exist, so the next ask can be right",
+  (guessedOut.kindsOnThisSpace ?? []).includes("message"),
+  (guessedOut.kindsOnThisSpace ?? []).slice(0, 5).join(","),
+);
+
 // ---- the phantom kind from the transcript ----
 // The assistant asked for `space_event` — the name of a TOOL, not a record kind — and had it
 // approved. Nothing failed: the grant exists, it appears in scope lines, and it authorizes

@@ -156,6 +156,18 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   separator no value can contain, since the encoded form is both unambiguous and printable; and
   `grep -P "\x00"` will NOT find these — grep suppresses binary matches, so scan with something
   that reads bytes.
+- **Tightening a grant by adding a TEMPLATE is inert on any space that already had the loose one.**
+  Scope and template are part of a grant's identity, so declaring `{message, [put,query],
+  template:{conversationId}}` beside an existing `{message, [put,query]}` creates a SECOND grant —
+  and grants union, so the narrower one changes nothing. Every test passed, because tests start on a
+  fresh space; a live session on a two-day-old space kept reading every conversation after its
+  grants were scoped to one. `createAgentDefinition` now retires the untemplated twin of each grant
+  it declares. Two boundaries worth keeping: it fires on TEMPLATE only, because `grantKey` excludes
+  `scope` on purpose (a self-scoped grant already replaces its unscoped twin in place) and including
+  scope made the rule retire the grant it had just written — the two share a key; and it retires
+  only a grant identical in principal, kind and operations, so a grant a human assigned out of band
+  survives every restart. The general shape: when identity includes the thing you are changing, a
+  change is an ADD, and the old value stays in force until something withdraws it.
 - **An escalation that costs two turns and two human inputs per grant does not converge.** The loop
   was: assistant hits `forbidden`, calls `request_grant`, the tool returns "asked them, retry
   later", the turn ends; the human approves at the prompt; the human types "retry"; the assistant

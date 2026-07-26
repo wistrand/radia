@@ -227,6 +227,11 @@ export async function reviewGrantRequests(
         ...b,
         retired: true,
         decision: answer === "n" ? "refused" : "granted",
+        // A requester that cannot list kinds guesses one, and the guess is usually a TOOL name.
+        // Telling it the real names HERE closes the loop in the same turn — otherwise it learns
+        // only that the grant it was given authorizes nothing, and guesses again. (Seen twice, in
+        // consecutive sessions, both times `space_event` for the `space_events` tool.)
+        ...(unknown ? { noSuchKind: b.kind, kindsOnThisSpace: known.slice(0, 40) } : {}),
         ...(answer === "n" ? {} : {
           granted: {
             kind: b.kind,

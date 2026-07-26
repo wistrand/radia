@@ -189,4 +189,56 @@ export const retireSuites: Suite[] = [
       assertEquals(all.length, 2, "the grant and its revocation both remain on the space");
     },
   },
+  {
+    name: "tightening an agent definition supersedes its own unrestricted grant",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({ kind: "message", indexedPaths: [{ path: "conversationId", type: "keyword" }] });
+
+      // An existing space: the loose grant a previous build declared.
+      await space.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "message", operations: ["put", "query"] },
+      ]);
+      assertEquals(await space.authorize("agent:w", "query", "message"), null, "unrestricted to begin with");
+
+      // The new build declares the SAME grant with a template. Scope and template are part of a
+      // grant's identity, so without superseding this is a second grant beside the first — and
+      // grants union, so the tightening would change nothing at all. That is not hypothetical: it
+      // is how a session on a pre-existing space kept reading every conversation after its grants
+      // were scoped to one.
+      await space.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "message", operations: ["put", "query"], template: { conversationId: "mine" } },
+      ]);
+      assertEquals(
+        await space.authorize("agent:w", "query", "message"),
+        [{ conversationId: "mine" }],
+        "the tightening actually takes effect",
+      );
+    },
+  },
+  {
+    name: "…but it does not touch grants a human assigned separately",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({ kind: "message", indexedPaths: [{ path: "conversationId", type: "keyword" }] });
+      space.registerKind({ kind: "note", indexedPaths: [] });
+
+      // A human approved this one out of band. An agent definition speaks for the grants IT
+      // declares; treating it as authority over everything the principal holds would mean every
+      // restart silently revoked what a person approved.
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "note", operations: ["query"] } });
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "message", operations: ["read_one"] } });
+
+      await space.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "message", operations: ["put", "query"], template: { conversationId: "mine" } },
+      ]);
+
+      assertEquals(await space.authorize("agent:w", "query", "note"), null, "another kind is untouched");
+      assertEquals(
+        await space.authorize("agent:w", "read_one", "message"),
+        null,
+        "and so are different operations on the same kind",
+      );
+    },
+  },
 ];

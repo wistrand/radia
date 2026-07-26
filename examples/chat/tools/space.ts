@@ -81,6 +81,18 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
         );
         const decided = rows.map((r) => r.body as Record<string, unknown>).find((b) => b.decision && mine(b));
         if (!decided) continue;
+        // The kind does not exist, so whatever was decided, the grant authorizes nothing. Say that
+        // plainly and hand back the real names rather than reporting success the caller will spend
+        // another round discovering is empty.
+        if (decided.noSuchKind) {
+          return {
+            ok: false,
+            decision: "no_such_kind",
+            kindsOnThisSpace: decided.kindsOnThisSpace,
+            note: `there is no record kind '${decided.noSuchKind}' on this space, so that grant authorizes nothing. ` +
+              `Pick the kind that actually holds what you want from the list and ask again, in this turn.`,
+          };
+        }
         if (decided.decision !== "granted") {
           return { ok: false, decision: "refused", note: "the human refused. Do not ask again for the same thing." };
         }
