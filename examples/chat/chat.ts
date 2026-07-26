@@ -172,13 +172,28 @@ while (true) {
   if (!line.trim()) continue;
   await thread.append({ role: "user", content: line });
   try {
-    await runTurn(session, thread, tools);
+    // The hook is what collapses the escalation loop into ONE turn: while a `request_grant` is in
+    // flight the person is asked here, the decision is written back as a record, and the tool call
+    // returns with it — so the assistant can retry inside its remaining rounds. Throttled, because
+    // this runs on every poll of the wait loop and each pass is a query.
+    let lastReview = 0;
+    await runTurn(session, thread, tools, async (tool) => {
+      if (tool !== "request_grant" || Date.now() - lastReview < 1000) return;
+      lastReview = Date.now();
+      try {
+        await reviewGrantRequests(session, admin, CHAT_USER, thread.id, nextLine);
+        await tools.scopeTo(thread.id); // a new grant may have changed what is reachable
+      } catch (e) {
+        write(`\n[grant review failed] ${e}\n`);
+      }
+    });
   } catch (e) {
     write(`\n[error] ${e}\n`);
   }
-  // Between turns, so it owns the terminal: if the assistant hit a `forbidden` and asked for
-  // authority, the person in the conversation decides now. `admin` is the operator credential this
-  // process bootstrapped with — the session itself cannot write a grant, which is the point.
+  // Between turns as well, as the backstop: a request written by a worker rather than asked for
+  // through the blocking tool (or one whose turn died) would otherwise sit pending forever.
+  // `admin` is the operator credential this process bootstrapped with — the session itself cannot
+  // write a grant, which is the point.
   try {
     await reviewGrantRequests(session, admin, CHAT_USER, thread.id, nextLine);
     await tools.scopeTo(thread.id); // a new grant may have changed what is reachable

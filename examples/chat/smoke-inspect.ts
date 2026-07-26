@@ -251,19 +251,45 @@ function capture(): () => string {
   };
 }
 
+/** Ask and answer CONCURRENTLY, as the REPL does: `request_grant` blocks on the decision, and the
+ *  human is prompted while it is in flight. Sequentially the ask would wait out its whole deadline
+ *  before anyone was asked — which is the two-turn dance this replaced. */
+async function askAndAnswer(
+  request: Record<string, unknown>,
+  answer: string,
+): Promise<{ result: unknown; prompt: string }> {
+  let stop: (() => string) | undefined;
+  const [result] = await Promise.all([
+    tools.request_grant(request, { callId: "smoke", conversationId: mine }),
+    (async () => {
+      for (let i = 0; i < 100; i++) {
+        const pending = await admin.query({ kind: "grant_request", match: { conversationId: mine } }, 10, { dir: "desc" });
+        if (pending.some((r) => !(r.body as { decision?: string }).decision)) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      stop = capture();
+      await reviewGrantRequests(session, admin, "agent:chat-user", mine, () => Promise.resolve(answer));
+    })(),
+  ]);
+  return { result, prompt: stop ? stop() : "" };
+}
+
 // A kind only somebody else has written to — the shape that makes a self-scoped read empty.
 for (let i = 0; i < 3; i++) {
   await admin.put({ kind: "procedure", body: { name: `theirs_${i}`, artifactId: "x", description: "not mine" } });
 }
 
 // --- the dead end: asking for "own" on a kind you do not write ---
-await tools.request_grant(
+const narrow = await askAndAnswer(
   { kind: "procedure", operations: ["query", "read_one"], why: "to read the saved procedures", scope: "own" },
-  { callId: "smoke", conversationId: mine },
+  "y",
 );
-let stop = capture();
-await reviewGrantRequests(session, admin, "agent:chat-user", mine, () => Promise.resolve("y"));
-const narrowPrompt = stop();
+const narrowPrompt = narrow.prompt;
+check(
+  "the decision comes back to the asker in the same call",
+  (narrow.result as { decision?: string }).decision === "granted",
+  JSON.stringify(narrow.result).slice(0, 80),
+);
 
 check(
   "the prompt warns that 'own records only' would expose nothing",
@@ -282,13 +308,16 @@ check("the approved grant really does return nothing", afterNarrow.count === 0, 
 check("…while the records are plainly there", (await admin.query({ kind: "procedure" }, 25)).length === 3);
 
 // --- the fix: the asker can say which it needs, and the prompt shows it ---
-await tools.request_grant(
+const wide = await askAndAnswer(
   { kind: "kind_def", operations: ["query", "read_one"], why: "to list the kinds before surveying them", scope: "all" },
-  { callId: "smoke", conversationId: mine },
+  "a",
 );
-stop = capture();
-await reviewGrantRequests(session, admin, "agent:chat-user", mine, () => Promise.resolve("a"));
-const widePrompt = stop();
+const widePrompt = wide.prompt;
+check(
+  "…and reports the scope it actually got, not just that it got something",
+  (wide.result as { granted?: { scope?: string } }).granted?.scope === "all records",
+  JSON.stringify(wide.result).slice(0, 90),
+);
 
 check("the prompt relays that the assistant asked for ALL records", widePrompt.includes("asked for ALL records of this kind"));
 const listed = await tools.space_kinds({}) as { kinds: unknown[] };

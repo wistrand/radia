@@ -55,10 +55,46 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
         kind: "grant_request",
         body: { conversationId: ctx?.conversationId, kind, operations: ops, why, scope },
       });
+
+      // …and WAIT for the answer, rather than returning "I asked, retry later".
+      //
+      // The escalation loop used to cost two full turns and two human inputs per grant: ask, end
+      // the turn, human approves at the prompt, human types "retry", assistant retries — and every
+      // miss (wrong kind, wrong scope) cost another two. In practice it broke before it converged.
+      // The human is sitting at the prompt; the only reason the decision could not come back here
+      // was that nothing waited for it. The REPL reviews pending requests WHILE this call is in
+      // flight (see `onToolWait` in chat.ts), so the person is asked immediately and the answer
+      // lands in this same turn, leaving the assistant its remaining tool rounds to act on it.
+      const deadline = Date.now() + 240_000; // a person is deciding; do not rush them
+      const mine = (b: Record<string, unknown>) =>
+        b.kind === kind && b.scope === scope &&
+        JSON.stringify([...(b.operations as string[] ?? [])].sort()) === JSON.stringify([...ops].sort());
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 400));
+        // The decision comes back as a SUCCESSOR grant_request carrying `decision` — the session
+        // can read its own requests but has no grant on `grant` itself, so this is the only channel
+        // that does not widen it.
+        const rows = await client.query(
+          { kind: "grant_request", match: { conversationId: ctx?.conversationId } },
+          50,
+          { dir: "desc" },
+        );
+        const decided = rows.map((r) => r.body as Record<string, unknown>).find((b) => b.decision && mine(b));
+        if (!decided) continue;
+        if (decided.decision !== "granted") {
+          return { ok: false, decision: "refused", note: "the human refused. Do not ask again for the same thing." };
+        }
+        return {
+          ok: true,
+          decision: "granted",
+          granted: decided.granted ?? { kind, operations: ops },
+          note: "in force now — retry the operation in THIS turn rather than ending it.",
+        };
+      }
       return {
         ok: true,
-        requested: { kind, operations: ops, scope },
-        note: "asked the human in this conversation; they decide. Retry the operation once they answer.",
+        decision: "pending",
+        note: "no answer yet. Say what you asked for and stop; the human will approve or refuse, and you can retry after.",
       };
     },
 
@@ -202,7 +238,7 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
 }
 
 export const INSPECT_SCHEMAS: ToolDef[] = [
-  { type: "function", function: { name: "request_grant", description: "Ask the human for permission this session lacks. `kind` must be a RECORD KIND — the kinds records are stored under, like 'message' or 'artifact' — never a tool name: 'space_events' is a tool, and there is no record kind called that. If you cannot list the kinds, ask for what you actually want to read (the records) rather than naming the tool that reads them. When a space_* call fails with 'forbidden', that is not a bug and not something to work around — this session runs under a scoped identity, and the missing authority has to be granted by a person. Call this with the kind and operations you need and a plain-language reason; the human sees the request and decides. You cannot grant yourself anything, so do not retry the failed call until they answer. Say what you asked for in your reply so the human knows what they are approving.", parameters: { type: "object", properties: { kind: { type: "string", description: "The record kind you need access to, e.g. 'kind_def' or 'artifact'." }, operations: { type: "array", items: { type: "string", enum: ["put", "query", "read_one", "take"] }, description: "The coordination verbs you need on that kind." }, why: { type: "string", description: "Why you need it, in one sentence, for the human deciding." }, scope: { type: "string", enum: ["own", "all"], description: "Whose records you need: 'own' (the default) for a kind you WRITE — your messages, your tool calls — where reading your own is the whole point; 'all' for a kind written by someone else, where a grant over your own records authorizes a view of NOTHING. Registries and other agents' work are the 'all' case. Asking for 'own' on such a kind is the mistake to avoid: it is approved, it looks like access, and every read returns empty." } }, required: ["kind", "operations", "why"] } } },
+  { type: "function", function: { name: "request_grant", description: "Ask the human for permission this session lacks. `kind` must be a RECORD KIND — the kinds records are stored under, like 'message' or 'artifact' — never a tool name: 'space_events' is a tool, and there is no record kind called that. If you cannot list the kinds, ask for what you actually want to read (the records) rather than naming the tool that reads them. When a space_* call fails with 'forbidden', that is not a bug and not something to work around — this session runs under a scoped identity, and the missing authority has to be granted by a person. Call this with the kind and operations you need and a plain-language reason; the human sees the request and decides. You cannot grant yourself anything. This call BLOCKS until the human answers and reports what you actually got, so when it returns `decision: granted`, RETRY the failed operation immediately IN THE SAME TURN — ending your turn to ask the user to type 'retry' wastes a round trip and usually loses the thread. On `refused`, say so and stop; on `pending`, say what you asked for and stop.", parameters: { type: "object", properties: { kind: { type: "string", description: "The record kind you need access to, e.g. 'kind_def' or 'artifact'." }, operations: { type: "array", items: { type: "string", enum: ["put", "query", "read_one", "take"] }, description: "The coordination verbs you need on that kind." }, why: { type: "string", description: "Why you need it, in one sentence, for the human deciding." }, scope: { type: "string", enum: ["own", "all"], description: "Whose records you need: 'own' (the default) for a kind you WRITE — your messages, your tool calls — where reading your own is the whole point; 'all' for a kind written by someone else, where a grant over your own records authorizes a view of NOTHING. Registries and other agents' work are the 'all' case. Asking for 'own' on such a kind is the mistake to avoid: it is approved, it looks like access, and every read returns empty." } }, required: ["kind", "operations", "why"] } } },
   { type: "function", function: { name: "space_stats", description: "Counts of records by kind and state in the Radia space (a quick overview / health check).", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "space_kinds", description: "List the registered record kinds and their indexed/sortable paths.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "space_query", description: "Find records by kind, with an optional match (equality/$gt/$in/$exists/…) and order_by. order_by is an array of {path, dir?} over the kind's SORTABLE paths only (list a kind's sortable paths with space_kinds), and only over fields in the record BODY — when a record was created is not a body field, so there is no way to sort by time. Without order_by, records come back in ascending record-id order; that is stable, not arbitrary, but it means a `limit` gives you the OLDEST matches, never the newest. So this is the wrong tool for 'the most recent X': use space_events (the event log is in time order) or narrow the match instead. Returns up to `limit` (default 10, max 25) records with size-capped bodies, plus `more`: true when further records match — the result is then a PAGE, so never count or compute percentages from it (space_stats has per-kind totals). The conversation itself is records: kind 'message' with match {conversationId}, order_by [{path:\"index\"}].", parameters: { type: "object", properties: { kind: { type: "string" }, match: { type: "object" }, orderBy: { type: "array", items: { type: "object", properties: { path: { type: "string" }, dir: { type: "string", enum: ["asc", "desc"] } }, required: ["path"] } }, limit: { type: "integer" } }, required: ["kind"] } } },

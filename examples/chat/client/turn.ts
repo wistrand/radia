@@ -16,8 +16,26 @@ import { Waiter, waitWake } from "./waiting.ts";
 const MAX_ROUNDS = 8;
 const INFERENCE_DEADLINE_MS = 120_000;
 const TOOL_DEADLINE_MS = 30_000;
+/** `request_grant` waits on a PERSON, so it gets a human deadline rather than a worker one — and a
+ *  longer one than the tool's own wait, or the REPL would give up on a decision still being made. */
+const HUMAN_DEADLINE_MS = 300_000;
 
-export async function runTurn(client: RadiaClient, thread: Thread, tools: ToolSet): Promise<void> {
+/**
+ * Called repeatedly while a tool call is outstanding, with the tool's name.
+ *
+ * This exists for exactly one thing: a `request_grant` in flight is waiting for the person at this
+ * terminal, and the REPL is the only part of the system that can ask them. Reviewing pending
+ * requests only BETWEEN turns cost two turns and two human inputs per grant — ask, end the turn,
+ * approve, type "retry" — and the loop usually broke before it converged.
+ */
+export type ToolWaitHook = (tool: string) => Promise<void>;
+
+export async function runTurn(
+  client: RadiaClient,
+  thread: Thread,
+  tools: ToolSet,
+  onToolWait?: ToolWaitHook,
+): Promise<void> {
   for (let round = 0; round < MAX_ROUNDS; round++) {
     write("\nassistant> ");
     // The chat picks no model — it references the thread by (conversationId, upToIndex) and lets
@@ -42,7 +60,7 @@ export async function runTurn(client: RadiaClient, thread: Thread, tools: ToolSe
     if (message.tool_calls?.length) {
       write("\n");
       for (const call of message.tool_calls) {
-        await runToolCall(client, thread, call);
+        await runToolCall(client, thread, call, onToolWait);
       }
       continue; // the model reads the tool results from the thread on the next call
     }
@@ -60,6 +78,7 @@ async function runToolCall(
   client: RadiaClient,
   thread: Thread,
   call: { id: string; function: { name: string; arguments: string } },
+  onToolWait?: ToolWaitHook,
 ): Promise<void> {
   let args: Record<string, unknown> = {};
   try {
@@ -75,7 +94,7 @@ async function runToolCall(
     body: { tool: call.function.name, args, conversationId: thread.id },
     parentIds: [thread.id],
   });
-  const result = await awaitToolResult(client, toolCallId, prefix, call.function.name);
+  const result = await awaitToolResult(client, toolCallId, prefix, call.function.name, onToolWait);
   write(`-> ${trunc(JSON.stringify(result.output), 80)}\n`);
   await showArtifact(client, result.output);
   await thread.append(
@@ -169,16 +188,20 @@ async function awaitToolResult(
   callId: string,
   prefix: string,
   tool: string,
+  onToolWait?: ToolWaitHook,
 ): Promise<{ ok: boolean; output: unknown }> {
   const waiter = new Waiter(client, prefix);
-  const stall = `no worker serves '${tool}'`;
-  const deadline = Date.now() + TOOL_DEADLINE_MS;
+  const stall = tool === "request_grant" ? "waiting for you to approve or refuse" : `no worker serves '${tool}'`;
+  const deadline = Date.now() + (tool === "request_grant" ? HUMAN_DEADLINE_MS : TOOL_DEADLINE_MS);
   while (Date.now() < deadline) {
     const result = await client.readOne({ kind: "tool_result", match: { callId } });
     if (result) {
       endStatus(prefix);
       return result.body as { ok: boolean; output: unknown };
     }
+    // Before waiting again: whatever this turn needs from the human, ask for it now rather than
+    // after the turn ends.
+    if (onToolWait) await onToolWait(tool);
     await waiter.pump(callId, stall);
     await waitWake();
   }

@@ -63,7 +63,7 @@ real assembly, with no API key:
 | `longthread` | a deliberately awkward 58-message thread — two resumes, a tool-heavy turn wider than the window, empty/null/20k/unicode bodies — with the invariants checked at EVERY position in it |
 | `procedures` | save → call by name → read back → retire → revive, conversation scoping, name shadowing, result provenance |
 | `resume` | reattaching across a genuine process restart (the space is killed and restarted on the same `--db`) |
-| `selfgrant` | forbidden → request → human approval → self-scoped reads, on both the ops and coordination planes |
+| `selfgrant` | forbidden → request → human approval → self-scoped reads, on both the ops and coordination planes. The ask BLOCKS on the human's answer and the answer names the scope actually granted, so the whole escalation fits in one turn instead of two |
 | `inspect` | session isolation (a session reads only its own conversation), the `space_*` TOOLS on a busy space — paging past a wall of another author's events, answering "what may I do" from the enforcement rather than by inference, and the full escalation loop: a grant approved at the wrong scope authorizes nothing, and the prompt has to say so |
 | `fleet` | model advertisements: publish, restart without growing the space, withdraw on shutdown, revive |
 

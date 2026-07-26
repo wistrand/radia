@@ -156,6 +156,21 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   separator no value can contain, since the encoded form is both unambiguous and printable; and
   `grep -P "\x00"` will NOT find these — grep suppresses binary matches, so scan with something
   that reads bytes.
+- **An escalation that costs two turns and two human inputs per grant does not converge.** The loop
+  was: assistant hits `forbidden`, calls `request_grant`, the tool returns "asked them, retry
+  later", the turn ends; the human approves at the prompt; the human types "retry"; the assistant
+  tries again — and every miss (wrong kind, wrong scope) costs another two. Sessions ran out of tool
+  rounds mid-loop and gave up. Nothing was broken; it just could not finish. `request_grant` now
+  BLOCKS on the decision and the REPL reviews pending requests WHILE the call is in flight
+  (`onToolWait` in `turn.ts`), so the person is asked immediately and the answer lands in the same
+  turn with rounds left to act on it. Three details that make it work: the decision travels as a
+  successor `grant_request` record carrying what was ACTUALLY granted (scope included — the asker
+  may have been given something narrower than it asked for, and discovering that by retrying and
+  failing is the loop being removed), because the session can read its own requests and holds no
+  grant on `grant`; the tool's deadline is a human one (240s) and the REPL's is longer still, or the
+  REPL would abandon a decision still being made; and the between-turns review stays as the backstop
+  for a request whose turn died. Watch for this shape generally: a protocol whose round trip crosses
+  a turn boundary pays for the boundary every iteration.
 - **Kind-scoped is not conversation-scoped: every chat session ran as one agent, so each could read
   every other session's messages.** `USER_GRANTS` said `message: {put, query}` with a comment
   promising "may drive a conversation and read its own results, nothing more" — and nothing enforced

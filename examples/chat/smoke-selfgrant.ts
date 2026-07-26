@@ -133,20 +133,38 @@ check(
 );
 
 // 3. It asks THROUGH THE TOOL, as the session. It cannot grant — only ask.
-const asked0 = await callTool("request_grant", { kind: "message", operations: ["query"], why: "to count what I created" }, conv);
+//
+// The tool BLOCKS on the decision, and the human answers while it is in flight — the shape the REPL
+// now drives (`onToolWait`). Running them concurrently is not test convenience: sequentially, the
+// ask would wait out its full deadline before anyone was asked, which is precisely the two-turn
+// dance this replaced.
+const [asked0] = await Promise.all([
+  callTool("request_grant", { kind: "message", operations: ["query"], why: "to count what I created" }, conv, 30_000),
+  (async () => {
+    // Approving the narrow option withdraws the wider bootstrap grant on that kind (grants union,
+    // so a narrow grant beside a broad one changes nothing) while KEEPING the operations it was not
+    // asked about. Getting that wrong killed a live session: narrowing `query` on `message` retired
+    // the bootstrap {put, query} grant wholesale, and the chat died writing its next message.
+    for (let i = 0; i < 60; i++) {
+      const pending = await admin.query({ kind: "grant_request", match: { conversationId: conv } }, 10, { dir: "desc" });
+      if (pending.some((r) => !(r.body as { decision?: string }).decision)) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await reviewGrantRequests(session, admin, CHAT_USER, conv, () => Promise.resolve("y"));
+  })(),
+]);
 check("request_grant succeeds", asked0.ok, JSON.stringify(asked0.output).slice(0, 70));
+// The whole point of blocking: the answer comes back to the ASKER, in the same turn, and says what
+// it actually got — the requester asked for one scope and may have been given another.
+const decision = asked0.output as { decision?: string; granted?: { scope?: string } };
+check("…and returns the human's decision to the caller", decision.decision === "granted", JSON.stringify(decision).slice(0, 90));
+check("…including the scope actually granted", decision.granted?.scope === "own records only", decision.granted?.scope ?? "(none)");
+
 const asked = await session.query({ kind: "grant_request", match: { conversationId: conv } }, 10);
-check("the request is a record the human can read", asked.length === 1);
+check("the request is a record the human can read", asked.length >= 1);
 check("and the asker is recorded by the server, not by the body", asked[0].runtimeMeta.createdBy.startsWith("run:"));
 check("the session still cannot grant itself anything", await forbidden(() =>
   session.put({ kind: "grant", body: { principal: CHAT_USER, kind: "message", operations: ["query"] } })));
-
-// 3. The human approves, through the REAL review path — which is where the narrowing logic lives.
-//    Approving the narrow option withdraws the wider bootstrap grant on that kind (grants union, so
-//    a narrow grant beside a broad one changes nothing) while KEEPING the operations it was not
-//    asked about. Getting that wrong killed a live session: narrowing `query` on `message` retired
-//    the bootstrap {put, query} grant wholesale, and the chat died writing its next message.
-await reviewGrantRequests(session, admin, CHAT_USER, conv, () => Promise.resolve("y"));
 
 check(
   "the session can STILL write after its reads were narrowed",

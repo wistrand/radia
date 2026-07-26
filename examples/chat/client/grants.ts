@@ -150,9 +150,9 @@ export async function reviewGrantRequests(
       write(dim(`  note: this grant authorizes reads of ${b.kind} records this session created, and there are none.\n`));
     }
 
+    let inheritedTemplate: Record<string, unknown> | undefined;
     if (answer === "y" || answer === "a") {
       const selfScoped = answer === "y";
-      let inheritedTemplate: Record<string, unknown> | undefined;
       if (selfScoped) {
         // Grants UNION, so adding a narrow grant beside a broad one changes nothing — and the
         // session starts with broad read grants on the conversation kinds. Choosing "own records
@@ -216,9 +216,26 @@ export async function reviewGrantRequests(
     }
     // Handled either way — a refusal that stayed pending would re-prompt on every turn. The
     // assistant can ask again; that is a new request, and a new decision.
+    //
+    // This record is also the ANSWER CHANNEL: `request_grant` blocks on it, because the session can
+    // read its own requests and has no grant on `grant` itself. So it carries what was actually
+    // granted, not merely that something was — the requester asked for one scope and may have been
+    // given another, and finding that out by retrying and failing is the loop this removes.
     await admin.put({
       kind: "grant_request",
-      body: { ...b, retired: true, decision: answer === "n" ? "refused" : "granted" },
+      body: {
+        ...b,
+        retired: true,
+        decision: answer === "n" ? "refused" : "granted",
+        ...(answer === "n" ? {} : {
+          granted: {
+            kind: b.kind,
+            operations: b.operations,
+            scope: answer === "y" ? "own records only" : "all records",
+            ...(inheritedTemplate ? { limitedTo: inheritedTemplate } : {}),
+          },
+        }),
+      },
     });
     write(`${dim("─".repeat(60))}\n`);
   }
