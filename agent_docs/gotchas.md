@@ -28,13 +28,29 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
 
 ## Traps and load-bearing decisions
 
-- **`childrenOf` (the relationship-graph reverse lookup) is a `LIKE` scan** over the
-  `parent_ids` JSON text, not an indexed reverse edge. Fine for the dev console at small
-  scale; a real reverse index (or an edges table) is the fix before it's a hot path. It
-  works because ids are ULIDs (no `%`/`_`), so `like '%"<id>"%'` is safe. **Measured**
-  (`deno task bench -- --suite lineage`): 87µs at 1k records → 662µs at 20k for the *same
-  five children*, while `getRecord` on the same table stays flat — the cost tracks the space,
-  not the answer.
+- **`record_edges` is a DERIVED index; `parent_ids` stays the source of truth.** `childrenOf` was
+  a `LIKE` scan over the `parent_ids` JSON text (safe, because ids are ULIDs and carry no `%`/`_`,
+  but O(space) to find a handful of children — 87µs at 1k records → 662µs at 20k for the *same
+  five children*). It is now an indexed lookup through a `(parent_id, child_id)` table: 31µs →
+  32µs, flat. Three things keep the derivation honest, and all three are load-bearing: the edge is
+  written **in the same transaction as the record**, so it cannot lag what it indexes; **every**
+  insert path writes it — including ack-with-result, which is the path that creates a task's result
+  and therefore exactly the edges most worth having (pinned by a conformance case, because a
+  reverse index that only `put` maintained would look correct in every hand test); and the schema
+  carries a **one-time backfill** from `parent_ids`, guarded by `where not exists (select 1 from
+  record_edges)`, so a database written by an older build rebuilds its edges on next startup.
+  Conformance cannot reach that backfill — every harness database is created fresh by the current
+  schema — so it was verified by hand against both dialects instead.
+- **A graph walk should batch by LEVEL, but the reason it got faster may not be the batching.**
+  `getLineage` now fetches a whole depth level with one `getRecords` call instead of one
+  `getRecord` per node. Measured head to head at depth 64 in a 20k-record space: 0.224ms vs
+  0.651ms. But note *where* that came from — the benchmark's lineage is a plain chain, one node
+  per level, so batching saves no round trips there at all. The first version of the batched walk
+  was **slower** than the per-node one (1.247ms vs 0.780ms), because SQLite's `getRecords` builds
+  its SQL text from the id count and so re-parsed an identical statement every level. Caching the
+  prepared statement by placeholder count is what actually won; the batching pays on a DAG that
+  fans out and on a networked Postgres, where a round trip is latency rather than work. Worth
+  remembering before attributing a speedup to the change you meant to make.
 
 - **Predicate pushdown is a SOUND pre-filter, never a second opinion.** `src/storage/pushdown.ts`
   renders part of a compiled template into SQL, but the oracle in `core/matching.ts` still decides

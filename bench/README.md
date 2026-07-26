@@ -86,14 +86,20 @@ estimate (`CREATE STATISTICS` on the path expression) drops it to 1.92ms. See
 [gotchas.md](../agent_docs/gotchas.md), "a claim on Postgres is planned on a guess" — that is the
 next thing to fix, and the numbers above are the argument for it.
 
-**`childrenOf` grows with the whole space, not with the answer.** 87µs at 1k records → 662µs
-at 20k, for the same five children — the `LIKE` scan over `parent_ids`
-([gotchas.md](../agent_docs/gotchas.md)). `getRecord` on the same table stays flat, which is
-the contrast that proves it is the scan and not the table size.
+**`childrenOf` grew with the whole space, not with the answer — until it got a reverse index.**
+87µs at 1k records → **662µs at 20k** for the same five children, because `parent_ids` was
+searched with a `LIKE` over every record. With a `record_edges` table written in the same
+transaction as the record, it is 31µs → 32µs: **flat**, and 20× faster at 20k. The contrast that
+originally proved this was the scan and not the table size (`getRecord` stays flat) is now the
+shape `childrenOf` itself has.
 
-**`getLineage` costs a round trip per hop.** 80µs at depth 8 → 613µs at depth 64 on sqlite
-(~10µs/hop), 1.8ms → 14.3ms on pglite (~220µs/hop). It walks ancestors one `getRecord` at a
-time.
+**`getLineage` costs a round trip per LEVEL, not per hop.** It fetches a whole depth level in one
+batched query. Measured head to head at depth 64 in a 20k-record space: **0.224ms batched vs
+0.651ms walking node by node** — 2.9×, on a plain chain, where batching saves no round trips at
+all. That is the tell: the gain there is not the batching but the prepared-statement cache it
+forced (building the SQL text per call re-parsed an identical query every level). On a DAG that
+fans out, and on a networked Postgres where a round trip is latency rather than work, the
+batching itself is what pays.
 
 **Contention found a real bug — the benchmark that counts honestly is the one that finds it.**
 The contention bench counts *empty* takes separately instead of treating a null claim as

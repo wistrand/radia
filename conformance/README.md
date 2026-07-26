@@ -39,7 +39,7 @@ the blob suites existed; its storage half is what a live server adds.)
 |------|------|
 | `run.test.ts` | entry point: enumerates implementations, registers every suite against each |
 | `harness.ts`  | the `Suite` / `BlobSuite` / `BlobCryptoSuite` types and setup/teardown. The only `Deno.test` binding in the repo |
-| `suites/`     | one file per behavior area (records, matching, **pushdown soundness**, leases + claim fairness, idempotency, events, watches, faults, auth, taint, admin + selector-driven remediation, blobs + encryption) |
+| `suites/`     | one file per behavior area (records, matching, **pushdown soundness**, **graph: children + lineage**, leases + claim fairness, idempotency, events, watches, faults, auth, taint, admin + selector-driven remediation, blobs + encryption) |
 
 ## Writing a suite
 

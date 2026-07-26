@@ -123,6 +123,8 @@ class SqliteJson implements JsonDialect {
 }
 
 // SQLite has no boolean type; taint is stored as integer 0/1.
+// NOTE: this is a template literal — a backtick anywhere inside, including in a `-- comment`,
+// ends the string and produces a wall of TS syntax errors pointing at the SQL.
 const DDL = `
 create table if not exists records (
   id text primary key,
@@ -167,6 +169,15 @@ create index if not exists idx_runtime_claim
 -- once the window is full.
 create index if not exists idx_runtime_claim_order
   on record_runtime (kind, effective_priority desc, available_at asc, record_id asc);
+-- The lineage DAG's edges, one row per (parent, child). records.parent_ids stays the source of
+-- truth — this table is a derived REVERSE index, because parent_ids answers "who are my parents"
+-- for free and "who are my children" only by scanning every record. Written in the same
+-- transaction as the record, so it cannot lag; rebuilt from parent_ids by the backfill below.
+create table if not exists record_edges (
+  parent_id text not null,
+  child_id text not null,
+  primary key (parent_id, child_id)
+);
 create table if not exists idempotency (
   principal text not null,
   operation text not null,
@@ -187,6 +198,13 @@ create table if not exists events (
   state text,
   detail text
 );
+-- One-time backfill of the reverse edge index for a database written by an older build. The
+-- guard makes this free on every later startup: on a populated table the NOT EXISTS short-circuits
+-- and the INSERT reads nothing. A space that genuinely has no edges (no record ever had a parent)
+-- re-runs the scan each start, which costs one scan of a table whose parent_ids are all empty.
+insert or ignore into record_edges (parent_id, child_id)
+  select p.value, r.id from records r, json_each(r.parent_ids) as p
+   where not exists (select 1 from record_edges);
 `;
 
 type SqlValue = string | number | null;
@@ -199,6 +217,8 @@ function toSqlValues(values: unknown[]): SqlValue[] {
 export class SqliteAdapter implements StorageAdapter {
   readonly name = "sqlite";
   #db?: DatabaseSync;
+  /** `getRecords` statements, keyed by placeholder count. Cleared with the database. */
+  #byIds = new Map<number, ReturnType<DatabaseSync["prepare"]>>();
 
   /** @param path `:memory:` for an in-memory database, else a file path. */
   constructor(private readonly path = ":memory:") {}
@@ -213,6 +233,7 @@ export class SqliteAdapter implements StorageAdapter {
   }
 
   close(): Promise<void> {
+    this.#byIds.clear(); // statements belong to the database being closed
     this.#db?.close();
     this.#db = undefined;
     return Promise.resolve();
@@ -445,9 +466,28 @@ export class SqliteAdapter implements StorageAdapter {
   }
 
   childrenOf(recordId: string): Promise<RadiaRecord[]> {
-    // parent_ids is a JSON text array of quoted ids; a LIKE on `"<id>"` finds children.
-    const rows = this.db.prepare("select * from records where parent_ids like ?").all(`%"${recordId}"%`) as RawRow[];
+    // Indexed lookup through the reverse edge table. This used to be
+    // `parent_ids like '%"<id>"%'` — correct (ids are ULIDs, so they carry no LIKE wildcards) but
+    // a scan of every record in the space to find a handful of children.
+    const rows = this.db.prepare(
+      `select r.* from record_edges e join records r on r.id = e.child_id
+        where e.parent_id = ? order by r.id`,
+    ).all(recordId) as RawRow[];
     return Promise.resolve(rows.map(rowToRecord));
+  }
+
+  getRecords(ids: string[]): Promise<RadiaRecord[]> {
+    if (ids.length === 0) return Promise.resolve([]);
+    // Cached by id count. The SQL text varies with the number of placeholders, so preparing it
+    // fresh each call re-parses the statement every time — which cost more than the round trip it
+    // was meant to save: a 64-hop lineage walk spent ~7µs per level re-parsing an identical query.
+    // A graph walk issues the same handful of widths over and over, so this cache is small.
+    let stmt = this.#byIds.get(ids.length);
+    if (!stmt) {
+      stmt = this.db.prepare(`select * from records where id in (${qmarks(ids.length)})`);
+      this.#byIds.set(ids.length, stmt);
+    }
+    return Promise.resolve((stmt.all(...ids) as RawRow[]).map(rowToRecord));
   }
 
   getEvents(afterCursor: string, limit: number): Promise<SpaceEvent[]> {
@@ -692,6 +732,12 @@ export class SqliteAdapter implements StorageAdapter {
          (record_id, kind, state, attempt, available_at, claim_until, deadline_at, effective_priority)
        values (?, ?, 'available', 0, ?, ?, ?, ?)`,
     ).run(...toSqlValues(runtimeInsertValues(input)));
+    // The reverse edge, in the SAME transaction as the record — a derived index that can never
+    // lag the thing it indexes.
+    if (input.record.runtimeMeta.parentIds.length > 0) {
+      const edge = this.db.prepare("insert or ignore into record_edges (parent_id, child_id) values (?, ?)");
+      for (const pid of input.record.runtimeMeta.parentIds) edge.run(pid, input.record.id);
+    }
   }
 
   private get db(): DatabaseSync {

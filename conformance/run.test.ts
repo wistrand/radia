@@ -8,6 +8,7 @@ import { recordSuites } from "./suites/records.ts";
 import { kindSuites } from "./suites/kinds.ts";
 import { matchingSuites } from "./suites/matching.ts";
 import { pushdownSuites } from "./suites/pushdown.ts";
+import { graphSuites } from "./suites/graph.ts";
 import { claimFairnessSuites, leaseSuites } from "./suites/leases.ts";
 import { idempotencySuites } from "./suites/idempotency.ts";
 import { eventSuites } from "./suites/events.ts";
@@ -26,6 +27,7 @@ conformance(adapters, [
   ...kindSuites,
   ...matchingSuites,
   ...pushdownSuites,
+  ...graphSuites,
   ...leaseSuites,
   ...claimFairnessSuites,
   ...idempotencySuites,

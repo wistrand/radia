@@ -284,8 +284,16 @@ export interface StorageAdapter {
   /** The mutable envelope for a record (diagnostics, inspector, tests). */
   getEnvelope(recordId: Ulid): Promise<Envelope | null>;
 
-  /** A single record by id (lineage walk, inspector). */
+  /** A single record by id (inspector, get-by-id). */
   getRecord(recordId: Ulid): Promise<RadiaRecord | null>;
+
+  /**
+   * Records for a set of ids, in one round trip. Missing ids are simply absent from the result,
+   * and order is not guaranteed — callers that need one must impose it. This exists so a graph
+   * walk costs a round trip per LEVEL rather than per node; `getLineage` is the caller that
+   * makes the difference visible on a deep DAG.
+   */
+  getRecords(ids: Ulid[]): Promise<RadiaRecord[]>;
 
   /** Records whose parent_ids include this id — the reverse of lineage (relationship graph). */
   childrenOf(recordId: Ulid): Promise<RadiaRecord[]>;

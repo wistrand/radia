@@ -853,16 +853,21 @@ export class Space {
   async getLineage(recordId: string, maxNodes = 200): Promise<{ record: RadiaRecord; depth: number }[]> {
     const out: { record: RadiaRecord; depth: number }[] = [];
     const seen = new Set<string>();
-    let frontier: { id: string; depth: number }[] = [{ id: recordId, depth: 0 }];
-    while (frontier.length > 0 && out.length < maxNodes) {
-      const next: { id: string; depth: number }[] = [];
-      for (const { id, depth } of frontier) {
-        if (seen.has(id)) continue;
-        seen.add(id);
-        const rec = await this.storage.getRecord(id);
-        if (!rec) continue;
+    let frontier: string[] = [recordId];
+    // One round trip per DEPTH LEVEL, not per node: a level's records are fetched together, and
+    // only then does the walk decide what the next level is. A chain of 64 ancestors used to cost
+    // 64 sequential round trips — which on a networked Postgres is latency, not work.
+    for (let depth = 0; frontier.length > 0 && out.length < maxNodes; depth++) {
+      const fresh = frontier.filter((id) => !seen.has(id));
+      for (const id of fresh) seen.add(id);
+      const records = await this.storage.getRecords(fresh);
+      // getRecords does not promise an order, and lineage output should not depend on one. A
+      // single-record level — every level of a plain chain — is already sorted.
+      if (records.length > 1) records.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const next: string[] = [];
+      for (const rec of records) {
         out.push({ record: rec, depth });
-        for (const pid of rec.runtimeMeta.parentIds) next.push({ id: pid, depth: depth + 1 });
+        next.push(...rec.runtimeMeta.parentIds);
       }
       frontier = next;
     }

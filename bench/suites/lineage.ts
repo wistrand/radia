@@ -1,10 +1,11 @@
-// The known hotspot, measured rather than assumed.
+// A hotspot that was measured, then fixed — and is kept measured so it stays fixed.
 //
-// `childrenOf` — the reverse edge behind `space_children`, the graph view, and any DAG walk — is
-// a `LIKE` scan over the `parent_ids` JSON text, not an indexed edge (gotchas.md). This suite
-// exists to put a number on when that stops being acceptable, because "fine at small scale" is
-// not a size. It is also the prerequisite measurement for flow mining
-// (research-self-modeling.md), which walks ancestry across the whole space repeatedly.
+// `childrenOf` — the reverse edge behind `space_children`, the graph view, and any DAG walk —
+// used to be a `LIKE` scan over the `parent_ids` JSON text: cost grew with the size of the SPACE
+// rather than with the number of children found. It is now an indexed lookup through
+// `record_edges`, and the shape these benches watch for is a FLAT line across the sizes. A rising
+// one means the edge table stopped being used. This is also the prerequisite measurement for flow
+// mining (research-self-modeling.md), which walks ancestry across the whole space repeatedly.
 
 import type { Bench, Measurement } from "../harness.ts";
 import { measure } from "../harness.ts";
@@ -12,7 +13,7 @@ import { measure } from "../harness.ts";
 export const lineageBenches: Bench[] = [
   {
     name: "lineage-scaling",
-    note: "childrenOf is a LIKE scan: cost should grow with TOTAL records, not with the number of children found. If p50 rises across the sizes while the answer stays the same size, that is the scan.",
+    note: "childrenOf is an indexed edge lookup: p50 should stay FLAT across the sizes, since the answer size is fixed. A rising line means it has gone back to scanning.",
     run: async (ctx) => {
       ctx.space.registerKind({ kind: "job", indexedPaths: [], claimable: false });
       ctx.space.registerKind({ kind: "step", indexedPaths: [], claimable: false });
@@ -35,7 +36,7 @@ export const lineageBenches: Bench[] = [
   },
   {
     name: "lineage-depth",
-    note: "getLineage walks parent_ids upward one record at a time — cost is depth, not scan.",
+    note: "getLineage walks parent_ids upward one LEVEL at a time (a batched fetch per depth) — cost is depth, not space size.",
     run: async (ctx) => {
       ctx.space.registerKind({ kind: "step", indexedPaths: [], claimable: false });
       const out: Measurement[] = [];

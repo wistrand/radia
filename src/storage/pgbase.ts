@@ -107,7 +107,11 @@ export const NOW_SQL =
  *  not exists` only ever creates: it does NOT reshape a table that already exists. Any column
  *  added after the initial schema therefore also needs an `alter table ... add column if not
  *  exists` in the migrations block at the end, or databases created by an older build keep the
- *  old shape and fail at query time. */
+ *  old shape and fail at query time.
+ *
+ *  NOTE: this is a template literal — a backtick anywhere inside, including in a `-- comment`,
+ *  ends the string and produces a wall of TS syntax errors pointing at the SQL. Quote identifiers
+ *  in comments some other way. */
 export const DDL = `
 create table if not exists records (
   id text primary key,
@@ -152,6 +156,15 @@ create index if not exists idx_runtime_claim
 -- once the window is full.
 create index if not exists idx_runtime_claim_order
   on record_runtime (kind, effective_priority desc, available_at asc, record_id asc);
+-- The lineage DAG's edges, one row per (parent, child). records.parent_ids stays the source of
+-- truth — this table is a derived REVERSE index, because parent_ids answers "who are my parents"
+-- for free and "who are my children" only by scanning every record. Written in the same
+-- transaction as the record, so it cannot lag; rebuilt from parent_ids by the backfill below.
+create table if not exists record_edges (
+  parent_id text not null,
+  child_id text not null,
+  primary key (parent_id, child_id)
+);
 create table if not exists idempotency (
   principal text not null,
   operation text not null,
@@ -201,6 +214,15 @@ create index if not exists idx_records_body_gin on records using gin (body_jsonb
 -- a different record here than on SQLite. This index is what keeps the limit cheap AND identical
 -- across adapters.
 create index if not exists idx_records_id_c on records (id collate "C");
+-- One-time backfill of the reverse edge index for a database written by an older build. The
+-- guard makes this free on every later startup: the NOT EXISTS is evaluated once, and on a
+-- populated table the whole INSERT reads nothing. A space that genuinely has no edges (no record
+-- ever had a parent) re-runs the scan each start, which costs one sequential scan of a table
+-- whose records all have empty parent_ids.
+insert into record_edges (parent_id, child_id)
+  select p.value, r.id from records r, jsonb_array_elements_text(r.parent_ids::jsonb) as p
+   where not exists (select 1 from record_edges)
+  on conflict do nothing;
 `;
 
 const SQL_CMP: Record<string, string> = { gt: ">", gte: ">=", lt: "<", lte: "<=" };
@@ -579,8 +601,23 @@ export class PgSqlAdapter implements StorageAdapter {
   }
 
   async childrenOf(recordId: string): Promise<RadiaRecord[]> {
-    // parent_ids is a JSON text array of quoted ids; a LIKE on `"<id>"` finds children.
-    const res = await this.sql.query<RawRow>("select * from records where parent_ids like $1", [`%"${recordId}"%`]);
+    // Indexed lookup through the reverse edge table. This used to be
+    // `parent_ids like '%"<id>"%'` — correct (ids are ULIDs, so they carry no LIKE wildcards) but
+    // a scan of every record in the space to find a handful of children.
+    const res = await this.sql.query<RawRow>(
+      `select ${RECORD_COLS_R} from record_edges e join records r on r.id = e.child_id
+        where e.parent_id = $1 order by r.id`,
+      [recordId],
+    );
+    return res.rows.map(rowToRecord);
+  }
+
+  async getRecords(ids: string[]): Promise<RadiaRecord[]> {
+    if (ids.length === 0) return [];
+    const res = await this.sql.query<RawRow>(
+      `select ${RECORD_COLS} from records where id = any($1::text[])`,
+      [ids],
+    );
     return res.rows.map(rowToRecord);
   }
 
@@ -782,6 +819,14 @@ export class PgSqlAdapter implements StorageAdapter {
        values ($1, $2, 'available', 0, $3, $4, $5, $6)`,
       runtimeInsertValues(input),
     );
+    // The reverse edge, in the SAME transaction as the record — a derived index that can never
+    // lag the thing it indexes. One statement regardless of parent count.
+    if (parents.length > 0) {
+      await tx.query(
+        "insert into record_edges (parent_id, child_id) select unnest($1::text[]), $2 on conflict do nothing",
+        [parents, input.record.id],
+      );
+    }
   }
 
   // Run a state-changing op in a transaction with idempotency + concurrent-insert replay.
