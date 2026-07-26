@@ -23,7 +23,7 @@
 // guarantee as well as the security story.
 
 import { agentLoop } from "../../../sdk/ts/loop.ts";
-import { RadiaClient } from "../../../sdk/ts/client.ts";
+import { RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
 import { runCode } from "../tools/exec-sandbox.ts";
 import { progress } from "../space/progress.ts";
 import { arg, argAll } from "../util.ts";
@@ -91,16 +91,141 @@ const RUN_CODE: ToolDef = {
   },
 };
 
+const SAVE_PROCEDURE: ToolDef = {
+  type: "function",
+  function: {
+    name: "save_procedure",
+    description:
+      "Save a program under a NAME so it can be run again later without you re-typing it. The " +
+      "saved procedure becomes one of your tools in this conversation: call it by name, and the " +
+      "object you pass is available inside the code as `args`. Use this when you have written " +
+      "code you expect to run more than once — a calculation you will repeat with different " +
+      "inputs, a parser, a checker. Saving costs one call; re-pasting the same program every " +
+      "time costs its full length in every message that follows. The code runs in the SAME " +
+      "sandbox as run_code, with the same limits. Re-saving the same name replaces it. Returns " +
+      "{name, artifactId, size}.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Tool name to save it under: lowercase letters, digits and underscores, e.g. 'hash_text'." },
+        description: { type: "string", description: "What it does and what `args` it expects — this becomes the tool description you will see later, so write it for your future self." },
+        code: { type: "string", description: "The JavaScript program. Read inputs from the `args` object; print results with console.log." },
+        parameters: { type: "object", description: "Optional JSON Schema for `args`, same shape as any tool's parameters. Omit for a procedure that takes no input." },
+      },
+      required: ["name", "description", "code"],
+    },
+  },
+};
+
+const READ_PROCEDURE: ToolDef = {
+  type: "function",
+  function: {
+    name: "read_procedure",
+    description:
+      "Read back the source of a procedure you saved earlier. Use this BEFORE changing one: the " +
+      "code is not in your context once the turn that wrote it has scrolled away, and rewriting " +
+      "from memory risks losing behaviour you had already got right. To fix or extend a " +
+      "procedure, read it, edit the text, and save_procedure under the SAME name — that replaces " +
+      "it. Returns {name, description, code, versions}, where versions counts how many times it " +
+      "has been saved.",
+    parameters: {
+      type: "object",
+      properties: { name: { type: "string", description: "The saved procedure's name." } },
+      required: ["name"],
+    },
+  },
+};
+
 await publishCapability(client, RUN_CODE);
+await publishCapability(client, SAVE_PROCEDURE);
+await publishCapability(client, READ_PROCEDURE);
+
+// EVERYTHING the handler reads must be declared above `agentLoop`, which never returns: a `const`
+// placed after it is never evaluated, so it stays in the temporal dead zone for the life of the
+// process and the first handler that touches it throws `Cannot access '<name>' before
+// initialization` — silently, since a handler that throws just nacks and retries.
+
+/** Names a procedure may not take: a built-in must never be shadowed by model-written code. */
+const RESERVED = new Set(["run_code", "save_procedure", "read_procedure"]);
+
+/** A tool name that is safe to advertise and to match a claim template on. */
+const NAME_RE = /^[a-z][a-z0-9_]{0,40}$/;
+
+// The claim templates, MUTABLE on purpose. `agentLoop` re-reads this array on every pass, so
+// appending to it is how this worker starts serving a procedure the assistant saved a moment ago —
+// without a restart, and without claiming `tool_call` wholesale (which would steal other workers'
+// work). Every procedure the space already holds is added at startup; new ones arrive on the watch
+// below. Dispatch stays content-routed: one template per tool name, exactly like a built-in tool.
+const templates = [
+  { kind: "tool_call", match: { tool: "run_code" } },
+  { kind: "tool_call", match: { tool: "save_procedure" } },
+  { kind: "tool_call", match: { tool: "read_procedure" } },
+];
+const served = new Set<string>();
+
+async function adoptProcedures(): Promise<void> {
+  try {
+    for (const rec of await client.query({ kind: "procedure" }, 500)) {
+      const name = String((rec.body as { name?: string }).name ?? "");
+      if (!NAME_RE.test(name) || served.has(name)) continue;
+      served.add(name);
+      templates.push({ kind: "tool_call", match: { tool: name } });
+    }
+  } catch { /* no grant to read procedures: this worker simply serves the built-ins */ }
+}
+await adoptProcedures();
+(async () => {
+  try {
+    for await (const _ of client.watch({ kind: "procedure" })) await adoptProcedures();
+  } catch { /* watch unavailable: adopted at startup, and a restart picks up the rest */ }
+})();
+
+/**
+ * The procedure a call is asking for, or a refusal.
+ *
+ * The conversation check is a BOUNDARY, not a filter. The chat only offers a procedure to the
+ * conversation that wrote it, but "not offered" is not "not callable" — a model can name any tool
+ * it likes, and a tool_call is just a record anyone may write. So the scope is enforced here,
+ * where the code would actually run.
+ */
+async function lookupProcedure(c: RadiaClient, name: string, conversationId?: string) {
+  const rows = await c.query({ kind: "procedure", match: { name, conversationId: conversationId ?? "" } }, 50);
+  if (rows.length === 0) return null;
+  // Latest wins, like capability and kind_def: re-saving a name is a successor record.
+  const latest = rows.reduce((a, b) => (a.id > b.id ? a : b));
+  return latest.body as { name: string; artifactId: string; description?: string };
+}
 
 await agentLoop(client, {
   name: "exec",
-  templates: [{ kind: "tool_call", match: { tool: "run_code" } }],
+  templates,
   leaseSeconds: 60,
   handle: async (rec, c) => {
     const callId = rec.id;
-    const b = rec.body as { args?: { code?: string }; conversationId?: string };
-    const code = String(b.args?.code ?? "");
+    const b = rec.body as { tool?: string; args?: { code?: string }; conversationId?: string };
+
+    if (b.tool === "save_procedure") return await saveProcedure(rec, c);
+    if (b.tool === "read_procedure") return await readProcedure(rec, c);
+
+    // A named procedure: the code comes from the artifact it was saved as, and the call's own
+    // arguments are handed to it as `args`.
+    let code = String(b.args?.code ?? "");
+    if (b.tool && b.tool !== "run_code") {
+      const proc = await lookupProcedure(c, b.tool, b.conversationId);
+      if (!proc) {
+        return {
+          kind: "tool_result",
+          body: { callId, ok: false, output: `no procedure '${b.tool}' saved in this conversation` },
+          taint: true,
+        };
+      }
+      const source = new TextDecoder().decode(await c.getArtifact(proc.artifactId));
+      // `args` is injected as a literal rather than passed on argv: the sandbox takes its program
+      // on stdin and has no environment, and a JSON literal is the one channel that needs no
+      // permission. JSON.stringify also means the model's arguments arrive as DATA — they are
+      // never concatenated into executable positions.
+      code = `const args = ${JSON.stringify(b.args ?? {})};\n${source}`;
+    }
     // The source is already in the tool_call record, so every program the model ever ran is
     // auditable by query — `{kind: tool_call, tool: "run_code"}` is the execution log, with the
     // result and any artifact as its children.
@@ -154,3 +279,100 @@ await agentLoop(client, {
     };
   },
 });
+
+/**
+ * Store a named program: the code becomes an artifact, the name becomes a `procedure` record.
+ *
+ * The write is content-keyed the same way `capability` and `kind_def` are — an identical re-save
+ * dedups, a changed one is a successor and latest wins — so "save it again under the same name"
+ * is an update, never a 409.
+ */
+async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
+  const callId = rec.id;
+  const b = rec.body as { args?: Record<string, unknown>; conversationId?: string };
+  const a = b.args ?? {};
+  const name = String(a.name ?? "");
+  const description = String(a.description ?? "");
+  const code = String(a.code ?? "");
+  const fail = (output: string) => ({ kind: "tool_result", body: { callId, ok: false, output }, taint: true });
+
+  if (!NAME_RE.test(name)) return fail("`name` must be lowercase letters, digits and underscores, starting with a letter");
+  if (RESERVED.has(name)) return fail(`'${name}' is a built-in tool name — choose another`);
+  if (!code.trim()) return fail("save_procedure needs a `code` argument");
+  if (!description.trim()) return fail("save_procedure needs a `description` — it is what you will read when deciding to call it later");
+  if (!b.conversationId) return fail("save_procedure needs a conversation to belong to");
+
+  await progress(c, { conversationId: b.conversationId, callId, stage: "saving", by: ME, note: name }, [callId]);
+  const art = await c.putArtifact(new TextEncoder().encode(code), {
+    mediaType: "text/javascript",
+    filename: `${name}.js`,
+    parentIds: [callId],
+    taint: true, // model-written source, like any other bytes it produced
+  });
+  const key = await shortHash(`${description}\n${code}`);
+  await c.put({
+    kind: "procedure",
+    body: {
+      name,
+      description,
+      parameters: a.parameters ?? { type: "object", properties: {} },
+      artifactId: art.id,
+      conversationId: b.conversationId,
+    },
+    parentIds: [callId],
+  }, `procedure:${b.conversationId}:${name}:${key}`);
+
+  // Serve it immediately rather than waiting for the watch to come round: the model may well call
+  // what it just saved on the very next turn.
+  if (!served.has(name)) {
+    served.add(name);
+    templates.push({ kind: "tool_call", match: { tool: name } });
+  }
+  return {
+    kind: "tool_result",
+    body: { callId, ok: true, output: { name, artifactId: art.id, size: art.size, saved: true } },
+  };
+}
+
+/**
+ * Hand back a saved procedure's source, so it can be edited rather than rewritten from memory.
+ *
+ * This is what makes a saved procedure maintainable instead of write-once: the code leaves the
+ * model's context as soon as the turn that wrote it scrolls out of the window, and without a way
+ * to read it back, "fix the bug in X" means reconstructing X from its description and hoping.
+ * Every version is still on the space — records are immutable, so a re-save is a successor, not an
+ * overwrite — which is why this also reports how many there have been.
+ */
+async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
+  const callId = rec.id;
+  const b = rec.body as { args?: { name?: string }; conversationId?: string };
+  const name = String(b.args?.name ?? "");
+  if (!name) {
+    return { kind: "tool_result", body: { callId, ok: false, output: "read_procedure needs a `name`" }, taint: true };
+  }
+  const rows = await c.query({ kind: "procedure", match: { name, conversationId: b.conversationId ?? "" } }, 50);
+  if (rows.length === 0) {
+    return {
+      kind: "tool_result",
+      body: { callId, ok: false, output: `no procedure '${name}' saved in this conversation` },
+      taint: true,
+    };
+  }
+  const latest = rows.reduce((a, b2) => (a.id > b2.id ? a : b2));
+  const body = latest.body as { name: string; description: string; artifactId: string };
+  const code = new TextDecoder().decode(await c.getArtifact(body.artifactId));
+  return {
+    kind: "tool_result",
+    body: {
+      callId,
+      ok: true,
+      output: { name: body.name, description: body.description, code, versions: rows.length },
+    },
+    taint: true, // it is model-written source coming back out
+  };
+}
+
+async function shortHash(s: string): Promise<string> {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(bytes)].slice(0, 8).map((x) => x.toString(16).padStart(2, "0")).join("");
+}

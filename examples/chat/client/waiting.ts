@@ -66,7 +66,20 @@ export class Waiter {
   private nextPoll = 0;
   last?: ProgressBody;
 
-  constructor(private readonly client: RadiaClient, readonly prefix: string) {}
+  /**
+   * @param prefix what the status line redraws after. MUTABLE: a caller that prints a permanent
+   *   line of its own (the routing label) sets this to "" so the status stops re-printing a prompt
+   *   the user has already scrolled past.
+   * @param onProgress called once per NEWLY seen progress record, in emission order. This is how a
+   *   caller reacts to a stage the moment a worker reports it, instead of learning it afterwards
+   *   from the result — which is the difference between a label that precedes the text it
+   *   describes and one that trails it.
+   */
+  constructor(
+    private readonly client: RadiaClient,
+    public prefix: string,
+    private readonly onProgress?: (p: ProgressBody) => void,
+  ) {}
 
   /** Poll this call's progress records and redraw the status line. */
   async pump(callId: string, stallHint: string): Promise<void> {
@@ -79,6 +92,7 @@ export class Waiter {
         if (this.seen.has(r.id)) continue;
         this.seen.add(r.id);
         this.last = r.body as ProgressBody; // ULID order = emission order, so the last one wins
+        this.onProgress?.(this.last);
       }
     } catch { /* no grant to read progress: fall through to the elapsed-only status */ }
     const secs = Math.round((Date.now() - this.started) / 1000);

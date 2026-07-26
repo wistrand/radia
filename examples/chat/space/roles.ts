@@ -68,17 +68,24 @@ const TOOLS_GRANTS: Grant[] = [
 ];
 
 // exec-worker: claims `tool_call{run_code}` and runs the model's program in a permissionless
-// subprocess. It needs --allow-run (to spawn) but holds no API key and reads no files itself; on
-// the space it can do exactly these five things. `artifact: put` lets it store a program's output
-// (WRITE only — it can save what the sandbox produced, never read a stored artifact). Note what is
-// still ABSENT: no query of any kind, because a code runner has no business reading the
-// conversation.
+// subprocess. It needs --allow-run (to spawn) but holds no API key and reads no files itself.
+//
+// Saved procedures widened this set, and it is worth being precise about how much. The worker now
+// reads and writes `procedure` records, and reads artifacts — it previously did neither. What is
+// still ABSENT is the part that mattered: it cannot query `message`, `llm_call` or `llm_result`,
+// so a code runner still has no way to read the conversation. `procedure: query` lets it learn
+// which names to claim and whose conversation each belongs to; `artifact: read_one` lets it fetch
+// the source it saved, and it only ever fetches the id named by a procedure record it just looked
+// up — never an id the model supplied. And note who CANNOT write a procedure: the user session
+// (below) has no such grant, so a saved procedure is always code this worker stored on the
+// assistant's behalf, not a record the model wrote directly.
 const EXEC_GRANTS: Grant[] = [
   { kind: "tool_call", operations: ["take"] },
   { kind: "tool_result", operations: ["put"] },
-  { kind: "artifact", operations: ["put"] },
+  { kind: "artifact", operations: ["put", "read_one"] },
   { kind: "capability", operations: ["put"] },
   { kind: "progress", operations: ["put"] },
+  { kind: "procedure", operations: ["put", "query"] },
 ];
 
 // plain user (the REPL): may drive a conversation and read its own results, nothing more.
@@ -93,6 +100,11 @@ const USER_GRANTS: Grant[] = [
   { kind: "llm_result", operations: ["read_one"] },
   { kind: "tool_result", operations: ["read_one"] },
   { kind: "capability", operations: ["query"] },
+  // READ-ONLY on purpose: the session builds its tool list from the procedures its conversation
+  // saved, but cannot write one. Only the exec-worker can, and only as the result of a
+  // `save_procedure` call it actually ran — so "the assistant saved a procedure" always means code
+  // that went through the sandbox's own path.
+  { kind: "procedure", operations: ["query"] },
   { kind: "progress", operations: ["query"] }, // read-only: the session reports no progress of its own
   { kind: "artifact", operations: ["read_one"] }, // read generated images + mint a download capability
 ];

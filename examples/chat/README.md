@@ -33,7 +33,7 @@ flowchart TB
     I -.->|"escalate → next tier by rank"| SP
     SP -->|"take {tool_call, tool}"| T["tools<br/>agent:chat-tools<br/>sandboxed reads, no env"]
     SP -->|"take {tool_call, generate_image}"| G["images<br/>agent:chat-images<br/>API key, no files"]
-    SP -->|"take {tool_call, run_code}"| X["exec<br/>agent:chat-exec<br/>--allow-run, no key, no files"]
+    SP -->|"take {tool_call, run_code · save_procedure · &lt;saved name&gt;}"| X["exec<br/>agent:chat-exec<br/>--allow-run, no key, no files"]
     X -->|"program on stdin"| SB["deno run -<br/>NO permissions at all"]
     SB -->|"stdout / stderr"| X
     T -->|"tool_result · artifact (save_content)"| SP
@@ -148,7 +148,8 @@ full compromise of it yields a process that can print bytes to its parent. Path 
 Tools: `read_file`, `list_files`, `search_files`, `stat` (sandboxed to `RADIA_CHAT_DIRS`,
 default `examples/chat/sandbox`; `list_files`/`read_file`/`stat` return `size` + `modified`
 so size/date questions get ground truth, not guesses), `time`, `calc`, `save_content` (store
-text as an artifact), `run_code` (sandboxed execution), and `generate_image`.
+text as an artifact), `run_code` (sandboxed execution), `save_procedure`/`read_procedure`
+(name a program and keep it — see below), and `generate_image`.
 
 **Inspection tools** (`tools/space.ts`) make the chatbot a conversational inspector of its own
 space: `space_stats`, `space_kinds`, `space_query`, `space_count`, `space_record`, `space_lineage` (ancestors,
@@ -215,6 +216,35 @@ The sandbox is a `deno` subprocess with no `--allow-*` flags at all, the program
 adversarial programs — network, local-space fetch, credential read, KEK read, file write, env read,
 process spawn, remote import, infinite loop, allocation storm, output flood, uncaught throw — all
 13 fail in the intended way and the benign case returns its stdout.
+
+**The assistant can give a program a name and keep it** (`save_procedure` / `read_procedure`).
+Without that, reuse means re-typing the whole program into every call — which is what made a
+"hash both files" turn re-transcribe the files into its own source. A saved procedure stores the
+code as an **artifact** and its name/description/schema as a `procedure` record, and then behaves
+exactly like any other tool: it shows up in the tool list on the next turn, is dispatched by
+content (`tool_call{tool: <its name>}`, one claim template per name), and its arguments arrive
+inside the sandbox as `args`. Adding a procedure adds a tool with no code change anywhere — the
+same property that adding a worker has, applied to code the assistant wrote itself.
+
+Three details carry the weight:
+
+- **A procedure belongs to the conversation that wrote it**, and that is enforced where the code
+  would *run*, not merely where tools are listed. The chat only offers a procedure back to its own
+  conversation, but "not offered" is not "not callable" — a model can name any tool, and a
+  `tool_call` is a record anyone may write — so the exec worker re-checks `conversationId` before
+  fetching a single byte of source.
+- **Improving one means saving it again under the same name.** Records are immutable, so that is a
+  successor and latest wins (the `kind_def`/`capability` rule again) — never a 409, never a delete.
+  Every earlier version is still on the space, which is why `read_procedure` can report how many
+  there have been. It exists because code leaves the model's context when its turn scrolls away,
+  and "fix the bug in X" must not mean reconstructing X from its description.
+- **Only the exec worker may write one.** The user session has `procedure: query` and nothing more,
+  so a saved procedure is always code that went through the sandbox's own path, not a record the
+  model wrote directly.
+
+`deno run -A examples/chat/smoke-procedures.ts` exercises save → call → re-save → read back →
+cross-conversation refusal against a throwaway space. No API key: a tool call is just a record, so
+the whole path is reachable without a model.
 
 **Saving works from both directions.** `save_content` (`tools/save.ts`) stores text the assistant
 *wrote* — an SVG it drew in prose, a drafted config, a summary — and `run_code`'s `save_as` stores

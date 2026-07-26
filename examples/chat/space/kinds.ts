@@ -23,7 +23,14 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // llm_call is indexed on `tier` so a per-tier inference-worker claims `{match:{tier}}` — model
   // selection is content-routing (like tool_call → the worker that serves the tool). A `model`
   // record (reference) advertises which tier→model each worker serves, for discovery + the console.
-  await client.registerKind({ kind: "llm_call", indexedPaths: [{ path: "tier", type: "keyword" }] });
+  // `conversationId` is indexed on both work kinds because both BODIES carry it — a field a
+  // record holds but its kind does not declare is invisible to matching, so a scoped query is
+  // rejected with `undeclared_path` rather than answered. That is what makes "how many run_code
+  // did we do in THIS conversation" reachable in one query instead of a walk down children.
+  await client.registerKind({
+    kind: "llm_call",
+    indexedPaths: [{ path: "tier", type: "keyword" }, { path: "conversationId", type: "keyword" }],
+  });
   await client.registerKind({ kind: "model", indexedPaths: [{ path: "tier", type: "keyword" }], claimable: false });
   await client.registerKind({ kind: "llm_result", indexedPaths: [{ path: "callId", type: "keyword" }], claimable: false });
   await client.registerKind({
@@ -32,8 +39,22 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     sortablePaths: ["index"],
     claimable: false,
   });
-  await client.registerKind({ kind: "tool_call", indexedPaths: [{ path: "tool", type: "keyword" }] });
+  await client.registerKind({
+    kind: "tool_call",
+    indexedPaths: [{ path: "tool", type: "keyword" }, { path: "conversationId", type: "keyword" }],
+  });
   await client.registerKind({ kind: "tool_result", indexedPaths: [{ path: "callId", type: "keyword" }], claimable: false });
+  // A `procedure` = code the ASSISTANT wrote and named, so it can be run again without being
+  // re-typed into a tool call. Deliberately its own kind rather than a `capability`: a capability
+  // is what a worker serves and is global, while a procedure belongs to the conversation that
+  // wrote it — `conversationId` is indexed because that scope is enforced on every execution, not
+  // just used to filter what the model is offered. The code itself is an artifact; the record
+  // carries its id, never its text (records route, blobs hold bytes).
+  await client.registerKind({
+    kind: "procedure",
+    indexedPaths: [{ path: "name", type: "keyword" }, { path: "conversationId", type: "keyword" }],
+    claimable: false,
+  });
   // `progress` = what a worker is doing right now, keyed to the call the chat awaits. Turn
   // feedback is a record like everything else (see progress.ts): the chat renders the stream,
   // and its ABSENCE tells the chat nobody claimed the work.

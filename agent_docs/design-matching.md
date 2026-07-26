@@ -127,3 +127,14 @@ Templates are storable, analyzable, and schema-validated at registration. Orphan
 and starving templates are first-class diagnostics (see
 [design-observability.md](design-observability.md)). Deterministic tie-breaking:
 `order_by`, then record ID.
+
+Two consequences of that tie-break that callers get wrong, so state them plainly. **No `order_by`
+does not mean "unordered"** — it means ascending record id, which is stable and repeatable, and
+which a pushed `LIMIT` reproduces exactly (see [design-storage.md](design-storage.md), Matching).
+So a limited query returns the OLDEST matches; there is no way to ask for the newest, since
+`order_by` ranges over the record BODY and creation time is runtime metadata, not a body field.
+Recency questions belong to the event log, not to `query` — until the M1 keyset query lands.
+And **ids order by time only to the millisecond**: ULIDs minted in the same millisecond differ
+only in their random half, so records written in one burst come back in a stable but arbitrary
+relative order. A test that assumes "the order I put them" is a test that passes on a slow
+adapter and fails on a fast one.

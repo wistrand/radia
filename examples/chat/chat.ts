@@ -24,9 +24,10 @@
 //   tools/        what those workers actually do
 //     files.ts (sandboxed file + compute) · space.ts (inspect + remediate)
 //     save.ts (store content) · exec-sandbox.ts (permissionless code execution)
+//     workers/exec.ts also serves save_procedure/read_procedure: named, reusable programs
 //
 //   space/        how this app uses Radia
-//     kinds.ts (record kinds) · roles.ts (grants + run tokens)
+//     kinds.ts (record kinds, incl. `procedure`) · roles.ts (grants + run tokens)
 //     capability.ts (advertising a tool) · progress.ts (turn progress as records)
 //
 //   provider/     the outside world
@@ -122,6 +123,8 @@ console.log(
 console.log(`space ${url}${usingRunning ? " (existing)" : " (spawned)"} — open it and watch the Feed tab. Ctrl-D to quit.`);
 
 const thread = await Thread.open(session, role);
+// Procedures belong to a conversation, so the tool set can only be complete once there is one.
+await tools.scopeTo(thread.id);
 
 // Wait for the workers to publish their capabilities (the watch fills the set).
 for (let i = 0; i < 50 && tools.all().length === 0; i++) await sleep(200);

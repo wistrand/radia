@@ -26,11 +26,16 @@ export async function runTurn(client: RadiaClient, thread: Thread, tools: ToolSe
       body: { conversationId: thread.id, upToIndex: thread.upToIndex, tools: tools.all() },
       parentIds: [thread.id],
     });
-    const { message, finishReason, streamed, tier, context } = await streamResult(client, callId);
+    const { message, finishReason, streamed, tier, context, announced } = await streamResult(client, callId);
 
     // Show the context window only when it actually dropped something — otherwise it is noise.
+    // It is reported by the inference-worker, so unlike the tier it cannot be known up front.
     const win = context && context.hidden > 0 ? ` · ${context.sent} msgs, ${context.hidden} older not sent` : "";
-    if (tier) write(`  ${dim(`[routed → ${tier}${win}]`)}\n`);
+    // The label normally went up before the first token (see streamResult). This is the fallback
+    // for when it could not: no progress record was visible — the session may lack a grant to read
+    // them — so the tier is only knowable from the result.
+    if (!announced && tier) write(`  ${dim(`[routed → ${tier}${win}]`)}\n`);
+    else if (win) write(`${dim(`[context${win}]`)}\n`);
     await thread.append({ role: "assistant", content: message.content ?? null, tool_calls: message.tool_calls }, [callId]);
 
     if (message.tool_calls?.length) {
@@ -82,16 +87,36 @@ interface StreamedResult {
   message: ChatMessage;
   finishReason: string;
   streamed: boolean;
+  announced: boolean; // the routing label was already printed from the router's progress record
   tier?: string; // the tier that answered, stamped by the inference-worker
   context?: { sent: number; hidden: number }; // what the worker's context window sent vs. omitted
 }
 
 /** Follow one call: print `llm_chunk` deltas as they land, return when the `llm_result` arrives. */
 async function streamResult(client: RadiaClient, callId: string): Promise<StreamedResult> {
-  const waiter = new Waiter(client, "assistant> ");
   const stall = "no worker claimed this call — is the router/inference fleet running?";
   let lastIndex = -1; // watermark over ONE monotonic stream: an escalation hands it on, never resets
   let printed = false; // any visible text on the line yet
+  let announced = false; // the routing label is on screen
+
+  // The tier is known the moment the ROUTER decides it, which is before the tiered call exists and
+  // so before any token can stream. Reading it from the router's progress record puts the label
+  // ahead of the text it describes; taking it from the `llm_result` (as this once did) can only
+  // ever print it after the last token, describing an answer the user has already read.
+  const label = (text: string) => {
+    endStatus(waiter.prefix);
+    write(`${dim(`[${text}]`)}\n`);
+    waiter.prefix = ""; // the prompt is spent — later status lines must not reprint it
+    announced = true;
+  };
+  const waiter = new Waiter(client, "assistant> ", (p) => {
+    if (!p.note) return;
+    // `routed` carries "→ tier"; `escalating` carries "from → to" when a worker gives up mid-answer
+    // and hands the turn to a stronger model. Both are routing decisions, both belong in the
+    // stream at the point they happen.
+    if (p.stage === "routed") label(`routed ${p.note}`);
+    else if (p.stage === "escalating") label(`escalated ${p.note}`);
+  });
 
   const printNew = async () => {
     // Incremental read: ask for what is past the watermark instead of re-scanning the stream every
@@ -107,8 +132,11 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
       lastIndex = b.index;
       if (b.reset) {
         // A worker escalated mid-stream: what is on screen came from the attempt it just threw
-        // away. Say so, rather than letting the stronger model's answer append to it.
-        if (printed) write(`\n${dim("↩ escalated — restarting on a stronger model")}\n`);
+        // away. Say so, rather than letting the stronger model's answer append to it. WHICH tiers
+        // are involved is named by the `escalating` progress record (see the label in
+        // streamResult); this line's job is only to mark where the discarded text ends, and it has
+        // to stand on its own because a session without a grant to read progress sees only this.
+        if (printed) write(`\n${dim("↩ discarding the partial answer above")}\n`);
         printed = false;
         continue;
       }
@@ -126,8 +154,8 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
     if (result) {
       await printNew(); // flush any stragglers
       if (!printed) endStatus(waiter.prefix); // nothing streamed (tool-call turn, or an error)
-      const body = result.body as Omit<StreamedResult, "streamed">;
-      return { ...body, streamed: printed };
+      const body = result.body as Omit<StreamedResult, "streamed" | "announced">;
+      return { ...body, streamed: printed, announced };
     }
     if (!printed) await waiter.pump(callId, stall); // status only until output takes the line
     await waitWake();
@@ -163,8 +191,18 @@ async function awaitToolResult(
 // next turn — no code change here, no per-turn re-query. The chat never learns that `calc` or
 // `run_code` exist; it learns that whatever is advertised exists, and dispatches by content.
 
+/**
+ * The tool list, discovered rather than declared — from two sources with different lifetimes.
+ *
+ * `capability` records are what the WORKERS serve: global, and the same for every conversation.
+ * `procedure` records are code this conversation's assistant wrote and named; they are offered
+ * only back to that conversation, which is why the set has to be scoped before it is complete.
+ * Neither is a list in this file — adding a worker or saving a procedure changes what the model
+ * can do with no edit here.
+ */
 export class ToolSet {
   private tools: ToolDef[] = [];
+  private conversationId?: string;
 
   constructor(private readonly client: RadiaClient) {}
 
@@ -173,23 +211,60 @@ export class ToolSet {
     return this.tools;
   }
 
+  /** Bind the set to a conversation, so its saved procedures join the list. */
+  async scopeTo(conversationId: string): Promise<void> {
+    this.conversationId = conversationId;
+    await this.refresh();
+  }
+
   /** Keep the set current until aborted. Seeds once, then refreshes on every wakeup. */
   async watch(signal: AbortSignal): Promise<void> {
     await this.refresh();
-    try {
-      for await (const _ of this.client.watch({ kind: "capability" }, signal)) await this.refresh();
-    } catch { /* aborted on shutdown */ }
+    for (const kind of ["capability", "procedure"]) {
+      (async () => {
+        try {
+          for await (const _ of this.client.watch({ kind }, signal)) await this.refresh();
+        } catch { /* aborted on shutdown, or no grant to watch this kind */ }
+      })();
+    }
   }
 
-  /** Latest capability record per tool wins — a redefined tool is a successor record, the same
-   *  latest-wins rule as `kind_def`, so a restart with a changed description is not a duplicate. */
+  /** Latest record per tool name wins — a redefined tool is a successor record, the same
+   *  latest-wins rule as `kind_def`, so a restart with a changed description is not a duplicate.
+   *  A procedure may not shadow a worker's tool: the built-in is the one that has a worker behind
+   *  it, and a saved name that collided would silently change what a call does. */
   private async refresh(): Promise<void> {
-    const caps = await this.client.query({ kind: "capability" }, 500);
     const latest = new Map<string, { id: string; def: ToolDef }>();
-    for (const c of caps) {
+    for (const c of await this.client.query({ kind: "capability" }, 500)) {
       const b = c.body as { tool: string; def: ToolDef };
       const prev = latest.get(b.tool);
       if (!prev || prev.id < c.id) latest.set(b.tool, { id: c.id, def: b.def });
+    }
+    const builtin = new Set(latest.keys());
+    if (this.conversationId) {
+      const procs = await this.client.query(
+        { kind: "procedure", match: { conversationId: this.conversationId } },
+        200,
+      );
+      for (const p of procs) {
+        const b = p.body as { name: string; description: string; parameters?: Record<string, unknown> };
+        if (builtin.has(b.name)) continue;
+        const prev = latest.get(b.name);
+        if (prev && prev.id >= p.id) continue;
+        latest.set(b.name, {
+          id: p.id,
+          // The description the assistant wrote for itself, marked so it can tell its own saved
+          // code apart from a tool a worker provides.
+          def: {
+            type: "function",
+            function: {
+              name: b.name,
+              description: `(saved procedure) ${b.description}`,
+              parameters: b.parameters ?? { type: "object", properties: {} },
+            },
+          },
+        });
+      }
     }
     this.tools = [...latest.values()].map((v) => v.def);
   }
