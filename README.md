@@ -82,6 +82,7 @@ deno task chat         # a CLI LLM chatbot (needs OPENROUTER_API_KEY) — thinki
                        # and sandboxed code execution are all records; watch the Feed tab
 deno task stress       # fill a space with waves of activity to watch in the Space tab
 deno task conformance  # the port contract suites (storage adapters + the blob store)
+deno task bench        # throughput, latency percentiles, scaling curves — see bench/README.md
 ```
 
 Storage is in-memory by default. To persist across restarts, pass `--db`:

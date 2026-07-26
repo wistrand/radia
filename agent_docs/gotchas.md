@@ -31,7 +31,80 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
 - **`childrenOf` (the relationship-graph reverse lookup) is a `LIKE` scan** over the
   `parent_ids` JSON text, not an indexed reverse edge. Fine for the dev console at small
   scale; a real reverse index (or an edges table) is the fix before it's a hot path. It
-  works because ids are ULIDs (no `%`/`_`), so `like '%"<id>"%'` is safe.
+  works because ids are ULIDs (no `%`/`_`), so `like '%"<id>"%'` is safe. **Measured**
+  (`deno task bench -- --suite lineage`): 87µs at 1k records → 662µs at 20k for the *same
+  five children*, while `getRecord` on the same table stays flat — the cost tracks the space,
+  not the answer.
+
+- **Predicate pushdown is a SOUND pre-filter, never a second opinion.** `src/storage/pushdown.ts`
+  renders part of a compiled template into SQL, but the oracle in `core/matching.ts` still decides
+  every match. The asymmetry is the whole safety argument: over-returning is free (the oracle
+  rejects the extras), under-returning is a silent lost record — and for `take`, an empty space
+  reported while work sits in it. So anything not expressible EXACTLY renders as `TRUE`: object
+  and array equality (the oracle compares serialized text, so key order matters; jsonb normalizes
+  it), `$any`/`$each`, a range against a non-ASCII bound, and any path segment outside
+  `[A-Za-z0-9_]` (segments are inlined into a JSON path literal so the planner can match an index,
+  and restricting the alphabet is what makes inlining injection-proof). Three traps that are not
+  obvious until they bite: rendering a node BINDS PARAMETERS as a side effect, so a caller that
+  discards the SQL must roll the parameters back too (`mark`/`rollback`) — an `$or` that discards
+  one branch used to leave orphan bindings and fail the statement; `json_extract` returns SQL NULL
+  for *both* an absent key and a JSON `null`, so presence is always asked via `json_type`; and an
+  unguarded jsonb `>` will happily compare a string to a number, because jsonb has a total order
+  across types. Every comparison is therefore type-guarded first.
+- **A LIMIT may only be pushed under an EXACT filter, not merely a sound one.** `Pushed.exact`
+  distinguishes them, and it is the difference between an optimization and a correctness bug: with
+  an inexact filter SQL returns its first N rows, the oracle rejects some, and the matching rows
+  further down were never fetched — the caller silently gets fewer records than exist. `readOne`
+  and `query` push the limit only when the filter is exact AND there is no `orderBy` (with no
+  `orderBy` the oracle's order is its `x.id < y.id` tie-break, which `order by id` reproduces).
+  Pinned by "a limit is never pushed under a filter the database cannot decide" in
+  `conformance/suites/pushdown.ts`.
+- **Postgres orders text by the database's collation; the oracle orders by JS string comparison.**
+  Those disagree under a linguistic collation, so the pushed limit sorts `id collate "C"` (byte
+  order, what JS means) against a dedicated `idx_records_id_c`. Without the explicit collation
+  `read_one` could return a *different* record on Postgres than on SQLite for the same space —
+  a semantic divergence between adapters, not just a slower query. Note the conformance Docker
+  image runs in C locale, where the bug is invisible: it was verified against an `en_US.UTF-8`
+  server on purpose.
+- **`indexedPaths` are a validation contract, not per-path physical indexes — and they no longer
+  need to be.** One GIN index (`jsonb_path_ops` over the generated `body_jsonb` column) answers
+  pushed equality on every path, so declaring a path costs no DDL and no migration, which is what
+  keeps kinds-as-records from dragging a schema change behind it. Measured on 40k records: a
+  genuinely selective `read_one` is **7.98ms without the index, 1.42ms with it**, for about 5% on
+  `put`. Do not confuse that with the *headline* pushdown win — against an unselective predicate
+  (the benchmark's 1-in-7 "rare") GIN is not used at all, and the speedup comes entirely from the
+  pushed LIMIT letting the scan stop at the first match.
+
+- **A claim must not lock, or even read, what it does not claim.** `take` originally selected
+  *every* available-or-leased record of the kind `for update ... skip locked`, then filtered in
+  the runtime. Two distinct bugs, one line. (1) **Starvation:** on a real Postgres, one claimer's
+  open transaction held row locks on the entire queue, so a peer's `skip locked` found nothing
+  and was told *empty* while work remained — 67 wasted takes at 4 claimers, 166 at 16. sqlite and
+  PGlite hid it completely, being single-connection: the fault was invisible to `deno task
+  conformance` and only appeared against a live server. (2) **Cost:** ordering the *join*
+  materialized every record body of the kind before `limit` applied, making a claim O(kind size)
+  in bytes, not rows. The fix is in `pgbase.ts`/`sqlite.ts` `fetchCandidates`/`take`: a bounded
+  `CANDIDATE_WINDOW` (64) chosen from the narrow `record_runtime` table first, bodies fetched only
+  for that window, no row locks, and single-winner resting on a **checked** compare-and-set
+  (`affectedRows === 0` → try the next candidate) instead of on holding locks. Two consequences
+  worth keeping straight: bounding the window is only safe because the SQL `order by` is the same
+  key `rankClaimable` sorts by (`effective_priority desc, available_at asc, id asc`) — change one
+  and you must change the other, or a claim silently prefers the wrong record; and a *selective*
+  template pages to the next window rather than truncating, so a rare match deep in a large kind
+  is still found. `take` at 40k went 183ms → 18.4ms, and empty takes 67/166 → 2/4 (the genuine
+  tail as the queue drains). Pinned by `claimFairnessSuites` in `conformance/suites/leases.ts` —
+  which fails on Postgres without the fix, so run `scripts/pg-conformance.sh`, not just the
+  embedded suite, before trusting a change to the claim path.
+  One loose end found while fixing it, left alone deliberately: `idx_runtime_claim` is
+  `(kind, available_at, effective_priority desc, record_id) where state = 'available'` — the
+  *wrong* column order for the claim sort (priority leads), and partial on a predicate the
+  candidate query widens (`state in ('available','leased')`, needed to reclaim expired leases).
+  So it cannot serve the window's `order by`. Adding an index that does was measured and changed
+  nothing (58.8ms vs 60.2ms at 40k), because selecting the window off the narrow envelope table
+  had already removed the cost; the sort was never what hurt. Don't add the index without a
+  measurement that says it helps. Also note `effective_priority` is uniformly 0 until the
+  scheduler lands (M3), which is why the two orderings are indistinguishable today — the
+  mismatch becomes real the day priorities differ.
 - **An idempotency key travels as an HTTP header (a ByteString) — hash content into it, never
   embed it.** `Idempotency-Key` (and any header) must be Latin1; a key built from free-form content
   can carry Unicode (a tool description with `…`/`→`, a body with an em-dash) and `fetch` throws

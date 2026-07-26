@@ -40,8 +40,8 @@ Scaling), envelope encryption/KMS (M2). `npm`/`pip` binary wrapping is BUILT but
 - The runtime is the sole DB client (no non-runtime client speaks SQL; agents speak the
   protocol) — so the concurrency guarantees are enforced in the runtime's DB transactions,
   not pushed onto agents, and not held in process-local state on the hot path (which is what
-  lets many instances share one Postgres — see Scaling). `SKIP LOCKED` is the *Postgres
-  implementation* of the take contract, not the contract.
+  lets many instances share one Postgres — see Scaling). A checked compare-and-set is the
+  *implementation* of the take contract, not the contract.
 - The wire contract is frozen, not the implementation or the storage backend.
 - All lease/timing math uses the DB clock (`now()`).
 
@@ -50,8 +50,10 @@ Scaling), envelope encryption/KMS (M2). `npm`/`pip` binary wrapping is BUILT but
 | Concept      | Implementation                                                                                                                                                                    |
 |--------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Storage      | `records` (immutable) + `record_runtime` (mutable envelope), with `kind`, `deadline_at`, and hot routing fields denormalized into `record_runtime` at commit, never client-editable |
-| Claim index  | `CREATE INDEX ON record_runtime (kind, available_at, effective_priority DESC, record_id) WHERE state = 'available'` — single-table partial index; no cross-table join on the hot path |
-| take         | conditional `UPDATE record_runtime ... FOR UPDATE SKIP LOCKED RETURNING`, epoch bump                                                                                               |
+| Body index   | `body_jsonb` — a GENERATED column holding the parsed body — under one `gin (body_jsonb jsonb_path_ops)` index, serving pushed equality on EVERY path. Declaring a new `indexedPath` therefore needs no DDL and no migration, which is what keeps kinds-as-records from dragging a schema change behind them |
+| Matching     | a sound SQL pre-filter (`src/storage/pushdown.ts`) narrows; `matchesRecord` decides. An *exact* filter additionally carries the caller's `LIMIT` into SQL, ordered `id collate "C"` to match the oracle's tie-break |
+| Claim index  | `CREATE INDEX ON record_runtime (kind, available_at, effective_priority DESC, record_id) WHERE state = 'available'` — single-table partial index; no cross-table join to choose candidates |
+| take         | bounded candidate window off `record_runtime`, then conditional `UPDATE record_runtime ... RETURNING` per candidate until one affects a row; epoch bump                            |
 | Fencing      | `lease_id` / `lease_epoch` conditional updates                                                                                                                                     |
 | Idempotency  | `idempotency` table: (principal, op, key) → request hash + stored response (incl. generated IDs); checked **before** lease validation                                              |
 | watch        | wakeups (Postgres LISTEN/NOTIFY; embedded: in-process `Notifier`) + event-log cursor catch-up; 410 on expired cursors (dormant until GC)                                           |
@@ -104,8 +106,11 @@ The `production` row is horizontal: **N runtime instances behind a load balancer
 each other — only with the DB, which is the sole arbiter. The coordination guarantees are
 enforced **in the storage transaction**, which is what makes this safe:
 
-- **Claims** — `UPDATE ... FOR UPDATE SKIP LOCKED RETURNING`: two instances racing for the same
-  record, exactly one wins the row lock.
+- **Claims** — a conditional `UPDATE ... RETURNING` that names the state it expects: two
+  instances racing for the same record, exactly one update affects a row, and the loser reads
+  `affectedRows === 0` and moves to the next candidate. The winner is decided by the write, not
+  by holding a lock over the candidate set — locking rows a claimer might *not* take is what
+  starved peers (see [gotchas.md](gotchas.md), "a claim must not lock what it does not claim").
 - **Fencing** — `lease_id`/`lease_epoch` conditional updates: a stale settle fails the epoch
   check regardless of which instance issued it.
 - **Idempotency** — the `(principal, op, key)` unique row: a retried write collapses to one
@@ -158,7 +163,7 @@ SSE `id:` / `Last-Event-ID`) — the transport only echoes it; each adapter inte
 concurrent-writer test (a watcher polling while N puts commit over the pool misses none).
 
 **Current build:** the standalone **Postgres adapter is built** (`src/storage/postgres.ts`) with
-`FOR UPDATE ... SKIP LOCKED` claims, so the hot path is multi-instance-safe — but real HA still
+compare-and-set claims, so the hot path is multi-instance-safe — but real HA still
 needs the three caches above made cross-instance-aware (write-invalidation or bounded TTL), and
 the pg adapter's live-server conformance run in CI. The embedded adapters (SQLite/PGlite) remain
 one-process by nature. Nothing in the design or the wire contract limits Radia to one server.

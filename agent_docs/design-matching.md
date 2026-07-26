@@ -10,10 +10,26 @@ that defines what a template matches. The per-kind indexing contract is
 `kind_def` record, written via `put` and reloaded at startup by querying those records
 (`Space.loadKinds`); the registry is a cache/projection. The one bootstrap is the `kind_def`
 meta-kind itself (`META_KIND_DEF`), defined in code so a query for `kind_def` records can
-compile. `read_one`/`query` fetch by kind and filter + order with the
-oracle; **pushing predicates onto physical per-kind expression indexes is deferred** (paired
-with the M1 keyset query — see [plan-m0-implementation.md](plan-m0-implementation.md) Phase 2).
-Any future indexed SQL must agree with the oracle.
+compile.
+
+**Predicate pushdown is built** (`src/storage/pushdown.ts`), and it does not compete with the
+oracle — it is a **sound pre-filter**: SQL that is *implied by* the oracle's verdict, never
+equivalent to it by assumption. The database narrows, `matchesRecord` still decides. Anything not
+expressible exactly (object/array equality, `$any`/`$each`, a non-ASCII range bound, a path that
+is not an identifier) renders as `TRUE` and falls through to the oracle. A filter that is not
+merely sound but *exact* additionally carries the caller's `LIMIT` into SQL, which is what makes
+`read_one` stop at the first match instead of materializing every one. Measured
+(`deno task bench -- --suite growth`, 40k records): `read_one` on a declared indexed path went
+**102ms → 29µs** on SQLite and **513ms → 732µs** on Postgres, and is now flat as the space grows
+rather than linear. Postgres pays for it on the write side (`put` roughly 1ms → 2.5ms), which is
+the trade a coordination substrate should want: records are matched far more often than written.
+
+A `kind`'s `indexedPaths` are still a **validation contract**, not a per-path physical index —
+Postgres answers pushed equality from one GIN index over the whole body, so declaring a path
+needs no DDL and no migration. What `indexedPaths` buys is the guarantee that a template only
+matches on paths the kind promised, which is what keeps a query analyzable. Paired with the M1
+keyset query — see [plan-m0-implementation.md](plan-m0-implementation.md) Phase 2. Indexed SQL
+must agree with the oracle; `conformance/suites/pushdown.ts` is where that is enforced.
 
 ## Contents
 - Invariants

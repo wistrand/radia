@@ -23,8 +23,8 @@ flowchart LR
 ```
 
 ```bash
-deno task conformance                     # sqlite + pglite + the blob port   (190 tests)
-scripts/pg-conformance.sh                 # + a live Postgres                 (adds ~71)
+deno task conformance                     # sqlite + pglite + the blob port   (216 tests)
+scripts/pg-conformance.sh                 # + a live Postgres                 (306 total)
 RADIA_PG_URL=postgres://… scripts/pg-conformance.sh   # against your own server
 ```
 
@@ -39,7 +39,7 @@ the blob suites existed; its storage half is what a live server adds.)
 |------|------|
 | `run.test.ts` | entry point: enumerates implementations, registers every suite against each |
 | `harness.ts`  | the `Suite` / `BlobSuite` / `BlobCryptoSuite` types and setup/teardown. The only `Deno.test` binding in the repo |
-| `suites/`     | one file per behavior area (records, matching, leases, idempotency, events, watches, faults, auth, taint, admin + selector-driven remediation, blobs + encryption) |
+| `suites/`     | one file per behavior area (records, matching, **pushdown soundness**, leases + claim fairness, idempotency, events, watches, faults, auth, taint, admin + selector-driven remediation, blobs + encryption) |
 
 ## Writing a suite
 
@@ -47,7 +47,7 @@ A suite is a name plus a `run(...)` function; the harness runs it once per imple
 observable behavior, never on a specific backend's SQL or on-disk layout — a test that only passes
 on one implementation is testing the implementation, not the contract.
 
-Three conventions worth copying rather than reinventing:
+Five conventions worth copying rather than reinventing:
 
 - **Simulate faults by composition, not test hooks.** A crashed worker is one that took a lease
   and never acked, with the lease forced expired via a negative `leaseSeconds`. Deterministic, no
@@ -57,6 +57,15 @@ Three conventions worth copying rather than reinventing:
 - **Keep crypto deterministic.** The blob-crypto suites use a fixed KEK, so a failure means a
   behavior change rather than a coin flip. Randomness stays inside the implementation (DEKs,
   nonces), never in the assertions.
+- **Assume the embedded adapters cannot see your bug.** Two real faults were invisible to
+  `deno task conformance` and only appeared against a live Postgres: claim starvation, because
+  SQLite and PGlite are single-connection and never actually contend; and a collation-dependent
+  record ordering, because the throwaway Docker image runs in C locale while a real server usually
+  does not. Anything touching concurrent claims or text ordering needs `scripts/pg-conformance.sh`
+  — and, for ordering, a server with a linguistic collation.
+- **Never assume ULID insertion order is id order.** Ids minted inside the same millisecond differ
+  only in their random half, so a test asserting "the records I put, in that order" passes on a
+  slow adapter and fails on a fast one. Sort the expectation.
 
 Adding a behavior to `StorageAdapter` or `BlobStore` means adding it here in the same change. A
 behavior is not done until it is green on every implementation of that port.

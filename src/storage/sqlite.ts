@@ -13,6 +13,7 @@
 import { DatabaseSync } from "node:sqlite";
 import {
   type AckResult,
+  type CmpOp,
   type CompiledMatch,
   type Envelope,
   type IdempotencyKey,
@@ -42,10 +43,14 @@ import {
   runtimeInsertValues,
 } from "./row.ts";
 import { firstByOrder, matchesRecord, orderRecords } from "../core/matching.ts";
+import { isTrivial, type JsonDialect, pushdown } from "./pushdown.ts";
 import { type Candidate, rankClaimable } from "../core/take.ts";
 import { addSeconds, minIso } from "../core/time.ts";
 import { newUlid } from "../core/ids.ts";
 import { RadiaError } from "../core/errors.ts";
+
+/** One claim examines this many candidates at a time; a selective match pages further. */
+const CANDIDATE_WINDOW = 64;
 
 const CANDIDATE_COLS =
   "r.*, rt.record_id, rt.state, rt.attempt, rt.available_at, rt.claim_until, " +
@@ -53,6 +58,69 @@ const CANDIDATE_COLS =
   "rt.lease_hard_deadline";
 
 type SqlParam = string | number | null;
+
+const SQL_CMP: Record<string, string> = { gt: ">", gte: ">=", lt: "<", lte: "<=" };
+
+/**
+ * SQLite half of predicate pushdown (see `pushdown.ts` for the soundness contract). Presence and
+ * type are always asked via `json_type`, never via the extracted value: `json_extract` returns SQL
+ * NULL for BOTH an absent key and a JSON `null`, and the oracle draws a hard line between them.
+ * `json_type` reports 'null' for the latter and SQL NULL for the former.
+ *
+ * Text comparisons ride SQLite's default BINARY collation, which is byte order — what
+ * `pushdown`'s ASCII-bound rule assumes.
+ */
+class SqliteJson implements JsonDialect {
+  readonly params: SqlParam[] = [];
+
+  /** `table` qualifies the body column — required wherever more than one `records` alias is in
+   *  scope, as in the claim window's inner select. */
+  constructor(private readonly table = "") {}
+
+  private get col(): string {
+    return `${this.table ? `${this.table}.` : ""}body_json`;
+  }
+  mark(): number {
+    return this.params.length;
+  }
+  rollback(mark: number): void {
+    this.params.length = mark;
+  }
+  private bind(v: SqlParam): string {
+    this.params.push(v);
+    return "?";
+  }
+  /** Safe to inline: `pushablePath` has already restricted segments to `[A-Za-z0-9_]`. */
+  private at(path: string[]): string {
+    return `json_extract(${this.col}, '$.${path.join(".")}')`;
+  }
+  private type(path: string[]): string {
+    return `json_type(${this.col}, '$.${path.join(".")}')`;
+  }
+
+  present(path: string[]): string {
+    return `(${this.type(path)} is not null)`;
+  }
+
+  eqScalar(path: string[], value: string | number | boolean | null): string {
+    // json_type alone settles null and booleans — SQLite extracts both JSON `true` and the number
+    // 1 as integer 1, so the type check is what keeps them apart.
+    if (value === null) return `(${this.type(path)} = 'null')`;
+    if (typeof value === "boolean") return `(${this.type(path)} = '${value}')`;
+    if (typeof value === "number") {
+      return `(${this.type(path)} in ('integer','real') and ${this.at(path)} = ${this.bind(value)})`;
+    }
+    return `(${this.type(path)} = 'text' and ${this.at(path)} = ${this.bind(value)})`;
+  }
+
+  cmpNumber(path: string[], op: CmpOp, value: number): string {
+    return `(${this.type(path)} in ('integer','real') and ${this.at(path)} ${SQL_CMP[op]} ${this.bind(value)})`;
+  }
+
+  cmpString(path: string[], op: CmpOp, value: string): string {
+    return `(${this.type(path)} = 'text' and ${this.at(path)} ${SQL_CMP[op]} ${this.bind(value)})`;
+  }
+}
 
 // SQLite has no boolean type; taint is stored as integer 0/1.
 const DDL = `
@@ -167,10 +235,22 @@ export class SqliteAdapter implements StorageAdapter {
   async take(selector: TakeSelector, spec: LeaseSpec): Promise<TakeResult | null> {
     const now = await this.now();
     return this.tx(() => {
-      const candidates = this.fetchCandidates(selector);
       const template = "template" in selector ? selector.template : undefined;
-      const ranked = rankClaimable(candidates, template, now, spec.requireUntainted);
+      const byId = "recordId" in selector;
+      for (let offset = 0;; offset += CANDIDATE_WINDOW) {
+        const candidates = this.fetchCandidates(selector, CANDIDATE_WINDOW, offset);
+        if (candidates.length === 0) return null;
+        const ranked = rankClaimable(candidates, template, now, spec.requireUntainted);
+        const claimed = this.claimFirst(ranked, spec, now);
+        if (claimed) return claimed;
+        if (byId || candidates.length < CANDIDATE_WINDOW) return null;
+      }
+    });
+  }
 
+  /** Try each ranked candidate in order; return the first whose compare-and-set actually wins. */
+  private claimFirst(ranked: ReturnType<typeof rankClaimable>, spec: LeaseSpec, now: string): TakeResult | null {
+    {
       for (const cand of ranked) {
         const id = cand.record.id;
         const epoch = (cand.env.leaseEpoch ?? 0) + 1;
@@ -180,10 +260,12 @@ export class SqliteAdapter implements StorageAdapter {
         if (cand.how === "expired") {
           const newAttempt = cand.env.attempt + 1;
           if (newAttempt > spec.maxAttempts) {
-            this.run(
-              "update record_runtime set state='dead_letter', lease_id=null where record_id=? and state='leased' and lease_epoch=?",
-              [id, cand.env.leaseEpoch ?? 0],
-            );
+            if (
+              this.run(
+                "update record_runtime set state='dead_letter', lease_id=null where record_id=? and state='leased' and lease_epoch=?",
+                [id, cand.env.leaseEpoch ?? 0],
+              ) === 0
+            ) continue; // someone else already moved it
             this.appendEvent({
               runId: spec.ownerRun,
               operation: "expire",
@@ -193,19 +275,21 @@ export class SqliteAdapter implements StorageAdapter {
             }, now);
             continue;
           }
-          this.run(
+          const wonExpired = this.run(
             `update record_runtime set state='leased', attempt=?, lease_id=?, lease_epoch=?,
                lease_owner=?, leased_until=?, lease_hard_deadline=?
              where record_id=? and state='leased' and lease_epoch=?`,
             [newAttempt, spec.leaseId, epoch, spec.ownerRun, leasedUntil, hardDeadline, id, cand.env.leaseEpoch ?? 0],
           );
+          if (wonExpired === 0) continue; // another claimer reclaimed it first
         } else {
-          this.run(
+          const won = this.run(
             `update record_runtime set state='leased', lease_id=?, lease_epoch=?,
                lease_owner=?, leased_until=?, lease_hard_deadline=?
              where record_id=? and state='available'`,
             [spec.leaseId, epoch, spec.ownerRun, leasedUntil, hardDeadline, id],
           );
+          if (won === 0) continue; // it was claimed between the read and the update
         }
         this.appendEvent({
           runId: spec.ownerRun,
@@ -221,7 +305,7 @@ export class SqliteAdapter implements StorageAdapter {
         } as TakeResult;
       }
       return null;
-    });
+    }
   }
 
   async renew(ref: LeaseRef, leaseSeconds: number, idem?: IdempotencyKey): Promise<RenewResult> {
@@ -443,21 +527,36 @@ export class SqliteAdapter implements StorageAdapter {
     ).run(newUlid(), ts, e.runId, e.operation, e.recordId ?? null, e.kind ?? null, e.state ?? null, e.detail ? JSON.stringify(e.detail) : null);
   }
 
+  /**
+   * Rows of the kind that survive the SQL pre-filter — a superset of what the oracle accepts.
+   *
+   * `want` is how many records the caller will ultimately keep. It becomes a SQL `LIMIT` only when
+   * the filter is EXACT and the caller has no `orderBy`, because only then does the database agree
+   * with the oracle about both which rows match and which come first: with no `orderBy` the
+   * oracle's order is `x.id < y.id`, its deterministic tie-break, which `order by id asc` matches
+   * exactly. Any other case fetches everything and lets the oracle sort — see `Pushed.exact`.
+   */
+  private candidateRows(match: CompiledMatch, want?: number): RawRow[] {
+    const d = new SqliteJson();
+    const filter = pushdown(match.where, d);
+    const where = isTrivial(filter) ? "" : ` and ${filter.sql}`;
+    const bounded = want !== undefined && filter.exact && !match.orderBy?.length;
+    return this.db
+      .prepare(`select * from records where kind = ?${where}${bounded ? " order by id asc limit ?" : ""}`)
+      .all(match.kind, ...d.params, ...(bounded ? [want] : [])) as RawRow[];
+  }
+
   readOne(match: CompiledMatch): Promise<RadiaRecord | null> {
-    // Fetch by kind, filter + order with the core oracle. Predicate pushdown onto
-    // per-kind expression indexes is a tracked follow-up; the oracle defines correctness.
-    const rows = this.db
-      .prepare("select * from records where kind = ?")
-      .all(match.kind) as RawRow[];
-    const matches = rows
+    // SQL narrows; the core oracle decides. `pushdown` is a sound over-approximation, so this
+    // filter never removes a record `matchesRecord` would have accepted.
+    const matches = this.candidateRows(match, 1)
       .map(rowToRecord)
       .filter((rec) => matchesRecord(rec, match));
     return Promise.resolve(firstByOrder(matches, match.orderBy));
   }
 
   query(match: CompiledMatch, limit: number): Promise<RadiaRecord[]> {
-    const rows = this.db.prepare("select * from records where kind = ?").all(match.kind) as RawRow[];
-    const matches = rows.map(rowToRecord).filter((rec) => matchesRecord(rec, match));
+    const matches = this.candidateRows(match, limit).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
     return Promise.resolve(orderRecords(matches, match.orderBy).slice(0, limit));
   }
 
@@ -485,8 +584,10 @@ export class SqliteAdapter implements StorageAdapter {
     }
   }
 
-  private run(sql: string, params: SqlParam[]): void {
-    this.db.prepare(sql).run(...params);
+  /** Returns the number of rows the statement changed — needed to tell a won compare-and-set
+   *  from a lost one, which is what makes single-winner independent of row locking. */
+  private run(sql: string, params: SqlParam[]): number {
+    return Number(this.db.prepare(sql).run(...params).changes ?? 0);
   }
 
   // Idempotency wrapper. Runs INSIDE the op's transaction and checks the stored response
@@ -510,17 +611,48 @@ export class SqliteAdapter implements StorageAdapter {
     return result;
   }
 
-  private fetchCandidates(selector: TakeSelector): Candidate[] {
+  /** One window of candidates in claim order. `take` used to fetch every available-or-leased
+   *  record of the kind, making a claim O(kind size) — 183ms on a 40k-record kind. */
+  private fetchCandidates(selector: TakeSelector, limit = CANDIDATE_WINDOW, offset = 0): Candidate[] {
     const rows = "recordId" in selector
       ? this.db.prepare(
         `select ${CANDIDATE_COLS} from records r join record_runtime rt on rt.record_id=r.id
            where r.id=? and rt.state in ('available','leased')`,
       ).all(selector.recordId) as RawRow[]
-      : this.db.prepare(
-        `select ${CANDIDATE_COLS} from records r join record_runtime rt on rt.record_id=r.id
-           where r.kind=? and rt.state in ('available','leased')`,
-      ).all(selector.template.kind) as RawRow[];
+      : this.windowRows(selector, limit, offset);
     return rows.map((row) => ({ record: rowToRecord(row), env: rowToEnvelope(row) }));
+  }
+
+  /**
+   * One window of claim candidates, in `rankClaimable` order.
+   *
+   * Pick the window from the narrow envelope table FIRST, then fetch bodies for just those rows.
+   * Sorting the join materializes every record body of the kind before the limit applies, which is
+   * most of the cost of a claim on a large kind.
+   *
+   * A template with a pushable predicate joins `records` inside that inner select so the window is
+   * drawn from ROWS THAT CAN MATCH. Without it the window is the head of the queue regardless of
+   * the template, so a selective take pages through the entire kind 64 rows at a time — correct,
+   * but O(kind size) round trips to find one record. The filter is a sound over-approximation, so
+   * `rankClaimable` still decides.
+   */
+  private windowRows(selector: { template: CompiledMatch }, limit: number, offset: number): RawRow[] {
+    const d = new SqliteJson("r2");
+    const filter = pushdown(selector.template.where, d);
+    const inner = isTrivial(filter)
+      ? `select record_id from record_runtime
+           where kind=? and state in ('available','leased')
+           order by effective_priority desc, available_at asc, record_id asc
+           limit ? offset ?`
+      : `select rt2.record_id from record_runtime rt2 join records r2 on r2.id=rt2.record_id
+           where rt2.kind=? and rt2.state in ('available','leased') and ${filter.sql}
+           order by rt2.effective_priority desc, rt2.available_at asc, rt2.record_id asc
+           limit ? offset ?`;
+    return this.db.prepare(
+      `select ${CANDIDATE_COLS} from records r join record_runtime rt on rt.record_id=r.id
+         where rt.record_id in (${inner})
+         order by rt.effective_priority desc, rt.available_at asc, r.id asc`,
+    ).all(selector.template.kind, ...d.params, limit, offset) as RawRow[];
   }
 
   private fetchEnvelopeRow(recordId: string): RawRow | null {

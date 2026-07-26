@@ -5,8 +5,9 @@
   "tasks": {
     "dev": "deno run --allow-net --allow-read --allow-write --allow-env src/main.ts dev",
     "dev:pg": "deno run --allow-net --allow-read --allow-write --allow-env src/main.ts dev --storage postgres --db postgres://radia:radia@localhost:5432/radia --blobs .radia-blobs --blob-kek .radia-kek.json",
-    "check": "deno check src/main.ts conformance/run.test.ts examples/pipeline/demo.ts examples/stress/stress.ts examples/chat/*.ts examples/chat/*/*.ts",
+    "check": "deno check src/main.ts conformance/run.test.ts examples/pipeline/demo.ts examples/stress/stress.ts examples/chat/*.ts examples/chat/*/*.ts bench/run.ts",
     "conformance": "deno test --allow-read --allow-write --allow-env --allow-net conformance/",
+    "bench": "deno run --allow-read --allow-write --allow-env --allow-net bench/run.ts",
     "demo": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/pipeline/demo.ts",
     "demo:ci": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/pipeline/demo.ts --once",
     "stress": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/stress/stress.ts",

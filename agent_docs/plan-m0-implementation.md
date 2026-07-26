@@ -37,15 +37,17 @@ This is a focused prototype (2–3 careful weeks), explicitly **not** production
     assumptions into `core/` surfaces here. Uses the runtime built-in rather than an FFI
     package — zero external dependency, no native download (`jsr:@db/sqlite` segfaulted;
     see [gotchas.md](gotchas.md)).
-- **`SKIP LOCKED` is the Postgres *implementation* of the take contract, not the
-  contract** (see [design-storage.md](design-storage.md)). The adapter interface exposes
-  an atomic take; both embedded adapters serialize takes in-process (PGlite single
-  connection, SQLite single writer), and the M1 Postgres adapter will use `FOR UPDATE SKIP
-  LOCKED`. All three satisfy the same conformance test.
-- **Path indexing is abstracted, not assumed.** The per-kind `indexed_paths` contract maps
-  to Postgres generated columns / expression indexes on one adapter and to SQLite
-  expression indexes over `json_extract` on the other. `core/matching.ts` speaks the port,
-  never a backend dialect. Getting this seam right is the main reason SQLite is in M0.
+- **Row locking is an *implementation* choice inside the take contract, not the contract**
+  (see [design-storage.md](design-storage.md)). The adapter interface exposes an atomic take;
+  both embedded adapters serialize takes in-process (PGlite single connection, SQLite single
+  writer), and every adapter settles a contended claim with a checked compare-and-set. All
+  three satisfy the same conformance test — but only the Postgres run actually *contends*,
+  so a claim-path change needs `scripts/pg-conformance.sh`.
+- **Path indexing is abstracted, not assumed.** `core/matching.ts` speaks the neutral port,
+  never a backend dialect; `storage/pushdown.ts` renders it per dialect. As built, Postgres
+  answers pushed equality from one GIN index over a generated `body_jsonb` column and SQLite
+  filters with `json_extract` — the same contract, different physics, which is the main reason
+  SQLite is in M0.
 - **Dependencies kept tiny and audited:** Deno std (`jsr:@std/ulid`, `jsr:@std/assert`)
   + PGlite (`npm:@electric-sql/pglite`). SQLite uses the runtime built-in `node:sqlite`,
   so it is not a dependency. No web framework, no ORM. Each further dependency is a cost
@@ -279,7 +281,7 @@ read-one match/miss(null), 400 `problem+json` on bad body. See
 - [x] Full operator set in the oracle (`src/core/matching.ts`): `$eq` (implicit), `$gt/$gte/$lt/$lte`, `$in`, `$exists`, `$any/$each`, `$and/$or` (depth ≤ 3). Forbidden (`$regex/$where/$expr`) and deferred (`$ne/$nin/$not/$prefix`) operators rejected at compile.
 - [x] Divergence semantics: missing ≠ null, no type coercion (cross-type = false), explicit array quantifiers (scalar predicates never distribute).
 - [x] Template validation against the kind: predicate paths ⊆ indexed paths, `order_by` ⊆ sortable paths; `unknown_kind`/`undeclared_path`/`unsortable_path`. `order_by` + deterministic record-id tie-break.
-- [~] **Physical expression indexes / predicate pushdown DEFERRED.** M0 `read_one` fetches by kind and filters + orders with the semantic oracle (`matchesRecord`, `firstByOrder`), which *defines* correctness. Per-kind expression indexes and pushing predicates onto them are a matched pair, deferred to when query performance is exercised (M1 keyset query). Noted so it is not mistaken for done.
+- [x] **Predicate pushdown BUILT** (`src/storage/pushdown.ts`), after `deno task bench` turned the deferred cost into a number. The oracle still *defines* correctness: SQL is a sound pre-filter, `matchesRecord`/`firstByOrder` decide, and an inexpressible node falls through rather than guessing. A filter that is *exact* also carries the caller's `LIMIT` into SQL — the change that made `read_one` flat (102ms → 29µs at 40k on sqlite, 513ms → 732µs on Postgres) rather than merely faster. Physical per-kind expression indexes turned out to be unnecessary: one GIN index over a generated `body_jsonb` column serves every path, so a new `indexedPath` still needs no DDL. Soundness is pinned by `conformance/suites/pushdown.ts`.
 
 **Verify:** PASSED. `deno task conformance` green — 36 tests, both adapters: registration
 validation, undeclared-path/unknown-kind/unsortable-path rejection, forbidden/deferred

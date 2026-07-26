@@ -3,8 +3,8 @@
 // This interface IS the storage-adapter contract. The conformance suite targets it,
 // not any concrete backend, so PGlite, SQLite (both M0), and Postgres (M1) satisfy the
 // same tests. Keep backend dialect OUT of this file and out of `src/core/`: SQL and
-// dialect-specific concurrency (`FOR UPDATE SKIP LOCKED` on Postgres, single-connection
-// serialization on the embedded adapters) live inside each adapter.
+// dialect-specific concurrency (checked compare-and-set over a bounded candidate window,
+// serialized in-process on the embedded adapters) live inside each adapter.
 //
 // Design split (see agent_docs/plan-m0-implementation.md):
 //   - core/  computes policy: matching predicates, attempt deltas, idempotency ordering.
@@ -87,10 +87,11 @@ export interface Lease {
 // ---------------------------------------------------------------------------
 //
 // core/matching.ts compiles a wire template into this neutral AST over declared indexed
-// paths, and core/matching.ts's evaluator is the SEMANTIC ORACLE for it. Each adapter may
-// later render nodes into its own dialect (Postgres jsonb / SQLite json_extract) for
-// indexed pushdown, but that SQL must agree with the oracle. The neutral form is what
-// stops a Postgres assumption leaking into core.
+// paths, and core/matching.ts's evaluator is the SEMANTIC ORACLE for it. `storage/pushdown.ts`
+// renders nodes into each dialect (Postgres jsonb / SQLite json_extract) as a SOUND PRE-FILTER:
+// SQL implied by the oracle's verdict, never a substitute for it, so a node it cannot express
+// exactly falls through to the oracle rather than guessing. The neutral form is what stops a
+// Postgres assumption leaking into core.
 
 export type CmpOp = "eq" | "gt" | "gte" | "lt" | "lte";
 

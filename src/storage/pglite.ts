@@ -1,7 +1,8 @@
 // Embedded adapter: PGlite (WASM Postgres). A thin driver binding over the shared
 // Postgres-dialect body in pgbase.ts — PGlite and the standalone Postgres adapter run the
 // SAME SQL, so all logic lives once in `PgSqlAdapter`. Single-connection, so takes serialize
-// in-process — the embedded equivalent of `FOR UPDATE SKIP LOCKED`.
+// in-process; the checked compare-and-set that decides a contended claim on a real server is
+// therefore never actually contended here — it cannot validate the concurrent path.
 
 import { PGlite } from "@electric-sql/pglite";
 import { NOW_SQL, PgSqlAdapter, type Sql, type SqlBackend, type SqlResult } from "./pgbase.ts";

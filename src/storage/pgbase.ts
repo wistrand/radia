@@ -9,6 +9,7 @@
 
 import {
   type AckResult,
+  type CmpOp,
   type CompiledMatch,
   type Envelope,
   type EventInput,
@@ -38,6 +39,7 @@ import {
   runtimeInsertValues,
 } from "./row.ts";
 import { firstByOrder, matchesRecord, orderRecords } from "../core/matching.ts";
+import { isTrivial, type JsonDialect, pushdown } from "./pushdown.ts";
 import { type Candidate, rankClaimable } from "../core/take.ts";
 import { addSeconds, minIso } from "../core/time.ts";
 import { newUlid } from "../core/ids.ts";
@@ -68,13 +70,36 @@ export interface SqlBackend extends Sql {
   close(): Promise<void>;
 }
 
-const CANDIDATE_COLS =
-  "r.*, rt.record_id, rt.state, rt.attempt, rt.available_at, rt.claim_until, " +
+/** Every column of `records` EXCEPT the generated `body_jsonb`. Never `select *` from this table:
+ *  `body_jsonb` is a second, larger copy of the body that exists only so the DATABASE can filter
+ *  on it, and shipping it to the runtime would cost more than pushdown saves. `rowToRecord`
+ *  ignores unknown columns, so a wildcard would fail silently — as bytes on the wire, not as an
+ *  error. */
+const RECORD_COLS = "id, kind, body_json, body_sha256, client_meta, created_by, delegation_context, " +
+  "parent_ids, taint, schema_version, created_at, deadline_at, retention_until";
+
+const RECORD_COLS_R = RECORD_COLS.split(", ").map((c) => `r.${c}`).join(", ");
+
+const CANDIDATE_COLS = `${RECORD_COLS_R}, rt.record_id, rt.state, rt.attempt, rt.available_at, rt.claim_until, ` +
   "rt.effective_priority, rt.lease_id, rt.lease_epoch, rt.lease_owner, rt.leased_until, " +
   "rt.lease_hard_deadline";
 
 /** The DB clock as ISO 8601 UTC. Shared so the backends' `now()` and the in-transaction
  *  `txNow` read it identically. */
+/** Claim order, identical to `rankClaimable`'s: highest priority, then oldest eligible, then id.
+ *  The window is only safe to bound because SQL sorts by the same key the ranker does — the head
+ *  of this ordering IS the winner the unbounded scan would have picked. Ordering also gives every
+ *  claimer the same traversal, so two transactions cannot deadlock updating rows in opposite
+ *  orders. */
+const CLAIM_ORDER = "order by rt.effective_priority desc, rt.available_at asc, r.id asc";
+
+/** How many candidates one claim examines at a time. `take` used to fetch — and row-lock — EVERY
+ *  available-or-leased record of the kind, which made a claim O(kind size) and, worse, let one
+ *  claimer's open transaction hide the whole queue from everyone else (`skip locked` finds nothing
+ *  unlocked, so a peer is told "empty" while work remains). A template with a selective match
+ *  pages through further windows rather than truncating. */
+const CANDIDATE_WINDOW = 64;
+
 export const NOW_SQL =
   "select to_char(now() at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') as now";
 
@@ -147,7 +172,108 @@ create table if not exists events (
 -- they sort before every later event, keeping their relative seq order, which is the
 -- correct history.
 alter table events add column if not exists xid xid8 not null default pg_current_xact_id();
+-- records.body_jsonb is the parsed form of body_json, for predicate pushdown. GENERATED, so it
+-- cannot drift from the text the record actually committed with, and no write path has to know it
+-- exists. Without it every pushed predicate would re-parse the body text once per row per
+-- comparison, which costs more than the scan it replaces. Postgres backfills existing rows on the
+-- ALTER; the cast is immutable, which is what makes it legal in a generated column.
+alter table records add column if not exists body_jsonb jsonb generated always as (body_json::jsonb) stored;
+-- One GIN index serves equality on EVERY path, so a kind declaring a new indexed path needs no
+-- DDL and no migration — which is what keeps kinds-as-records from dragging a schema change
+-- behind it. jsonb_path_ops (rather than the default operator class) indexes hashed path/value
+-- pairs: smaller, faster to search, and it supports exactly the one operator pushdown emits, @>.
+-- Range predicates cannot use it and still scan.
+create index if not exists idx_records_body_gin on records using gin (body_jsonb jsonb_path_ops);
+-- Record ids under BYTE order, which is what the oracle's id tie-break means (a JS string
+-- comparison). The primary key index sorts under the database's collation instead, and a
+-- linguistic collation is free to order the same ids differently — so a pushed ordered limit
+-- would otherwise have to sort the whole match set to be correct, and read_one could answer with
+-- a different record here than on SQLite. This index is what keeps the limit cheap AND identical
+-- across adapters.
+create index if not exists idx_records_id_c on records (id collate "C");
 `;
+
+const SQL_CMP: Record<string, string> = { gt: ">", gte: ">=", lt: "<", lte: "<=" };
+
+/** `["a","b"], 1` -> `{a: {b: 1}}` — the containment probe for a value at a dotted path. */
+function nest(path: string[], value: unknown): unknown {
+  return path.reduceRight<unknown>((acc, key) => ({ [key]: acc }), value);
+}
+
+/**
+ * Postgres half of predicate pushdown (see `pushdown.ts` for the soundness contract).
+ *
+ * Scalar equality is a single `jsonb =`, which is already the oracle's rule for scalars: typed,
+ * exact, and numerically aware (`5` equals `5.0`, and neither equals `"5"`). That does NOT extend
+ * to objects and arrays — jsonb normalizes key order while the oracle compares serialized text —
+ * which is why `pushdown` refuses to hand them here.
+ *
+ * Ordered comparison always guards on `jsonb_typeof` first. jsonb has a total order ACROSS types
+ * (object > array > boolean > number > string > null), so an unguarded `>` would happily compare a
+ * string to a number and match rows the oracle rejects — sound, but it would also mean the guard
+ * is doing the real work, so it is stated explicitly. Numbers compare as jsonb (no cast, so no
+ * chance of a cast error on a row that a reordered plan reaches before the guard); strings compare
+ * as extracted text under `COLLATE "C"`, which is byte order — what `pushdown`'s ASCII-bound rule
+ * assumes, and what the database's default collation would NOT give.
+ */
+class PgJson implements JsonDialect {
+  readonly params: unknown[] = [];
+  /** `offset` is how many bound parameters the enclosing statement already used; `table` qualifies
+   *  the body column, required wherever more than one `records` alias is in scope. */
+  constructor(private readonly offset: number, private readonly table = "") {}
+
+  private get col(): string {
+    return `${this.table ? `${this.table}.` : ""}body_jsonb`;
+  }
+  mark(): number {
+    return this.params.length;
+  }
+  rollback(mark: number): void {
+    this.params.length = mark;
+  }
+  private bind(v: unknown): string {
+    this.params.push(v);
+    return `$${this.offset + this.params.length}`;
+  }
+  /** Safe to inline: `pushablePath` has already restricted segments to `[A-Za-z0-9_]`. */
+  private at(path: string[]): string {
+    return `${this.col} #> '{${path.join(",")}}'`;
+  }
+  private text(path: string[]): string {
+    return `${this.col} #>> '{${path.join(",")}}'`;
+  }
+
+  present(path: string[]): string {
+    // A missing path yields SQL NULL; a JSON null yields 'null'::jsonb. The oracle needs exactly
+    // that distinction, and this is the operator that preserves it.
+    return `(${this.at(path)} is not null)`;
+  }
+
+  eqScalar(path: string[], value: string | number | boolean | null): string {
+    // Two terms doing different jobs. `@>` is the only operator the GIN index answers, so it is
+    // what turns this from a scan into a lookup — but containment is WEAKER than the oracle's
+    // equality (jsonb treats a scalar as contained in an array at the same key, so {"a":["x"]}
+    // contains {"a":"x"}). The `=` term restores exactness. Weaker-then-exact is the sound order:
+    // the index narrows, the comparison decides.
+    const contains = `${this.col} @> ${this.bind(JSON.stringify(nest(path, value)))}::jsonb`;
+    const exact = value === null
+      ? `jsonb_typeof(${this.at(path)}) = 'null'`
+      : `${this.at(path)} = ${this.bind(JSON.stringify(value))}::jsonb`;
+    return `(${contains} and ${exact})`;
+  }
+
+  cmpNumber(path: string[], op: CmpOp, value: number): string {
+    return `(jsonb_typeof(${this.at(path)}) = 'number' and ${this.at(path)} ${SQL_CMP[op]} ${
+      this.bind(JSON.stringify(value))
+    }::jsonb)`;
+  }
+
+  cmpString(path: string[], op: CmpOp, value: string): string {
+    return `(jsonb_typeof(${this.at(path)}) = 'string' and (${this.text(path)}) collate "C" ${SQL_CMP[op]} ${
+      this.bind(value)
+    })`;
+  }
+}
 
 /** Internal signal: a concurrent op committed the same idempotency key first. Caught by
  *  `withRetry`, which rolls back this attempt and replays the winner's stored response. Never
@@ -155,10 +281,14 @@ alter table events add column if not exists xid xid8 not null default pg_current
 class IdempotencyReplay extends Error {}
 
 /**
- * The full StorageAdapter, in Postgres SQL, over a `SqlBackend`. `take` uses
- * `FOR UPDATE SKIP LOCKED` when the backend is a real server (concurrent claims race for the
- * row lock, exactly one wins); on the single-connection embedded backend the same statement
- * serializes in-process — the same contract either way.
+ * The full StorageAdapter, in Postgres SQL, over a `SqlBackend`. Single-winner claiming rests on
+ * a CHECKED compare-and-set — the state transition names the state it expects, and a claimer
+ * whose update affects zero rows lost the race and moves to the next candidate. That holds on a
+ * real server (concurrent claims race, exactly one wins) and on the single-connection embedded
+ * backend (where transactions serialize in-process anyway) — the same contract either way. A
+ * take by record id additionally uses `FOR UPDATE SKIP LOCKED`, which is safe because it locks
+ * exactly the one row it intends to claim; see `CANDIDATE_WINDOW` for why a template take must
+ * not.
  */
 export class PgSqlAdapter implements StorageAdapter {
   constructor(readonly name: string, protected readonly sql: SqlBackend) {}
@@ -190,17 +320,37 @@ export class PgSqlAdapter implements StorageAdapter {
     });
   }
 
+  /**
+   * Rows of the kind that survive the SQL pre-filter — a superset of what the oracle accepts.
+   *
+   * `want` is how many records the caller will ultimately keep. It becomes a SQL `LIMIT` only when
+   * the filter is EXACT and the caller has no `orderBy`, because only then does the database agree
+   * with the oracle about both which rows match and which come first: with no `orderBy` the
+   * oracle's order is `x.id < y.id`, its deterministic tie-break, which `order by id asc` matches
+   * exactly. Any other case fetches everything and lets the oracle sort — see `Pushed.exact`.
+   */
+  private async candidateRows(match: CompiledMatch, want?: number): Promise<RawRow[]> {
+    const d = new PgJson(1); // $1 is the kind
+    const filter = pushdown(match.where, d);
+    const where = isTrivial(filter) ? "" : ` and ${filter.sql}`;
+    const bounded = want !== undefined && filter.exact && !match.orderBy?.length;
+    const res = await this.sql.query<RawRow>(
+      `select ${RECORD_COLS} from records where kind = $1${where}` +
+        (bounded ? ` order by id collate "C" asc limit $${2 + d.params.length}` : ""),
+      bounded ? [match.kind, ...d.params, want] : [match.kind, ...d.params],
+    );
+    return res.rows;
+  }
+
   async readOne(match: CompiledMatch): Promise<RadiaRecord | null> {
-    // Fetch by kind, filter + order with the core oracle. Predicate pushdown onto
-    // per-kind expression indexes is a tracked follow-up; the oracle defines correctness.
-    const res = await this.sql.query<RawRow>("select * from records where kind = $1", [match.kind]);
-    const matches = res.rows.map(rowToRecord).filter((rec) => matchesRecord(rec, match));
+    // SQL narrows; the core oracle decides. `pushdown` is a sound over-approximation, so this
+    // filter never removes a record `matchesRecord` would have accepted.
+    const matches = (await this.candidateRows(match, 1)).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
     return firstByOrder(matches, match.orderBy);
   }
 
   async query(match: CompiledMatch, limit: number): Promise<RadiaRecord[]> {
-    const res = await this.sql.query<RawRow>("select * from records where kind = $1", [match.kind]);
-    const matches = res.rows.map(rowToRecord).filter((rec) => matchesRecord(rec, match));
+    const matches = (await this.candidateRows(match, limit)).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
     return orderRecords(matches, match.orderBy).slice(0, limit);
   }
 
@@ -218,10 +368,34 @@ export class PgSqlAdapter implements StorageAdapter {
   async take(selector: TakeSelector, spec: LeaseSpec): Promise<TakeResult | null> {
     return await this.sql.transaction(async (tx) => {
       const now = await this.txNow(tx);
-      const candidates = await this.fetchCandidates(tx, selector);
       const template = "template" in selector ? selector.template : undefined;
-      const ranked = rankClaimable(candidates, template, now, spec.requireUntainted);
+      const byId = "recordId" in selector;
 
+      // Page through candidate windows. Single-winner no longer rests on holding a lock over the
+      // whole candidate set: the claim below is a compare-and-set whose result is CHECKED, so a
+      // lost race falls through to the next candidate instead of returning a lease for a record
+      // somebody else already took.
+      for (let offset = 0;; offset += CANDIDATE_WINDOW) {
+        const candidates = await this.fetchCandidates(tx, selector, CANDIDATE_WINDOW, offset);
+        if (candidates.length === 0) return null;
+        const ranked = rankClaimable(candidates, template, now, spec.requireUntainted);
+        const claimed = await this.claimFirst(tx, ranked, spec, now);
+        if (claimed) return claimed;
+        // Nothing in this window was claimable (all filtered out, or every CAS lost). A record-id
+        // take has no further windows; a template take keeps paging until the kind is exhausted.
+        if (byId || candidates.length < CANDIDATE_WINDOW) return null;
+      }
+    });
+  }
+
+  /** Try each ranked candidate in order; return the first whose compare-and-set actually wins. */
+  private async claimFirst(
+    tx: Sql,
+    ranked: ReturnType<typeof rankClaimable>,
+    spec: LeaseSpec,
+    now: string,
+  ): Promise<TakeResult | null> {
+    {
       for (const cand of ranked) {
         const id = cand.record.id;
         const epoch = (cand.env.leaseEpoch ?? 0) + 1;
@@ -231,10 +405,11 @@ export class PgSqlAdapter implements StorageAdapter {
         if (cand.how === "expired") {
           const newAttempt = cand.env.attempt + 1;
           if (newAttempt > spec.maxAttempts) {
-            await tx.query(
+            const shredded = await tx.query(
               "update record_runtime set state='dead_letter', lease_id=null where record_id=$1 and state='leased' and lease_epoch=$2",
               [id, cand.env.leaseEpoch],
             );
+            if (shredded.affectedRows === 0) continue; // someone else already moved it
             await this.appendEvent(tx, {
               runId: spec.ownerRun,
               operation: "expire",
@@ -244,19 +419,21 @@ export class PgSqlAdapter implements StorageAdapter {
             }, now);
             continue;
           }
-          await tx.query(
+          const won = await tx.query(
             `update record_runtime set state='leased', attempt=$1, lease_id=$2, lease_epoch=$3,
                lease_owner=$4, leased_until=$5, lease_hard_deadline=$6
              where record_id=$7 and state='leased' and lease_epoch=$8`,
             [newAttempt, spec.leaseId, epoch, spec.ownerRun, leasedUntil, hardDeadline, id, cand.env.leaseEpoch],
           );
+          if (won.affectedRows === 0) continue; // another claimer reclaimed it first
         } else {
-          await tx.query(
+          const won = await tx.query(
             `update record_runtime set state='leased', lease_id=$1, lease_epoch=$2,
                lease_owner=$3, leased_until=$4, lease_hard_deadline=$5
              where record_id=$6 and state='available'`,
             [spec.leaseId, epoch, spec.ownerRun, leasedUntil, hardDeadline, id],
           );
+          if (won.affectedRows === 0) continue; // it was claimed between the read and the update
         }
         await this.appendEvent(tx, {
           runId: spec.ownerRun,
@@ -272,7 +449,7 @@ export class PgSqlAdapter implements StorageAdapter {
         };
       }
       return null;
-    });
+    }
   }
 
   async renew(ref: LeaseRef, leaseSeconds: number, idem?: IdempotencyKey): Promise<RenewResult> {
@@ -509,19 +686,54 @@ export class PgSqlAdapter implements StorageAdapter {
     );
   }
 
-  private async fetchCandidates(tx: Sql, selector: TakeSelector): Promise<Candidate[]> {
+  private async fetchCandidates(tx: Sql, selector: TakeSelector, limit = CANDIDATE_WINDOW, offset = 0): Promise<Candidate[]> {
     const rows = "recordId" in selector
       ? (await tx.query<RawRow>(
         `select ${CANDIDATE_COLS} from records r join record_runtime rt on rt.record_id=r.id
            where r.id=$1 and rt.state in ('available','leased') for update of rt skip locked`,
         [selector.recordId],
       )).rows
-      : (await tx.query<RawRow>(
-        `select ${CANDIDATE_COLS} from records r join record_runtime rt on rt.record_id=r.id
-           where r.kind=$1 and rt.state in ('available','leased') for update of rt skip locked`,
-        [selector.template.kind],
-      )).rows;
+      : await this.windowRows(tx, selector, limit, offset);
     return rows.map((row) => ({ record: rowToRecord(row), env: rowToEnvelope(row) }));
+  }
+
+  /**
+   * One window of claim candidates, in `rankClaimable` order.
+   *
+   * Pick the window from the narrow envelope table FIRST, then fetch bodies for only those rows.
+   * Ordering the join instead makes the database materialize every record body of the kind before
+   * the limit applies — most of the cost of a claim on a large kind.
+   *
+   * A template with a pushable predicate joins `records` inside that inner select so the window is
+   * drawn from ROWS THAT CAN MATCH. Without it the window is the head of the queue regardless of
+   * the template, so a selective take pages through the entire kind 64 rows at a time — correct,
+   * but O(kind size) round trips to find one record. The filter is a sound over-approximation, so
+   * `rankClaimable` still decides.
+   */
+  private async windowRows(
+    tx: Sql,
+    selector: { template: CompiledMatch },
+    limit: number,
+    offset: number,
+  ): Promise<RawRow[]> {
+    const d = new PgJson(1, "r2"); // $1 is the kind
+    const filter = pushdown(selector.template.where, d);
+    const n = 1 + d.params.length;
+    const inner = isTrivial(filter)
+      ? `select record_id from record_runtime
+          where kind=$1 and state in ('available','leased')
+          order by effective_priority desc, available_at asc, record_id asc
+          limit $${n + 1} offset $${n + 2}`
+      : `select rt2.record_id from record_runtime rt2 join records r2 on r2.id=rt2.record_id
+          where rt2.kind=$1 and rt2.state in ('available','leased') and ${filter.sql}
+          order by rt2.effective_priority desc, rt2.available_at asc, rt2.record_id asc
+          limit $${n + 1} offset $${n + 2}`;
+    return (await tx.query<RawRow>(
+      `select ${CANDIDATE_COLS} from records r join record_runtime rt on rt.record_id=r.id
+         where rt.record_id in (${inner})
+         ${CLAIM_ORDER}`,
+      [selector.template.kind, ...d.params, limit, offset],
+    )).rows;
   }
 
   private async fetchEnvelopeRow(tx: Sql, recordId: string): Promise<RawRow | null> {

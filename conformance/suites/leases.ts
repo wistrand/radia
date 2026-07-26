@@ -140,3 +140,53 @@ export const leaseSuites: Suite[] = [
     },
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Claim fairness and candidate-set bounds
+//
+// `take` must hand out work that exists. The original implementation locked its ENTIRE candidate
+// set (`for update ... skip locked` over every available-or-leased record of the kind) and relied
+// on that lock — not on the compare-and-set update — for single-winner. Under real concurrency
+// that starves: one claimer's open transaction holds every candidate, so everyone else is told
+// the queue is empty while it is full. Measured on Postgres at 16 concurrent claimers: 166 empty
+// takes against 120 records that were never claimed by anyone.
+// ---------------------------------------------------------------------------
+
+export const claimFairnessSuites: Suite[] = [
+  {
+    name: "concurrent claimers each get work while work remains (no starvation)",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const N = 16;
+      for (let i = 0; i < N; i++) await space.put({ kind: "task", body: { tag: "x", i } });
+
+      // Concurrent, overlapping takes. On a single-connection adapter these serialize and the
+      // assertion is trivially true; on a real backend they overlap, which is where locking the
+      // whole candidate set shows up as a false "nothing available".
+      const claims = await Promise.all(
+        Array.from({ length: N }, () => space.take({ template: { kind: "task" } }, { leaseSeconds: 60 })),
+      );
+      const got = claims.filter((c) => c !== null);
+      assertEquals(got.length, N, `every claimer must get one of the ${N} available records`);
+
+      // …and single-winner still holds: no record claimed twice.
+      const ids = new Set(got.map((c) => c!.record.id));
+      assertEquals(ids.size, N, "two claimers must never win the same record");
+    },
+  },
+  {
+    name: "a match that only hits records deep in the candidate order is still found",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      // Guards the fix rather than the bug: bounding the candidate window must PAGE, not truncate.
+      // A window of the first N records that contains no match must not report "nothing to claim"
+      // when a matching record sits behind it.
+      for (let i = 0; i < 300; i++) await space.put({ kind: "task", body: { tag: "common", i } });
+      const { id: needle } = await space.put({ kind: "task", body: { tag: "rare" } });
+
+      const claimed = await space.take({ template: { kind: "task", match: { tag: "rare" } } }, { leaseSeconds: 60 });
+      assert(claimed, "the only matching record must be found however deep it sits");
+      assertEquals(claimed!.record.id, needle);
+    },
+  },
+];

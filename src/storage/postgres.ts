@@ -1,10 +1,13 @@
 // Standalone Postgres adapter (M1). The multi-instance / HA backend: N runtime instances over
-// one shared server, with `FOR UPDATE ... SKIP LOCKED` giving the atomic claim across
-// connections (see agent_docs/design-storage.md "Scaling"). All SQL lives in the shared
+// one shared server, with a checked compare-and-set giving the atomic claim across connections
+// (see agent_docs/design-storage.md "Scaling"). All SQL lives in the shared
 // PgSqlAdapter body — this is only the driver binding (deno-postgres, pure-Deno TCP, no npm).
 //
-// Connection pooling: each op acquires a pooled connection and releases it, so concurrent
-// takes race for row locks on distinct connections (the whole point of SKIP LOCKED). An
+// Connection pooling: each op acquires a pooled connection and releases it, so concurrent takes
+// genuinely race on distinct connections. This adapter is therefore the only one that exercises
+// the concurrent claim path at all — the embedded adapters serialize it away, which is why a
+// claim-path change must be run through `scripts/pg-conformance.sh`, not just `deno task
+// conformance` (gotchas.md, "a claim must not lock what it does not claim"). An
 // optional `schema` isolates a run into its own namespace — used by the conformance harness,
 // which spins up an ephemeral schema per adapter and drops it on close.
 
