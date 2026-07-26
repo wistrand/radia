@@ -1,10 +1,27 @@
 // Identifiers and content hashing.
 
-import { ulid } from "@std/ulid";
+import { monotonicUlid } from "@std/ulid";
 
-/** A fresh ULID. Lexicographically sortable ~ chronological, like created_at ordering. */
+/**
+ * A fresh ULID — MONOTONIC, and that matters more than it looks.
+ *
+ * A plain `ulid()` encodes the millisecond and fills the rest with randomness, so two ids minted
+ * inside the same millisecond sort in ARBITRARY relative order. Record id order is load-bearing
+ * all over Radia: it is the deterministic tie-break for `query`, the cursor for keyset pagination,
+ * and — the one that bites — the "which record is newer" rule behind every latest-wins registry
+ * projection (`core/registry.ts`: kind declarations, grants, capabilities, saved procedures).
+ * Declaring something and then retiring it in quick succession is exactly a same-millisecond pair,
+ * so with plain ULIDs a retirement could be silently outranked by the record it retired.
+ *
+ * `monotonicUlid()` keeps the timestamp and INCREMENTS the random component when the clock has not
+ * advanced, so ids from one process are strictly increasing. Note the honest limit: across
+ * processes (several runtime instances on one Postgres) ordering is still only millisecond-
+ * accurate, because nothing coordinates their random halves. Within a millisecond, across
+ * instances, "newest" remains a tie — which is why a retirement and its revival should not be
+ * raced from two instances.
+ */
 export function newUlid(): string {
-  return ulid();
+  return monotonicUlid();
 }
 
 /**

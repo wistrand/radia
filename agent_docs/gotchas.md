@@ -52,6 +52,31 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   fans out and on a networked Postgres, where a round trip is latency rather than work. Worth
   remembering before attributing a speedup to the change you meant to make.
 
+- **A registry is a projection, and `retired: true` is how you withdraw from one.** Declared kinds,
+  assigned grants, advertised capabilities, live models and saved procedures are all mutable-looking
+  tables derived from an append-only record stream, so "remove" cannot be a delete. It is a
+  successor carrying `retired: true`, honoured in ONE place (`src/core/registry.ts`) rather than by
+  each consumer. Two shapes, and picking the wrong one is a correctness bug: **latest-wins**
+  (`activeByKey` — kind_def by kind, capability by tool, model by tier, procedure by name) where a
+  re-declaration replaces, and **additive** (`activeSet` — grants) where entries coexist and each is
+  independently withdrawable. Revoking a grant keyed on `(principal, kind)` would silently take
+  every other grant that principal holds on that kind with it, which is why `grantKey` is the whole
+  content — operations and template included. Two rules that are easy to get wrong: retirement must
+  be applied AFTER the newest-per-key pass, never as a filter over the input (filter first and an
+  older non-retired record becomes "newest" and resurrects the entry); and the projection must
+  compare ids rather than trust arrival order, for the same reason. Nothing is deleted, so the audit
+  trail survives a revocation, and re-declaring a retired key revives it because that record is
+  newer still — there is no un-retire path to implement.
+- **Record ids are MONOTONIC ULIDs, and latest-wins depends on it.** A plain `ulid()` encodes the
+  millisecond and randomizes the rest, so two ids minted in the same millisecond sort arbitrarily.
+  Every latest-wins registry asks "which record is newer" by comparing ids — and declaring
+  something then retiring it is exactly a same-millisecond pair, so with plain ULIDs a retirement
+  could be outranked by the record it retired. This was latent in `loadKinds` and the capability
+  projection long before retirement existed; it surfaced as a conformance test that passed alone
+  and failed in a full run, which is the signature of same-millisecond id collisions. `newUlid()`
+  now uses `monotonicUlid()`. The honest limit: monotonicity is PER PROCESS, so several runtime
+  instances on one Postgres are still only millisecond-accurate relative to each other — do not
+  race a retirement and its revival from two instances.
 - **Predicate pushdown is a SOUND pre-filter, never a second opinion.** `src/storage/pushdown.ts`
   renders part of a compiled template into SQL, but the oracle in `core/matching.ts` still decides
   every match. The asymmetry is the whole safety argument: over-returning is free (the oracle

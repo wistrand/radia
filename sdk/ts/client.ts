@@ -14,8 +14,13 @@ import type {
 } from "../../src/storage/adapter.ts";
 import type { Template } from "../../src/core/matching.ts";
 import type { Page } from "../../src/storage/adapter.ts";
+import { activeByKey } from "../../src/core/registry.ts";
 import type { PutRequest } from "../../src/core/record.ts";
 import { KIND_DEF, type KindDef, kindDefKey } from "../../src/core/kinds.ts";
+// Re-exported because every client that reads a registry (capabilities, models, kinds, an app's
+// own kinds) needs the SAME latest-wins-minus-retired rule the runtime uses. Six hand-rolled
+// copies of this loop existed before it was shared, and the failure mode is silent.
+export { activeByKey, activeSet, isRetired, newestByKey, RETIRED } from "../../src/core/registry.ts";
 
 export type { AckResult, KindDef, Lease, Page, PutRequest, RadiaRecord, SpaceEvent, Template };
 
@@ -187,14 +192,8 @@ export class RadiaClient {
    *  successor record). Discovery through the substrate: a plain query, no kinds endpoint. */
   async listKinds(): Promise<KindDef[]> {
     const records = await this.query({ kind: KIND_DEF }, 1000);
-    const latest = new Map<string, { id: string; def: KindDef }>();
-    for (const rec of records) {
-      const def = rec.body as KindDef;
-      if (!def || typeof def.kind !== "string") continue;
-      const prev = latest.get(def.kind);
-      if (!prev || prev.id < rec.id) latest.set(def.kind, { id: rec.id, def });
-    }
-    return [...latest.values()].map((v) => v.def);
+    const latest = activeByKey<KindDef>(records, (def) => (typeof def?.kind === "string" ? def.kind : undefined));
+    return [...latest.values()].map((r) => r.body as KindDef);
   }
 
   /** Ops-plane envelope query: records filtered by runtime state (leased/available/…), optional

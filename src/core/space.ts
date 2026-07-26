@@ -49,6 +49,7 @@ import { CredentialStore, hashToken, mintCredential, type ResolvedToken } from "
 import { type BlobStore, isDigest, MemoryBlobStore } from "../storage/blobs.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
+import { activeByKey, activeSet, grantKey } from "./registry.ts";
 import { Notifier } from "./notifier.ts";
 
 export interface SpaceContext {
@@ -177,13 +178,12 @@ export class Space {
    *  declaration wins (records are immutable; a redeclaration is a successor, not a mutation). */
   async loadKinds(): Promise<void> {
     const records = await this.storage.query({ kind: KIND_DEF }, 1000);
-    const latest = new Map<string, RadiaRecord>();
-    for (const rec of records) {
-      const kind = (rec.body as { kind?: unknown } | null)?.kind;
-      if (typeof kind !== "string") continue;
-      const prev = latest.get(kind);
-      if (!prev || prev.id < rec.id) latest.set(kind, rec); // ULID id is monotonic ~ recency
-    }
+    // Latest-wins per kind name, with retired declarations dropped — the shared registry
+    // projection (`core/registry.ts`), not a loop local to this method.
+    const latest = activeByKey<{ kind?: unknown }>(
+      records,
+      (b) => (typeof b?.kind === "string" ? b.kind : undefined),
+    );
     for (const rec of latest.values()) {
       try {
         this.kinds.register(rec.body as KindDef);
@@ -253,7 +253,16 @@ export class Space {
     }
     const subject = this.grantSubject(principal);
     // Grants are records: query the ones for this (subject, kind) and check the op.
-    const grants = await this.query({ kind: GRANT, match: { principal: subject, kind } }, 100);
+    //
+    // ADDITIVE, not latest-wins: a principal may hold several grants on one kind (different
+    // operations, different template scopes) and they coexist. So a revocation targets one GRANT,
+    // identified by its content (`grantKey`), and `activeSet` drops exactly that entry while
+    // leaving the others in force. Projecting by (principal, kind) instead would let a single
+    // revocation silently take every grant on the kind with it.
+    const grants = activeSet(
+      await this.query({ kind: GRANT, match: { principal: subject, kind } }, 100),
+      grantKey,
+    );
     const applicable = grants.filter((g) => {
       const ops = (g.body as Partial<GrantDef>)?.operations;
       return Array.isArray(ops) && ops.includes(op);
@@ -282,7 +291,12 @@ export class Space {
   async authorizeWatch(principal: string, kind: string): Promise<Record<string, unknown>[] | null> {
     if (this.isPrivileged(principal)) return null;
     const subject = this.grantSubject(principal);
-    const grants = await this.query({ kind: GRANT, match: { principal: subject, kind } }, 100);
+    // Retracted grants are subtracted here too. A watch observes records, so a revocation that
+    // stopped `query` but left `watch` standing would revoke nothing that matters.
+    const grants = activeSet(
+      await this.query({ kind: GRANT, match: { principal: subject, kind } }, 100),
+      grantKey,
+    );
     if (grants.length === 0) {
       throw new RadiaError("forbidden", `principal '${principal}' has no grant to watch kind '${kind}'`);
     }

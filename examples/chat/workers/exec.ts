@@ -23,7 +23,7 @@
 // guarantee as well as the security story.
 
 import { agentLoop } from "../../../sdk/ts/loop.ts";
-import { RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
+import { newestByKey, RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
 import { runCode } from "../tools/exec-sandbox.ts";
 import { progress } from "../space/progress.ts";
 import { arg, argAll } from "../util.ts";
@@ -213,9 +213,10 @@ await adoptProcedures();
  */
 async function lookupProcedure(c: RadiaClient, name: string, conversationId?: string) {
   const rows = await c.query({ kind: "procedure", match: { name, conversationId: conversationId ?? "" } }, 50);
-  if (rows.length === 0) return null;
-  // Latest wins, like capability and kind_def: re-saving a name is a successor record.
-  const latest = rows.reduce((a, b) => (a.id > b.id ? a : b));
+  // `newestByKey`, not `activeByKey`: this caller must SEE a retirement to report it, where the
+  // chat's tool list wants it already filtered out. Same projection, two needs.
+  const latest = newestByKey<{ name?: string }>(rows, (b) => b?.name).get(name);
+  if (!latest) return null;
   return latest.body as { name: string; artifactId: string; description?: string; retired?: boolean };
 }
 
@@ -383,7 +384,7 @@ async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
       taint: true,
     };
   }
-  const latest = rows.reduce((a, b2) => (a.id > b2.id ? a : b2));
+  const latest = newestByKey<{ name?: string }>(rows, (bb) => bb?.name).get(name)!;
   const body = latest.body as { name: string; description: string; artifactId: string };
   const code = new TextDecoder().decode(await c.getArtifact(body.artifactId));
   return {

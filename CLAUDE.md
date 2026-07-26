@@ -51,7 +51,7 @@ content, not by addressing.
 | `src/ui/vendor/`                        | prebuilt browser assets served under `/ui/` — `blitzoom.bundle.js` (`<bz-graph>`, layout for the Space tab), pinned to an upstream commit; see the README there |
 | `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes, `resolveAuth` Bearer, ops-plane gate, operator-token injection), `problem.ts` (RFC 9457), `handlers/` (`records.ts` + authorize, `leases.ts`, `agents.ts` = bootstrap chain, `artifacts.ts` = bytes in/out + download capabilities, `ops.ts` = ops plane: stats/events/lineage/children/graph/envelope-query/diagnostics/admin/remediate/declassify, `watches.ts` SSE = grant-gated `authorizeWatch`) |
 | `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port: records/leases/idempotency/events/graph + compiled-match AST; kinds are records, not a port concern), `blobs.ts` (the `BlobStore` port: artifact bytes, content-addressed; memory + filesystem impls), `crypto.ts` (optional blob encryption: per-blob AES-GCM DEK wrapped under a space KEK), `row.ts` (shared row/value mapping), `pushdown.ts` (compiled template → a **sound** SQL pre-filter; the oracle still decides — see the soundness contract at the top of the file), `pgbase.ts` (shared Postgres-dialect body over a minimal SQL port) + `pglite.ts`, `postgres.ts` (both bind their driver to `pgbase`), `sqlite.ts` (own dialect) |
-| `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + graph, kinds-as-records, envelope query, `authorize`/grants, delegation, taint, bootstrap chain), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order + `combineMatch`), `kinds.ts` (indexing contract + `kind_def`/`grant`/`signal`/`agent_*`/`artifact` reserved kinds), `auth.ts` (`CredentialStore`, token mint/hash), `take.ts` (claim ranking), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts`, `errors.ts` |
+| `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + graph, kinds-as-records, envelope query, `authorize`/grants, delegation, taint, bootstrap chain), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order + `combineMatch`), `kinds.ts` (indexing contract + `kind_def`/`grant`/`signal`/`agent_*`/`artifact` reserved kinds), `auth.ts` (`CredentialStore`, token mint/hash), `take.ts` (claim ranking), `registry.ts` (the latest-wins / additive projections every registry is built from, and `retired: true`), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts` (**monotonic** ULIDs — latest-wins depends on it), `errors.ts` |
 | `sdk/README.md`                         | SDK overview + parity table (TS and Python) — start here for client work |
 | `sdk/ts/`                               | TS SDK: `client.ts` (`RadiaClient` over `/v0`, incl. `watch()` SSE), `loop.ts` (`agentLoop`, event-driven, design §5) |
 | `sdk/py/radia.py`                       | Python SDK at parity (stdlib only): `RadiaClient`, `watch()`, `agent_loop` with heartbeat |
@@ -131,6 +131,13 @@ out-of-band. Four applications already made:
   publish `capability` records ({tool, schema}); an agent *watches/queries* them to build its
   tool list and dispatches by content (`tool_call{tool}` → whichever worker registered it) — no
   preconfigured routing table (§7). Add a worker → the agent gains the tool, no code change.
+- **Withdrawal is a successor record, not a delete — and the projection is shared.** Kinds, grants,
+  capabilities, models and saved procedures are all registries: mutable-looking views over an
+  append-only stream. So removing one is a successor carrying `retired: true`, honoured once in
+  `src/core/registry.ts` (`activeByKey` for latest-wins, `activeSet` for additive entries like
+  grants) rather than re-implemented per consumer — which it was, six times, before it was shared.
+  Revoking a grant is exactly this, and the audit trail survives it. See
+  [agent_docs/gotchas.md](agent_docs/gotchas.md).
 - **Grants are records the runtime reads, not a config table.** A kind-scoped grant is a
   reserved `grant` record ({principal, kind, operations}); a human/supervisor `put`s one and
   `Space.authorize` discovers it by `query`. Authorization state gets the same immutability,

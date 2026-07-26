@@ -24,7 +24,7 @@
 // no code change here.
 
 import { agentLoop } from "../../../sdk/ts/loop.ts";
-import { RadiaClient } from "../../../sdk/ts/client.ts";
+import { activeByKey, RadiaClient } from "../../../sdk/ts/client.ts";
 import { progress } from "../space/progress.ts";
 import { arg, sleep } from "../util.ts";
 import type { ChatMessage } from "../provider/openrouter.ts";
@@ -41,7 +41,10 @@ const client = new RadiaClient(url, token ? { token } : {});
  *  ["image"]`), and a conversation turn dispatched to one would never come back. A record with no
  *  `modalities` is text, so this stays backward compatible with workers that predate the field. */
 async function liveTiers(c: RadiaClient): Promise<string[]> {
-  const models = (await c.query({ kind: "model" }, 100))
+  // A latest-wins registry like any other: one entry per tier, and a retired `model` record takes
+  // its tier out of rotation — so a tier-worker that goes away stops being routed to, instead of
+  // leaving its advertisement behind for the router to dispatch into silence.
+  const models = [...activeByKey<{ tier?: string }>(await c.query({ kind: "model" }, 100), (b) => b?.tier).values()]
     .map((m) => m.body as { tier: string; rank?: number; modalities?: string[] })
     .filter((m) => !m.modalities || m.modalities.includes("text"));
   return [...new Set(models.sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0)).map((m) => m.tier))];
