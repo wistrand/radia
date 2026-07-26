@@ -149,6 +149,22 @@ export interface CompiledMatch {
   orderBy?: OrderBy[];
 }
 
+/**
+ * Keyset pagination over record id. `after` is EXCLUSIVE and is read in the direction of `dir`,
+ * so it is "the last id of the previous page" either way — ids strictly greater for `asc`,
+ * strictly smaller for `desc`.
+ *
+ * Note what a ULID cursor does and does not promise. Ids sort by creation time only to the
+ * MILLISECOND; records written inside the same millisecond differ in their random half, so `desc`
+ * is "newest first" at millisecond resolution, not a strict write order. What it does guarantee is
+ * a total, stable order — which is all pagination needs, and is exactly what an offset cannot give
+ * while the space is being written to.
+ */
+export interface Page {
+  after?: Ulid;
+  dir?: "asc" | "desc"; // default "asc"
+}
+
 // ---------------------------------------------------------------------------
 // Idempotency
 // ---------------------------------------------------------------------------
@@ -246,10 +262,18 @@ export interface StorageAdapter {
   readOne(match: CompiledMatch): Promise<RadiaRecord | null>;
 
   /**
-   * Matching records, ordered by the template, capped at `limit`. A basic list for the
-   * dev UI; the keyset-cursor `query` (stable pagination) lands in M1.
+   * Matching records, ordered by the template, capped at `limit`.
+   *
+   * `page` is KEYSET pagination over record id — a cursor, not an offset, so a page stays stable
+   * while records are being written. It is defined only for the natural (id) order, i.e. when the
+   * template carries no `orderBy`: a keyset cursor has to be the whole sort key, and for a body
+   * field that means (value, id) pairs plus the type semantics of the oracle. Refusing the
+   * combination is the honest bound; sorting by a body field still works, just without a cursor.
+   *
+   * `dir: "desc"` is what makes "the newest N" expressible at all. Without it a limit always
+   * returns the OLDEST matches, because the deterministic tie-break is ascending id.
    */
-  query(match: CompiledMatch, limit: number): Promise<RadiaRecord[]>;
+  query(match: CompiledMatch, limit: number, page?: Page): Promise<RadiaRecord[]>;
 
   /** Record counts grouped by kind and state (dev UI overview / diagnostics). */
   stats(): Promise<KindStateCount[]>;

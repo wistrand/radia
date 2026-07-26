@@ -12,6 +12,7 @@ import type {
   Lease,
   LeaseRef,
   LeaseSpec,
+  Page,
   PutInput,
   RadiaRecord,
   RecordState,
@@ -624,9 +625,25 @@ export class Space {
     return this.storage.readOne(this.compile(template));
   }
 
-  /** Matching records ordered by the template, capped at `limit` (dev UI list; keyset query is M1). */
-  query(template: Template, limit = 100): Promise<RadiaRecord[]> {
-    return this.storage.query(this.compile(template), limit);
+  /**
+   * Matching records ordered by the template, capped at `limit`.
+   *
+   * `page` is a KEYSET cursor over record id (`after` exclusive, `dir` to walk backwards) — the
+   * stable way to paginate a space that is still being written to, and the only way to ask for the
+   * NEWEST records rather than the oldest. It is defined for the natural id order only: an
+   * explicit `order_by` already answers "in what order", and a cursor over a body field would need
+   * the whole sort key plus the oracle's type rules, so combining them is rejected rather than
+   * silently resolved one way.
+   */
+  query(template: Template, limit = 100, page?: Page): Promise<RadiaRecord[]> {
+    const compiled = this.compile(template);
+    if (page && (page.after || page.dir) && compiled.orderBy?.length) {
+      throw new RadiaError(
+        "invalid_template",
+        "a keyset page (after/dir) is only defined for the natural id order — drop order_by, or page without a cursor",
+      );
+    }
+    return this.storage.query(compiled, limit, page);
   }
 
   /** Record counts by kind and state (dev UI overview). */

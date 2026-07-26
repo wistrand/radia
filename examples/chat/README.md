@@ -238,6 +238,13 @@ Three details carry the weight:
   Every earlier version is still on the space, which is why `read_procedure` can report how many
   there have been. It exists because code leaves the model's context when its turn scrolls away,
   and "fix the bug in X" must not mean reconstructing X from its description.
+- **Retiring one is the same move, not a delete.** `retire_procedure` writes a successor carrying
+  `retired: true`; the projection that builds the tool list stops offering it, and saving the name
+  again revives it because that record is newer still — no un-retire path needed. The code stays
+  readable the whole time. The worker keeps CLAIMING a retired name on purpose: it answers "this
+  has been retired" at once, where dropping the claim would leave a caller waiting out the tool
+  deadline for a stall diagnosis. Retirement matters because every tool in the list costs tokens on
+  every request, so a procedure that turned out wrong is worth removing from the model's context.
 - **Only the exec worker may write one.** The user session has `procedure: query` and nothing more,
   so a saved procedure is always code that went through the sandbox's own path, not a record the
   model wrote directly.

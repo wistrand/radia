@@ -17,6 +17,7 @@ import {
   type KindStateCount,
   type LeaseRef,
   type LeaseSpec,
+  type Page,
   type PutInput,
   type PutResult,
   type RadiaRecord,
@@ -38,7 +39,7 @@ import {
   rowToRecord,
   runtimeInsertValues,
 } from "./row.ts";
-import { firstByOrder, matchesRecord, orderRecords } from "../core/matching.ts";
+import { firstByOrder, matchesRecord, orderRecords, pageRecords } from "../core/matching.ts";
 import { isTrivial, type JsonDialect, pushdown } from "./pushdown.ts";
 import { type Candidate, rankClaimable } from "../core/take.ts";
 import { addSeconds, minIso } from "../core/time.ts";
@@ -361,15 +362,27 @@ export class PgSqlAdapter implements StorageAdapter {
    * oracle's order is `x.id < y.id`, its deterministic tie-break, which `order by id asc` matches
    * exactly. Any other case fetches everything and lets the oracle sort — see `Pushed.exact`.
    */
-  private async candidateRows(match: CompiledMatch, want?: number): Promise<RawRow[]> {
+  private async candidateRows(match: CompiledMatch, want?: number, page?: Page): Promise<RawRow[]> {
     const d = new PgJson(1); // $1 is the kind
     const filter = pushdown(match.where, d);
     const where = isTrivial(filter) ? "" : ` and ${filter.sql}`;
+    const params: unknown[] = [match.kind, ...d.params];
+    // The cursor is an id comparison, so it is always EXACT — it constrains nothing the oracle
+    // would have to re-check, and it applies whether or not the body filter could be pushed.
+    // `collate "C"` for the same reason the ordering uses it: the oracle compares ids as JS
+    // strings, and a linguistic collation would put a different set of records "after" the cursor.
+    const dir = page?.dir === "desc" ? "desc" : "asc";
+    let cursor = "";
+    if (page?.after) {
+      params.push(page.after);
+      cursor = ` and id collate "C" ${dir === "desc" ? "<" : ">"} $${params.length}`;
+    }
     const bounded = want !== undefined && filter.exact && !match.orderBy?.length;
+    if (bounded) params.push(want);
     const res = await this.sql.query<RawRow>(
-      `select ${RECORD_COLS} from records where kind = $1${where}` +
-        (bounded ? ` order by id collate "C" asc limit $${2 + d.params.length}` : ""),
-      bounded ? [match.kind, ...d.params, want] : [match.kind, ...d.params],
+      `select ${RECORD_COLS} from records where kind = $1${where}${cursor}` +
+        (bounded ? ` order by id collate "C" ${dir} limit $${params.length}` : ""),
+      params,
     );
     return res.rows;
   }
@@ -381,9 +394,9 @@ export class PgSqlAdapter implements StorageAdapter {
     return firstByOrder(matches, match.orderBy);
   }
 
-  async query(match: CompiledMatch, limit: number): Promise<RadiaRecord[]> {
-    const matches = (await this.candidateRows(match, limit)).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
-    return orderRecords(matches, match.orderBy).slice(0, limit);
+  async query(match: CompiledMatch, limit: number, page?: Page): Promise<RadiaRecord[]> {
+    const matches = (await this.candidateRows(match, limit, page)).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
+    return pageRecords(matches, match.orderBy, limit, page);
   }
 
   async stats(): Promise<KindStateCount[]> {

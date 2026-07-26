@@ -111,8 +111,14 @@ paths:
       operationId: query
       summary: Matching records ordered by the template, capped at limit
       description: >
-        M1 status: a basic ordered list. The keyset-cursor variant (stable pagination over
-        immutable sort keys) is not yet implemented.
+        Ordered by the template, capped at limit. `after`/`dir` are KEYSET pagination over record
+        id: a cursor, not an offset, so a page stays correct while records are being written.
+        Records without an explicit order_by come back in ASCENDING id order, so a plain limit
+        returns the OLDEST matches; `dir: desc` is what expresses "the newest N". A cursor is
+        defined for that natural id order only — combining after/dir with order_by is a 400,
+        because a keyset over a body field would need the whole sort key plus the matcher's type
+        rules. Note that ids order by time only to the millisecond (ULID), so `desc` is
+        newest-first at that resolution, not a strict write order.
       x-stability: stable
       requestBody:
         required: true
@@ -122,7 +128,16 @@ paths:
               allOf:
                 - { $ref: "#/components/schemas/Template" }
                 - type: object
-                  properties: { limit: { type: integer, default: 100, maximum: 500 } }
+                  properties:
+                    limit: { type: integer, default: 100, maximum: 500 }
+                    after:
+                      type: string
+                      description: Exclusive record-id cursor, read in the direction of `dir` — the last id of the previous page.
+                    dir:
+                      type: string
+                      enum: [asc, desc]
+                      default: asc
+                      description: Direction of the natural (record id) order.
       responses:
         "200":
           description: page
@@ -132,6 +147,9 @@ paths:
                 type: object
                 properties:
                   records: { type: array, items: { $ref: "#/components/schemas/Record" } }
+                  nextAfter:
+                    type: string
+                    description: Cursor for the next page; absent on the last page (a short page ends the walk).
         "400": { $ref: "#/components/responses/Problem" }
 
   /takes:

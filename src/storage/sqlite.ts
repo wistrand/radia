@@ -20,6 +20,7 @@ import {
   type KindStateCount,
   type LeaseRef,
   type LeaseSpec,
+  type Page,
   type PutInput,
   type PutResult,
   type EventInput,
@@ -42,7 +43,7 @@ import {
   rowToRecord,
   runtimeInsertValues,
 } from "./row.ts";
-import { firstByOrder, matchesRecord, orderRecords } from "../core/matching.ts";
+import { firstByOrder, matchesRecord, orderRecords, pageRecords } from "../core/matching.ts";
 import { isTrivial, type JsonDialect, pushdown } from "./pushdown.ts";
 import { type Candidate, rankClaimable } from "../core/take.ts";
 import { addSeconds, minIso } from "../core/time.ts";
@@ -588,14 +589,22 @@ export class SqliteAdapter implements StorageAdapter {
    * oracle's order is `x.id < y.id`, its deterministic tie-break, which `order by id asc` matches
    * exactly. Any other case fetches everything and lets the oracle sort — see `Pushed.exact`.
    */
-  private candidateRows(match: CompiledMatch, want?: number): RawRow[] {
+  private candidateRows(match: CompiledMatch, want?: number, page?: Page): RawRow[] {
     const d = new SqliteJson();
     const filter = pushdown(match.where, d);
     const where = isTrivial(filter) ? "" : ` and ${filter.sql}`;
+    // The cursor is an id comparison, so it is always EXACT — it constrains nothing the oracle
+    // would have to re-check, and it applies whether or not the body filter could be pushed.
+    const dir = page?.dir === "desc" ? "desc" : "asc";
+    const cursor = page?.after ? ` and id ${dir === "desc" ? "<" : ">"} ?` : "";
     const bounded = want !== undefined && filter.exact && !match.orderBy?.length;
+    const params = [match.kind, ...d.params, ...(page?.after ? [page.after] : []), ...(bounded ? [want] : [])];
     return this.db
-      .prepare(`select * from records where kind = ?${where}${bounded ? " order by id asc limit ?" : ""}`)
-      .all(match.kind, ...d.params, ...(bounded ? [want] : [])) as RawRow[];
+      .prepare(
+        `select * from records where kind = ?${where}${cursor}` +
+          (bounded ? ` order by id ${dir} limit ?` : ""),
+      )
+      .all(...params) as RawRow[];
   }
 
   readOne(match: CompiledMatch): Promise<RadiaRecord | null> {
@@ -607,9 +616,9 @@ export class SqliteAdapter implements StorageAdapter {
     return Promise.resolve(firstByOrder(matches, match.orderBy));
   }
 
-  query(match: CompiledMatch, limit: number): Promise<RadiaRecord[]> {
-    const matches = this.candidateRows(match, limit).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
-    return Promise.resolve(orderRecords(matches, match.orderBy).slice(0, limit));
+  query(match: CompiledMatch, limit: number, page?: Page): Promise<RadiaRecord[]> {
+    const matches = this.candidateRows(match, limit, page).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
+    return Promise.resolve(pageRecords(matches, match.orderBy, limit, page));
   }
 
   stats(): Promise<KindStateCount[]> {

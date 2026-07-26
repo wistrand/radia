@@ -136,9 +136,31 @@ const READ_PROCEDURE: ToolDef = {
   },
 };
 
+const RETIRE_PROCEDURE: ToolDef = {
+  type: "function",
+  function: {
+    name: "retire_procedure",
+    description:
+      "Stop offering a procedure you saved. Use it when one turned out to be wrong, was a bad " +
+      "idea, or is no longer worth its place in your tool list — every tool you carry costs " +
+      "tokens on every request, so a procedure you will not call again is worth retiring. This " +
+      "does not erase anything: the code stays readable with read_procedure and saving the same " +
+      "name again brings it back. Returns {name, retired}.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The saved procedure's name." },
+        reason: { type: "string", description: "Optional note on why, kept with the record." },
+      },
+      required: ["name"],
+    },
+  },
+};
+
 await publishCapability(client, RUN_CODE);
 await publishCapability(client, SAVE_PROCEDURE);
 await publishCapability(client, READ_PROCEDURE);
+await publishCapability(client, RETIRE_PROCEDURE);
 
 // EVERYTHING the handler reads must be declared above `agentLoop`, which never returns: a `const`
 // placed after it is never evaluated, so it stays in the temporal dead zone for the life of the
@@ -146,7 +168,7 @@ await publishCapability(client, READ_PROCEDURE);
 // initialization` — silently, since a handler that throws just nacks and retries.
 
 /** Names a procedure may not take: a built-in must never be shadowed by model-written code. */
-const RESERVED = new Set(["run_code", "save_procedure", "read_procedure"]);
+const RESERVED = new Set(["run_code", "save_procedure", "read_procedure", "retire_procedure"]);
 
 /** A tool name that is safe to advertise and to match a claim template on. */
 const NAME_RE = /^[a-z][a-z0-9_]{0,40}$/;
@@ -160,6 +182,7 @@ const templates = [
   { kind: "tool_call", match: { tool: "run_code" } },
   { kind: "tool_call", match: { tool: "save_procedure" } },
   { kind: "tool_call", match: { tool: "read_procedure" } },
+  { kind: "tool_call", match: { tool: "retire_procedure" } },
 ];
 const served = new Set<string>();
 
@@ -193,7 +216,7 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
   if (rows.length === 0) return null;
   // Latest wins, like capability and kind_def: re-saving a name is a successor record.
   const latest = rows.reduce((a, b) => (a.id > b.id ? a : b));
-  return latest.body as { name: string; artifactId: string; description?: string };
+  return latest.body as { name: string; artifactId: string; description?: string; retired?: boolean };
 }
 
 await agentLoop(client, {
@@ -206,18 +229,20 @@ await agentLoop(client, {
 
     if (b.tool === "save_procedure") return await saveProcedure(rec, c);
     if (b.tool === "read_procedure") return await readProcedure(rec, c);
+    if (b.tool === "retire_procedure") return await retireProcedure(rec, c);
 
     // A named procedure: the code comes from the artifact it was saved as, and the call's own
     // arguments are handed to it as `args`.
     let code = String(b.args?.code ?? "");
     if (b.tool && b.tool !== "run_code") {
       const proc = await lookupProcedure(c, b.tool, b.conversationId);
-      if (!proc) {
-        return {
-          kind: "tool_result",
-          body: { callId, ok: false, output: `no procedure '${b.tool}' saved in this conversation` },
-          taint: true,
-        };
+      if (!proc || proc.retired) {
+        // A retired name is still claimed on purpose, so this answers at once instead of leaving
+        // the caller to wait out the tool deadline. Saving the name again un-retires it.
+        const why = proc?.retired
+          ? `procedure '${b.tool}' has been retired — save it again to bring it back`
+          : `no procedure '${b.tool}' saved in this conversation`;
+        return { kind: "tool_result", body: { callId, ok: false, output: why }, taint: true };
       }
       const source = new TextDecoder().decode(await c.getArtifact(proc.artifactId));
       // `args` is injected as a literal rather than passed on argv: the sandbox takes its program
@@ -370,6 +395,41 @@ async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
     },
     taint: true, // it is model-written source coming back out
   };
+}
+
+/**
+ * Retire a procedure: stop offering it, without erasing it.
+ *
+ * Records are immutable, so this is a SUCCESSOR carrying `retired: true` — the same latest-wins
+ * rule that makes re-saving a name an update. Nothing is deleted, which is the point: the code
+ * stays readable, the history stays intact, and saving the name again simply writes a newer record
+ * that is not retired. A delete would also be the wrong shape for a space where every earlier
+ * version of the procedure is still referenced by the tool_calls that ran it.
+ */
+async function retireProcedure(rec: RadiaRecord, c: RadiaClient) {
+  const callId = rec.id;
+  const b = rec.body as { args?: { name?: string; reason?: string }; conversationId?: string };
+  const name = String(b.args?.name ?? "");
+  const fail = (output: string) => ({ kind: "tool_result", body: { callId, ok: false, output }, taint: true });
+  if (!name) return fail("retire_procedure needs a `name`");
+
+  const current = await lookupProcedure(c, name, b.conversationId);
+  if (!current) return fail(`no procedure '${name}' saved in this conversation`);
+  if (current.retired) return fail(`'${name}' is already retired`);
+
+  await c.put({
+    kind: "procedure",
+    body: { ...current, retired: true, retiredReason: b.args?.reason ?? null },
+    parentIds: [callId],
+  }, `procedure:${b.conversationId}:${name}:retired:${await shortHash(String(b.args?.reason ?? ""))}`);
+
+  // The claim template deliberately STAYS. Two reasons, and the second is the load-bearing one:
+  // a retired name that is still claimed answers "it has been retired" immediately, where an
+  // unclaimed one would leave the caller waiting out the tool deadline for a stall diagnosis; and
+  // this handler runs INSIDE agentLoop's iteration over `templates`, so splicing it here would
+  // mutate the array being walked. The chat stops OFFERING the tool, which is what actually
+  // removes it from the model's context.
+  return { kind: "tool_result", body: { callId, ok: true, output: { name, retired: true } } };
 }
 
 async function shortHash(s: string): Promise<string> {

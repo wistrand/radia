@@ -96,11 +96,24 @@ export async function handleQuery(space: Space, req: Request, principal: string)
     orderBy: j.orderBy as Template["orderBy"],
   };
   const limit = typeof j.limit === "number" && j.limit > 0 ? Math.min(j.limit, 500) : 100;
+  // Keyset page. Validated at the boundary rather than cast: `after` reaching SQL as a non-string
+  // and `dir` as anything but asc/desc are exactly the shapes that turn a bad request into a 500.
+  if (j.after !== undefined && typeof j.after !== "string") {
+    return problem(400, "invalid_template", "after must be a record id string");
+  }
+  if (j.dir !== undefined && j.dir !== "asc" && j.dir !== "desc") {
+    return problem(400, "invalid_template", "dir must be 'asc' or 'desc'");
+  }
+  const page = j.after !== undefined || j.dir !== undefined
+    ? { after: j.after as string | undefined, dir: j.dir as "asc" | "desc" | undefined }
+    : undefined;
   try {
     const constraint = await space.authorize(principal, "query", template.kind);
     if (constraint) template.match = combineMatch(template.match, constraint); // grant ∧ request
-    const records = await space.query(template, limit);
-    return Response.json({ records });
+    const records = await space.query(template, limit, page);
+    // The cursor for the NEXT page is the last id of this one — echoed so a caller never has to
+    // know that the cursor happens to be a record id.
+    return Response.json({ records, nextAfter: records.length === limit ? records[records.length - 1]?.id : undefined });
   } catch (e) {
     if (e instanceof RadiaError) return problem(statusFor(e.code, 400), e.code, e.message);
     throw e;

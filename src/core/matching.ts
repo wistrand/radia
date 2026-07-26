@@ -323,6 +323,26 @@ export function orderRecords(
   return [...records].sort((x, y) => compareRecords(x, y, orderBy ?? []));
 }
 
+/**
+ * Order and cap a matched set for `query`, honouring a keyset page direction.
+ *
+ * `dir` reverses the NATURAL (id) order only. With an explicit `order_by` the caller has already
+ * said how to sort and each key carries its own direction, so a page direction there would be a
+ * second, conflicting answer to the same question — `Space.query` rejects the combination, and
+ * this ignores it if one reaches here anyway.
+ */
+export function pageRecords(
+  records: RadiaRecord[],
+  orderBy: OrderBy[] | undefined,
+  limit: number,
+  page?: { dir?: "asc" | "desc" },
+): RadiaRecord[] {
+  const ordered = orderRecords(records, orderBy);
+  const natural = !orderBy || orderBy.length === 0;
+  if (natural && page?.dir === "desc") ordered.reverse();
+  return ordered.slice(0, limit);
+}
+
 /** First record by the template's order (then record id, always, for determinism). */
 export function firstByOrder(
   records: RadiaRecord[],

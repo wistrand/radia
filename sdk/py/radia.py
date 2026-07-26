@@ -28,7 +28,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
 __all__ = [
     "RadiaClient",
@@ -276,10 +276,39 @@ class RadiaClient:
     def read_one(self, template: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return self._req("POST", "/v0/records/read-one", template)
 
-    def query(self, template: Dict[str, Any], limit: int = 100) -> List[Dict[str, Any]]:
+    def query(
+        self,
+        template: Dict[str, Any],
+        limit: int = 100,
+        after: Optional[str] = None,
+        dir: str = "asc",
+    ) -> List[Dict[str, Any]]:
+        return self.query_page(template, limit, after, dir)[0]
+
+    def query_page(
+        self,
+        template: Dict[str, Any],
+        limit: int = 100,
+        after: Optional[str] = None,
+        dir: str = "asc",
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """One page plus the cursor for the next, as ``(records, next_after)``.
+
+        ``after``/``dir`` are KEYSET pagination over record id — a cursor, not an offset, so a
+        page stays correct while records are being written. Records come back in ASCENDING id
+        order by default, which means a plain ``limit`` gives the OLDEST matches; pass
+        ``dir="desc"`` for the newest. A cursor is defined for that natural order only: combining
+        it with ``order_by`` is rejected, since a keyset over a body field would need the whole
+        sort key. ``next_after`` is ``None`` on the last page.
+        """
         payload = dict(template)
         payload["limit"] = limit
-        return self._req("POST", "/v0/records/query", payload)["records"]
+        if after is not None:
+            payload["after"] = after
+        if dir != "asc":
+            payload["dir"] = dir
+        r = self._req("POST", "/v0/records/query", payload)
+        return r["records"], r.get("nextAfter")
 
     def get_record(self, record_id: str) -> Optional[Dict[str, Any]]:
         try:

@@ -11,6 +11,7 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { bootstrap } from "./space/roles.ts";
+import { ToolSet } from "./client/turn.ts";
 
 const PORT = 7799;
 const url = `http://127.0.0.1:${PORT}`;
@@ -114,6 +115,45 @@ check("read_procedure honours the conversation boundary", !readOther.ok, String(
 // NOTE: a name that was never saved anywhere has no claim template, so no worker takes it and the
 // chat surfaces it through its existing "no worker serves X" stall path. That is the same
 // behaviour as calling any nonexistent tool, so there is nothing procedure-specific to assert.
+
+// 8. Discovery: the real ToolSet, driven against the real space. This is the projection under
+//    test, not a reimplementation of it.
+const tools = new ToolSet(admin);
+await tools.scopeTo(convA);
+const named = () => tools.all().map((t) => t.function.name);
+check("a saved procedure is offered as a tool", named().includes("add_nums"));
+check("the built-ins are still there", named().includes("run_code") && named().includes("save_procedure"));
+
+const toolsB = new ToolSet(admin);
+await toolsB.scopeTo(convB);
+check("and only to the conversation that saved it", !toolsB.all().some((t) => t.function.name === "add_nums"));
+
+// 9. Retire it: stop offering it, without erasing it.
+const retired = await callTool("retire_procedure", { name: "add_nums", reason: "superseded" }, convA);
+check("retire_procedure succeeds", retired.ok, JSON.stringify(retired.output).slice(0, 60));
+await tools.scopeTo(convA);
+check("a retired procedure is no longer offered", !named().includes("add_nums"));
+check("retiring does not disturb the built-ins", named().includes("run_code"));
+
+const afterRetire = await callTool("add_nums", { a: 1, b: 1 }, convA);
+check("calling a retired procedure is refused, promptly", !afterRetire.ok, String(afterRetire.output).slice(0, 60));
+
+const readRetired = await callTool("read_procedure", { name: "add_nums" }, convA);
+check("but its code is still readable — retire is not delete", readRetired.ok);
+check("retiring twice is refused", !(await callTool("retire_procedure", { name: "add_nums" }, convA)).ok);
+
+// 10. Saving the name again brings it back: the successor is newer, so latest-wins un-retires it
+//     with no un-retire path needed.
+const revived = await callTool("save_procedure", {
+  name: "add_nums",
+  description: "Add args.a and args.b.",
+  code: "console.log(args.a + args.b);",
+}, convA);
+check("re-saving a retired name revives it", revived.ok);
+await tools.scopeTo(convA);
+check("and it is offered again", named().includes("add_nums"));
+const ran3 = await callTool("add_nums", { a: 20, b: 22 }, convA);
+check("and it runs again", ran3.ok && (ran3.output as { stdout?: string }).stdout?.trim() === "42");
 
 try {
   worker.kill();

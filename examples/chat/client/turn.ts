@@ -6,7 +6,7 @@
 // inference-worker serves it, and whichever worker claims `tool_call{tool}` runs the tool. Every
 // per-turn decision belongs to a worker, which is what makes this loop short enough to read.
 
-import type { RadiaClient } from "../../../sdk/ts/client.ts";
+import type { RadiaClient, RadiaRecord } from "../../../sdk/ts/client.ts";
 import type { ChatMessage, ToolDef } from "../provider/openrouter.ts";
 import type { Thread } from "./thread.ts";
 import { dim, endStatus, showArtifact, trunc, write } from "./terminal.ts";
@@ -191,6 +191,38 @@ async function awaitToolResult(
 // next turn — no code change here, no per-turn re-query. The chat never learns that `calc` or
 // `run_code` exist; it learns that whatever is advertised exists, and dispatches by content.
 
+interface ProcedureBody {
+  name: string;
+  description: string;
+  parameters?: Record<string, unknown>;
+  retired?: boolean;
+}
+
+/**
+ * The newest record per key — the latest-wins projection every registry on this space is built
+ * from (`kind_def`, `capability`, `model`, `procedure`).
+ *
+ * It compares ids rather than trusting the order rows arrive in. That is not defensiveness for its
+ * own sake: the moment a projection depends on arrival order, a retirement can be resurrected by
+ * an older record being processed after it, and the tool quietly comes back. Ids are ULIDs, so the
+ * highest id is the newest record — which is the same rule `kind_def` redeclaration and capability
+ * republication already use.
+ */
+function newestPerKey<T>(
+  records: RadiaRecord[],
+  keyOf: (body: T) => string | undefined,
+): Map<string, { id: string; body: T }> {
+  const out = new Map<string, { id: string; body: T }>();
+  for (const r of records) {
+    const body = r.body as T;
+    const key = keyOf(body);
+    if (!key) continue;
+    const prev = out.get(key);
+    if (!prev || prev.id < r.id) out.set(key, { id: r.id, body });
+  }
+  return out;
+}
+
 /**
  * The tool list, discovered rather than declared — from two sources with different lifetimes.
  *
@@ -234,38 +266,38 @@ export class ToolSet {
    *  A procedure may not shadow a worker's tool: the built-in is the one that has a worker behind
    *  it, and a saved name that collided would silently change what a call does. */
   private async refresh(): Promise<void> {
-    const latest = new Map<string, { id: string; def: ToolDef }>();
-    for (const c of await this.client.query({ kind: "capability" }, 500)) {
-      const b = c.body as { tool: string; def: ToolDef };
-      const prev = latest.get(b.tool);
-      if (!prev || prev.id < c.id) latest.set(b.tool, { id: c.id, def: b.def });
-    }
-    const builtin = new Set(latest.keys());
+    // Capabilities first: what the workers serve, one per tool name.
+    const caps = newestPerKey<{ tool: string; def: ToolDef }>(
+      await this.client.query({ kind: "capability" }, 500),
+      (b) => b.tool,
+    );
+    const tools = [...caps.values()].map((v) => v.body.def);
+
     if (this.conversationId) {
-      const procs = await this.client.query(
-        { kind: "procedure", match: { conversationId: this.conversationId } },
-        200,
+      const procs = newestPerKey<ProcedureBody>(
+        await this.client.query({ kind: "procedure", match: { conversationId: this.conversationId } }, 200),
+        (b) => b.name,
       );
-      for (const p of procs) {
-        const b = p.body as { name: string; description: string; parameters?: Record<string, unknown> };
-        if (builtin.has(b.name)) continue;
-        const prev = latest.get(b.name);
-        if (prev && prev.id >= p.id) continue;
-        latest.set(b.name, {
-          id: p.id,
-          // The description the assistant wrote for itself, marked so it can tell its own saved
-          // code apart from a tool a worker provides.
-          def: {
-            type: "function",
-            function: {
-              name: b.name,
-              description: `(saved procedure) ${b.description}`,
-              parameters: b.parameters ?? { type: "object", properties: {} },
-            },
+      for (const [name, { body }] of procs) {
+        // A procedure never shadows a worker's tool: the built-in is the one with a worker behind
+        // it, and a saved name that collided would silently change what a call does.
+        if (caps.has(name)) continue;
+        // Retirement is a SUCCESSOR record, not a delete — so it is simply whatever the newest
+        // record says. Saving the name again writes a newer, non-retired record and the tool
+        // comes back, with no un-retire path needed.
+        if (body.retired) continue;
+        tools.push({
+          type: "function",
+          function: {
+            name,
+            // The description the assistant wrote for itself, marked so it can tell its own saved
+            // code apart from a tool a worker provides.
+            description: `(saved procedure) ${body.description}`,
+            parameters: body.parameters ?? { type: "object", properties: {} },
           },
         });
       }
     }
-    this.tools = [...latest.values()].map((v) => v.def);
+    this.tools = tools;
   }
 }

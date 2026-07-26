@@ -199,8 +199,8 @@ just curl.
 **BUILT** (ahead of Phase 7): `src/ui/index.html` served at `GET /`, with all panels
 working — Overview, Records browser (with lineage in detail), Kinds, Put, Query
 playground, Worker, and a live **Feed** tab. Backing endpoints added to support it: `GET
-/v0/ops/stats`, `POST /v0/records/query` (basic list — keyset-cursor `query`
-is still M1; the Kinds panel uses it with `{kind:kind_def}`), `GET /v0/ops/records/{id}/envelope`,
+/v0/ops/stats`, `POST /v0/records/query` (ordered list plus the keyset cursor `after`/`dir`; the Kinds
+panel uses it with `{kind:kind_def}`), `GET /v0/ops/records/{id}/envelope`,
 `GET /v0/ops/events`, and `GET /v0/ops/records/{id}/lineage`. Remaining polish: SSE push for the feed (currently polls;
 proper watches land in M1).
 

@@ -13,10 +13,11 @@ import type {
   TakeResult,
 } from "../../src/storage/adapter.ts";
 import type { Template } from "../../src/core/matching.ts";
+import type { Page } from "../../src/storage/adapter.ts";
 import type { PutRequest } from "../../src/core/record.ts";
 import { KIND_DEF, type KindDef, kindDefKey } from "../../src/core/kinds.ts";
 
-export type { AckResult, KindDef, Lease, PutRequest, RadiaRecord, SpaceEvent, Template };
+export type { AckResult, KindDef, Lease, Page, PutRequest, RadiaRecord, SpaceEvent, Template };
 
 export interface KindStateCount {
   kind: string;
@@ -130,9 +131,26 @@ export class RadiaClient {
     return this.req("POST", "/v0/records/read-one", template);
   }
 
-  async query(template: Template, limit = 100): Promise<RadiaRecord[]> {
-    const r = await this.req("POST", "/v0/records/query", { ...template, limit });
+  async query(template: Template, limit = 100, page?: Page): Promise<RadiaRecord[]> {
+    const r = await this.req("POST", "/v0/records/query", { ...template, limit, ...page });
     return r.records;
+  }
+
+  /**
+   * One page, plus the cursor for the next one — `nextAfter` is undefined on the last page.
+   *
+   * Use this over `query` when walking a whole kind: a keyset cursor stays correct while records
+   * are being written, where an offset would skip or repeat rows as the space grows underneath it.
+   * `dir: "desc"` walks newest-first, which a plain `query` cannot express — its deterministic
+   * order is ascending id, so a limit there always returns the OLDEST matches.
+   */
+  async queryPage(
+    template: Template,
+    limit = 100,
+    page?: Page,
+  ): Promise<{ records: RadiaRecord[]; nextAfter?: string }> {
+    const r = await this.req("POST", "/v0/records/query", { ...template, limit, ...page });
+    return { records: r.records, nextAfter: r.nextAfter };
   }
 
   take(sel: TakeSelector, opts: { leaseSeconds?: number; requireUntainted?: boolean } = {}): Promise<TakeResult | null> {

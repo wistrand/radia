@@ -8,6 +8,7 @@ whatever an SDK can do, a plain HTTP client can too.
 | Path        | [`ts/`](ts/) — `client.ts`, `loop.ts` | [`py/radia.py`](py/radia.py) |
 | Client      | `RadiaClient`      | `RadiaClient` |
 | Worker loop | `agentLoop`        | `agent_loop` |
+| Paging      | `query` / `queryPage` (keyset: `{after, dir}`) | `query` / `query_page` (keyset: `after=`, `dir=`) |
 | Watches     | `client.watch()` async generator | `client.watch()` generator |
 | Artifacts   | `putArtifact` / `getArtifact` / `artifactCapability` | `put_artifact` / `get_artifact` / `artifact_capability` |
 | Remediation | `admin(action, id)` / `remediate(action, selector)` | `admin(action, id)` / `remediate(action, state=…, expired=…)` |

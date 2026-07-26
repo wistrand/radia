@@ -27,9 +27,13 @@ the trade a coordination substrate should want: records are matched far more oft
 A `kind`'s `indexedPaths` are still a **validation contract**, not a per-path physical index —
 Postgres answers pushed equality from one GIN index over the whole body, so declaring a path
 needs no DDL and no migration. What `indexedPaths` buys is the guarantee that a template only
-matches on paths the kind promised, which is what keeps a query analyzable. Paired with the M1
-keyset query — see [plan-m0-implementation.md](plan-m0-implementation.md) Phase 2. Indexed SQL
-must agree with the oracle; `conformance/suites/pushdown.ts` is where that is enforced.
+matches on paths the kind promised, which is what keeps a query analyzable.
+
+**The keyset query is built** (`after`/`dir` on `query`): a cursor over record id rather than an
+offset, so a page stays correct while the space is written to, and `dir: "desc"` makes "the newest
+N" expressible — see Template properties below for why a plain limit cannot. Indexed SQL must
+agree with the oracle; `conformance/suites/pushdown.ts` and `conformance/suites/keyset.ts` are
+where that is enforced.
 
 ## Contents
 - Invariants
@@ -131,9 +135,10 @@ and starving templates are first-class diagnostics (see
 Two consequences of that tie-break that callers get wrong, so state them plainly. **No `order_by`
 does not mean "unordered"** — it means ascending record id, which is stable and repeatable, and
 which a pushed `LIMIT` reproduces exactly (see [design-storage.md](design-storage.md), Matching).
-So a limited query returns the OLDEST matches; there is no way to ask for the newest, since
-`order_by` ranges over the record BODY and creation time is runtime metadata, not a body field.
-Recency questions belong to the event log, not to `query` — until the M1 keyset query lands.
+So a limited query returns the OLDEST matches unless you say otherwise — `order_by` cannot help,
+because it ranges over the record BODY and creation time is runtime metadata, not a body field.
+Asking for the newest is what `dir: "desc"` on the keyset cursor is for; the event log remains the
+answer when you want events rather than records.
 And **ids order by time only to the millisecond**: ULIDs minted in the same millisecond differ
 only in their random half, so records written in one burst come back in a stable but arbitrary
 relative order. A test that assumes "the order I put them" is a test that passes on a slow
