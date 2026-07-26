@@ -120,16 +120,27 @@ export interface OrderBy {
 }
 
 /**
- * Restricts an aggregate to a subset of the space. Both fields are ANDed, and both are applied in
- * SQL rather than after the fact.
+ * What an ops-plane read is narrowed to: the principal's own records (`createdBy`) on `kinds`.
+ * Both filters are ANDed and both are applied in SQL, never after the fact. `createdBy` holds
+ * PRINCIPALS as stored on the record (`run:…` for a token-bearing session), not agent names — what
+ * "my records" means is resolved by the runtime before it gets here.
  *
- * `createdBy` holds PRINCIPALS as stored on the record (`run:…` for a token-bearing session), not
- * agent names: what "my records" means is resolved by the runtime before it gets here, because the
- * run → agent mapping lives in the credential index and not in any column.
+ * `alsoReadable` filters NOTHING — it is carried so the answer can describe itself honestly. A
+ * principal's authority is not uniform across kinds: it can hold a self-scoped read grant on one
+ * and an unscoped one on another, and then the ops aggregate (always self-scoped, by design) counts
+ * fewer records than its own `query` returns for the same kind. That happened — `ops/stats` said
+ * 187 messages to a session whose `space_count` said 578 — and the aggregate gave no hint, so the
+ * session reported its own slice as the space and had to correct itself. The counts stay narrow;
+ * the response says which kinds it could read more of.
  */
 export interface StatsScope {
+  /** Author restriction: the principal and its runs. */
   createdBy?: string[];
+  /** Kinds the aggregate covers, narrowed to `createdBy`. */
   kinds?: string[];
+  /** Descriptive only: kinds whose READS are not narrowed, so a query on them returns more than
+   *  these counts. Never used as a filter — see the note above. */
+  alsoReadable?: string[];
 }
 
 export interface KindStateCount {

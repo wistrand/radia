@@ -43,7 +43,7 @@ let space = startSpace();
 await waitUp();
 await registerChatKinds(client);
 
-const first = await Thread.open(client, "admin");
+const first = await Thread.open(client, "admin", (await client.put({ kind: "conversation", body: {} })).id);
 await first.append({ role: "user", content: "hello" });
 await first.append({ role: "assistant", content: "hi" });
 const convId = first.id;
@@ -95,7 +95,7 @@ const procs = await client.query({ kind: "procedure", match: { conversationId: c
 check("conversation-scoped procedures survive the restart", procs.length === 1);
 
 // `last` resolves to the newest conversation — the keyset direction in use.
-await Thread.open(client, "admin"); // a newer conversation
+await Thread.open(client, "admin", (await client.put({ kind: "conversation", body: {} })).id); // a newer conversation
 const newest = await client.query({ kind: "conversation" }, 1, { dir: "desc" });
 check("'last' resolves to the most recent conversation", newest.length === 1 && newest[0].id !== convId);
 

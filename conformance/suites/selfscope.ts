@@ -211,4 +211,81 @@ export const selfScopeSuites: Suite[] = [
       assert(denied, "a revoked self-scope closes the plane");
     },
   },
+  {
+    name: "an aggregate that covers less than the caller can read says so",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({ kind: "message", indexedPaths: [{ path: "role", type: "keyword" }] });
+      space.registerKind({ kind: "note", indexedPaths: [] });
+
+      const { definitionToken } = await space.createAgentDefinition("agent:w", []);
+      const { runToken } = await space.mintRun(definitionToken);
+      const resolved = await space.resolveToken(runToken);
+      const principal = resolved.ok && resolved.kind === "run" ? resolved.principal : "";
+
+      for (let i = 0; i < 5; i++) await space.put({ kind: "message", body: { role: "user", i } });
+      for (let i = 0; i < 2; i++) await space.put({ kind: "message", body: { role: "user", i } }, undefined, principal);
+      for (let i = 0; i < 4; i++) await space.put({ kind: "note", body: { i } });
+      await space.put({ kind: "note", body: { i: 99 } }, undefined, principal);
+
+      // The state that produced a wrong number in a live session: an unscoped {put, query} grant
+      // (written by the fleet's bootstrap) beside a self-scoped {query} one (a human narrowing it
+      // once). Different operation sets means different grant identities, so BOTH are in force —
+      // and the union rule says reads are therefore NOT narrowed.
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "message", operations: ["put", "query"] } });
+      await space.put({
+        kind: "grant",
+        body: { principal: "agent:w", kind: "message", operations: ["query"], scope: { createdBy: "self" } },
+      });
+      // …and a kind where the self-scoped grant is the only one, which IS narrowed.
+      await space.put({
+        kind: "grant",
+        body: { principal: "agent:w", kind: "note", operations: ["query"], scope: { createdBy: "self" } },
+      });
+
+      const scope = await space.opsScope(principal);
+      const stats = await space.stats(scope ?? undefined);
+      const count = (kind: string) => stats.filter((s) => s.kind === kind).reduce((n, s) => n + s.count, 0);
+
+      // The ops plane is self-scoped BY DESIGN, so both counts are the caller's own records — that
+      // part is deliberate and stays. What must not happen is the number quietly disagreeing with
+      // the caller's own `query` on the same kind with nothing to signal it: reads on `message` are
+      // NOT narrowed (an unscoped grant permits them), so the caller can list 7 while this counts
+      // 2, and the scope has to say so.
+      assertEquals(await space.authorScope(principal, "query", "message"), undefined, "reads on message are not narrowed");
+      assertEquals(count("message"), 2, "the aggregate still covers only the caller's own records");
+      assert((scope?.alsoReadable ?? []).includes("message"), "and the scope flags the kind it can read in full");
+
+      assert(await space.authorScope(principal, "query", "note") !== undefined, "reads on note ARE narrowed");
+      assertEquals(count("note"), 1, "own notes only");
+      assert(!(scope?.alsoReadable ?? []).includes("note"), "a genuinely narrowed kind is not flagged");
+    },
+  },
+  {
+    name: "a kind the caller can list in full is reported, not silently widened",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({ kind: "message", indexedPaths: [{ path: "role", type: "keyword" }] });
+      const { definitionToken } = await space.createAgentDefinition("agent:w", []);
+      const { runToken } = await space.mintRun(definitionToken);
+      const resolved = await space.resolveToken(runToken);
+      const principal = resolved.ok && resolved.kind === "run" ? resolved.principal : "";
+
+      const { id: theirs } = await space.put({ kind: "message", body: { role: "user" } });
+      // Unscoped {put, query} beside a self-scoped {query}: the plane is reachable (something is
+      // self-scoped) and message reads are NOT narrowed (the union includes an unscoped grant).
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "message", operations: ["put", "query"] } });
+      await space.put({
+        kind: "grant",
+        body: { principal: "agent:w", kind: "message", operations: ["query"], scope: { createdBy: "self" } },
+      });
+
+      const scope = await space.opsScope(principal);
+      // The per-record ops reads stay self-scoped along with the aggregate — a caller that can LIST
+      // another author's record still gets 404 for it here. That is the deliberate posture; what
+      // the scope owes the caller is to say the two planes differ, not to quietly widen one.
+      assert((scope?.alsoReadable ?? []).includes("message"), "the discrepancy is reported");
+      assert(await space.getRecord(theirs), "the record exists and the caller can list it");
+    },
+  },
 ];

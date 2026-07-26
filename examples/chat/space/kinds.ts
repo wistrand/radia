@@ -40,10 +40,21 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     indexedPaths: [{ path: "tier", type: "keyword" }, { path: "conversationId", type: "keyword" }],
   });
   await client.registerKind({ kind: "model", indexedPaths: [{ path: "tier", type: "keyword" }], claimable: false });
-  await client.registerKind({ kind: "llm_result", indexedPaths: [{ path: "callId", type: "keyword" }], claimable: false });
+  // `conversationId` on the RESULT kinds, not just the call kinds: these are keyed by callId, and a
+  // grant scoped by conversation can only bind a path the body actually carries. Without it a
+  // session holding a callId from another conversation could read its result.
+  await client.registerKind({
+    kind: "llm_result",
+    indexedPaths: [{ path: "callId", type: "keyword" }, { path: "conversationId", type: "keyword" }],
+    claimable: false,
+  });
   await client.registerKind({
     kind: "llm_chunk",
-    indexedPaths: [{ path: "callId", type: "keyword" }, { path: "index", type: "integer" }],
+    indexedPaths: [
+      { path: "callId", type: "keyword" },
+      { path: "index", type: "integer" },
+      { path: "conversationId", type: "keyword" },
+    ],
     sortablePaths: ["index"],
     claimable: false,
   });
@@ -51,7 +62,11 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     kind: "tool_call",
     indexedPaths: [{ path: "tool", type: "keyword" }, { path: "conversationId", type: "keyword" }],
   });
-  await client.registerKind({ kind: "tool_result", indexedPaths: [{ path: "callId", type: "keyword" }], claimable: false });
+  await client.registerKind({
+    kind: "tool_result",
+    indexedPaths: [{ path: "callId", type: "keyword" }, { path: "conversationId", type: "keyword" }],
+    claimable: false,
+  });
   // A `grant_request` = the assistant asking for authority it does not have. Grants are
   // "assigned, never self-declared" (CLAUDE.md), so an agent that hits a 403 cannot fix it — but it
   // CAN say what it needs and why, as a record, and let a human decide. The request is written by

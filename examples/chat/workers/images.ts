@@ -75,7 +75,7 @@ await agentLoop(client, {
     const prompt = String(b.args?.prompt ?? "").trim();
     // Nothing streams for the next 5-20s, so this record is the only sign of life the chat has.
     await progress(c, { conversationId: b.conversationId, callId, stage: "drawing", by: ME, note: model }, [callId]);
-    if (!prompt) return { kind: "tool_result", body: { callId, ok: false, output: "generate_image needs a prompt" } };
+    if (!prompt) return { kind: "tool_result", body: { callId, conversationId: b.conversationId, ok: false, output: "generate_image needs a prompt" } };
     try {
       const { bytes, mediaType } = await generateImage({ apiKey, model, prompt, safetySettings });
       // Tainted on purpose. The bytes come from a provider (and in two of the response formats,
@@ -92,6 +92,7 @@ await agentLoop(client, {
         kind: "tool_result",
         body: {
           callId,
+          conversationId: b.conversationId,
           ok: true,
           output: { artifactId: artifact.id, mediaType, size: artifact.size, model, prompt },
         },
@@ -99,7 +100,7 @@ await agentLoop(client, {
     } catch (e) {
       // Don't nack: a refused or failed generation is an ANSWER (the model should see why and can
       // rephrase), not a transient fault to retry at cost.
-      return { kind: "tool_result", body: { callId, ok: false, output: String(e) } };
+      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, ok: false, output: String(e) } };
     }
   },
 });

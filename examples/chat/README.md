@@ -42,7 +42,7 @@ outside world).
 ## Testing it without a model
 
 ```bash
-deno task chat-test              # all six suites, ~11s
+deno task chat-test              # all seven suites, ~13s
 deno task chat-test longthread   # one by name
 ```
 
@@ -64,6 +64,8 @@ real assembly, with no API key:
 | `procedures` | save → call by name → read back → retire → revive, conversation scoping, name shadowing, result provenance |
 | `resume` | reattaching across a genuine process restart (the space is killed and restarted on the same `--db`) |
 | `selfgrant` | forbidden → request → human approval → self-scoped reads, on both the ops and coordination planes |
+| `inspect` | session isolation (a session reads only its own conversation), the `space_*` TOOLS on a busy space — paging past a wall of another author's events, answering "what may I do" from the enforcement rather than by inference, and the full escalation loop: a grant approved at the wrong scope authorizes nothing, and the prompt has to say so |
+| `fleet` | model advertisements: publish, restart without growing the space, withdraw on shutdown, revive |
 
 The long thread is the one that pays for itself: bugs here come from the SHAPE of accumulated
 state, which is cheap to construct as records and nearly impossible to hit reliably by chatting.
@@ -208,8 +210,10 @@ text as an artifact), `run_code` (sandboxed execution), `save_procedure`/`read_p
 **Inspection tools** (`tools/space.ts`) make the chatbot a conversational inspector of its own
 space: `space_stats`, `space_kinds`, `space_query`, `space_count`, `space_record`, `space_lineage` (ancestors,
 UP), `space_children` (records that reference this one, DOWN — e.g. a conversation's messages),
-`space_events`, and `space_doctor` (a derived health report — stuck leases, dead-letters,
-stale-available). Tool guidance lives in each tool's description (published as a `capability`
+`space_events` (which PAGES to the end of the log, so a scoped session still reaches its own
+activity past events it may not see), `space_permissions` (what this session may actually do — the
+fold over its grants, straight from the enforcement), and `space_doctor` (a derived health report —
+stuck leases, dead-letters, stale-available). Tool guidance lives in each tool's description (published as a `capability`
 record), not in the chatbot's prompt. Because everything is a record, it can inspect *itself* — ask it "how many
 records are in the space?", "show the lineage of the last summary", "is the space healthy?",
 or "query my conversation thread" (the conversation is `kind:message` with your
@@ -318,7 +322,7 @@ Three details carry the weight:
   used a saved procedure, said yes, had not, and invented a reason for the mismatch.
 
 ```bash
-deno task chat-test              # all six suites, ~11s, no API key
+deno task chat-test              # all seven suites, ~13s, no API key
 deno task chat-test longthread   # one by name
 ```
 

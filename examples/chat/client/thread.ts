@@ -25,8 +25,14 @@ export class Thread {
 
   private constructor(private readonly client: RadiaClient, readonly id: string) {}
 
-  static async open(client: RadiaClient, role: Role): Promise<Thread> {
-    const { id } = await client.put({ kind: "conversation", body: {} });
+  /**
+   * Attach to a conversation record that ALREADY EXISTS.
+   *
+   * The record is created by the operator before the session token is minted, because the session's
+   * grants are scoped to this conversation and a grant is minted with the token. That also means a
+   * user-role session no longer needs `conversation: put` at all.
+   */
+  static async open(client: RadiaClient, role: Role, id: string): Promise<Thread> {
     const thread = new Thread(client, id);
     // The assistant is told its OWN id, not how to use it. Identity is data an agent needs to act
     // on its own behalf — the same category as handing a worker a run token — while the mechanism

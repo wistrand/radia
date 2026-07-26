@@ -20,11 +20,19 @@ import { problem } from "../problem.ts";
  */
 function describeScope(scope?: StatsScope | null) {
   if (!scope) return undefined;
+  const more = scope.alsoReadable ?? [];
   return {
     self: true,
     kinds: scope.kinds ?? [],
+    // Kinds this caller can READ in full even though these counts cover only its own records. Not
+    // a caveat about completeness in general — a specific, checkable statement that `query` on
+    // these kinds returns more than the number above, so the number is never mistaken for a total.
+    ...(more.length > 0 ? { alsoReadableInFull: more } : {}),
     note: "scoped to your own records, on the kinds you are granted — an empty result means nothing " +
-      "visible to you, NOT that the space is empty",
+      "visible to you, NOT that the space is empty" +
+      (more.length > 0
+        ? `. Your grants let you READ every record of ${more.join(", ")}, so a query there returns more than these counts`
+        : ""),
   };
 }
 

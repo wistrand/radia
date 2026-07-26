@@ -48,9 +48,9 @@ await agentLoop(client, {
     await progress(c, { conversationId: b.conversationId, callId, stage: "running", by: "agent:chat-tools", note: b.tool }, [callId]);
     try {
       const output = await tools[b.tool](b.args ?? {}, { callId, conversationId: b.conversationId });
-      return { kind: "tool_result", body: { callId, ok: true, output } };
+      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, ok: true, output } };
     } catch (e) {
-      return { kind: "tool_result", body: { callId, ok: false, output: String(e) } };
+      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, ok: false, output: String(e) } };
     }
   },
 });

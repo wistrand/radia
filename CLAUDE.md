@@ -56,7 +56,7 @@ content, not by addressing.
 | `sdk/ts/`                               | TS SDK: `client.ts` (`RadiaClient` over `/v0`, incl. `watch()` SSE), `loop.ts` (`agentLoop`, event-driven, design §5) |
 | `sdk/py/radia.py`                       | Python SDK at parity (stdlib only): `RadiaClient`, `watch()`, `agent_loop` with heartbeat |
 | `scripts/build-release.sh`              | `deno compile` per OS + staged npm/pip launcher packages (`deno task release`) |
-| `examples/`                             | one directory per example, each with its own README: `pipeline/` (planner + workers + aggregator, `deno task demo`), `stress/` (wave load generator for the Space tab), `chat/` (the full LLM agent — llm + tool calls, images, artifacts and sandboxed code execution, all as records; `deno task chat-test` runs its six suites with NO API key — this app is where bugs surface first, so it has its own harness) — see [examples/README.md](examples/README.md) |
+| `examples/`                             | one directory per example, each with its own README: `pipeline/` (planner + workers + aggregator, `deno task demo`), `stress/` (wave load generator for the Space tab), `chat/` (the full LLM agent — llm + tool calls, images, artifacts and sandboxed code execution, all as records; `deno task chat-test` runs its seven suites with NO API key — this app is where bugs surface first, so it has its own harness) — see [examples/README.md](examples/README.md) |
 | `bench/`                                | benchmark suite (`deno task bench`): throughput, latency percentiles, scaling curves per adapter. Nothing asserts — see the README there for what the numbers mean and what the first run found |
 | `conformance/`                          | port contract suites — storage adapters and the blob store (`run.test.ts`, `harness.ts`, `suites/`), plus standalone `*.test.ts` for what is not adapter-parameterized: `http.test.ts` (the HTTP boundary, via `makeHandler`), `backfill.test.ts` (the schema's one migration), `planner.test.ts` (Postgres statistics), `registry.test.ts`, `console.test.ts`; see the README there |
 | `openapi/radia.yaml`                    | the frozen wire contract (source of truth)                 |
@@ -158,8 +158,12 @@ a stopped run's token kept resolving after a restart. So:
 - Registry writes are CONTENT-KEYED, so restarting a fleet does not append a duplicate per entry.
   Unbounded growth is what makes bounded reads dangerous in the first place.
 - Authorization has a canonical, inspectable form: `Space.effectivePermissions` /
-  `GET /v0/ops/permissions` / `radia permissions <principal>`. Every grant bug so far was a promise
-  that did not match the enforcement; this is how you check before believing.
+  `GET /v0/ops/permissions` / `radia permissions <principal>` / the chat's `space_permissions`.
+  Every grant bug so far was a promise that did not match the enforcement; this is how you check
+  before believing. **Any principal may read its OWN permissions**, including one with no grants at
+  all — that is the caller most likely to need the answer, and gating it behind the ops plane left
+  an agent unable to tell an approved grant from a pending one. Reading anyone else's stays
+  operator-only.
 - State that is high-churn AND security-critical (credentials) is a poor fit for this shape. Prefer
   bounded relevance (only what can still be presented) over replaying history.
 

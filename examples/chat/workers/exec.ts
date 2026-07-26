@@ -275,7 +275,7 @@ await agentLoop(client, {
       if ((await capabilityNames(c)).has(b.tool)) {
         return {
           kind: "tool_result",
-          body: { callId, ok: false, output: `'${b.tool}' is served by a worker, not by a saved procedure` },
+          body: { callId, conversationId: b.conversationId, ok: false, output: `'${b.tool}' is served by a worker, not by a saved procedure` },
           taint: true,
         };
       }
@@ -286,7 +286,7 @@ await agentLoop(client, {
         const why = proc?.retired
           ? `procedure '${b.tool}' has been retired — save it again to bring it back`
           : `no procedure '${b.tool}' saved in this conversation`;
-        return { kind: "tool_result", body: { callId, ok: false, output: why }, taint: true };
+        return { kind: "tool_result", body: { callId, conversationId: b.conversationId, ok: false, output: why }, taint: true };
       }
       provenance = { name: proc.name, recordId: proc.id, artifactId: proc.artifactId };
       const source = new TextDecoder().decode(await c.getArtifact(proc.artifactId));
@@ -301,7 +301,7 @@ await agentLoop(client, {
     // result and any artifact as its children.
     await progress(c, { conversationId: b.conversationId, callId, stage: "executing", by: ME, note: `${code.length} chars` }, [callId]);
     if (!code.trim()) {
-      return { kind: "tool_result", body: { callId, ok: false, output: "run_code needs a `code` argument" }, taint: true };
+      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, ok: false, output: "run_code needs a `code` argument" }, taint: true };
     }
     const r = await runCode(code, { timeoutMs, readRoots, denyRead });
 
@@ -333,6 +333,7 @@ await agentLoop(client, {
       kind: "tool_result",
       body: {
         callId,
+        conversationId: b.conversationId,
         ok: r.ok,
         // Recorded on the RECORD, deliberately not inside `output`: only `output` is serialized
         // back into the model's thread, so provenance is auditable by query without spending
@@ -372,7 +373,7 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
   const name = String(a.name ?? "");
   const description = String(a.description ?? "");
   const code = String(a.code ?? "");
-  const fail = (output: string) => ({ kind: "tool_result", body: { callId, ok: false, output }, taint: true });
+  const fail = (output: string) => ({ kind: "tool_result", body: { callId, conversationId: b.conversationId, ok: false, output }, taint: true });
 
   if (!NAME_RE.test(name)) return fail("`name` must be lowercase letters, digits and underscores, starting with a letter");
   if ((await capabilityNames(c)).has(name)) return fail(`'${name}' is already a tool served by a worker — choose another name`);
@@ -423,6 +424,7 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
     kind: "tool_result",
     body: {
       callId,
+      conversationId: b.conversationId,
       ok: true,
       output: { name, artifactId: art.id, size: art.size, saved: true, ...(note ? { note } : {}) },
     },
@@ -443,13 +445,13 @@ async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
   const b = rec.body as { args?: { name?: string }; conversationId?: string };
   const name = String(b.args?.name ?? "");
   if (!name) {
-    return { kind: "tool_result", body: { callId, ok: false, output: "read_procedure needs a `name`" }, taint: true };
+    return { kind: "tool_result", body: { callId, conversationId: b.conversationId, ok: false, output: "read_procedure needs a `name`" }, taint: true };
   }
   const rows = await c.query({ kind: "procedure", match: { name, conversationId: b.conversationId ?? "" } }, 50);
   if (rows.length === 0) {
     return {
       kind: "tool_result",
-      body: { callId, ok: false, output: `no procedure '${name}' saved in this conversation` },
+      body: { callId, conversationId: b.conversationId, ok: false, output: `no procedure '${name}' saved in this conversation` },
       taint: true,
     };
   }
@@ -460,6 +462,7 @@ async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
     kind: "tool_result",
     body: {
       callId,
+      conversationId: b.conversationId,
       ok: true,
       output: { name: body.name, description: body.description, code, versions: rows.length },
     },
@@ -480,7 +483,7 @@ async function retireProcedure(rec: RadiaRecord, c: RadiaClient) {
   const callId = rec.id;
   const b = rec.body as { args?: { name?: string; reason?: string }; conversationId?: string };
   const name = String(b.args?.name ?? "");
-  const fail = (output: string) => ({ kind: "tool_result", body: { callId, ok: false, output }, taint: true });
+  const fail = (output: string) => ({ kind: "tool_result", body: { callId, conversationId: b.conversationId, ok: false, output }, taint: true });
   if (!name) return fail("retire_procedure needs a `name`");
 
   const current = await lookupProcedure(c, name, b.conversationId);
@@ -499,7 +502,7 @@ async function retireProcedure(rec: RadiaRecord, c: RadiaClient) {
   // this handler runs INSIDE agentLoop's iteration over `templates`, so splicing it here would
   // mutate the array being walked. The chat stops OFFERING the tool, which is what actually
   // removes it from the model's context.
-  return { kind: "tool_result", body: { callId, ok: true, output: { name, retired: true } } };
+  return { kind: "tool_result", body: { callId, conversationId: b.conversationId, ok: true, output: { name, retired: true } } };
 }
 
 async function shortHash(s: string): Promise<string> {

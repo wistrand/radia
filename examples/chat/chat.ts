@@ -95,7 +95,24 @@ if (!usingRunning) {
 
 // Bootstrap as operator, then hand each worker its own least-privilege run token.
 await registerChatKinds(admin);
-const tokens = await bootstrap(admin, role);
+// Which conversation this session is for, decided BEFORE its credential exists — the session's
+// grants are scoped to it, and a grant is minted with the run token. Resolved (and created) with
+// the OPERATOR client on purpose: enumerating conversations would otherwise need a
+// `conversation: query` grant on the scoped session, which would let a user session list every
+// conversation on the space — a real widening to save a keystroke.
+async function resolveConversation(): Promise<{ id: string; resumed: boolean }> {
+  if (resume && resume !== "last") return { id: resume, resumed: true };
+  if (resume === "last") {
+    // Newest first — the keyset direction, which is the only way to ask for the most recent.
+    const recent = await admin.query({ kind: "conversation" }, 1, { dir: "desc" });
+    if (recent.length > 0) return { id: recent[0].id, resumed: true };
+    write("no conversation to resume; starting a new one\n");
+  }
+  return { id: (await admin.put({ kind: "conversation", body: {} })).id, resumed: false };
+}
+const conversation = await resolveConversation();
+
+const tokens = await bootstrap(admin, role, conversation.id);
 const session = new RadiaClient(url, tokens.sessionToken ? { token: tokens.sessionToken } : {});
 procs.push(...launchFleet(tokens));
 
@@ -126,28 +143,11 @@ console.log(
   `space ${url}${usingRunning ? " (existing)" : ` (spawned, persisted at ${spaceDb})`} — open it and watch the Feed tab. Ctrl-D to quit.`,
 );
 
-// Resume, or start fresh. `last` is resolved with the OPERATOR client on purpose: enumerating
-// conversations would otherwise need a `conversation: query` grant on the scoped session, which
-// would let a user session list every conversation on the space — a real widening to save a
-// keystroke. The REPL already holds the operator credential it bootstrapped with.
-async function openThread(): Promise<Thread> {
-  if (!resume) return await Thread.open(session, role);
-  let id = resume;
-  if (resume === "last") {
-    // Newest first — the keyset direction, which is the only way to ask for the most recent.
-    const recent = await admin.query({ kind: "conversation" }, 1, { dir: "desc" });
-    if (recent.length === 0) {
-      write("no conversation to resume; starting a new one\n");
-      return await Thread.open(session, role);
-    }
-    id = recent[0].id;
-  }
-  return await Thread.resume(session, id, role);
-}
-
 let thread: Thread;
 try {
-  thread = await openThread();
+  thread = conversation.resumed
+    ? await Thread.resume(session, conversation.id, role)
+    : await Thread.open(session, role, conversation.id);
 } catch (e) {
   console.error(`could not resume: ${e}`);
   cleanup();

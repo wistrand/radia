@@ -156,7 +156,7 @@ await agentLoop(client, {
         body.stream === false
           ? () => Promise.resolve() // raw-prompt one-off calls don't emit chunk records
           : async (delta) => {
-            await c.put({ kind: "llm_chunk", body: { callId: resultKey, index: index++, delta }, parentIds: [callId] });
+            await c.put({ kind: "llm_chunk", body: { callId: resultKey, conversationId: body.conversationId, index: index++, delta }, parentIds: [callId] });
           },
       );
       // Self-escalation: the model asked for a stronger model and one exists → re-dispatch the turn
@@ -168,7 +168,7 @@ await agentLoop(client, {
         // `reset` chunk marks the boundary, and `indexOffset` carries the watermark so the next
         // worker continues one monotonic sequence instead of replaying indices from zero.
         if (body.stream !== false) {
-          await c.put({ kind: "llm_chunk", body: { callId: resultKey, index: index++, delta: "", reset: true }, parentIds: [callId] });
+          await c.put({ kind: "llm_chunk", body: { callId: resultKey, conversationId: body.conversationId, index: index++, delta: "", reset: true }, parentIds: [callId] });
         }
         await progress(c, {
           conversationId: body.conversationId,
@@ -195,13 +195,13 @@ await agentLoop(client, {
       // "did windowing change how often the assistant reaches for its own history?".
       return {
         kind: "llm_result",
-        body: { callId: resultKey, message, finishReason, usage, tier, context: { sent: messages.length, hidden } },
+        body: { callId: resultKey, conversationId: body.conversationId, message, finishReason, usage, tier, context: { sent: messages.length, hidden } },
       };
     } catch (e) {
       // Don't nack (that retries and double-spends); surface the error as the result.
       return {
         kind: "llm_result",
-        body: { callId: resultKey, message: { role: "assistant", content: `[inference error: ${e}]` }, finishReason: "error", tier },
+        body: { callId: resultKey, conversationId: body.conversationId, message: { role: "assistant", content: `[inference error: ${e}]` }, finishReason: "error", tier },
       };
     }
   },

@@ -31,7 +31,11 @@ for (let i = 0; i < 100; i++) {
   }
 }
 await registerChatKinds(admin);
-const { sessionToken, toolsToken } = await bootstrap(admin, "user");
+// The conversation exists BEFORE the session credential, because the session's grants are scoped
+// to it — the same order chat.ts uses, and the reason a user session no longer holds
+// `conversation: put` at all.
+const conv = (await admin.put({ kind: "conversation", body: { title: "mine" } })).id;
+const { sessionToken, toolsToken } = await bootstrap(admin, "user", conv);
 const session = new RadiaClient(url, { token: sessionToken! });
 
 // A BUSY space must not hide the newest tool. Discovery reads a bounded page, and a limited query
@@ -98,7 +102,6 @@ await admin.put({ kind: "message", body: { conversationId: "other", index: 0, ro
 await admin.put({ kind: "message", body: { conversationId: "other", index: 1, role: "user", content: "also not mine" } });
 
 // The session's own records.
-const conv = (await session.put({ kind: "conversation", body: { title: "mine" } })).id;
 for (let i = 0; i < 3; i++) {
   await session.put({ kind: "message", body: { conversationId: conv, index: i, role: "user", content: `m${i}` } });
 }

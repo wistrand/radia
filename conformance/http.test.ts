@@ -183,6 +183,40 @@ Deno.test("http: --auth required closes the no-header shortcut but keeps the con
   }
 });
 
+Deno.test("http: a principal may read its OWN permissions, and only its own", async () => {
+  const { space, handler, close } = await newHandler();
+  try {
+    const { definitionToken } = await space.createAgentDefinition("agent:w", [
+      { principal: "agent:w", kind: "task", operations: ["query"] },
+    ]);
+    const { runToken } = await space.mintRun(definitionToken);
+    const auth = { authorization: `Bearer ${runToken}` };
+
+    // Note this principal has NO self-scoped grant, so the ops plane is shut to it entirely — and
+    // that is precisely the caller that needs to ask what it may do. Gating this behind the plane
+    // left an agent unable to tell an approved grant from a pending one.
+    const own = await handler(get("/v0/ops/permissions?principal=agent:w", auth));
+    assertEquals(own.status, 200);
+    const view = await own.json();
+    assert(view.kinds.some((k: { kind: string }) => k.kind === "task"), "its own grants are reported");
+
+    // A run token asking about its own AGENT is asking about itself: grants flow down the chain.
+    assertEquals((await handler(get("/v0/ops/permissions?principal=agent:w", auth))).status, 200);
+
+    // Anyone else's authorization stays an operator question.
+    const other = await handler(get("/v0/ops/permissions?principal=agent:elsewhere", auth));
+    assertEquals(other.status, 403, "reading another principal's permissions is refused");
+
+    // The rest of the ops plane is still shut to a principal with no self scope.
+    assertEquals((await handler(get("/v0/ops/stats", auth))).status, 403);
+
+    // …and the operator can still ask about anyone.
+    assertEquals((await handler(get("/v0/ops/permissions?principal=agent:elsewhere"))).status, 200);
+  } finally {
+    await close();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Wire shapes: a cast is a promise to the type checker, not a check.
 // ---------------------------------------------------------------------------

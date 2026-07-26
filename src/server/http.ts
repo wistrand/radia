@@ -164,8 +164,26 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     // A scope does NOT open the whole plane: the write half (remediate/admin/declassify) stays
     // operator-only below, because those are the interrupt half and taint clears only via
     // privileged declassify.
+    // Asking what YOU may do is not an operator question, and it is checked BEFORE the plane's
+    // gate rather than inside it — a principal with no grants at all is exactly the one that needs
+    // the answer, and `opsScope` refuses that principal outright. Refusing it was worse than
+    // useless: an agent that cannot read its own permissions cannot tell an approved grant from a
+    // pending one, and one was observed reporting a granted request as still awaiting approval
+    // because the (unrelated) call it retried had not changed. Reading ANOTHER principal's
+    // authorization stays operator-only.
+    const asksAboutSelf = url.pathname === "/v0/ops/permissions" &&
+      [principal, space.grantSubject(principal)].includes(url.searchParams.get("principal") ?? "");
+
+    // The observe-and-operate plane is grant-gated. Operator (human/supervisor) sees everything;
+    // anyone else sees the plane only through a SELF SCOPE — the kinds they hold a
+    // `scope.createdBy:"self"` grant on, restricted to their own records. `opsScope` throws
+    // `forbidden` when nothing is scoped to them, which is the answer the plane gave before.
+    //
+    // A scope does NOT open the whole plane: the write half (remediate/admin/declassify) stays
+    // operator-only below, because those are the interrupt half and taint clears only via
+    // privileged declassify.
     let opsScope: StatsScope | null = null;
-    if (url.pathname.startsWith("/v0/ops/")) {
+    if (url.pathname.startsWith("/v0/ops/") && !asksAboutSelf) {
       try {
         opsScope = await space.opsScope(principal);
       } catch (e) {
@@ -266,8 +284,8 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
       case "GET /v0/ops/records":
         return await handleEnvelopeQuery(space, url, opsScope);
       case "GET /v0/ops/permissions":
-        // Deliberately NOT self-scopable: reading another principal's authorization is an operator
-        // question, so this path is absent from READ_ONLY_OPS and a scoped caller is refused above.
+        // Absent from READ_ONLY_OPS on purpose: reading ANOTHER principal's authorization is an
+        // operator question. The one exception is reading your own, allowed above.
         return await handlePermissions(space, url);
       case "GET /v0/ops/stats":
         return await handleStats(space, opsScope);

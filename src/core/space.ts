@@ -119,7 +119,17 @@ export interface EffectivePermissions {
   /** The agent a run resolves to — grants are held by agents, not by individual runs. */
   subject: string;
   privileged: boolean;
-  kinds: { kind: string; operations: GrantOp[]; readsScopedToSelf: boolean; templates: Record<string, unknown>[] }[];
+  kinds: {
+    kind: string;
+    operations: GrantOp[];
+    readsScopedToSelf: boolean;
+    templates: Record<string, unknown>[];
+    /** Set when NO such kind is declared on this space, so the grant authorizes nothing. A grant
+     *  may legitimately precede its kind (an operator bootstraps an agent before the fleet declares
+     *  its kinds), so this is a flag rather than an error — but an agent that guessed a kind name
+     *  and got it approved otherwise reads this row as working access. */
+    kindNotDeclared?: true;
+  }[];
   ops: { reachable: boolean; kinds: string[] };
   /** False if the grant scan could not be exhausted — the picture may be missing entries. */
   complete: boolean;
@@ -291,8 +301,12 @@ export class Space {
 
   /** The subject grants are checked against: a `run:*` principal inherits its agent definition's
    *  grants (grants flow down the chain), so it authorizes as `agent:<name>`. Everything else
-   *  authorizes as itself. */
-  private grantSubject(principal: string): string {
+   *  authorizes as itself.
+   *
+   *  Public because the HTTP layer needs it to answer "is this principal asking about itself?" —
+   *  a run token asking for its AGENT's permissions is asking about itself, and refusing that is
+   *  what left a scoped agent unable to tell an approved grant from a pending one. */
+  grantSubject(principal: string): string {
     // Memo only, deliberately, so this stays synchronous on the hot path. Safe because the fact is
     // IMMUTABLE (a run's agent never changes) and because authentication populates it: every
     // request presenting a run token resolves that token first, from records. A miss falls back to
@@ -437,6 +451,11 @@ export class Space {
       kinds.push({
         kind: r.kind,
         operations: [...r.operations].sort(),
+        // A grant naming a kind that does not exist is the shape a guessing agent produces: one
+        // asked for `space_event` — the name of a TOOL — had it approved, and then read its own
+        // scope line as evidence of access it did not have. The grant is honoured as written (kinds
+        // may be declared later), and said to be empty.
+        ...(this.kinds.get(r.kind) ? {} : { kindNotDeclared: true as const }),
         // Asked of `authorScope` rather than recomputed here. Restating the rule produced a view
         // that disagreed with the enforcement — it aggregated scoped/unscoped across ALL grants on
         // the kind, while the enforcement considers only grants permitting THAT OPERATION, so a
@@ -875,17 +894,41 @@ export class Space {
   async opsScope(principal: string): Promise<StatsScope | null> {
     if (this.isPrivileged(principal)) return null;
     const subject = this.grantSubject(principal);
-    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject })).entries.values()];
-    const kinds = grants
+    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject })).entries.values()]
       .map((g) => g.body as GrantDef & { scope?: { createdBy?: string } })
-      .filter((g) => g.scope?.createdBy === "self" && Array.isArray(g.operations) && g.operations.includes("query"))
-      .map((g) => g.kind);
-    if (kinds.length === 0) {
+      .filter((g) => Array.isArray(g.operations) && g.operations.includes("query"));
+    // Reachability is still opt-in: SOME kind must carry a self-scoped read grant, or the plane
+    // stays shut. An ordinary query grant does not open it.
+    if (!grants.some((g) => g.scope?.createdBy === "self")) {
       throw new RadiaError("forbidden", `principal '${principal}' may not access the ops plane`);
+    }
+    // Which of those kinds are actually NARROWED is asked of `authorScope` — the same function the
+    // read path uses — rather than restated here. Restating it was wrong in a way that produced a
+    // confidently incorrect number: this filtered on "has a self-scoped grant", while a read is
+    // narrowed only when EVERY grant permitting it is self-scoped. A principal holding both an
+    // unscoped `{put, query}` and a self-scoped `{query}` on one kind (different operation sets, so
+    // different grant identities, so both live) could therefore LIST every record of that kind
+    // while `ops/stats` counted only its own — 187 messages reported to a session whose own query
+    // returned 578, with nothing in the aggregate to hint at it.
+    const kinds = [...new Set(grants.filter((g) => g.scope?.createdBy === "self").map((g) => g.kind))];
+    // …and which of those the caller can actually read MORE of. This does not widen the aggregate —
+    // the ops plane stays self-scoped on purpose — it makes the aggregate able to say so. A read is
+    // narrowed only when EVERY grant permitting it is self-scoped, so a principal holding an
+    // unscoped `{put, query}` beside a self-scoped `{query}` (different operation sets, different
+    // grant identities, both live) can LIST every record of the kind while these counts cover only
+    // its own. That is a legitimate state, and a number that quietly disagrees with the caller's own
+    // query is how a session came to report 187 messages as the space's total when it could see 578.
+    const alsoReadable: string[] = [];
+    for (const kind of kinds) {
+      if (!(await this.authorScope(principal, "query", kind))) alsoReadable.push(kind);
     }
     // An agent with no runs on record would scope to the empty set and see nothing; include the
     // principal itself so a direct (non-run) principal still matches its own records.
-    return { createdBy: await this.runPrincipalsOf(subject, principal), kinds: [...new Set(kinds)] };
+    return {
+      createdBy: await this.runPrincipalsOf(subject, principal),
+      kinds: kinds.sort(),
+      ...(alsoReadable.length > 0 ? { alsoReadable: alsoReadable.sort() } : {}),
+    };
   }
 
   /** Registered kind declarations (dev UI). */

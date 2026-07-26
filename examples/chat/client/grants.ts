@@ -27,17 +27,47 @@ interface RequestBody {
   kind: string;
   operations: string[];
   why?: string;
+  /** What the ASKER says it needs: its own records, or all of them. A request, never a decision —
+   *  the human still chooses, and the subject still comes from this process. Without it the
+   *  protocol could not express the difference, so an agent that needed to read a registry written
+   *  by others had no way to say so and was handed a grant over its own (nonexistent) records. */
+  scope?: "own" | "all";
   retired?: boolean;
 }
 
-/** One key per (kind, operations) ask, so a repeat of the same request is one entry, and a handled
- *  one is retired by a successor — the shared registry projection, applied to requests. */
-const keyOf = (b: RequestBody) => `${b.kind}:${[...(b.operations ?? [])].sort().join(",")}`;
+/** One key per (kind, operations, scope) ask, so a repeat of the same request is one entry and a
+ *  handled one is retired by a successor — the shared registry projection, applied to requests.
+ *  Scope is part of the identity: asking for the same reads UNSCOPED after a scoped grant proved
+ *  useless is a different request, and folding the two together would hide the second. */
+const keyOf = (b: RequestBody) => `${b.kind}:${[...(b.operations ?? [])].sort().join(",")}:${b.scope ?? "own"}`;
 
 /**
  * Show any pending requests from this conversation and act on the answer. Called between turns, so
  * it owns the terminal and can read a line without racing the REPL's own prompt.
  */
+/**
+ * How much of a kind a SELF-SCOPED read would actually expose, sampled.
+ *
+ * `created_by` is runtime metadata, not a body field, so it cannot be matched by a template — the
+ * count is taken over a bounded page and reported as a sample rather than a total. Authorship is
+ * resolved the way the runtime resolves it: an agent's records are written by its RUNS, so the
+ * `agent_run` records for this subject give the principals to compare against.
+ */
+async function selfExposure(
+  admin: RadiaClient,
+  kind: string,
+  subject: string,
+): Promise<{ mine: number; total: number } | undefined> {
+  try {
+    const runs = await admin.query({ kind: "agent_run", match: { agent: subject } }, 200, { dir: "desc" });
+    const principals = new Set([subject, ...runs.map((r) => (r.body as { run?: string }).run).filter(Boolean) as string[]]);
+    const sample = await admin.query({ kind }, 100, { dir: "desc" });
+    return { mine: sample.filter((r) => principals.has(r.runtimeMeta.createdBy)).length, total: sample.length };
+  } catch {
+    return undefined; // cannot tell: say nothing rather than guess
+  }
+}
+
 export async function reviewGrantRequests(
   session: RadiaClient,
   admin: RadiaClient,
@@ -87,14 +117,42 @@ export async function reviewGrantRequests(
       write(dim(`    kinds on this space: ${known.slice(0, 12).join(", ")}${known.length > 12 ? ", …" : ""}\n`));
       if (near.length > 0) write(dim(`    did it mean: ${near.join(", ")}?\n`));
     }
-    write(`\n  [y] yes, but only its OWN records of that kind — reads only (recommended)\n`);
-    write(`  [a] yes, ALL records of that kind in this space\n`);
+    // What "own records only" would actually expose. Self-scope is the right default for a kind
+    // the session WRITES (its messages, its llm_calls) and useless for one it only reads: a
+    // registry like `kind_def`, `capability` or `model` is written by the fleet, so scoping it to
+    // the session's own records grants a view of nothing. That is not a hypothetical — a session
+    // was granted self-scoped `kind_def`, `space_kinds` kept returning `[]`, and it concluded the
+    // approval had not gone through. Measured on a bounded page rather than guessed from a list of
+    // "registry-ish" kind names, which would be wrong the moment an app adds one.
+    const exposure = unknown ? undefined : await selfExposure(admin, b.kind, subject);
+    const pointless = exposure !== undefined && exposure.mine === 0 && exposure.total > 0;
+    if (pointless) {
+      write(`\n  ⚠ '${b.kind}' records here were written by others (0 of ${exposure.total} sampled are this session's),\n`);
+      write(dim(`    so "own records only" would show it NOTHING. This kind is a registry it reads, not data it writes.\n`));
+    }
+    // What the asker said it needs. It is shown rather than obeyed — but not showing it meant an
+    // assistant could state "this only helps un-scoped" in its reply, have the human answer the
+    // narrower prompt, and get a grant that did not do the job. The two halves of the exchange were
+    // talking about different things.
+    if (b.scope === "all") {
+      write(`\n  the assistant asked for ALL records of this kind, not just its own.\n`);
+    }
+    const wantsAll = pointless || b.scope === "all";
+    write(`\n  [y] yes, but only its OWN records of that kind — reads only${wantsAll ? "" : " (recommended)"}\n`);
+    write(`  [a] yes, ALL records of that kind in this space${wantsAll ? " (recommended here)" : ""}\n`);
     write(`  [n] no\n`);
     write("approve? ");
     const answer = ((await ask()) ?? "n").trim().toLowerCase();
+    // Answering the narrow way against a measured-empty exposure is allowed — it is the human's
+    // call — but it must not look like it worked. Three turns of "the grant landed and changed
+    // nothing" started here.
+    if (answer === "y" && pointless) {
+      write(dim(`  note: this grant authorizes reads of ${b.kind} records this session created, and there are none.\n`));
+    }
 
     if (answer === "y" || answer === "a") {
       const selfScoped = answer === "y";
+      let inheritedTemplate: Record<string, unknown> | undefined;
       if (selfScoped) {
         // Grants UNION, so adding a narrow grant beside a broad one changes nothing — and the
         // session starts with broad read grants on the conversation kinds. Choosing "own records
@@ -108,8 +166,17 @@ export async function reviewGrantRequests(
         const live = activeSet(
           await admin.query({ kind: "grant", match: { principal: subject, kind: b.kind } }, 100, { dir: "desc" }),
           grantKey,
-        ).map((r) => r.body as { operations?: string[]; scope?: unknown; retired?: boolean })
+        ).map((r) => r.body as { operations?: string[]; scope?: unknown; template?: Record<string, unknown>; retired?: boolean })
           .filter((g) => !g.retired && !g.scope && (g.operations ?? []).some((op) => b.operations.includes(op)));
+
+        // Carry the TEMPLATE of what is being narrowed onto the narrowed grant. The session's base
+        // grants are template-scoped to its conversation, and grant templates UNION — so writing an
+        // untemplated self-scoped grant beside them would replace "this conversation" with "every
+        // conversation this agent ever wrote", which is a widening performed by the act of
+        // narrowing. Only adopted when the grants being replaced agree on one template; otherwise
+        // there is no single right answer and the explicit ask wins.
+        const templates = new Set(live.filter((g) => g.template).map((g) => JSON.stringify(g.template)));
+        inheritedTemplate = templates.size === 1 ? JSON.parse([...templates][0]) : undefined;
 
         const kept = new Set<string>();
         for (const g of live) {
@@ -137,9 +204,13 @@ export async function reviewGrantRequests(
           kind: b.kind,
           operations: b.operations,
           ...(selfScoped ? { scope: { createdBy: "self" } } : {}),
+          ...(inheritedTemplate ? { template: inheritedTemplate } : {}),
         },
       });
-      write(dim(`granted: ${b.operations.join(",")} on ${b.kind}${selfScoped ? " (its own records only)" : " (all records)"}\n`));
+      write(dim(
+        `granted: ${b.operations.join(",")} on ${b.kind}${selfScoped ? " (its own records only)" : " (all records)"}` +
+          `${inheritedTemplate ? `, still limited to ${JSON.stringify(inheritedTemplate)}` : ""}\n`,
+      ));
     } else {
       write(dim("refused\n"));
     }

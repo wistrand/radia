@@ -156,6 +156,30 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   separator no value can contain, since the encoded form is both unambiguous and printable; and
   `grep -P "\x00"` will NOT find these — grep suppresses binary matches, so scan with something
   that reads bytes.
+- **Kind-scoped is not conversation-scoped: every chat session ran as one agent, so each could read
+  every other session's messages.** `USER_GRANTS` said `message: {put, query}` with a comment
+  promising "may drive a conversation and read its own results, nothing more" — and nothing enforced
+  the "its own". A ten-minute session reconstructed two days of unrelated conversations, correctly.
+  Six chat kinds index `conversationId`, so the fix is the runtime's own content scoping: the
+  session's grants are TEMPLATE-scoped to its conversation, which binds reads and writes alike.
+  Consequences worth keeping: the conversation record is created by the OPERATOR before the session
+  token is minted (a grant is minted with the token, so the conversation has to exist first), and a
+  user session therefore no longer holds `conversation: put` at all. Growth is per distinct
+  CONVERSATION, not per session — the template is part of a grant's identity, so resuming re-mints
+  the same content key and writes nothing. The result kinds needed the same
+  treatment and lacked the field to do it with: `llm_chunk`, `llm_result` and `tool_result` are
+  keyed by `callId`, so a session holding a callId from elsewhere could read another conversation's
+  streamed tokens, model output and tool results whatever the conversation scoping said. They now
+  carry `conversationId`, written by the worker that produces them and indexed so a template can
+  bind it. The failure mode of getting THAT wrong is not a leak but a hang — a writer that forgets
+  the field produces a result its own session cannot read — so the test pins both directions.
+  Residual: `artifact` alone. Its body is built by the runtime (`{digest, mediaType, size}`), so an
+  application field cannot be added and no path exists for a template to bind; a session can still
+  read an artifact whose id it knows. Every id it can learn now comes from a record it may read.
+  **And the narrowing had to learn about it.** Grant templates UNION, so approving an untemplated
+  self-scoped grant beside a templated one replaces "this conversation" with "everything this agent
+  ever wrote" — a widening performed by the act of narrowing. The approval flow now inherits the
+  template of the grants it replaces. Guarded in `smoke-inspect.ts`, both directions.
 - **A self scope must narrow the plane the agent actually READS through, and grants UNION.** Two
   mistakes, one live incident. First, `scope: {createdBy: "self"}` narrowed only the ops plane while
   ordinary `query`/`read_one` returned every record of the kind — so an approval promising "only its
@@ -178,6 +202,15 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   in code instead (`kind_def`, `grant`, `signal`, `agent_definition`, `agent_run`, `artifact` —
   `RESERVED_KINDS`). Anything answering "does this kind exist" must add them, or it will report that
   `artifact` is not a kind while the caller is successfully counting artifacts.
+- **The ops aggregate is self-scoped even where READS are not, so it must say which kinds it
+  under-counts.** A principal can hold an unscoped `{put, query}` grant beside a self-scoped
+  `{query}` on the same kind — different operation sets, so different grant identities, so both live
+  — and then it can LIST every record while `ops/stats` counts only its own. Observed: 187 messages
+  reported as the space's total by a session whose own `space_count` said 578. The self-scoping is
+  deliberate and stays; the answer now carries `alsoReadableInFull` and says a query on those kinds
+  returns more. Widening the aggregate to match was tried and reverted — it turns every unscoped
+  bootstrap grant into full ops visibility, which is the opposite of what the plane is for.
+  Guarded by "an aggregate that covers less than the caller can read says so" in `suites/selfscope.ts`.
 - **A scoped answer must SAY it is scoped, or an empty one reads as an empty space.** A session
   granted ops access on one kind read `stats: []`, `events: []` and an all-zero diagnostics, and
   told its user "the space is empty and healthy". Every number was correct; the claim was wrong, and
@@ -187,6 +220,62 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   have reached the model. The general form: a narrowed result is only safe to publish alongside a
   statement of the narrowing, because the consumer cannot infer it from the data and an aggregate
   gives it no other clue.
+- **A grant on a kind that does not exist authorizes nothing, and everything downstream reads it as
+  access.** An agent that cannot list kinds guesses one, and a plausible guess is a TOOL name: a
+  session asked for `space_event` (there is a `space_events` tool; there is no such kind), a human
+  approved it past the prompt's warning, and from then on the phantom kind appeared in every
+  `scope.kinds` line the ops plane returned — so the agent had documentary evidence of access it
+  did not have. The grant is still honoured as written, because a grant may legitimately precede its
+  kind (an operator bootstraps an agent before the fleet declares anything), but
+  `effectivePermissions` now marks the row `kindNotDeclared: true`. That is the one answer an agent
+  is told to trust about its own authority, so it is where the discrepancy has to surface.
+- **A scoped agent must be able to ask what it may do, and the ops plane refused exactly the
+  principal that needed to.** `GET /v0/ops/permissions` was operator-only on the reasoning that
+  reading a principal's authorization is an operator question. Reading YOUR OWN is not, and the
+  refusal was worse than useless: `opsScope` throws for a principal with no self-scoped grants, so
+  the caller with the least authority — the one that has just asked for some — got a 403 from the
+  one endpoint that would tell it whether the ask succeeded. Observed end to end: a session was
+  granted precisely what it requested, retried a DIFFERENT call that was failing for an unrelated
+  reason, saw no change, and told its user the request must still be awaiting approval. It had no
+  way to check, so it guessed, and the guess wasted a person's time. The self-read is now checked
+  BEFORE the plane's gate (`asksAboutSelf` in `http.ts`, matching the principal or its grant
+  subject, since a run token asking about its agent is asking about itself); every other
+  principal's authorization stays operator-only. CLAUDE.md already said `effectivePermissions` is
+  how you check before believing — an agent could not reach it.
+- **Testing the client is not testing the TOOL the model calls.** `smoke-selfgrant.ts` proved the
+  scoped-events contract by paging the log itself, and passed. The chat does not call the server;
+  it calls `tools/space.ts`, and `space_events` there fetched exactly one page from cursor `0`. On
+  a busy space the server's bounded forward scan covers only the first few hundred raw events, all
+  of them somebody else's, so the tool returned `{events: [], withheld: 500}` — with the SAME
+  cursor on every retry — while the session's own activity sat at the far end of an 11,588-event
+  log. Every layer underneath was correct. The tool now pages to the end (large raw pages, keeping
+  the newest `limit`) and reports `complete` so "the end of the log" is distinguishable from "I ran
+  out of budget". General rule: a wrapper that adds a bound is a place a bug can hide from every
+  test of the thing it wraps — `smoke-inspect.ts` drives the tools for this reason.
+- **An escalation protocol that cannot express WHOSE records are needed will keep producing grants
+  that authorize nothing.** `request_grant` carried kind and operations, and the approval prompt
+  offered "own records only" (recommended) or "all". An assistant that needed to read a registry
+  written by others had no field to say so — it said it in prose instead ("both need to be
+  un-scoped"), the human answered the narrower prompt, and the two halves of the exchange were
+  talking about different things. Observed three times in one session: request, approve, "the grant
+  landed", every read still empty. The request now carries `scope: "own" | "all"` — a REQUEST, not a
+  decision, still assigned by the operator to the subject this process controls — and the prompt
+  relays it. Two supporting details, both load-bearing: `scope` is part of the request's identity
+  key, or re-asking un-scoped after a scoped grant disappointed dedups into the handled request and
+  vanishes; and choosing the narrow option against a measured-empty exposure now PRINTS that the
+  grant authorizes nothing, because the human's answer being allowed is not the same as it looking
+  like it worked. The whole loop — warning, recommendation flip, the note, the empty reads that
+  follow, and the wider approval actually answering the question — is pinned in `smoke-inspect.ts`.
+- **Self-scoping a REGISTRY kind grants a view of nothing, not a narrowed one.** `scope:
+  {createdBy: "self"}` is the right default for a kind the principal WRITES (its messages, its
+  llm_calls) and useless for one it only reads: `kind_def`, `capability`, `model` and `procedure`
+  records are written by whoever declares them, so a session self-scoped on `kind_def` sees zero of
+  them and `space_kinds` answers `[]` on a space with twelve. Nothing is broken, and that is what
+  makes it expensive — the session was told the grant existed, saw an empty list, and concluded the
+  approval had not gone through. The approval prompt (`client/grants.ts`) now MEASURES the exposure
+  before offering the choice — how many of a sampled page of that kind the principal actually
+  authored — and recommends against self-scope when the answer is none. Measured, not a hardcoded
+  list of registry-ish kind names, which would be wrong the moment an app adds one.
 - **Filtering a cursor-paged endpoint breaks paging unless the cursor is reported separately.** The
   self-scoped `/v0/ops/events` withholds events the caller may not see — and an empty page is how
   every caller detects the end of a log, so a page whose events were all withheld reads as "nothing

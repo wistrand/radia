@@ -23,6 +23,9 @@ export const CHAT_USER = "agent:chat-user";
 interface Grant {
   kind: string;
   operations: string[];
+  /** ANDed into every read and matched against every write body — the runtime's own content
+   *  scoping. Used to pin a session to ITS conversation; see `userGrants`. */
+  template?: Record<string, unknown>;
 }
 
 // inference-worker: claims llm_call (its tier), emits llm_result + streamed llm_chunk, advertises
@@ -95,36 +98,57 @@ const EXEC_GRANTS: Grant[] = [
   { kind: "procedure", operations: ["put", "query"] },
 ];
 
-// plain user (the REPL): may drive a conversation and read its own results, nothing more.
+// plain user (the REPL): may drive ONE conversation and read its own results, nothing more.
 // Note what's ABSENT: no /ops/* (space_stats/doctor/events/lineage/reclaim/declassify), and
 // query is granted only per-kind — so `space_query {kind: grant}` or {kind: agent_run} is denied.
-const USER_GRANTS: Grant[] = [
-  { kind: "conversation", operations: ["put"] },
-  { kind: "message", operations: ["put", "query"] },
-  { kind: "llm_call", operations: ["put"] },
-  { kind: "tool_call", operations: ["put"] },
-  { kind: "llm_chunk", operations: ["query"] },
-  { kind: "llm_result", operations: ["read_one"] },
-  { kind: "tool_result", operations: ["read_one"] },
-  { kind: "capability", operations: ["query"] },
-  // READ-ONLY on purpose: the session builds its tool list from the procedures its conversation
-  // saved, but cannot write one. Only the exec-worker can, and only as the result of a
-  // `save_procedure` call it actually ran — so "the assistant saved a procedure" always means code
-  // that went through the sandbox's own path.
-  { kind: "procedure", operations: ["query"] },
-  // ASK for authority, never take it. The session may write a grant_request and read its own; it
-  // has no grant on `grant` itself, so the escalation path ends at a human. This is the whole
-  // point of the split: least privilege by default, with a visible, auditable way to ask.
-  { kind: "grant_request", operations: ["put", "query"] },
-  { kind: "progress", operations: ["query"] }, // read-only: the session reports no progress of its own
-  { kind: "artifact", operations: ["read_one"] }, // read generated images + mint a download capability
-];
+//
+// The grants are TEMPLATE-SCOPED to the conversation this session is attached to, and that is not
+// decoration. Every session runs as the same `agent:chat-user`, so a kind-scoped `message: query`
+// let any session read every message in the space — a live one reconstructed two days of other
+// people's conversations from a ten-minute session, and was right to: the comment above claimed
+// "its own results" and nothing enforced it. Six of the chat kinds index `conversationId`, so the
+// runtime can enforce it; the grant template is ANDed into reads and matched against write bodies.
+//
+// Growth is bounded by DISTINCT conversations, not sessions: the template is part of a grant's
+// identity, so resuming the same conversation re-mints the same content key and writes nothing.
+//
+// Residual: `artifact` alone stays unscoped. Its body is built by the RUNTIME (`{digest, mediaType,
+// size}` — see `Space.putArtifact`), so an application field cannot be added to it and there is no
+// path for a template to bind. A session can therefore still read an artifact whose id it knows;
+// the ids it can learn all come from records it is already allowed to read, now that the result
+// kinds are scoped too.
+function userGrants(conversationId?: string): Grant[] {
+  const scoped = conversationId ? { template: { conversationId } } : {};
+  return [
+    { kind: "message", operations: ["put", "query"], ...scoped },
+    { kind: "llm_call", operations: ["put"], ...scoped },
+    { kind: "tool_call", operations: ["put"], ...scoped },
+    // Keyed by `callId`, so these carry `conversationId` purely so a grant can bind them: a
+    // session that learned a callId from elsewhere could otherwise read another conversation's
+    // streamed tokens, model output, or tool results.
+    { kind: "llm_chunk", operations: ["query"], ...scoped },
+    { kind: "llm_result", operations: ["read_one"], ...scoped },
+    { kind: "tool_result", operations: ["read_one"], ...scoped },
+    { kind: "capability", operations: ["query"] }, // a registry: the fleet's tools, not conversation data
+    // READ-ONLY on purpose: the session builds its tool list from the procedures its conversation
+    // saved, but cannot write one. Only the exec-worker can, and only as the result of a
+    // `save_procedure` call it actually ran — so "the assistant saved a procedure" always means code
+    // that went through the sandbox's own path.
+    { kind: "procedure", operations: ["query"], ...scoped },
+    // ASK for authority, never take it. The session may write a grant_request and read its own; it
+    // has no grant on `grant` itself, so the escalation path ends at a human. This is the whole
+    // point of the split: least privilege by default, with a visible, auditable way to ask.
+    { kind: "grant_request", operations: ["put", "query"], ...scoped },
+    { kind: "progress", operations: ["query"], ...scoped }, // read-only: the session reports no progress of its own
+    { kind: "artifact", operations: ["read_one"] }, // read generated images + mint a download capability
+  ];
+}
 
 /** Operator action: define an agent with its grants and mint a short-lived run token. */
 async function mint(admin: RadiaClient, agent: string, grants: Grant[]): Promise<string> {
   const { definitionToken } = await admin.createAgentDefinition(
     agent,
-    grants.map((g) => ({ principal: agent, kind: g.kind, operations: g.operations })),
+    grants.map((g) => ({ principal: agent, kind: g.kind, operations: g.operations, ...(g.template ? { template: g.template } : {}) })),
   );
   const { runToken } = await admin.createRun(definitionToken);
   return runToken;
@@ -140,13 +164,19 @@ export interface Bootstrapped {
   sessionToken?: string;
 }
 
-/** Bootstrap the run tokens for this session (called by chat.ts as the operator). */
-export async function bootstrap(admin: RadiaClient, role: Role): Promise<Bootstrapped> {
+/**
+ * Bootstrap the run tokens for this session (called by chat.ts as the operator).
+ *
+ * `conversationId` scopes the SESSION's grants to one conversation. It is a parameter rather than
+ * something read later because a grant is minted with the run token: the conversation therefore has
+ * to exist first, which is why the REPL creates it as operator before calling this.
+ */
+export async function bootstrap(admin: RadiaClient, role: Role, conversationId?: string): Promise<Bootstrapped> {
   const inferenceToken = await mint(admin, "agent:chat-inference", INFERENCE_GRANTS);
   const routerToken = await mint(admin, "agent:chat-router", ROUTER_GRANTS);
   const toolsToken = await mint(admin, "agent:chat-tools", TOOLS_GRANTS);
   const imagesToken = await mint(admin, "agent:chat-images", IMAGE_GRANTS);
   const execToken = await mint(admin, "agent:chat-exec", EXEC_GRANTS);
-  const sessionToken = role === "user" ? await mint(admin, CHAT_USER, USER_GRANTS) : undefined;
+  const sessionToken = role === "user" ? await mint(admin, CHAT_USER, userGrants(conversationId)) : undefined;
   return { inferenceToken, routerToken, toolsToken, imagesToken, execToken, sessionToken };
 }
