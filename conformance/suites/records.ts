@@ -7,6 +7,7 @@ import type { Suite } from "../harness.ts";
 import { Space } from "../../src/core/space.ts";
 import { sha256Hex } from "../../src/core/ids.ts";
 import { handlePut } from "../../src/server/handlers/records.ts";
+import type { RadiaError } from "../../src/core/errors.ts";
 
 /** Register the kinds these suites match on (predicates require declared indexed paths). */
 function newSpace(adapter: Parameters<Suite["run"]>[0]): Space {
@@ -175,6 +176,94 @@ export const recordSuites: Suite[] = [
         assertEquals((e as { code?: string }).code, "parent_not_found");
       }
       assert(rejected, "expected a dangling parent to be rejected");
+    },
+  },
+  {
+    name: "an artifact body carries application fields, and the runtime's own always win",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      // Artifacts were the one kind an application could not SCOPE: the body is entirely
+      // runtime-built, and a grant template matches the body — so "artifacts belonging to this
+      // conversation" was inexpressible and any holder of an id could read one.
+      const { id } = await space.putArtifact(new TextEncoder().encode("hello"), {
+        mediaType: "text/plain",
+        appFields: { conversationId: "conv-1", origin: "tool" },
+      });
+      const rec = await space.getRecord(id);
+      const body = rec!.body as Record<string, unknown>;
+      assertEquals(body.conversationId, "conv-1");
+      assertEquals(body.origin, "tool");
+      assertEquals(body.mediaType, "text/plain");
+      assertEquals(body.size, 5, "the runtime's own fields are still there");
+      assert(typeof body.digest === "string" && body.digest.length > 0);
+
+      // …and cannot be forged: a caller supplying one is refused outright rather than silently
+      // overridden, so a lie about a digest is never a stored record that merely looks wrong.
+      for (const field of ["digest", "size", "mediaType", "filename"]) {
+        let refused = false;
+        try {
+          await space.putArtifact(new TextEncoder().encode("x"), {
+            mediaType: "text/plain",
+            appFields: { [field]: "forged" },
+          });
+        } catch (e) {
+          refused = (e as RadiaError).code === "invalid_artifact";
+        }
+        assert(refused, `supplying '${field}' must be refused`);
+      }
+
+      // Metadata, not a second payload: the bytes live in the blob store precisely so bodies stay
+      // small and matchable.
+      let tooBig = false;
+      try {
+        await space.putArtifact(new TextEncoder().encode("x"), {
+          mediaType: "text/plain",
+          appFields: { note: "x".repeat(300) },
+        });
+      } catch {
+        tooBig = true;
+      }
+      assert(tooBig, "an oversized field is rejected");
+    },
+  },
+  {
+    name: "a template-scoped grant can bind an artifact to an application field",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      // The whole point of the field: this grant is inexpressible without it.
+      await space.persistKind({
+        kind: "artifact",
+        indexedPaths: [
+          { path: "digest", type: "keyword" },
+          { path: "mediaType", type: "keyword" },
+          { path: "conversationId", type: "keyword" },
+        ],
+        claimable: false,
+      });
+      await space.put({
+        kind: "grant",
+        body: {
+          principal: "agent:w",
+          kind: "artifact",
+          operations: ["read_one"],
+          template: { conversationId: "mine" },
+        },
+      });
+      const mine = await space.putArtifact(new TextEncoder().encode("mine"), {
+        mediaType: "text/plain",
+        appFields: { conversationId: "mine" },
+      });
+      const theirs = await space.putArtifact(new TextEncoder().encode("theirs"), {
+        mediaType: "text/plain",
+        appFields: { conversationId: "theirs" },
+      });
+
+      const constraint = await space.authorize("agent:w", "read_one", "artifact");
+      assertEquals(constraint, [{ conversationId: "mine" }]);
+      const ok = (await space.getRecord(mine.id))!.body;
+      const no = (await space.getRecord(theirs.id))!.body;
+      assert(space.bodyMatchesGrant("artifact", ok, constraint!), "its own artifact is inside the scope");
+      assert(!space.bodyMatchesGrant("artifact", no, constraint!), "another conversation's is not");
     },
   },
 ];

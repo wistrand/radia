@@ -42,6 +42,7 @@ import {
   KindRegistry,
   META_RESERVED,
   validateArtifactDef,
+  validateArtifactFields,
   validateGrantDef,
   validateKindDef,
   WRITE_PROTECTED_KINDS,
@@ -783,7 +784,24 @@ export class Space {
    *  server-assigned field. */
   async putArtifact(
     bytes: Uint8Array,
-    meta: { mediaType: string; filename?: string; parentIds?: string[]; retentionUntil?: string; taint?: boolean },
+    meta: {
+      mediaType: string;
+      filename?: string;
+      parentIds?: string[];
+      retentionUntil?: string;
+      taint?: boolean;
+      /**
+       * APPLICATION fields merged into the artifact's record body.
+       *
+       * The body is otherwise entirely runtime-built, which left artifacts as the one kind an
+       * application could not scope: a grant template matches the body, so with nothing of the
+       * app's in there, "artifacts belonging to this conversation" was inexpressible and any
+       * holder of an artifact id could read it. These are client CLAIMS like any other body
+       * content — the runtime routes on them, never trusts them — and the authoritative fields
+       * below always win, so nothing here can forge a digest, size or media type.
+       */
+      appFields?: Record<string, unknown>;
+    },
     idempotencyKey?: string,
     principal?: string,
   ): Promise<{ id: string; digest: string; size: number }> {
@@ -791,8 +809,11 @@ export class Space {
       throw new RadiaError("artifact_too_large", `artifact exceeds the ${this.ctx.maxArtifactBytes}-byte limit`);
     }
     validateArtifactDef({ digest: "", mediaType: meta.mediaType, size: 0, filename: meta.filename });
+    validateArtifactFields(meta.appFields);
     const ref = await this.blobs.put(bytes);
-    const body: ArtifactDef = { digest: ref.digest, mediaType: meta.mediaType, size: ref.size };
+    // Authoritative fields LAST: an app field can never shadow the digest, size or media type the
+    // runtime computed, whatever the caller sent.
+    const body: ArtifactDef = { ...meta.appFields, digest: ref.digest, mediaType: meta.mediaType, size: ref.size };
     if (meta.filename) body.filename = meta.filename;
     const { id } = await this.put(
       {

@@ -319,6 +319,7 @@ await agentLoop(client, {
           filename: args?.save_as,
           parentIds: [callId], // lineage: conversation -> tool_call -> artifact
           taint: true, // bytes produced by model-written code
+          meta: { conversationId: b.conversationId ?? "" }, // what a grant template can bind
         });
         stored = { artifactId: a.id, mediaType, size: a.size };
       } catch (e) {
@@ -387,6 +388,7 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
     filename: `${name}.js`,
     parentIds: [callId],
     taint: true, // model-written source, like any other bytes it produced
+    meta: { conversationId: b.conversationId ?? "" }, // what a grant template can bind
   });
   const key = await shortHash(`${description}\n${code}`);
   await c.put({

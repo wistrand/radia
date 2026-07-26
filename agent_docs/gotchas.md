@@ -173,9 +173,13 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   carry `conversationId`, written by the worker that produces them and indexed so a template can
   bind it. The failure mode of getting THAT wrong is not a leak but a hang — a writer that forgets
   the field produces a result its own session cannot read — so the test pins both directions.
-  Residual: `artifact` alone. Its body is built by the runtime (`{digest, mediaType, size}`), so an
-  application field cannot be added and no path exists for a template to bind; a session can still
-  read an artifact whose id it knows. Every id it can learn now comes from a record it may read.
+  Artifacts were the last kind and needed a RUNTIME change, because their body is computed from the
+  bytes: `Space.putArtifact` now takes application fields to merge alongside it (`x-radia-meta`, an
+  ASCII JSON header — a header is a ByteString, so non-ASCII is refused rather than mangled). The
+  runtime's own fields are applied last and supplying one is refused outright, so nothing an app
+  sends can forge a digest, size or media type. The chat stamps `conversationId` on every artifact
+  it writes and REDECLARES the reserved `artifact` kind to index it — legal, since only `kind_def`
+  is protected — repeating `digest`/`mediaType` because a redeclaration replaces rather than merges.
   **And the narrowing had to learn about it.** Grant templates UNION, so approving an untemplated
   self-scoped grant beside a templated one replaces "this conversation" with "everything this agent
   ever wrote" — a widening performed by the act of narrowing. The approval flow now inherits the

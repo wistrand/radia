@@ -112,11 +112,10 @@ const EXEC_GRANTS: Grant[] = [
 // Growth is bounded by DISTINCT conversations, not sessions: the template is part of a grant's
 // identity, so resuming the same conversation re-mints the same content key and writes nothing.
 //
-// Residual: `artifact` alone stays unscoped. Its body is built by the RUNTIME (`{digest, mediaType,
-// size}` — see `Space.putArtifact`), so an application field cannot be added to it and there is no
-// path for a template to bind. A session can therefore still read an artifact whose id it knows;
-// the ids it can learn all come from records it is already allowed to read, now that the result
-// kinds are scoped too.
+// Artifacts are scoped too, which needed a runtime change: their body is computed from the bytes,
+// so `Space.putArtifact` now takes APPLICATION fields to merge alongside it (the runtime's own
+// always win, and supplying one of them is refused). The chat stamps `conversationId` on every
+// artifact it writes and redeclares the kind to index it.
 function userGrants(conversationId?: string): Grant[] {
   const scoped = conversationId ? { template: { conversationId } } : {};
   return [
@@ -140,7 +139,9 @@ function userGrants(conversationId?: string): Grant[] {
     // point of the split: least privilege by default, with a visible, auditable way to ask.
     { kind: "grant_request", operations: ["put", "query"], ...scoped },
     { kind: "progress", operations: ["query"], ...scoped }, // read-only: the session reports no progress of its own
-    { kind: "artifact", operations: ["read_one"] }, // read generated images + mint a download capability
+    // Scoped like the rest: the chat redeclares `artifact` with `conversationId` indexed and its
+    // writers stamp it, so this binds to the conversation that produced the bytes.
+    { kind: "artifact", operations: ["read_one"], ...scoped }, // read generated images + mint a download capability
   ];
 }
 

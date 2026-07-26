@@ -303,10 +303,29 @@ export class RadiaClient {
    *  travels inside a record body; the record carries {digest, mediaType, size} and routes. */
   async putArtifact(
     bytes: Uint8Array,
-    opts: { mediaType?: string; filename?: string; parentIds?: string[]; taint?: boolean; idempotencyKey?: string } = {},
+    opts: {
+      mediaType?: string;
+      filename?: string;
+      parentIds?: string[];
+      taint?: boolean;
+      idempotencyKey?: string;
+      /** Application fields merged into the artifact's record body, so an app can route and SCOPE
+       *  artifacts it owns — a grant template matches the body, and the rest of the body is
+       *  runtime-computed. Values must be scalars; the whole object travels in a header, so it must
+       *  be ASCII. */
+      meta?: Record<string, string | number | boolean | null>;
+    } = {},
   ): Promise<{ id: string; digest: string; size: number }> {
     const headers: Record<string, string> = { "content-type": opts.mediaType ?? "application/octet-stream" };
     if (opts.filename) headers["x-radia-filename"] = opts.filename;
+    if (opts.meta) {
+      const json = JSON.stringify(opts.meta);
+      // Fail here rather than at `fetch`, which throws an opaque ByteString error naming neither
+      // the header nor the offending value.
+      // deno-lint-ignore no-control-regex
+      if (/[^\x00-\x7f]/.test(json)) throw new Error("artifact meta must be ASCII: it travels in a header");
+      headers["x-radia-meta"] = json;
+    }
     if (opts.parentIds?.length) headers["x-radia-parent-ids"] = opts.parentIds.join(",");
     if (opts.taint) headers["x-radia-taint"] = "true";
     if (opts.idempotencyKey) headers["Idempotency-Key"] = opts.idempotencyKey;

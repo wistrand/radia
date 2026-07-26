@@ -87,6 +87,10 @@ await agentLoop(client, {
         filename: "generated.png",
         parentIds: [callId], // lineage: conversation -> tool_call -> artifact
         taint: true,
+        // Lineage records where it CAME from; this is what a grant can bind. Templates match the
+        // body, and parent_ids is not body — so without this field an artifact is readable by any
+        // session that learns its id, whatever the conversation scoping says.
+        meta: { conversationId: b.conversationId ?? "" },
       });
       return {
         kind: "tool_result",

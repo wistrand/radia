@@ -176,15 +176,28 @@ class RadiaClient:
         parent_ids: Optional[List[str]] = None,
         taint: bool = False,
         idempotency_key: Optional[str] = None,
+        meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Store bytes and get back the ``artifact`` record that references them.
 
         The payload never travels inside a record body: the record carries
         ``{digest, mediaType, size}`` and routes like anything else.
+
+        ``meta`` adds APPLICATION fields to that record body, so an app can route and scope the
+        artifacts it owns — a grant template matches the body, and the rest of the body is computed
+        by the runtime. Values must be scalars, and the object travels in a header, so it must be
+        ASCII.
         """
         hdrs = {"Content-Type": media_type}
         if filename:
             hdrs["X-Radia-Filename"] = filename
+        if meta:
+            encoded = json.dumps(meta)
+            # Fail here rather than deep in http.client, which raises an opaque encoding error
+            # naming neither the header nor the value.
+            if not encoded.isascii():
+                raise ValueError("artifact meta must be ASCII: it travels in a header")
+            hdrs["X-Radia-Meta"] = encoded
         if parent_ids:
             hdrs["X-Radia-Parent-Ids"] = ",".join(parent_ids)
         if taint:

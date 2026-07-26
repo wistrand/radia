@@ -301,6 +301,7 @@ paths:
         - { name: X-Radia-Filename, in: header, required: false, schema: { type: string }, description: "Advisory download name; never used as a path." }
         - { name: X-Radia-Parent-Ids, in: header, required: false, schema: { type: string }, description: "Comma-separated data lineage parents." }
         - { name: X-Radia-Taint, in: header, required: false, schema: { type: string, enum: ["true"] }, description: "Raise taint (a client may raise it, never clear it)." }
+        - { name: X-Radia-Meta, in: header, required: false, schema: { type: string }, description: "ASCII JSON object of APPLICATION fields merged into the artifact's record body (scalars only; digest/mediaType/size/filename are runtime-computed and rejected here). This is what lets a template-scoped grant bind an artifact to something the app owns — the rest of the body is the runtime's." }
       requestBody:
         required: true
         content:

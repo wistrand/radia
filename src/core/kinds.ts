@@ -171,6 +171,37 @@ export function validateArtifactDef(def: ArtifactDef): void {
   }
 }
 
+/** Field names the runtime owns on an artifact body. An application may add its own alongside them
+ *  (see `Space.putArtifact`), but not redefine these: they are computed from the bytes. */
+const ARTIFACT_RESERVED_FIELDS = ["digest", "mediaType", "size", "filename"];
+
+/**
+ * Validate the application half of an artifact body.
+ *
+ * Kept narrow on purpose. The point is to let an app scope artifacts it owns (a grant template
+ * matches the body, so without an app field there is nothing to bind), not to turn the artifact
+ * record into a second payload — the bytes live in the blob store precisely so bodies stay small
+ * and matchable.
+ */
+export function validateArtifactFields(fields: unknown): void {
+  if (fields === undefined) return;
+  if (fields === null || typeof fields !== "object" || Array.isArray(fields)) {
+    throw new RadiaError("invalid_artifact", "artifact metadata must be an object of field → value");
+  }
+  for (const [key, value] of Object.entries(fields as Record<string, unknown>)) {
+    if (ARTIFACT_RESERVED_FIELDS.includes(key)) {
+      throw new RadiaError("invalid_artifact", `artifact field '${key}' is computed by the runtime and cannot be supplied`);
+    }
+    const t = typeof value;
+    if (value !== null && t !== "string" && t !== "number" && t !== "boolean") {
+      throw new RadiaError("invalid_artifact", `artifact metadata field '${key}' must be a string, number, boolean or null`);
+    }
+    if (typeof value === "string" && value.length > 256) {
+      throw new RadiaError("invalid_artifact", `artifact metadata field '${key}' is too long (max 256 characters)`);
+    }
+  }
+}
+
 /** Kinds defined in CODE, not as `kind_def` records — so they never appear in `listKinds()`, which
  *  reads those records. Anything asking "does this kind exist" must consider these too. */
 export const RESERVED_KINDS = [KIND_DEF, GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, ARTIFACT];

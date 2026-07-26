@@ -174,6 +174,16 @@ Indexed on `digest` (every record referencing the same bytes) and `mediaType` (a
 `{mediaType: "image/png"}` — content routing, not a routing table). `digest` and `size` are
 server-computed; a client cannot assert them.
 
+An application may merge its OWN fields into that body (`putArtifact`'s `appFields`, `X-Radia-Meta`
+on the wire — scalars, ASCII, since a header is a ByteString). Without them an artifact was the one
+kind an application could not scope: a grant template matches the body, and a wholly runtime-built
+body offers nothing to bind, so any principal holding an artifact id could read the bytes. Lineage
+does not help — `parent_ids` is not body, and matching is body-only by design. The runtime's fields
+are applied last and supplying one is refused, so app metadata can never forge a digest, size or
+media type. A kind whose indexing an app extends this way is redeclared with a `kind_def` record
+like any other (only `kind_def` itself is protected), and a redeclaration REPLACES, so the reserved
+paths must be repeated.
+
 Blobs are **content-addressed** by sha256 of the plaintext: an object verifies itself, identical
 bytes are stored once, and re-upload is free. Client-facing identity stays the record id, so
 dedup never merges two artifacts into one reference.

@@ -71,11 +71,30 @@ export async function handlePutArtifact(space: Space, req: Request, principal: s
     }
     if (bytes.byteLength === 0) return problem(400, "invalid_body", "artifact body is empty");
     const parentIds = (req.headers.get("x-radia-parent-ids") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    // Application fields for the record body, as JSON in a header. A header is a ByteString, so
+    // non-ASCII is rejected rather than silently mangled — the same rule that made idempotency keys
+    // hashes rather than content (see gotchas.md). Bytes belong in the body; this is metadata.
+    const metaHeader = req.headers.get("x-radia-meta");
+    let appFields: Record<string, unknown> | undefined;
+    if (metaHeader) {
+      // deno-lint-ignore no-control-regex
+      if (/[^\x00-\x7f]/.test(metaHeader)) {
+        return problem(400, "invalid_artifact", "x-radia-meta must be ASCII JSON (a header cannot carry non-Latin1 text)");
+      }
+      try {
+        const parsed = JSON.parse(metaHeader);
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+        appFields = parsed as Record<string, unknown>;
+      } catch {
+        return problem(400, "invalid_artifact", "x-radia-meta must be a JSON object of field → scalar");
+      }
+    }
     const out = await space.putArtifact(
       bytes,
       {
         mediaType,
         filename,
+        appFields,
         parentIds: parentIds.length ? parentIds : undefined,
         taint: req.headers.get("x-radia-taint") === "true" ? true : undefined,
       },

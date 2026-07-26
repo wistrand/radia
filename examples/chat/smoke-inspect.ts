@@ -150,6 +150,33 @@ check("its own llm_result is readable", (await session.readOne({ kind: "llm_resu
 check("its own tool_result is readable", (await session.readOne({ kind: "tool_result", match: { callId: myCall } })) !== null);
 check("its own chunks are readable", (await session.query({ kind: "llm_chunk", match: { callId: myCall } }, 10)).length === 1);
 
+// Artifacts. The last kind a session could not be scoped on: the body is computed from the bytes,
+// so until `putArtifact` accepted application fields there was nothing for a template to bind and
+// any holder of an id could read the bytes.
+const theirArt = await admin.putArtifact(new TextEncoder().encode("their secret"), {
+  mediaType: "text/plain",
+  meta: { conversationId: conv },
+});
+const myArt = await admin.putArtifact(new TextEncoder().encode("my bytes"), {
+  mediaType: "text/plain",
+  meta: { conversationId: mine },
+});
+const canRead = async (id: string) => {
+  try {
+    await session.getArtifact(id);
+    return true;
+  } catch {
+    return false;
+  }
+};
+check("another conversation's artifact bytes are refused", !(await canRead(theirArt.id)));
+check("…while its own are served", await canRead(myArt.id));
+check(
+  "…and the runtime's own fields survive the app's",
+  (await admin.getRecord(myArt.id))!.body !== null &&
+    typeof ((await admin.getRecord(myArt.id))!.body as { digest?: string }).digest === "string",
+);
+
 // ---- being able to answer "which grants do i have" ----
 const perms = await tools.space_permissions({}) as {
   principal: string;
