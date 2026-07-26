@@ -332,6 +332,64 @@ export class PgSqlAdapter implements StorageAdapter {
     await this.sql.exec(DDL);
   }
 
+  /**
+   * Give the planner a real estimate for the body paths this kind declares.
+   *
+   * The problem this solves is not a missing index — the GIN index is there and gets used. It is
+   * that Postgres has no statistics for a JSON EXPRESSION, so it falls back to a generic guess:
+   * ~26 rows for a predicate matching 5,715 of 40,000. On that estimate a sort looks free, so a
+   * claim collects every matching record through the body index and sorts it, instead of walking
+   * the claim index and stopping at the window. Measured: 15.07ms → 1.92ms with the statistics,
+   * with the planner choosing the ordered walk unprompted. No query rewrite reproduces this, and
+   * forcing the planner with enable_* flags makes it worse — the estimate is the whole problem.
+   *
+   * The expression must match what `PgJson.at` emits (`body_jsonb #> '{a,b}'`) character for
+   * character, or the planner will not associate the statistics with the predicate.
+   *
+   * Statistics are read at ANALYZE time, not at write time, so this costs nothing on the hot path.
+   * The ANALYZE is run only when something was actually created — declaring a kind is idempotent
+   * and happens at startup, so this is once per path for the life of the database, and a no-op on
+   * every later boot.
+   */
+  async prepareKind(_kind: string, paths: string[]): Promise<void> {
+    let created = 0;
+    for (const path of paths) {
+      const segments = path.split(".");
+      // Same alphabet restriction as pushdown: the path is INLINED into DDL here, so anything
+      // outside it is skipped rather than escaped. A path that cannot be pushed down cannot
+      // benefit from statistics anyway.
+      if (!segments.every((s) => s.length > 0 && /^[A-Za-z0-9_]+$/.test(s))) continue;
+      const name = `radia_stat_${segments.join("_")}`;
+      if (name.length > 63) continue; // Postgres identifier limit; a path that long is pathological
+      const existing = await this.sql.query<{ n: number }>(
+        "select count(*)::int as n from pg_statistic_ext where stxname = $1",
+        [name],
+      );
+      if (Number(existing.rows[0]?.n ?? 0) > 0) continue;
+      try {
+        await this.sql.query(
+          `create statistics ${name} on ((body_jsonb #> '{${segments.join(",")}}')) from records`,
+        );
+        created++;
+      } catch {
+        // Statistics are an optimization. A server too old for expression statistics (pre-14), a
+        // concurrent creator, or a permission that does not allow DDL must not fail a kind
+        // declaration — the query still returns the right rows, just planned on a guess.
+      }
+    }
+    if (created > 0) {
+      try {
+        // BOTH tables, and record_runtime is not an afterthought: a claim joins the two, and with
+        // no statistics on the envelope table the join estimate collapses regardless of how good
+        // the body estimate is. Measured on a 20k-record claim: 48ms with neither analyzed, 11ms
+        // with the envelope table analyzed, 1.0ms with the expression statistics on top. Skipping
+        // either half leaves most of the win on the table.
+        await this.sql.query("analyze records");
+        await this.sql.query("analyze record_runtime");
+      } catch { /* the next autoanalyze picks it up */ }
+    }
+  }
+
   async close(): Promise<void> {
     await this.sql.close();
   }

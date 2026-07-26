@@ -42,7 +42,7 @@ outside world).
 ## Testing it without a model
 
 ```bash
-deno task chat-test              # all five suites, ~11s
+deno task chat-test              # all six suites, ~11s
 deno task chat-test longthread   # one by name
 ```
 
@@ -318,7 +318,7 @@ Three details carry the weight:
   used a saved procedure, said yes, had not, and invented a reason for the mismatch.
 
 ```bash
-deno task chat-test              # all five suites, ~11s, no API key
+deno task chat-test              # all six suites, ~11s, no API key
 deno task chat-test longthread   # one by name
 ```
 

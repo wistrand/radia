@@ -242,6 +242,9 @@ export class SqliteAdapter implements StorageAdapter {
   constructor(private readonly path = ":memory:") {}
 
   init(): Promise<void> {
+    // Re-initializing an open adapter would otherwise leak the previous connection (and, for
+    // `:memory:`, silently swap in an EMPTY database while the caller believes it reconnected).
+    if (this.#db) this.close();
     this.#db = new DatabaseSync(this.path);
     // WAL is a no-op for :memory: but is the intended mode for file-backed dev spaces.
     this.#db.exec("PRAGMA journal_mode = WAL;");

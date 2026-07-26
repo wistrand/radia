@@ -65,11 +65,16 @@ Scaling), envelope encryption/KMS (M2). `npm`/`pip` binary wrapping is BUILT but
 | Blobs        | the `BlobStore` port (`src/storage/blobs.ts`): content-addressed by sha256, memory + filesystem impls, one conformance suite for both; the "artifact table" is the reserved `artifact` **record** kind; runtime-issued short-lived download capabilities; optional **encryption at rest** (per-blob AES-GCM DEK, AES-KW-wrapped under a space KEK, HMAC-named paths, key in a destroyable sidecar) — **built (M1)**                                                        |
 
 The claim index is what lets a candidate window be an ordered seek rather than a scan of the
-envelope table. A template with a pushable predicate does need the join, and there the two
-backends diverge for a reason worth knowing: SQLite still walks the claim index and stops early,
-while Postgres mis-estimates the jsonb predicate badly enough to collect every match and sort
-(~23ms vs ~1.2ms at 40k records). The remedy is planner statistics on the path expression, not a
-different query — see [gotchas.md](gotchas.md), "a claim on Postgres is planned on a guess". See
+envelope table. A template with a pushable predicate does need the join, and there the two backends
+diverge for a reason worth knowing: SQLite walks the claim index and stops early, while Postgres
+mis-estimated the jsonb predicate badly enough to collect every match and sort. The remedy was a
+better ESTIMATE, not a different query: `StorageAdapter.prepareKind` (optional; implemented by the
+Postgres adapters, ignored by SQLite) creates planner statistics on each declared path expression
+when a kind is declared, and analyzes BOTH `records` and `record_runtime` — a claim joins them, and
+missing statistics on either half sinks the estimate. Measured on a 20k-record claim: 9.75ms →
+3.37ms, with the plan changing to an ordered index walk. A residual underestimate remains because
+the two pushed terms are redundant and the planner assumes independence; details, numbers and method
+in [gotchas.md](gotchas.md), "a claim on Postgres is planned on a guess". See
 [design-api.md](design-api.md) for the take contract this implements and
 [design-data-model.md](design-data-model.md) for the record/envelope split.
 

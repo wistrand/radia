@@ -63,6 +63,19 @@ export function newestByKey<T = unknown>(
  *
  * Retirement is applied AFTER the newest-per-key pass, never as a filter over the input — filtering
  * first would let an older, non-retired record become "newest" and resurrect the entry.
+ *
+ * KNOWN LIMIT, and the obvious fix was tried and reverted. "Newer" here means a higher ULID, and
+ * ULID monotonicity is per PROCESS — so two runtime instances on one Postgres, writing to the same
+ * key in the same millisecond, sort arbitrarily relative to each other. Resolving that tie toward
+ * retirement (fail-closed, so a revocation can never lose a race) looks right and is not: within a
+ * single process the ids ARE strictly ordered, and a retire-then-revive pair lands in one
+ * millisecond routinely — the rule discarded real ordering information and broke revival, which is
+ * a far more common operation than a cross-instance write race. A correct fix needs a comparator
+ * the DATABASE assigns, and specifically a COMMIT-order one: a bigserial has the same defect as
+ * `events.seq` (assigned at insert, committed out of order — see design-storage.md "Watch delivery
+ * under concurrency"), so it would have to be the xid8 machinery the event cursor already uses.
+ * Not worth that until a multi-instance deployment is real; until then, do not race a retirement
+ * and its revival from two instances.
  */
 export function activeByKey<T = unknown>(
   records: RadiaRecord[],

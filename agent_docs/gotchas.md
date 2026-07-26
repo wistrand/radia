@@ -36,6 +36,31 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
 > result as "all of them", use `readRegistry` instead.
 
 
+- **"Public route" means no credential is REQUIRED, not that a bad one is ignored.** `GET /` and
+  `GET /v0/health` skip authentication so the console can bootstrap in `--auth required` mode. The
+  skip covered every credential error, so a request presenting an expired, stopped, or garbage
+  bearer token got `200 {principal: "anonymous"}` from health — the one endpoint a client calls to
+  ask whether its token still works. Not a privilege escalation (the caller is anonymous, not the
+  operator), but it makes a dead credential indistinguishable from an open space. Only
+  `auth_required` — the error meaning nothing was presented — is exempt now; every other resolution
+  failure is a 401 on public routes too. Note a malformed `Authorization` header that is not a
+  Bearer at all still reads as "no credential" in open mode, because header normalization has
+  already eaten it by the time the server looks.
+- **A cast is still a promise, not a check — `match` was the one that got away.** The boundary
+  validation added after the fuzzing covered `parentIds`, `deadlineAt`, `orderBy` and the rest, but
+  `template.match` was cast (`j.match as Record<string, unknown>`) all the way into the compiler.
+  `Object.keys(3)` is empty, so `match: 3` compiled to NO PREDICATE and the query returned every
+  record of the kind — a malformed filter that WIDENS, answering a question the caller never asked
+  with a plausible-looking result. Validated in `compileTemplate` rather than in the handlers, for
+  the same reason `compileOrderBy` is: the SDK, MCP and in-process callers never pass through a
+  handler. Found by writing the HTTP boundary tests, not by reading the code — the fuzzing that
+  found the original class was a one-off that was never checked in, so every endpoint added since
+  had no such check. It is a table in `conformance/http.test.ts` now.
+- **A wrong-typed field that changes WHICH records are involved is a 400; one that only sizes the
+  answer falls back to its default.** `limit: "ten"`, `leaseSeconds: "60"` and `backoffSeconds: []`
+  are ignored in favour of the default; `match`, `template`, `orderBy`, `after` and `dir` are
+  rejected. The asymmetry is deliberate and easy to "fix" into inconsistency: a bad bound cannot
+  answer a different question, and a bad selector can. Pinned in both directions so neither drifts.
 - **Cache what cannot change; never cache what can be revoked.** Credentials looked like a registry
   (records projected into a lookup, rebuilt at startup) and were built as one — wrongly, because the
   thing a registry cache trades away is *freshness*, and freshness is the entire content of a
@@ -72,8 +97,13 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   reverse index that only `put` maintained would look correct in every hand test); and the schema
   carries a **one-time backfill** from `parent_ids`, guarded by `where not exists (select 1 from
   record_edges)`, so a database written by an older build rebuilds its edges on next startup.
-  Conformance cannot reach that backfill — every harness database is created fresh by the current
-  schema — so it was verified by hand against both dialects instead.
+  That backfill is now covered by `conformance/backfill.test.ts`, which empties the table and
+  reopens — the earlier claim that conformance "cannot reach it, every harness database is created
+  fresh" was true of the harness and false of the problem. Two things the test had to get right, and
+  both were wrong first: the database must be PERSISTENT, because `init()` on `:memory:` opens a new
+  empty database and the first draft "survived a restart" by finding nothing in it; and
+  `SqliteAdapter.init` now closes any existing handle first, since re-initializing otherwise leaked
+  the previous connection and silently swapped in that empty database.
 - **A graph walk should batch by LEVEL, but the reason it got faster may not be the batching.**
   `getLineage` now fetches a whole depth level with one `getRecords` call instead of one
   `getRecord` per node. Measured head to head at depth 64 in a 20k-record space: 0.224ms vs
@@ -232,18 +262,37 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   never the problem". `idx_runtime_claim_order`, with the sort columns immediately after `kind` and
   no `state`, took a claim at 40k records from **19.5ms to 0.8ms** on SQLite by turning a full scan
   of the envelope table into an ordered seek that stops when the window is full.
-- **A claim on Postgres is planned on a guess, and the guess is wrong by 200×.** The same query
-  that SQLite answers with an ordered seek, Postgres answers by collecting EVERY matching record
-  through the body index (5,715 of 40,000), joining each to its envelope, and sorting — because it
-  estimates the jsonb predicate at 26 rows and concludes the sort is free. This is not fixable by
-  rewriting the query: `join` vs `exists`, with and without the `@>` term, all plan the same way
-  (15–20ms), and forcing the planner's hand with `enable_seqscan`/`enable_bitmapscan` off makes it
-  *worse* (28.6ms) because it picks a different wrong plan. What does fix it is giving the planner
-  a real estimate — `create statistics on ((body_jsonb #> '{path}')) from records` drops the same
-  claim from **15.07ms to 1.92ms**, with the planner then choosing the ordered walk unprompted.
-  That is the tracked next step; it means per-declared-path statistics (cheap — statistics cost
-  ANALYZE time, not write time), created when a kind is declared. Until then a claim is ~23ms at
-  40k on Postgres versus ~1.2ms on SQLite, and the gap is the estimate, not the storage.
+- **A claim on Postgres is planned on a guess, and the guess is wrong by 200× — BUILT, and the
+  estimate has two halves.** The same query SQLite answers with an ordered seek, Postgres answered
+  by collecting EVERY matching record through the body index (5,715 of 40,000), joining each to its
+  envelope, and sorting — because it estimates the jsonb predicate at 26 rows and concludes the sort
+  is free. Not fixable by rewriting the query: `join` vs `exists`, with and without the `@>` term,
+  all plan the same way, and forcing the planner with `enable_seqscan`/`enable_bitmapscan` off makes
+  it *worse* (28.6ms) because it picks a different wrong plan. The fix is a real ESTIMATE:
+  `PgSqlAdapter.prepareKind` creates `create statistics … on ((body_jsonb #> '{path}')) from
+  records` for each declared indexed path, via the optional `StorageAdapter.prepareKind` hook that
+  `Space` calls when a kind is declared or loaded. Statistics cost ANALYZE time, not write time.
+  Measured end to end on a real `take` over 20k records: **9.75ms → 3.37ms p50**, with the plan
+  changing from sorting 9,168 buffers to an ordered walk of `idx_runtime_claim_order` over 1,364.
+  Three things are easy to get wrong, and the first two cost an afternoon each:
+  * **ANALYZE `record_runtime`, not just `records`.** A claim JOINS the two, and with no statistics
+    on the envelope table the join estimate collapses however good the body estimate is. The
+    isolated window query measured 48ms with neither analyzed, 11ms with the envelope table
+    analyzed, 1.0ms with the expression statistics on top.
+  * **The two pushed terms are redundant AND correlated, and the planner multiplies them.**
+    Pushdown emits `body_jsonb @> '{...}'` (what the GIN index answers) AND `body_jsonb #> '{path}'
+    = '...'` (what makes the filter exact). Measured selectivity for a value matching 2,858 of
+    20,000 rows: `@>` alone estimates 2,858 — exactly right; `#>` alone estimates 100 without
+    statistics and 2,858 with them; the two ANDed estimate **14 without and 408 with**, because the
+    planner assumes independence. So the statistics help, but the residual 7× underestimate is
+    structural, and dropping either term is not an option (one is the index, the other is the
+    exactness that lets a LIMIT be pushed).
+  * **The statistics expression must match `PgJson.at` character for character**, and the path is
+    inlined into DDL — so `prepareKind` skips any path outside `[A-Za-z0-9_]` rather than escaping
+    it, the same rule pushdown uses for the same reason.
+  A fresh space declares its kinds before it has rows, so the ANALYZE at declaration time measures
+  an empty table; the estimate becomes real at the next autoanalyze. Nothing is wrong when a brand
+  new space plans a claim badly for a while.
   Also worth knowing before optimizing a claim: an unfiltered first window (try the head of the
   queue cheaply, fall back to the filtered query) was built and **reverted** — no measurement
   supported it. It only wins when the head happens to hold a match, and in a queue where workers
@@ -259,11 +308,15 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   `conformance/suites/pushdown.ts`.
 - **Postgres orders text by the database's collation; the oracle orders by JS string comparison.**
   Those disagree under a linguistic collation, so the pushed limit sorts `id collate "C"` (byte
-  order, what JS means) against a dedicated `idx_records_id_c`. Without the explicit collation
-  `read_one` could return a *different* record on Postgres than on SQLite for the same space —
-  a semantic divergence between adapters, not just a slower query. Note the conformance Docker
-  image runs in C locale, where the bug is invisible: it was verified against an `en_US.UTF-8`
-  server on purpose.
+  order, what JS means) against a dedicated `idx_records_id_c`. Keep it — but keep the severity
+  straight too, because this entry used to claim `read_one` "could return a different record on
+  Postgres than on SQLite", and for the ids the runtime actually mints it cannot. Checked directly
+  (`sort` under both locales): `C` and `en_US.UTF-8` order Crockford base32 — digits and uppercase
+  letters, which is all a ULID contains — IDENTICALLY. They diverge on punctuation and case, which
+  is precisely what a ULID has none of. So the collation is a guard against ids ever ceasing to be
+  ULIDs, not a live divergence, and no test can currently be written that fails without it. Related
+  and also worth stating plainly: `scripts/pg-conformance.sh` pins no locale, so the old claim that
+  "the conformance Docker image runs in C locale" was never verified by anything either.
 - **`indexedPaths` are a validation contract, not per-path physical indexes — and they no longer
   need to be.** One GIN index (`jsonb_path_ops` over the generated `body_jsonb` column) answers
   pushed equality on every path, so declaring a path costs no DDL and no migration, which is what
@@ -293,16 +346,21 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   tail as the queue drains). Pinned by `claimFairnessSuites` in `conformance/suites/leases.ts` —
   which fails on Postgres without the fix, so run `scripts/pg-conformance.sh`, not just the
   embedded suite, before trusting a change to the claim path.
-  One loose end found while fixing it, left alone deliberately: `idx_runtime_claim` is
-  `(kind, available_at, effective_priority desc, record_id) where state = 'available'` — the
-  *wrong* column order for the claim sort (priority leads), and partial on a predicate the
-  candidate query widens (`state in ('available','leased')`, needed to reclaim expired leases).
-  So it cannot serve the window's `order by`. Adding an index that does was measured and changed
-  nothing (58.8ms vs 60.2ms at 40k), because selecting the window off the narrow envelope table
-  had already removed the cost; the sort was never what hurt. Don't add the index without a
-  measurement that says it helps. Also note `effective_priority` is uniformly 0 until the
-  scheduler lands (M3), which is why the two orderings are indistinguishable today — the
-  mismatch becomes real the day priorities differ.
+  A loose end noted while fixing it was later RESOLVED THE OTHER WAY, and the sequence is worth
+  keeping because the first measurement was misleading. `idx_runtime_claim` is
+  `(kind, available_at, effective_priority desc, record_id) where state = 'available'` — the wrong
+  column order for the claim sort (priority leads), and partial on a predicate the candidate query
+  widens (`state in ('available','leased')`, needed to reclaim expired leases), so it cannot serve
+  the window's `order by`. Adding a correctly-ordered index was measured at the time and changed
+  nothing (58.8ms vs 60.2ms at 40k), and this entry concluded "don't add it". That conclusion was
+  wrong: the measurement was taken against a claim whose cost was dominated elsewhere. The index
+  was later added as `idx_runtime_claim_order` and took a claim from **19.5ms to 0.8ms** (see the
+  entry above). If you are reading this to decide whether to remove one of them: keep BOTH.
+  `idx_runtime_claim_order` serves the claim window; `idx_runtime_claim` is still chosen for
+  `envelopesInState`/diagnostics, where it narrows the scan to available rows (verified with
+  `explain query plan`, not assumed). Also note `effective_priority` is uniformly 0 until the
+  scheduler lands (M3), which is why the two orderings are indistinguishable today — the mismatch
+  becomes real the day priorities differ.
 - **An idempotency key travels as an HTTP header (a ByteString) — hash content into it, never
   embed it.** `Idempotency-Key` (and any header) must be Latin1; a key built from free-form content
   can carry Unicode (a tool description with `…`/`→`, a body with an em-dash) and `fetch` throws
@@ -359,6 +417,14 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   or kind name (validated only as "a non-empty string") could inject an event handler into the
   page that carries an operator token. Escaping now covers `"` and `'`; the fix belongs in `esc`
   rather than at each call site, since new call sites keep appearing.
+  The follow-up is the part that generalizes: `esc` being correct was never the problem, ONE call
+  site interpolating raw was. `conformance/console.test.ts` now checks the property structurally —
+  every `${…}` inside an HTML attribute in the page must route through `esc` or be a ternary whose
+  branches are string literals — and it immediately found two more (`note`'s CSS class and
+  `stateBadge`'s state, both server-supplied). The console is one file with no build step, so the
+  test lifts `esc` out of the page source by brace balance rather than the page being split into
+  modules; the extraction fails loudly if the function is renamed, which is what keeps the test
+  from quietly testing nothing.
 
 - **A selector on `state: available` must exclude reference kinds.** `claimable:false` records —
   the `kind_def` registry, `grant`s, `agent_run`s, plain facts — sit available forever by design.
@@ -369,12 +435,17 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   for the same reason; in remediation it is a guard, not a heuristic. `dead_letter` stays
   unfiltered so a reference record that lands there is still requeueable.
 
-- **There is no `expired` record STATE.** It exists in the `RecordState` union and nothing ever
-  writes it: a lapsed lease leaves the record `leased`, and a later take reclaims it. Diagnostics
-  therefore reports no `expired` count — it would be a confident zero beside hundreds of
-  demonstrably lapsed leases, which is exactly how a reader (or a model) concludes the report is
-  broken. The real number is `stuckLeases`, which carries `atLeast` when its scan hit the sample
-  cap, because a bounded scan must not present itself as a census.
+- **There is no `expired` record STATE, and the union no longer pretends otherwise.** A lapsed
+  lease leaves the record `leased`; a later take reclaims it. `RecordState` used to carry an
+  `expired` member nothing ever wrote, and `GET /v0/ops/records?state=expired` accepted it and
+  answered zero rows — a confident nothing beside hundreds of demonstrably lapsed leases, which is
+  exactly how a reader (or a model) concludes the report is broken. The member is gone from the
+  union and from both OpenAPI enums, and the endpoint now answers `400` naming the query that does
+  work: expiry is a PREDICATE over leased records (`state=leased&expired=1`). Diagnostics reports
+  the real number as `stuckLeases`, which carries `atLeast` when its scan hit the sample cap,
+  because a bounded scan must not present itself as a census. Note `take.ts` has its own
+  `how: "available" | "expired"` — a different thing that happens to share the word, describing how
+  a candidate was reached rather than what state it is in.
 
 - **Client-supplied headers must win over the SDK's own credential.** The Python `_req` set
   `Authorization` from the client's token *after* merging caller headers, silently clobbering
@@ -690,10 +761,26 @@ rejected for stated reasons.
   `model` records by `rank`, the classifier answers with one of those words, and the fallback
   heuristic picks by *position* in that list, not by name — the original fallback hardcoded
   `"fast"|"balanced"|"deep"` in the file whose thesis is that tiers are discovered.
-  **Related limit, unresolved:** a `model` record is written once at worker startup and never
-  expires, so it advertises a tier, not a live worker. Routing to a tier whose worker is dead
-  leaves the call `available`; the chat's stall detection reports it rather than the fleet
-  re-probing.
+  **Related limit, now partly closed.** A `model` record advertises a TIER, not a live worker.
+  Two of the three problems are fixed (`examples/chat/space/model.ts`): the publish reads before
+  writing, so restarting the fleet no longer appends a record per worker per launch — the same
+  unbounded growth `publishCapability` was fixed for, still present here until now; and a worker
+  retires its advertisement on SIGINT/SIGTERM (`onStop`), so a stopped tier leaves rotation instead
+  of remaining an offer nobody serves. What is NOT fixed: a worker that crashes or is `kill -9`ed
+  leaves its advertisement behind, and the router will dispatch into silence — the call sits
+  `available` and the chat reports a stall rather than failing over. Closing that needs liveness the
+  substrate does not have: a heartbeat record reintroduces exactly the growth above, and
+  advertisements that expire need the retention GC that is still M2. Do not "fix" it with a periodic
+  re-publish.
+  **The retire/republish trap, which bit immediately and is general to content-keyed registries.**
+  Withdrawing an entry and later re-publishing it looks symmetric and is not: the republish reuses
+  the publish key, an idempotency key is scoped `(principal, operation, key)`, and within one
+  principal that write is a REPLAY of the record being revived — so nothing is written, the
+  retirement stays newest, and the entry is withdrawn permanently. It happens to work across a real
+  restart, because the worker's principal is a fresh `run:<ulid>` each launch, which is precisely
+  what makes it a trap: correctness would depend on who is calling. A revival must therefore key on
+  the retirement it supersedes (`…:after:<retirement id>`). Caught by `smoke-fleet.ts` on the first
+  run; it would not have been caught by any test that used a fresh principal per step.
 
 ## Risk register
 

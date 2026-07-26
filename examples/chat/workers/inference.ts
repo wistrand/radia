@@ -7,8 +7,9 @@ import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { assembleContext, selectWindow, type ThreadRow, toMessage } from "../provider/context.ts";
 import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { progress } from "../space/progress.ts";
-import { arg } from "../util.ts";
+import { arg, onStop } from "../util.ts";
 import { publishCapability } from "../space/capability.ts";
+import { publishModel, retireModel } from "../space/model.ts";
 import { type ChatMessage, streamChat, type ToolCall, type ToolDef } from "../provider/openrouter.ts";
 
 const ME = "agent:chat-inference";
@@ -47,8 +48,12 @@ const ESCALATE: ToolDef = {
 };
 
 if (tier) {
-  await client.put({ kind: "model", body: { tier, model, rank } }, `model:${tier}:${model}:${rank}`);
+  const ad = { tier, model, rank };
+  await publishModel(client, ad);
   await publishCapability(client, ESCALATE);
+  // A stopped worker must stop being routed to: the router reads `model` records as a latest-wins
+  // registry, so a retirement takes the tier out of rotation and the next start revives it.
+  onStop(() => retireModel(client, ad));
 }
 
 await agentLoop(client, {

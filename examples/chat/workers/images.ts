@@ -14,8 +14,9 @@ import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { generateImage } from "../provider/imagegen.ts";
 import { progress } from "../space/progress.ts";
-import { arg } from "../util.ts";
+import { arg, onStop } from "../util.ts";
 import { publishCapability } from "../space/capability.ts";
+import { publishModel, retireModel } from "../space/model.ts";
 import type { ToolDef } from "../provider/openrouter.ts";
 
 const ME = "agent:chat-images";
@@ -58,10 +59,11 @@ const GENERATE_IMAGE: ToolDef = {
 // is what keeps this out of TEXT routing: the router and the escalation ladder select tiers that
 // serve text, and this one does not — the same array the request sends as `modalities: ["image"]`.
 await publishCapability(client, GENERATE_IMAGE);
-await client.put(
-  { kind: "model", body: { tier: "image", model, rank: 0, modalities: ["image"] } },
-  `model:image:${model}:0`,
-);
+const AD = { tier: "image", model, rank: 0, modalities: ["image"] };
+await publishModel(client, AD);
+// Withdraw the advertisement on a graceful stop, so the tier leaves rotation instead of sitting
+// there as an offer nobody serves. A crash still leaves it — see space/model.ts.
+onStop(() => retireModel(client, AD));
 
 await agentLoop(client, {
   name: "images",

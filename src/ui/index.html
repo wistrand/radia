@@ -315,9 +315,9 @@ async function api(method, path, body, headers = {}) {
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
-function note(el, kind, msg) { $(el).innerHTML = `<div class="note ${kind}">${esc(msg)}</div>`; }
+function note(el, kind, msg) { $(el).innerHTML = `<div class="note ${esc(kind)}">${esc(msg)}</div>`; }
 function errText(r) { return (r.data && r.data.detail) ? `${r.data.title}: ${r.data.detail}` : `HTTP ${r.status}`; }
-function stateBadge(s) { return `<span class="badge st-${s}">${s}</span>`; }
+function stateBadge(s) { return `<span class="badge st-${esc(s)}">${esc(s)}</span>`; }
 
 // ---- nav ----
 function selectTab(b) {

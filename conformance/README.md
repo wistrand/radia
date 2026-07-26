@@ -23,8 +23,8 @@ flowchart LR
 ```
 
 ```bash
-deno task conformance                     # sqlite + pglite + the blob port   (256 tests)
-scripts/pg-conformance.sh                 # + a live Postgres                 (366 total)
+deno task conformance                     # sqlite + pglite + the blob port   (322 tests)
+scripts/pg-conformance.sh                 # + a live Postgres
 RADIA_PG_URL=postgres://… scripts/pg-conformance.sh   # against your own server
 ```
 
@@ -34,7 +34,7 @@ ephemeral range — an unrelated outbound connection holding it, even in TIME_WA
 fail with a docker "address already in use" that reads like a stale container and is not one).
 
 Each Postgres test runs in its own ephemeral schema, dropped on close, so it is safe to point at a
-database you care about. The live-server run adds 110 storage tests to the embedded 256 — and it
+database you care about. The live-server run adds its own storage tests to the embedded 322 — and it
 is the only run that actually *contends* for claims, which is why a claim-path change needs it (see
 "Writing a suite" below).
 
@@ -43,8 +43,18 @@ is the only run that actually *contends* for claims, which is why a claim-path c
 | File | Role |
 |------|------|
 | `run.test.ts` | entry point: enumerates implementations, registers every suite against each |
-| `harness.ts`  | the `Suite` / `BlobSuite` / `BlobCryptoSuite` types and setup/teardown. The only `Deno.test` binding in the repo |
+| `harness.ts`  | the `Suite` / `BlobSuite` / `BlobCryptoSuite` types and setup/teardown |
 | `suites/`     | one file per behavior area (records, matching, **pushdown soundness**, **graph: children + lineage**, leases + claim fairness, idempotency, events, watches, faults, auth, taint, admin + selector-driven remediation, blobs + encryption) |
+| `http.test.ts` | the HTTP boundary, driving `makeHandler` directly — authentication, the artifact inline/download allowlist, and a table of wrong-typed fields per endpoint |
+| `backfill.test.ts` | the schema's one migration: rebuilding `record_edges` for a database written before that table existed |
+| `planner.test.ts`  | Postgres planner statistics for declared body paths (`prepareKind`) |
+| `registry.test.ts` | latest-wins projections over hand-made ids |
+| `console.test.ts`  | the dev console's HTML escaping, lifted out of the page source |
+
+The four files outside `suites/` are NOT adapter-parameterized, and that is the rule for where a
+test belongs: the shared run is for PORT contracts, so anything that has one implementation (the
+HTTP surface, the console) or knows a specific dialect (the backfill, the planner) is a standalone
+`*.test.ts`. They still run under `deno task conformance`, which globs the directory.
 
 ## Writing a suite
 
@@ -52,7 +62,7 @@ A suite is a name plus a `run(...)` function; the harness runs it once per imple
 observable behavior, never on a specific backend's SQL or on-disk layout — a test that only passes
 on one implementation is testing the implementation, not the contract.
 
-Five conventions worth copying rather than reinventing:
+Six conventions worth copying rather than reinventing:
 
 - **Simulate faults by composition, not test hooks.** A crashed worker is one that took a lease
   and never acked, with the lease forced expired via a negative `leaseSeconds`. Deterministic, no
@@ -62,12 +72,16 @@ Five conventions worth copying rather than reinventing:
 - **Keep crypto deterministic.** The blob-crypto suites use a fixed KEK, so a failure means a
   behavior change rather than a coin flip. Randomness stays inside the implementation (DEKs,
   nonces), never in the assertions.
-- **Assume the embedded adapters cannot see your bug.** Two real faults were invisible to
-  `deno task conformance` and only appeared against a live Postgres: claim starvation, because
-  SQLite and PGlite are single-connection and never actually contend; and a collation-dependent
-  record ordering, because the throwaway Docker image runs in C locale while a real server usually
-  does not. Anything touching concurrent claims or text ordering needs `scripts/pg-conformance.sh`
-  — and, for ordering, a server with a linguistic collation.
+- **Assume the embedded adapters cannot see your bug.** Claim starvation was invisible to
+  `deno task conformance` and appeared only against a live Postgres, because SQLite and PGlite are
+  single-connection and never actually contend. Anything touching concurrent claims needs
+  `scripts/pg-conformance.sh`. (This bullet used to name collation-dependent ordering as a second
+  case; it is not one — `C` and `en_US.UTF-8` order the ULID alphabet identically, so no test can
+  currently distinguish them. See gotchas.md.)
+- **A persistent database is not `:memory:`, and a "restart" needs one.** `init()` opens a fresh
+  connection, so re-initializing an in-memory adapter gives you an EMPTY database rather than the
+  one you just wrote — a restart test that skips this passes by finding nothing. `backfill.test.ts`
+  uses a temp file/dir per dialect for exactly this reason.
 - **Never assume ULID insertion order is id order.** Ids minted inside the same millisecond differ
   only in their random half, so a test asserting "the records I put, in that order" passes on a
   slow adapter and fails on a fast one. Sort the expectation.

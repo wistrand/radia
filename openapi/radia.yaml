@@ -569,7 +569,7 @@ paths:
         a composition of these. Returns records with their envelopes.
       x-stability: experimental
       parameters:
-        - { name: state, in: query, required: true, schema: { type: string, enum: [available, leased, consumed, dead_letter, expired] } }
+        - { name: state, in: query, required: true, schema: { type: string, enum: [available, leased, consumed, dead_letter] }, description: "NOT `expired`: a lapsed lease stays `leased`. Ask for expiry with state=leased&expired=1." }
         - { name: expired, in: query, required: false, schema: { type: string, enum: ["1", "true"] } }
         - { name: stale, in: query, required: false, schema: { type: integer }, description: "keep first-attempt available rows older than this many seconds" }
         - { name: limit, in: query, required: false, schema: { type: integer, default: 100, maximum: 500 } }
@@ -929,7 +929,7 @@ components:
       properties:
         recordId: { type: string }
         kind: { type: string }
-        state: { type: string, enum: [available, leased, consumed, dead_letter, expired] }
+        state: { type: string, enum: [available, leased, consumed, dead_letter] }
         attempt: { type: integer }
         availableAt: { type: string }
         claimUntil: { type: string }

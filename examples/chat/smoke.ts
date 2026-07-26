@@ -23,6 +23,7 @@ const SUITES = [
   { name: "procedures", file: "smoke-procedures.ts", about: "saved procedures: save, call by name, read back, retire, shadowing, provenance" },
   { name: "resume", file: "smoke-resume.ts", about: "resuming a conversation across a real process restart" },
   { name: "selfgrant", file: "smoke-selfgrant.ts", about: "escalation: forbidden → request → approve → self-scoped reads, on both planes" },
+  { name: "fleet", file: "smoke-fleet.ts", about: "model advertisements: publish, restart, withdraw, revive — what the router discovers" },
 ];
 
 const wanted = Deno.args.filter((a) => !a.startsWith("-"));

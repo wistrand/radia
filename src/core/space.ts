@@ -191,6 +191,27 @@ export class Space {
   }
 
   /**
+   * Tell the adapter which body paths this kind declares, so it can do whatever it physically
+   * needs to plan predicates on them (`StorageAdapter.prepareKind`, optional — Postgres creates
+   * planner statistics, SQLite implements nothing).
+   *
+   * Advisory in both directions: an adapter without the hook is skipped, and a failure inside it
+   * is swallowed. A kind declaration must not fail because an optimization could not be applied —
+   * the difference is how fast the answer comes back, never what it is.
+   *
+   * Only the DURABLE declaration paths call this. `registerKind` is synchronous by contract (its
+   * callers rely on the kind being usable on the next line), and an in-memory declaration is a
+   * test/example convenience where planning does not matter.
+   */
+  private async prepareStorageFor(def: KindDef): Promise<void> {
+    const paths = (def.indexedPaths ?? []).map((p) => p.path);
+    if (paths.length === 0 || !this.storage.prepareKind) return;
+    try {
+      await this.storage.prepareKind(def.kind, paths);
+    } catch { /* advisory */ }
+  }
+
+  /**
    * Read one registry kind completely and project it — the ONE place limit and direction are
    * decided, instead of at each of the call sites that used to guess.
    */
@@ -217,7 +238,9 @@ export class Space {
         this.kinds.register(rec.body as KindDef);
       } catch {
         // skip a malformed persisted declaration rather than fail startup
+        continue;
       }
+      await this.prepareStorageFor(rec.body as KindDef);
     }
   }
 
@@ -239,6 +262,29 @@ export class Space {
       throw new RadiaError("invalid_grant", "a grant record body must be a GrantDef object");
     }
     return body as GrantDef;
+  }
+
+  /**
+   * Reject a grant whose `template` could never compile — while the kind is known.
+   *
+   * A grant template is otherwise validated only when it COMPILES AT USE, which is late in a way
+   * that matters: a template naming a path the kind does not declare is accepted, looks assigned in
+   * every listing, and then denies or 400s at the first read. Authorization that appears granted
+   * and does nothing is worse than a rejected write.
+   *
+   * It stays conditional on the kind being registered, because it legitimately may not be: grants
+   * are routinely assigned before the kinds they scope exist (an operator bootstraps an agent, the
+   * fleet declares its kinds at startup). An unknown kind is therefore not an error here — this
+   * catches the mistake it can catch and leaves the rest to use, as before.
+   */
+  private checkGrantTemplate(def: GrantDef): void {
+    if (!def.template || !this.kinds.get(def.kind)) return;
+    try {
+      compileTemplate({ kind: def.kind, match: def.template }, this.kinds.get(def.kind));
+    } catch (e) {
+      const why = e instanceof RadiaError ? e.message : String(e);
+      throw new RadiaError("invalid_grant", `grant template does not compile against kind '${def.kind}': ${why}`);
+    }
   }
 
   // ---- authorization + the bootstrap chain (M1 slice; taint + delegation still deferred) ----
@@ -644,12 +690,15 @@ export class Space {
       const def = this.kindDefFromBody(req.body); // throws RadiaError on an invalid declaration
       const id = await this.putRaw(req, idempotencyKey, { principal });
       this.kinds.register(def); // reflect it in this process's registry (also on idempotent replay)
+      await this.prepareStorageFor(def);
       return id;
     }
     // A grant record IS an authorization grant: validate its body before commit (write-protection
     // — that only a privileged principal may put one — is enforced at the API boundary).
     if (req.kind === GRANT) {
-      validateGrantDef(this.grantDefFromBody(req.body));
+      const def = this.grantDefFromBody(req.body);
+      validateGrantDef(def);
+      this.checkGrantTemplate(def);
     }
     return this.putRaw(req, idempotencyKey, { principal });
   }

@@ -424,4 +424,45 @@ export const authSuites: Suite[] = [
       assert(!bogus.ok && bogus.reason === "invalid_token");
     },
   },
+  {
+    name: "a grant template that could never compile is rejected when the grant is written",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
+
+      // A template is otherwise checked only when it COMPILES AT USE — so a path the kind does not
+      // declare produced a grant that looked assigned in every listing and then denied at the first
+      // read. Authorization that appears granted and does nothing is the failure to avoid.
+      assertEquals(
+        await denied(() =>
+          space.put({
+            kind: "grant",
+            body: { principal: "agent:w", kind: "task", operations: ["query"], template: { nope: "x" } },
+          })
+        ),
+        "invalid_grant",
+        "an undeclared path in a grant template is caught at write time",
+      );
+
+      // The declared path is fine, and still scopes reads.
+      await space.put({
+        kind: "grant",
+        body: { principal: "agent:w", kind: "task", operations: ["query"], template: { tag: "a" } },
+      });
+      assertEquals(await space.authorize("agent:w", "query", "task"), [{ tag: "a" }]);
+    },
+  },
+  {
+    name: "a grant may still be assigned before the kind it scopes exists",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      // Bootstrapping an agent before its fleet has declared its kinds is normal, so an UNKNOWN
+      // kind must not be an error — the check catches what it can and leaves the rest to use.
+      await space.put({
+        kind: "grant",
+        body: { principal: "agent:w", kind: "later", operations: ["query"], template: { whatever: 1 } },
+      });
+      assertEquals((await space.authorize("agent:w", "query", "later"))?.length, 1);
+    },
+  },
 ];

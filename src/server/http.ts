@@ -98,7 +98,15 @@ async function resolveAuth(req: Request, space: Space, authRequired: boolean): P
 /** Vendored console JS, read on first request (never on import) and held for the process life. */
 let blitzoomJs: string | null = null;
 
-function makeHandler(space: Space, ui: string, authRequired: boolean) {
+/**
+ * The whole HTTP surface as one `(Request) => Response` function.
+ *
+ * Exported because it is the testable seam: the boundary rules that live here — a bad bearer is a
+ * 401 and never a fall-through to the operator, a wrong-typed field is a 400 and never a 500, an
+ * artifact's disposition — are exactly the ones a Space-level test cannot reach, and binding a real
+ * port to check them buys nothing but flakes. See `conformance/http.test.ts`.
+ */
+export function makeHandler(space: Space, ui: string, authRequired: boolean) {
   return async function handler(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const route = `${req.method} ${url.pathname}`;
@@ -138,7 +146,14 @@ function makeHandler(space: Space, ui: string, authRequired: boolean) {
     // The console (GET /) and health stay public so the console can bootstrap even in required
     // mode (it authenticates thereafter with its baked operator token); everything else 401s.
     const isPublic = route === "GET /" || route === "GET /v0/health" || route === "GET /ui/blitzoom.bundle.js";
-    if ("error" in auth && !isPublic) return problem(401, auth.error, auth.detail);
+    // "Public" means NO credential is needed — not that a presented one is ignored. Only
+    // `auth_required` (nothing was presented) is exempt; a token that failed to resolve is a 401
+    // even here. The exemption used to cover both, so a client with an expired or stopped token
+    // got `200 {principal: "anonymous"}` from health — the one endpoint it would call to ask
+    // "am I authenticated?" — and could not distinguish a dead credential from an open space.
+    if ("error" in auth && !(isPublic && auth.error === "auth_required")) {
+      return problem(401, auth.error, auth.detail);
+    }
     const principal = "principal" in auth ? auth.principal : "anonymous";
 
     // The observe-and-operate plane is grant-gated. Operator (human/supervisor) sees everything;

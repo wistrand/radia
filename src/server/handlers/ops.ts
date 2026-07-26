@@ -63,9 +63,13 @@ async function visible(space: Space, recordId: string, scope?: StatsScope | null
  */
 export async function handleEnvelopeQuery(space: Space, url: URL, scope?: StatsScope | null): Promise<Response> {
   const state = url.searchParams.get("state");
-  const valid = new Set(["available", "leased", "consumed", "dead_letter", "expired"]);
-  if (!state || !valid.has(state)) {
-    return problem(400, "invalid_state", `state must be one of ${[...valid].join(", ")}`);
+  const valid = new Set(["available", "leased", "consumed", "dead_letter"]);
+  if (!valid.has(state ?? "")) {
+    // `expired` is the one people reach for and it is NOT a state — a lapsed lease leaves the
+    // record `leased`. It used to be accepted and answered zero rows, which reads as "no expired
+    // leases" rather than "wrong question", so it is named explicitly here.
+    const hint = state === "expired" ? " — expiry is a predicate over leased records: state=leased&expired=1" : "";
+    return problem(400, "invalid_state", `state must be one of ${[...valid].join(", ")}${hint}`);
   }
   const expired = url.searchParams.get("expired") === "1" || url.searchParams.get("expired") === "true";
   // A query parameter is a string, so every numeric one needs a finiteness check: `Number("abc")`

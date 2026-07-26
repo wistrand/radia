@@ -18,12 +18,18 @@
 
 export type Ulid = string;
 
+/**
+ * The states a record's envelope can actually be IN. There is deliberately no `expired`: a lapsed
+ * lease leaves the record `leased` and a later take reclaims it, so nothing ever writes such a row.
+ * The union used to carry one anyway, which made `state=expired` a query that always answered zero
+ * — a confident nothing beside hundreds of demonstrably lapsed leases. Expiry is a PREDICATE over
+ * `leased` records (`?state=leased&expired=1`), not a state.
+ */
 export type RecordState =
   | "available"
   | "leased"
   | "consumed"
-  | "dead_letter"
-  | "expired";
+  | "dead_letter";
 
 /**
  * The single authorization chain for delegated work — server-derived from the CLAIMED LEASE,
@@ -363,6 +369,23 @@ export interface StorageAdapter {
 
   // Kind declarations are NOT a storage concern: they are kind_def records, written via put()
   // and read via query() like any record (see core/space.ts loadKinds). No kinds table.
+
+  /**
+   * OPTIONAL physical hint: this kind declares these body paths, and predicates on them are about
+   * to be pushed down. Purely an optimization — an adapter that ignores it must return identical
+   * results, and the default is to have no implementation at all.
+   *
+   * It exists because one adapter cannot plan a claim without it. Postgres estimates a jsonb
+   * predicate at ~26 rows where 5,715 match, concludes a sort is free, and collects every match
+   * through the body index instead of walking the claim index — 200× off, and not fixable by
+   * rewriting the query (see gotchas.md, "a claim on Postgres is planned on a guess"). The fix is
+   * to give the planner a real estimate for the expression, which is per-path DDL, which means the
+   * adapter has to be told the paths. It is deliberately NOT "create an index": what a path costs
+   * physically is the adapter's business, and SQLite implements none of this.
+   *
+   * Must be idempotent and safe to call on every startup.
+   */
+  prepareKind?(kind: string, paths: string[]): Promise<void>;
 
   /** Envelopes currently in a given state, capped (diagnostics). `excludeKinds` filters them out
    *  at the query level (before the cap) — used to skip reference kinds in the starvation check. */
