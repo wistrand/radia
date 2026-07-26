@@ -142,6 +142,16 @@ create table if not exists record_runtime (
 create index if not exists idx_runtime_claim
   on record_runtime (kind, available_at, effective_priority desc, record_id)
   where state = 'available';
+-- The claim window's ordering, column for column. Two things make this index and not the one
+-- above the one a claim uses, and both are easy to get wrong: the columns must be in the ORDER
+-- BY's order (priority leads, not available_at), and state must NOT appear before them — an
+-- index on (kind, state, ...) can satisfy state in ('available','leased') but only sorts WITHIN
+-- each state, so the database still sorts the whole set and the index buys nothing. Measured:
+-- adding the state-first version changed a claim by 1.4ms; this one took it from 19.5ms to 0.8ms
+-- at 40k records, by turning a full scan of the envelope table into an ordered seek that stops
+-- once the window is full.
+create index if not exists idx_runtime_claim_order
+  on record_runtime (kind, effective_priority desc, available_at asc, record_id asc);
 create table if not exists idempotency (
   principal text not null,
   operation text not null,
@@ -686,7 +696,12 @@ export class PgSqlAdapter implements StorageAdapter {
     );
   }
 
-  private async fetchCandidates(tx: Sql, selector: TakeSelector, limit = CANDIDATE_WINDOW, offset = 0): Promise<Candidate[]> {
+  private async fetchCandidates(
+    tx: Sql,
+    selector: TakeSelector,
+    limit = CANDIDATE_WINDOW,
+    offset = 0,
+  ): Promise<Candidate[]> {
     const rows = "recordId" in selector
       ? (await tx.query<RawRow>(
         `select ${CANDIDATE_COLS} from records r join record_runtime rt on rt.record_id=r.id
@@ -709,6 +724,12 @@ export class PgSqlAdapter implements StorageAdapter {
    * the template, so a selective take pages through the entire kind 64 rows at a time — correct,
    * but O(kind size) round trips to find one record. The filter is a sound over-approximation, so
    * `rankClaimable` still decides.
+   *
+   * SQLite answers this from `idx_runtime_claim_order`: an ordered seek that stops once the window
+   * is full. Postgres does NOT, and cannot be talked into it by rewriting the SQL — it estimates a
+   * jsonb predicate at ~26 rows when 5,715 match, so it collects every match through the body index
+   * and sorts. The fix is a better ESTIMATE, not a better query: see gotchas.md, "a claim on
+   * Postgres is planned on a guess".
    */
   private async windowRows(
     tx: Sql,

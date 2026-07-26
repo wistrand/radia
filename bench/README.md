@@ -55,7 +55,7 @@ deferring predicate pushdown, and the numbers were the argument for building it:
 | `put` | 47µs | 42µs |
 | `read_one` on an indexed path | 102ms | **29µs** |
 | `query limit=25` on an indexed path | 102ms | **147µs** |
-| `take` matching an indexed path | 183ms | **19.4ms** |
+| `take` matching an indexed path | 183ms | **1.2ms** |
 
 `read_one` is not merely faster, it is **flat** — 31µs at 2k, 32µs at 10k, 29µs at 40k — where
 before it grew linearly with the space. Postgres tells the same story: `read_one` at 40k went
@@ -74,10 +74,17 @@ this table. Postgres pays about 1ms → 2.5ms on `put` for the parsed-body colum
 sqlite's writes are unchanged. See [gotchas.md](../agent_docs/gotchas.md) for the soundness rules
 that constrain all of it.
 
-`take` was the worst row on the first run — worse than the scan it contains — and is now the
-slowest remaining operation at 19.4ms. Its window sorts by claim order
-(`effective_priority, available_at, id`), which no index serves; that is the next thing to fix,
-not the body filter.
+`take` was the worst row on the first run — worse than the scan it contains — and is now flat at
+~1.2ms on SQLite, once an index matching the claim order (`effective_priority, available_at, id`)
+replaced a full scan of the envelope table with an ordered seek.
+
+**The same claim costs ~23ms on Postgres, and the difference is the query planner, not the
+storage.** Postgres estimates the body predicate at 26 rows when 5,715 match, so it collects every
+match through the body index and sorts instead of walking the claim index and stopping early. No
+rewrite of the query changes that, and overriding the planner makes it worse; supplying a real
+estimate (`CREATE STATISTICS` on the path expression) drops it to 1.92ms. See
+[gotchas.md](../agent_docs/gotchas.md), "a claim on Postgres is planned on a guess" — that is the
+next thing to fix, and the numbers above are the argument for it.
 
 **`childrenOf` grows with the whole space, not with the answer.** 87µs at 1k records → 662µs
 at 20k, for the same five children — the `LIKE` scan over `parent_ids`

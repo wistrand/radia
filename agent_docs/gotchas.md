@@ -51,6 +51,34 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   for *both* an absent key and a JSON `null`, so presence is always asked via `json_type`; and an
   unguarded jsonb `>` will happily compare a string to a number, because jsonb has a total order
   across types. Every comparison is therefore type-guarded first.
+- **The claim index must be ordered like the claim, and `state` must not lead it.** The candidate
+  window sorts by `effective_priority desc, available_at asc, record_id asc`; an index only serves
+  that if its columns are in that order. `idx_runtime_claim` is not (it leads with `available_at`)
+  and is also partial on `state = 'available'` while the window needs `'leased'` too, for expired-
+  lease reclaim — so it never applied. The subtle part is the fix that does NOT work: an index
+  leading `(kind, state, …)` satisfies `state in ('available','leased')` but sorts only WITHIN each
+  state value, so the database still sorts the whole set. Measured, that version changed a claim by
+  1.4ms — indistinguishable from noise, which is why the first attempt looked like "the sort was
+  never the problem". `idx_runtime_claim_order`, with the sort columns immediately after `kind` and
+  no `state`, took a claim at 40k records from **19.5ms to 0.8ms** on SQLite by turning a full scan
+  of the envelope table into an ordered seek that stops when the window is full.
+- **A claim on Postgres is planned on a guess, and the guess is wrong by 200×.** The same query
+  that SQLite answers with an ordered seek, Postgres answers by collecting EVERY matching record
+  through the body index (5,715 of 40,000), joining each to its envelope, and sorting — because it
+  estimates the jsonb predicate at 26 rows and concludes the sort is free. This is not fixable by
+  rewriting the query: `join` vs `exists`, with and without the `@>` term, all plan the same way
+  (15–20ms), and forcing the planner's hand with `enable_seqscan`/`enable_bitmapscan` off makes it
+  *worse* (28.6ms) because it picks a different wrong plan. What does fix it is giving the planner
+  a real estimate — `create statistics on ((body_jsonb #> '{path}')) from records` drops the same
+  claim from **15.07ms to 1.92ms**, with the planner then choosing the ordered walk unprompted.
+  That is the tracked next step; it means per-declared-path statistics (cheap — statistics cost
+  ANALYZE time, not write time), created when a kind is declared. Until then a claim is ~23ms at
+  40k on Postgres versus ~1.2ms on SQLite, and the gap is the estimate, not the storage.
+  Also worth knowing before optimizing a claim: an unfiltered first window (try the head of the
+  queue cheaply, fall back to the filtered query) was built and **reverted** — no measurement
+  supported it. It only wins when the head happens to hold a match, and in a queue where workers
+  have consumed the nearby matches it just adds a round trip: every measured cell got worse
+  (sqlite 1.0 → 1.3ms, Postgres 22.7 → 28.6ms).
 - **A LIMIT may only be pushed under an EXACT filter, not merely a sound one.** `Pushed.exact`
   distinguishes them, and it is the difference between an optimization and a correctness bug: with
   an inexact filter SQL returns its first N rows, the oracle rejects some, and the matching rows

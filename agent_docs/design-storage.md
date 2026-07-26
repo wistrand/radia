@@ -52,7 +52,7 @@ Scaling), envelope encryption/KMS (M2). `npm`/`pip` binary wrapping is BUILT but
 | Storage      | `records` (immutable) + `record_runtime` (mutable envelope), with `kind`, `deadline_at`, and hot routing fields denormalized into `record_runtime` at commit, never client-editable |
 | Body index   | `body_jsonb` — a GENERATED column holding the parsed body — under one `gin (body_jsonb jsonb_path_ops)` index, serving pushed equality on EVERY path. Declaring a new `indexedPath` therefore needs no DDL and no migration, which is what keeps kinds-as-records from dragging a schema change behind them |
 | Matching     | a sound SQL pre-filter (`src/storage/pushdown.ts`) narrows; `matchesRecord` decides. An *exact* filter additionally carries the caller's `LIMIT` into SQL, ordered `id collate "C"` to match the oracle's tie-break |
-| Claim index  | `CREATE INDEX ON record_runtime (kind, available_at, effective_priority DESC, record_id) WHERE state = 'available'` — single-table partial index; no cross-table join to choose candidates |
+| Claim index  | `CREATE INDEX ON record_runtime (kind, effective_priority DESC, available_at, record_id)` — the claim's ORDER BY, column for column, so a window is an ordered seek that stops when full. `state` must NOT precede the sort columns (it would sort only within each state); the older partial `WHERE state='available'` index remains for the remediation selectors |
 | take         | bounded candidate window off `record_runtime`, then conditional `UPDATE record_runtime ... RETURNING` per candidate until one affects a row; epoch bump                            |
 | Fencing      | `lease_id` / `lease_epoch` conditional updates                                                                                                                                     |
 | Idempotency  | `idempotency` table: (principal, op, key) → request hash + stored response (incl. generated IDs); checked **before** lease validation                                              |
@@ -63,10 +63,14 @@ Scaling), envelope encryption/KMS (M2). `npm`/`pip` binary wrapping is BUILT but
 | Clock        | DB `now()` for all lease/timing math                                                                                                                                              |
 | Blobs        | the `BlobStore` port (`src/storage/blobs.ts`): content-addressed by sha256, memory + filesystem impls, one conformance suite for both; the "artifact table" is the reserved `artifact` **record** kind; runtime-issued short-lived download capabilities; optional **encryption at rest** (per-blob AES-GCM DEK, AES-KW-wrapped under a space KEK, HMAC-named paths, key in a destroyable sidecar) — **built (M1)**                                                        |
 
-The single-table partial index is why the hot claim path (`take`) never requires an
-index-assisted join. See [design-api.md](design-api.md) for the take contract this
-implements and [design-data-model.md](design-data-model.md) for the record/envelope
-split.
+The claim index is what lets a candidate window be an ordered seek rather than a scan of the
+envelope table. A template with a pushable predicate does need the join, and there the two
+backends diverge for a reason worth knowing: SQLite still walks the claim index and stops early,
+while Postgres mis-estimates the jsonb predicate badly enough to collect every match and sort
+(~23ms vs ~1.2ms at 40k records). The remedy is planner statistics on the path expression, not a
+different query — see [gotchas.md](gotchas.md), "a claim on Postgres is planned on a guess". See
+[design-api.md](design-api.md) for the take contract this implements and
+[design-data-model.md](design-data-model.md) for the record/envelope split.
 
 The runtime is the sole DB client; everything else speaks the protocol:
 
