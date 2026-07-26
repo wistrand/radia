@@ -16,7 +16,7 @@ import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
 import { handleCreateDefinition, handleCreateRun, handleStopRun } from "./handlers/agents.ts";
 import { handleGetArtifact, handleMintCapability, handlePutArtifact } from "./handlers/artifacts.ts";
-import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleGetRecord, handleGraph, handleLineage, handleStats } from "./handlers/ops.ts";
+import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleGetRecord, handleGraph, handleLineage, handlePermissions, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem, statusFor } from "./problem.ts";
 import { RadiaError } from "../core/errors.ts";
@@ -250,6 +250,10 @@ function makeHandler(space: Space, ui: string, authRequired: boolean) {
         return await handleRemediate(space, req);
       case "GET /v0/ops/records":
         return await handleEnvelopeQuery(space, url, opsScope);
+      case "GET /v0/ops/permissions":
+        // Deliberately NOT self-scopable: reading another principal's authorization is an operator
+        // question, so this path is absent from READ_ONLY_OPS and a scoped caller is refused above.
+        return await handlePermissions(space, url);
       case "GET /v0/ops/stats":
         return await handleStats(space, opsScope);
       case "GET /v0/ops/events":

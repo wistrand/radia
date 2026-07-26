@@ -23,13 +23,17 @@ that definition token (`Authorization: Bearer`) and mints a short-lived **run to
 `agent_run` record; `POST /v0/agent-runs/{id}/stop` stops a run. Requests authenticate with
 `Authorization: Bearer <run-token>` → a `run:*` principal that **inherits its agent
 definition's grants** (`Space.grantSubject` maps `run:` → its `agent:`). Tokens are secrets:
-only their sha256 **hash** is stored (in the record body — a hash is not a secret), and the
-credential index is a cache over `agent_definition`/`agent_run` records, rebuilt by
-`Space.loadCredentials` at startup (the same cache-over-records pattern as kinds). The records are
-the **authority**, not the cache: on a cache MISS `Space.resolveToken` hydrates the one credential
-from the records by token hash (`agent_*` indexed on `tokenHash`, honoring a later stop successor)
-and retries — so a token minted on another instance, or one the startup load capped, still resolves
-instead of failing. Expiry uses
+only their sha256 **hash** is stored (in the record body — a hash is not a secret). Credentials are
+**not cached**: `Space.resolveToken` asks the space on every authenticated request, reading the
+newest `agent_definition`/`agent_run` record for that token hash (`agent_*` indexed on `tokenHash`;
+a stop is a successor carrying the same hash, so one lookup sees it). The rule the design turns on
+is *cache what cannot change, never cache what can be revoked* — a stopped run, an expired token
+and a withdrawn grant must all be **discovered**, not remembered. What `CredentialStore` still holds
+is one immutable fact (which agent a run instantiates) plus operator tokens, which are
+process-lifetime by design and never records. This replaced a startup-rebuilt index, whose bounded
+read of an unbounded log let a stopped run's token keep working after a restart on a busy space —
+fail-open and silent. A token minted on one instance authenticates on another immediately, with no
+replay. Expiry uses
 the DB clock (`SpaceContext.runTokenSeconds`, default 900s). `Authorization: Bearer <token>`
 is the **only** auth channel. In **open mode** (the default) a request with no header is the
 operator `human:local`, so local dev/UI/examples stay open; to act as a scoped principal, mint a
@@ -409,11 +413,11 @@ carries no information the caller was not already entitled to.
 ### How the aggregate is computed
 
 "Records whose author resolves to my agent" cannot be evaluated in SQL — the run → agent mapping
-lives in the runtime's credential index, not in a column. So the runtime resolves the agent's run
-principals FIRST (`CredentialStore.runsForAgent`) and pushes `created_by IN (…)` down, which is
-exact and indexable. The alternative, denormalizing an `agent` column onto every record, was
-rejected for now: it duplicates authority-adjacent data onto immutable records and needs a
-migration, for a lookup the credential index already answers.
+lives in `agent_run` records, not in a column. So the runtime resolves the agent's run principals
+FIRST (`Space.runPrincipalsOf`, a query over `agent_run` by `agent`) and pushes `created_by IN (…)`
+down, which is exact and indexable. The alternative, denormalizing an `agent` column onto every
+record, was rejected for now: it duplicates authority-adjacent data onto immutable records and
+needs a migration, for a lookup the run records already answer.
 
 That choice makes one constraint explicit, and it is cheap now and awkward later: **`agent_run`
 records must be treated as durable by retention GC.** They are the only thing that maps an old
@@ -428,7 +432,7 @@ records must be treated as durable by retention GC.** They are the only thing th
 
 ### Known risks
 
-- **Resolution depends on the credential index.** Decided above: `agent_run` records are durable,
+- **Resolution depends on `agent_run` records.** Decided above: `agent_run` records are durable,
   and retention GC must not sweep them. The fallback if that ever changes is a stored agent stamp
   on the record.
 - **A scoped aggregate is cheaper to get wrong than a scoped list.** A filter applied after

@@ -71,7 +71,6 @@ async function dev(args: string[]): Promise<void> {
   console.log(`radia dev: blobs=${blobs.name}${blobDir ? ` (${blobDir})` : " (in-memory)"}${kek ? ` — encrypted, KEK from ${kek.source}` : ""}`);
   const space = new Space(storage, {}, blobs);
   await space.loadKinds(); // restore persisted kind declarations
-  await space.loadCredentials(); // rebuild the credential index from agent_definition/agent_run records
   const operatorToken = await space.mintOperatorToken(); // the bundled console authenticates with this
   // Auto-provision: write the token where the CLI and MCP adapter look, so local tools present a
   // real Bearer token like any production client instead of relying on the no-header shortcut.

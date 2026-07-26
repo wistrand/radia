@@ -180,6 +180,22 @@ create table if not exists record_edges (
   child_id text not null,
   primary key (parent_id, child_id)
 );
+-- Credential resolution, the one lookup on the path of EVERY authenticated request. It is an
+-- ordinary query (kind + an equality on tokenHash) and takes the ordinary route through pushdown,
+-- so what it needs is an ordinary index -- except that Postgres serves it from the GIN index over
+-- every path, and SQLite has no equivalent, so its hot path gets a physical index.
+--
+-- Two things about the shape, both learned by measuring rather than by reading:
+--   * (kind, expr), not a partial index on the two credential kinds. SQLite cannot use a partial
+--     index when the query binds the kind as a PARAMETER -- it can't prove at plan time that the
+--     bound value satisfies the index predicate -- so the partial version was never chosen and
+--     changed nothing. Putting kind in the index KEY works with a parameter.
+--   * The expression must match what SqliteJson.at emits, character for character.
+-- Measured over 3000 credential records: 1.17ms scanning, 0.012ms with this index. The ORDER BY
+-- was the reason the scan was so bad -- newest-first over a filter matching one OLD row walks the
+-- whole kind -- and it is also why an index on tokenHash ALONE did not help.
+create index if not exists idx_records_token_hash
+  on records (kind, json_extract(body_json, '$.tokenHash'));
 create table if not exists idempotency (
   principal text not null,
   operation text not null,

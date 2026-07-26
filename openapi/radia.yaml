@@ -747,6 +747,49 @@ paths:
                         depth: { type: integer }
         "404": { $ref: "#/components/responses/Problem" }
 
+  /ops/permissions:
+    get:
+      operationId: permissions
+      summary: What a principal can actually do — the fold over its grants, computed and shown
+      description: >
+        Effective permission is a fold over an unbounded record set: union across grants, per
+        operation, self-scope applied only when every grant permitting that read is scoped, and
+        retirement applied after newest-per-key. Recomputing that inside each decision left no way
+        to check it, and every grant defect so far has been a promise that did not match the
+        enforcement. Operator only — reading another principal's authorization is not something a
+        self scope may reach. `complete: false` means the grant scan could not be exhausted and the
+        view may be missing entries.
+      x-stability: experimental
+      parameters:
+        - { name: principal, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: effective permissions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  principal: { type: string }
+                  subject: { type: string, description: The agent a run resolves to. }
+                  privileged: { type: boolean }
+                  complete: { type: boolean }
+                  ops:
+                    type: object
+                    properties:
+                      reachable: { type: boolean }
+                      kinds: { type: array, items: { type: string } }
+                  kinds:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        kind: { type: string }
+                        operations: { type: array, items: { type: string } }
+                        readsScopedToSelf: { type: boolean }
+                        templates: { type: array, items: { type: object } }
+        "400": { $ref: "#/components/responses/Problem" }
+
   /ops/records/{recordId}/children:
     get:
       operationId: children

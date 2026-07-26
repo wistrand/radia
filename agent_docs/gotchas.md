@@ -28,6 +28,39 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
 
 ## Traps and load-bearing decisions
 
+> Most of the entries below are instances of ONE mistake: a registry's writes are unbounded, its
+> reads were bounded, and nothing connected the two. They are kept individually because each cost
+> real debugging, but the fix is structural and lives in `src/core/registry.ts` (`readRegistry`,
+> which pages to exhaustion and admits when it cannot) plus content-keyed registry writes. New code
+> should not be able to re-enter this class: if you are writing `query(kind, N)` and treating the
+> result as "all of them", use `readRegistry` instead.
+
+
+- **Cache what cannot change; never cache what can be revoked.** Credentials looked like a registry
+  (records projected into a lookup, rebuilt at startup) and were built as one — wrongly, because the
+  thing a registry cache trades away is *freshness*, and freshness is the entire content of a
+  credential. The bill came due twice, both fail-open and both silent: the startup rebuild read a
+  bounded page of an unbounded log, so on a busy space a STOPPED run's token still resolved after a
+  restart; and `stopRun` consulted the cache first, so stopping a run the cache had not seen
+  returned `applied: false` and did nothing. `Space.resolveToken` now reads the records on every
+  authenticated request; `CredentialStore` (`src/core/auth.ts`) keeps only operator tokens and a
+  memo of which agent a run instantiates — an immutable fact. A stop is a successor carrying the
+  SAME `tokenHash`, so one indexed lookup sees it, and a token minted on one instance authenticates
+  on another with no replay. The same test applies to anything else you are tempted to cache: if it
+  can be withdrawn, it must be discovered.
+- **An ORDER BY can defeat the index that would have served the filter — and a partial index is
+  unusable when its predicate column is a bound parameter.** Both bit the credential lookup, and
+  both are invisible without `explain query plan`. Newest-first over a selective equality
+  (`where kind=? and <expr>=? order by id desc limit 1`) makes SQLite walk the whole kind in id
+  order, evaluating the filter per row, because it reasons the limit will be satisfied early — so
+  a token whose record is OLD costs a full scan, and an index on the hash alone changes nothing.
+  Then the obvious fix, a partial index restricted to the credential kinds, is never chosen either:
+  SQLite cannot prove at plan time that a bound `kind` parameter satisfies the index predicate. The
+  shape that works puts kind in the index KEY: `(kind, json_extract(body_json,'$.tokenHash'))`, and
+  the expression must match what `SqliteJson.at` emits character for character. Measured at 3000
+  credential records: 1.23ms → 0.05ms, and flat to 12k instead of growing. Postgres needs none of
+  this — the GIN index over `body_jsonb` already serves every path, which is why this is the only
+  physical per-path index in the schema.
 - **`record_edges` is a DERIVED index; `parent_ids` stays the source of truth.** `childrenOf` was
   a `LIKE` scan over the `parent_ids` JSON text (safe, because ids are ULIDs and carry no `%`/`_`,
   but O(space) to find a handful of children — 87µs at 1k records → 662µs at 20k for the *same
@@ -60,18 +93,19 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   record could still drag in an arbitrary number of rows to enqueue them. A client-side `.slice()`
   is not a bound: the rows were already fetched by then, which is what the chat's `space_children`
   was doing.
-- **The credential index is rebuilt from a bounded page too, and a run STOP is a successor.**
-  `loadCredentials` read the oldest 5000 `agent_definition`/`agent_run` records. Both accumulate —
-  one definition per re-definition, one run per mint, and a live run re-mints on a timer — so on a
-  busy space the window held only ancient history. Measured on 5202 run records: after a restart a
-  STOPPED run's token still resolved. Fail-open on a stop, exactly like fail-open on a revocation.
-  Both reads are now newest-first, which is sound HERE in a way it is not for grants: a run token is
-  short-lived, so the newest window covers everything that can still be presented and what ages out
-  is expired anyway.
-  One consequence had to be handled separately. `runsForAgent` was reading that same index to answer
-  "which principals count as me" for a self scope — but that question wants HISTORY, not live
-  credentials, so it would have shrunk as the space aged and quietly narrowed "what did I create".
-  It now queries `agent_run` by `agent` (a declared indexed path) instead of reading the cache.
+- **The credential index was rebuilt from a bounded page too — and the fix was to delete the index,
+  not to widen the page.** `loadCredentials` read the oldest 5000 `agent_definition`/`agent_run`
+  records. Both accumulate — one definition per re-definition, one run per mint, and a live run
+  re-mints on a timer — so on a busy space the window held only ancient history. Measured on 5202
+  run records: after a restart a STOPPED run's token still resolved. Reading newest-first patched
+  that instance; the cache itself was the defect, and it is now gone (see "cache what cannot change"
+  above). Kept as history because the reasoning that justified the cache — "credentials are a
+  registry like kinds" — is exactly the reasoning to distrust next time.
+  One consequence had to be handled separately, and it survives the removal. `runsForAgent` read the
+  cache to answer "which principals count as me" for a self scope — but that question wants HISTORY,
+  not live credentials, so it would have shrunk as the space aged and quietly narrowed "what did I
+  create". It is now `Space.runPrincipalsOf`, querying `agent_run` by `agent` (a declared indexed
+  path).
 - **Every grant read is a bounded page over records that ACCUMULATE, and truncation misauthorizes
   silently.** Re-defining an agent used to append a fresh record per grant on every boot, so a
   long-lived principal crossed the page cap in ordinary use — and `authorize`/`authorizeWatch`/
@@ -450,8 +484,9 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   without needing either.
 - **The dev console holds an operator token; it's a server-lifetime in-memory bootstrap credential,
   not a record.** `Space.mintOperatorToken` (startup) registers a hash in `CredentialStore` that
-  resolves to the privileged `human:local`, never expires, and is NOT persisted or cleared on
-  `loadCredentials` rebuild (like the in-code meta-kinds). The server bakes the plaintext into the
+  resolves to the privileged `human:local`, never expires, and is NOT persisted (like the in-code
+  meta-kinds). It is the one credential that legitimately lives in memory — it cannot be revoked
+  because it cannot outlive the process. The server bakes the plaintext into the
   served `index.html` (replacing `__RADIA_OPERATOR_TOKEN__`); the console's guard falls back to the
   no-header default if the placeholder is left intact (page opened as a static file). This is
   additive — the no-header operator default still exists for curl/examples/tests; the console just
@@ -464,17 +499,14 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   `POST /v0/agent-runs` is special — it reads its DEFINITION token directly (a def
   token is not a coordination principal, so `resolveAuth` returns `invalid_token` for it), which
   is why that route is dispatched **before** the bad-bearer 401 check.
-- **Only token HASHES are stored; the credential index is a cache over records — the records are
-  the authority.** Run/definition tokens are secrets returned once at mint; the
-  `agent_definition`/`agent_run` record bodies hold the sha256 hash (not a secret), and
-  `CredentialStore` is an in-memory index rebuilt by `Space.loadCredentials` at startup — the same
-  cache-over-records pattern as kinds. A run's status change (stop) is a **successor** `agent_run`
-  record (records are immutable), so rebuild takes records in id order and a later stop overrides the
-  earlier mint. **The cache is not the source of truth:** on a miss, `Space.resolveToken` hydrates the
-  one credential from the records by `tokenHash` (indexed on `agent_*`, honoring a stop successor)
-  and retries — so a token minted on another instance, or one the startup load's `LIMIT` capped,
-  resolves instead of a spurious `401`. The miss path is guarded by a token-shape regex so garbage
-  tokens don't trigger a scan, and costs a per-kind fetch until read pushdown lands. Token expiry
+- **Only token HASHES are stored, and the records are the authority on every request.**
+  Run/definition tokens are secrets returned once at mint; the `agent_definition`/`agent_run` record
+  bodies hold the sha256 hash (not a secret). `Space.resolveToken` reads the newest record for that
+  hash per authenticated request — there is no credential cache to miss, go stale, or replay at
+  startup. A run's status change (stop) is a **successor** `agent_run` record (records are
+  immutable) carrying the SAME `tokenHash`, so the one indexed lookup that finds the mint finds the
+  stop instead. The lookup path is guarded by a token-shape regex so garbage tokens don't reach the
+  query at all. Token expiry
   uses the **DB clock** (fetched only when a token is actually presented, so the no-auth path stays free).
 - **Graceful stop ≠ quarantine.** A lease is owned by the claiming principal (`take` threads it
   into `lease_owner`; a run token → `run:*`). `stopRun` (default) only stops the token resolving —

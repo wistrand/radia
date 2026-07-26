@@ -23,6 +23,7 @@ Inspect
   health                              backend, DB clock, resolved principal
   stats                               record counts by kind and state
   doctor                              diagnostics: dead-letters, stuck leases, stale work
+  permissions <principal>             what that principal can actually do (the fold over its grants)
   kinds                               declared kinds (a query for kind_def records)
   get <record-id>                     one record
   lineage <record-id>                 ancestry via parent_ids
@@ -112,6 +113,33 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           ? table(["KIND", "STATE", "COUNT"], rows.map((r) => [r.kind, r.state, String(r.count)]))
           : "(empty space)"
       );
+    }
+
+    case "permissions": {
+      // "What can this principal do?" — the question every grant bug in this codebase turned out
+      // to be, asked directly instead of inferred from a denial.
+      const who = argv[0];
+      if (!who) return usage("permissions <principal>");
+      const p = await client.permissions(who) as {
+        privileged: boolean;
+        subject: string;
+        complete: boolean;
+        ops: { reachable: boolean; kinds: string[] };
+        kinds: { kind: string; operations: string[]; readsScopedToSelf: boolean; templates: unknown[] }[];
+      };
+      return out(ctx, p, () => {
+        if (p.privileged) return `${who} is PRIVILEGED (operator): every kind, every operation, full ops plane.`;
+        const lines = [`${who}${p.subject !== who ? `  (grants held by ${p.subject})` : ""}`];
+        if (p.kinds.length === 0) lines.push("  no grants");
+        for (const k of p.kinds) {
+          const scope = k.readsScopedToSelf ? "   reads: own records only" : "";
+          const tmpl = k.templates.length > 0 ? `   scoped to ${JSON.stringify(k.templates)}` : "";
+          lines.push(`  ${k.kind.padEnd(20)} ${k.operations.join(",")}${scope}${tmpl}`);
+        }
+        lines.push(`  ops plane: ${p.ops.reachable ? `readable for ${p.ops.kinds.join(", ")}` : "no"}`);
+        if (!p.complete) lines.push("  WARNING: the grant scan could not be exhausted; this view may be incomplete");
+        return lines.join("\n");
+      });
     }
 
     case "doctor": {

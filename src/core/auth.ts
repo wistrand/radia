@@ -1,11 +1,22 @@
 // Bootstrap-chain credentials: agent-definition tokens (mint runs) and short-lived run tokens
-// (do coordination). This is the fast, in-memory index that per-request auth consults — the
-// SAME cache-over-records pattern as the kind registry: the durable source of truth is
-// `agent_definition` / `agent_run` records (the token HASH lives in the record body — a hash is
-// not a secret), and `Space.loadCredentials` rebuilds this index from them at startup.
+// (do coordination).
 //
-// Plaintext tokens are returned once at mint and never stored; only their sha256 hash is kept,
-// so a leaked record body (or DB) does not yield a usable token.
+// This used to be an in-memory INDEX rebuilt from `agent_definition`/`agent_run` records at
+// startup — the same cache-over-records shape as the kind registry. That shape is wrong here, and
+// the bill came due twice: the rebuild read a bounded page of an unbounded log, so on a busy space
+// a STOPPED run's token still resolved after a restart; and `stopRun` consulted the cache first, so
+// stopping a run the cache had not seen silently did nothing. Both are fail-open, and both are
+// invisible.
+//
+// So resolution is now authoritative per request: the space is asked, every time. What remains here
+// is a memo of one IMMUTABLE fact — which agent a run instantiates, which cannot change once the
+// run exists — plus operator tokens, which are process-lifetime by design and never records.
+//
+// The distinction is the whole design: cache what cannot change, never cache what can be revoked.
+// A stopped run, an expired token and a withdrawn grant must all be discovered, not remembered.
+//
+// Plaintext tokens are returned once at mint and never stored; only their sha256 hash is kept, so a
+// leaked record body (or DB) does not yield a usable token.
 
 import { sha256Hex } from "./ids.ts";
 
@@ -21,95 +32,39 @@ export function hashToken(token: string): Promise<string> {
   return sha256Hex(token);
 }
 
-interface DefCred {
-  kind: "def";
-  agent: string; // the agent:* principal this definition mints runs for
-}
-
-interface RunCred {
-  kind: "run";
-  principal: string; // run:* principal
-  agent: string; // the agent definition it instantiates (grants flow from here)
-  expiresAt: string; // ISO, DB clock at mint
-  stopped: boolean;
-}
-
 export type ResolvedToken =
   | { ok: true; kind: "def"; agent: string }
   | { ok: true; kind: "run"; principal: string; agent: string }
   | { ok: false; reason: "invalid_token" | "token_expired" | "run_stopped" };
 
-/** In-memory credential index (a cache over agent_definition/agent_run records). */
+/**
+ * What this process may remember about credentials.
+ *
+ * Deliberately tiny. Operator tokens are minted per server lifetime and are not records at all (the
+ * bundled console needs one before any agent exists). The run → agent memo holds an immutable fact
+ * and saves a lookup on the authorization path; nothing here can keep a revoked credential alive,
+ * because no revocable state is stored.
+ */
 export class CredentialStore {
-  #byHash = new Map<string, DefCred | RunCred>();
-  #runByPrincipal = new Map<string, RunCred>();
-  // Operator tokens resolve to `human:local` (privileged) and never expire — server-lifetime
-  // bootstrap credentials for the bundled dev console, NOT persisted as records (like the
-  // in-code meta-kinds). Cleared on rebuild; the server re-mints one at startup.
   #operatorHashes = new Set<string>();
-
-  /** Reset run/definition creds (used before a rebuild from records). Operator tokens persist
-   *  for the process lifetime and are re-seeded by the server, so they are not cleared here. */
-  clear(): void {
-    this.#byHash.clear();
-    this.#runByPrincipal.clear();
-  }
+  #agentByRun = new Map<string, string>();
 
   /** Register an operator token hash (resolves to the privileged `human:local`). */
   addOperator(hash: string): void {
     this.#operatorHashes.add(hash);
   }
 
-  addDefinition(hash: string, agent: string): void {
-    this.#byHash.set(hash, { kind: "def", agent });
+  isOperator(hash: string): boolean {
+    return this.#operatorHashes.has(hash);
   }
 
-  addRun(hash: string, principal: string, agent: string, expiresAt: string, stopped = false): void {
-    const cred: RunCred = { kind: "run", principal, agent, expiresAt, stopped };
-    this.#byHash.set(hash, cred);
-    this.#runByPrincipal.set(principal, cred);
+  /** Remember which agent a run instantiates. Immutable for the life of the run, so caching it
+   *  cannot make a stale authorization decision — only save a query. */
+  rememberRun(run: string, agent: string): void {
+    this.#agentByRun.set(run, agent);
   }
 
-  stopRun(principal: string): boolean {
-    const cred = this.#runByPrincipal.get(principal);
-    if (!cred) return false;
-    cred.stopped = true;
-    return true;
-  }
-
-  /** The agent definition a run instantiates (grants flow from it), or undefined. */
-  agentForRun(principal: string): string | undefined {
-    return this.#runByPrincipal.get(principal)?.agent;
-  }
-
-  /**
-   * Every run principal that belongs to `agent`, including finished ones.
-   *
-   * This is what makes "records I created" answerable: `created_by` stores the RUN
-   * (`run:<ulid>`), run tokens are short-lived and re-minted, so an agent's own history is spread
-   * across many run principals. SQL cannot do this join — the mapping lives here — so the runtime
-   * resolves the set first and pushes it down as a value list.
-   */
-  runsForAgent(agent: string): string[] {
-    const out: string[] = [];
-    for (const [principal, run] of this.#runByPrincipal) if (run.agent === agent) out.push(principal);
-    return out;
-  }
-
-  runExists(principal: string): boolean {
-    return this.#runByPrincipal.has(principal);
-  }
-
-  /** Resolve a presented bearer token against the index. `now` is the DB clock (for expiry). */
-  async resolve(token: string, now: string): Promise<ResolvedToken> {
-    const hash = await sha256Hex(token);
-    // Operator token (bundled console): the privileged local operator, no expiry.
-    if (this.#operatorHashes.has(hash)) return { ok: true, kind: "run", principal: "human:local", agent: "human:local" };
-    const cred = this.#byHash.get(hash);
-    if (!cred) return { ok: false, reason: "invalid_token" };
-    if (cred.kind === "def") return { ok: true, kind: "def", agent: cred.agent };
-    if (cred.stopped) return { ok: false, reason: "run_stopped" };
-    if (cred.expiresAt <= now) return { ok: false, reason: "token_expired" };
-    return { ok: true, kind: "run", principal: cred.principal, agent: cred.agent };
+  agentForRun(run: string): string | undefined {
+    return this.#agentByRun.get(run);
   }
 }

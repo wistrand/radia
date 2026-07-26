@@ -201,6 +201,13 @@ export class RadiaClient {
 
   /** Stats plus, for a SCOPED caller, what the answer was narrowed to. Prefer this when the result
    *  will be shown to someone (or something) that could read an empty list as an empty space. */
+  /** What a principal can actually do — the fold over its grants, computed and shown. Operator
+   *  only. Use it before and after changing grants: the difference is whether the change did what
+   *  was promised. */
+  permissions(principal: string): Promise<unknown> {
+    return this.req("GET", `/v0/ops/permissions?principal=${encodeURIComponent(principal)}`);
+  }
+
   async getStatsReport(): Promise<{ stats: KindStateCount[]; scope?: { self: boolean; kinds: string[]; note: string } }> {
     const r = await this.req("GET", "/v0/ops/stats");
     return { stats: r.stats, scope: r.scope };

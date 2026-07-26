@@ -12,6 +12,7 @@ import { graphSuites } from "./suites/graph.ts";
 import { keysetSuites } from "./suites/keyset.ts";
 import { retireSuites } from "./suites/retire.ts";
 import { selfScopeSuites } from "./suites/selfscope.ts";
+import { authHistorySuites } from "./suites/authhistory.ts";
 import { claimFairnessSuites, leaseSuites } from "./suites/leases.ts";
 import { idempotencySuites } from "./suites/idempotency.ts";
 import { eventSuites } from "./suites/events.ts";
@@ -34,6 +35,7 @@ conformance(adapters, [
   ...keysetSuites,
   ...retireSuites,
   ...selfScopeSuites,
+  ...authHistorySuites,
   ...leaseSuites,
   ...claimFairnessSuites,
   ...idempotencySuites,

@@ -104,3 +104,54 @@ export function grantKey(body: unknown): string | undefined {
   // encoded array is unambiguous (no value can forge a boundary) and printable.
   return JSON.stringify([g.principal, g.kind, ops, g.template ?? null]);
 }
+
+/** What a registry read produced, and whether it saw everything. */
+export interface RegistryView {
+  /** Current entry per key, retired ones dropped. */
+  entries: Map<string, RadiaRecord>;
+  /** False when the scan hit its cap before exhausting the kind — the view may be missing entries,
+   *  and a caller that treats it as authoritative would be guessing. */
+  complete: boolean;
+  scanned: number;
+}
+
+/** Pages one registry read takes before giving up. Generous: a content-keyed registry holds one
+ *  record per entry, so exhausting it is normally a single page. */
+const REGISTRY_PAGE = 500;
+const REGISTRY_MAX_PAGES = 40;
+
+/**
+ * Read a registry COMPLETELY, newest-first, and project it.
+ *
+ * This exists because the same mistake was made eleven times: writes to a registry are unbounded,
+ * reads were bounded, and nothing connected the two. A capped read returns the OLDEST matches by
+ * default, so the newest record — a retirement, a revocation, a re-declaration, the tool published
+ * a minute ago — was exactly what fell off the end. The failure is silent in both directions: an
+ * entry that should be gone stays live, and an entry that should be live is missing.
+ *
+ * Two properties make it safe rather than merely convenient. It pages to EXHAUSTION, so the answer
+ * does not depend on a limit someone guessed at the call site; and when it cannot exhaust, it says
+ * so (`complete: false`) instead of returning a plausible prefix. Callers that authorize on this
+ * must treat an incomplete view as a reason to refuse widening, never as a full picture.
+ *
+ * `read(limit, after)` must return records NEWEST-FIRST, `after` being the last id of the previous
+ * page — i.e. a keyset page with `dir: "desc"`.
+ */
+export async function readRegistry<T = unknown>(
+  read: (limit: number, after?: string) => Promise<RadiaRecord[]>,
+  keyOf: (body: T, record: RadiaRecord) => string | undefined,
+): Promise<RegistryView> {
+  const all: RadiaRecord[] = [];
+  let after: string | undefined;
+  let complete = false;
+  for (let page = 0; page < REGISTRY_MAX_PAGES; page++) {
+    const rows = await read(REGISTRY_PAGE, after);
+    all.push(...rows);
+    if (rows.length < REGISTRY_PAGE) {
+      complete = true;
+      break;
+    }
+    after = rows[rows.length - 1].id;
+  }
+  return { entries: activeByKey(all, keyOf), complete, scanned: all.length };
+}

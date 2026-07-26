@@ -28,6 +28,14 @@ function describeScope(scope?: StatsScope | null) {
   };
 }
 
+/** What a principal can actually do. Operator-only: it is an authorization view of another
+ *  principal, which is not something a self scope should ever reach. */
+export async function handlePermissions(space: Space, url: URL): Promise<Response> {
+  const principal = url.searchParams.get("principal");
+  if (!principal) return problem(400, "invalid_request", "principal is required");
+  return Response.json(await space.effectivePermissions(principal));
+}
+
 export async function handleStats(space: Space, scope?: StatsScope | null): Promise<Response> {
   return Response.json({ stats: await space.stats(scope ?? undefined), scope: describeScope(scope) });
 }

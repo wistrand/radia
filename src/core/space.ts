@@ -50,7 +50,7 @@ import { CredentialStore, hashToken, mintCredential, type ResolvedToken } from "
 import { type BlobStore, isDigest, MemoryBlobStore } from "../storage/blobs.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
-import { activeByKey, activeSet, grantKey } from "./registry.ts";
+import { activeSet, grantKey, readRegistry, type RegistryView } from "./registry.ts";
 import { Notifier } from "./notifier.ts";
 
 export interface SpaceContext {
@@ -114,6 +114,17 @@ export interface GraphNode {
   delegated: number; // delegation-chain length (0 = root/operator work)
 }
 
+export interface EffectivePermissions {
+  principal: string;
+  /** The agent a run resolves to — grants are held by agents, not by individual runs. */
+  subject: string;
+  privileged: boolean;
+  kinds: { kind: string; operations: GrantOp[]; readsScopedToSelf: boolean; templates: Record<string, unknown>[] }[];
+  ops: { reachable: boolean; kinds: string[] };
+  /** False if the grant scan could not be exhausted — the picture may be missing entries. */
+  complete: boolean;
+}
+
 export interface Diagnostics {
   now: string;
   counts: Record<string, number>;
@@ -131,23 +142,6 @@ function labelFor(rec: RadiaRecord): string {
   const hint = b.role ?? b.op ?? b.tool ?? "";
   return hint ? `${rec.kind}:${hint}` : rec.kind;
 }
-
-/**
- * Grants are read NEWEST-FIRST, and that is load-bearing rather than tidy.
- *
- * A capped page returns the OLDEST matches, and grant records ACCUMULATE: re-bootstrapping an agent
- * writes a fresh record for every grant it holds, so a long-lived principal crosses 100 records in
- * ordinary use. Reading the oldest page then breaks authorization in both directions — measured: a
- * legitimately granted principal was DENIED once its 101st record arrived, and, worse, a REVOCATION
- * written as the newest record was invisible, so the revoked grant kept working. Fail-open on
- * revocation is the one that matters.
- */
-const GRANTS_NEWEST_FIRST = { dir: "desc" } as const;
-
-/** How many grant records one authorization read examines. Generous because the cost of truncating
- *  is silent misauthorization, and grant writes are now content-keyed so the normal case is a
- *  handful of records per principal — this bound only absorbs history written before that. */
-const GRANT_PAGE = 500;
 
 /** How many children of ONE record a graph walk follows. The walk's node cap bounds the picture;
  *  this bounds the reading, so a record with a huge fan-out cannot dominate a single step. */
@@ -196,20 +190,29 @@ export class Space {
     await this.put({ kind: KIND_DEF, body: def }, kindDefKey(def));
   }
 
+  /**
+   * Read one registry kind completely and project it — the ONE place limit and direction are
+   * decided, instead of at each of the call sites that used to guess.
+   */
+  private registry<T = unknown>(
+    kind: string,
+    keyOf: (body: T, rec: RadiaRecord) => string | undefined,
+    match?: Record<string, unknown>,
+  ): Promise<RegistryView> {
+    return readRegistry<T>(
+      (limit: number, after?: string) => this.query({ kind, match }, limit, { dir: "desc", after }),
+      keyOf,
+    );
+  }
+
   /** Rebuild the registry from kind_def records (call once at startup). A kind's latest
    *  declaration wins (records are immutable; a redeclaration is a successor, not a mutation). */
   async loadKinds(): Promise<void> {
-    // Newest first: a limited query returns the OLDEST matches, so a space with more kind_def
-    // records than this cap would rebuild its registry from declarations that have since been
-    // superseded — see design-matching.md, "Template properties".
-    const records = await this.storage.query({ kind: KIND_DEF }, 1000, { dir: "desc" });
-    // Latest-wins per kind name, with retired declarations dropped — the shared registry
-    // projection (`core/registry.ts`), not a loop local to this method.
-    const latest = activeByKey<{ kind?: unknown }>(
-      records,
+    const view = await this.registry<{ kind?: unknown }>(
+      KIND_DEF,
       (b) => (typeof b?.kind === "string" ? b.kind : undefined),
     );
-    for (const rec of latest.values()) {
+    for (const rec of view.entries.values()) {
       try {
         this.kinds.register(rec.body as KindDef);
       } catch {
@@ -244,6 +247,10 @@ export class Space {
    *  grants (grants flow down the chain), so it authorizes as `agent:<name>`. Everything else
    *  authorizes as itself. */
   private grantSubject(principal: string): string {
+    // Memo only, deliberately, so this stays synchronous on the hot path. Safe because the fact is
+    // IMMUTABLE (a run's agent never changes) and because authentication populates it: every
+    // request presenting a run token resolves that token first, from records. A miss falls back to
+    // the run itself, which holds no grants — fail-closed, never fail-open.
     if (principal.startsWith("run:")) return this.creds.agentForRun(principal) ?? principal;
     return principal;
   }
@@ -284,10 +291,7 @@ export class Space {
     // identified by its content (`grantKey`), and `activeSet` drops exactly that entry while
     // leaving the others in force. Projecting by (principal, kind) instead would let a single
     // revocation silently take every grant on the kind with it.
-    const grants = activeSet(
-      await this.query({ kind: GRANT, match: { principal: subject, kind } }, GRANT_PAGE, GRANTS_NEWEST_FIRST),
-      grantKey,
-    );
+    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject, kind })).entries.values()];
     const applicable = grants.filter((g) => {
       const ops = (g.body as Partial<GrantDef>)?.operations;
       return Array.isArray(ops) && ops.includes(op);
@@ -325,7 +329,7 @@ export class Space {
     // reads, and counting it as "an unscoped grant on this kind" lifted the read restriction —
     // which happened the moment narrowing a read grant left the write grant behind, exactly as
     // intended.
-    const grants = activeSet(await this.query({ kind: GRANT, match: { principal: subject, kind } }, GRANT_PAGE, GRANTS_NEWEST_FIRST), grantKey)
+    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject, kind })).entries.values()]
       .map((g) => g.body as GrantDef & { scope?: { createdBy?: string } })
       .filter((g) => Array.isArray(g.operations) && g.operations.includes(op));
     if (grants.length === 0 || !grants.every((g) => g.scope?.createdBy === "self")) return undefined;
@@ -334,17 +338,76 @@ export class Space {
 
   /**
    * Every principal whose records count as "mine": the agent itself, the presented principal, and
-   * the agent's RUNS — read from the space rather than from the credential index.
+   * the agent's RUNS — all of them, including runs that have since stopped or expired.
    *
-   * The index is a bounded cache of credentials that can still be PRESENTED, so it ages out old
-   * runs by design. A self scope needs the opposite: the historical run principals an agent wrote
-   * records under, or "what did I create" silently shrinks as the space ages. `agent` is a declared
+   * This is deliberately a different question from authentication, which asks only about
+   * credentials that can still be PRESENTED. A self scope needs the opposite: the historical run
+   * principals an agent wrote records under, or "what did I create" silently shrinks as the space
+   * ages and old runs stop mattering to the auth path. `agent` is a declared
    * indexed path on `agent_run`, so this is one indexed query per authorization rather than a scan.
    */
   private async runPrincipalsOf(subject: string, principal: string): Promise<string[]> {
     const runs = await this.query({ kind: AGENT_RUN, match: { agent: subject } }, 1000, { dir: "desc" });
     const ids = runs.map((r) => (r.body as { run?: string }).run).filter((r): r is string => typeof r === "string");
     return [...new Set([...ids, subject, principal])];
+  }
+
+  /**
+   * What a principal can actually do — computed once and shown, rather than only ever recomputed
+   * inside a decision nobody can see.
+   *
+   * Effective permission here is a FOLD over an unbounded record set: union across grants, per
+   * operation, self-scope only when every applicable grant is scoped, retirement applied after
+   * newest-per-key. That is four rules interacting, and every grant bug so far has been the same
+   * shape — the promise made to a human did not match the enforcement, and there was no way to look.
+   * This is the way to look. Use it before and after changing a principal's grants; the difference
+   * is the answer to "did that do what I said it would".
+   */
+  async effectivePermissions(principal: string): Promise<EffectivePermissions> {
+    const subject = this.grantSubject(principal);
+    if (this.isPrivileged(principal)) {
+      return { principal, subject, privileged: true, kinds: [], ops: { reachable: true, kinds: [] }, complete: true };
+    }
+    const view = await this.registry(GRANT, grantKey, { principal: subject });
+    const byKind = new Map<string, { kind: string; operations: GrantOp[]; scoped: boolean; unscoped: boolean; templates: Record<string, unknown>[] }>();
+    for (const rec of view.entries.values()) {
+      const g = rec.body as GrantDef & { scope?: { createdBy?: string } };
+      if (typeof g.kind !== "string" || !Array.isArray(g.operations)) continue;
+      const row = byKind.get(g.kind) ??
+        { kind: g.kind, operations: [], scoped: false, unscoped: false, templates: [] };
+      for (const op of g.operations) if (!row.operations.includes(op)) row.operations.push(op);
+      if (g.scope?.createdBy === "self") row.scoped = true;
+      else row.unscoped = true;
+      if (g.template && Object.keys(g.template).length > 0) row.templates.push(g.template);
+      byKind.set(g.kind, row);
+    }
+    // The ops plane is reachable for the kinds carrying a self-scoped READ grant — the same rule
+    // `opsScope` enforces, stated once here so the two cannot drift.
+    const opsKinds = [...byKind.values()]
+      .filter((r) => r.scoped && r.operations.includes("query"))
+      .map((r) => r.kind);
+    const kinds = [];
+    for (const r of [...byKind.values()].sort((a, b) => (a.kind < b.kind ? -1 : 1))) {
+      kinds.push({
+        kind: r.kind,
+        operations: [...r.operations].sort(),
+        // Asked of `authorScope` rather than recomputed here. Restating the rule produced a view
+        // that disagreed with the enforcement — it aggregated scoped/unscoped across ALL grants on
+        // the kind, while the enforcement considers only grants permitting THAT OPERATION, so a
+        // scoped `query` beside an unscoped `put` was reported as unscoped. A view that can drift
+        // from the decision is worse than no view, because it is believed.
+        readsScopedToSelf: (await this.authorScope(principal, "query", r.kind)) !== undefined,
+        templates: r.templates,
+      });
+    }
+    return {
+      principal,
+      subject,
+      privileged: false,
+      kinds,
+      ops: { reachable: opsKinds.length > 0, kinds: opsKinds.sort() },
+      complete: view.complete,
+    };
   }
 
   /**
@@ -361,10 +424,7 @@ export class Space {
     const subject = this.grantSubject(principal);
     // Retracted grants are subtracted here too. A watch observes records, so a revocation that
     // stopped `query` but left `watch` standing would revoke nothing that matters.
-    const grants = activeSet(
-      await this.query({ kind: GRANT, match: { principal: subject, kind } }, GRANT_PAGE, GRANTS_NEWEST_FIRST),
-      grantKey,
-    );
+    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject, kind })).entries.values()];
     if (grants.length === 0) {
       throw new RadiaError("forbidden", `principal '${principal}' has no grant to watch kind '${kind}'`);
     }
@@ -440,7 +500,6 @@ export class Space {
       // principal, which here is stable.
       await this.putRaw({ kind: GRANT, body: g }, `grant:${await sha256Hex(grantKey(g) ?? "")}`);
     }
-    this.creds.addDefinition(hash, agent);
     this.notifier.notify();
     return { agent, definitionToken: token };
   }
@@ -458,7 +517,7 @@ export class Space {
     const expiresAt = addSeconds(now, this.ctx.runTokenSeconds);
     const { token, hash } = await mintCredential();
     await this.putRaw({ kind: AGENT_RUN, body: { run, agent, tokenHash: hash, status: "active", expiresAt } });
-    this.creds.addRun(hash, run, agent, expiresAt);
+    this.creds.rememberRun(run, agent);
     this.notifier.notify();
     return { run, agent, runToken: token, expiresAt };
   }
@@ -470,15 +529,29 @@ export class Space {
    * the run's in-flight leases now (epoch-bumped, so a late ack/renew fences out as `lease_lost`).
    */
   async stopRun(run: string, opts: { quarantine?: boolean } = {}): Promise<{ applied: boolean; quarantined: number }> {
-    const agent = this.creds.agentForRun(run);
-    if (agent === undefined) return { applied: false, quarantined: 0 };
+    // Looked up in the SPACE, not in a cache. Consulting an in-memory index here meant that
+    // stopping a run this process had not seen — another instance's run, or one written before a
+    // restart — silently reported `applied: false` and left the token working.
+    const mint = await this.runRecord(run);
+    if (!mint?.agent) return { applied: false, quarantined: 0 };
     let quarantined = 0;
     if (opts.quarantine) {
       const now = await this.storage.now();
       quarantined = await this.storage.quarantineLeasesOf(run, now);
     }
-    await this.putRaw({ kind: AGENT_RUN, body: { run, agent, status: "stopped", quarantined: opts.quarantine ?? false } });
-    this.creds.stopRun(run);
+    // The successor carries the SAME tokenHash as the mint, so resolving that token finds the stop
+    // in the one indexed lookup it already does. Without it, a token-hash lookup could only ever
+    // see the mint, and revocation depended on a second lookup nobody was guaranteed to make.
+    await this.putRaw({
+      kind: AGENT_RUN,
+      body: {
+        run,
+        agent: mint.agent,
+        tokenHash: mint.tokenHash,
+        status: "stopped",
+        quarantined: opts.quarantine ?? false,
+      },
+    });
     this.notifier.notify();
     return { applied: true, quarantined };
   }
@@ -492,81 +565,69 @@ export class Space {
     return token;
   }
 
-  /** Resolve a presented bearer token to a principal (DB clock for expiry). On a cache MISS (not an
-   *  expired/stopped token) — a token minted on another instance, or one whose record was never
-   *  loaded because `loadCredentials` capped — hydrate that one credential from the durable records
-   *  and retry, so the in-memory index is a cache, never the authority. */
+  /** Resolve a presented bearer token to a principal, using the DB clock for expiry. */
   async resolveToken(token: string): Promise<ResolvedToken> {
-    return this.resolveCredential(token, await this.storage.now());
+    return await this.resolveCredential(token, await this.storage.now());
   }
 
-  /** Cache lookup with an on-miss hydration from records. Shared by `resolveToken` (run tokens on
-   *  the request path) and `mintRun` (definition tokens), so both resolve cross-instance / capped
-   *  tokens identically. */
+  /**
+   * Resolve a presented bearer token to a principal, from the RECORDS, on every request.
+   *
+   * There is no credential cache to go stale: a stopped run, an expired token and a token minted on
+   * another instance are all discovered here rather than remembered. Both kinds index `tokenHash`,
+   * so this is an indexed lookup, not a scan — and because a stop successor carries the same hash,
+   * the newest record for that hash IS the current state of the credential.
+   */
   private async resolveCredential(token: string, now: string): Promise<ResolvedToken> {
-    const r = await this.creds.resolve(token, now);
-    if (r.ok || r.reason !== "invalid_token") return r; // hit, or a definitive expired/stopped
-    if (!/^[0-9a-f]{48}$/.test(token)) return r; // not a mintable token shape — don't scan on garbage
-    if (await this.hydrateCredential(await hashToken(token))) return this.creds.resolve(token, now);
-    return r;
+    const hash = await hashToken(token);
+    // Operator tokens are process-lifetime and never records (the console needs one before any
+    // agent exists), so they are the one thing answered from memory.
+    if (this.creds.isOperator(hash)) return { ok: true, kind: "def", agent: this.ctx.principal };
+    if (!/^[0-9a-f]{48}$/.test(token)) return { ok: false, reason: "invalid_token" };
+
+    const run = await this.newestByHash(AGENT_RUN, hash);
+    if (run) {
+      const b = run as { run?: string; agent?: string; status?: string; expiresAt?: string };
+      if (!b.run || !b.agent) return { ok: false, reason: "invalid_token" };
+      this.creds.rememberRun(b.run, b.agent); // immutable; safe to memo
+      if (b.status === "stopped") return { ok: false, reason: "run_stopped" };
+      if (!b.expiresAt || b.expiresAt <= now) return { ok: false, reason: "token_expired" };
+      return { ok: true, kind: "run", principal: b.run, agent: b.agent };
+    }
+
+    const def = await this.newestByHash(AGENT_DEFINITION, hash);
+    const agent = (def as { agent?: string } | undefined)?.agent;
+    return agent ? { ok: true, kind: "def", agent } : { ok: false, reason: "invalid_token" };
   }
 
-  /** Populate the credential cache for one token hash from the durable agent_definition/agent_run
-   *  records (honoring a later stop successor for a run). Returns whether anything was found. Cost:
-   *  a per-kind fetch on the miss path (no read pushdown yet) — rare and self-healing once cached. */
-  private async hydrateCredential(hash: string): Promise<boolean> {
-    const def = (await this.query({ kind: AGENT_DEFINITION, match: { tokenHash: hash } }, 1))[0]?.body as
-      | { agent?: string }
-      | undefined;
-    if (def?.agent) {
-      this.creds.addDefinition(hash, def.agent);
-      return true;
-    }
-    const mint = (await this.query({ kind: AGENT_RUN, match: { tokenHash: hash } }, 1))[0]?.body as
-      | { run?: string; agent?: string; expiresAt?: string }
-      | undefined;
-    if (!mint?.run || !mint.agent || !mint.expiresAt) return false;
-    const runRecs = await this.query({ kind: AGENT_RUN, match: { run: mint.run } }, 100);
-    const stopped = runRecs.some((r) => (r.body as { status?: string }).status === "stopped");
-    this.creds.addRun(hash, mint.run, mint.agent, mint.expiresAt, stopped);
-    return true;
+  /** The newest record of `kind` carrying this token hash — the current state of that credential,
+   *  because a stop is written as a successor with the same hash. */
+  private async newestByHash(kind: string, tokenHash: string): Promise<unknown | undefined> {
+    const rows = await this.query({ kind, match: { tokenHash } }, 1, { dir: "desc" });
+    return rows[0]?.body;
   }
 
-  /** The agent definition a run instantiates, or undefined (for ownership checks). */
-  agentOfRun(run: string): string | undefined {
-    return this.creds.agentForRun(run);
+  /** The mint record for a run (newest wins, so a stopped run reports its stop). */
+  private async runRecord(run: string): Promise<{ agent?: string; tokenHash?: string; status?: string } | undefined> {
+    const rows = await this.query({ kind: AGENT_RUN, match: { run } }, 5, { dir: "desc" });
+    // The stop successor omits nothing, but an older mint carries the hash if a caller wrote one
+    // without it; take the newest non-empty value for each field.
+    const bodies = rows.map((r) => r.body as { agent?: string; tokenHash?: string; status?: string });
+    if (bodies.length === 0) return undefined;
+    return {
+      agent: bodies.find((b) => b.agent)?.agent,
+      tokenHash: bodies.find((b) => b.tokenHash)?.tokenHash,
+      status: bodies[0]?.status,
+    };
   }
 
-  /** Rebuild the credential index from agent_definition/agent_run records (call once at startup,
-   *  after loadKinds). Mirrors loadKinds: records are the source of truth, this index is a cache. */
-  async loadCredentials(): Promise<void> {
-    this.creds.clear();
-    // NEWEST-first, both kinds. These records accumulate — a definition per re-definition, a run per
-    // mint, and a live run re-mints on a timer — so a bounded ASCENDING read eventually returns only
-    // ancient history. Measured on 5202 run records: after a restart, a STOPPED run's token still
-    // resolved, because the stop is a successor and successors are the newest thing on the space.
-    // Fail-open on a stop is the same shape as fail-open on a revocation.
-    //
-    // Newest-first is sound here in a way it is not for grants: a run token is short-lived, so the
-    // newest window covers every credential that can still be presented, and anything outside it is
-    // expired anyway. What ages out of this index is HISTORY, which only `runsForAgent` wants — and
-    // that reads the space directly rather than this cache.
-    for (const rec of await this.storage.query({ kind: AGENT_DEFINITION }, 5000, { dir: "desc" })) {
-      const b = rec.body as { agent?: string; tokenHash?: string } | null;
-      if (b?.agent && b.tokenHash) this.creds.addDefinition(b.tokenHash, b.agent);
-    }
-    // agent_run records in id order: a later (stop) successor overrides the earlier (mint) one.
-    const runs = await this.storage.query({ kind: AGENT_RUN }, 5000, { dir: "desc" });
-    runs.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    for (const rec of runs) {
-      const b = rec.body as { run?: string; agent?: string; tokenHash?: string; status?: string; expiresAt?: string } | null;
-      if (!b?.run || !b.agent) continue;
-      if (b.status === "stopped") {
-        this.creds.stopRun(b.run);
-      } else if (b.tokenHash && b.expiresAt) {
-        this.creds.addRun(b.tokenHash, b.run, b.agent, b.expiresAt);
-      }
-    }
+  /** The agent a run instantiates. Immutable, so the memo is safe; a miss reads the space. */
+  async agentForRun(run: string): Promise<string | undefined> {
+    const memo = this.creds.agentForRun(run);
+    if (memo) return memo;
+    const rec = await this.runRecord(run);
+    if (rec?.agent) this.creds.rememberRun(run, rec.agent);
+    return rec?.agent;
   }
 
   /** DB clock passthrough (health, diagnostics). */
@@ -765,7 +826,7 @@ export class Space {
   async opsScope(principal: string): Promise<StatsScope | null> {
     if (this.isPrivileged(principal)) return null;
     const subject = this.grantSubject(principal);
-    const grants = activeSet(await this.query({ kind: GRANT, match: { principal: subject } }, GRANT_PAGE, GRANTS_NEWEST_FIRST), grantKey);
+    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject })).entries.values()];
     const kinds = grants
       .map((g) => g.body as GrantDef & { scope?: { createdBy?: string } })
       .filter((g) => g.scope?.createdBy === "self" && Array.isArray(g.operations) && g.operations.includes("query"))

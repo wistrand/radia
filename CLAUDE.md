@@ -51,7 +51,7 @@ content, not by addressing.
 | `src/ui/vendor/`                        | prebuilt browser assets served under `/ui/` — `blitzoom.bundle.js` (`<bz-graph>`, layout for the Space tab), pinned to an upstream commit; see the README there |
 | `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes, `resolveAuth` Bearer, ops-plane gate, operator-token injection), `problem.ts` (RFC 9457), `handlers/` (`records.ts` + authorize, `leases.ts`, `agents.ts` = bootstrap chain, `artifacts.ts` = bytes in/out + download capabilities, `ops.ts` = ops plane: stats/events/lineage/children/graph/envelope-query/diagnostics/admin/remediate/declassify, `watches.ts` SSE = grant-gated `authorizeWatch`) |
 | `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port: records/leases/idempotency/events/graph + compiled-match AST; kinds are records, not a port concern), `blobs.ts` (the `BlobStore` port: artifact bytes, content-addressed; memory + filesystem impls), `crypto.ts` (optional blob encryption: per-blob AES-GCM DEK wrapped under a space KEK), `row.ts` (shared row/value mapping), `pushdown.ts` (compiled template → a **sound** SQL pre-filter; the oracle still decides — see the soundness contract at the top of the file), `pgbase.ts` (shared Postgres-dialect body over a minimal SQL port) + `pglite.ts`, `postgres.ts` (both bind their driver to `pgbase`), `sqlite.ts` (own dialect) |
-| `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + graph, kinds-as-records, envelope query, `authorize`/grants, delegation, taint, bootstrap chain), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order + `combineMatch`), `kinds.ts` (indexing contract + `kind_def`/`grant`/`signal`/`agent_*`/`artifact` reserved kinds), `auth.ts` (`CredentialStore`, token mint/hash), `take.ts` (claim ranking), `registry.ts` (the latest-wins / additive projections every registry is built from, and `retired: true`), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts` (**monotonic** ULIDs — latest-wins depends on it), `errors.ts` |
+| `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + graph, kinds-as-records, envelope query, `authorize`/grants, delegation, taint, bootstrap chain), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order + `combineMatch`), `kinds.ts` (indexing contract + `kind_def`/`grant`/`signal`/`agent_*`/`artifact` reserved kinds), `auth.ts` (token mint/hash; `CredentialStore` holds only what cannot be revoked — credentials resolve from records per request), `take.ts` (claim ranking), `registry.ts` (the latest-wins / additive projections every registry is built from, and `retired: true`), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts` (**monotonic** ULIDs — latest-wins depends on it), `errors.ts` |
 | `sdk/README.md`                         | SDK overview + parity table (TS and Python) — start here for client work |
 | `sdk/ts/`                               | TS SDK: `client.ts` (`RadiaClient` over `/v0`, incl. `watch()` SSE), `loop.ts` (`agentLoop`, event-driven, design §5) |
 | `sdk/py/radia.py`                       | Python SDK at parity (stdlib only): `RadiaClient`, `watch()`, `agent_loop` with heartbeat |
@@ -143,6 +143,25 @@ out-of-band. Four applications already made:
   `Space.authorize` discovers it by `query`. Authorization state gets the same immutability,
   event-log visibility, and watchability as any record. `signal`/`grant` writes and `/v0/ops/*`
   are the grant-gated boundary — see [agent_docs/design-auth.md](agent_docs/design-auth.md).
+
+**The principle has a stopping rule, and it was learned the hard way.** Expressing a feature as
+records means its current state is a PROJECTION over an append-only log: writes are unbounded, reads
+are bounded, and every consumer must page, order and dedupe correctly. That is a fine trade for
+kinds and capabilities, where a stale read is a missing tool. It is a bad trade for anything whose
+failure mode is SILENT MISAUTHORIZATION — a revocation that fell off a page kept a grant alive, and
+a stopped run's token kept resolving after a restart. So:
+
+- Registry state is read through `readRegistry` (`src/core/registry.ts`), never a hand-rolled
+  `query(kind, N)`. It pages to exhaustion and reports `complete: false` rather than returning a
+  plausible prefix. A bounded read whose result is treated as a population is the single most
+  repeated bug in this codebase.
+- Registry writes are CONTENT-KEYED, so restarting a fleet does not append a duplicate per entry.
+  Unbounded growth is what makes bounded reads dangerous in the first place.
+- Authorization has a canonical, inspectable form: `Space.effectivePermissions` /
+  `GET /v0/ops/permissions` / `radia permissions <principal>`. Every grant bug so far was a promise
+  that did not match the enforcement; this is how you check before believing.
+- State that is high-churn AND security-critical (credentials) is a poor fit for this shape. Prefer
+  bounded relevance (only what can still be presented) over replaying history.
 
 **The corollary binds agents, not just the runtime: discover, don't hardcode.** An agent (and
 every example client) learns its tools and models from records (`capability`/`model`), *how* to

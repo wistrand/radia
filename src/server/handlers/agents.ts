@@ -62,7 +62,7 @@ export async function handleStopRun(space: Space, req: Request, principal: strin
     const token = bearer(req);
     if (token) {
       const r = await space.resolveToken(token);
-      allowed = r.ok && ((r.kind === "def" && space.agentOfRun(runId) === r.agent) ||
+      allowed = r.ok && ((r.kind === "def" && await space.agentForRun(runId) === r.agent) ||
         (r.kind === "run" && r.principal === runId));
     }
   }

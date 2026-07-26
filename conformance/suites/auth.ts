@@ -28,6 +28,43 @@ async function denied(fn: () => Promise<unknown>): Promise<string | undefined> {
 
 export const authSuites: Suite[] = [
   {
+    name: "a run stops from a process that never saw it minted",
+    run: async (adapter) => {
+      const minter = newSpace(adapter);
+      const { definitionToken } = await minter.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "task", operations: ["query"] },
+      ]);
+      const { run, runToken } = await minter.mintRun(definitionToken);
+
+      // A DIFFERENT Space over the same adapter: another instance, or this one after a restart.
+      // Stopping used to consult an in-memory index first and silently report `applied: false`,
+      // leaving the token working — the operator was told the stop did nothing, and it did nothing.
+      const other = newSpace(adapter);
+      const stop = await other.stopRun(run);
+      assert(stop.applied, "the stop applies without having minted the run");
+
+      // …and it takes effect for everyone, because the successor carries the same token hash.
+      for (const s of [minter, other, newSpace(adapter)]) {
+        const r = await s.resolveToken(runToken);
+        assert(!r.ok, "a stopped run's token resolves nowhere");
+      }
+    },
+  },
+  {
+    name: "a run minted on one instance authenticates on another immediately",
+    run: async (adapter) => {
+      const a = newSpace(adapter);
+      const { definitionToken } = await a.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "task", operations: ["query"] },
+      ]);
+      const { runToken } = await a.mintRun(definitionToken);
+      // No replay, no hydration step: the record IS the credential.
+      const b = newSpace(adapter);
+      const r = await b.resolveToken(runToken);
+      assert(r.ok && r.kind === "run", "the token resolves on an instance that never minted it");
+    },
+  },
+  {
     name: "a stopped run stays stopped after a restart, however busy the space",
     run: async (adapter) => {
       const space = newSpace(adapter);
@@ -37,10 +74,10 @@ export const authSuites: Suite[] = [
       ]);
       const { run, runToken } = await space.mintRun(definitionToken);
 
-      // Runs accumulate: one per mint, and a live run re-mints on a timer. The credential index is
-      // rebuilt from a BOUNDED page of them, and a stop is a successor — so it is always among the
-      // newest records. Reading the oldest page made a stopped token keep resolving across a
-      // restart, which is fail-open on revocation.
+      // Runs accumulate: one per mint, and a live run re-mints on a timer. This history used to be
+      // replayed into a cache from a BOUNDED page, so a stopped token kept resolving across a
+      // restart — fail-open on revocation. Resolution now reads the records per request, and this
+      // pins that the answer does not depend on how much history sits in front of it.
       for (let i = 0; i < 600; i++) {
         await space.put({
           kind: "agent_run",
@@ -49,9 +86,10 @@ export const authSuites: Suite[] = [
       }
       await space.stopRun(run);
 
+      // No credential replay: a restarted process resolves from the records themselves, so there
+      // is no rebuilt index to be stale, capped, or missing this run.
       const restarted = newSpace(adapter);
       await restarted.loadKinds();
-      await restarted.loadCredentials();
       const resolved = await restarted.resolveToken(runToken);
       assert(!resolved.ok, "a stopped run's token must not resolve after a restart");
     },
@@ -358,21 +396,21 @@ export const authSuites: Suite[] = [
     },
   },
   {
-    name: "credentials resolve from records: fallback hydration + loadCredentials; stopped/bad tokens rejected",
+    name: "credentials resolve from the records themselves; stopped/bad/expired tokens rejected",
     run: async (adapter) => {
       const space = newSpace(adapter);
       const { definitionToken } = await space.createAgentDefinition("agent:w");
       const { runToken } = await space.mintRun(definitionToken);
 
       // A fresh Space has an empty in-memory index, but the durable records are the authority:
-      // resolveToken hydrates the one credential from storage on the miss (no loadCredentials).
+      // Resolution reads the records directly — there is no index to prime and none to go stale.
       const viaFallback = await (new Space(adapter)).resolveToken(runToken);
       assert(viaFallback.ok && viaFallback.kind === "run", "fallback should resolve a minted run token");
       const runPrincipal = viaFallback.ok && viaFallback.kind === "run" ? viaFallback.principal : "";
 
       // Bulk rebuild also resolves it.
       const reloaded = new Space(adapter);
-      await reloaded.loadCredentials();
+
       const after = await reloaded.resolveToken(runToken);
       assert(after.ok && after.kind === "run");
 
