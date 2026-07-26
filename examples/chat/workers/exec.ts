@@ -23,7 +23,7 @@
 // guarantee as well as the security story.
 
 import { agentLoop } from "../../../sdk/ts/loop.ts";
-import { newestByKey, RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
+import { activeByKey, newestByKey, RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
 import { runCode } from "../tools/exec-sandbox.ts";
 import { progress } from "../space/progress.ts";
 import { arg, argAll } from "../util.ts";
@@ -167,8 +167,30 @@ await publishCapability(client, RETIRE_PROCEDURE);
 // process and the first handler that touches it throws `Cannot access '<name>' before
 // initialization` — silently, since a handler that throws just nacks and retries.
 
-/** Names a procedure may not take: a built-in must never be shadowed by model-written code. */
+/** This worker's own tools. A fallback for the check below, for the moment before capabilities
+ *  have been read (or if this run has no grant to read them). */
 const RESERVED = new Set(["run_code", "save_procedure", "read_procedure", "retire_procedure"]);
+
+/**
+ * Tool names a procedure must not take — every tool ANY worker advertises, discovered rather than
+ * listed.
+ *
+ * A hardcoded list would only ever cover this worker's own tools, and the names that matter most
+ * belong to others: `read_file`, `generate_image`, `save_content`, `space_query`. Letting a
+ * procedure take one of those is not a naming annoyance, it is a HIJACK — this worker would add a
+ * claim template for `tool_call{tool:"read_file"}` alongside the tools-worker's, both would race
+ * for each call, and whichever claimed first would answer. The model would meanwhile see the real
+ * tool's description in its list, because the chat prefers a capability over a procedure of the
+ * same name. Wrong behaviour, non-deterministically, invisibly.
+ */
+async function capabilityNames(c: RadiaClient): Promise<Set<string>> {
+  try {
+    const caps = await c.query({ kind: "capability" }, 500);
+    return new Set([...activeByKey<{ tool?: string }>(caps, (b) => b?.tool).keys()]);
+  } catch {
+    return RESERVED; // no grant to read capabilities: fall back to what this worker knows it serves
+  }
+}
 
 /** A tool name that is safe to advertise and to match a claim template on. */
 const NAME_RE = /^[a-z][a-z0-9_]{0,40}$/;
@@ -188,9 +210,12 @@ const served = new Set<string>();
 
 async function adoptProcedures(): Promise<void> {
   try {
+    const builtin = await capabilityNames(client);
     for (const rec of await client.query({ kind: "procedure" }, 500)) {
       const name = String((rec.body as { name?: string }).name ?? "");
-      if (!NAME_RE.test(name) || served.has(name)) continue;
+      // Never claim a name a worker serves — that is the race described on `capabilityNames`. A
+      // procedure saved before that worker published simply stops being claimed here.
+      if (!NAME_RE.test(name) || served.has(name) || builtin.has(name)) continue;
       served.add(name);
       templates.push({ kind: "tool_call", match: { tool: name } });
     }
@@ -217,7 +242,10 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
   // chat's tool list wants it already filtered out. Same projection, two needs.
   const latest = newestByKey<{ name?: string }>(rows, (b) => b?.name).get(name);
   if (!latest) return null;
-  return latest.body as { name: string; artifactId: string; description?: string; retired?: boolean };
+  // The RECORD, not just its body: a caller has to be able to name the exact version it used.
+  // Re-saving a name is a successor, so "the procedure called X" is not a stable referent — only
+  // a record id is.
+  return { id: latest.id, ...(latest.body as { name: string; artifactId: string; description?: string; retired?: boolean }) };
 }
 
 await agentLoop(client, {
@@ -234,8 +262,23 @@ await agentLoop(client, {
 
     // A named procedure: the code comes from the artifact it was saved as, and the call's own
     // arguments are handed to it as `args`.
+    //
+    // PROVENANCE. For `run_code` the program is in the tool_call body, so "what exactly ran" is a
+    // query. A procedure call carries only {tool, args}, and the code lives elsewhere and can be
+    // re-saved — so without this the result could never be attributed to the version that produced
+    // it. `provenance` becomes a parent link plus a body field on the result below.
+    let provenance: { name: string; recordId: string; artifactId: string } | undefined;
     let code = String(b.args?.code ?? "");
     if (b.tool && b.tool !== "run_code") {
+      // Checked at execution too, not just at save: a worker may have started serving this name
+      // since. The real tool wins — this worker refuses rather than answering for it.
+      if ((await capabilityNames(c)).has(b.tool)) {
+        return {
+          kind: "tool_result",
+          body: { callId, ok: false, output: `'${b.tool}' is served by a worker, not by a saved procedure` },
+          taint: true,
+        };
+      }
       const proc = await lookupProcedure(c, b.tool, b.conversationId);
       if (!proc || proc.retired) {
         // A retired name is still claimed on purpose, so this answers at once instead of leaving
@@ -245,6 +288,7 @@ await agentLoop(client, {
           : `no procedure '${b.tool}' saved in this conversation`;
         return { kind: "tool_result", body: { callId, ok: false, output: why }, taint: true };
       }
+      provenance = { name: proc.name, recordId: proc.id, artifactId: proc.artifactId };
       const source = new TextDecoder().decode(await c.getArtifact(proc.artifactId));
       // `args` is injected as a literal rather than passed on argv: the sandbox takes its program
       // on stdin and has no environment, and a JSON literal is the one channel that needs no
@@ -290,6 +334,10 @@ await agentLoop(client, {
       body: {
         callId,
         ok: r.ok,
+        // Recorded on the RECORD, deliberately not inside `output`: only `output` is serialized
+        // back into the model's thread, so provenance is auditable by query without spending
+        // context tokens on every call.
+        ...(provenance ? { procedure: provenance } : {}),
         output: {
           // When it was stored, send a preview rather than the payload: the artifact is the copy.
           stdout: stored ? r.stdout.slice(0, 400) + (r.stdout.length > 400 ? " …[stored as artifact]" : "") : r.stdout,
@@ -301,6 +349,10 @@ await agentLoop(client, {
           ...(stored ?? {}),
         },
       },
+      // The procedure record becomes a PARENT of the result, so "which code produced this?" is a
+      // lineage walk rather than a guess — the question a model answered wrong from memory, and
+      // then invented a reason for. The claimed tool_call is added as a parent by `ack`.
+      ...(provenance ? { parentIds: [provenance.recordId] } : {}),
       taint: true, // executed-code output is untrusted by construction
     };
   },
@@ -323,7 +375,7 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
   const fail = (output: string) => ({ kind: "tool_result", body: { callId, ok: false, output }, taint: true });
 
   if (!NAME_RE.test(name)) return fail("`name` must be lowercase letters, digits and underscores, starting with a letter");
-  if (RESERVED.has(name)) return fail(`'${name}' is a built-in tool name — choose another`);
+  if ((await capabilityNames(c)).has(name)) return fail(`'${name}' is already a tool served by a worker — choose another name`);
   if (!code.trim()) return fail("save_procedure needs a `code` argument");
   if (!description.trim()) return fail("save_procedure needs a `description` — it is what you will read when deciding to call it later");
   if (!b.conversationId) return fail("save_procedure needs a conversation to belong to");
@@ -354,9 +406,26 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
     served.add(name);
     templates.push({ kind: "tool_call", match: { tool: name } });
   }
+  // Say so when it takes no input. A procedure saved without `parameters` can only ever do the one
+  // thing its literals encode — which is easy to write by accident and expensive to discover three
+  // turns later, when the model reaches for it with an argument and finds it ignores them. The
+  // feedback belongs here, at the moment it can still be acted on, not in the description (which is
+  // read before the code is written, when the limitation is not yet visible).
+  const schema = a.parameters as { properties?: Record<string, unknown> } | undefined;
+  const takesInput = Boolean(schema?.properties && Object.keys(schema.properties).length > 0);
+  const usesArgs = /\bargs\b/.test(code);
+  const note = takesInput
+    ? undefined
+    : usesArgs
+    ? "saved with no `parameters` schema, but the code reads `args` — callers will not know what to pass"
+    : "saved with no `parameters`: it takes no input and will do the same thing on every call";
   return {
     kind: "tool_result",
-    body: { callId, ok: true, output: { name, artifactId: art.id, size: art.size, saved: true } },
+    body: {
+      callId,
+      ok: true,
+      output: { name, artifactId: art.id, size: art.size, saved: true, ...(note ? { note } : {}) },
+    },
   };
 }
 

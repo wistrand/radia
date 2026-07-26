@@ -83,7 +83,9 @@ const EXEC_GRANTS: Grant[] = [
   { kind: "tool_call", operations: ["take"] },
   { kind: "tool_result", operations: ["put"] },
   { kind: "artifact", operations: ["put", "read_one"] },
-  { kind: "capability", operations: ["put"] },
+  // `query` as well as `put`: it must know every tool name ANY worker advertises, to refuse a
+  // saved procedure that would shadow one (see `capabilityNames` in workers/exec.ts).
+  { kind: "capability", operations: ["put", "query"] },
   { kind: "progress", operations: ["put"] },
   { kind: "procedure", operations: ["put", "query"] },
 ];

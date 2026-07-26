@@ -25,9 +25,20 @@ fi
 
 NAME="radia-pg-conformance-$$"
 echo "Starting throwaway Postgres container ($NAME)…"
-docker run -d --rm --name "$NAME" -e POSTGRES_PASSWORD=radia -e POSTGRES_DB=radia -p 55432:5432 postgres:16 >/dev/null
+# Let DOCKER choose the host port rather than hardcoding one. A fixed port here used to be 55432,
+# which sits inside Linux's default ephemeral range (see /proc/sys/net/ipv4/ip_local_port_range,
+# typically 32768-60999) — so an unrelated outbound connection could hold it, even just in
+# TIME_WAIT, and this script would die with a docker "address already in use" that looks like a
+# stale container but is not one. Port 0 asks the kernel for a free port; we read back which.
+docker run -d --rm --name "$NAME" -e POSTGRES_PASSWORD=radia -e POSTGRES_DB=radia -p 127.0.0.1::5432 postgres:16 >/dev/null
 cleanup() { docker stop "$NAME" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
+
+PORT="$(docker port "$NAME" 5432/tcp | head -1 | sed 's/.*://')"
+if [ -z "$PORT" ]; then
+  echo "Could not determine the container's published port." >&2
+  exit 1
+fi
 
 echo "Waiting for Postgres to accept connections…"
 for _ in $(seq 1 30); do
@@ -35,6 +46,6 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
-export RADIA_PG_URL="postgres://postgres:radia@localhost:55432/radia"
+export RADIA_PG_URL="postgres://postgres:radia@localhost:$PORT/radia"
 echo "Running conformance against $RADIA_PG_URL"
 deno task conformance

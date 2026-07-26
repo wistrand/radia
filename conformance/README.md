@@ -23,15 +23,20 @@ flowchart LR
 ```
 
 ```bash
-deno task conformance                     # sqlite + pglite + the blob port   (216 tests)
-scripts/pg-conformance.sh                 # + a live Postgres                 (306 total)
+deno task conformance                     # sqlite + pglite + the blob port   (256 tests)
+scripts/pg-conformance.sh                 # + a live Postgres                 (366 total)
 RADIA_PG_URL=postgres://… scripts/pg-conformance.sh   # against your own server
 ```
 
 Without `RADIA_PG_URL`, `pg-conformance.sh` starts a throwaway Docker Postgres and removes it
-afterwards. Each Postgres test runs in its own ephemeral schema, dropped on close, so it is safe
-to point at a database you care about. (The Postgres run was last measured at 213 total, before
-the blob suites existed; its storage half is what a live server adds.)
+afterwards, on a host port docker picks (it used to hardcode 55432, which is inside Linux's
+ephemeral range — an unrelated outbound connection holding it, even in TIME_WAIT, made the script
+fail with a docker "address already in use" that reads like a stale container and is not one).
+
+Each Postgres test runs in its own ephemeral schema, dropped on close, so it is safe to point at a
+database you care about. The live-server run adds 110 storage tests to the embedded 256 — and it
+is the only run that actually *contends* for claims, which is why a claim-path change needs it (see
+"Writing a suite" below).
 
 ## Layout
 

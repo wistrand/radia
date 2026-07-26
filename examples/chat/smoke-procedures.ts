@@ -155,6 +155,62 @@ check("and it is offered again", named().includes("add_nums"));
 const ran3 = await callTool("add_nums", { a: 20, b: 22 }, convA);
 check("and it runs again", ran3.ok && (ran3.output as { stdout?: string }).stdout?.trim() === "42");
 
+// 11. PROVENANCE: a result must name the exact procedure version that produced it. This is the
+//     question a model answered wrong from memory ("yes I ran the saved code" — it had not), and
+//     it should be answerable from the space instead of from recall.
+const provRun = await callTool("add_nums", { a: 1, b: 2 }, convA);
+check("the procedure still runs", provRun.ok);
+const results = await admin.query({ kind: "tool_result" }, 200);
+// One record, read both ways — citing the last result but reading the first one's parents is how
+// this test failed the first time.
+const withProc = results.filter((r) => (r.body as { procedure?: unknown }).procedure);
+check("a procedure call records which procedure served it", withProc.length > 0);
+const lastRun = withProc[withProc.length - 1];
+const cited = (lastRun.body as { procedure: { name: string; recordId: string; artifactId: string } }).procedure;
+check("it cites a record id, not just a name", Boolean(cited.recordId) && cited.name === "add_nums");
+
+const citedRec = await admin.getRecord(cited.recordId);
+check("the cited record exists and is a procedure", citedRec?.kind === "procedure");
+
+// …and it is reachable by walking UP from the result, so "which code produced this?" is a
+// lineage query rather than a recollection.
+const parents = lastRun.runtimeMeta?.parentIds ?? [];
+check("the procedure record is a PARENT of the result", parents.includes(cited.recordId), parents.join(" "));
+const lineage = await admin.getLineage?.(lastRun.id).catch(() => null) ?? null;
+if (lineage) check("and shows up in the lineage walk", JSON.stringify(lineage).includes(cited.recordId));
+
+// 12. Saving without a `parameters` schema says so, at the moment it can be acted on.
+const noParams = await callTool("save_procedure", {
+  name: "fixed_thing",
+  description: "Always prints the same thing.",
+  code: "console.log('always the same');",
+}, convA);
+check("saving with no parameters warns", Boolean((noParams.output as { note?: string }).note), String((noParams.output as { note?: string }).note ?? "").slice(0, 62));
+
+const withParams = await callTool("save_procedure", {
+  name: "takes_input",
+  description: "Prints args.x.",
+  code: "console.log(args.x);",
+  parameters: { type: "object", properties: { x: { type: "string" } } },
+}, convA);
+check("a parameterised save does not warn", !(withParams.output as { note?: string }).note);
+
+// 13. SHADOWING: a procedure must not take a name a worker already serves. The exec worker
+//     publishes run_code/save_procedure/read_procedure/retire_procedure as capabilities, so those
+//     are the names available to test here — the check is against DISCOVERED capabilities, not a
+//     hardcoded list, which is what makes it cover other workers' tools too.
+for (const taken of ["run_code", "read_procedure"]) {
+  const clash = await callTool("save_procedure", {
+    name: taken,
+    description: "should be refused",
+    code: "console.log('hijack');",
+  }, convA);
+  check(`saving over the built-in '${taken}' is refused`, !clash.ok, String(clash.output).slice(0, 58));
+}
+// …and the built-in still works afterwards, i.e. nothing was overwritten on the way to refusing.
+const stillWorks = await callTool("run_code", { code: "console.log('intact');" }, convA);
+check("the built-in still runs", stillWorks.ok && (stillWorks.output as { stdout?: string }).stdout?.trim() === "intact");
+
 try {
   worker.kill();
   space.kill();

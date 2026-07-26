@@ -248,6 +248,20 @@ Three details carry the weight:
 - **Only the exec worker may write one.** The user session has `procedure: query` and nothing more,
   so a saved procedure is always code that went through the sandbox's own path, not a record the
   model wrote directly.
+- **A procedure cannot take a name a worker already serves**, checked against DISCOVERED capability
+  records rather than a hardcoded list — the names that matter belong to other workers
+  (`read_file`, `generate_image`, `space_query`). Allowing one would not be a naming annoyance but
+  a hijack: the exec worker would add a claim template for `tool_call{tool:"read_file"}` alongside
+  the tools-worker's, both would race for every call, and the model would still be shown the real
+  tool's description. It is re-checked at execution as well as at save, because a worker may start
+  serving the name later.
+- **A result names the procedure version that produced it.** For `run_code` the program is in the
+  `tool_call` body, so "what exactly ran" is a query; a procedure call carries only `{tool, args}`
+  and the code can be re-saved, so the `tool_result` records `{procedure: {name, recordId,
+  artifactId}}` and takes the procedure record as a PARENT. "Which code produced this?" is then a
+  lineage walk. It is on the record and not in `output` — only `output` is serialized back into the
+  thread, so provenance costs no context tokens. This exists because a model, asked whether it had
+  used a saved procedure, said yes, had not, and invented a reason for the mismatch.
 
 `deno run -A examples/chat/smoke-procedures.ts` exercises save → call → re-save → read back →
 cross-conversation refusal against a throwaway space. No API key: a tool call is just a record, so
