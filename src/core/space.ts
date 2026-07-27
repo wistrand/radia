@@ -566,41 +566,45 @@ export class Space {
       // agent definitions are an OPERATOR action, and an idempotency key is scoped to the acting
       // principal, which here is stable.
       await this.putRaw({ kind: GRANT, body: g }, `grant:${await sha256Hex(grantKey(g) ?? "")}`);
-      await this.supersedeWiderGrant(g);
+      await this.supersedeGrantsFor(g);
     }
     this.notifier.notify();
     return { agent, definitionToken: token };
   }
 
   /**
-   * Retire the UNRESTRICTED twin of a grant this definition just declared.
+   * Make an agent definition AUTHORITATIVE for the exact grants it declares.
    *
-   * A grant's identity includes its scope and template, so declaring a narrower version of an
+   * A grant's identity includes its template, so declaring a differently-scoped version of an
    * existing grant creates a SECOND grant rather than replacing the first — and grants union, so
-   * the narrower one changes nothing. Tightening an agent definition was therefore inert on any
-   * space that already had the looser grant: fine on a fresh space, silent on a real one. It was
-   * found exactly that way, by tightening the chat's session grants to one conversation and
-   * watching a live session keep reading every conversation on a space that predated the change.
+   * the new one changes nothing. Every live grant on the same (principal, kind, operations) whose
+   * template differs from the declared one is therefore retired here.
    *
-   * TEMPLATE only, and that is not an oversight: `grantKey` deliberately excludes `scope`, so a
-   * self-scoped grant already replaces its unscoped twin in place — the projection does that work.
-   * Including scope here made this retire the very grant it had just written, since the two share a
-   * key. Template is the one dimension that mints a separate identity, so it is the one that needs
-   * superseding.
+   * This covers both ways it bites, and the second was found only by testing the first's fix:
+   * adding a template beside an untemplated grant (tightening an existing space, which silently did
+   * nothing), and REPLACING one template with another (switching a session's scope from one binding
+   * to another, which also silently did nothing — the two unioned and the wider view won).
    *
-   * Deliberately narrow in the other direction too: only a grant identical in principal, kind and
-   * operations, carrying no template, is retired. Anything a human assigned separately — different
-   * operations, or an already-templated grant — is left alone, because an agent definition is a
-   * statement about the grants IT declares, not authority over every grant the principal holds.
+   * Bounded to the triple it declares, deliberately. Different operations or a different kind are
+   * left alone, because an agent definition speaks for the grants IT declares and not for every
+   * grant the principal holds — otherwise each restart would quietly revoke what a person approved.
+   * Note `scope` is absent from `grantKey` on purpose, so a self-scoped grant already replaces its
+   * unscoped twin in place; including it here made an earlier version retire the grant it had just
+   * written, since the two share a key.
    */
-  private async supersedeWiderGrant(g: GrantDef): Promise<void> {
-    if (!g.template) return; // scope narrows in place; only a template mints a second identity
-    const wider: GrantDef = { principal: g.principal, kind: g.kind, operations: g.operations };
-    const key = grantKey(wider);
+  private async supersedeGrantsFor(g: GrantDef): Promise<void> {
+    const declared = grantKey(g);
     const live = [...(await this.registry(GRANT, grantKey, { principal: g.principal })).entries.values()]
-      .find((rec) => grantKey(rec.body) === key);
-    if (!live) return;
-    await this.putRaw({ kind: GRANT, body: { ...wider, retired: true } }, `grant-retire:${await sha256Hex(key ?? "")}`);
+      .map((rec) => rec.body as GrantDef)
+      .filter((body) =>
+        body.kind === g.kind &&
+        JSON.stringify([...(body.operations ?? [])].sort()) === JSON.stringify([...g.operations].sort()) &&
+        grantKey(body) !== declared
+      );
+    for (const stale of live) {
+      const key = grantKey(stale);
+      await this.putRaw({ kind: GRANT, body: { ...stale, retired: true } }, `grant-retire:${await sha256Hex(key ?? "")}`);
+    }
   }
 
   /** Mint a short-lived run token for the agent behind `definitionToken`. Records an `agent_run`

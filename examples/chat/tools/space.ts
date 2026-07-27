@@ -10,6 +10,7 @@
 import type { RadiaClient, RadiaRecord } from "../../../sdk/ts/client.ts";
 import type { Tool } from "./files.ts";
 import type { ToolDef } from "../provider/openrouter.ts";
+import { CHAT_USER as OWNER } from "../space/roles.ts";
 
 /** A record trimmed for the prompt: id, kind, createdAt, and a size-capped body. */
 function compact(rec: RadiaRecord): unknown {
@@ -53,7 +54,7 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
       // conversation exists, and the approver is the person in this one.
       await client.put({
         kind: "grant_request",
-        body: { conversationId: ctx?.conversationId, kind, operations: ops, why, scope },
+        body: { conversationId: ctx?.conversationId, owner: OWNER, kind, operations: ops, why, scope },
       });
 
       // …and WAIT for the answer, rather than returning "I asked, retry later".
@@ -121,18 +122,22 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
       // Fetch one past the limit purely to answer "is this all of them?". A page that reports only
       // its own size reads as a population: the model counts 10 records and states a total. This is
       // a page, and it says so.
-      const found = await client.query(
+      const page = await client.queryPage(
         { kind: String(a.kind ?? ""), match: a.match as Record<string, unknown> | undefined, orderBy: normalizeOrderBy(a.orderBy) as never },
         limit + 1,
       );
-      const records = found.slice(0, limit);
-      const more = found.length > limit;
+      const records = page.records.slice(0, limit);
+      const more = page.records.length > limit;
       return {
         count: records.length,
         more,
         ...(more
           ? { warning: `more than ${limit} records match; this is a PAGE, not the total. Do not count or aggregate from it — use space_stats for totals, or narrow the match.` }
           : {}),
+        // A page bounded by the LIMIT and a page bounded by your GRANT are different facts, and
+        // only the first was ever reported. A session whose reads are scoped to its conversation
+        // queried `message`, got its own, and told the user that was the space's whole history.
+        ...(page.scope ? { scope: page.scope } : {}),
         records: records.map(compact),
       };
     },
@@ -143,13 +148,16 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
     // rather than rounding the truth off.
     space_count: async (a) => {
       const CAP = 500; // the server's max query limit
-      const records = await client.query(
+      const page = await client.queryPage(
         { kind: String(a.kind ?? ""), match: a.match as Record<string, unknown> | undefined },
         CAP,
       );
-      return records.length >= CAP
-        ? { count: CAP, exact: false, note: `at least ${CAP} records match; narrow the match for an exact count` }
-        : { count: records.length, exact: true };
+      // A count is the shape most likely to be quoted as a fact about the space, so a narrowed one
+      // has to say what it counted over.
+      const scope = page.scope ? { scope: page.scope } : {};
+      return page.records.length >= CAP
+        ? { count: CAP, exact: false, note: `at least ${CAP} records match; narrow the match for an exact count`, ...scope }
+        : { count: page.records.length, exact: true, ...scope };
     },
 
     space_record: async (a) => {
@@ -200,12 +208,14 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
       let cursor = a.after != null ? String(a.after) : "0"; // opaque cursor
       const kept: { seq: unknown; op: string; kind?: string; state?: string; recordId?: string }[] = [];
       let withheld = 0;
+      let withheldNote: string | undefined;
       let scope: unknown;
       let complete = false;
       for (let call = 0; call < 12; call++) {
         const page = await client.getEventsPage(cursor, 500);
         scope = page.scope ?? scope;
         withheld += page.withheld ?? 0;
+        withheldNote = page.withheldNote ?? withheldNote;
         for (const e of page.events) {
           kept.push({ seq: e.seq, op: e.operation, kind: e.kind, state: e.state, recordId: e.recordId });
         }
@@ -224,7 +234,7 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
         // and `scope` keeps an empty answer from reading as an empty space.
         complete,
         ...(scope ? { scope } : {}),
-        ...(withheld ? { withheld } : {}),
+        ...(withheld ? { withheld, withheldNote } : {}),
       };
     },
 
@@ -253,12 +263,12 @@ export const INSPECT_SCHEMAS: ToolDef[] = [
   { type: "function", function: { name: "request_grant", description: "Ask the human for permission this session lacks. `kind` must be a RECORD KIND — the kinds records are stored under, like 'message' or 'artifact' — never a tool name: 'space_events' is a tool, and there is no record kind called that. If you cannot list the kinds, ask for what you actually want to read (the records) rather than naming the tool that reads them. When a space_* call fails with 'forbidden', that is not a bug and not something to work around — this session runs under a scoped identity, and the missing authority has to be granted by a person. Call this with the kind and operations you need and a plain-language reason; the human sees the request and decides. You cannot grant yourself anything. This call BLOCKS until the human answers and reports what you actually got, so when it returns `decision: granted`, RETRY the failed operation immediately IN THE SAME TURN — ending your turn to ask the user to type 'retry' wastes a round trip and usually loses the thread. On `refused`, say so and stop; on `pending`, say what you asked for and stop.", parameters: { type: "object", properties: { kind: { type: "string", description: "The record kind you need access to, e.g. 'kind_def' or 'artifact'." }, operations: { type: "array", items: { type: "string", enum: ["put", "query", "read_one", "take"] }, description: "The coordination verbs you need on that kind." }, why: { type: "string", description: "Why you need it, in one sentence, for the human deciding." }, scope: { type: "string", enum: ["own", "all"], description: "Whose records you need: 'own' (the default) for a kind you WRITE — your messages, your tool calls — where reading your own is the whole point; 'all' for a kind written by someone else, where a grant over your own records authorizes a view of NOTHING. Registries and other agents' work are the 'all' case. Asking for 'own' on such a kind is the mistake to avoid: it is approved, it looks like access, and every read returns empty." } }, required: ["kind", "operations", "why"] } } },
   { type: "function", function: { name: "space_stats", description: "Counts of records by kind and state in the Radia space (a quick overview / health check).", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "space_kinds", description: "List the registered record kinds and their indexed/sortable paths.", parameters: { type: "object", properties: {} } } },
-  { type: "function", function: { name: "space_query", description: "Find records by kind, with an optional match (equality/$gt/$in/$exists/…) and order_by. order_by is an array of {path, dir?} over the kind's SORTABLE paths only (list a kind's sortable paths with space_kinds), and only over fields in the record BODY — when a record was created is not a body field, so there is no way to sort by time. Without order_by, records come back in ascending record-id order; that is stable, not arbitrary, but it means a `limit` gives you the OLDEST matches, never the newest. So this is the wrong tool for 'the most recent X': use space_events (the event log is in time order) or narrow the match instead. Returns up to `limit` (default 10, max 25) records with size-capped bodies, plus `more`: true when further records match — the result is then a PAGE, so never count or compute percentages from it (space_stats has per-kind totals). The conversation itself is records: kind 'message' with match {conversationId}, order_by [{path:\"index\"}].", parameters: { type: "object", properties: { kind: { type: "string" }, match: { type: "object" }, orderBy: { type: "array", items: { type: "object", properties: { path: { type: "string" }, dir: { type: "string", enum: ["asc", "desc"] } }, required: ["path"] } }, limit: { type: "integer" } }, required: ["kind"] } } },
-  { type: "function", function: { name: "space_count", description: "How MANY records match, not which ones: {count, exact}. Use this for totals, distributions and percentages — count each value separately (e.g. one call per tier) rather than counting the records a query happened to return. A count is over the WHOLE SPACE unless the match narrows it, so a question about this conversation must say so: {kind:'tool_call', match:{conversationId, tool:'run_code'}}. `exact` is false only when the match is too broad to count precisely.", parameters: { type: "object", properties: { kind: { type: "string" }, match: { type: "object" } }, required: ["kind"] } } },
+  { type: "function", function: { name: "space_query", description: "Find records by kind, with an optional match (equality/$gt/$in/$exists/…) and order_by. order_by is an array of {path, dir?} over the kind's SORTABLE paths only (list a kind's sortable paths with space_kinds), and only over fields in the record BODY — when a record was created is not a body field, so there is no way to sort by time. Without order_by, records come back in ascending record-id order; that is stable, not arbitrary, but it means a `limit` gives you the OLDEST matches, never the newest. So this is the wrong tool for 'the most recent X': use space_events (the event log is in time order) or narrow the match instead. Returns up to `limit` (default 10, max 25) records with size-capped bodies, plus `more`: true when further records match — the result is then a PAGE, so never count or compute percentages from it (space_stats has per-kind totals). The conversation itself is records: kind 'message' with match {conversationId}, order_by [{path:\"index\"}]. A `scope` in the answer means your GRANT narrowed the read — what came back is a slice of that kind, not the kind; say so instead of describing it as everything, and do not try to widen it by guessing at kinds.", parameters: { type: "object", properties: { kind: { type: "string" }, match: { type: "object" }, orderBy: { type: "array", items: { type: "object", properties: { path: { type: "string" }, dir: { type: "string", enum: ["asc", "desc"] } }, required: ["path"] } }, limit: { type: "integer" } }, required: ["kind"] } } },
+  { type: "function", function: { name: "space_count", description: "How MANY records match, not which ones: {count, exact}. Use this for totals, distributions and percentages — count each value separately (e.g. one call per tier) rather than counting the records a query happened to return. A count is over the WHOLE SPACE unless the match narrows it, so a question about this conversation must say so: {kind:'tool_call', match:{conversationId, tool:'run_code'}}. `exact` is false only when the match is too broad to count precisely. A `scope` in the answer means the count covers only the records your grant lets you read — quote it as a count of the records you can see, never as the space's total.", parameters: { type: "object", properties: { kind: { type: "string" }, match: { type: "object" } }, required: ["kind"] } } },
   { type: "function", function: { name: "space_record", description: "Fetch a single record by id.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
   { type: "function", function: { name: "space_lineage", description: "The ANCESTRY (parent_ids, UP) of a record: {depth, id, kind} — how it was derived. A root record (e.g. a conversation) has no ancestors; to find what REFERENCES it, use space_children.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
   { type: "function", function: { name: "space_children", description: "Records that REFERENCE this record via parent_ids — its children (DOWN, the reverse of lineage), with bodies. Use this to follow links from a root: a conversation's messages (kind:message) and llm_calls, an llm_call's chunks + result, a task's results. Optional `kind` filter (e.g. 'message'). Returns up to `limit` (default 25).", parameters: { type: "object", properties: { recordId: { type: "string" }, kind: { type: "string" }, limit: { type: "integer" } }, required: ["recordId"] } } },
-  { type: "function", function: { name: "space_events", description: "The most recent event-log entries (put/take/ack/nack/…) this session may see: {seq, op, kind, state, recordId}. It pages to the end of the log for you, so a scoped session still reaches its own activity past events belonging to others. `withheld` counts what was filtered out (activity you are not scoped to — not an error), `complete` is false only if it ran out of paging budget, and `scope` says what the answer was narrowed to. An empty result with a `scope` means you saw everything you are allowed to see, NOT that the space is idle — say so that way.", parameters: { type: "object", properties: { after: { type: "integer" }, limit: { type: "integer" } } } } },
+  { type: "function", function: { name: "space_events", description: "The most recent event-log entries (put/take/ack/nack/…) this session may see: {seq, op, kind, state, recordId}. It pages to the end of the log for you, so a scoped session still reaches its own activity past events belonging to others. `withheld` counts what was filtered out — activity performed by OTHER principals, not an error and not something a grant fixes: the log is filtered by who acted, not by record kind, so do not request kind grants to widen it (say it needs an operator session instead), `complete` is false only if it ran out of paging budget, and `scope` says what the answer was narrowed to. An empty result with a `scope` means you saw everything you are allowed to see, NOT that the space is idle — say so that way.", parameters: { type: "object", properties: { after: { type: "integer" }, limit: { type: "integer" } } } } },
   { type: "function", function: { name: "space_permissions", description: "What THIS session is actually allowed to do: the fold over its grants, per kind, with whether reads are narrowed to its own records. Use it whenever authority is in question — before claiming a grant is missing or still pending, and after a human approves a request, since the answer here is the enforcement itself rather than an inference from some other call's scope line. A grant on a kind that does not exist authorizes nothing, and will show up here as exactly that.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "space_doctor", description: "A derived health report: counts by state, dead-lettered records, expired-but-stuck leases, and records that have sat available/unclaimed. Use to answer 'is the space healthy / what's stuck?'.", parameters: { type: "object", properties: {} } } },
 ];

@@ -34,6 +34,9 @@ async function walk(root: string, dir: string, fn: (real: string, rel: string) =
 export interface ToolContext {
   callId: string;
   conversationId?: string;
+  /** The identity the call was made on behalf of, so anything a tool writes for it can be scoped
+   *  the same way the caller is. Stamped by the session, enforced by its write template. */
+  owner?: string;
 }
 
 export type Tool = (args: Record<string, unknown>, ctx?: ToolContext) => Promise<unknown>;

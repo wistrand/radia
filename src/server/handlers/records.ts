@@ -84,6 +84,33 @@ export async function handlePut(space: Space, req: Request, principal: string): 
   }
 }
 
+/**
+ * What a grant narrowed this read to, when it narrowed anything.
+ *
+ * The ops plane has said this for a while; the COORDINATION plane never did, and that asymmetry is
+ * what makes a scoped session confidently wrong. A caller whose grants limit `message` to one
+ * conversation queries `message`, gets its own conversation, and has no way to tell that from "this
+ * is every message there is" — so it reports its slice as the space. It happened repeatedly, and
+ * each time the session went looking for a grant to fix a gap it could not see.
+ *
+ * Absent when nothing was narrowed, so an unrestricted read stays exactly as it was on the wire.
+ */
+function describeReadScope(
+  constraint: Record<string, unknown>[] | null,
+  authors: string[] | undefined,
+): { scope?: { narrowedBy?: Record<string, unknown>[]; ownRecordsOnly?: true; note: string } } {
+  const templates = (constraint ?? []).filter((t) => Object.keys(t).length > 0);
+  if (templates.length === 0 && !authors) return {};
+  return {
+    scope: {
+      ...(templates.length > 0 ? { narrowedBy: templates } : {}),
+      ...(authors ? { ownRecordsOnly: true as const } : {}),
+      note: "your grant narrows this read — records outside it are not returned and are not counted. " +
+        "This is a slice, not the whole kind.",
+    },
+  };
+}
+
 export async function handleQuery(space: Space, req: Request, principal: string): Promise<Response> {
   const j = await readJson(req);
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
@@ -116,7 +143,11 @@ export async function handleQuery(space: Space, req: Request, principal: string)
     const records = await space.query(template, limit, page, authors ? { createdBy: authors } : undefined);
     // The cursor for the NEXT page is the last id of this one — echoed so a caller never has to
     // know that the cursor happens to be a record id.
-    return Response.json({ records, nextAfter: records.length === limit ? records[records.length - 1]?.id : undefined });
+    return Response.json({
+      records,
+      nextAfter: records.length === limit ? records[records.length - 1]?.id : undefined,
+      ...describeReadScope(constraint, authors),
+    });
   } catch (e) {
     if (e instanceof RadiaError) return problem(statusFor(e.code, 400), e.code, e.message);
     throw e;

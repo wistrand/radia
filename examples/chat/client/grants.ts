@@ -97,7 +97,10 @@ export async function reviewGrantRequests(
     // `listKinds` reads `kind_def` RECORDS, so the kinds defined in code — `artifact`, `kind_def`,
     // `grant`, … — are absent from it. Without them the warning fired on real kinds and told the
     // human that `artifact` did not exist while the assistant was successfully counting artifacts.
-    known = [...(await admin.listKinds()).map((k) => k.kind), ...RESERVED_KINDS];
+    // Deduped: a kind can be in BOTH lists. The chat redeclares the reserved `artifact` kind to
+    // index its own path, so it appears as a kind_def record and as a reserved name — and the
+    // assistant dutifully read "artifact" twice back to the user.
+    known = [...new Set([...(await admin.listKinds()).map((k) => k.kind), ...RESERVED_KINDS])];
   } catch { /* fall through: warn about nothing rather than block the review */ }
 
   for (const [, rec] of pending) {
@@ -137,22 +140,64 @@ export async function reviewGrantRequests(
     if (b.scope === "all") {
       write(`\n  the assistant asked for ALL records of this kind, not just its own.\n`);
     }
+    // Operations that are NOT reads. "Own records only" is a read filter — `take` CLAIMS a record,
+    // and claiming one and then rejecting it is not filtering, so a self-scoped grant must never
+    // carry it. The prompt used to offer "only its OWN records — reads only" and then grant
+    // `query, read_one, take` verbatim: the label was false, and on a work kind like `llm_call` the
+    // grant would let a chat session claim calls the inference fleet is waiting for.
+    const writes = b.operations.filter((op) => op !== "query" && op !== "read_one");
+    const reads = b.operations.filter((op) => op === "query" || op === "read_one");
+    if (writes.length > 0) {
+      write(`\n  ⚠ this asks for ${writes.join(", ").toUpperCase()}, which ${writes.length > 1 ? "are" : "is"} not a read.\n`);
+      if (writes.includes("take")) {
+        write(dim(`    'take' CLAIMS records — on a work kind that means taking work other agents are waiting for.\n`));
+      }
+      write(dim(`    [own] will grant only ${reads.length > 0 ? reads.join(", ") : "nothing"}; [all] grants everything asked for.\n`));
+    }
+
     const wantsAll = pointless || b.scope === "all";
-    write(`\n  [y] yes, but only its OWN records of that kind — reads only${wantsAll ? "" : " (recommended)"}\n`);
-    write(`  [a] yes, ALL records of that kind in this space${wantsAll ? " (recommended here)" : ""}\n`);
-    write(`  [n] no\n`);
+    // Named options rather than y/n. `y` read as plain "yes" and meant the NARROW one, so a person
+    // answering "yes" to "can I see more of the space?" got the opposite and the assistant spent
+    // its next turns discovering the grant did nothing. Nothing here means "yes" any more, and
+    // `yes` is not accepted as an answer at all.
+    if (reads.length > 0) {
+      write(`\n  [own] its OWN records of that kind — reads only${wantsAll ? "" : " (recommended)"}\n`);
+    }
+    write(`${reads.length > 0 ? "" : "\n"}  [all] ALL records of that kind in this space${wantsAll ? " (recommended here)" : ""}\n`);
+    write(`  [no] refuse\n`);
     write("approve? ");
-    const answer = ((await ask()) ?? "n").trim().toLowerCase();
+
+    let answer = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const raw = ((await ask()) ?? "no").trim().toLowerCase();
+      if (raw === "own" || raw === "o") answer = "own";
+      else if (raw === "all" || raw === "a") answer = "all";
+      else if (raw === "no" || raw === "n" || raw === "") answer = "no";
+      if (answer) break;
+      // An ambiguous "yes" is the whole reason these are words: it must not silently become either
+      // a refusal (which the old code did) or the narrow grant.
+      write(dim(`  '${raw}' is not one of them — answer own, all or no: `));
+    }
+    if (!answer) answer = "no";
+    if (answer === "own" && reads.length === 0) {
+      write(dim(`  nothing to grant: 'own records only' is a read filter and this asks for no reads.\n`));
+      answer = "no";
+    }
     // Answering the narrow way against a measured-empty exposure is allowed — it is the human's
     // call — but it must not look like it worked. Three turns of "the grant landed and changed
     // nothing" started here.
-    if (answer === "y" && pointless) {
+    if (answer === "own" && pointless) {
       write(dim(`  note: this grant authorizes reads of ${b.kind} records this session created, and there are none.\n`));
     }
 
     let inheritedTemplate: Record<string, unknown> | undefined;
-    if (answer === "y" || answer === "a") {
-      const selfScoped = answer === "y";
+    // Self-scoping is a read filter, so the narrow answer grants the READS only — never the
+    // operation the label said it was excluding. Declared out here because the decision record
+    // reports it too: "granted" without saying WHAT is how a caller retries an operation it still
+    // cannot perform.
+    const granting = answer === "own" ? reads : b.operations;
+    if (answer === "own" || answer === "all") {
+      const selfScoped = answer === "own";
       if (selfScoped) {
         // Grants UNION, so adding a narrow grant beside a broad one changes nothing — and the
         // session starts with broad read grants on the conversation kinds. Choosing "own records
@@ -167,7 +212,7 @@ export async function reviewGrantRequests(
           await admin.query({ kind: "grant", match: { principal: subject, kind: b.kind } }, 100, { dir: "desc" }),
           grantKey,
         ).map((r) => r.body as { operations?: string[]; scope?: unknown; template?: Record<string, unknown>; retired?: boolean })
-          .filter((g) => !g.retired && !g.scope && (g.operations ?? []).some((op) => b.operations.includes(op)));
+          .filter((g) => !g.retired && !g.scope && (g.operations ?? []).some((op) => granting.includes(op)));
 
         // Carry the TEMPLATE of what is being narrowed onto the narrowed grant. The session's base
         // grants are template-scoped to its conversation, and grant templates UNION — so writing an
@@ -181,7 +226,7 @@ export async function reviewGrantRequests(
         const kept = new Set<string>();
         for (const g of live) {
           await admin.put({ kind: "grant", body: { ...g, retired: true } });
-          const keep = (g.operations ?? []).filter((op) => !b.operations.includes(op));
+          const keep = (g.operations ?? []).filter((op) => !granting.includes(op));
           if (keep.length > 0) {
             await admin.put({ kind: "grant", body: { ...g, operations: keep } });
             for (const op of keep) kept.add(op);
@@ -190,7 +235,7 @@ export async function reviewGrantRequests(
         // One line, however many duplicate grant records the space has accumulated.
         if (live.length > 0) {
           write(dim(
-            `  withdrew wider ${b.operations.join(",")} on ${b.kind} so "own records only" holds` +
+            `  withdrew wider ${granting.join(",")} on ${b.kind} so "own records only" holds` +
               `${kept.size > 0 ? ` (kept ${[...kept].join(",")})` : ""}\n`,
           ));
         }
@@ -202,14 +247,17 @@ export async function reviewGrantRequests(
         body: {
           principal: subject,
           kind: b.kind,
-          operations: b.operations,
+          operations: granting,
           ...(selfScoped ? { scope: { createdBy: "self" } } : {}),
           ...(inheritedTemplate ? { template: inheritedTemplate } : {}),
         },
       });
       write(dim(
-        `granted: ${b.operations.join(",")} on ${b.kind}${selfScoped ? " (its own records only)" : " (all records)"}` +
-          `${inheritedTemplate ? `, still limited to ${JSON.stringify(inheritedTemplate)}` : ""}\n`,
+        `granted: ${granting.join(",")} on ${b.kind}${selfScoped ? " (its own records only)" : " (all records)"}` +
+          `${inheritedTemplate ? `, still limited to ${JSON.stringify(inheritedTemplate)}` : ""}` +
+          // Say what was withheld, or "granted" reads as "granted everything I asked for" and the
+          // caller retries the operation it still cannot perform.
+          `${selfScoped && writes.length > 0 ? `; withheld ${writes.join(",")} (not a read)` : ""}\n`,
       ));
     } else {
       write(dim("refused\n"));
@@ -226,17 +274,18 @@ export async function reviewGrantRequests(
       body: {
         ...b,
         retired: true,
-        decision: answer === "n" ? "refused" : "granted",
+        decision: answer === "no" ? "refused" : "granted",
         // A requester that cannot list kinds guesses one, and the guess is usually a TOOL name.
         // Telling it the real names HERE closes the loop in the same turn — otherwise it learns
         // only that the grant it was given authorizes nothing, and guesses again. (Seen twice, in
         // consecutive sessions, both times `space_event` for the `space_events` tool.)
         ...(unknown ? { noSuchKind: b.kind, kindsOnThisSpace: known.slice(0, 40) } : {}),
-        ...(answer === "n" ? {} : {
+        ...(answer === "no" ? {} : {
           granted: {
             kind: b.kind,
-            operations: b.operations,
-            scope: answer === "y" ? "own records only" : "all records",
+            operations: granting,
+            ...(writes.length > 0 && answer === "own" ? { withheld: writes, why: "not a read; 'own records only' is a read filter" } : {}),
+            scope: answer === "own" ? "own records only" : "all records",
             ...(inheritedTemplate ? { limitedTo: inheritedTemplate } : {}),
           },
         }),

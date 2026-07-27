@@ -38,7 +38,7 @@ for (let i = 0; i < 100; i++) {
 await registerChatKinds(admin);
 // The conversation exists before the credential that is scoped to it (see chat.ts).
 const mine = (await admin.put({ kind: "conversation", body: { title: "mine" } })).id;
-const { sessionToken } = await bootstrap(admin, "user", mine);
+const { sessionToken } = await bootstrap(admin, "user", { conversationId: mine });
 const session = new RadiaClient(url, { token: sessionToken! });
 const tools = makeInspectTools(session);
 
@@ -82,6 +82,7 @@ await admin.put({
 const ev = await tools.space_events({ limit: 20 }) as {
   events: { recordId?: string }[];
   withheld?: number;
+  withheldNote?: string;
   complete?: boolean;
   scope?: unknown;
 };
@@ -89,6 +90,14 @@ check("space_events reaches the session's own activity past a wall of foreign ev
 check("…and says it reached the end of the log", ev.complete === true);
 check("…and still says the answer is scoped, so empty never reads as idle", Boolean(ev.scope));
 check("…and reports what it could not show", (ev.withheld ?? 0) > 0, `withheld ${ev.withheld}`);
+// The number alone reads as "ask for a grant and this goes away". It does not: the log is filtered
+// by WHO ACTED, so no grant on any record kind widens it — four sessions in a row spent their turns
+// requesting kind grants (and inventing kinds to request) chasing an answer no grant can give.
+check(
+  "…and says why, so the count does not read as a missing grant",
+  (ev.withheldNote ?? "").includes("filtered by which principal performed the operation"),
+  (ev.withheldNote ?? "(none)").slice(0, 60),
+);
 
 // The events it did return must be the session's OWN records, not a leak from the wall it paged
 // through — paging further must not widen what a scoped caller sees, only reach more of it.
@@ -107,8 +116,24 @@ check(
   visible.count === 3 && !visible.more,
   `${visible.count}${visible.more ? "+" : ""} of ${3 + 700} in the space`,
 );
-const counted = await tools.space_count({ kind: "message" }) as { count: number };
+const counted = await tools.space_count({ kind: "message" }) as { count: number; scope?: { narrowedBy?: unknown[] } };
 check("…and counts only those", counted.count === 3, `${counted.count}`);
+
+// The reason four sessions in a row reported their own slice as the space: a narrowed read looked
+// exactly like an unrestricted one. The ops plane has always described its scope; the coordination
+// plane — the one the assistant actually reads records through — never did, so "3 messages" was
+// indistinguishable from "this space has 3 messages".
+const scoped = visible as unknown as { scope?: { narrowedBy?: Record<string, unknown>[]; note?: string } };
+check("a narrowed query SAYS it was narrowed", Boolean(scoped.scope), JSON.stringify(scoped.scope ?? {}).slice(0, 70));
+check(
+  "…and names what narrowed it, so the limit is explainable rather than mysterious",
+  JSON.stringify(scoped.scope?.narrowedBy ?? []).includes(mine),
+);
+check("a narrowed COUNT says so too — it is the number most likely to be quoted", Boolean(counted.scope));
+
+// …and an unrestricted read stays exactly as it was: no scope, nothing for a caller to explain away.
+const openRead = await admin.queryPage({ kind: "message" }, 5);
+check("an unrestricted read carries no scope at all", openRead.scope === undefined);
 check(
   "…while the other conversation's messages are really there",
   (await admin.query({ kind: "message", match: { conversationId: conv } }, 5)).length === 5,
@@ -198,6 +223,45 @@ const kindDef = (after.kinds ?? []).find((k) => k.kind === "kind_def");
 check("a newly granted kind shows up immediately", Boolean(kindDef));
 check("…and says the read is narrowed to its own records", kindDef?.readsScopedToSelf === true);
 
+// ---- "reads only" must mean reads only ----
+// A live session asked for `["query","read_one","take"]` on `llm_call`; the prompt offered "only its
+// OWN records — reads only" and then granted `take` verbatim. The label was false, and on a work
+// kind that grant lets a chat session CLAIM calls the inference fleet is waiting for.
+const claimy = await askAndAnswer(
+  { kind: "llm_call", operations: ["query", "read_one", "take"], why: "to survey activity", scope: "own" },
+  "own",
+);
+const claimyPrompt = claimy.prompt;
+check("the prompt flags an operation that is not a read", claimyPrompt.includes("which is not a read") || claimyPrompt.includes("which are not a read"));
+check("…and warns what 'take' does to a work kind", claimyPrompt.includes("CLAIMS records"));
+const claimyGrant = (claimy.result as { granted?: { operations?: string[]; withheld?: string[] } }).granted;
+check(
+  "the narrow answer grants the reads and withholds the claim",
+  JSON.stringify(claimyGrant?.operations) === JSON.stringify(["query", "read_one"]),
+  JSON.stringify(claimyGrant?.operations),
+);
+check("…and says so, rather than reporting a bare success", (claimyGrant?.withheld ?? []).includes("take"));
+const canTake = await session.take({ template: { kind: "llm_call" } }, { leaseSeconds: 5 }).then(() => true).catch(() => false);
+check("…so the session still cannot claim the fleet's work", !canTake);
+
+// An answer that is neither option must not silently become one. `y` read as plain "yes" and meant
+// the NARROW grant, so a person answering "yes" to "shall I look wider?" got the opposite of what
+// they said — twice, in consecutive sessions, each costing the assistant its next turns.
+const ambiguous = await askAndAnswer(
+  { kind: "progress", operations: ["query"], why: "to read progress records", scope: "all" },
+  ["yes", "all"],
+);
+check("'yes' is not accepted as an answer", ambiguous.prompt.includes("is not one of them"));
+check(
+  "…and the options are named, so nothing reads as a plain yes",
+  !ambiguous.prompt.includes("[y]") && ambiguous.prompt.includes("[own]") && ambiguous.prompt.includes("[all]"),
+);
+check(
+  "…and the re-ask is what decides",
+  (ambiguous.result as { granted?: { scope?: string } }).granted?.scope === "all records",
+  JSON.stringify((ambiguous.result as { granted?: unknown }).granted ?? {}).slice(0, 70),
+);
+
 // ---- a guessed kind is corrected IN THE TURN, not discovered a round later ----
 // A session that cannot list kinds guesses, and the guess is usually a tool name — `space_event`
 // for the `space_events` tool, twice in consecutive sessions. Approving it produced a grant that
@@ -205,7 +269,7 @@ check("…and says the read is narrowed to its own records", kindDef?.readsScope
 // real names back to the asker.
 const guessed = await askAndAnswer(
   { kind: "space_event", operations: ["query"], why: "to read the activity log", scope: "all" },
-  "y",
+  "own",
 );
 const guessedOut = guessed.result as { ok: boolean; decision?: string; kindsOnThisSpace?: string[]; note?: string };
 check("a guessed kind comes back as no_such_kind, not as success", guessedOut.decision === "no_such_kind", guessedOut.decision ?? "?");
@@ -215,6 +279,10 @@ check(
   (guessedOut.kindsOnThisSpace ?? []).includes("message"),
   (guessedOut.kindsOnThisSpace ?? []).slice(0, 5).join(","),
 );
+// A kind an app REDECLARES (the chat does this to `artifact`) is both a kind_def record and a
+// reserved name, and the list read "artifact" twice back to the user.
+const listed2 = guessedOut.kindsOnThisSpace ?? [];
+check("…each kind once", new Set(listed2).size === listed2.length, listed2.filter((k, i) => listed2.indexOf(k) !== i).join(",") || "no duplicates");
 
 // ---- the phantom kind from the transcript ----
 // The assistant asked for `space_event` — the name of a TOOL, not a record kind — and had it
@@ -274,8 +342,9 @@ function capture(): () => string {
  *  before anyone was asked — which is the two-turn dance this replaced. */
 async function askAndAnswer(
   request: Record<string, unknown>,
-  answer: string,
+  answer: string | string[],
 ): Promise<{ result: unknown; prompt: string }> {
+  const replies = Array.isArray(answer) ? [...answer] : [answer];
   let stop: (() => string) | undefined;
   const [result] = await Promise.all([
     tools.request_grant(request, { callId: "smoke", conversationId: mine }),
@@ -286,7 +355,7 @@ async function askAndAnswer(
         await new Promise((r) => setTimeout(r, 50));
       }
       stop = capture();
-      await reviewGrantRequests(session, admin, "agent:chat-user", mine, () => Promise.resolve(answer));
+      await reviewGrantRequests(session, admin, "agent:chat-user", mine, () => Promise.resolve(replies.shift() ?? "no"));
     })(),
   ]);
   return { result, prompt: stop ? stop() : "" };
@@ -300,7 +369,7 @@ for (let i = 0; i < 3; i++) {
 // --- the dead end: asking for "own" on a kind you do not write ---
 const narrow = await askAndAnswer(
   { kind: "procedure", operations: ["query", "read_one"], why: "to read the saved procedures", scope: "own" },
-  "y",
+  "own",
 );
 const narrowPrompt = narrow.prompt;
 check(
@@ -328,7 +397,7 @@ check("…while the records are plainly there", (await admin.query({ kind: "proc
 // --- the fix: the asker can say which it needs, and the prompt shows it ---
 const wide = await askAndAnswer(
   { kind: "kind_def", operations: ["query", "read_one"], why: "to list the kinds before surveying them", scope: "all" },
-  "a",
+  "all",
 );
 const widePrompt = wide.prompt;
 check(

@@ -156,18 +156,49 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   separator no value can contain, since the encoded form is both unambiguous and printable; and
   `grep -P "\x00"` will NOT find these — grep suppresses binary matches, so scan with something
   that reads bytes.
+- **Scoping by AUTHOR does not mean what "my records" means to a user.** The chat's session writes
+  `message`/`llm_call`/`tool_call`; the RESULTS, chunks and artifacts are written by WORKERS under
+  their own principals. So `createdBy: self` would show a session its messages and hide its own tool
+  output, and the chat would hang waiting for results it could no longer read. Conversation scoping
+  covers both but hides the user's OWN earlier threads, which is not what they meant either. What
+  works is an application field: the session stamps `owner`, workers copy it onto everything they
+  produce for that call, and the grant binds `{owner}` — enforced on writes too, so a session
+  cannot stamp another identity. `RADIA_CHAT_SCOPE` picks between that and `{conversationId}`,
+  because the right answer depends on the space: identity scoping separates a session from workers
+  and operator sessions, but NOT two people sharing one space, since both are `agent:chat-user`.
 - **Tightening a grant by adding a TEMPLATE is inert on any space that already had the loose one.**
   Scope and template are part of a grant's identity, so declaring `{message, [put,query],
   template:{conversationId}}` beside an existing `{message, [put,query]}` creates a SECOND grant —
   and grants union, so the narrower one changes nothing. Every test passed, because tests start on a
   fresh space; a live session on a two-day-old space kept reading every conversation after its
   grants were scoped to one. `createAgentDefinition` now retires the untemplated twin of each grant
-  it declares. Two boundaries worth keeping: it fires on TEMPLATE only, because `grantKey` excludes
-  `scope` on purpose (a self-scoped grant already replaces its unscoped twin in place) and including
-  scope made the rule retire the grant it had just written — the two share a key; and it retires
-  only a grant identical in principal, kind and operations, so a grant a human assigned out of band
-  survives every restart. The general shape: when identity includes the thing you are changing, a
+  it declares — and, since testing that fix exposed the same hole one level up, every live grant on
+  the same (principal, kind, operations) whose template DIFFERS. Swapping one template for another
+  is not adding a grant: the two union and the wider view wins, so changing a session's scope
+  silently widened it instead. Two boundaries worth keeping: `scope` is excluded on purpose, because
+  `grantKey` excludes it (a self-scoped grant already replaces its unscoped twin in place) and
+  including it made the rule retire the grant it had just written — the two share a key; and it is
+  bounded to the exact triple declared, so a grant a human assigned out of band survives restarts. The general shape: when identity includes the thing you are changing, a
   change is an ADD, and the old value stays in force until something withdraws it.
+- **A withheld count with no reason sends every agent hunting for a grant that cannot exist.**
+  `/v0/ops/events` filters by which principal PERFORMED the operation, so no grant on any record
+  kind widens it — but the response only said `withheld: 65923`, which reads as "you are missing a
+  grant". Four sessions in a row spent their turns requesting kind grants to close that gap, two of
+  them inventing a kind (`space_event`) to request, and none could have succeeded. The response now
+  carries `withheldNote` saying the filter is on the actor and that seeing another principal's
+  activity needs an operator session. Cheaper to say once than to have every caller learn it by
+  exhaustion — and note the failure was not wrong behaviour anywhere, just an unexplained number.
+- **An approval prompt whose label does not match what it grants, and whose keys read as "yes".**
+  Two failures in one exchange, both from a live session. The narrow option said "only its OWN
+  records — reads only" and then granted the request VERBATIM, including `take` — on `llm_call`,
+  which would let a chat session claim work the inference fleet is waiting for. Self-scoping is a
+  read filter (claiming a record and then rejecting it is not filtering), so the narrow answer now
+  grants the reads ONLY, names what it withheld, and the prompt says up front which requested
+  operations are not reads. Separately, the keys were `y`/`a`/`n`: `y` reads as plain "yes" and
+  meant the NARROW grant, so a person answering "yes" to "shall I look wider?" got the opposite —
+  observed twice, each time costing the assistant its following turns. The options are words now
+  (`own`/`all`/`no`), nothing means "yes", and an unrecognised answer is re-asked instead of
+  silently becoming a refusal, which is what the old code did with "yes".
 - **An escalation that costs two turns and two human inputs per grant does not converge.** The loop
   was: assistant hits `forbidden`, calls `request_grant`, the tool returns "asked them, retry
   later", the turn ends; the human approves at the prompt; the human types "retry"; the assistant
@@ -242,6 +273,17 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   returns more. Widening the aggregate to match was tried and reverted — it turns every unscoped
   bootstrap grant into full ops visibility, which is the opposite of what the plane is for.
   Guarded by "an aggregate that covers less than the caller can read says so" in `suites/selfscope.ts`.
+- **The scoped-answer rule was only ever applied to the OPS plane; the plane records are actually
+  read through said nothing.** `/v0/ops/*` has carried a `scope` for a while. `POST
+  /v0/records/query` returned `{records, nextAfter}` — so a caller whose grant limits `message` to
+  one conversation queried `message`, got its own conversation, and had no way to distinguish that
+  from "this is every message there is". Four sessions in a row reported their own slice as the
+  space's history, and each then went hunting for a grant to close a gap they could not see. The
+  response now carries `scope: {narrowedBy, ownRecordsOnly, note}` when — and only when — a grant
+  narrowed the read, so an unrestricted read is byte-identical to before (additive to the frozen
+  contract). `read_one` is deliberately left alone: it returns the record itself, and a null answer
+  to "give me this one thing" does not invite the same mistake. General form: the thing that makes a
+  narrowed answer dangerous is that it is SHAPED exactly like a complete one.
 - **A scoped answer must SAY it is scoped, or an empty one reads as an empty space.** A session
   granted ops access on one kind read `stats: []`, `events: []` and an all-zero diagnostics, and
   told its user "the space is empty and healthy". Every number was correct; the claim was wrong, and

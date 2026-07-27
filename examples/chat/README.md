@@ -42,7 +42,7 @@ outside world).
 ## Testing it without a model
 
 ```bash
-deno task chat-test              # all seven suites, ~13s
+deno task chat-test              # all eight suites, ~17s
 deno task chat-test longthread   # one by name
 ```
 
@@ -65,6 +65,7 @@ real assembly, with no API key:
 | `resume` | reattaching across a genuine process restart (the space is killed and restarted on the same `--db`) |
 | `selfgrant` | forbidden → request → human approval → self-scoped reads, on both the ops and coordination planes. The ask BLOCKS on the human's answer and the answer names the scope actually granted, so the whole escalation fits in one turn instead of two |
 | `inspect` | session isolation (a session reads only its own conversation), the `space_*` TOOLS on a busy space — paging past a wall of another author's events, answering "what may I do" from the enforcement rather than by inference, and the full escalation loop: a grant approved at the wrong scope authorizes nothing, and the prompt has to say so |
+| `scope` | what a scoped session may read under both postures — identity (all its own conversations, including worker-produced results) vs conversation (this thread only) |
 | `fleet` | model advertisements: publish, restart without growing the space, withdraw on shutdown, revive |
 
 The long thread is the one that pays for itself: bugs here come from the SHAPE of accumulated
@@ -322,7 +323,7 @@ Three details carry the weight:
   used a saved procedure, said yes, had not, and invented a reason for the mismatch.
 
 ```bash
-deno task chat-test              # all seven suites, ~13s, no API key
+deno task chat-test              # all eight suites, ~17s, no API key
 deno task chat-test longthread   # one by name
 ```
 

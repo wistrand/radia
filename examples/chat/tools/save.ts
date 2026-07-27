@@ -31,7 +31,7 @@ export function makeSaveTools(client: RadiaClient): Record<string, Tool> {
         parentIds: ctx?.callId ? [ctx.callId] : undefined,
         // Body metadata, not lineage: a grant template matches the body, so this is what pins the
         // artifact to the conversation that produced it.
-        meta: { conversationId: ctx?.conversationId ?? "" },
+        meta: { conversationId: ctx?.conversationId ?? "", owner: ctx?.owner ?? "" },
         // Model-authored content, possibly derived from something it read: untrusted, like any
         // other output on this path. Clearing it needs a privileged declassify.
         taint: true,

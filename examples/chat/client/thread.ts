@@ -10,7 +10,7 @@
 // claim-and-append protocol, which would obscure the thing this example exists to show.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
-import type { Role } from "../space/roles.ts";
+import { CHAT_USER as OWNER, type Role } from "../space/roles.ts";
 
 export interface OutgoingMessage {
   role: string;
@@ -87,7 +87,12 @@ export class Thread {
   async append(msg: OutgoingMessage, parentIds: string[] = []): Promise<void> {
     await this.client.put({
       kind: "message",
-      body: { conversationId: this.id, index: this.nextIndex++, ...msg },
+      // `owner` is the identity binding a grant can scope on, and it is stamped even when the
+      // session is scoped by conversation instead — a record that carries both can be read under
+      // either posture, so switching RADIA_CHAT_SCOPE does not blind a session to its own history.
+      // The runtime enforces it rather than trusting it: under identity scoping the write template
+      // is `{owner}`, so a session physically cannot stamp another identity here.
+      body: { conversationId: this.id, owner: OWNER, index: this.nextIndex++, ...msg },
       parentIds: [this.id, ...parentIds],
     });
   }

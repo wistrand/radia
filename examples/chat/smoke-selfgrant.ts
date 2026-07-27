@@ -35,7 +35,7 @@ await registerChatKinds(admin);
 // to it — the same order chat.ts uses, and the reason a user session no longer holds
 // `conversation: put` at all.
 const conv = (await admin.put({ kind: "conversation", body: { title: "mine" } })).id;
-const { sessionToken, toolsToken } = await bootstrap(admin, "user", conv);
+const { sessionToken, toolsToken } = await bootstrap(admin, "user", { conversationId: conv });
 const session = new RadiaClient(url, { token: sessionToken! });
 
 // A BUSY space must not hide the newest tool. Discovery reads a bounded page, and a limited query
@@ -150,7 +150,7 @@ const [asked0] = await Promise.all([
       if (pending.some((r) => !(r.body as { decision?: string }).decision)) break;
       await new Promise((r) => setTimeout(r, 100));
     }
-    await reviewGrantRequests(session, admin, CHAT_USER, conv, () => Promise.resolve("y"));
+    await reviewGrantRequests(session, admin, CHAT_USER, conv, () => Promise.resolve("own"));
   })(),
 ]);
 check("request_grant succeeds", asked0.ok, JSON.stringify(asked0.output).slice(0, 70));

@@ -29,7 +29,7 @@ export interface ProgressBody {
  *  and a call with no conversation (the router's raw-prompt classifier) has nothing to report to. */
 export async function progress(
   client: RadiaClient,
-  p: Omit<ProgressBody, "conversationId"> & { conversationId?: string },
+  p: Omit<ProgressBody, "conversationId"> & { conversationId?: string; owner?: string },
   parentIds: string[] = [],
 ): Promise<void> {
   if (!p.conversationId) return;

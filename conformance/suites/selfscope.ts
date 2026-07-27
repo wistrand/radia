@@ -12,6 +12,7 @@ import { assert, assertEquals } from "@std/assert";
 import type { Suite } from "../harness.ts";
 import { Space } from "../../src/core/space.ts";
 import type { StatsScope } from "../../src/storage/adapter.ts";
+import { handleQuery } from "../../src/server/handlers/records.ts";
 
 /** A space holding two principals' records of two kinds. */
 async function twoAuthors(adapter: Parameters<Suite["run"]>[0]) {
@@ -286,6 +287,46 @@ export const selfScopeSuites: Suite[] = [
       // the scope owes the caller is to say the two planes differ, not to quietly widen one.
       assert((scope?.alsoReadable ?? []).includes("message"), "the discrepancy is reported");
       assert(await space.getRecord(theirs), "the record exists and the caller can list it");
+    },
+  },
+  {
+    name: "a narrowed coordination read reports the constraint that narrowed it",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({ kind: "message", indexedPaths: [{ path: "conversationId", type: "keyword" }] });
+      const { definitionToken } = await space.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "message", operations: ["query"], template: { conversationId: "mine" } },
+      ]);
+      const { runToken } = await space.mintRun(definitionToken);
+      const resolved = await space.resolveToken(runToken);
+      const principal = resolved.ok && resolved.kind === "run" ? resolved.principal : "";
+
+      for (let i = 0; i < 4; i++) await space.put({ kind: "message", body: { conversationId: "theirs", i } });
+      await space.put({ kind: "message", body: { conversationId: "mine", i: 0 } });
+
+      const ask = (p: string) =>
+        handleQuery(
+          space,
+          new Request("http://t/v0/records/query", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ kind: "message", limit: 50 }),
+          }),
+          p,
+        );
+
+      // The whole point: a caller cannot tell a narrowed read from a complete one unless the answer
+      // says so, and it will report its slice as the population. The ops plane always described its
+      // scope; this is the plane records are actually read through.
+      const scopedBody = await (await ask(principal)).json();
+      assertEquals(scopedBody.records.length, 1, "only its own conversation");
+      assertEquals(scopedBody.scope.narrowedBy, [{ conversationId: "mine" }]);
+      assert(String(scopedBody.scope.note).includes("slice"), "and says what that means");
+
+      // An unrestricted caller's answer is unchanged — no scope to explain away.
+      const openBody = await (await ask("human:local")).json();
+      assertEquals(openBody.records.length, 5);
+      assertEquals(openBody.scope, undefined, "nothing narrowed, nothing reported");
     },
   },
 ];

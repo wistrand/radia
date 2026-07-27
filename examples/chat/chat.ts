@@ -37,7 +37,7 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { bootstrap, CHAT_USER } from "./space/roles.ts";
-import { apiKey, execRoots, resume, role, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
+import { apiKey, execRoots, resume, role, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
 import { launchFleet, spawnSpace } from "./client/fleet.ts";
 import { ToolSet } from "./client/turn.ts";
 import { Thread } from "./client/thread.ts";
@@ -112,7 +112,12 @@ async function resolveConversation(): Promise<{ id: string; resumed: boolean }> 
 }
 const conversation = await resolveConversation();
 
-const tokens = await bootstrap(admin, role, conversation.id);
+// What the session's grants bind to. `owner` is this identity across all its conversations;
+// `conversationId` is this thread only. See RADIA_CHAT_SCOPE.
+const scope = scopeMode === "conversation"
+  ? { conversationId: conversation.id }
+  : { owner: CHAT_USER };
+const tokens = await bootstrap(admin, role, scope);
 const session = new RadiaClient(url, tokens.sessionToken ? { token: tokens.sessionToken } : {});
 procs.push(...launchFleet(tokens));
 

@@ -24,7 +24,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     indexedPaths: [
       { path: "digest", type: "keyword" },
       { path: "mediaType", type: "keyword" },
-      { path: "conversationId", type: "keyword" },
+      { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" },
     ],
     claimable: false,
   });
@@ -36,7 +36,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     // that question degrades into fetching pages and counting by hand — a worse answer, computed
     // from a page rather than the population.
     indexedPaths: [
-      { path: "conversationId", type: "keyword" },
+      { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" },
       { path: "index", type: "integer" },
       { path: "role", type: "keyword" },
     ],
@@ -52,7 +52,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // did we do in THIS conversation" reachable in one query instead of a walk down children.
   await client.registerKind({
     kind: "llm_call",
-    indexedPaths: [{ path: "tier", type: "keyword" }, { path: "conversationId", type: "keyword" }],
+    indexedPaths: [{ path: "tier", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
   });
   await client.registerKind({ kind: "model", indexedPaths: [{ path: "tier", type: "keyword" }], claimable: false });
   // `conversationId` on the RESULT kinds, not just the call kinds: these are keyed by callId, and a
@@ -60,7 +60,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // session holding a callId from another conversation could read its result.
   await client.registerKind({
     kind: "llm_result",
-    indexedPaths: [{ path: "callId", type: "keyword" }, { path: "conversationId", type: "keyword" }],
+    indexedPaths: [{ path: "callId", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
     claimable: false,
   });
   await client.registerKind({
@@ -68,18 +68,18 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     indexedPaths: [
       { path: "callId", type: "keyword" },
       { path: "index", type: "integer" },
-      { path: "conversationId", type: "keyword" },
+      { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" },
     ],
     sortablePaths: ["index"],
     claimable: false,
   });
   await client.registerKind({
     kind: "tool_call",
-    indexedPaths: [{ path: "tool", type: "keyword" }, { path: "conversationId", type: "keyword" }],
+    indexedPaths: [{ path: "tool", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
   });
   await client.registerKind({
     kind: "tool_result",
-    indexedPaths: [{ path: "callId", type: "keyword" }, { path: "conversationId", type: "keyword" }],
+    indexedPaths: [{ path: "callId", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
     claimable: false,
   });
   // A `grant_request` = the assistant asking for authority it does not have. Grants are
@@ -90,7 +90,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // conversation; `kind` so a request can be found by what it asks for.
   await client.registerKind({
     kind: "grant_request",
-    indexedPaths: [{ path: "conversationId", type: "keyword" }, { path: "kind", type: "keyword" }],
+    indexedPaths: [{ path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }, { path: "kind", type: "keyword" }],
     claimable: false,
   });
   // A `procedure` = code the ASSISTANT wrote and named, so it can be run again without being
@@ -101,7 +101,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // carries its id, never its text (records route, blobs hold bytes).
   await client.registerKind({
     kind: "procedure",
-    indexedPaths: [{ path: "name", type: "keyword" }, { path: "conversationId", type: "keyword" }],
+    indexedPaths: [{ path: "name", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
     claimable: false,
   });
   // `progress` = what a worker is doing right now, keyed to the call the chat awaits. Turn
@@ -109,7 +109,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // and its ABSENCE tells the chat nobody claimed the work.
   await client.registerKind({
     kind: "progress",
-    indexedPaths: [{ path: "callId", type: "keyword" }, { path: "conversationId", type: "keyword" }],
+    indexedPaths: [{ path: "callId", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
     claimable: false,
   });
 }

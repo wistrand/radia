@@ -71,11 +71,11 @@ await agentLoop(client, {
   leaseSeconds: 120, // image generation is slow; the heartbeat keeps the lease alive
   handle: async (rec, c) => {
     const callId = rec.id;
-    const b = rec.body as { args?: { prompt?: string }; conversationId?: string };
+    const b = rec.body as { args?: { prompt?: string }; conversationId?: string; owner?: string };
     const prompt = String(b.args?.prompt ?? "").trim();
     // Nothing streams for the next 5-20s, so this record is the only sign of life the chat has.
-    await progress(c, { conversationId: b.conversationId, callId, stage: "drawing", by: ME, note: model }, [callId]);
-    if (!prompt) return { kind: "tool_result", body: { callId, conversationId: b.conversationId, ok: false, output: "generate_image needs a prompt" } };
+    await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "drawing", by: ME, note: model }, [callId]);
+    if (!prompt) return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: "generate_image needs a prompt" } };
     try {
       const { bytes, mediaType } = await generateImage({ apiKey, model, prompt, safetySettings });
       // Tainted on purpose. The bytes come from a provider (and in two of the response formats,
@@ -90,13 +90,13 @@ await agentLoop(client, {
         // Lineage records where it CAME from; this is what a grant can bind. Templates match the
         // body, and parent_ids is not body — so without this field an artifact is readable by any
         // session that learns its id, whatever the conversation scoping says.
-        meta: { conversationId: b.conversationId ?? "" },
+        meta: { conversationId: b.conversationId ?? "", owner: b.owner ?? "" },
       });
       return {
         kind: "tool_result",
         body: {
           callId,
-          conversationId: b.conversationId,
+          conversationId: b.conversationId, owner: b.owner,
           ok: true,
           output: { artifactId: artifact.id, mediaType, size: artifact.size, model, prompt },
         },
@@ -104,7 +104,7 @@ await agentLoop(client, {
     } catch (e) {
       // Don't nack: a refused or failed generation is an ANSWER (the model should see why and can
       // rephrase), not a transient fault to retry at cost.
-      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, ok: false, output: String(e) } };
+      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: String(e) } };
     }
   },
 });

@@ -43,14 +43,14 @@ await agentLoop(client, {
   templates: Object.keys(tools).map((tool) => ({ kind: "tool_call", match: { tool } })),
   handle: async (rec, c) => {
     const callId = rec.id;
-    const b = rec.body as { tool: string; args?: Record<string, unknown>; conversationId?: string };
+    const b = rec.body as { tool: string; args?: Record<string, unknown>; conversationId?: string; owner?: string };
     // A file search or a space query can take seconds; say who picked it up and what is running.
-    await progress(c, { conversationId: b.conversationId, callId, stage: "running", by: "agent:chat-tools", note: b.tool }, [callId]);
+    await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "running", by: "agent:chat-tools", note: b.tool }, [callId]);
     try {
-      const output = await tools[b.tool](b.args ?? {}, { callId, conversationId: b.conversationId });
-      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, ok: true, output } };
+      const output = await tools[b.tool](b.args ?? {}, { callId, conversationId: b.conversationId, owner: b.owner });
+      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: true, output } };
     } catch (e) {
-      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, ok: false, output: String(e) } };
+      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: String(e) } };
     }
   },
 });

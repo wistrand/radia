@@ -54,6 +54,15 @@ export interface ClientAuth {
   token?: string;
 }
 
+/** What a grant narrowed a read to. Absent when nothing was narrowed. */
+export interface ReadScope {
+  /** Grant templates ANDed into the request — records outside them were not returned. */
+  narrowedBy?: Record<string, unknown>[];
+  /** True when the read was restricted to the caller's own records. */
+  ownRecordsOnly?: true;
+  note: string;
+}
+
 export class RadiaClient {
   private readonly auth: ClientAuth;
   /** @param auth a run token — `{token}` or a bare token string. Omit for the default operator
@@ -150,13 +159,15 @@ export class RadiaClient {
    * `dir: "desc"` walks newest-first, which a plain `query` cannot express — its deterministic
    * order is ascending id, so a limit there always returns the OLDEST matches.
    */
+  /** Present when a grant narrowed the read: what it was narrowed BY. An answer that does not say
+   *  it is a slice gets reported as the whole kind. */
   async queryPage(
     template: Template,
     limit = 100,
     page?: Page,
-  ): Promise<{ records: RadiaRecord[]; nextAfter?: string }> {
+  ): Promise<{ records: RadiaRecord[]; nextAfter?: string; scope?: ReadScope }> {
     const r = await this.req("POST", "/v0/records/query", { ...template, limit, ...page });
-    return { records: r.records, nextAfter: r.nextAfter };
+    return { records: r.records, nextAfter: r.nextAfter, scope: r.scope };
   }
 
   take(sel: TakeSelector, opts: { leaseSeconds?: number; requireUntainted?: boolean } = {}): Promise<TakeResult | null> {
@@ -189,9 +200,9 @@ export class RadiaClient {
   async getEventsPage(
     after = "0",
     limit = 200,
-  ): Promise<{ events: SpaceEvent[]; nextAfter?: string; scope?: unknown; withheld?: number }> {
+  ): Promise<{ events: SpaceEvent[]; nextAfter?: string; scope?: unknown; withheld?: number; withheldNote?: string }> {
     const r = await this.req("GET", `/v0/ops/events?after=${encodeURIComponent(after)}&limit=${limit}`);
-    return { events: r.events, nextAfter: r.nextAfter, scope: r.scope, withheld: r.withheld };
+    return { events: r.events, nextAfter: r.nextAfter, scope: r.scope, withheld: r.withheld, withheldNote: r.withheldNote };
   }
 
   async getEvents(after = "0", limit = 200): Promise<SpaceEvent[]> {

@@ -64,6 +64,7 @@ await agentLoop(client, {
     const callId = rec.id;
     const body = rec.body as {
       conversationId: string;
+      owner?: string;
       upToIndex: number;
       model?: string;
       tools?: ToolDef[];
@@ -84,7 +85,7 @@ await agentLoop(client, {
     // chosen by the router. Keyed to resultKey so it lands on the call the chat awaits.
     const reportModel = body.model ?? model;
     await progress(c, {
-      conversationId: body.conversationId,
+      conversationId: body.conversationId, owner: body.owner,
       callId: resultKey,
       stage: "generating",
       by: ME,
@@ -122,7 +123,7 @@ await agentLoop(client, {
           async (limit) =>
             (await c.query({
               kind: "message",
-              match: { conversationId: body.conversationId, index: { $lte: body.upToIndex } },
+              match: { conversationId: body.conversationId, owner: body.owner, index: { $lte: body.upToIndex } },
               orderBy: [{ path: "index", dir: "desc" }],
             }, limit)).map((r) => r.body as ThreadRow),
           { window: WINDOW, cap: WINDOW_CAP },
@@ -132,7 +133,7 @@ await agentLoop(client, {
         // it started. One indexed query, because `role` is a declared indexed path.
         const newestSystem = (await c.query({
           kind: "message",
-          match: { conversationId: body.conversationId, role: "system", index: { $lte: body.upToIndex } },
+          match: { conversationId: body.conversationId, owner: body.owner, role: "system", index: { $lte: body.upToIndex } },
           orderBy: [{ path: "index", dir: "desc" }],
         }, 1)).map((r) => r.body as ThreadRow)[0];
         const built = assembleContext(newestSystem, tail);
@@ -156,7 +157,7 @@ await agentLoop(client, {
         body.stream === false
           ? () => Promise.resolve() // raw-prompt one-off calls don't emit chunk records
           : async (delta) => {
-            await c.put({ kind: "llm_chunk", body: { callId: resultKey, conversationId: body.conversationId, index: index++, delta }, parentIds: [callId] });
+            await c.put({ kind: "llm_chunk", body: { callId: resultKey, conversationId: body.conversationId, owner: body.owner, index: index++, delta }, parentIds: [callId] });
           },
       );
       // Self-escalation: the model asked for a stronger model and one exists → re-dispatch the turn
@@ -168,10 +169,10 @@ await agentLoop(client, {
         // `reset` chunk marks the boundary, and `indexOffset` carries the watermark so the next
         // worker continues one monotonic sequence instead of replaying indices from zero.
         if (body.stream !== false) {
-          await c.put({ kind: "llm_chunk", body: { callId: resultKey, conversationId: body.conversationId, index: index++, delta: "", reset: true }, parentIds: [callId] });
+          await c.put({ kind: "llm_chunk", body: { callId: resultKey, conversationId: body.conversationId, owner: body.owner, index: index++, delta: "", reset: true }, parentIds: [callId] });
         }
         await progress(c, {
-          conversationId: body.conversationId,
+          conversationId: body.conversationId, owner: body.owner,
           callId: resultKey,
           stage: "escalating",
           by: ME,
@@ -180,7 +181,7 @@ await agentLoop(client, {
         return {
           kind: "llm_call",
           body: {
-            conversationId: body.conversationId,
+            conversationId: body.conversationId, owner: body.owner,
             upToIndex: body.upToIndex,
             tools: body.tools,
             tier: higher.tier,
@@ -195,13 +196,13 @@ await agentLoop(client, {
       // "did windowing change how often the assistant reaches for its own history?".
       return {
         kind: "llm_result",
-        body: { callId: resultKey, conversationId: body.conversationId, message, finishReason, usage, tier, context: { sent: messages.length, hidden } },
+        body: { callId: resultKey, conversationId: body.conversationId, owner: body.owner, message, finishReason, usage, tier, context: { sent: messages.length, hidden } },
       };
     } catch (e) {
       // Don't nack (that retries and double-spends); surface the error as the result.
       return {
         kind: "llm_result",
-        body: { callId: resultKey, conversationId: body.conversationId, message: { role: "assistant", content: `[inference error: ${e}]` }, finishReason: "error", tier },
+        body: { callId: resultKey, conversationId: body.conversationId, owner: body.owner, message: { role: "assistant", content: `[inference error: ${e}]` }, finishReason: "error", tier },
       };
     }
   },

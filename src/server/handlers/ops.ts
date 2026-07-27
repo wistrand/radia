@@ -154,7 +154,19 @@ export async function handleEvents(space: Space, url: URL, scope?: StatsScope | 
     events: mine,
     nextAfter: cursor === after ? undefined : cursor,
     scope: describeScope(scope),
-    ...(mine.length < scanned ? { withheld: scanned - mine.length } : {}),
+    ...(mine.length < scanned
+      ? {
+        withheld: scanned - mine.length,
+        // WHY, because the number alone reads as "ask for a grant and this goes away" — and it
+        // does not. The filter is on which principal PERFORMED the operation, so no grant on any
+        // record kind widens it. Sessions burned turn after turn requesting kind grants (and
+        // inventing kinds to request) chasing an answer this endpoint cannot give them; saying so
+        // once, here, is cheaper than every caller learning it by exhaustion.
+        withheldNote: "events are filtered by which principal performed the operation, not by " +
+          "record kind — no grant on a kind widens this. Seeing another principal's activity " +
+          "needs an operator session.",
+      }
+      : {}),
   });
 }
 

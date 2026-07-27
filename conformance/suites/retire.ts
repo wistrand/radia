@@ -190,6 +190,33 @@ export const retireSuites: Suite[] = [
     },
   },
   {
+    name: "swapping one grant template for another supersedes the old one",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({
+        kind: "message",
+        indexedPaths: [{ path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
+      });
+
+      await space.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "message", operations: ["query"], template: { owner: "agent:w" } },
+      ]);
+      assertEquals(await space.authorize("agent:w", "query", "message"), [{ owner: "agent:w" }]);
+
+      // Switching what a grant binds to is not adding a grant. Templates union, so without
+      // superseding the principal would hold BOTH bindings and see the union of them — a change of
+      // scope that widens instead of changing. Found by testing the untemplated case's fix.
+      await space.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "message", operations: ["query"], template: { conversationId: "c1" } },
+      ]);
+      assertEquals(
+        await space.authorize("agent:w", "query", "message"),
+        [{ conversationId: "c1" }],
+        "the new binding replaces the old rather than joining it",
+      );
+    },
+  },
+  {
     name: "tightening an agent definition supersedes its own unrestricted grant",
     run: async (adapter) => {
       const space = new Space(adapter);

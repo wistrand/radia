@@ -150,6 +150,18 @@ paths:
                   nextAfter:
                     type: string
                     description: Cursor for the next page; absent on the last page (a short page ends the walk).
+                  scope:
+                    type: object
+                    description: >
+                      Present ONLY when the caller's grants narrowed this read; absent otherwise, so an
+                      unrestricted read is byte-identical to before. `narrowedBy` lists the grant templates
+                      ANDed into the request and `ownRecordsOnly` marks an author restriction. Without it a
+                      narrowed read is indistinguishable from a complete one, and callers report their slice
+                      as the whole kind.
+                    properties:
+                      narrowedBy: { type: array, items: { type: object, additionalProperties: true } }
+                      ownRecordsOnly: { type: boolean }
+                      note: { type: string }
         "400": { $ref: "#/components/responses/Problem" }
 
   /takes:

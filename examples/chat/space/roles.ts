@@ -98,37 +98,43 @@ const EXEC_GRANTS: Grant[] = [
   { kind: "procedure", operations: ["put", "query"] },
 ];
 
-// plain user (the REPL): may drive ONE conversation and read its own results, nothing more.
+// plain user (the REPL): may drive its own conversations and read its own results, nothing more.
 // Note what's ABSENT: no /ops/* (space_stats/doctor/events/lineage/reclaim/declassify), and
 // query is granted only per-kind — so `space_query {kind: grant}` or {kind: agent_run} is denied.
 //
-// The grants are TEMPLATE-SCOPED to the conversation this session is attached to, and that is not
-// decoration. Every session runs as the same `agent:chat-user`, so a kind-scoped `message: query`
-// let any session read every message in the space — a live one reconstructed two days of other
-// people's conversations from a ten-minute session, and was right to: the comment above claimed
-// "its own results" and nothing enforced it. Six of the chat kinds index `conversationId`, so the
-// runtime can enforce it; the grant template is ANDed into reads and matched against write bodies.
+// The grants are TEMPLATE-SCOPED, and what they bind to is a choice (`RADIA_CHAT_SCOPE`):
 //
-// Growth is bounded by DISTINCT conversations, not sessions: the template is part of a grant's
-// identity, so resuming the same conversation re-mints the same content key and writes nothing.
+//   identity (default) — `{owner: agent:chat-user}`. The session stamps `owner` on what it writes
+//     and workers copy it onto the results and artifacts they produce for it, so this covers
+//     everything this identity produced across ALL its conversations. Scoping by AUTHOR instead
+//     would not work: the results, chunks and artifacts are written by WORKERS under their own
+//     principals, so `createdBy: self` would hide the session's own tool output and the chat would
+//     hang waiting for results it could no longer read.
+//   conversation — `{conversationId}`. Strict, and the only posture that separates two people
+//     sharing a space, since both would be `agent:chat-user`; the cost is that a session cannot
+//     see its own earlier threads.
 //
-// Artifacts are scoped too, which needed a runtime change: their body is computed from the bytes,
-// so `Space.putArtifact` now takes APPLICATION fields to merge alongside it (the runtime's own
-// always win, and supplying one of them is refused). The chat stamps `conversationId` on every
-// artifact it writes and redeclares the kind to index it.
-function userGrants(conversationId?: string): Grant[] {
-  const scoped = conversationId ? { template: { conversationId } } : {};
+// Either way it is the RUNTIME enforcing it: a grant template is ANDed into reads and matched
+// against write bodies, so a session cannot read outside its scope and cannot write outside it
+// either — it cannot stamp another identity's `owner`, because that write would fail the template.
+// Kind-scoping alone enforced nothing of the sort: it let any session read every message in the
+// space, and one reconstructed two days of unrelated conversations from a ten-minute session.
+//
+// Growth is bounded by distinct scopes, not sessions: the template is part of a grant's identity,
+// so re-running under the same scope re-mints the same content key and writes nothing.
+function userGrants(scope?: Record<string, unknown>): Grant[] {
+  const scoped = scope ? { template: scope } : {};
   return [
     { kind: "message", operations: ["put", "query"], ...scoped },
     { kind: "llm_call", operations: ["put"], ...scoped },
     { kind: "tool_call", operations: ["put"], ...scoped },
-    // Keyed by `callId`, so these carry `conversationId` purely so a grant can bind them: a
-    // session that learned a callId from elsewhere could otherwise read another conversation's
-    // streamed tokens, model output, or tool results.
+    // Keyed by `callId`, so these carry the scope field purely so a grant can bind them: a session
+    // that learned a callId from elsewhere could otherwise read another session's streamed tokens,
+    // model output, or tool results.
     { kind: "llm_chunk", operations: ["query"], ...scoped },
     { kind: "llm_result", operations: ["read_one"], ...scoped },
     { kind: "tool_result", operations: ["read_one"], ...scoped },
-    { kind: "capability", operations: ["query"] }, // a registry: the fleet's tools, not conversation data
+    { kind: "capability", operations: ["query"] }, // a registry: the fleet's tools, not session data
     // READ-ONLY on purpose: the session builds its tool list from the procedures its conversation
     // saved, but cannot write one. Only the exec-worker can, and only as the result of a
     // `save_procedure` call it actually ran — so "the assistant saved a procedure" always means code
@@ -139,9 +145,9 @@ function userGrants(conversationId?: string): Grant[] {
     // point of the split: least privilege by default, with a visible, auditable way to ask.
     { kind: "grant_request", operations: ["put", "query"], ...scoped },
     { kind: "progress", operations: ["query"], ...scoped }, // read-only: the session reports no progress of its own
-    // Scoped like the rest: the chat redeclares `artifact` with `conversationId` indexed and its
-    // writers stamp it, so this binds to the conversation that produced the bytes.
-    { kind: "artifact", operations: ["read_one"], ...scoped }, // read generated images + mint a download capability
+    // Scoped like the rest: `Space.putArtifact` takes application fields, the chat's writers stamp
+    // them, and the kind is redeclared to index them.
+    { kind: "artifact", operations: ["read_one"], ...scoped },
   ];
 }
 
@@ -168,16 +174,21 @@ export interface Bootstrapped {
 /**
  * Bootstrap the run tokens for this session (called by chat.ts as the operator).
  *
- * `conversationId` scopes the SESSION's grants to one conversation. It is a parameter rather than
- * something read later because a grant is minted with the run token: the conversation therefore has
- * to exist first, which is why the REPL creates it as operator before calling this.
+ * `scope` is the template the SESSION's grants bind to — `{owner}` or `{conversationId}`, decided by
+ * the caller (see `RADIA_CHAT_SCOPE`). It is a parameter rather than something read later because a
+ * grant is minted with the run token, so whatever it binds to has to exist first: that is why the
+ * REPL resolves the conversation as operator before calling this.
  */
-export async function bootstrap(admin: RadiaClient, role: Role, conversationId?: string): Promise<Bootstrapped> {
+export async function bootstrap(
+  admin: RadiaClient,
+  role: Role,
+  scope?: Record<string, unknown>,
+): Promise<Bootstrapped> {
   const inferenceToken = await mint(admin, "agent:chat-inference", INFERENCE_GRANTS);
   const routerToken = await mint(admin, "agent:chat-router", ROUTER_GRANTS);
   const toolsToken = await mint(admin, "agent:chat-tools", TOOLS_GRANTS);
   const imagesToken = await mint(admin, "agent:chat-images", IMAGE_GRANTS);
   const execToken = await mint(admin, "agent:chat-exec", EXEC_GRANTS);
-  const sessionToken = role === "user" ? await mint(admin, CHAT_USER, userGrants(conversationId)) : undefined;
+  const sessionToken = role === "user" ? await mint(admin, CHAT_USER, userGrants(scope)) : undefined;
   return { inferenceToken, routerToken, toolsToken, imagesToken, execToken, sessionToken };
 }

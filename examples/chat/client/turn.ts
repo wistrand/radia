@@ -10,6 +10,7 @@ import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import { activeByKey, newestByKey } from "../../../sdk/ts/client.ts";
 import type { ChatMessage, ToolDef } from "../provider/openrouter.ts";
 import type { Thread } from "./thread.ts";
+import { CHAT_USER as OWNER } from "../space/roles.ts";
 import { dim, endStatus, showArtifact, trunc, write } from "./terminal.ts";
 import { Waiter, waitWake } from "./waiting.ts";
 
@@ -42,7 +43,9 @@ export async function runTurn(
     // the substrate decide who serves it.
     const { id: callId } = await client.put({
       kind: "llm_call",
-      body: { conversationId: thread.id, upToIndex: thread.upToIndex, tools: tools.all() },
+      // `owner` rides along so a worker can copy it onto the result and chunks — that is what lets
+      // a grant bind records the SESSION did not write but that were produced for it.
+      body: { conversationId: thread.id, owner: OWNER, upToIndex: thread.upToIndex, tools: tools.all() },
       parentIds: [thread.id],
     });
     const { message, finishReason, streamed, tier, context, announced } = await streamResult(client, callId);
@@ -91,7 +94,7 @@ async function runToolCall(
   // records to this turn: provenance is causality, not a lookup path.
   const { id: toolCallId } = await client.put({
     kind: "tool_call",
-    body: { tool: call.function.name, args, conversationId: thread.id },
+    body: { tool: call.function.name, args, conversationId: thread.id, owner: OWNER },
     parentIds: [thread.id],
   });
   const result = await awaitToolResult(client, toolCallId, prefix, call.function.name, onToolWait);
