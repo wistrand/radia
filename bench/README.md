@@ -83,15 +83,12 @@ storage.** Postgres estimates the body predicate at 26 rows when 5,715 match, so
 match through the body index and sorts instead of walking the claim index and stopping early. No
 rewrite of the query changes that, and overriding the planner makes it worse; supplying a real
 estimate (`CREATE STATISTICS` on the path expression) drops it to 1.92ms. See
-[gotchas.md](../agent_docs/gotchas.md), "a claim on Postgres is planned on a guess" — that is the
-next thing to fix, and the numbers above are the argument for it.
+[gotchas.md](../agent_docs/gotchas.md), "a claim on Postgres is planned on a guess".
 
 **`childrenOf` grew with the whole space, not with the answer — until it got a reverse index.**
 87µs at 1k records → **662µs at 20k** for the same five children, because `parent_ids` was
 searched with a `LIKE` over every record. With a `record_edges` table written in the same
-transaction as the record, it is 31µs → 32µs: **flat**, and 20× faster at 20k. The contrast that
-originally proved this was the scan and not the table size (`getRecord` stays flat) is now the
-shape `childrenOf` itself has.
+transaction as the record, it is 31µs → 32µs: **flat**, and 20× faster at 20k.
 
 **`getLineage` costs a round trip per LEVEL, not per hop.** It fetches a whole depth level in one
 batched query. Measured head to head at depth 64 in a 20k-record space: **0.224ms batched vs

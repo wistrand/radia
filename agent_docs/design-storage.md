@@ -14,7 +14,7 @@ startup via `Space.loadKinds`). **M1 status (built):** the standalone **Postgres
 (`src/storage/postgres.ts`, deno-postgres pool) shares one Postgres-dialect body with PGlite
 (`src/storage/pgbase.ts` — `PgSqlAdapter`), so they can't drift; `--storage postgres` runs it,
 and it joins the conformance suite when `RADIA_PG_URL` is set (`scripts/pg-conformance.sh`). Its
-green-against-a-live-server CI run is still pending (needs a Postgres). Perf: the adapter enables
+green-against-a-live-server CI run is pending (needs a Postgres). Perf: the adapter enables
 `TCP_NODELAY` (deno-postgres omits it — otherwise every parameterized query eats a ~40ms
 delayed-ACK; see [gotchas.md](gotchas.md)) and the shared body folds the clock read into each
 settle transaction and checks parents in one query. **Not implemented:**
@@ -52,7 +52,7 @@ Scaling), envelope encryption/KMS (M2). `npm`/`pip` binary wrapping is BUILT but
 | Storage      | `records` (immutable) + `record_runtime` (mutable envelope), with `kind`, `deadline_at`, and hot routing fields denormalized into `record_runtime` at commit, never client-editable |
 | Body index   | `body_jsonb` — a GENERATED column holding the parsed body — under one `gin (body_jsonb jsonb_path_ops)` index, serving pushed equality on EVERY path. Declaring a new `indexedPath` therefore needs no DDL and no migration, which is what keeps kinds-as-records from dragging a schema change behind them |
 | Matching     | a sound SQL pre-filter (`src/storage/pushdown.ts`) narrows; `matchesRecord` decides. An *exact* filter additionally carries the caller's `LIMIT` into SQL, ordered `id collate "C"` to match the oracle's tie-break |
-| Claim index  | `CREATE INDEX ON record_runtime (kind, effective_priority DESC, available_at, record_id)` — the claim's ORDER BY, column for column, so a window is an ordered seek that stops when full. `state` must NOT precede the sort columns (it would sort only within each state); the older partial `WHERE state='available'` index remains for the remediation selectors |
+| Claim index  | `CREATE INDEX ON record_runtime (kind, effective_priority DESC, available_at, record_id)` — the claim's ORDER BY, column for column, so a window is an ordered seek that stops when full. `state` must NOT precede the sort columns (it would sort only within each state); a partial `WHERE state='available'` index serves the remediation selectors |
 | take         | bounded candidate window off `record_runtime`, then conditional `UPDATE record_runtime ... RETURNING` per candidate until one affects a row; epoch bump                            |
 | Fencing      | `lease_id` / `lease_epoch` conditional updates                                                                                                                                     |
 | Idempotency  | `idempotency` table: (principal, op, key) → request hash + stored response (incl. generated IDs); checked **before** lease validation                                              |
@@ -67,14 +67,14 @@ Scaling), envelope encryption/KMS (M2). `npm`/`pip` binary wrapping is BUILT but
 The claim index is what lets a candidate window be an ordered seek rather than a scan of the
 envelope table. A template with a pushable predicate does need the join, and there the two backends
 diverge for a reason worth knowing: SQLite walks the claim index and stops early, while Postgres
-mis-estimated the jsonb predicate badly enough to collect every match and sort. The remedy was a
-better ESTIMATE, not a different query: `StorageAdapter.prepareKind` (optional; implemented by the
-Postgres adapters, ignored by SQLite) creates planner statistics on each declared path expression
-when a kind is declared, and analyzes BOTH `records` and `record_runtime` — a claim joins them, and
-missing statistics on either half sinks the estimate. Measured on a 20k-record claim: 9.75ms →
-3.37ms, with the plan changing to an ordered index walk. A residual underestimate remains because
-the two pushed terms are redundant and the planner assumes independence; details, numbers and method
-in [gotchas.md](gotchas.md), "a claim on Postgres is planned on a guess". See
+underestimates the jsonb predicate badly enough to collect every match and sort. Fix the ESTIMATE,
+never the query: `StorageAdapter.prepareKind` (optional; implemented by the Postgres adapters,
+ignored by SQLite) creates planner statistics on each declared path expression when a kind is
+declared, and analyzes BOTH `records` and `record_runtime` — a claim joins them, and missing
+statistics on either half sinks the estimate, which is worth roughly 3x on a 20k-record claim and
+turns the plan into an ordered index walk. A residual underestimate remains because the two pushed
+terms are redundant and the planner assumes independence; details, numbers and method in
+[gotchas.md](gotchas.md), "a claim on Postgres is planned on a guess". See
 [design-api.md](design-api.md) for the take contract this implements and
 [design-data-model.md](design-data-model.md) for the record/envelope split.
 
@@ -139,16 +139,24 @@ at startup):
 
 | Cache | Source records | Staleness across instances | Fix |
 |-------|----------------|----------------------------|-----|
-| `CredentialStore` (`src/core/auth.ts`) | `agent_definition` / `agent_run` | ~~a token minted on A doesn't resolve on B~~ | **fixed:** `Space.resolveToken` hydrates on cache miss from the records by `tokenHash` (honoring a stop successor), so a cross-instance / cap-evicted token resolves. Miss-path cost is a per-kind fetch until read pushdown |
-| kind registry (`Space.loadKinds`)      | `kind_def`                        | a kind declared on A is unknown to B → B can't compile templates for it or index it | refresh on miss / on `kind_def` write (same pattern as the credential fallback now uses) |
-| `Notifier` (`src/core/notifier.ts`)    | event log                         | a watch on B doesn't wake for a mutation on A | Postgres `LISTEN/NOTIFY` (already the design — see the watch row) |
+| kind registry (`Space.loadKinds`)      | `kind_def`  | a kind declared on A is unknown to B → B can't compile templates for it or index it | refresh on miss / on `kind_def` write |
+| `Notifier` (`src/core/notifier.ts`)    | event log   | a watch on B doesn't wake for a mutation on A | Postgres `LISTEN/NOTIFY` (already the design — see the watch row) |
+
+**Credentials are deliberately not in this table.** There is no token cache to go stale:
+`Space.resolveCredential` (`src/core/space.ts`) reads the `agent_definition` / `agent_run` records
+on **every** request, keyed on the indexed `tokenHash`, so a stopped run, an expired token and a
+token minted on another instance are all *discovered* rather than remembered — and because a stop
+successor carries the same hash, the newest record for that hash is the current state of the
+credential. `CredentialStore` (`src/core/auth.ts`) retains only two things that cannot go stale:
+operator token hashes (process-lifetime, never records — the console needs one before any agent
+exists) and a run → agent memo that is immutable for the life of the run. Never cache state whose
+failure mode is silent misauthorization; resolve it from records per request instead.
 
 Only the `Notifier` gap is self-healing: the event log is the source of truth, so a missed
 cross-instance wakeup **degrades to poll-catchup, never a lost event** — *given a gap-free event
-cursor* (see "Watch delivery under concurrency" below; before that fix the SSE cursor itself could
-drop events on a single pooled instance). The **credential** cache now self-heals too, via the
-on-miss hydration above. The remaining gap is the **kind registry**: a kind declared on another
-instance is unknown until reload, so it needs the same on-miss/on-write refresh before HA is correct.
+cursor* (see "Watch delivery under concurrency" below). The remaining gap is the **kind
+registry**: a kind declared on another instance is unknown until reload, so it needs
+on-miss/on-write refresh before HA is correct.
 (Open: LISTEN/NOTIFY-driven invalidation vs. bounded TTLs vs. the on-miss-hydrate pattern — likely a
 mix, cache-dependent.)
 
@@ -157,12 +165,12 @@ mix, cache-dependent.)
 The event log's `seq` is a `bigint … identity`, assigned at INSERT time inside each mutation's
 transaction. On a **single connection** (embedded) transactions commit in seq order, so a watcher
 consuming `seq > cursor` never skips. On the **pooled** Postgres adapter, transactions commit out
-of seq order: a watcher can read seq 11 (committed), advance its cursor past 11, and then seq 10
-commits and is skipped forever by `seq > 11`. That silently drops watch/SSE deliveries — felt as
-chat "slowness" because the affected hop waits for the worker's `take()` poll fallback instead of
-the instant wakeup.
+of seq order, so a watch cursor must never be `seq`: a watcher can read seq 11 (committed), advance
+its cursor past 11, and then seq 10 commits and is skipped forever by `seq > 11`. That silently
+drops watch/SSE deliveries — felt as chat "slowness", because the affected hop waits for the
+worker's `take()` poll fallback instead of the instant wakeup.
 
-Fix (`src/storage/pgbase.ts`): the watch cursor is the inserting **transaction id** (`xid`), not
+So (`src/storage/pgbase.ts`) the watch cursor is the inserting **transaction id** (`xid`), not
 `seq`, and `getEvents` withholds events until they are below the snapshot watermark
 `pg_snapshot_xmin(pg_current_snapshot())` — i.e. no older transaction can still commit a lower-
 ordered event. Ordering by `(xid, seq)` under that watermark is gap-free: each `xid` enters exactly
@@ -173,10 +181,9 @@ SSE `id:` / `Last-Event-ID`) — the transport only echoes it; each adapter inte
 concurrent-writer test (a watcher polling while N puts commit over the pool misses none).
 
 **Current build:** the standalone **Postgres adapter is built** (`src/storage/postgres.ts`) with
-compare-and-set claims, so the hot path is multi-instance-safe — but real HA still
-needs the three caches above made cross-instance-aware (write-invalidation or bounded TTL), and
-the pg adapter's live-server conformance run in CI. The embedded adapters (SQLite/PGlite) remain
-one-process by nature. Nothing in the design or the wire contract limits Radia to one server.
+compare-and-set claims, so the hot path is multi-instance-safe — but real HA needs the caches above
+made cross-instance-aware (write-invalidation or bounded TTL), and the pg adapter's live-server
+conformance run in CI. The embedded adapters (SQLite/PGlite) remain one-process by nature. Nothing in the design or the wire contract limits Radia to one server.
 
 ## Why zero-setup dev is architecturally cheap
 

@@ -487,9 +487,9 @@ export class SqliteAdapter implements StorageAdapter {
   }
 
   childrenOf(recordId: string, limit: number, page?: Page): Promise<RadiaRecord[]> {
-    // Indexed lookup through the reverse edge table. This used to be
-    // `parent_ids like '%"<id>"%'` — correct (ids are ULIDs, so they carry no LIKE wildcards) but
-    // a scan of every record in the space to find a handful of children.
+    // Indexed lookup through the reverse edge table. `record_edges` exists so that finding a
+    // record's children is an index seek; matching against the `parent_ids` JSON is a scan of
+    // every record in the space to find a handful of children.
     const dir = page?.dir === "desc" ? "desc" : "asc";
     const cursor = page?.after ? ` and r.id ${dir === "desc" ? "<" : ">"} ?` : "";
     const rows = this.db.prepare(
@@ -502,9 +502,9 @@ export class SqliteAdapter implements StorageAdapter {
   getRecords(ids: string[]): Promise<RadiaRecord[]> {
     if (ids.length === 0) return Promise.resolve([]);
     // Cached by id count. The SQL text varies with the number of placeholders, so preparing it
-    // fresh each call re-parses the statement every time — which cost more than the round trip it
-    // was meant to save: a 64-hop lineage walk spent ~7µs per level re-parsing an identical query.
-    // A graph walk issues the same handful of widths over and over, so this cache is small.
+    // fresh each call re-parses an identical statement on every hop of a graph walk — which costs
+    // more than the batching saves. A walk issues the same handful of widths over and over, so
+    // this cache stays small.
     let stmt = this.#byIds.get(ids.length);
     if (!stmt) {
       stmt = this.db.prepare(`select * from records where id in (${qmarks(ids.length)})`);
@@ -740,8 +740,8 @@ export class SqliteAdapter implements StorageAdapter {
     return result;
   }
 
-  /** One window of candidates in claim order. `take` used to fetch every available-or-leased
-   *  record of the kind, making a claim O(kind size) — 183ms on a 40k-record kind. */
+  /** One window of candidates in claim order. Bounded on purpose: never fetch every
+   *  available-or-leased record of the kind, which makes a claim O(kind size). */
   private fetchCandidates(selector: TakeSelector, limit = CANDIDATE_WINDOW, offset = 0): Candidate[] {
     const rows = "recordId" in selector
       ? this.db.prepare(

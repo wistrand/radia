@@ -1,9 +1,7 @@
 # Plan: audit remediation
 
-> Status: not started. Source: a full-codebase bug audit (2026-07-27) run as six parallel
-> reviews (core, storage, server/CLI/MCP, SDKs, chat example, working-tree diff). Every item
-> below was substantiated against real code paths; items marked **reproduced** were verified
-> empirically. Line numbers are from the audit and drift — trust the symbol, not the number.
+> Status: not started. Every item below was substantiated against real code paths; items marked
+> **reproduced** were verified empirically. Line numbers drift — trust the symbol, not the number.
 
 ## Goal
 
@@ -27,6 +25,15 @@ correctness/security; P2 is durability and drift.
 | G   | Blob write durability                   | P2       | Permanent unhealable corruption       |
 | H   | `lease_lost` unobservable in clients    | P2       | Side effects continue after fencing   |
 | I   | SDK parity + chat example               | P2       | Drift; example-specific data loss     |
+| J   | Declassify is unattributed              | P1       | The approval step names no approver   |
+
+**Downstream dependencies.** Two packages gate work outside this plan, both tracked in
+[plan-inspection.md](plan-inspection.md):
+
+- **Package B gates the whole inspection backlog.** Every proposed view is a read amplifier, and
+  lineage and graph already leak. Build the scoped-read helper before adding views.
+- **Package D gates any new registry.** An interest registry or a saved-lens registry churns far
+  harder than grants do, so the revival defect would fire on every worker restart.
 
 ---
 
@@ -254,6 +261,41 @@ idempotency keys replay against their own successors (`workers/exec.ts`), so the
 sandbox denies `~/.radia` but the credential resolves via `RADIA_CREDENTIALS` and
 `$XDG_STATE_HOME/radia` first (`client/fleet.ts`), so on a typical Linux box model-written code
 can read the operator token.
+
+## Package J — declassify is unattributed (P1)
+
+`declassify` (`src/core/space.ts`) calls `putRaw` with **no principal**, so the successor's
+`created_by` — and therefore the emitted event's `runId` — is the space's own `ctx.principal`, not
+the operator who approved. The event carries `operation: "put"`; there is no `declassify` operation
+in the event log at all (operations are put/take/ack/nack/release/expire/admin/quarantine). The
+entire audit trail for a clearance is the successor's `parentIds` plus an anonymous put.
+
+This is the wrong thing to be missing for the one operation whose purpose is accountability, and it
+outranks the hash-chained log (M1–M2): a tamper-evident chain over a record that omits the approver
+protects the wrong fact. See [research-applications.md](research-applications.md) §5.
+
+Fix: thread the invoking principal through `declassify` into `putRaw`, and give the event log a
+distinct `declassify` operation so the clearance is greppable rather than hidden among ordinary
+puts.
+
+Guard: a conformance case asserting the declassify event names the invoking principal, and that the
+successor's `created_by` is that principal rather than the space.
+
+Related, same area, lower severity:
+
+- **Taint launders by omission.** `parent_ids` on a direct put is client-asserted
+  (`src/core/record.ts` says so). An agent that reads tainted content and writes a fresh record
+  without naming the parent produces an untainted record; only `ack` force-prepends the leased
+  record. Containment therefore holds for lease-mediated work, not arbitrary writes. This is
+  arguably by design, but it is undocumented as a limit and should be stated in
+  [design-auth.md](design-auth.md) rather than discovered.
+- **`requireUntainted` is per-call, not bindable.** It is a worker's own flag, not a property of a
+  grant or identity, so an operator cannot force a principal's takes to be untainted.
+- **`declassify` mints a new record id** with the same `body_sha256`, so a clearance keyed on record
+  id and one keyed on digest behave differently across it. Pick one and say which.
+- **`body_sha256` is never re-verified on read**, and unencrypted blob `get` streams bytes without
+  re-hashing (the encrypted path is fine — the digest is the AES-GCM AAD). Integrity against a
+  compromised blob store is unverified in the default configuration.
 
 ## Deferred — low severity
 

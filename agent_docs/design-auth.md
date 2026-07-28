@@ -14,7 +14,7 @@ allowed if the principal holds ANY grant on the kind — it is a participant —
 template is AND-ed into the watch match, so it wakes only on records inside its scope; no grant →
 `forbidden`). `/v0/ops/*` requires a privileged principal; writing a reserved control kind
 (`grant`/`signal`/`agent_*`) requires privilege — grants are **assigned, never self-declared**.
-Every coordination verb is now grant-gated; there is no unauthenticated observe path.
+Every coordination verb is grant-gated; there is no unauthenticated observe path.
 
 The **bootstrap chain is built** (`src/core/auth.ts`, `src/server/handlers/agents.ts`):
 `POST /v0/agent-definitions` (operator) creates an `agent_definition` record, optionally
@@ -28,12 +28,12 @@ only their sha256 **hash** is stored (in the record body — a hash is not a sec
 newest `agent_definition`/`agent_run` record for that token hash (`agent_*` indexed on `tokenHash`;
 a stop is a successor carrying the same hash, so one lookup sees it). The rule the design turns on
 is *cache what cannot change, never cache what can be revoked* — a stopped run, an expired token
-and a withdrawn grant must all be **discovered**, not remembered. What `CredentialStore` still holds
-is one immutable fact (which agent a run instantiates) plus operator tokens, which are
-process-lifetime by design and never records. This replaced a startup-rebuilt index, whose bounded
-read of an unbounded log let a stopped run's token keep working after a restart on a busy space —
-fail-open and silent. A token minted on one instance authenticates on another immediately, with no
-replay. Expiry uses
+and a withdrawn grant must all be **discovered**, not remembered. What `CredentialStore` holds is
+one immutable fact (which agent a run instantiates) plus operator tokens, which are
+process-lifetime by design and never records. Never rebuild a credential index at startup: a
+bounded read of an unbounded log lets a stopped run's token keep working after a restart on a busy
+space — fail-open and silent. A token minted on one instance authenticates on another immediately,
+with no replay. Expiry uses
 the DB clock (`SpaceContext.runTokenSeconds`, default 900s). `Authorization: Bearer <token>`
 is the **only** auth channel. In **open mode** (the default) a request with no header is the
 operator `human:local`, so local dev/UI/examples stay open; to act as a scoped principal, mint a
@@ -75,8 +75,8 @@ existence), but is logged server-side so a misconfigured agent — which would o
 **Provenance is the resolved caller (built):** `created_by`, the event `run_id`, and the
 idempotency scope are the principal the handler resolved (a run token → `run:*`, no header →
 `human:local`), threaded into `put`/`ack`/settle — not the space's static identity. So attribution
-is real, and idempotency keys are **per principal** (two agents reusing one `Idempotency-Key` no
-longer collide). In-process callers (conformance, examples) omit the principal and default to the
+is real, and idempotency keys are **per principal** (two agents reusing one `Idempotency-Key` do
+not collide). In-process callers (conformance, examples) omit the principal and default to the
 space identity.
 
 **Template-scoped grants (built):** a `grant` may carry a `template` (a match object); a
@@ -92,17 +92,18 @@ ack-emitted results).
 server-derived `delegation_context` `{chain, origin}` (`Space.deriveDelegation`) — the authority
 chain accumulates the acting agents along the delegation path, from the record's authoritative
 `lease_owner`, **never** from `parent_ids`. Emitting a result is authorized as a `put` for the
-acting agent (`Space.ack` calls `authorize(owner, "put", kind)`), closing the gap where
-ack-emitted records bypassed put-authorization. This is pipeline-friendly: each hop needs only
-its own grant, and the chain records the path (see [design-data-model.md](design-data-model.md)).
+acting agent (`Space.ack` calls `authorize(owner, "put", kind)`) — an ack-emitted record never
+bypasses put-authorization. This is pipeline-friendly: each hop needs only its own grant, and the
+chain records the path (see [design-data-model.md](design-data-model.md)).
 
 **Deferred to later M1–M3:** real OIDC for `human:*` and the `agent-definitions` credential
 (the operator boundary is the auto-provisioned local default, not federated identity); the
 stricter **chain-intersection** delegation policy (effective permission = intersection of the
 whole chain's grants — rejected as a hard default because it breaks legitimate pipelines; it
 belongs with taint composition); per-principal **trust classification** (auto-tainting untrusted
-principals' puts — now unblocked, since the resolved caller *is* threaded into `put`/`created_by`;
-the current taint model is propagation + client-raise + declassify); and **budget** enforcement.
+principals' puts — nothing blocks it, since the resolved caller *is* threaded into
+`put`/`created_by`; the taint model is propagation + client-raise + declassify); and **budget**
+enforcement.
 The examples also run tool-workers as **OS-permission-scoped subprocesses** (`--allow-read`/net, no
 env) — a real but out-of-band isolation layer, complementary to grants.
 
@@ -386,8 +387,8 @@ Per-endpoint disposition, because they do not all behave the same:
 | `ops/remediate`, `ops/admin`, `ops/declassify` | **no** | these are the interrupt half (build order step 5) and a write. Declassify especially: taint clears only via privileged declassify — a self-scope must never reach it |
 
 **The coordination plane is narrowed for READS** (`query`/`read_one`), because that is the plane an
-agent actually reads records through — scoping only the ops plane meant an approval promising "its
-own records" still returned every record of the kind. `take` stays excluded: post-filtering a claim
+agent actually reads records through — scoping only the ops plane leaves an approval promising "its
+own records" returning every record of the kind. `take` stays excluded: post-filtering a claim
 would mean claiming a record and then rejecting it, which is not a filter.
 
 Because grants **union**, the author restriction applies only when EVERY applicable grant on the

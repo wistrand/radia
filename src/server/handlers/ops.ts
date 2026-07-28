@@ -3,8 +3,7 @@
 // remediation (reclaim / dead-letter / requeue / declassify).
 //
 // All of it goes through the public `Space` surface — no privileged backdoor. The dev console
-// is a consumer of this plane, not its owner (the file was once called `dev.ts`, which read as
-// "console support code" and undersold what lives here).
+// is a consumer of this plane, not its owner.
 
 import type { Space } from "../../core/space.ts";
 import type { RecordState, StatsScope } from "../../storage/adapter.ts";
@@ -13,10 +12,10 @@ import { problem } from "../problem.ts";
 /**
  * How a scoped response describes itself.
  *
- * Without this, an empty scoped answer is indistinguishable from an empty SPACE — and that is not
- * hypothetical: a scoped session read `stats: []`, `events: []` and an all-zero diagnostics and
- * reported "the space is empty and healthy". Every scoped response therefore carries what it was
- * narrowed to, so "nothing here" can be read as "nothing YOU can see, of these kinds".
+ * Without this, an empty scoped answer is indistinguishable from an empty SPACE: a scoped session
+ * reads `stats: []`, `events: []` and an all-zero diagnostics, and reports "the space is empty and
+ * healthy". Every scoped response therefore carries what it was narrowed to, so "nothing here" can
+ * be read as "nothing YOU can see, of these kinds".
  */
 function describeScope(scope?: StatsScope | null) {
   if (!scope) return undefined;
@@ -74,14 +73,14 @@ export async function handleEnvelopeQuery(space: Space, url: URL, scope?: StatsS
   const valid = new Set(["available", "leased", "consumed", "dead_letter"]);
   if (!valid.has(state ?? "")) {
     // `expired` is the one people reach for and it is NOT a state — a lapsed lease leaves the
-    // record `leased`. It used to be accepted and answered zero rows, which reads as "no expired
-    // leases" rather than "wrong question", so it is named explicitly here.
+    // record `leased`. Never accept it and answer zero rows: that reads as "no expired leases"
+    // rather than "wrong question", so it is named explicitly here.
     const hint = state === "expired" ? " — expiry is a predicate over leased records: state=leased&expired=1" : "";
     return problem(400, "invalid_state", `state must be one of ${[...valid].join(", ")}${hint}`);
   }
   const expired = url.searchParams.get("expired") === "1" || url.searchParams.get("expired") === "true";
   // A query parameter is a string, so every numeric one needs a finiteness check: `Number("abc")`
-  // is NaN, and a NaN `stale` reached date arithmetic and turned a bad request into a 500.
+  // is NaN, and a NaN `stale` in date arithmetic turns a bad request into a 500.
   const staleParam = url.searchParams.get("stale");
   let staleSeconds: number | undefined;
   if (staleParam !== null && staleParam !== "") {
@@ -233,10 +232,9 @@ export async function handleDeclassify(space: Space, recordId: string): Promise<
   return Response.json({ declassifiedFrom: recordId, id: out.id });
 }
 
-/** Control-plane remediation (bypasses lease fencing; grant-gated with real auth). */
-/** Selector-driven remediation: fix everything matching, instead of one id at a time. The body is
- *  the same envelope selector `GET /v0/ops/records` takes, so diagnosing and fixing share one
- *  vocabulary. */
+/** Selector-driven control-plane remediation: fix everything matching, not one id at a time
+ *  (bypasses lease fencing; grant-gated). The body is the same envelope selector
+ *  `GET /v0/ops/records` takes, so diagnosing and fixing share one vocabulary. */
 export async function handleRemediate(space: Space, req: Request): Promise<Response> {
   let j: Record<string, unknown>;
   try {

@@ -13,12 +13,12 @@ deno task chat -- --conversation last    # …or pick up where you left off
 
 **Conversations survive a restart, because they were never in the process.** The thread is
 `message` records on the space, so resuming is just recovering the one piece of client-held state
-(`nextIndex`) — one query, since `index` is a declared sortable path. Two things had to be true for
-that to work: a chat-spawned space now runs with `--db` (`RADIA_CHAT_DB`, default
-`.radia-chat-space.db`), because a space without one is in-memory and takes the conversation, its
-saved procedures and its artifacts down with it; and `--conversation <id>|last` reattaches instead
-of opening a new thread. Resuming restores more than the transcript — saved procedures are
-conversation-scoped, so the tools come back too.
+(`nextIndex`) — one query, since `index` is a declared sortable path. Two things it depends on: a
+chat-spawned space runs with `--db` (`RADIA_CHAT_DB`, default `.radia-chat-space.db`), because a
+space without one is in-memory and takes the conversation, its saved procedures and its artifacts
+down with it; and `--conversation <id>|last` reattaches instead of opening a new thread. Resuming
+restores more than the transcript — saved procedures are conversation-scoped, so the tools come
+back too.
 
 `last` is resolved with the OPERATOR credential the REPL already holds, not by the session:
 enumerating conversations would otherwise need a `conversation: query` grant on a scoped user, and
@@ -30,10 +30,10 @@ otherwise a conversation resumed later keeps running under whatever disposition 
 started. That has a protocol consequence worth knowing: providers reject a `system` role anywhere
 but the front ("system must follow a user or assistant message"), and a resumed thread has one
 mid-conversation by construction. `provider/context.ts` assembles exactly one leading system
-message, drops older ones from the body, and folds the windowing notice into it — that notice used
-to be its own system message straight after the head, which was the same violation waiting for a
-conversation long enough to drop messages. It is a pure function precisely because this is where
-the context bugs have been (`deno run -A examples/chat/smoke-context.ts`).
+message, drops older ones from the body, and folds the windowing notice into it. Never emit that
+notice as its own system message after the head: it is the same violation, waiting for a
+conversation long enough to drop messages. `context.ts` is a pure function because this is where
+the context bugs are (`deno run -A examples/chat/smoke-context.ts`).
 
 `chat.ts` opens with a map of the tree; the areas are `client/` (the REPL), `workers/` (the five
 agent processes), `tools/` (what they do), `space/` (how the app uses Radia) and `provider/` (the
@@ -46,11 +46,11 @@ deno task chat-test              # all eight suites, ~17s
 deno task chat-test longthread   # one by name
 ```
 
-This app is where bugs surface first — and most of them turned out to be in the app's own handling
-of ACCUMULATED STATE rather than in the runtime: a resumed thread with a system message
-mid-conversation (rejected by every provider), a capability page that no longer reached the newest
-tool, a grant narrowed in a way that removed a write permission, a NUL in a message body that no
-longer fit the storage layer's JSON type. None needed a model to reproduce, and none were caught by
+This app is where bugs surface first, and most of them live in the app's own handling of
+ACCUMULATED STATE rather than in the runtime: a resumed thread with a system message
+mid-conversation (rejected by every provider), a capability page that does not reach the newest
+tool, a grant narrowed in a way that removes a write permission, a NUL in a message body that the
+storage layer's JSON type will not take. None needed a model to reproduce, and none were caught by
 reading the code.
 
 That is possible because a tool call is a record, a conversation is records, and the context path
@@ -175,12 +175,6 @@ next worker via `indexOffset`. Chunk indices therefore form one monotonic sequen
 across every attempt — the chat prints `↩ escalated — restarting on a stronger model`, drops what it
 had, and keeps reading forward. Nothing is replayed and no two attempts interleave.
 
-```bash
-export OPENROUTER_API_KEY=sk-or-...          # https://openrouter.ai/keys
-deno task dev                                # optional: open http://localhost:7788, Feed tab
-deno task chat                               # connects to 7788 (or spawns its own space)
-```
-
 `deno task chat` connects to (or spawns) a space and launches seven **scoped subprocess**
 workers, then gives you a REPL. Watch every thought and action stream into the Feed tab.
 
@@ -223,9 +217,9 @@ itself a `tool_call` (a small observer effect).
 
 Two of those exist because of a specific failure: asked for a percentage breakdown, the assistant
 counted the 10 records a query happened to return and reported it as the population. `space_query`
-now returns `more: true` with a warning that the result is a page, and **`space_count`** answers
+returns `more: true` with a warning that the result is a page, and **`space_count`** answers
 "how many" directly (exact up to the server's 500-row query cap, and says so when it isn't). A page
-answers *show me some*; an aggregation question needs *how many*, and the tool set now has both.
+answers *show me some*; an aggregation question needs *how many*, and the tool set has both.
 
 **Remediation tools** (`tools/space.ts`) turn it into an operator, in bulk: `space_reclaim` (un-stick
 an expired lease), `space_dead_letter`, `space_requeue` — control-plane operations that
@@ -238,10 +232,10 @@ true. That matters at real scale: draining 500 stuck leases per-id is 500 calls 
 `space_doctor` calls just to learn the ids, because the report samples ten. The selector is the
 same one the envelope query takes, so the model diagnoses and fixes in one vocabulary.
 
-Two related honesty fixes in `space_doctor`: it no longer reports an `expired` count (a lapsed
-lease leaves the record `leased`, so that number was always a confident zero next to hundreds of
-demonstrably lapsed leases), and `stuckLeases` now carries `atLeast` when its scan hit the sample
-cap — a bounded scan must not read as a census.
+Two honesty rules in `space_doctor`: it reports no `expired` count (a lapsed lease leaves the
+record `leased`, so that number is a confident zero next to hundreds of demonstrably lapsed
+leases), and `stuckLeases` carries `atLeast` when its scan hit the sample cap — a bounded scan must
+not read as a census.
 
 **The chat is woken by the runtime, not by a timer.** A background `watch` per streaming kind
 (`llm_chunk`, `llm_result`, `tool_result`) turns "a matching record became available" into a
@@ -322,11 +316,6 @@ Three details carry the weight:
   thread, so provenance costs no context tokens. This exists because a model, asked whether it had
   used a saved procedure, said yes, had not, and invented a reason for the mismatch.
 
-```bash
-deno task chat-test              # all eight suites, ~17s, no API key
-deno task chat-test longthread   # one by name
-```
-
 **Saving works from both directions.** `save_content` (`tools/save.ts`) stores text the assistant
 *wrote* — an SVG it drew in prose, a drafted config, a summary — and `run_code`'s `save_as` stores
 what a program *printed*. Both were needed: content whose only source is the model's own output has
@@ -396,7 +385,7 @@ being told the id the model could not name the thread it is in.
 **Which is what makes windowing safe.** The inference-worker sends the newest `RADIA_CHAT_WINDOW`
 messages (default 40), not the whole thread: a descending keyset read over the sortable `index`,
 so per-turn cost is bounded by the window rather than by conversation length — "stored once, read
-incrementally" now holds for the *context*, not only for storage. Dropping old turns is normally
+incrementally" holds for the *context*, not only for storage. Dropping old turns is normally
 lossy and one-way; here the omitted messages are still records, and the assistant knows its own
 conversation id, so the notice it gets can be a pointer rather than a summary:
 
@@ -507,12 +496,12 @@ unset = no filesystem, and separate from `RADIA_CHAT_DIRS` on purpose).
 
 Honest edges (documented, not hidden): a crashed inference retries and can double-spend
 (at-least-once — the gateway is the real fix); file contents become records and flow to the
-model — taint now exists (a tool-worker could `put {taint:true}` on file reads so the untrust
+model — taint exists (a tool-worker could `put {taint:true}` on file reads so the untrust
 propagates, and a sensitive consumer could `take {requireUntainted}`), though this example
-doesn't wire it yet. The thread model makes Radia storage linear, but re-sending history to
+does not wire it. The thread model makes Radia storage linear, but re-sending history to
 the provider each call is inherent to stateless chat APIs (prompt caching mitigates it,
-provider-side), and a large single message (e.g. a 64 KB file read) is still one big record
-until **artifacts** (§2.4, M1) let it be stored once and referenced. Not a CI test
+provider-side), and a large single message (e.g. a 64 KB file read) is one big record: this
+path does not route it through **artifacts** (§2.4). Not a CI test
 (non-deterministic); `calc` and the sandbox path checks are unit-testable.
 
 ## Files

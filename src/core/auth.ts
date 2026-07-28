@@ -1,16 +1,16 @@
 // Bootstrap-chain credentials: agent-definition tokens (mint runs) and short-lived run tokens
 // (do coordination).
 //
-// This used to be an in-memory INDEX rebuilt from `agent_definition`/`agent_run` records at
-// startup — the same cache-over-records shape as the kind registry. That shape is wrong here, and
-// the bill came due twice: the rebuild read a bounded page of an unbounded log, so on a busy space
-// a STOPPED run's token still resolved after a restart; and `stopRun` consulted the cache first, so
-// stopping a run the cache had not seen silently did nothing. Both are fail-open, and both are
-// invisible.
+// Resolution is authoritative per request: the space is asked, every time. Never rebuild an
+// in-memory INDEX from `agent_definition`/`agent_run` records at startup — the cache-over-records
+// shape the kind registry uses. It fails OPEN, invisibly, twice over: the rebuild reads a bounded
+// page of an unbounded log, so on a busy space a STOPPED run's token still resolves after a
+// restart; and a `stopRun` that consults the cache first silently does nothing for a run the cache
+// never saw.
 //
-// So resolution is now authoritative per request: the space is asked, every time. What remains here
-// is a memo of one IMMUTABLE fact — which agent a run instantiates, which cannot change once the
-// run exists — plus operator tokens, which are process-lifetime by design and never records.
+// What is memoized here is one IMMUTABLE fact — which agent a run instantiates, which cannot change
+// once the run exists — plus operator tokens, which are process-lifetime by design and never
+// records.
 //
 // The distinction is the whole design: cache what cannot change, never cache what can be revoked.
 // A stopped run, an expired token and a withdrawn grant must all be discovered, not remembered.

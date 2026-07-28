@@ -116,8 +116,8 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
     }
 
     case "permissions": {
-      // "What can this principal do?" — the question every grant bug in this codebase turned out
-      // to be, asked directly instead of inferred from a denial.
+      // "What can this principal do?" — the question behind every grant bug in this codebase,
+      // asked directly instead of inferred from a denial.
       const who = argv[0];
       if (!who) return usage("permissions <principal>");
       const p = await client.permissions(who) as {

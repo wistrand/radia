@@ -148,28 +148,18 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     const isPublic = route === "GET /" || route === "GET /v0/health" || route === "GET /ui/blitzoom.bundle.js";
     // "Public" means NO credential is needed — not that a presented one is ignored. Only
     // `auth_required` (nothing was presented) is exempt; a token that failed to resolve is a 401
-    // even here. The exemption used to cover both, so a client with an expired or stopped token
-    // got `200 {principal: "anonymous"}` from health — the one endpoint it would call to ask
-    // "am I authenticated?" — and could not distinguish a dead credential from an open space.
+    // even here. Never exempt both: health is the one endpoint a client calls to ask "am I
+    // authenticated?", and answering `200 {principal: "anonymous"}` to an expired or stopped
+    // token makes a dead credential indistinguishable from an open space.
     if ("error" in auth && !(isPublic && auth.error === "auth_required")) {
       return problem(401, auth.error, auth.detail);
     }
     const principal = "principal" in auth ? auth.principal : "anonymous";
 
-    // The observe-and-operate plane is grant-gated. Operator (human/supervisor) sees everything;
-    // anyone else sees the plane only through a SELF SCOPE — the kinds they hold a
-    // `scope.createdBy:"self"` grant on, restricted to their own records. `opsScope` throws
-    // `forbidden` when nothing is scoped to them, which is the answer the plane gave before.
-    //
-    // A scope does NOT open the whole plane: the write half (remediate/admin/declassify) stays
-    // operator-only below, because those are the interrupt half and taint clears only via
-    // privileged declassify.
-    // Asking what YOU may do is not an operator question, and it is checked BEFORE the plane's
+    // Asking what YOU may do is not an operator question, and it must be checked BEFORE the plane's
     // gate rather than inside it — a principal with no grants at all is exactly the one that needs
-    // the answer, and `opsScope` refuses that principal outright. Refusing it was worse than
-    // useless: an agent that cannot read its own permissions cannot tell an approved grant from a
-    // pending one, and one was observed reporting a granted request as still awaiting approval
-    // because the (unrelated) call it retried had not changed. Reading ANOTHER principal's
+    // the answer, and `opsScope` refuses that principal outright. An agent that cannot read its own
+    // permissions cannot tell an approved grant from a pending one. Reading ANOTHER principal's
     // authorization stays operator-only.
     const asksAboutSelf = url.pathname === "/v0/ops/permissions" &&
       [principal, space.grantSubject(principal)].includes(url.searchParams.get("principal") ?? "");
@@ -177,7 +167,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     // The observe-and-operate plane is grant-gated. Operator (human/supervisor) sees everything;
     // anyone else sees the plane only through a SELF SCOPE — the kinds they hold a
     // `scope.createdBy:"self"` grant on, restricted to their own records. `opsScope` throws
-    // `forbidden` when nothing is scoped to them, which is the answer the plane gave before.
+    // `forbidden` when nothing is scoped to them.
     //
     // A scope does NOT open the whole plane: the write half (remediate/admin/declassify) stays
     // operator-only below, because those are the interrupt half and taint clears only via

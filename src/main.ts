@@ -117,9 +117,9 @@ async function main(argsIn: string[]): Promise<number> {
       case "help":
       case "--help":
       case "-h":
-        // Print BOTH: the launcher's commands and the CLI verbs. `help` used to stop here, which
-        // left the CLI's own help — the only place the verbs and their flags are documented —
-        // unreachable behind a pointer back to this text.
+        // Print BOTH: the launcher's commands and the CLI verbs. Stopping at USAGE leaves the
+        // CLI's own help — the only place the verbs and their flags are documented — unreachable
+        // behind a pointer back to this text.
         console.log(USAGE);
         console.log("");
         return await runCli("help", rest);

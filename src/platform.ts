@@ -183,8 +183,8 @@ export function writeStderr(text: string): void {
 /**
  * Run `handler` on an interrupt or termination signal; returns an unsubscribe function.
  *
- * Without this, a SIGTERM kills the process before any `finally` runs — which is exactly how the
- * provisioned credential used to survive a shutdown and 401 the next command. SIGTERM does not
+ * Without this, a SIGTERM kills the process before any `finally` runs, and the provisioned
+ * credential outlives the space that minted it — 401ing the next command. SIGTERM does not
  * exist on Windows; SIGINT does, so the set is platform-dependent.
  */
 export function onShutdown(handler: () => void): () => void {

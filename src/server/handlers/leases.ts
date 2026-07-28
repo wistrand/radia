@@ -57,7 +57,7 @@ export async function handleTake(space: Space, req: Request, principal: string):
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
 
   const recordId = typeof j.recordId === "string" ? j.recordId : undefined;
-  // `typeof [] === "object"`, so the old shape check let `template: []` and `template: {}` through
+  // `typeof [] === "object"`, so a bare object check lets `template: []` and `template: {}` through
   // to the matcher with no kind — a 500 for what is plainly a bad request. Present-but-invalid is
   // rejected rather than silently ignored: dropping it would claim a different record than asked.
   let template: Template | undefined;

@@ -21,9 +21,9 @@ export type Ulid = string;
 /**
  * The states a record's envelope can actually be IN. There is deliberately no `expired`: a lapsed
  * lease leaves the record `leased` and a later take reclaims it, so nothing ever writes such a row.
- * The union used to carry one anyway, which made `state=expired` a query that always answered zero
- * — a confident nothing beside hundreds of demonstrably lapsed leases. Expiry is a PREDICATE over
- * `leased` records (`?state=leased&expired=1`), not a state.
+ * Never add one: `state=expired` then becomes a query that always answers zero — a confident
+ * nothing beside hundreds of demonstrably lapsed leases. Expiry is a PREDICATE over `leased`
+ * records (`?state=leased&expired=1`), not a state.
  */
 export type RecordState =
   | "available"
@@ -128,10 +128,9 @@ export interface OrderBy {
  * `alsoReadable` filters NOTHING — it is carried so the answer can describe itself honestly. A
  * principal's authority is not uniform across kinds: it can hold a self-scoped read grant on one
  * and an unscoped one on another, and then the ops aggregate (always self-scoped, by design) counts
- * fewer records than its own `query` returns for the same kind. That happened — `ops/stats` said
- * 187 messages to a session whose `space_count` said 578 — and the aggregate gave no hint, so the
- * session reported its own slice as the space and had to correct itself. The counts stay narrow;
- * the response says which kinds it could read more of.
+ * fewer records than its own `query` returns for the same kind. With no hint in the aggregate, the
+ * caller reports its own slice as the space. The counts stay narrow; the response says which kinds
+ * it could read more of.
  */
 export interface StatsScope {
   /** Author restriction: the principal and its runs. */

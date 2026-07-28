@@ -83,8 +83,8 @@ export function compileTemplate(t: Template, def: KindDef | undefined): Compiled
 
   // `match` is validated here rather than at each caller, for the same reason `compileOrderBy` is:
   // in-process callers (SDK, MCP, examples, the runtime itself) reach this without passing a
-  // handler. A non-object match used to be CAST straight through, and `Object.keys(3)` is empty —
-  // so `match: 3` compiled to "no predicate" and the query silently returned EVERY record of the
+  // handler. Never cast a non-object match straight through: `Object.keys(3)` is empty, so
+  // `match: 3` compiles to "no predicate" and the query silently returns EVERY record of the
   // kind instead of failing. A malformed filter that widens is the worst shape of this bug: the
   // caller gets a plausible answer to a question it did not ask.
   if (t.match !== undefined && t.match !== null) {

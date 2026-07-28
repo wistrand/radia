@@ -6,9 +6,9 @@ the wire protocol, and the client agent loop. Origin: outline §4–5.
 **M0/M1 status (implemented):** the guarantee, fenced leases, idempotency-before-lease,
 and all ten operations are built — HTTP handlers in `src/server/handlers/`, the service in
 `src/core/space.ts`, lease/settlement in the adapters, claim ranking in `src/core/take.ts`.
-Watches are implemented (see Wire protocol below), as is the artifact payload plane (below).
-**Not implemented:** long-poll blocking on `take` (M1) and the keyset-cursor `query` (M1; a basic
-ordered list ships now).
+Watches are implemented (see Wire protocol below), as is the artifact payload plane (below), and
+`query` takes a keyset cursor (`after`/`dir` — see [design-matching.md](design-matching.md)).
+**Not implemented:** long-poll blocking on `take` (M1).
 
 ## Contents
 - Invariants

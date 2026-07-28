@@ -224,7 +224,7 @@ export class Space {
 
   /**
    * Read one registry kind completely and project it — the ONE place limit and direction are
-   * decided, instead of at each of the call sites that used to guess.
+   * decided, rather than at each call site.
    */
   private registry<T = unknown>(
     kind: string,
@@ -375,8 +375,8 @@ export class Space {
    * A self-scoped grant (`scope: {createdBy: "self"}`) has to narrow the coordination plane too,
    * not only the ops plane — otherwise approving "its own records of that kind" hands over every
    * record of that kind through `query`, which is the plane an agent actually reads records
-   * through. That gap was live: a session granted self-scoped `message` access saw its own 98
-   * records in `ops/stats` and all 308 through `query`.
+   * through. The gap is not hypothetical: a session granted self-scoped `message` access sees its
+   * own records in `ops/stats` and every author's through `query`.
    *
    * Applied only when EVERY applicable grant is self-scoped. Grants union — a record is readable if
    * any grant permits it — so one unscoped grant already permits other authors' records, and
@@ -387,9 +387,8 @@ export class Space {
     if (this.isPrivileged(principal)) return undefined;
     const subject = this.grantSubject(principal);
     // Only grants that permit THIS operation are relevant. A `put`-only grant says nothing about
-    // reads, and counting it as "an unscoped grant on this kind" lifted the read restriction —
-    // which happened the moment narrowing a read grant left the write grant behind, exactly as
-    // intended.
+    // reads, and counting it as "an unscoped grant on this kind" lifts the read restriction the
+    // moment a read grant is narrowed while the write grant stays as it was.
     const grants = [...(await this.registry(GRANT, grantKey, { principal: subject, kind })).entries.values()]
       .map((g) => g.body as GrantDef & { scope?: { createdBy?: string } })
       .filter((g) => Array.isArray(g.operations) && g.operations.includes(op));
@@ -457,11 +456,11 @@ export class Space {
         // scope line as evidence of access it did not have. The grant is honoured as written (kinds
         // may be declared later), and said to be empty.
         ...(this.kinds.get(r.kind) ? {} : { kindNotDeclared: true as const }),
-        // Asked of `authorScope` rather than recomputed here. Restating the rule produced a view
-        // that disagreed with the enforcement — it aggregated scoped/unscoped across ALL grants on
-        // the kind, while the enforcement considers only grants permitting THAT OPERATION, so a
-        // scoped `query` beside an unscoped `put` was reported as unscoped. A view that can drift
-        // from the decision is worse than no view, because it is believed.
+        // Asked of `authorScope` rather than recomputed here. Never restate the rule: a
+        // restatement aggregates scoped/unscoped across ALL grants on the kind, while enforcement
+        // considers only grants permitting THAT OPERATION, so a scoped `query` beside an unscoped
+        // `put` reads as unscoped. A view that can drift from the decision is worse than no view,
+        // because it is believed.
         readsScopedToSelf: (await this.authorScope(principal, "query", r.kind)) !== undefined,
         templates: r.templates,
       });
@@ -580,17 +579,17 @@ export class Space {
    * the new one changes nothing. Every live grant on the same (principal, kind, operations) whose
    * template differs from the declared one is therefore retired here.
    *
-   * This covers both ways it bites, and the second was found only by testing the first's fix:
-   * adding a template beside an untemplated grant (tightening an existing space, which silently did
-   * nothing), and REPLACING one template with another (switching a session's scope from one binding
-   * to another, which also silently did nothing — the two unioned and the wider view won).
+   * This covers both ways it bites: adding a template beside an untemplated grant (tightening an
+   * existing space), and REPLACING one template with another (switching a session's scope from one
+   * binding to another). Without the retire, both silently do nothing — the two grants union and
+   * the wider view wins.
    *
    * Bounded to the triple it declares, deliberately. Different operations or a different kind are
    * left alone, because an agent definition speaks for the grants IT declares and not for every
    * grant the principal holds — otherwise each restart would quietly revoke what a person approved.
    * Note `scope` is absent from `grantKey` on purpose, so a self-scoped grant already replaces its
-   * unscoped twin in place; including it here made an earlier version retire the grant it had just
-   * written, since the two share a key.
+   * unscoped twin in place. Never include it in the filter below: the declared grant shares a key
+   * with the live one, so it would retire the grant it just wrote.
    */
   private async supersedeGrantsFor(g: GrantDef): Promise<void> {
     const declared = grantKey(g);
@@ -632,9 +631,9 @@ export class Space {
    * the run's in-flight leases now (epoch-bumped, so a late ack/renew fences out as `lease_lost`).
    */
   async stopRun(run: string, opts: { quarantine?: boolean } = {}): Promise<{ applied: boolean; quarantined: number }> {
-    // Looked up in the SPACE, not in a cache. Consulting an in-memory index here meant that
-    // stopping a run this process had not seen — another instance's run, or one written before a
-    // restart — silently reported `applied: false` and left the token working.
+    // Looked up in the SPACE, never in a cache. Consulting an in-memory index here makes stopping
+    // a run this process has not seen — another instance's run, or one written before a restart —
+    // silently report `applied: false` and leave the token working.
     const mint = await this.runRecord(run);
     if (!mint?.agent) return { applied: false, quarantined: 0 };
     let quarantined = 0;
@@ -830,10 +829,10 @@ export class Space {
       /**
        * APPLICATION fields merged into the artifact's record body.
        *
-       * The body is otherwise entirely runtime-built, which left artifacts as the one kind an
-       * application could not scope: a grant template matches the body, so with nothing of the
-       * app's in there, "artifacts belonging to this conversation" was inexpressible and any
-       * holder of an artifact id could read it. These are client CLAIMS like any other body
+       * The body is otherwise entirely runtime-built, which would leave artifacts as the one kind
+       * an application cannot scope: a grant template matches the body, so with nothing of the
+       * app's in there, "artifacts belonging to this conversation" is inexpressible and any
+       * holder of an artifact id can read it. These are client CLAIMS like any other body
        * content — the runtime routes on them, never trusts them — and the authoritative fields
        * below always win, so nothing here can forge a digest, size or media type.
        */
@@ -946,8 +945,7 @@ export class Space {
    *
    * "Its own records" resolves through the AGENT, not the presented run: `created_by` stores
    * `run:<ulid>`, run tokens are re-minted, and comparing to the current run would silently hide
-   * the same agent's earlier work. Throws `forbidden` when nothing is scoped to it — the same
-   * answer the plane gave before, for a principal with no such grant.
+   * the same agent's earlier work. Throws `forbidden` when nothing is scoped to it.
    */
   async opsScope(principal: string): Promise<StatsScope | null> {
     if (this.isPrivileged(principal)) return null;
@@ -961,21 +959,20 @@ export class Space {
       throw new RadiaError("forbidden", `principal '${principal}' may not access the ops plane`);
     }
     // Which of those kinds are actually NARROWED is asked of `authorScope` — the same function the
-    // read path uses — rather than restated here. Restating it was wrong in a way that produced a
-    // confidently incorrect number: this filtered on "has a self-scoped grant", while a read is
-    // narrowed only when EVERY grant permitting it is self-scoped. A principal holding both an
-    // unscoped `{put, query}` and a self-scoped `{query}` on one kind (different operation sets, so
-    // different grant identities, so both live) could therefore LIST every record of that kind
-    // while `ops/stats` counted only its own — 187 messages reported to a session whose own query
-    // returned 578, with nothing in the aggregate to hint at it.
+    // read path uses — and never restated here. A restatement filters on "has a self-scoped
+    // grant", while a read is narrowed only when EVERY grant permitting it is self-scoped. The two
+    // disagree for a principal holding an unscoped `{put, query}` beside a self-scoped `{query}` on
+    // one kind (different operation sets, so different grant identities, so both live), which can
+    // LIST every record of that kind while `ops/stats` counts only its own — and a number that
+    // disagrees with the caller's own query is believed.
     const kinds = [...new Set(grants.filter((g) => g.scope?.createdBy === "self").map((g) => g.kind))];
     // …and which of those the caller can actually read MORE of. This does not widen the aggregate —
     // the ops plane stays self-scoped on purpose — it makes the aggregate able to say so. A read is
     // narrowed only when EVERY grant permitting it is self-scoped, so a principal holding an
     // unscoped `{put, query}` beside a self-scoped `{query}` (different operation sets, different
     // grant identities, both live) can LIST every record of the kind while these counts cover only
-    // its own. That is a legitimate state, and a number that quietly disagrees with the caller's own
-    // query is how a session came to report 187 messages as the space's total when it could see 578.
+    // its own. That is a legitimate state, and a count that quietly disagrees with the caller's own
+    // query gets read as the space's total.
     const alsoReadable: string[] = [];
     for (const kind of kinds) {
       if (!(await this.authorScope(principal, "query", kind))) alsoReadable.push(kind);
@@ -1212,8 +1209,8 @@ export class Space {
     const seen = new Set<string>();
     let frontier: string[] = [recordId];
     // One round trip per DEPTH LEVEL, not per node: a level's records are fetched together, and
-    // only then does the walk decide what the next level is. A chain of 64 ancestors used to cost
-    // 64 sequential round trips — which on a networked Postgres is latency, not work.
+    // only then does the walk decide what the next level is. Walking node by node costs a
+    // sequential round trip per ancestor — which on a networked Postgres is latency, not work.
     for (let depth = 0; frontier.length > 0 && out.length < maxNodes; depth++) {
       const fresh = frontier.filter((id) => !seen.has(id));
       for (const id of fresh) seen.add(id);
@@ -1303,11 +1300,11 @@ export class Space {
   /**
    * Remediate every record matching an envelope SELECTOR, not one id at a time.
    *
-   * Remediation used to be strictly per-record (`POST /v0/ops/records/{id}/{action}`), which meant
-   * draining 500 stuck leases took 500 calls preceded by 50 diagnostics calls just to learn the
-   * ids — and the diagnostics report only samples ten. The selector here is deliberately the SAME
-   * shape `queryEnvelopes` accepts, so "what is wrong" and "fix it" are one query language rather
-   * than two: `{state:"leased", expired:true}` is the stuck-lease set in both.
+   * Per-record remediation (`POST /v0/ops/records/{id}/{action}`) makes draining 500 stuck leases
+   * 500 calls, preceded by diagnostics calls just to learn the ids — and the diagnostics report
+   * only samples ten. The selector here is deliberately the SAME shape `queryEnvelopes` accepts, so
+   * "what is wrong" and "fix it" are one query language rather than two: `{state:"leased",
+   * expired:true}` is the stuck-lease set in both.
    *
    * Every transition is state-guarded per record, so this is safe to re-run and safe to race with
    * a worker that comes back: a record that moved on is simply not applied. Bounded by `limit`;

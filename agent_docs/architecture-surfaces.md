@@ -142,7 +142,7 @@ its description, never from a system prompt that teaches the substrate. Kinds ar
 
 Known gap: neither the CLI nor the MCP adapter has artifact verbs. Bytes are reachable only over
 HTTP (`POST /v0/artifacts`, `GET /v0/artifacts/{id}`) or through an SDK, so "if the CLI can do it,
-an external client can too" currently holds in one direction only for payloads. A `radia artifact
+an external client can too" holds in one direction only for payloads. A `radia artifact
 put/get` pair would close it; base64 in an MCP tool result would not (it would put the payload
 back inside a record, which is the thing artifacts exist to avoid).
 
@@ -150,11 +150,10 @@ The CLI has the full set: `radia reclaim|dead-letter|requeue` take either a reco
 with an envelope selector (`--stale`, `--limit`, `--drain`), so draining a backlog is one call per
 page rather than one per record.
 
-Known gap: the MCP adapter still exposes `space_doctor` (diagnosis) but no remediation verbs
+Known gap: the MCP adapter exposes `space_doctor` (diagnosis) but no remediation verbs
 (`reclaim`/`dead-letter`/`requeue`/`declassify`). Those sit behind `/v0/ops/*` and are grant-gated,
-so exposing them to a model is a deliberate decision rather than an oversight. Those sit behind `/v0/ops/*` and are grant-gated,
-so exposing them is a deliberate decision rather than an oversight — but it does mean a model can
-report a stuck lease and do nothing about it.
+so exposing them to a model is a deliberate decision rather than an oversight — but it does mean a
+model can report a stuck lease and do nothing about it.
 
 ### Invariants (subsystem-local)
 

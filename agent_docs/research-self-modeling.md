@@ -109,7 +109,6 @@ Each of these was checked against the source; none is a guess.
 | Attention as scarcity (a contended focus lease) | Watches wake only on records becoming **available**, so a *claim* broadcasts nothing; and `effective_priority` is hardcoded `0` until the scheduler (M3) | `handlers/watches.ts`, `Space.putRaw` |
 | Forgetting / consolidation | `retention_until` is **stored and never swept**; crypto-shredding covers artifact blobs only, not record bodies | no delete path references it |
 | Livelock / rumination detection | Specified, unbuilt (M3) | [design-observability.md](design-observability.md) |
-| Mining recurring flows over lineage | `childrenOf` is a **`LIKE` scan** over `parent_ids` JSON — fine for a console, not for repeated whole-space DAG walks | [gotchas.md](gotchas.md), traps |
 
 Two of these deserve emphasis because they are easy to underestimate.
 
@@ -191,11 +190,12 @@ measurement itself has provenance instead of living in a notebook the system can
 - It closes loops failure-reporting cannot: a recognized flow is a prior for routing, a
   candidate plan to reuse, and the measured half of a `capability` claim.
 
-**Four hazards, one of them a prerequisite.**
+**Four hazards.**
 
-- **The DAG walk is the blocker.** Mining flows means repeated whole-space ancestry walks,
-  and `childrenOf` is a `LIKE` scan. Nothing else on this list pushes on that; a reverse edge
-  index is a prerequisite, not an optimization.
+- **Fan-out is the cost, not the index.** Mining flows means repeated whole-space ancestry walks.
+  `childrenOf` is an indexed lookup through `record_edges` with keyset paging, so the walk itself
+  is cheap; `getGraph` caps fan-out at `GRAPH_FANOUT = 200` per node (`src/core/space.ts`), so a
+  miner pages `childrenOf` directly rather than reusing the graph endpoint.
 - **Signature granularity is the whole design.** Too specific and every flow is unique, so
   nothing aggregates; too coarse and everything is one flow. Start at `(kind, agent)` with
   bucketed counts and payloads dropped, and treat granularity as a parameter to measure, not

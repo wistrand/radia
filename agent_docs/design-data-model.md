@@ -105,8 +105,8 @@ Two separate structures, deliberately not merged:
   the delegation path (from the record's authoritative `lease_owner` → its agent) and `origin`
   is the leased record it was delegated from. Derived from the lease, **never** from
   `parent_ids`. Operator/root-owned work carries none (full authority). Emitting a result is
-  authorized as a `put` for the acting agent (closing the gap where ack-emitted records
-  bypassed put-authorization); the stricter *chain-intersection* policy composes with taint
+  authorized as a `put` for the acting agent — an ack-emitted record never bypasses
+  put-authorization; the stricter *chain-intersection* policy composes with taint
   (M3). See [design-auth.md](design-auth.md).
 
 A result may have many data parents but exactly one authorization context:
@@ -141,10 +141,23 @@ writers only).
 
 ## Resource limits
 
-Hard, enforced at commit/registration — an indexed query can still be expensive, so
-limits are not optional. Bounded: max record and template size · field depth · predicate
-count · `$or` branches · array cardinality · registered templates per agent · watches
-per run · slow-lane time and row-scan budgets · SSE buffer/backpressure limits.
+**M1 status: mostly unbuilt.** The intent stands — an indexed query can still be expensive, so
+limits are not optional, and they belong at commit/registration — but only two are enforced:
+
+- **template `$and`/`$or` nesting depth ≤ 3** — `MAX_DEPTH` in `src/core/matching.ts`, raised as
+  `too_deep` at compile.
+- **artifact bytes**, default 32 MiB — `SpaceContext.maxArtifactBytes` (`src/core/space.ts`),
+  returned as `413 artifact_too_large` by `src/server/handlers/artifacts.ts`.
+
+Still to build, tracked as the unchecked M1 item "resource limits enforced" in
+[plan-milestones.md](plan-milestones.md): max record and template size · body field depth ·
+predicate count · `$or` branch count · array cardinality · registered templates per agent ·
+watches per run · slow-lane time and row-scan budgets · SSE buffer/backpressure limits.
+
+The gap with a live consumer is **record body size**: nothing rejects a large body, so the
+cross-cutting invariant that artifact bytes never travel inside a record (see
+[CLAUDE.md](../CLAUDE.md)) is today a convention the runtime does not enforce. A base64 payload in
+a body defeats matching, windowing and every size assumption downstream, and it will be accepted.
 
 ## Artifact references
 
@@ -175,9 +188,9 @@ Indexed on `digest` (every record referencing the same bytes) and `mediaType` (a
 server-computed; a client cannot assert them.
 
 An application may merge its OWN fields into that body (`putArtifact`'s `appFields`, `X-Radia-Meta`
-on the wire — scalars, ASCII, since a header is a ByteString). Without them an artifact was the one
-kind an application could not scope: a grant template matches the body, and a wholly runtime-built
-body offers nothing to bind, so any principal holding an artifact id could read the bytes. Lineage
+on the wire — scalars, ASCII, since a header is a ByteString). Without them an artifact is the one
+kind an application cannot scope: a grant template matches the body, and a wholly runtime-built
+body offers nothing to bind, so any principal holding an artifact id can read the bytes. Lineage
 does not help — `parent_ids` is not body, and matching is body-only by design. The runtime's fields
 are applied last and supplying one is refused, so app metadata can never forge a digest, size or
 media type. A kind whose indexing an app extends this way is redeclared with a `kind_def` record

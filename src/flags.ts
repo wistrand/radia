@@ -1,6 +1,5 @@
 // Command-line flag parsing, shared by the entry point, the CLI verbs, and the MCP adapter.
-// Six copies of the same four-line `flag()` had accumulated across `src/` and `examples/`;
-// this is the one implementation.
+// This is the one implementation; never add a local copy of `flag()` beside a call site.
 //
 // Deliberately tiny: `--name value` pairs, repeatable flags, boolean switches, and positionals.
 // No sub-parsers, no schema, no dependency. If radia ever needs more than this, that is a signal

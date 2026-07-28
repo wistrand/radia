@@ -44,7 +44,7 @@ Temporal (and its Cadence-at-Uber lineage) is the incumbent for durable executio
 deterministic replay reconstructs in-process workflow state from a persisted event history,
 side effects are quarantined into activities with retries/heartbeats/timeouts, and it ships
 timers, cron, signals, queries, child workflows, and continue-as-new across many language SDKs
-and a managed cloud. That is a decade of production hardening, now actively marketed into agent
+and a managed cloud. That is a decade of production hardening, actively marketed into agent
 use cases (Series D at a ~$5B valuation, a16z, 2026). **Radia does not compete on durability,
 and any pitch that leads with it invites "so why not just use Temporal, which my platform team
 already runs."** Name the incumbent, and state precisely where the models don't overlap:

@@ -424,8 +424,8 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   never the problem". `idx_runtime_claim_order`, with the sort columns immediately after `kind` and
   no `state`, took a claim at 40k records from **19.5ms to 0.8ms** on SQLite by turning a full scan
   of the envelope table into an ordered seek that stops when the window is full.
-- **A claim on Postgres is planned on a guess, and the guess is wrong by 200× — BUILT, and the
-  estimate has two halves.** The same query SQLite answers with an ordered seek, Postgres answered
+- **A claim on Postgres is planned on a guess, and the guess is wrong by 200×.** The estimate that
+  fixes it has two halves. The same query SQLite answers with an ordered seek, Postgres answered
   by collecting EVERY matching record through the body index (5,715 of 40,000), joining each to its
   envelope, and sorting — because it estimates the jsonb predicate at 26 rows and concludes the sort
   is free. Not fixable by rewriting the query: `join` vs `exists`, with and without the `@>` term,
@@ -479,8 +479,7 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   ULIDs, not a live divergence, and no test can currently be written that fails without it. Related
   and also worth stating plainly: `scripts/pg-conformance.sh` pins no locale, so the old claim that
   "the conformance Docker image runs in C locale" was never verified by anything either.
-- **`indexedPaths` are a validation contract, not per-path physical indexes — and they no longer
-  need to be.** One GIN index (`jsonb_path_ops` over the generated `body_jsonb` column) answers
+- **`indexedPaths` are a validation contract, not per-path physical indexes.** One GIN index (`jsonb_path_ops` over the generated `body_jsonb` column) answers
   pushed equality on every path, so declaring a path costs no DDL and no migration, which is what
   keeps kinds-as-records from dragging a schema change behind it. Measured on 40k records: a
   genuinely selective `read_one` is **7.98ms without the index, 1.42ms with it**, for about 5% on
@@ -925,8 +924,8 @@ rejected for stated reasons.
   `"fast"|"balanced"|"deep"` in the file whose thesis is that tiers are discovered.
   **Related limit, now partly closed.** A `model` record advertises a TIER, not a live worker.
   Two of the three problems are fixed (`examples/chat/space/model.ts`): the publish reads before
-  writing, so restarting the fleet no longer appends a record per worker per launch — the same
-  unbounded growth `publishCapability` was fixed for, still present here until now; and a worker
+  writing, so restarting the fleet does not append a record per worker per launch — the same
+  unbounded growth `publishCapability` was fixed for; and a worker
   retires its advertisement on SIGINT/SIGTERM (`onStop`), so a stopped tier leaves rotation instead
   of remaining an offer nobody serves. What is NOT fixed: a worker that crashes or is `kill -9`ed
   leaves its advertisement behind, and the router will dispatch into silence — the call sits

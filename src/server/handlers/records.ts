@@ -25,7 +25,7 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
 /**
  * Build a `PutRequest` from wire JSON: pick only client-submittable fields, and VALIDATE their
  * types rather than casting. A cast is a promise to the type checker, not a check — `parentIds: 42`
- * or `deadlineAt: {}` used to sail through and fail deep in the adapter, turning a malformed
+ * or `deadlineAt: {}` otherwise sails through and fails deep in the adapter, turning a malformed
  * request into a 500. Returns a problem message instead of throwing so the caller can answer 400.
  */
 function pickPut(j: Record<string, unknown>): PutRequest | string {
@@ -87,11 +87,10 @@ export async function handlePut(space: Space, req: Request, principal: string): 
 /**
  * What a grant narrowed this read to, when it narrowed anything.
  *
- * The ops plane has said this for a while; the COORDINATION plane never did, and that asymmetry is
- * what makes a scoped session confidently wrong. A caller whose grants limit `message` to one
- * conversation queries `message`, gets its own conversation, and has no way to tell that from "this
- * is every message there is" — so it reports its slice as the space. It happened repeatedly, and
- * each time the session went looking for a grant to fix a gap it could not see.
+ * A read that narrows silently makes a scoped caller confidently wrong: one whose grants limit
+ * `message` to a single conversation queries `message`, gets its own conversation, and cannot tell
+ * that from "this is every message there is" — so it reports its slice as the space and goes
+ * looking for a grant to fix a gap it cannot see. The ops plane says this; so must this plane.
  *
  * Absent when nothing was narrowed, so an unrestricted read stays exactly as it was on the wire.
  */

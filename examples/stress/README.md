@@ -7,11 +7,6 @@ leases left `leased`). Run it repeatedly — every run is a new wave with fresh 
 ```bash
 deno task dev      # terminal 1 — open http://localhost:7788, Space tab
 deno task stress   # terminal 2 — one wave
-```
-
-```bash
-deno task dev                                            # terminal 1 — open http://localhost:7788
-deno task stress                                         # terminal 2 — one wave
 deno task stress -- --waves 3 --tasks 600 --rate 150 --workers 6
 ```
 

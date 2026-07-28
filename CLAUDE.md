@@ -95,10 +95,12 @@ key), [examples/stress/](examples/stress/) (load, for the Space tab), [examples/
 Research and planning:
 
 - [agent_docs/research-positioning.md](agent_docs/research-positioning.md): thesis, evidence, prior art, the defensible gap (§1).
+- [agent_docs/research-applications.md](agent_docs/research-applications.md): what the substrate is for, verified against `src/` — the **open `template` → `pattern` naming decision** (§1, has a closing date), the template layer as the authorization primitive and its limits, ranked applications, gated execution of LLM-generated code, and the Bank Python precedent. Carries a claim ledger of what was checked, including doc claims that turned out false.
 - [agent_docs/plan-milestones.md](agent_docs/plan-milestones.md): M0–M3 delivery plan, milestone scope (§11).
 - [agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md): the buildable M0 plan — Deno + TS runtime, storage decisions, phase-by-phase build with verify steps.
 - [agent_docs/plan-validation.md](agent_docs/plan-validation.md): baselines, metrics, fault-injection matrix (§12).
-- [agent_docs/plan-audit-remediation.md](agent_docs/plan-audit-remediation.md): confirmed defects from the 2026-07-27 full-codebase audit, grouped by root cause with the guard each one needs. Read before touching auth scope enforcement, lease settle, or grant supersede.
+- [agent_docs/plan-audit-remediation.md](agent_docs/plan-audit-remediation.md): confirmed defects from the 2026-07-27 full-codebase audit, grouped by root cause with the guard each one needs. Read before touching auth scope enforcement, lease settle, grant supersede, or declassify.
+- [agent_docs/plan-inspection.md](agent_docs/plan-inspection.md): making emergent flows visible — standing claim interest as records, the Flows view, and helping LLM inspectors. Gated on remediation packages B and D; read those before starting.
 - [agent_docs/research-self-modeling.md](agent_docs/research-self-modeling.md): whether a space can hold an agent's model of its own process in the same medium as its model of the world — the paired self-report/measurement claim, the verified blockers, and the calibration baseline. Research, gated like the marketplace; nothing scheduled.
 - [agent_docs/gotchas.md](agent_docs/gotchas.md): rejected approaches, the risk register, and non-obvious "why is it like this" decisions. Skim before proposing a change to signing, encryption, idempotency ordering, or storage backends.
 

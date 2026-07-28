@@ -5,8 +5,8 @@
 // an append-only record stream. Records never change, so "update" is a successor record and the
 // projection decides which one counts.
 //
-// That projection was hand-rolled in six places before this file existed, and it is easy to get
-// subtly wrong in ways nothing catches: compare ids the wrong way and you keep the older record;
+// Never hand-roll that projection at a call site: it is easy to get subtly wrong in ways nothing
+// catches — compare ids the wrong way and you keep the older record;
 // depend on the order rows arrive in and a retirement can be resurrected by an older record
 // processed after it, quietly bringing back a thing someone withdrew.
 //
@@ -111,10 +111,10 @@ export function grantKey(body: unknown): string | undefined {
   const g = body as { principal?: unknown; kind?: unknown; operations?: unknown; template?: unknown };
   if (typeof g?.principal !== "string" || typeof g?.kind !== "string") return undefined;
   const ops = Array.isArray(g.operations) ? [...g.operations].map(String).sort().join(",") : "";
-  // JSON-encoded parts, not a delimiter-joined string. The separator here was a NUL, which was
-  // invisible in review and harmless while this was only an in-memory Map key — until the key was
-  // used as an idempotency key and reached Postgres, which rejects 0x00 in text outright. An
-  // encoded array is unambiguous (no value can forge a boundary) and printable.
+  // JSON-encoded parts, not a delimiter-joined string. Never separate with a NUL: it is invisible
+  // in review and harmless as an in-memory Map key, but this key also travels as an idempotency
+  // key, and Postgres rejects 0x00 in text outright. An encoded array is unambiguous (no value can
+  // forge a boundary) and printable.
   return JSON.stringify([g.principal, g.kind, ops, g.template ?? null]);
 }
 
@@ -136,11 +136,12 @@ const REGISTRY_MAX_PAGES = 40;
 /**
  * Read a registry COMPLETELY, newest-first, and project it.
  *
- * This exists because the same mistake was made eleven times: writes to a registry are unbounded,
- * reads were bounded, and nothing connected the two. A capped read returns the OLDEST matches by
- * default, so the newest record — a retirement, a revocation, a re-declaration, the tool published
- * a minute ago — was exactly what fell off the end. The failure is silent in both directions: an
- * entry that should be gone stays live, and an entry that should be live is missing.
+ * This exists because registry writes are unbounded while a hand-written read is bounded, with
+ * nothing connecting the two — the most repeated bug in this codebase. A capped read returns the
+ * OLDEST matches by default, so the newest record — a retirement, a revocation, a re-declaration,
+ * the tool published a minute ago — is exactly what falls off the end. The failure is silent in
+ * both directions: an entry that should be gone stays live, and an entry that should be live is
+ * missing.
  *
  * Two properties make it safe rather than merely convenient. It pages to EXHAUSTION, so the answer
  * does not depend on a limit someone guessed at the call site; and when it cannot exhaust, it says

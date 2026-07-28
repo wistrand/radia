@@ -55,11 +55,10 @@ export async function buildRecord(
 
   const id = newUlid();
   const bodyJson = JSON.stringify(req.body ?? null);
-  // U+0000 is valid in a JSON string and CANNOT be represented in Postgres `jsonb`. Bodies used to
-  // be stored as opaque text, so it round-tripped; once a parsed `body_jsonb` column existed for
-  // predicate pushdown, the same body became unstorable — and failed as a 500 from deep inside the
-  // driver, on Postgres and PGlite but not SQLite. Rejected here, in core, so every adapter agrees
-  // and the caller gets an answer instead of an internal error.
+  // U+0000 is valid in a JSON string and CANNOT be represented in Postgres `jsonb`. Postgres and
+  // PGlite parse bodies into `body_jsonb` for predicate pushdown, so such a body is unstorable
+  // there — and fails as a 500 from deep inside the driver — while SQLite accepts it. Rejected
+  // here, in core, so every adapter agrees and the caller gets an answer, not an internal error.
   //
   // The pattern matches a genuine NUL ESCAPE: an even number of preceding backslashes. The literal
   // six-character text that spells the escape serializes with a doubled backslash and stays storable.

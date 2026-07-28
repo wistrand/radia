@@ -75,9 +75,7 @@ Six conventions worth copying rather than reinventing:
 - **Assume the embedded adapters cannot see your bug.** Claim starvation was invisible to
   `deno task conformance` and appeared only against a live Postgres, because SQLite and PGlite are
   single-connection and never actually contend. Anything touching concurrent claims needs
-  `scripts/pg-conformance.sh`. (This bullet used to name collation-dependent ordering as a second
-  case; it is not one — `C` and `en_US.UTF-8` order the ULID alphabet identically, so no test can
-  currently distinguish them. See gotchas.md.)
+  `scripts/pg-conformance.sh`.
 - **A persistent database is not `:memory:`, and a "restart" needs one.** `init()` opens a fresh
   connection, so re-initializing an in-memory adapter gives you an EMPTY database rather than the
   one you just wrote — a restart test that skips this passes by finding nothing. `backfill.test.ts`

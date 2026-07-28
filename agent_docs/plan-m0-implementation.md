@@ -103,11 +103,11 @@ The one thing M0 claims that has not been executed end to end is `npx radia dev`
 the binaries compile and the shim packages are staged by `deno task release`, but nothing has
 been published to a registry, so the install path itself is unexercised.
 
-Two post-Phase fixes worth knowing about, both in storage (`src/storage/`):
-- `ack` with a result appends the successor's own `put` event. Without it the record existed
-  with no `available` event of its kind, so a watch on that kind never woke. See Phase 5.
-- `DDL` gained a migrations block. `create table if not exists` only ever creates, so a
-  database from a build predating `events.xid` kept the old shape and failed every
+Two storage rules the phases produced (`src/storage/`):
+- `ack` with a result appends the successor's own `put` event. Without it the record exists
+  with no `available` event of its kind, so a watch on that kind never wakes. See Phase 5.
+- `DDL` carries a migrations block. `create table if not exists` only ever creates, so a
+  database from a build predating `events.xid` keeps the old shape and fails every
   `getEvents`. `PostgresBackend.exec` also strips `--` comments before its naive split on `;`.
 
 **Enhancements built on top of the phases** (not in the original M0 checklist):
@@ -129,7 +129,7 @@ Two post-Phase fixes worth knowing about, both in storage (`src/storage/`):
   lease fencing; `reclaim` only touches an *expired* lease). Surfaced as chatbot tools
   (`space_doctor` + `space_reclaim`/`space_dead_letter`/`space_requeue`) so the chat example
   is both inspector and operator.
-- **Authorization stack (M1, ahead of the M1 milestone):** grants are `grant` records enforced by
+- **Authorization stack (M1):** grants are `grant` records enforced by
   `Space.authorize` at the HTTP boundary; the bootstrap chain (`agent-definitions` → `agent-runs` →
   stop/quarantine) mints run tokens (`src/core/auth.ts`, only the hash stored); `Authorization:
   Bearer` is the sole channel (no header → operator default; the dev console holds a server-minted
@@ -138,38 +138,9 @@ Two post-Phase fixes worth knowing about, both in storage (`src/storage/`):
   console surfaces the auth records (Auth tab) + taint/delegation badges. Detail in
   [design-auth.md](design-auth.md); this is M1 work, tracked in [plan-milestones.md](plan-milestones.md).
 
-## Proposed layout
+## Layout
 
-The original target layout (the actual tree is in [CLAUDE.md](../CLAUDE.md); the sketch
-below is kept for the phase-planning record):
-
-```
-deno.json            # tasks + import map; no build for dev
-openapi/radia.yaml   # the frozen wire contract (source of truth)
-src/
-  main.ts            # `radia dev` entry: arg parse, boot space + dev UI + MCP
-  cli.ts             # minimal CLI over the public API only
-  server/
-    http.ts          # Deno.serve routing; long-poll; SSE
-    handlers/        # one module per operation (put, take, ack, ...)
-  core/              # storage-agnostic runtime logic
-    record.ts        # record + envelope model, ULID, body_sha256
-    matching.ts      # template evaluation (equality/range, divergences)
-    lease.ts         # fencing, epochs, attempt semantics, dead-letter
-    idempotency.ts   # (principal, op, key) store; ordering
-    eventlog.ts      # append-only, same-transaction writes
-    auth.ts          # auto-provisioned local principals/run tokens
-  storage/
-    adapter.ts       # StorageAdapter interface — the port/contract
-    pglite.ts        # embedded adapter — WASM Postgres (M0)
-    sqlite.ts        # embedded adapter — SQLite via built-in node:sqlite (M0)
-  mcp/               # bundled MCP adapter (credentials outside model context)
-  ui/                # dev UI: one self-contained index.html served at GET / (see "Dev UI")
-sdk/
-  ts/                # TS SDK stub (heartbeat + loop harness)
-  py/                # Python SDK stub
-conformance/         # storage-adapter contract suite + basic fault cases
-```
+The tree is in [CLAUDE.md](../CLAUDE.md).
 
 ## Testing methodology
 
@@ -196,20 +167,20 @@ explorable in a browser the moment it boots — this is what makes the under-a-m
 adoption bar (see [design-storage.md](design-storage.md) "Deployment modes") land, not
 just curl.
 
-**BUILT** (ahead of Phase 7): `src/ui/index.html` served at `GET /`, with all panels
+**BUILT**: `src/ui/index.html` served at `GET /`, with all panels
 working — Overview, Records browser (with lineage in detail), Kinds, Put, Query
-playground, Worker, and a live **Feed** tab. Backing endpoints added to support it: `GET
+playground, Worker, and a live **Feed** tab. Backing endpoints: `GET
 /v0/ops/stats`, `POST /v0/records/query` (ordered list plus the keyset cursor `after`/`dir`; the Kinds
 panel uses it with `{kind:kind_def}`), `GET /v0/ops/records/{id}/envelope`,
-`GET /v0/ops/events`, and `GET /v0/ops/records/{id}/lineage`. Remaining polish: SSE push for the feed (currently polls;
-proper watches land in M1).
+`GET /v0/ops/events`, and `GET /v0/ops/records/{id}/lineage`. Remaining polish: SSE push for the
+feed, which polls.
 
 Principles:
 
 - **One `index.html`** — inline CSS + vanilla JS, no framework, no build step, no external
   requests. This is the [CLAUDE.md](../CLAUDE.md) minimal-deps / zero-build /
   platform-independence invariant applied to the UI, and it keeps the demo a single binary.
-  Served from `src/ui/`. One exception since the Space tab: the prebuilt BlitZoom bundle in
+  Served from `src/ui/`. One exception: the prebuilt BlitZoom bundle in
   `src/ui/vendor/`, served from the same origin at `GET /ui/blitzoom.bundle.js` and injected
   lazily on first use. Checked in as an artifact, so there is still no build step and still no
   external request; `deno task compile` `--include`s it.
@@ -234,9 +205,6 @@ Panels (each maps to existing endpoints):
 | Live feed — records/state-transitions/dead-letters streaming in | event log + watches (SSE) | Phase 5 / M1 |
 | Lineage viewer — a record's parent/child DAG | lineage query | Phase 5 (M2 richer) |
 | Space — every record placed by property similarity (kind, envelope state, owning run), streamed from the event log; hierarchical zoom aggregates into supernodes. Layout is a pure function of the properties, so insertion never displaces what is on screen. Vendored BlitZoom `<bz-graph>` | `GET /v0/ops/events` (+ `GET /v0/ops/records/{id}` for detail) | built |
-
-Everything above except the live feed and lineage viewer is backed by endpoints that
-already exist (Phases 1–3), so the console can be built now and grow with the runtime.
 
 ## Phases
 
@@ -281,7 +249,7 @@ read-one match/miss(null), 400 `problem+json` on bad body. See
 - [x] Full operator set in the oracle (`src/core/matching.ts`): `$eq` (implicit), `$gt/$gte/$lt/$lte`, `$in`, `$exists`, `$any/$each`, `$and/$or` (depth ≤ 3). Forbidden (`$regex/$where/$expr`) and deferred (`$ne/$nin/$not/$prefix`) operators rejected at compile.
 - [x] Divergence semantics: missing ≠ null, no type coercion (cross-type = false), explicit array quantifiers (scalar predicates never distribute).
 - [x] Template validation against the kind: predicate paths ⊆ indexed paths, `order_by` ⊆ sortable paths; `unknown_kind`/`undeclared_path`/`unsortable_path`. `order_by` + deterministic record-id tie-break.
-- [x] **Predicate pushdown BUILT** (`src/storage/pushdown.ts`), after `deno task bench` turned the deferred cost into a number. The oracle still *defines* correctness: SQL is a sound pre-filter, `matchesRecord`/`firstByOrder` decide, and an inexpressible node falls through rather than guessing. A filter that is *exact* also carries the caller's `LIMIT` into SQL — the change that made `read_one` flat (102ms → 29µs at 40k on sqlite, 513ms → 732µs on Postgres) rather than merely faster. Physical per-kind expression indexes turned out to be unnecessary: one GIN index over a generated `body_jsonb` column serves every path, so a new `indexedPath` still needs no DDL. Soundness is pinned by `conformance/suites/pushdown.ts`.
+- [x] **Predicate pushdown BUILT** (`src/storage/pushdown.ts`), after `deno task bench` turned the deferred cost into a number. The oracle still *defines* correctness: SQL is a sound pre-filter, `matchesRecord`/`firstByOrder` decide, and an inexpressible node falls through rather than guessing. A filter that is *exact* also carries the caller's `LIMIT` into SQL — the change that made `read_one` flat (102ms → 29µs at 40k on sqlite, 513ms → 732µs on Postgres) rather than merely faster. Physical per-kind expression indexes are unnecessary: one GIN index over a generated `body_jsonb` column serves every path, so a new `indexedPath` needs no DDL. Soundness is pinned by `conformance/suites/pushdown.ts`.
 
 **Verify:** PASSED. `deno task conformance` green — 36 tests, both adapters: registration
 validation, undeclared-path/unknown-kind/unsortable-path rejection, forbidden/deferred
@@ -325,7 +293,7 @@ ack conflict → `idempotency_conflict`. Live `radia dev` confirmed via curl (he
 ### Phase 5 — event log and dead-letter — DONE
 
 - [x] Append-only `events` table (monotonic `seq`, id, ts, run_id, operation, record_id, kind, state, detail) written in the **same transaction** as each mutation via `appendEvent`, inside each op's tx. Run identity on every event (creator principal for `put`, lease owner for settlements — real run tokens now built, M1).
-- [x] One event per **mutation**: `put`, `take`, `ack` (with `resultId` in detail), `nack`, `release`, and `expire`→`dead_letter`. No-op outcomes (`lease_lost`, idempotency replay) append nothing. `renew` is intentionally not evented (heartbeat noise; it changes no lifecycle state). Usually one op is one mutation; `ack` **with a result** is the exception — it consumes the parent *and* inserts a record, so it appends two: the result's own `put` (its own kind, `state: available`, `detail.ackOf` = parent) then the parent's `ack`. Without that `put` the successor would be unwatchable: `matchesEvent` needs an `available` event carrying the record's own kind, and the `ack` event is `consumed` and carries the parent's. Fixed after Phase 5 was marked done; regression cases in `conformance/suites/{events,watches}.ts`.
+- [x] One event per **mutation**: `put`, `take`, `ack` (with `resultId` in detail), `nack`, `release`, and `expire`→`dead_letter`. No-op outcomes (`lease_lost`, idempotency replay) append nothing. `renew` is intentionally not evented (heartbeat noise; it changes no lifecycle state). Usually one op is one mutation; `ack` **with a result** is the exception — it consumes the parent *and* inserts a record, so it appends two: the result's own `put` (its own kind, `state: available`, `detail.ackOf` = parent) then the parent's `ack`. Without that `put` the successor would be unwatchable: `matchesEvent` needs an `available` event carrying the record's own kind, and the `ack` event is `consumed` and carries the parent's. Regression cases in `conformance/suites/{events,watches}.ts`.
 - [x] Dead-letter transition preserves `kind` (Phase 3); event records resulting state.
 - [x] Lineage BFS over `parent_ids` (`src/core/space.ts` `getLineage`, cycle-guarded, node-capped). Endpoints: `GET /v0/ops/events?after=&limit=`, `GET /v0/ops/records/{id}/lineage`.
 
@@ -334,9 +302,6 @@ ops append one event each in seq order with run identity; `lease_lost` and idemp
 replay append nothing; nack backoff vs. dead-letter evented with resulting state; lineage
 returns ancestry with correct depths. Live `radia dev` confirmed via curl (event stream
 put/take/ack, lineage child→parent). See [design-observability.md](design-observability.md).
-
-> Dev UI live feed + lineage viewer now BUILT (Feed tab polls `/v0/ops/events`; record detail
-> shows ancestry) — the last two dev-UI panels from the "Dev UI" section.
 
 ### Phase 6 — basic fault suite — DONE
 
@@ -352,7 +317,7 @@ real infra and is deferred past M0 — see [plan-validation.md](plan-validation.
 
 - [x] Auto-provisioned local credentials — **same API shape as production, never "no tokens"**. `radia dev` mints an operator token and writes it to `$XDG_STATE_HOME/radia/credentials.json` (`%APPDATA%`/`~/.radia` elsewhere), mode 0600, keyed by base URL; removed on clean shutdown, since operator tokens die with the process. The CLI, MCP adapter, and Python SDK all resolve it the same way (`RADIA_TOKEN` overrides). Implemented in `src/credentials.ts` rather than `src/core/auth.ts`: `core/` is storage- and IO-agnostic, and this touches the filesystem. The no-header operator default still exists for `curl` and the browser console, but nothing radia ships depends on it.
 - [x] Bundled MCP adapter (`src/mcp/`): newline-delimited JSON-RPC 2.0 over stdio, 15 tools. **Credentials outside the model context** — the token is attached by the adapter and appears in no schema, result, or error. **Heartbeats internally** — `space_take` returns an opaque `claimId`; the fenced lease stays in the adapter and is renewed at lease/3, so a model that thinks for minutes keeps its claim and cannot forge, replay, or leak a lease. Kinds are discovered through `space_kinds`, never hardcoded; tool descriptions carry the usage guidance rather than a system prompt teaching the substrate.
-- [x] Friendly dev UI (`src/ui/index.html`) served at `GET /` — BUILT ahead of schedule: space overview, records browser, kinds, put form, query playground, worker panel, live feed, lineage, graph, auth, and the Space map. Public-API-only; single file plus one vendored, same-origin asset (`src/ui/vendor/`). See "Dev UI" above. Remaining polish: SSE push for the feed (still polls).
+- [x] Friendly dev UI (`src/ui/index.html`) served at `GET /`: space overview, records browser, kinds, put form, query playground, worker panel, live feed, lineage, graph, auth, and the Space map. Public-API-only; single file plus one vendored, same-origin asset (`src/ui/vendor/`). See "Dev UI" above. Remaining polish: SSE push for the feed, which polls.
 - [x] Minimal CLI (`src/cli.ts`) over the public API only: `health stats doctor kinds get lineage children events watch put query read-one take ack nack release`, `--json` on every verb. `take --json` emits the claim; pipe it back to `ack -`/`nack -`/`release -`. Discovery-first — `kinds` is a query for `kind_def` records; no verb carries a table of known kinds.
 - [x] TS SDK (`sdk/ts/client.ts` + `loop.ts` — `RadiaClient` over `/v0`, `agentLoop` with heartbeat at lease/3, per-attempt idempotency key). Demo agents in `examples/` + `deno task demo` exercise it end-to-end over HTTP.
 - [x] **Python SDK at parity** (`sdk/py/radia.py`): `RadiaClient` (records, claims, watches with SSE reconnect + opaque cursor, ops reads), `agent_loop` with background watchers, heartbeat, per-attempt idempotency key, and the same permanent-403-on-watch handling as the TS loop. **Standard library only** — `urllib` + `threading`, nothing to install, Python 3.9+.
@@ -382,9 +347,6 @@ is therefore best-effort until someone publishes once.
   `node:sqlite`. It is marked unstable upstream; watch for API changes on Deno upgrades.
 - **npm/pip binary distribution mechanics** (embed vs. download-on-install) — defer the
   polished version to M1; a rough shim is enough for the M0 demo.
-
-Resolved: **two embedded adapters (PGlite + SQLite) ship in M0** — the port-abstraction
-test happens now, not at M1. OpenAPI freeze scope is settled by the policy below.
 
 <!-- When M0 lands: fold each phase's built behavior into the relevant architecture-*.md
      (promoted from design-*.md), point those docs into src/ paths + symbols, delete the

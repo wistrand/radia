@@ -95,8 +95,8 @@ const CANDIDATE_COLS = `${RECORD_COLS_R}, rt.record_id, rt.state, rt.attempt, rt
  *  orders. */
 const CLAIM_ORDER = "order by rt.effective_priority desc, rt.available_at asc, r.id asc";
 
-/** How many candidates one claim examines at a time. `take` used to fetch — and row-lock — EVERY
- *  available-or-leased record of the kind, which made a claim O(kind size) and, worse, let one
+/** How many candidates one claim examines at a time. Never fetch — and row-lock — EVERY
+ *  available-or-leased record of the kind: it makes a claim O(kind size) and, worse, lets one
  *  claimer's open transaction hide the whole queue from everyone else (`skip locked` finds nothing
  *  unlocked, so a peer is told "empty" while work remains). A template with a selective match
  *  pages through further windows rather than truncating. */
@@ -500,7 +500,7 @@ export class PgSqlAdapter implements StorageAdapter {
       const template = "template" in selector ? selector.template : undefined;
       const byId = "recordId" in selector;
 
-      // Page through candidate windows. Single-winner no longer rests on holding a lock over the
+      // Page through candidate windows. Single-winner does not rest on holding a lock over the
       // whole candidate set: the claim below is a compare-and-set whose result is CHECKED, so a
       // lost race falls through to the next candidate instead of returning a lease for a record
       // somebody else already took.
@@ -698,9 +698,9 @@ export class PgSqlAdapter implements StorageAdapter {
   }
 
   async childrenOf(recordId: string, limit: number, page?: Page): Promise<RadiaRecord[]> {
-    // Indexed lookup through the reverse edge table. This used to be
-    // `parent_ids like '%"<id>"%'` — correct (ids are ULIDs, so they carry no LIKE wildcards) but
-    // a scan of every record in the space to find a handful of children.
+    // Indexed lookup through the reverse edge table. `record_edges` exists so that finding a
+    // record's children is an index seek; matching against the `parent_ids` JSON is a scan of
+    // every record in the space to find a handful of children.
     const dir = page?.dir === "desc" ? "desc" : "asc";
     const params: unknown[] = [recordId];
     let cursor = "";
@@ -924,7 +924,7 @@ export class PgSqlAdapter implements StorageAdapter {
   private async insertRecord(tx: Sql, input: PutInput): Promise<void> {
     const parents = input.record.runtimeMeta.parentIds;
     if (parents.length > 0) {
-      // One round-trip regardless of parent count (was one SELECT per parent).
+      // One round-trip regardless of parent count.
       const res = await tx.query<{ id: string }>("select id from records where id = any($1::text[])", [parents]);
       const found = new Set(res.rows.map((r) => String(r.id)));
       for (const pid of parents) {
