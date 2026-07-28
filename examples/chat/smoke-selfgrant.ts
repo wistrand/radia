@@ -316,6 +316,33 @@ check(
   `${realGrants.length} grant records for llm_call`,
 );
 
+// 10. `client.grant()` must be able to REVIVE a retired grant.
+//
+// The helper is content-keyed so re-running a fleet does not append a duplicate per grant. That
+// key alone cannot revive: once a retirement is the newest record, re-granting the same content
+// replays the retirement — nothing is written, the call reports success, and the principal keeps
+// nothing. `createAgentDefinition` was fixed for this; the SDK helper is the other way in, and
+// `examples/stress/stress.ts` uses it.
+const D1 = "agent:d1-revive";
+const first = await admin.grant(D1, "llm_call", ["query"]);
+const beforeRetire = await admin.permissions(D1) as { kinds: { kind: string }[] };
+check("client.grant assigns a grant", beforeRetire.kinds.some((k) => k.kind === "llm_call"), first.id);
+
+// Retire it the way a revocation or a supersede would: a successor carrying `retired: true`.
+await admin.put({ kind: "grant", body: { principal: D1, kind: "llm_call", operations: ["query"], retired: true } });
+const afterRetire = await admin.permissions(D1) as { kinds: { kind: string }[] };
+check("…retiring it takes the grant away", !afterRetire.kinds.some((k) => k.kind === "llm_call"));
+
+// Re-granting the identical content must write a NEW record, not replay the retirement.
+const second = await admin.grant(D1, "llm_call", ["query"]);
+check("re-granting after a retirement writes a new record", second.id !== first.id, `${first.id} -> ${second.id}`);
+const revived = await admin.permissions(D1) as { kinds: { kind: string }[] };
+check("…and the grant is in force again", revived.kinds.some((k) => k.kind === "llm_call"));
+
+// Still idempotent where it should be: an unchanged re-grant against a LIVE grant writes nothing.
+const third = await admin.grant(D1, "llm_call", ["query"]);
+check("…while re-granting a live grant is still deduped", third.id === second.id, `${second.id} -> ${third.id}`);
+
 try {
   worker.kill();
   space.kill();

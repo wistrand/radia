@@ -180,6 +180,14 @@ Two more defects in the same mechanism:
 **throws `registry_incomplete` rather than superseding on a partial view** — a truncated read would
 silently leave stale grants live.
 
+The SDK helpers had the same defect on the public path and are fixed too: `client.grant()` in both
+SDKs anchors its idempotency key on the NEWEST RETIREMENT of that grant identity
+(`:after:<recordId>`), so a re-grant after a revocation or supersede writes a new record instead of
+replaying the retirement. Anchoring on "is the newest record retired" is NOT enough — after a
+revival that falls back to the plain key the original record already consumed, so a repeat returns
+the retired record. Covered by `examples/chat/smoke-selfgrant.ts` (assign → retire → revive →
+repeat).
+
 Guards added in `conformance/suites/retire.ts` (they run on both adapters): the round trip (A → B → A), two patterns
 on one triple in one definition, and re-narrowing a grant that was retired and re-granted.
 

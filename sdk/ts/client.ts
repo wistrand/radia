@@ -14,7 +14,7 @@ import type {
 } from "../../src/storage/adapter.ts";
 import type { Pattern } from "../../src/core/matching.ts";
 import type { Page } from "../../src/storage/adapter.ts";
-import { activeByKey } from "../../src/core/registry.ts";
+import { activeByKey, grantKey, isRetired, newestByKey } from "../../src/core/registry.ts";
 import type { PutRequest } from "../../src/core/record.ts";
 import { KIND_DEF, type KindDef, kindDefKey, RESERVED_KINDS } from "../../src/core/kinds.ts";
 export { RESERVED_KINDS };
@@ -110,14 +110,36 @@ export class RadiaClient {
   /** Assign a kind-scoped grant (a `grant` record — writable only by a human/supervisor
    *  principal). `operations` are coordination verbs: put | take | query | read_one. An optional
    *  `pattern` narrows read/take to `grant ∧ request` (pattern-scoped grant). */
-  grant(
+  async grant(
     principal: string,
     kind: string,
     operations: string[],
     pattern?: Record<string, unknown>,
   ): Promise<{ id: string }> {
     const body = pattern ? { principal, kind, operations, pattern } : { principal, kind, operations };
-    const key = `grant:${principal}:${kind}:${[...operations].sort().join(",")}:${pattern ? JSON.stringify(pattern) : ""}`;
+    // CONTENT-KEYED, so re-assigning an unchanged grant writes nothing rather than appending a
+    // duplicate on every run. But a grant that was RETIRED — by a revocation, or by a definition
+    // superseding it with a different pattern — cannot be revived under that same key: the write
+    // replays the retirement, so nothing is written while this reports success and the principal
+    // still holds nothing. Key the revival on the record it supersedes, the shape
+    // `Space.createAgentDefinition` uses.
+    let key = `grant:${principal}:${kind}:${[...operations].sort().join(",")}:${pattern ? JSON.stringify(pattern) : ""}`;
+    const identity = grantKey(body);
+    if (identity !== undefined) {
+      try {
+        const rows = await this.query({ kind: "grant", match: { principal, kind } }, 500, { dir: "desc" });
+        // Anchor on the NEWEST RETIREMENT of this identity, not on whether the newest record
+        // happens to be retired. That keeps the key stable across repeats: once revived, calling
+        // again reuses the revival's key and writes nothing, where anchoring on "newest is
+        // retired" would fall back to the plain key that the original record already consumed. A
+        // later retirement moves the anchor, so the next revival is a fresh write.
+        const supersedes = rows.find((r) => grantKey(r.body) === identity && isRetired(r.body));
+        if (supersedes) key += `:after:${supersedes.id}`;
+      } catch {
+        // A caller that may write grants but not read them cannot tell a retirement from a fresh
+        // key. Best effort: fall back to the plain key, which is the pre-existing behaviour.
+      }
+    }
     return this.put({ kind: "grant", body }, key);
   }
 

@@ -256,10 +256,45 @@ class RadiaClient:
         body: Dict[str, Any] = {"principal": principal, "kind": kind, "operations": operations}
         if pattern:
             body["pattern"] = pattern
+        # CONTENT-KEYED, so re-assigning an unchanged grant writes nothing rather than appending a
+        # duplicate on every run. But a grant that was RETIRED -- by a revocation, or by a
+        # definition superseding it with a different pattern -- cannot be revived under that same
+        # key: the write replays the retirement, so nothing is written while this reports success
+        # and the principal still holds nothing. Key the revival on the record it supersedes, the
+        # shape ``Space.createAgentDefinition`` uses.
         key = "grant:{}:{}:{}:{}".format(
             principal, kind, ",".join(sorted(operations)),
             json.dumps(pattern, sort_keys=True, separators=(",", ":")) if pattern else "",
         )
+        want_ops = sorted(operations)
+        try:
+            # Newest first, so the first identity match IS the current state of that grant.
+            rows = self.query(
+                {"kind": "grant", "match": {"principal": principal, "kind": kind}}, 500, dir="desc"
+            )
+        except RadiaError:
+            # A caller that may write grants but not read them cannot tell a retirement from a
+            # fresh key. Best effort: fall back to the plain key.
+            rows = []
+        # Anchor on the NEWEST RETIREMENT of this identity, not on whether the newest record
+        # happens to be retired. That keeps the key stable across repeats: once revived, calling
+        # again reuses the revival's key and writes nothing, where anchoring on "newest is retired"
+        # would fall back to the plain key the original record already consumed. A later retirement
+        # moves the anchor, so the next revival is a fresh write.
+        for row in rows:  # newest first
+            b = row.get("body") or {}
+            # A body carrying the pre-rename `template` field is a shape this build does not
+            # understand; the runtime drops it from every projection, so it is not an identity
+            # match here either.
+            if "template" in b:
+                continue
+            if sorted(b.get("operations") or []) != want_ops:
+                continue
+            if (b.get("pattern") or None) != (pattern or None):
+                continue
+            if b.get("retired") is True:
+                key += ":after:" + str(row["id"])
+                break
         return self.put({"kind": "grant", "body": body}, idempotency_key=key)
 
     def create_agent_definition(
