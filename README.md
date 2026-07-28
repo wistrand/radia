@@ -15,7 +15,7 @@ is a lineage homage.
 > Status: all of M0 built (Phases 0–7) plus a growing M1 slice — put/take/ack/nack/release/renew,
 > record+envelope split, fencing, idempotency, matching, transactional event log +
 > lineage, dead-letter, and SSE watches; the **authorization stack**: kind- and
-> template-scoped grants (as records), the run-token bootstrap chain, per-run leases with
+> pattern-scoped grants (as records), the run-token bootstrap chain, per-run leases with
 > stop/quarantine, `delegation_context`, and `taint` + declassify; and **artifacts** — a
 > content-addressed blob port with `artifact` records, short-lived download capabilities, and
 > optional encryption at rest (per-blob AES-GCM key wrapped under a space KEK). Running on three
@@ -30,10 +30,10 @@ is a lineage homage.
 ```mermaid
 flowchart LR
     A[agent A] -->|put record| S[(space)]
-    S -->|matches B's template| B[agent B]
+    S -->|matches B's pattern| B[agent B]
     B -->|take → fenced lease| S
     B -->|ack result| S
-    S -->|matches C's template| C[agent C]
+    S -->|matches C's pattern| C[agent C]
     S -.->|bytes too big for a body| BL[(blob store<br/>artifacts)]
 ```
 
@@ -46,7 +46,7 @@ authorized, observable place.
 Multi-agent systems usually coordinate through preconfigured routing tables: agent A
 knows to call agent B. That is brittle and topology-bound. Radia replaces it with
 content-based coordination: an agent publishes a record (a task, a fact, a request),
-and any agent whose registered template matches can claim it. Work flows by what it
+and any agent whose registered pattern matches can claim it. Work flows by what it
 is, not by who is wired to whom.
 
 Recent experiments suggest blackboard-style coordination can improve success or token
@@ -56,7 +56,7 @@ are encouraging and workload-specific, not proof of general superiority. See
 
 ## Core ideas
 
-- **Content-routed:** JSON records matched by templates (a Mongo-inspired query
+- **Content-routed:** JSON records matched by patterns (a Mongo-inspired query
   language with its own strict semantics), not by explicit addressing.
 - **Durable and leased:** work is claimed under a fenced, renewable lease with
   at-least-once execution; crashed agents don't lose work.
@@ -139,7 +139,7 @@ pipeline, a load generator, and the full LLM agent — each with its own directo
 ```bash
 radia kinds                                   # declared kinds (a query for kind_def records)
 radia put job '{"tag":"a"}'                   # write a record
-radia query job --match '{"tag":"a"}'         # read by template
+radia query job --match '{"tag":"a"}'         # read by pattern
 radia take job --lease 30 --json > claim.json # claim work
 radia ack - --result-kind job_result --result '{"ok":true}' < claim.json
 radia watch job                               # stream wakeups
@@ -178,7 +178,7 @@ the npm and pip packages are thin launchers that exec it, so `npx radia dev` and
 ## How it works
 
 A record is immutable content; a separate runtime envelope holds its mutable claim
-state (available, leased, consumed, dead-letter). Agents register templates; matching
+state (available, leased, consumed, dead-letter). Agents register patterns; matching
 routes records to interested agents. A `take` returns a fenced lease; the agent does
 its work and `ack`s a result record, which itself becomes new content others can match.
 Storage is Postgres (or embedded SQLite/PGlite for local dev) behind a single runtime

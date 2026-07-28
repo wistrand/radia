@@ -72,7 +72,7 @@ allowed, no removals or renames):
 
 Marked **experimental** (may change without a major bump) at M0:
 
-- control-plane: kinds, templates, agent-definitions, runs, grants;
+- control-plane: kinds, patterns, agent-definitions, runs, grants;
 - auth and credential exchange (auto-provisioned locally at M0; real at M1).
 
 Mechanism:
@@ -133,7 +133,7 @@ Two storage rules the phases produced (`src/storage/`):
   `Space.authorize` at the HTTP boundary; the bootstrap chain (`agent-definitions` → `agent-runs` →
   stop/quarantine) mints run tokens (`src/core/auth.ts`, only the hash stored); `Authorization:
   Bearer` is the sole channel (no header → operator default; the dev console holds a server-minted
-  operator token). Per-run lease ownership, template-scoped grants, `delegation_context`, and
+  operator token). Per-run lease ownership, pattern-scoped grants, `delegation_context`, and
   `taint` + declassify all built; the chat example runs with real `admin`/`user` roles and the
   console surfaces the auth records (Auth tab) + taint/delegation badges. Detail in
   [design-auth.md](design-auth.md); this is M1 work, tracked in [plan-milestones.md](plan-milestones.md).
@@ -187,7 +187,7 @@ Principles:
 - **Public API only.** The console calls the same `/v0` endpoints an agent would; it gets
   no privileged backdoor. If the UI can do it, a client SDK can too.
 - **Friendly by default.** Readable empty states, surfaced RFC 9457 error `detail`
-  (a rejected template says *why*), theme-aware (light/dark), keyboard-navigable.
+  (a rejected pattern says *why*), theme-aware (light/dark), keyboard-navigable.
 - **Built incrementally as backing features land** — each panel ships when its API does,
   so the UI is useful from Phase 1 onward rather than all-at-once at the end.
 
@@ -200,7 +200,7 @@ Panels (each maps to existing endpoints):
 | Graph — the `parent_ids` relationship DAG around a record (conversation/job fan-out) as a layered SVG; wide generations wrap to rows (bounded width), optional live auto-refresh, hide-chunks toggle | `GET /v0/ops/records/{id}/graph` (+ `childrenOf`) | built |
 | Kinds — view + register indexed/sortable paths (kinds are `kind_def` records) | `POST /v0/records` + `query {kind:kind_def}` | Phase 2 |
 | Put a record — kind + JSON body form | `POST /v0/records` | Phase 1 |
-| Query playground — template (match + order_by) with friendly validation errors | `read_one` | Phase 2 |
+| Query playground — pattern (match + order_by) with friendly validation errors | `read_one` | Phase 2 |
 | Worker panel — take a record, then renew/ack/nack/release by hand to drive the lifecycle | `takes` + `leases/*` | Phase 3 |
 | Live feed — records/state-transitions/dead-letters streaming in | event log + watches (SSE) | Phase 5 / M1 |
 | Lineage viewer — a record's parent/child DAG | lineage query | Phase 5 (M2 richer) |
@@ -248,7 +248,7 @@ read-one match/miss(null), 400 `problem+json` on bad body. See
 - [x] Per-kind `indexed_paths` (typed: keyword/integer/timestamp/array) and `sortable_paths` declaration + registration validation (`src/core/kinds.ts` `KindRegistry`/`validateKindDef`). Declarations are **`kind_def` records** (not a table/endpoint): `put` validates + registers, `query {kind:kind_def}` discovers, `Space.loadKinds` rebuilds the registry at startup; the `kind_def` meta-kind (`META_KIND_DEF`) is the one code bootstrap. Invalid declarations rejected (`invalid_kind`/`invalid_path`/`invalid_type`/`duplicate_path`/`unsortable_path`); redeclaring `kind_def` rejected (`reserved_kind`).
 - [x] Full operator set in the oracle (`src/core/matching.ts`): `$eq` (implicit), `$gt/$gte/$lt/$lte`, `$in`, `$exists`, `$any/$each`, `$and/$or` (depth ≤ 3). Forbidden (`$regex/$where/$expr`) and deferred (`$ne/$nin/$not/$prefix`) operators rejected at compile.
 - [x] Divergence semantics: missing ≠ null, no type coercion (cross-type = false), explicit array quantifiers (scalar predicates never distribute).
-- [x] Template validation against the kind: predicate paths ⊆ indexed paths, `order_by` ⊆ sortable paths; `unknown_kind`/`undeclared_path`/`unsortable_path`. `order_by` + deterministic record-id tie-break.
+- [x] Pattern validation against the kind: predicate paths ⊆ indexed paths, `order_by` ⊆ sortable paths; `unknown_kind`/`undeclared_path`/`unsortable_path`. `order_by` + deterministic record-id tie-break.
 - [x] **Predicate pushdown BUILT** (`src/storage/pushdown.ts`), after `deno task bench` turned the deferred cost into a number. The oracle still *defines* correctness: SQL is a sound pre-filter, `matchesRecord`/`firstByOrder` decide, and an inexpressible node falls through rather than guessing. A filter that is *exact* also carries the caller's `LIMIT` into SQL — the change that made `read_one` flat (102ms → 29µs at 40k on sqlite, 513ms → 732µs on Postgres) rather than merely faster. Physical per-kind expression indexes are unnecessary: one GIN index over a generated `body_jsonb` column serves every path, so a new `indexedPath` needs no DDL. Soundness is pinned by `conformance/suites/pushdown.ts`.
 
 **Verify:** PASSED. `deno task conformance` green — 36 tests, both adapters: registration
@@ -259,8 +259,8 @@ non-distribution, `$or/$and`, and `order_by` with id tie-break. See
 
 ### Phase 3 — take, leases, fencing — DONE
 
-- [x] Atomic `take(template | record_id, lease_s)`: one transaction, envelope → `leased`, epoch bump, returns `{record, lease}`. Claim ranking is a pure helper (`src/core/take.ts` `rankClaimable`); the adapter fetches candidates + performs the guarded claim. `POST /v0/takes`.
-- [x] `take(record_id=...)` re-verifies availability (and optional template) — selector, not bypass.
+- [x] Atomic `take(pattern | record_id, lease_s)`: one transaction, envelope → `leased`, epoch bump, returns `{record, lease}`. Claim ranking is a pure helper (`src/core/take.ts` `rankClaimable`); the adapter fetches candidates + performs the guarded claim. `POST /v0/takes`.
+- [x] `take(record_id=...)` re-verifies availability (and optional pattern) — selector, not bypass.
 - [x] `renew`, `ack(result_record?)`, `nack`, `release` present `recordId + lease_id + epoch`; mismatch → `lease_lost` (a non-error 200 status). `POST /v0/leases/{renew,ack,nack,release}`.
 - [x] Attempt semantics: `nack` +1 (backoff via `available_at`), lazy expiry +1 (reclaim at take), `release` +0; `dead_letter` past `max_attempts`; cumulative hard cap via `lease_hard_deadline` (renew past it → `lease_lost`).
 - [x] `ack` is atomic consume-and-emit: consumes the task and inserts the result record (linked via `parentIds`) in one transaction; a fenced `ack` emits nothing.

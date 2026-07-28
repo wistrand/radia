@@ -27,7 +27,7 @@ Three, to isolate contributions:
 
 Task success · tokens/cost · latency · invocation count · duplicate-execution rate ·
 lease-recovery latency · wakeup amplification · orphan rate · admission accuracy ·
-p50/p95/p99 take latency · throughput scaling in records × templates × agents.
+p50/p95/p99 take latency · throughput scaling in records × patterns × agents.
 
 ## Fault-injection matrix
 
@@ -41,7 +41,7 @@ Each is a required case (referenced from [plan-milestones.md](plan-milestones.md
 - partition during renewal
 - DB failover
 - conflicting idempotency payloads
-- schema migration with live templates
+- schema migration with live patterns
 - revocation mid-lease
 - cursor expiry under reconnect storm
 

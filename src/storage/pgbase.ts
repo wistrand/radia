@@ -98,7 +98,7 @@ const CLAIM_ORDER = "order by rt.effective_priority desc, rt.available_at asc, r
 /** How many candidates one claim examines at a time. Never fetch — and row-lock — EVERY
  *  available-or-leased record of the kind: it makes a claim O(kind size) and, worse, lets one
  *  claimer's open transaction hide the whole queue from everyone else (`skip locked` finds nothing
- *  unlocked, so a peer is told "empty" while work remains). A template with a selective match
+ *  unlocked, so a peer is told "empty" while work remains). A pattern with a selective match
  *  pages through further windows rather than truncating. */
 const CANDIDATE_WINDOW = 64;
 
@@ -321,7 +321,7 @@ class IdempotencyReplay extends Error {}
  * real server (concurrent claims race, exactly one wins) and on the single-connection embedded
  * backend (where transactions serialize in-process anyway) — the same contract either way. A
  * take by record id additionally uses `FOR UPDATE SKIP LOCKED`, which is safe because it locks
- * exactly the one row it intends to claim; see `CANDIDATE_WINDOW` for why a template take must
+ * exactly the one row it intends to claim; see `CANDIDATE_WINDOW` for why a pattern take must
  * not.
  */
 export class PgSqlAdapter implements StorageAdapter {
@@ -497,7 +497,7 @@ export class PgSqlAdapter implements StorageAdapter {
   async take(selector: TakeSelector, spec: LeaseSpec): Promise<TakeResult | null> {
     return await this.sql.transaction(async (tx) => {
       const now = await this.txNow(tx);
-      const template = "template" in selector ? selector.template : undefined;
+      const pattern = "pattern" in selector ? selector.pattern : undefined;
       const byId = "recordId" in selector;
 
       // Page through candidate windows. Single-winner does not rest on holding a lock over the
@@ -507,11 +507,11 @@ export class PgSqlAdapter implements StorageAdapter {
       for (let offset = 0;; offset += CANDIDATE_WINDOW) {
         const candidates = await this.fetchCandidates(tx, selector, CANDIDATE_WINDOW, offset);
         if (candidates.length === 0) return null;
-        const ranked = rankClaimable(candidates, template, now, spec.requireUntainted, spec.createdBy);
+        const ranked = rankClaimable(candidates, pattern, now, spec.requireUntainted, spec.createdBy);
         const claimed = await this.claimFirst(tx, ranked, spec, now);
         if (claimed) return claimed;
         // Nothing in this window was claimable (all filtered out, or every CAS lost). A record-id
-        // take has no further windows; a template take keeps paging until the kind is exhausted.
+        // take has no further windows; a pattern take keeps paging until the kind is exhausted.
         if (byId || candidates.length < CANDIDATE_WINDOW) return null;
       }
     });
@@ -889,9 +889,9 @@ export class PgSqlAdapter implements StorageAdapter {
    * Ordering the join instead makes the database materialize every record body of the kind before
    * the limit applies — most of the cost of a claim on a large kind.
    *
-   * A template with a pushable predicate joins `records` inside that inner select so the window is
+   * A pattern with a pushable predicate joins `records` inside that inner select so the window is
    * drawn from ROWS THAT CAN MATCH. Without it the window is the head of the queue regardless of
-   * the template, so a selective take pages through the entire kind 64 rows at a time — correct,
+   * the pattern, so a selective take pages through the entire kind 64 rows at a time — correct,
    * but O(kind size) round trips to find one record. The filter is a sound over-approximation, so
    * `rankClaimable` still decides.
    *
@@ -903,12 +903,12 @@ export class PgSqlAdapter implements StorageAdapter {
    */
   private async windowRows(
     tx: Sql,
-    selector: { template: CompiledMatch },
+    selector: { pattern: CompiledMatch },
     limit: number,
     offset: number,
   ): Promise<RawRow[]> {
     const d = new PgJson(1, "r2"); // $1 is the kind
-    const filter = pushdown(selector.template.where, d);
+    const filter = pushdown(selector.pattern.where, d);
     const n = 1 + d.params.length;
     const inner = isTrivial(filter)
       ? `select record_id from record_runtime
@@ -923,7 +923,7 @@ export class PgSqlAdapter implements StorageAdapter {
       `select ${CANDIDATE_COLS} from records r join record_runtime rt on rt.record_id=r.id
          where rt.record_id in (${inner})
          ${CLAIM_ORDER}`,
-      [selector.template.kind, ...d.params, limit, offset],
+      [selector.pattern.kind, ...d.params, limit, offset],
     )).rows;
   }
 
@@ -985,7 +985,12 @@ export class PgSqlAdapter implements StorageAdapter {
     );
     if (found.rows.length) {
       if (String(found.rows[0].request_hash) !== idem.requestHash) {
-        throw new RadiaError("idempotency_conflict", "idempotency key reused with a different request");
+        throw new RadiaError(
+          "idempotency_conflict",
+          `idempotency key reused with a different request: ${idem.operation} '${idem.key}' ` +
+            `(principal ${idem.principal}). The key is derived from the request's content, so a ` +
+            `key that matches while the content differs means the content changed shape.`,
+        );
       }
       return JSON.parse(String(found.rows[0].response_json)) as T;
     }

@@ -90,7 +90,7 @@ export class Thread {
       // `owner` is the identity binding a grant can scope on, and it is stamped even when the
       // session is scoped by conversation instead — a record that carries both can be read under
       // either posture, so switching RADIA_CHAT_SCOPE does not blind a session to its own history.
-      // The runtime enforces it rather than trusting it: under identity scoping the write template
+      // The runtime enforces it rather than trusting it: under identity scoping the write pattern
       // is `{owner}`, so a session physically cannot stamp another identity here.
       body: { conversationId: this.id, owner: OWNER, index: this.nextIndex++, ...msg },
       parentIds: [this.id, ...parentIds],

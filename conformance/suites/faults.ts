@@ -19,7 +19,7 @@ function newSpace(adapter: StorageAdapter): Space {
 
 // A crashed worker: takes with a lease that is already expired, then does nothing.
 function crashBeforeAck(space: Space) {
-  return space.take({ template: { kind: "task" } }, { leaseSeconds: -1 });
+  return space.take({ pattern: { kind: "task" } }, { leaseSeconds: -1 });
 }
 
 export const faultSuites: Suite[] = [
@@ -34,7 +34,7 @@ export const faultSuites: Suite[] = [
       await crashBeforeAck(space);
 
       // Recovery: worker B reclaims the expired lease and completes it.
-      const b = await space.take({ template: { kind: "task" } });
+      const b = await space.take({ pattern: { kind: "task" } });
       assert(b, "expected reclaim");
       effects++; // B's effect
       assertEquals((await space.ack(b!.lease)).status, "ok");
@@ -55,7 +55,7 @@ export const faultSuites: Suite[] = [
       effects++; // A's effect already happened externally
 
       // Recovery: B reclaims and, per the contract, runs the effect AGAIN.
-      const b = await space.take({ template: { kind: "task" } });
+      const b = await space.take({ pattern: { kind: "task" } });
       assert(b);
       effects++;
       assertEquals((await space.ack(b!.lease)).status, "ok");
@@ -69,7 +69,7 @@ export const faultSuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter);
       await space.put({ kind: "task", body: { tag: "a" } });
-      const t = await space.take({ template: { kind: "task" } });
+      const t = await space.take({ pattern: { kind: "task" } });
       assert(t);
 
       // ack commits, but the response is lost before the worker sees it.
@@ -88,7 +88,7 @@ export const faultSuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter);
       await space.put({ kind: "task", body: { tag: "a" } });
-      const t = await space.take({ template: { kind: "task" } });
+      const t = await space.take({ pattern: { kind: "task" } });
       assert(t);
 
       assertEquals((await space.ack(t!.lease, { kind: "result", body: {} }, "k")).status, "ok");
@@ -106,7 +106,7 @@ export const faultSuites: Suite[] = [
       const { id } = await space.put({ kind: "task", body: { tag: "a" } });
 
       const a = await crashBeforeAck(space); // A claims, lease will expire
-      const b = await space.take({ template: { kind: "task" } }); // B reclaims, epoch bumps
+      const b = await space.take({ pattern: { kind: "task" } }); // B reclaims, epoch bumps
       assert(a && b);
 
       // A wakes up late and acks its stale lease.

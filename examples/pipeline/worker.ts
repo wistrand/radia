@@ -15,7 +15,7 @@ export function workerLoop(client: RadiaClient, op: string, signal?: AbortSignal
   if (!tools[op]) throw new Error(`unknown tool op: ${op}`);
   return agentLoop(client, {
     name: `worker:${op}`,
-    templates: [{ kind: "task", match: { op } }],
+    patterns: [{ kind: "task", match: { op } }],
     signal,
     log,
     handle: async (rec: RadiaRecord) => {

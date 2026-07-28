@@ -1,5 +1,5 @@
-// Phase 2 conformance: per-kind indexing contract and template validation. Registration
-// rejects bad declarations; template compilation rejects predicates on undeclared paths
+// Phase 2 conformance: per-kind indexing contract and pattern validation. Registration
+// rejects bad declarations; pattern compilation rejects predicates on undeclared paths
 // and order_by on non-sortable paths. Runs on every adapter (validation is in core, but
 // running on both proves the Space wiring is adapter-independent).
 
@@ -108,7 +108,7 @@ export const kindSuites: Suite[] = [
         // note: tag not declared sortable
       });
 
-      // kind-only template on an unregistered kind is allowed (no path lookup)
+      // kind-only pattern on an unregistered kind is allowed (no path lookup)
       assertEquals(await space.readOne({ kind: "ghost", match: {} }), null);
 
       // predicate on an unregistered kind is rejected

@@ -45,7 +45,7 @@ class Model {
   readonly entries = new Map<string, ModelGrant>();
 
   /**
-   * A grant's identity is what it PERMITS — principal, kind, operations, template — and pointedly
+   * A grant's identity is what it PERMITS — principal, kind, operations, pattern — and pointedly
    * NOT its scope. So writing a scoped successor with the same operations narrows that grant in
    * place rather than coexisting with the unscoped one, which is the behaviour you want from
    * "restrict this to its own records": the alternative is two grants whose union is the wider of

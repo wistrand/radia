@@ -1,16 +1,16 @@
 // agentLoop — the take-based worker harness (design §5), event-driven via watches (M1).
 // Background watchers turn matching-kind wakeups into a signal; the claim loop drains all
-// its templates on each wakeup, then waits for the next one (with a poll fallback so a
+// its patterns on each wakeup, then waits for the next one (with a poll fallback so a
 // missed wakeup or a dropped watch can't stall it). Each claim runs the handler under a
 // fenced lease with a renewal heartbeat, acks with a per-attempt idempotency key, nacks on
 // error, and logs when fenced (at-least-once: duplicate work is possible).
 
 import { RadiaClientError } from "./client.ts";
-import type { PutRequest, RadiaClient, RadiaRecord, Template } from "./client.ts";
+import type { PutRequest, RadiaClient, RadiaRecord, Pattern } from "./client.ts";
 
 export interface LoopOptions {
   name: string;
-  templates: Template[];
+  patterns: Pattern[];
   leaseSeconds?: number;
   pollMs?: number; // fallback tick when no wakeup arrives
   signal?: AbortSignal;
@@ -24,7 +24,7 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
   const leaseSeconds = o.leaseSeconds ?? 30;
   const fallbackMs = Math.max(o.pollMs ?? 250, 1000);
   const log = o.log ?? (() => {});
-  const kinds = [...new Set(o.templates.map((t) => t.kind))];
+  const kinds = [...new Set(o.patterns.map((t) => t.kind))];
 
   // Background watchers: each matching-kind wakeup resolves a pending idle wait.
   let wake: (() => void) | null = null;
@@ -57,8 +57,8 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
   while (!o.signal?.aborted) {
     let claimed = null;
     try {
-      for (const template of o.templates) {
-        claimed = await client.take({ template }, { leaseSeconds });
+      for (const pattern of o.patterns) {
+        claimed = await client.take({ pattern }, { leaseSeconds });
         if (claimed) break;
       }
     } catch (e) {

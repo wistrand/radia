@@ -30,7 +30,7 @@ do not overclaim.
 
 ## Prior art and the gap
 
-Prior art: JavaSpaces (template matching, read/take, leases, notifications,
+Prior art: JavaSpaces (pattern matching, read/take, leases, notifications,
 transactions), GigaSpaces, LangGraph (durable execution, shared state).
 
 The defensible gap: **no prominent LLM-native runtime combines JSON content matching,
@@ -51,7 +51,7 @@ already runs."** Name the incumbent, and state precisely where the models don't 
 
 - **Content routing vs. addressed dispatch.** Temporal invokes an activity by type name on a
   named task queue; adding a capability edits the calling workflow, and its agent story puts
-  the routing choice inside the model, where it can't be inspected or denied. Radia's templates
+  the routing choice inside the model, where it can't be inspected or denied. Radia's patterns
   make dispatch a stored, queryable artifact — routing you can inspect, authorize, and refuse.
 - **Record-scoped authority vs. namespace-scoped.** Temporal's security is mTLS + namespace
   isolation + a pluggable authorizer gating API calls; within a namespace a workflow may touch

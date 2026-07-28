@@ -178,7 +178,7 @@ const RESERVED = new Set(["run_code", "save_procedure", "read_procedure", "retir
  * A hardcoded list would only ever cover this worker's own tools, and the names that matter most
  * belong to others: `read_file`, `generate_image`, `save_content`, `space_query`. Letting a
  * procedure take one of those is not a naming annoyance, it is a HIJACK — this worker would add a
- * claim template for `tool_call{tool:"read_file"}` alongside the tools-worker's, both would race
+ * claim pattern for `tool_call{tool:"read_file"}` alongside the tools-worker's, both would race
  * for each call, and whichever claimed first would answer. The model would meanwhile see the real
  * tool's description in its list, because the chat prefers a capability over a procedure of the
  * same name. Wrong behaviour, non-deterministically, invisibly.
@@ -192,15 +192,15 @@ async function capabilityNames(c: RadiaClient): Promise<Set<string>> {
   }
 }
 
-/** A tool name that is safe to advertise and to match a claim template on. */
+/** A tool name that is safe to advertise and to match a claim pattern on. */
 const NAME_RE = /^[a-z][a-z0-9_]{0,40}$/;
 
-// The claim templates, MUTABLE on purpose. `agentLoop` re-reads this array on every pass, so
+// The claim patterns, MUTABLE on purpose. `agentLoop` re-reads this array on every pass, so
 // appending to it is how this worker starts serving a procedure the assistant saved a moment ago —
 // without a restart, and without claiming `tool_call` wholesale (which would steal other workers'
 // work). Every procedure the space already holds is added at startup; new ones arrive on the watch
-// below. Dispatch stays content-routed: one template per tool name, exactly like a built-in tool.
-const templates = [
+// below. Dispatch stays content-routed: one pattern per tool name, exactly like a built-in tool.
+const patterns = [
   { kind: "tool_call", match: { tool: "run_code" } },
   { kind: "tool_call", match: { tool: "save_procedure" } },
   { kind: "tool_call", match: { tool: "read_procedure" } },
@@ -217,7 +217,7 @@ async function adoptProcedures(): Promise<void> {
       // procedure saved before that worker published simply stops being claimed here.
       if (!NAME_RE.test(name) || served.has(name) || builtin.has(name)) continue;
       served.add(name);
-      templates.push({ kind: "tool_call", match: { tool: name } });
+      patterns.push({ kind: "tool_call", match: { tool: name } });
     }
   } catch { /* no grant to read procedures: this worker simply serves the built-ins */ }
 }
@@ -250,7 +250,7 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
 
 await agentLoop(client, {
   name: "exec",
-  templates,
+  patterns,
   leaseSeconds: 60,
   handle: async (rec, c) => {
     const callId = rec.id;
@@ -319,7 +319,7 @@ await agentLoop(client, {
           filename: args?.save_as,
           parentIds: [callId], // lineage: conversation -> tool_call -> artifact
           taint: true, // bytes produced by model-written code
-          meta: { conversationId: b.conversationId ?? "", owner: b.owner ?? "" }, // what a grant template can bind
+          meta: { conversationId: b.conversationId ?? "", owner: b.owner ?? "" }, // what a grant pattern can bind
         });
         stored = { artifactId: a.id, mediaType, size: a.size };
       } catch (e) {
@@ -388,7 +388,7 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
     filename: `${name}.js`,
     parentIds: [callId],
     taint: true, // model-written source, like any other bytes it produced
-    meta: { conversationId: b.conversationId ?? "", owner: b.owner ?? "" }, // what a grant template can bind
+    meta: { conversationId: b.conversationId ?? "", owner: b.owner ?? "" }, // what a grant pattern can bind
   });
   const key = await shortHash(`${description}\n${code}`);
   await c.put({
@@ -407,7 +407,7 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
   // what it just saved on the very next turn.
   if (!served.has(name)) {
     served.add(name);
-    templates.push({ kind: "tool_call", match: { tool: name } });
+    patterns.push({ kind: "tool_call", match: { tool: name } });
   }
   // Say so when it takes no input. A procedure saved without `parameters` can only ever do the one
   // thing its literals encode — which is easy to write by accident and expensive to discover three
@@ -498,10 +498,10 @@ async function retireProcedure(rec: RadiaRecord, c: RadiaClient) {
     parentIds: [callId],
   }, `procedure:${b.conversationId}:${name}:retired:${await shortHash(String(b.args?.reason ?? ""))}`);
 
-  // The claim template deliberately STAYS. Two reasons, and the second is the load-bearing one:
+  // The claim pattern deliberately STAYS. Two reasons, and the second is the load-bearing one:
   // a retired name that is still claimed answers "it has been retired" immediately, where an
   // unclaimed one would leave the caller waiting out the tool deadline for a stall diagnosis; and
-  // this handler runs INSIDE agentLoop's iteration over `templates`, so splicing it here would
+  // this handler runs INSIDE agentLoop's iteration over `patterns`, so splicing it here would
   // mutate the array being walked. The chat stops OFFERING the tool, which is what actually
   // removes it from the model's context.
   return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: true, output: { name, retired: true } } };

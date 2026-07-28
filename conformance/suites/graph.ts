@@ -51,7 +51,7 @@ export const graphSuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter);
       const { id: task } = await space.put({ kind: "task", body: { tag: "work" } });
-      const claimed = await space.take({ template: { kind: "task", match: { tag: "work" } } }, { leaseSeconds: 60 });
+      const claimed = await space.take({ pattern: { kind: "task", match: { tag: "work" } } }, { leaseSeconds: 60 });
       assert(claimed);
       // Results enter the space through a different insert path than `put`. A reverse index that
       // only the put path maintained would silently lose exactly the edges that matter most —

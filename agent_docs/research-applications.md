@@ -14,8 +14,8 @@
 
 ## Contents
 
-- §1 The naming decision: template vs. pattern — **open**
-- §2 The template layer, and why it is the primitive everything rests on
+- §1 Naming: `pattern`, not `template` — decided and applied
+- §2 The pattern layer, and why it is the primitive everything rests on
 - §3 What the substrate uniquely provides
 - §4 Applications, ranked
 - §5 Gated execution of LLM-generated code — the sharpest specialization
@@ -39,123 +39,58 @@ applications worth pursuing need all three at once.
 
 ---
 
-## 1. The naming decision: template vs. pattern
+## 1. Naming: `pattern`, not `template`
 
-**Status: open. This doc uses "template" throughout, because that is what the code and the wire
-contract say.** If the rename lands, this doc changes with it. Recording the argument here so the
-decision is made deliberately rather than by default — it has a closing date (§1.4).
+**Decided and applied.** The matching construct is a **pattern** everywhere — wire contract, code,
+both SDKs, CLI, MCP tool definitions, docs. The inner field stays `match`.
 
-### 1.1 The case for keeping "template"
+Why it moved: to most engineers a *template* is a generator, something filled in to produce
+instances (HTML, C++, string templates). Radia's is the opposite — a recognizer — and the
+misreading had somewhere to land, because `kind_def` genuinely is blueprint-shaped. The word had
+also drifted from what once justified it: with `$in`, `$gt` and `$or` in the language it stopped
+being a partial instance and became a small query expression, which wants a word about selection.
 
-It is the lineage-correct word. In Linda — the tradition Radia's own name honours — the argument
-to `rd`/`in` is literally a *template* (occasionally "anti-tuple"); JavaSpaces kept it. For a
-reader who knows tuple spaces it signals exactly the right semantics: a partially specified
-instance that matches by structure.
+Why not `selector`, the other serious candidate: **it is already taken**, by the envelope selector
+on the ops plane (`{state:"leased", expired:true}`). The body/envelope split is the distinction
+these docs work hardest to keep sharp, and reusing one word across both planes would blur it.
+Never rename the body matcher to `selector`.
 
-It also earns its keep on the equality-only case. `{kind: "task", match: {op: "reverse"}}` really
-does look like a fragment of the record it matches — an example with holes. "Template" captures
-that example-shaped quality in a way "query" and "predicate" do not.
+Two consequences, both load-bearing:
 
-### 1.2 The case against
+- The livelock feature became **repeated-shape** detection
+  ([design-observability.md](design-observability.md)) because it had owned the word "pattern"
+  first. Never reintroduce "repeated-pattern" for it.
+- `notes/` keeps the old vocabulary deliberately. It is the origin outline — provenance, not a
+  maintained doc — so renaming it would falsify the record.
 
-**Mainstream usage points the arrow backwards.** To most working engineers a template is a
-*generator*: something filled in to produce instances (HTML, C++, string, PR templates). Radia's
-template is the opposite — a recognizer. A newcomer's first guess is inverted, and the misreading
-has somewhere to land, because Radia contains a thing that genuinely is blueprint-shaped:
-`kind_def`. People will call kind declarations "templates," and then the real templates need a
-disambiguating conversation. That is the tax.
+One sentence of lineage, because older prior-art reading uses the other word: Linda and JavaSpaces,
+the tuple-space tradition Radia's name honours, call this argument a *template*.
 
-**The word drifted from what justified it.** Once `$in`, `$gt` and `$or` arrived, a template
-stopped being a partial instance and became a small query expression. The example-shaped argument
-holds only for the simple case; the general case wants a word about *selection*, not shape.
+## 2. The pattern layer
 
-**The precedent lost.** JavaSpaces used "template" and lost the mindshare war. Kubernetes used
-"selector" for declarative data that picks out resources and made it a generation's vocabulary.
-Conversion to a content-routed model has to happen in a newcomer's first ten minutes, unaided; a
-word that misleads on first contact is a cost paid at the worst point in the funnel, and the
-audience that appreciates the Linda homage rounds to zero of that funnel.
-
-### 1.3 Alternatives, ranked
-
-1. **`pattern`** — strongest. "Pattern matching" is the one universally shared intuition pointing
-   the right way (Erlang, Rust, destructuring): recognize, don't generate. "Workers register
-   patterns", "starving patterns", "pattern-scoped grants" all read cleanly. Weakness is
-   genericness — and in *this* repo that is more than mild: `pattern` is already used for design
-   patterns throughout the docs and for **repeated-pattern livelock detection**
-   ([design-observability.md](design-observability.md), M3). A rename would collapse a term with
-   exactly one meaning onto one with several. Fixable by renaming the livelock feature too, but
-   that is part of the cost.
-2. **`selector`** — second. Kubernetes made it mainstream for these semantics and it connotes
-   data-not-code. But Radia already uses "selector" for the **envelope** selector on the ops plane
-   (`{state:"leased", expired:true}`), and the body/envelope split is the distinction the docs work
-   hardest to keep sharp. Reusing the word across both planes blurs the design's most deliberate
-   line. That existing usage is quietly an argument that "selector" was the natural word and is
-   already taken.
-3. **`query`** — accurate for reads, collides with the `query` verb (a template is the *argument*
-   to query), and undersells the routing/claiming role, which is the differentiating one.
-4. **`match`** — already the field name inside the template; the noun is awkward ("register a
-   match" sounds completed, not pending).
-5. **`interest`** — lovely for the subscription reading ("workers register interest"), wrong for
-   grants and one-shot reads. Worth stealing as prose, not as the term.
-
-### 1.4 What a rename would actually cost
-
-Lighter than expected, but one surface heavier than the first estimate. Inside the JSON payloads
-the fields are already `kind` / `match` / `orderBy`, so `Template` is largely an OpenAPI component
-name plus doc prose plus SDK vocabulary (`templates:` in `agentLoop`). **Verified — it is
-wire-visible in two places, not one:**
-
-- the **take selector** request field (`openapi/radia.yaml:184`), in the hot path of every worker;
-- the **`template` field in `grant` record bodies** (`:1049`), which is real stored data, echoed
-  by `narrowedBy`.
-
-So the rename is: docs, SDK option names, one request field, and one field in a reserved kind —
-plus `Template` schema name and 190 identifier sites in `src/`. Nontrivial but small. The npm/pip
-publish has not happened, so this is the last cheap moment. "The wire contract is frozen" is a
-discipline against churning *users*; pre-launch there are none.
-
-### 1.5 Recommendation
-
-Rename to **`pattern`**, keep `match` as the inner field it already is, rename the livelock
-feature to avoid the collision, and keep one sentence of lineage in the docs ("called a template
-in the Linda tradition Radia descends from"). That preserves the homage as trivia while giving
-first-contact readers a word whose arrow points the right way.
-
-The counterargument with real weight is consistency-conservatism: a rename must be **total** to be
-worth anything, because a codebase that says both is worse than either. If totality is a
-distraction right now, the fallback is cheap and nearly as effective — keep "template", but have
-every doc introduce it with the disarming line first: *a template matches records; it never
-generates them*, placed exactly where the misreading would otherwise occur.
-
-Do not do this halfway. Either surface is fine; the mixture is not.
-
----
-
-## 2. The template layer
-
-Templates are why the interesting applications are possible, and their limits are why some are
+Patterns are why the interesting applications are possible, and their limits are why some are
 harder than they look.
 
-### 2.1 Templates are data, and that is load-bearing
+### 2.1 Patterns are data, and that is load-bearing
 
 **Verified.** `src/core/matching.ts` holds `FORBIDDEN = new Set(["$regex", "$where", "$expr"])`,
-rejected at compile with `operator_forbidden` and the message "templates are data, not code". Any
+rejected at compile with `operator_forbidden` and the message "patterns are data, not code". Any
 unknown `$` key at object level also throws. Allowed:
 `$eq/$gt/$gte/$lt/$lte/$in/$exists/$any/$each/$and/$or`, with `$and`/`$or` nesting capped at depth
 3 (`MAX_DEPTH`). `$ne`/`$nin`/`$not`/`$prefix`/`$text` are deferred.
 
-Everything downstream depends on this. Because a template is a finite, analyzable structure rather
+Everything downstream depends on this. Because a pattern is a finite, analyzable structure rather
 than a predicate function, it can be **stored in a record** (which is what makes a grant a record
-rather than config), **compiled to SQL** as a pre-filter, **intersected with another template**
+rather than config), **compiled to SQL** as a pre-filter, **intersected with another pattern**
 server-side (which is what makes scoped authorization possible at all), and **shown to a human or
 an agent** and reasoned about before anything runs.
 
-Never add an operator that cannot be analyzed. The moment a template can execute, grants stop
+Never add an operator that cannot be analyzed. The moment a pattern can execute, grants stop
 being inspectable and the pushdown stops being sound.
 
-### 2.2 Templates are the authorization primitive, on both sides
+### 2.2 Patterns are the authorization primitive, on both sides
 
-The strongest thing in the codebase, and easy to miss. A grant carries an optional `template`,
+The strongest thing in the codebase, and easy to miss. A grant carries an optional `pattern`,
 enforced differently by direction.
 
 | Direction   | Mechanism          | Question it answers                         |
@@ -163,21 +98,21 @@ enforced differently by direction.
 | Write       | `bodyMatchesGrant` | May this principal *produce* this content?  |
 | Read/claim  | `combineMatch`     | Which records may this principal *observe*? |
 
-**Write side (verified, `src/core/space.ts`).** Each grant template is compiled against the kind
-and evaluated against the body being written; an uncompilable template grants nothing
+**Write side (verified, `src/core/space.ts`).** Each grant pattern is compiled against the kind
+and evaluated against the body being written; an uncompilable pattern grants nothing
 (fail-closed). Enforced in `handlers/records.ts` for `put`, `handlers/artifacts.ts` for artifact
 writes, and — importantly — **in core** for ack-emitted results, checked before anything is
 consumed.
 
-**Read/claim side (verified, `src/core/matching.ts`).** The grant's template (or the `$or` union of
+**Read/claim side (verified, `src/core/matching.ts`).** The grant's pattern (or the `$or` union of
 several) is ANDed with the client's own match: `{$and: [requestMatch, constraint]}`. Because the
-AND is applied server-side *after* the client's template, a wrong or buggy client template can only
+AND is applied server-side *after* the client's pattern, a wrong or buggy client pattern can only
 narrow. Applied in `handlers/records.ts` (query, read_one), `handlers/leases.ts` (take, including a
-synthesized template for a record-id take), and `handlers/watches.ts`.
+synthesized pattern for a record-id take), and `handlers/watches.ts`.
 
 Together these give environment tiering for free: a supervisor holding `put runnable {env:"ci"}`
-cannot mint a prod runnable, and a CI executor whose take grant is templated `{env:"ci"}` is
-*incapable* of claiming prod work regardless of what its own template says. This is the mechanism
+cannot mint a prod runnable, and a CI executor whose take grant is patterned `{env:"ci"}` is
+*incapable* of claiming prod work regardless of what its own pattern says. This is the mechanism
 behind §5.
 
 **Caveat, verified and important.** `Space.take` and `Space.query` do no grant work themselves —
@@ -185,12 +120,12 @@ behind §5.
 consumer of `Space` (embedded mode, an example's launcher, the conformance suite) bypasses grants
 entirely. Read every "the runtime enforces X" as "the HTTP boundary enforces X".
 
-### 2.3 What templates cannot express
+### 2.3 What patterns cannot express
 
-**Verified.** Template matching evaluates `rec.body` only (`matchesRecord` → `evalNode(rec.body,…)`).
+**Verified.** Pattern matching evaluates `rec.body` only (`matchesRecord` → `evalNode(rec.body,…)`).
 `taint` lives in `runtimeMeta`, not the body. Therefore:
 
-- **No template can filter on taint** — not in a query, not in a watch, not in a grant.
+- **No pattern can filter on taint** — not in a query, not in a watch, not in a grant.
 - The ops envelope-query plane (`GET /v0/ops/records`) accepts `state`, `expired`, `stale`,
   `limit`; there is no taint dimension there either.
 - The only place taint affects routing is a boolean skip in `rankClaimable`
@@ -214,10 +149,10 @@ work.
 
 ### 2.4 The soundness contract is the price
 
-Because templates compile to SQL, the pre-filter must **over-include, never over-exclude** — the
+Because patterns compile to SQL, the pre-filter must **over-include, never over-exclude** — the
 in-memory oracle decides (`src/storage/pushdown.ts`). Three live violations are recorded in
 [plan-audit-remediation.md](plan-audit-remediation.md) package E. The structural lesson: **every
-extension to the template language is also an extension to the pushdown, and an unsound pushdown
+extension to the pattern language is also an extension to the pushdown, and an unsound pushdown
 makes records invisible to `take` rather than merely slow.** A false-empty space is the worst
 failure this system has, because it looks like idleness.
 
@@ -231,7 +166,7 @@ way one organization's engineers can, which is the whole argument for content-ro
 
 The interchange format carries the same split. Barbara stores pickles — opaque to the substrate
 (unmatchable, unauditable) and executing code on load, so the storage format is itself an
-arbitrary-code-execution channel, tolerable only inside a hard perimeter. "Templates are data, not
+arbitrary-code-execution channel, tolerable only inside a hard perimeter. "Patterns are data, not
 code" is the opposite commitment. **You cannot taint-track a pickle, and you cannot route on one.**
 
 ### 2.6 The recurring patterns
@@ -345,7 +280,7 @@ which is what makes it a good fit.
 
 ```
 code_candidate (tainted; source as content-addressed artifact)
-  → scanner workers claim by template: lint, tests-in-sandbox, SAST, license
+  → scanner workers claim by pattern: lint, tests-in-sandbox, SAST, license
   → each acks an attestation record (parent: the candidate) — tainted, as descendants
   → a human or supervisor reviews the attestations
   → privileged DECLASSIFY emits the clean successor
@@ -359,7 +294,7 @@ carries the risk there. No comment or test asserts this as intent, so treat it a
 current code rather than a documented decision.
 
 **"On what" is the grants axis**, because one bit cannot distinguish "cleared for CI" from "cleared
-for prod". Template-scoped grants do, on both sides, per §2.2.
+for prod". Pattern-scoped grants do, on both sides, per §2.2.
 
 **The bytes are bound to the approval by content addressing.** Artifact digests are over plaintext,
 computed server-side, never taken from the client; records are immutable and carry `body_sha256`.
@@ -419,13 +354,13 @@ cautionary tale for §5.
 | Bank Python                                                      | Radia                                              | Where the rhyme breaks                                          |
 |-------------------------------------------------------------------|----------------------------------------------------|------------------------------------------------------------------|
 | **Barbara** — hierarchical KV of pickled objects, ~16MB soft limit | The space: records + content-addressed artifacts   | Barbara is name-addressed and mutable; Radia content-routed, append-only |
-| **Rings** — namespaces, stackable as overlays                      | Kinds + grants; scoping via templates              | Radia has no overlay/shadowing; rings are also how devs test     |
+| **Rings** — namespaces, stackable as overlays                      | Kinds + grants; scoping via patterns              | Radia has no overlay/shadowing; rings are also how devs test     |
 | Multiple instances, strongly consistent within, eventual across    | Embedded SQLite/PGlite vs. shared Postgres         | Radia's cross-instance gap is the kind registry, not auth        |
 | **Dagger** — DAG of instruments, auto-revalues dependents          | `parent_ids` lineage DAG                           | Dagger is forward recompute; Radia's DAG is backward provenance  |
 | **Walpole** — "mega Jenkins combined with mega systemd"            | Leases, take/ack, retries, watches                 | Radia's is a competitive work exchange, not a supervisor         |
 | Source code in Barbara's `sourcecode` ring                         | Saved procedures: source as artifact + record      | Bank Python did this for the whole firm's code                   |
 | **The vouch** — one code owner signs off, instantly in prod        | `grant_request` → human approval → privileged write | Radia's approval is an immutable record with lineage — but currently unattributed (§5) |
-| Pickle + zip                                                       | JSON records, analyzable templates, frozen OpenAPI | Pickle executes on load; it is the anti-Radia                    |
+| Pickle + zip                                                       | JSON records, analyzable patterns, frozen OpenAPI | Pickle executes on load; it is the anti-Radia                    |
 
 **Where they agree.** Integration is the product: positions, market data, code and jobs in one
 queryable place is almost word-for-word Radia's data-plane pitch. Both dogfood — Bank Python stores
@@ -484,12 +419,12 @@ What was checked, with evidence pointers.
 | Clients may raise taint, never lower it                                           | `pickPut`, `handlers/records.ts`; `conformance/suites/taint.ts` |
 | `declassify` is the only path clearing taint, and is ops-plane privileged          | `opts.taint` sole override; `READ_ONLY_OPS` excludes it |
 | `requireUntainted` enforced inside the claim transaction                          | `rankClaimable`, `src/core/take.ts`             |
-| Template-scoped grants enforced on writes, including ack-emitted results           | `bodyMatchesGrant`, `src/core/space.ts`         |
-| Grant template ANDed into client match server-side                                | `combineMatch`, `src/core/matching.ts`          |
+| Pattern-scoped grants enforced on writes, including ack-emitted results           | `bodyMatchesGrant`, `src/core/space.ts`         |
+| Grant pattern ANDed into client match server-side                                | `combineMatch`, `src/core/matching.ts`          |
 | `delegation_context` server-derived, not a `PutRequest` field                      | `deriveDelegation`, `src/core/record.ts`        |
 | `$regex`/`$where`/`$expr` forbidden at compile                                     | `FORBIDDEN`, `src/core/matching.ts`             |
-| Taint is a bare boolean, not in the body, therefore not template-matchable          | `RuntimeMeta`, both adapter schemas, `matchesRecord` |
-| `template` is wire-visible on the take selector and in grant bodies                | `openapi/radia.yaml:184`, `:1049`               |
+| Taint is a bare boolean, not in the body, therefore not pattern-matchable          | `RuntimeMeta`, both adapter schemas, `matchesRecord` |
+| `pattern` is wire-visible on the take selector and in grant bodies                | `openapi/radia.yaml:184`, `:1049`               |
 | **`record_edges` reverse index exists** — indexed, keyset-paged, same-transaction, backfilled | both adapters; `conformance/backfill.test.ts` |
 | Graph BFS calls `childrenOf` per node under a `GRAPH_FANOUT = 200` budget           | `src/core/space.ts:1181`, `:1238`               |
 | `matchesEvent` fires only on `state === "available"` and is watch-specific          | `src/core/space.ts:1257`                        |
@@ -516,7 +451,7 @@ These circulate — some appeared in other `agent_docs/` files. Check here befor
 | "Only the exec worker can write `procedure` records"       | **Configuration, not invariant.** `role` defaults to `admin`, whose session sends no bearer and resolves to the `human:local` operator |
 | "Three processes at three privilege levels"                | The repo's own diagram shows two; the third is the REPL/launcher         |
 | "Resource limits are hard and enforced"                    | Only `$and`/`$or` depth ≤ 3 and the 32 MiB artifact cap                  |
-| "`Template` is not wire-visible"                           | It is — the take selector request field, plus the grant body field       |
+| "`Pattern` is not wire-visible"                           | It is — the take selector request field, plus the grant body field       |
 
 ### Newly found gaps
 

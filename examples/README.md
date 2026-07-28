@@ -5,7 +5,7 @@ directory and README; start with whichever question you have.
 
 | Example | What it shows | Needs a key? |
 |---------|---------------|--------------|
-| [`pipeline/`](pipeline/) | Content-routed coordination with no routing table: a job fans out into tasks, workers claim only what matches their template, an aggregator fans the results back in. Leases, at-least-once, the event log, a 4-level lineage tree. | no |
+| [`pipeline/`](pipeline/) | Content-routed coordination with no routing table: a job fans out into tasks, workers claim only what matches their pattern, an aggregator fans the results back in. Leases, at-least-once, the event log, a 4-level lineage tree. | no |
 | [`stress/`](stress/) | What a busy space looks like. Waves of activity — poison records retrying into `dead_letter`, abandoned leases, per-op worker agents — to watch develop in the console's **Space** tab. | no |
 | [`chat/`](chat/) | The full end-to-end exercise: an LLM agent whose thinking, tool calls, images, saved files and sandboxed code execution are *all* records, served by six least-privilege worker processes with real auth roles. | yes |
 

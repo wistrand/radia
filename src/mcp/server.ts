@@ -23,7 +23,7 @@
 import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
 import { defaultBase, resolveToken } from "../credentials.ts";
 import type { Lease, RadiaRecord } from "../storage/adapter.ts";
-import type { Template } from "../core/matching.ts";
+import type { Pattern } from "../core/matching.ts";
 import { TOOLS } from "./tools.ts";
 import { flag } from "../flags.ts";
 import { stdin, writeStderr, writeStdout } from "../platform.ts";
@@ -90,7 +90,7 @@ async function handle(
         serverInfo: SERVER_INFO,
         instructions:
           `A Radia coordination space at ${base}. Agents exchange immutable JSON records and claim ` +
-          `work by template matching, not by addressing. Start with space_kinds to discover what ` +
+          `work by pattern matching, not by addressing. Start with space_kinds to discover what ` +
           `record kinds exist and how each is indexed — nothing about this space is implied by the ` +
           `tool list. Claim work with space_take and settle it with space_ack; the lease is held ` +
           `and renewed for you.`,
@@ -115,7 +115,7 @@ async function handle(
         return reply(id, { content: [{ type: "text", text }] });
       } catch (e) {
         // Tool-level failures are results with isError, not JSON-RPC errors — the model should
-        // see them and adapt (a rejected template says why), not have the call disappear.
+        // see them and adapt (a rejected pattern says why), not have the call disappear.
         return reply(id, { content: [{ type: "text", text: errorText(e) }], isError: true });
       }
     }
@@ -167,10 +167,10 @@ async function call(
     }
 
     case "space_query":
-      return pretty(await client.query(tpl(a), num(a, "limit") ?? 50));
+      return pretty(await client.query(pat(a), num(a, "limit") ?? 50));
 
     case "space_read_one":
-      return pretty(await client.readOne(tpl(a)));
+      return pretty(await client.readOne(pat(a)));
 
     case "space_get":
       return pretty(await client.getRecord(str(a, "recordId")));
@@ -186,11 +186,11 @@ async function call(
 
     case "space_take": {
       const leaseSeconds = num(a, "leaseSeconds") ?? 60;
-      const claimed = await client.take({ template: tpl(a) }, {
+      const claimed = await client.take({ pattern: pat(a) }, {
         leaseSeconds,
         requireUntainted: a.requireUntainted === true || undefined,
       });
-      if (!claimed) return "nothing available for that template";
+      if (!claimed) return "nothing available for that pattern";
       // The model gets a handle; the fenced lease never leaves this process.
       const claimId = `claim-${claimed.record.id}-${claimed.lease.epoch}`;
       const timer = setInterval(() => {
@@ -262,11 +262,11 @@ function num(a: Record<string, unknown>, k: string): number | undefined {
   return n;
 }
 
-function tpl(a: Record<string, unknown>): Template {
+function pat(a: Record<string, unknown>): Pattern {
   return {
     kind: str(a, "kind"),
     match: (a.match ?? undefined) as Record<string, unknown> | undefined,
-    orderBy: (a.orderBy ?? undefined) as Template["orderBy"],
+    orderBy: (a.orderBy ?? undefined) as Pattern["orderBy"],
   };
 }
 

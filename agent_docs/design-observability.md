@@ -21,9 +21,9 @@ stale-available records — and **remediation** (`adminTransition`,
 [design-auth.md](design-auth.md)) is the other operator action on this plane. All `/v0/ops/*` is
 grant-gated to operator principals (enforced). **Not
 implemented:** the hash-chained/anchored tamper-evident log (§9.1, M1–M2), envelope
-encryption / crypto-shredding (§9.2, M2), repeated-pattern livelock detection (M3),
-re-execution tooling (M3), and the full orphan/starving-template analysis (M1 — the current
-diagnostics use age/state heuristics, not template-match analysis).
+encryption / crypto-shredding (§9.2, M2), repeated-shape livelock detection (M3),
+re-execution tooling (M3), and the full orphan/starving-pattern analysis (M1 — the current
+diagnostics use age/state heuristics, not pattern-match analysis).
 
 ## Contents
 - Invariants
@@ -31,7 +31,7 @@ diagnostics use age/state heuristics, not template-match analysis).
 - Diagnostics
 - Livelock detection
 - Re-execution
-- Schema/template lifecycle
+- Schema/pattern lifecycle
 - Integrity architecture (why records are NOT signed)
 - Confidentiality architecture (three layers)
 
@@ -54,15 +54,15 @@ one.
 
 ## Diagnostics
 
-Orphan records · starving templates · wakeup amplification · duplicate-execution rate.
+Orphan records · starving patterns · wakeup amplification · duplicate-execution rate.
 
 Diagnostics are **compositions of substrate queries, not hand-rolled reports.** The building
 block is the envelope query (`Space.queryEnvelopes` / `GET /v0/ops/records?state=…`): filter
 records by runtime state, plus `expired` (lapsed lease) and `stale` (seconds sat available).
-Query-where-possible has a real boundary here: the content-routing template language matches
+Query-where-possible has a real boundary here: the content-routing pattern language matches
 record *bodies* (for routing) and deliberately can't see the envelope, so envelope filtering,
 aggregation (stats), and DAG-traversal (lineage/graph) are first-class ops capabilities rather
-than template queries — pushing them into the body-match DSL would corrupt it. What *can* be a
+than pattern queries — pushing them into the body-match DSL would corrupt it. What *can* be a
 query is one (the envelope filter); what genuinely can't stays a derived capability.
 
 **Remediation shares the diagnostic's selector.** `POST /v0/ops/remediate` takes the same envelope
@@ -86,12 +86,12 @@ normal, not stale, so it is excluded at the query level (`excludeKinds`, before 
 real starved work is never crowded out by reference records). See
 [design-matching.md](design-matching.md) `claimable`.
 
-## Livelock detection — repeated patterns, not cycles
+## Livelock detection — repeated shapes, not cycles
 
 The lineage DAG is acyclic by construction; ping-pong livelock is a repeating signature
 along a chain. Detect via:
 
-- repeated (agent, template/kind) signatures along ancestry,
+- repeated (agent, pattern/kind) signatures along ancestry,
 - max hop count,
 - max repeated-activation count,
 - no-progress detection via content hashes or an application-defined progress score
@@ -103,10 +103,10 @@ Capture: agent/prompt versions, model + provider + params, tool I/O, retrieval r
 schema and policy versions, artifact hashes, scheduler decisions, and logical time.
 External effects are suppressed / mocked / routed through replay-aware adapters.
 
-## Schema/template lifecycle
+## Schema/pattern lifecycle
 
-Templates pin validated schema versions; migration re-validates or quarantines
-(fault-injection case: migration with live templates — see
+Patterns pin validated schema versions; migration re-validates or quarantines
+(fault-injection case: migration with live patterns — see
 [plan-validation.md](plan-validation.md)).
 
 ## Integrity architecture (why records are NOT signed)

@@ -27,7 +27,7 @@ export const scaleBenches: Bench[] = [
         // The operation a work queue lives on: claim ranking has to find a candidate among
         // everything already in the space.
         out.push(await measure(`take ${tag}`, 20, async () => {
-          const c = await ctx.space.take({ template: { kind: "task", match: { op: "rare" } } }, { leaseSeconds: 1 });
+          const c = await ctx.space.take({ pattern: { kind: "task", match: { op: "rare" } } }, { leaseSeconds: 1 });
           if (c) await ctx.space.ack(c.lease);
         }));
         out.push(await measure(`stats ${tag}`, 10, () => ctx.space.stats()));

@@ -49,7 +49,7 @@ export const idempotencySuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter);
       await space.put({ kind: "task", body: { tag: "x" } });
-      const t = await space.take({ template: { kind: "task" } });
+      const t = await space.take({ pattern: { kind: "task" } });
       assert(t, "expected a take");
 
       const key = "ack-1";
@@ -76,7 +76,7 @@ export const idempotencySuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter);
       await space.put({ kind: "task", body: { tag: "x" } });
-      const t = await space.take({ template: { kind: "task" } });
+      const t = await space.take({ pattern: { kind: "task" } });
       assert(t);
       await space.ack(t!.lease, { kind: "result", body: { ok: true } }, "ack-2");
       assertEquals(

@@ -22,7 +22,7 @@
 //
 // RETIREMENT is a property of the projection, not of the runtime. `{retired: true}` on a successor
 // body means "this key is no longer active"; the runtime never interprets it (bodies stay opaque
-// data — see the templates-are-data invariant), it is honoured here, in the projection, once.
+// data — see the patterns-are-data invariant), it is honoured here, in the projection, once.
 // Nothing is deleted: the history stays queryable, the event log stays complete, and re-declaring
 // a retired key revives it because that record is newer still — so there is no un-retire path to
 // implement or to get wrong.
@@ -103,19 +103,38 @@ export function activeSet<T = unknown>(
 /**
  * The logical identity of a grant: everything that decides what it permits.
  *
- * A principal may hold several grants on one kind (different operations, different template
+ * A principal may hold several grants on one kind (different operations, different pattern
  * scopes), so this — not `(principal, kind)` — is what a retraction targets. Operations are sorted
  * so that the same grant written with the operations in a different order is the same entry.
  */
 export function grantKey(body: unknown): string | undefined {
-  const g = body as { principal?: unknown; kind?: unknown; operations?: unknown; template?: unknown };
+  const g = body as {
+    principal?: unknown;
+    kind?: unknown;
+    operations?: unknown;
+    pattern?: unknown;
+    template?: unknown;
+  };
   if (typeof g?.principal !== "string" || typeof g?.kind !== "string") return undefined;
+  // FAIL CLOSED on a grant whose scoping field this build does not understand. `pattern` was once
+  // called `template`, and this key encodes the pattern's VALUE rather than its field name — so a
+  // record written by the older build is indistinguishable here from an unpatterned grant, while
+  // `Space.authorize` reads `.pattern`, finds nothing, and treats it as UNRESTRICTED. A narrow
+  // grant silently widening to the whole kind is the worst failure this projection can produce, so
+  // an unrecognized shape identifies nothing and every projection drops it instead.
+  if (g.template !== undefined) return undefined;
   const ops = Array.isArray(g.operations) ? [...g.operations].map(String).sort().join(",") : "";
   // JSON-encoded parts, not a delimiter-joined string. Never separate with a NUL: it is invisible
   // in review and harmless as an in-memory Map key, but this key also travels as an idempotency
   // key, and Postgres rejects 0x00 in text outright. An encoded array is unambiguous (no value can
   // forge a boundary) and printable.
-  return JSON.stringify([g.principal, g.kind, ops, g.template ?? null]);
+  //
+  // The leading version tag namespaces these keys away from the pre-rename ones. Without it the
+  // value-based encoding produces the SAME key for a grant whose body changed shape, so writing it
+  // against a space that predates the rename failed with `idempotency_conflict` — a stored row
+  // matched the key while disagreeing about the body. Bump the tag whenever the grant body's shape
+  // changes; never reuse a tag across shapes.
+  return JSON.stringify(["g2", g.principal, g.kind, ops, g.pattern ?? null]);
 }
 
 /** What a registry read produced, and whether it saw everything. */

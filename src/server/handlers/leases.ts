@@ -5,7 +5,7 @@
 import type { Space, TakeInput } from "../../core/space.ts";
 import type { Lease } from "../../storage/adapter.ts";
 import type { PutRequest } from "../../core/record.ts";
-import { combineMatch, type Template } from "../../core/matching.ts";
+import { combineMatch, type Pattern } from "../../core/matching.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { pickResult } from "./records.ts";
 import { problem } from "../problem.ts";
@@ -57,41 +57,41 @@ export async function handleTake(space: Space, req: Request, principal: string):
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
 
   const recordId = typeof j.recordId === "string" ? j.recordId : undefined;
-  // `typeof [] === "object"`, so a bare object check lets `template: []` and `template: {}` through
+  // `typeof [] === "object"`, so a bare object check lets `pattern: []` and `pattern: {}` through
   // to the matcher with no kind — a 500 for what is plainly a bad request. Present-but-invalid is
   // rejected rather than silently ignored: dropping it would claim a different record than asked.
-  let template: Template | undefined;
-  if (j.template !== undefined && j.template !== null) {
-    const t = j.template as Record<string, unknown>;
+  let pattern: Pattern | undefined;
+  if (j.pattern !== undefined && j.pattern !== null) {
+    const t = j.pattern as Record<string, unknown>;
     if (typeof t !== "object" || Array.isArray(t) || typeof t.kind !== "string" || t.kind.length === 0) {
-      return problem(400, "invalid_template", "template.kind must be a non-empty string");
+      return problem(400, "invalid_pattern", "pattern.kind must be a non-empty string");
     }
-    template = t as unknown as Template;
+    pattern = t as unknown as Pattern;
   }
-  if (!recordId && !template) {
-    return problem(400, "invalid_selector", "take requires `template` or `recordId`");
+  if (!recordId && !pattern) {
+    return problem(400, "invalid_selector", "take requires `pattern` or `recordId`");
   }
 
   const leaseSeconds = typeof j.leaseSeconds === "number" && j.leaseSeconds > 0 ? j.leaseSeconds : undefined;
   const requireUntainted = j.requireUntainted === true;
   try {
-    // Authorize on the kind (from the template, or the record's own kind for a record-id take).
-    let kind = template?.kind;
+    // Authorize on the kind (from the pattern, or the record's own kind for a record-id take).
+    let kind = pattern?.kind;
     if (!kind && recordId) kind = (await space.getRecord(recordId))?.kind;
     let createdBy: string[] | undefined;
     if (kind) {
       const access = await space.readAccess(principal, "take", kind);
-      // A template-scoped grant narrows the claim: the record must also match the grant (grant ∧
-      // request). For a record-id take that means synthesizing a template the record must satisfy.
+      // A pattern-scoped grant narrows the claim: the record must also match the grant (grant ∧
+      // request). For a record-id take that means synthesizing a pattern the record must satisfy.
       if (access.constraint) {
-        template = { kind, match: combineMatch(template?.match, access.constraint), orderBy: template?.orderBy };
+        pattern = { kind, match: combineMatch(pattern?.match, access.constraint), orderBy: pattern?.orderBy };
       }
       // A claim returns the record BODY, so a self scope has to narrow `take` exactly as it
       // narrows `query` — otherwise draining the queue reads every record of the kind. It cannot
-      // ride in the template: `created_by` is envelope metadata, which templates never see.
+      // ride in the pattern: `created_by` is envelope metadata, which patterns never see.
       createdBy = access.createdBy;
     }
-    const sel: TakeInput = recordId ? { recordId, template } : { template: template! };
+    const sel: TakeInput = recordId ? { recordId, pattern } : { pattern: pattern! };
     const result = await space.take(sel, { leaseSeconds, requireUntainted, createdBy }, principal);
     return ok(result); // {record, lease} or null
   } catch (e) {

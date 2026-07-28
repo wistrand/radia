@@ -144,14 +144,14 @@ writers only).
 **M1 status: mostly unbuilt.** The intent stands — an indexed query can still be expensive, so
 limits are not optional, and they belong at commit/registration — but only two are enforced:
 
-- **template `$and`/`$or` nesting depth ≤ 3** — `MAX_DEPTH` in `src/core/matching.ts`, raised as
+- **pattern `$and`/`$or` nesting depth ≤ 3** — `MAX_DEPTH` in `src/core/matching.ts`, raised as
   `too_deep` at compile.
 - **artifact bytes**, default 32 MiB — `SpaceContext.maxArtifactBytes` (`src/core/space.ts`),
   returned as `413 artifact_too_large` by `src/server/handlers/artifacts.ts`.
 
 Still to build, tracked as the unchecked M1 item "resource limits enforced" in
-[plan-milestones.md](plan-milestones.md): max record and template size · body field depth ·
-predicate count · `$or` branch count · array cardinality · registered templates per agent ·
+[plan-milestones.md](plan-milestones.md): max record and pattern size · body field depth ·
+predicate count · `$or` branch count · array cardinality · registered patterns per agent ·
 watches per run · slow-lane time and row-scan budgets · SSE buffer/backpressure limits.
 
 The gap with a live consumer is **record body size**: nothing rejects a large body, so the
@@ -182,14 +182,14 @@ flowchart LR
 
 **An artifact is a record.** The reserved `artifact` kind's body is `{digest, mediaType, size,
 filename?}` — the metadata, never the bytes — so grants, taint, lineage, the event log, retention
-and template-scoped scoping all apply with no new machinery, and only the payload sits outside.
+and pattern-scoped scoping all apply with no new machinery, and only the payload sits outside.
 Indexed on `digest` (every record referencing the same bytes) and `mediaType` (a worker claims
 `{mediaType: "image/png"}` — content routing, not a routing table). `digest` and `size` are
 server-computed; a client cannot assert them.
 
 An application may merge its OWN fields into that body (`putArtifact`'s `appFields`, `X-Radia-Meta`
 on the wire — scalars, ASCII, since a header is a ByteString). Without them an artifact is the one
-kind an application cannot scope: a grant template matches the body, and a wholly runtime-built
+kind an application cannot scope: a grant pattern matches the body, and a wholly runtime-built
 body offers nothing to bind, so any principal holding an artifact id can read the bytes. Lineage
 does not help — `parent_ids` is not body, and matching is body-only by design. The runtime's fields
 are applied last and supplying one is refused, so app metadata can never forge a digest, size or

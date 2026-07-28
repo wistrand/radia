@@ -40,7 +40,7 @@ for (const name of Object.keys(tools)) {
 
 await agentLoop(client, {
   name: "tools",
-  templates: Object.keys(tools).map((tool) => ({ kind: "tool_call", match: { tool } })),
+  patterns: Object.keys(tools).map((tool) => ({ kind: "tool_call", match: { tool } })),
   handle: async (rec, c) => {
     const callId = rec.id;
     const b = rec.body as { tool: string; args?: Record<string, unknown>; conversationId?: string; owner?: string };

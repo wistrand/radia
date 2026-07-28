@@ -58,7 +58,7 @@ if (tier) {
 
 await agentLoop(client, {
   name: `inference:${tier ?? "all"}`,
-  templates: [tier ? { kind: "llm_call", match: { tier } } : { kind: "llm_call" }],
+  patterns: [tier ? { kind: "llm_call", match: { tier } } : { kind: "llm_call" }],
   leaseSeconds: 60, // inference can be slow; the heartbeat keeps the lease alive
   handle: async (rec, c) => {
     const callId = rec.id;

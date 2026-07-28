@@ -89,8 +89,8 @@ Also in this package, same theme:
   `read_one`, `take` and both artifact reads go through it, so the author scope cannot be fetched
   separately and then forgotten.
 - `take` carries the author scope into the CLAIM (`LeaseSpec.createdBy` → `rankClaimable`), beside
-  `requireUntainted`. It cannot ride in the template: `created_by` is envelope metadata, which
-  templates never see.
+  `requireUntainted`. It cannot ride in the pattern: `created_by` is envelope metadata, which
+  patterns never see.
 - `getLineage` and `getGraph` take an author scope and treat a foreign record as a WALL — traversal
   stops there rather than skipping it, since continuing would still expose the shape above.
 - Artifact reads apply the scope before serving bytes, and before minting a download capability
@@ -140,9 +140,9 @@ race itself is **fault-matrix work against a live Postgres**: "stale ack after r
 
 ## Package D — grant supersede vs. idempotency (P1) — DONE
 
-`supersedeGrantsFor` (`src/core/space.ts`) retires live grants whose template differs, but
+`supersedeGrantsFor` (`src/core/space.ts`) retires live grants whose pattern differs, but
 grants are put under a content-derived idempotency key and idempotency rows never expire. So
-re-declaring a previously-used template writes **nothing** while the supersede still retires
+re-declaring a previously-used pattern writes **nothing** while the supersede still retires
 the currently-live grant. Net: zero active grants, `createAgentDefinition` returns success.
 **Reproduced:**
 
@@ -157,9 +157,9 @@ identity → conversation → identity (`examples/chat/space/roles.ts`, `example
 
 Two more defects in the same mechanism:
 
-- Declaring two templated grants on one (principal, kind, operations) in a single definition
+- Declaring two patterned grants on one (principal, kind, operations) in a single definition
   keeps only the last — `supersedeGrantsFor` runs per grant inside the loop and retires its own
-  sibling. `authorize` is explicitly built to union templates; a definition can no longer
+  sibling. `authorize` is explicitly built to union patterns; a definition can no longer
   express that.
 - Retire records are keyed so a grant identity can be retired **at most once, ever**. A
   re-granted wide grant then survives the next supersede silently — misauthorization in the
@@ -180,7 +180,7 @@ Two more defects in the same mechanism:
 **throws `registry_incomplete` rather than superseding on a partial view** — a truncated read would
 silently leave stale grants live.
 
-Guards added in `conformance/suites/retire.ts` (they run on both adapters): the round trip (A → B → A), two templates
+Guards added in `conformance/suites/retire.ts` (they run on both adapters): the round trip (A → B → A), two patterns
 on one triple in one definition, and re-narrowing a grant that was retired and re-granted.
 
 ## Package E — pushdown soundness (P1)
@@ -203,7 +203,7 @@ but never over-exclude. Three violations:
 Fix the compilation for the first, tighten `getPath` for the second, and drop `exact` where the
 dialect cannot promise it for the third.
 
-Guard: a differential conformance test — same template and fixture set against every adapter and
+Guard: a differential conformance test — same pattern and fixture set against every adapter and
 the bare oracle, asserting identical result sets, over a fixture corpus that includes array
 paths, digit segments, leading zeros, and prototype-shaped names.
 
@@ -325,18 +325,18 @@ created at umask then chmod'd, leaving a world-readable window (`src/credentials
 control kinds other than `kind_def` can be redeclared and brick authorization across restarts
 (fail-closed, operator-recoverable); `parent_ids` existence documented as checked at commit but
 never is; `valueEq` compares objects by `JSON.stringify` and is key-order-sensitive;
-`PutResult.deduped` is never true; template-take OFFSET pagination transiently skips claimable
+`PutResult.deduped` is never true; pattern-take OFFSET pagination transiently skips claimable
 rows; `lease_epoch` is not monotonic per record; `ownerGuard` can turn a succeeded settle's
 retry into a false `lease_lost`; the chat router omits `owner` from progress records; Python SSE
 lacks backoff on clean close; TS `req`/`putArtifact` call `JSON.parse` before checking
 `res.ok`. Separately, the artifact write-side grant check matches a body omitting `appFields`
-(`src/server/handlers/artifacts.ts`), so template-scoped put grants on an app field can never be
+(`src/server/handlers/artifacts.ts`), so pattern-scoped put grants on an app field can never be
 satisfied — fail-closed, so legitimate writes just 403.
 
 ## Verified clean
 
 Recorded so a later audit does not re-walk them: `src/storage/crypto.ts` throughout (fresh DEK
-per seal, tag verified, digest-as-AAD, AES-KW); no SQL injection (template path segments are
+per seal, tag verified, digest-as-AAD, AES-KW); no SQL injection (pattern path segments are
 alphabet-restricted before inlining, blob digests shape-checked before touching the
 filesystem); time comparisons use the DB clock; idempotency-before-lease-validation ordering
 holds in both adapters; RFC 9457 bodies leak nothing internal; server-assigned metadata is not

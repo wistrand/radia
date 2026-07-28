@@ -89,10 +89,10 @@ export interface Lease {
 }
 
 // ---------------------------------------------------------------------------
-// Compiled match — backend-neutral template AST
+// Compiled match — backend-neutral pattern AST
 // ---------------------------------------------------------------------------
 //
-// core/matching.ts compiles a wire template into this neutral AST over declared indexed
+// core/matching.ts compiles a wire pattern into this neutral AST over declared indexed
 // paths, and core/matching.ts's evaluator is the SEMANTIC ORACLE for it. `storage/pushdown.ts`
 // renders nodes into each dialect (Postgres jsonb / SQLite json_extract) as a SOUND PRE-FILTER:
 // SQL implied by the oracle's verdict, never a substitute for it, so a node it cannot express
@@ -253,8 +253,8 @@ export interface LeaseRef {
 }
 
 export type TakeSelector =
-  | { template: CompiledMatch }
-  | { recordId: Ulid; template?: CompiledMatch };
+  | { pattern: CompiledMatch }
+  | { recordId: Ulid; pattern?: CompiledMatch };
 
 export interface TakeResult {
   record: RadiaRecord;
@@ -297,11 +297,11 @@ export interface StorageAdapter {
   readOne(match: CompiledMatch, scope?: StatsScope): Promise<RadiaRecord | null>;
 
   /**
-   * Matching records, ordered by the template, capped at `limit`.
+   * Matching records, ordered by the pattern, capped at `limit`.
    *
    * `page` is KEYSET pagination over record id — a cursor, not an offset, so a page stays stable
    * while records are being written. It is defined only for the natural (id) order, i.e. when the
-   * template carries no `orderBy`: a keyset cursor has to be the whole sort key, and for a body
+   * pattern carries no `orderBy`: a keyset cursor has to be the whole sort key, and for a body
    * field that means (value, id) pairs plus the type semantics of the oracle. Refusing the
    * combination is the honest bound; sorting by a body field still works, just without a cursor.
    *

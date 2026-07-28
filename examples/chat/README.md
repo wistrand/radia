@@ -275,7 +275,7 @@ Without that, reuse means re-typing the whole program into every call — which 
 "hash both files" turn re-transcribe the files into its own source. A saved procedure stores the
 code as an **artifact** and its name/description/schema as a `procedure` record, and then behaves
 exactly like any other tool: it shows up in the tool list on the next turn, is dispatched by
-content (`tool_call{tool: <its name>}`, one claim template per name), and its arguments arrive
+content (`tool_call{tool: <its name>}`, one claim pattern per name), and its arguments arrive
 inside the sandbox as `args`. Adding a procedure adds a tool with no code change anywhere — the
 same property that adding a worker has, applied to code the assistant wrote itself.
 
@@ -304,7 +304,7 @@ Three details carry the weight:
 - **A procedure cannot take a name a worker already serves**, checked against DISCOVERED capability
   records rather than a hardcoded list — the names that matter belong to other workers
   (`read_file`, `generate_image`, `space_query`). Allowing one would not be a naming annoyance but
-  a hijack: the exec worker would add a claim template for `tool_call{tool:"read_file"}` alongside
+  a hijack: the exec worker would add a claim pattern for `tool_call{tool:"read_file"}` alongside
   the tools-worker's, both would race for every call, and the model would still be shown the real
   tool's description. It is re-checked at execution as well as at save, because a worker may start
   serving the name later.
@@ -322,7 +322,7 @@ what a program *printed*. Both were needed: content whose only source is the mod
 no other route out of the conversation, and making it re-emit that text inside a `run_code` literal
 costs the identical tokens and lands in the thread identically. The rule that still holds is the
 one about records: payloads go out of line as artifacts, while the conversation stays queryable
-JSON — messages-as-blobs would break matching, template scoping, windowing and the Feed at once.
+JSON — messages-as-blobs would break matching, pattern scoping, windowing and the Feed at once.
 
 **Code output can become an artifact, which is how the assistant saves a file.** `run_code` takes
 `save_as` (plus optional `media_type` and `encoding: "base64"` for binary): stdout is stored as an

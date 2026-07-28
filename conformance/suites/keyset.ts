@@ -150,7 +150,7 @@ export const keysetSuites: Suite[] = [
         } catch (e) {
           code = (e as RadiaError).code;
         }
-        assertEquals(code, "invalid_template", `order_by + ${JSON.stringify(page)} must be rejected`);
+        assertEquals(code, "invalid_pattern", `order_by + ${JSON.stringify(page)} must be rejected`);
       }
       assertEquals((await space.query({ kind: "note", orderBy: [{ path: "n" }] }, 5)).length, 3);
     },

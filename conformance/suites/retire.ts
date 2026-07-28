@@ -108,15 +108,15 @@ export const retireSuites: Suite[] = [
     run: async (adapter) => {
       const space = new Space(adapter);
       space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
-      const a = { principal: "agent:w", kind: "task", operations: ["query"], template: { tag: "a" } };
-      const b = { principal: "agent:w", kind: "task", operations: ["query"], template: { tag: "b" } };
+      const a = { principal: "agent:w", kind: "task", operations: ["query"], pattern: { tag: "a" } };
+      const b = { principal: "agent:w", kind: "task", operations: ["query"], pattern: { tag: "b" } };
       await space.put({ kind: "grant", body: a });
       await space.put({ kind: "grant", body: b });
       assertEquals((await space.authorize("agent:w", "query", "task"))?.length, 2, "both scopes apply");
 
       await space.put({ kind: "grant", body: { ...a, retired: true } });
       const left = await space.authorize("agent:w", "query", "task");
-      assertEquals(left, [{ tag: "b" }], "only the surviving scope — template is part of a grant's identity");
+      assertEquals(left, [{ tag: "b" }], "only the surviving scope — pattern is part of a grant's identity");
     },
   },
   {
@@ -190,7 +190,7 @@ export const retireSuites: Suite[] = [
     },
   },
   {
-    name: "swapping one grant template for another supersedes the old one",
+    name: "swapping one grant pattern for another supersedes the old one",
     run: async (adapter) => {
       const space = new Space(adapter);
       space.registerKind({
@@ -199,15 +199,15 @@ export const retireSuites: Suite[] = [
       });
 
       await space.createAgentDefinition("agent:w", [
-        { principal: "agent:w", kind: "message", operations: ["query"], template: { owner: "agent:w" } },
+        { principal: "agent:w", kind: "message", operations: ["query"], pattern: { owner: "agent:w" } },
       ]);
       assertEquals(await space.authorize("agent:w", "query", "message"), [{ owner: "agent:w" }]);
 
-      // Switching what a grant binds to is not adding a grant. Templates union, so without
+      // Switching what a grant binds to is not adding a grant. Patterns union, so without
       // superseding the principal would hold BOTH bindings and see the union of them — a change of
-      // scope that widens instead of changing. Found by testing the untemplated case's fix.
+      // scope that widens instead of changing. Found by testing the unpatterned case's fix.
       await space.createAgentDefinition("agent:w", [
-        { principal: "agent:w", kind: "message", operations: ["query"], template: { conversationId: "c1" } },
+        { principal: "agent:w", kind: "message", operations: ["query"], pattern: { conversationId: "c1" } },
       ]);
       assertEquals(
         await space.authorize("agent:w", "query", "message"),
@@ -228,13 +228,13 @@ export const retireSuites: Suite[] = [
       ]);
       assertEquals(await space.authorize("agent:w", "query", "message"), null, "unrestricted to begin with");
 
-      // The new build declares the SAME grant with a template. Scope and template are part of a
+      // The new build declares the SAME grant with a pattern. Scope and pattern are part of a
       // grant's identity, so without superseding this is a second grant beside the first — and
       // grants union, so the tightening would change nothing at all. That is not hypothetical: it
       // is how a session on a pre-existing space kept reading every conversation after its grants
       // were scoped to one.
       await space.createAgentDefinition("agent:w", [
-        { principal: "agent:w", kind: "message", operations: ["put", "query"], template: { conversationId: "mine" } },
+        { principal: "agent:w", kind: "message", operations: ["put", "query"], pattern: { conversationId: "mine" } },
       ]);
       assertEquals(
         await space.authorize("agent:w", "query", "message"),
@@ -257,7 +257,7 @@ export const retireSuites: Suite[] = [
       await space.put({ kind: "grant", body: { principal: "agent:w", kind: "message", operations: ["read_one"] } });
 
       await space.createAgentDefinition("agent:w", [
-        { principal: "agent:w", kind: "message", operations: ["put", "query"], template: { conversationId: "mine" } },
+        { principal: "agent:w", kind: "message", operations: ["put", "query"], pattern: { conversationId: "mine" } },
       ]);
 
       assertEquals(await space.authorize("agent:w", "query", "note"), null, "another kind is untouched");
@@ -280,13 +280,13 @@ export const retireSuites: Suite[] = [
         principal: "agent:w",
         kind: "message",
         operations: ["query"],
-        template: { owner: "agent:w" },
+        pattern: { owner: "agent:w" },
       };
       const conversation: GrantDef = {
         principal: "agent:w",
         kind: "message",
         operations: ["query"],
-        template: { conversationId: "c1" },
+        pattern: { conversationId: "c1" },
       };
 
       // The grant write is content-keyed, and the supersede retires whatever is live. Together
@@ -306,22 +306,22 @@ export const retireSuites: Suite[] = [
     },
   },
   {
-    name: "a definition may declare two templates on one triple, and they union",
+    name: "a definition may declare two patterns on one triple, and they union",
     run: async (adapter) => {
       const space = new Space(adapter);
       space.registerKind({ kind: "message", indexedPaths: [{ path: "conversationId", type: "keyword" }] });
 
       // Superseding per grant as each one lands makes the second retire the first. `authorize`
-      // unions templates on purpose, so a definition has to be able to declare more than one.
+      // unions patterns on purpose, so a definition has to be able to declare more than one.
       await space.createAgentDefinition("agent:w", [
-        { principal: "agent:w", kind: "message", operations: ["query"], template: { conversationId: "a" } },
-        { principal: "agent:w", kind: "message", operations: ["query"], template: { conversationId: "b" } },
+        { principal: "agent:w", kind: "message", operations: ["query"], pattern: { conversationId: "a" } },
+        { principal: "agent:w", kind: "message", operations: ["query"], pattern: { conversationId: "b" } },
       ]);
-      const templates = await space.authorize("agent:w", "query", "message");
-      assertEquals(templates?.length, 2, "both declared scopes survive");
+      const patterns = await space.authorize("agent:w", "query", "message");
+      assertEquals(patterns?.length, 2, "both declared scopes survive");
       assert(
-        templates?.some((t) => t.conversationId === "a") && templates?.some((t) => t.conversationId === "b"),
-        `expected both scopes, got ${JSON.stringify(templates)}`,
+        patterns?.some((t) => t.conversationId === "a") && patterns?.some((t) => t.conversationId === "b"),
+        `expected both scopes, got ${JSON.stringify(patterns)}`,
       );
     },
   },
@@ -335,7 +335,7 @@ export const retireSuites: Suite[] = [
         principal: "agent:w",
         kind: "message",
         operations: ["query"],
-        template: { owner: "agent:w" },
+        pattern: { owner: "agent:w" },
       };
 
       // Keying a retirement on the grant identity alone lets an identity be retired only ONCE.

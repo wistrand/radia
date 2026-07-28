@@ -1,5 +1,5 @@
 // The Space service: the storage-agnostic runtime logic behind the HTTP surface. It owns
-// server-side policy (metadata assignment, template compilation) and delegates atomic
+// server-side policy (metadata assignment, pattern compilation) and delegates atomic
 // storage transitions to a StorageAdapter. One Space wraps one adapter.
 
 import type {
@@ -26,7 +26,7 @@ import type {
 } from "../storage/adapter.ts";
 import { addSeconds } from "./time.ts";
 import { buildRecord, type PutRequest } from "./record.ts";
-import { compileTemplate, matchesRecord, type Template } from "./matching.ts";
+import { compilePattern, matchesRecord, type Pattern } from "./matching.ts";
 import {
   AGENT_DEFINITION,
   AGENT_RUN,
@@ -92,8 +92,8 @@ const DEFAULT_CONTEXT: SpaceContext = {
 
 /** How a caller selects work to take. */
 export type TakeInput =
-  | { template: Template }
-  | { recordId: string; template?: Template };
+  | { pattern: Pattern }
+  | { recordId: string; pattern?: Pattern };
 
 export interface TakeOptions {
   leaseSeconds?: number;
@@ -115,9 +115,9 @@ export interface Watch {
   createdBy?: string[];
 }
 
-/** What a read verb is allowed to see: template constraint plus author restriction. */
+/** What a read verb is allowed to see: pattern constraint plus author restriction. */
 export interface ReadAccess {
-  /** Templates the request must additionally satisfy (`null` = unrestricted). */
+  /** Patterns the request must additionally satisfy (`null` = unrestricted). */
   constraint: Record<string, unknown>[] | null;
   /** Principals whose records are readable, or `undefined` for no author restriction. */
   createdBy?: string[];
@@ -141,7 +141,7 @@ export interface EffectivePermissions {
     kind: string;
     operations: GrantOp[];
     readsScopedToSelf: boolean;
-    templates: Record<string, unknown>[];
+    patterns: Record<string, unknown>[];
     /** Set when NO such kind is declared on this space, so the grant authorizes nothing. A grant
      *  may legitimately precede its kind (an operator bootstraps an agent before the fleet declares
      *  its kinds), so this is a flag rather than an error — but an agent that guessed a kind name
@@ -293,10 +293,10 @@ export class Space {
   }
 
   /**
-   * Reject a grant whose `template` could never compile — while the kind is known.
+   * Reject a grant whose `pattern` could never compile — while the kind is known.
    *
-   * A grant template is otherwise validated only when it COMPILES AT USE, which is late in a way
-   * that matters: a template naming a path the kind does not declare is accepted, looks assigned in
+   * A grant pattern is otherwise validated only when it COMPILES AT USE, which is late in a way
+   * that matters: a pattern naming a path the kind does not declare is accepted, looks assigned in
    * every listing, and then denies or 400s at the first read. Authorization that appears granted
    * and does nothing is worse than a rejected write.
    *
@@ -305,13 +305,13 @@ export class Space {
    * fleet declares its kinds at startup). An unknown kind is therefore not an error here — this
    * catches the mistake it can catch and leaves the rest to use, as before.
    */
-  private checkGrantTemplate(def: GrantDef): void {
-    if (!def.template || !this.kinds.get(def.kind)) return;
+  private checkGrantPattern(def: GrantDef): void {
+    if (!def.pattern || !this.kinds.get(def.kind)) return;
     try {
-      compileTemplate({ kind: def.kind, match: def.template }, this.kinds.get(def.kind));
+      compilePattern({ kind: def.kind, match: def.pattern }, this.kinds.get(def.kind));
     } catch (e) {
       const why = e instanceof RadiaError ? e.message : String(e);
-      throw new RadiaError("invalid_grant", `grant template does not compile against kind '${def.kind}': ${why}`);
+      throw new RadiaError("invalid_grant", `grant pattern does not compile against kind '${def.kind}': ${why}`);
     }
   }
 
@@ -349,12 +349,12 @@ export class Space {
    * requires privilege (assigned, never self-declared). Any other principal needs a matching
    * **grant record** (kind-scoped, op-scoped) — a run inherits its agent definition's grants.
    *
-   * Returns the **template constraint** for template-scoped grants: `null` when unrestricted
-   * (privileged, or at least one matching grant has no template), or the list of grant templates
+   * Returns the **pattern constraint** for pattern-scoped grants: `null` when unrestricted
+   * (privileged, or at least one matching grant has no pattern), or the list of grant patterns
    * (their union) the request must additionally satisfy. For read/take, callers AND it into the
    * query via `combineMatch` (`grant ∧ request`); for `put`, callers check the record body against
    * it with `bodyMatchesGrant` (write-side scoping — the principal may only write records inside
-   * the grant's template).
+   * the grant's pattern).
    */
   async authorize(principal: string, op: GrantOp, kind: string): Promise<Record<string, unknown>[] | null> {
     if (this.isPrivileged(principal)) return null;
@@ -365,7 +365,7 @@ export class Space {
     // Grants are records: query the ones for this (subject, kind) and check the op.
     //
     // ADDITIVE, not latest-wins: a principal may hold several grants on one kind (different
-    // operations, different template scopes) and they coexist. So a revocation targets one GRANT,
+    // operations, different pattern scopes) and they coexist. So a revocation targets one GRANT,
     // identified by its content (`grantKey`), and `activeSet` drops exactly that entry while
     // leaving the others in force. Projecting by (principal, kind) instead would let a single
     // revocation silently take every grant on the kind with it.
@@ -377,13 +377,13 @@ export class Space {
     if (applicable.length === 0) {
       throw new RadiaError("forbidden", `principal '${principal}' has no '${op}' grant for kind '${kind}'`);
     }
-    const templates: Record<string, unknown>[] = [];
+    const patterns: Record<string, unknown>[] = [];
     for (const g of applicable) {
-      const t = (g.body as GrantDef).template;
+      const t = (g.body as GrantDef).pattern;
       if (!t || Object.keys(t).length === 0) return null; // an unrestricted grant widens to the whole kind
-      templates.push(t);
+      patterns.push(t);
     }
-    return templates; // constrained: request must additionally match one of these
+    return patterns; // constrained: request must additionally match one of these
   }
 
   /**
@@ -414,11 +414,11 @@ export class Space {
   }
 
   /**
-   * Everything a READ of `kind` is allowed to see: the template constraint AND the author
+   * Everything a READ of `kind` is allowed to see: the pattern constraint AND the author
    * restriction, in one answer.
    *
    * Both halves are needed on every read verb, and asking for them separately is how they drift —
-   * `take`, lineage, graph and the artifact reads each authorized on the template and silently
+   * `take`, lineage, graph and the artifact reads each authorized on the pattern and silently
    * skipped the author scope, so a self-scoped grant returned other principals' records through
    * them while `query` correctly returned none. Never call `authorize` alone on a read path; call
    * this, and apply both fields.
@@ -467,12 +467,12 @@ export class Space {
       return { principal, subject, privileged: true, kinds: [], ops: { reachable: true, kinds: [] }, complete: true };
     }
     const view = await this.registry(GRANT, grantKey, { principal: subject });
-    const byKind = new Map<string, { kind: string; operations: GrantOp[]; scoped: boolean; unscoped: boolean; opsEligible: boolean; templates: Record<string, unknown>[] }>();
+    const byKind = new Map<string, { kind: string; operations: GrantOp[]; scoped: boolean; unscoped: boolean; opsEligible: boolean; patterns: Record<string, unknown>[] }>();
     for (const rec of view.entries.values()) {
       const g = rec.body as GrantDef & { scope?: { createdBy?: string } };
       if (typeof g.kind !== "string" || !Array.isArray(g.operations)) continue;
       const row = byKind.get(g.kind) ??
-        { kind: g.kind, operations: [], scoped: false, unscoped: false, opsEligible: false, templates: [] };
+        { kind: g.kind, operations: [], scoped: false, unscoped: false, opsEligible: false, patterns: [] };
       for (const op of g.operations) if (!row.operations.includes(op)) row.operations.push(op);
       if (g.scope?.createdBy === "self") row.scoped = true;
       else row.unscoped = true;
@@ -480,7 +480,7 @@ export class Space {
       // scope — never of the union across grants. `opsScope` asks it that way, so asking it any
       // other way here reports a plane the caller is then refused.
       if (g.scope?.createdBy === "self" && g.operations.includes("query")) row.opsEligible = true;
-      if (g.template && Object.keys(g.template).length > 0) row.templates.push(g.template);
+      if (g.pattern && Object.keys(g.pattern).length > 0) row.patterns.push(g.pattern);
       byKind.set(g.kind, row);
     }
     // The ops plane is reachable for kinds holding ONE grant that is both a `query` grant and
@@ -504,7 +504,7 @@ export class Space {
         // `put` reads as unscoped. A view that can drift from the decision is worse than no view,
         // because it is believed.
         readsScopedToSelf: (await this.authorScope(principal, "query", r.kind)) !== undefined,
-        templates: r.templates,
+        patterns: r.patterns,
       });
     }
     return {
@@ -521,7 +521,7 @@ export class Space {
    * Authorize a watch on `kind`. A watch OBSERVES matching records (its SSE payload is record
    * existence + ids + kind + timing), so it is allowed if the principal holds ANY grant on the kind
    * — it is a participant — regardless of op (a watcher may hold only `take`, like the agentLoop, or
-   * only `read_one`, like a result consumer). Returns the UNION of those grants' templates to AND
+   * only `read_one`, like a result consumer). Returns the UNION of those grants' patterns to AND
    * into the watch match (`null` = unrestricted / privileged), so a watcher only wakes on records
    * inside its grant scope — the same content-scoping `query`/`take` get. Throws `forbidden` if the
    * principal has no grant for the kind (closing the last unguarded coordination verb).
@@ -543,25 +543,25 @@ export class Space {
     const createdBy = grants.every((g) => g.scope?.createdBy === "self")
       ? await this.runPrincipalsOf(subject, principal)
       : undefined;
-    const templates: Record<string, unknown>[] = [];
+    const patterns: Record<string, unknown>[] = [];
     for (const g of grants) {
-      const t = g.template;
+      const t = g.pattern;
       if (!t || Object.keys(t).length === 0) return { constraint: null, createdBy }; // unrestricted widens to the kind
-      templates.push(t);
+      patterns.push(t);
     }
-    return { constraint: templates, createdBy };
+    return { constraint: patterns, createdBy };
   }
 
-  /** Write-side template scoping: does `body` (of `kind`) satisfy at least one grant `template`?
-   *  A template-scoped `put` grant lets a principal write only records inside its template (the
-   *  union across grants). Compiles each template against the kind (so its paths must be declared
+  /** Write-side pattern scoping: does `body` (of `kind`) satisfy at least one grant `pattern`?
+   *  A pattern-scoped `put` grant lets a principal write only records inside its pattern (the
+   *  union across grants). Compiles each pattern against the kind (so its paths must be declared
    *  indexed, same as read-side) and evaluates the body with the matching oracle. */
-  bodyMatchesGrant(kind: string, body: unknown, templates: Record<string, unknown>[]): boolean {
-    return templates.some((t) => {
+  bodyMatchesGrant(kind: string, body: unknown, patterns: Record<string, unknown>[]): boolean {
+    return patterns.some((t) => {
       try {
         return matchesRecord({ kind, body } as RadiaRecord, this.compile({ kind, match: t }));
       } catch {
-        return false; // an uncompilable grant template (e.g. undeclared path) grants nothing
+        return false; // an uncompilable grant pattern (e.g. undeclared path) grants nothing
       }
     });
   }
@@ -607,7 +607,7 @@ export class Space {
     await this.putRaw({ kind: AGENT_DEFINITION, body: { agent, tokenHash: hash } });
     for (const g of grants) {
       validateGrantDef(g);
-      this.checkGrantTemplate(g);
+      this.checkGrantPattern(g);
     }
     // One registry read per principal named here, taken BEFORE any write and reused for both the
     // revival check and the supersede. Never read it per grant inside the loop: superseding as
@@ -650,13 +650,13 @@ export class Space {
   /**
    * Make an agent definition AUTHORITATIVE for the exact grants it declares.
    *
-   * A grant's identity includes its template, so declaring a differently-scoped version of an
+   * A grant's identity includes its pattern, so declaring a differently-scoped version of an
    * existing grant creates a SECOND grant rather than replacing the first — and grants union, so
    * the new one changes nothing. Every live grant on the same (principal, kind, operations) whose
-   * template differs from the declared one is therefore retired here.
+   * pattern differs from the declared one is therefore retired here.
    *
-   * This covers both ways it bites: adding a template beside an untemplated grant (tightening an
-   * existing space), and REPLACING one template with another (switching a session's scope from one
+   * This covers both ways it bites: adding a pattern beside an unpatterned grant (tightening an
+   * existing space), and REPLACING one pattern with another (switching a session's scope from one
    * binding to another). Without the retire, both silently do nothing — the two grants union and
    * the wider view wins.
    *
@@ -668,7 +668,7 @@ export class Space {
    * with the live one, so it would retire the grant it just wrote.
    *
    * Takes the WHOLE declared set, never one grant at a time, so grants declared together do not
-   * retire each other — a definition may legitimately declare two templates on one triple, and
+   * retire each other — a definition may legitimately declare two patterns on one triple, and
    * `authorize` unions them.
    */
   private async supersedeGrantsFor(declared: GrantDef[], views: Map<string, RegistryView>): Promise<void> {
@@ -848,7 +848,7 @@ export class Space {
     if (req.kind === GRANT) {
       const def = this.grantDefFromBody(req.body);
       validateGrantDef(def);
-      this.checkGrantTemplate(def);
+      this.checkGrantPattern(def);
     }
     return this.putRaw(req, idempotencyKey, { principal });
   }
@@ -924,7 +924,7 @@ export class Space {
        * APPLICATION fields merged into the artifact's record body.
        *
        * The body is otherwise entirely runtime-built, which would leave artifacts as the one kind
-       * an application cannot scope: a grant template matches the body, so with nothing of the
+       * an application cannot scope: a grant pattern matches the body, so with nothing of the
        * app's in there, "artifacts belonging to this conversation" is inexpressible and any
        * holder of an artifact id can read it. These are client CLAIMS like any other body
        * content — the runtime routes on them, never trusts them — and the authoritative fields
@@ -999,12 +999,12 @@ export class Space {
     for (const [token, cap] of this.downloadCaps) if (cap.expiresAt <= now) this.downloadCaps.delete(token);
   }
 
-  readOne(template: Template, scope?: StatsScope): Promise<RadiaRecord | null> {
-    return this.storage.readOne(this.compile(template), scope);
+  readOne(pattern: Pattern, scope?: StatsScope): Promise<RadiaRecord | null> {
+    return this.storage.readOne(this.compile(pattern), scope);
   }
 
   /**
-   * Matching records ordered by the template, capped at `limit`.
+   * Matching records ordered by the pattern, capped at `limit`.
    *
    * `page` is a KEYSET cursor over record id (`after` exclusive, `dir` to walk backwards) — the
    * stable way to paginate a space that is still being written to, and the only way to ask for the
@@ -1013,11 +1013,11 @@ export class Space {
    * the whole sort key plus the oracle's type rules, so combining them is rejected rather than
    * silently resolved one way.
    */
-  query(template: Template, limit = 100, page?: Page, scope?: StatsScope): Promise<RadiaRecord[]> {
-    const compiled = this.compile(template);
+  query(pattern: Pattern, limit = 100, page?: Page, scope?: StatsScope): Promise<RadiaRecord[]> {
+    const compiled = this.compile(pattern);
     if (page && (page.after || page.dir) && compiled.orderBy?.length) {
       throw new RadiaError(
-        "invalid_template",
+        "invalid_pattern",
         "a keyset page (after/dir) is only defined for the natural id order — drop order_by, or page without a cursor",
       );
     }
@@ -1099,8 +1099,8 @@ export class Space {
       createdBy: opts.createdBy,
     };
     const selector: TakeSelector = "recordId" in sel
-      ? { recordId: sel.recordId, template: sel.template ? this.compile(sel.template) : undefined }
-      : { template: this.compile(sel.template) };
+      ? { recordId: sel.recordId, pattern: sel.pattern ? this.compile(sel.pattern) : undefined }
+      : { pattern: this.compile(sel.pattern) };
     return this.storage.take(selector, spec).then((r) => {
       this.notifier.notify(); // a claim changes state; a nack/release elsewhere may reopen work
       return r;
@@ -1129,12 +1129,12 @@ export class Space {
       ];
       // Emitting a result IS a put: authorize the ACTING principal to put this kind (this closes
       // the gap where ack-emitted records bypassed put-authorization). Pipeline-friendly — each
-      // agent needs only its own grant. A template-scoped grant also constrains the result body.
+      // agent needs only its own grant. A pattern-scoped grant also constrains the result body.
       // Throws forbidden before anything is consumed.
       if (owner) {
         const constraint = await this.authorize(owner, "put", result.kind);
         if (constraint && !this.bodyMatchesGrant(result.kind, result.body, constraint)) {
-          throw new RadiaError("forbidden", `result body is outside the template scope of the put grant for '${result.kind}'`);
+          throw new RadiaError("forbidden", `result body is outside the pattern scope of the put grant for '${result.kind}'`);
         }
       }
       // Derive the audit authority chain from the lease (undefined for operator/root owners).
@@ -1345,8 +1345,8 @@ export class Space {
   // ---- watches (M1) ----
 
   /** Create an ephemeral watch. The stream starts from the current high-water cursor. */
-  async createWatch(template: Template, owner: string, createdBy?: string[]): Promise<{ watchId: string }> {
-    const match = this.compile(template); // validates the template
+  async createWatch(pattern: Pattern, owner: string, createdBy?: string[]): Promise<{ watchId: string }> {
+    const match = this.compile(pattern); // validates the pattern
     const cursor0 = await this.storage.latestCursor();
     const watchId = newUlid();
     this.watches.set(watchId, { match, cursor0, owner, createdBy });
@@ -1545,10 +1545,10 @@ export class Space {
     return await this.putRaw({ kind: rec.kind, body: rec.body, parentIds: [recordId] }, undefined, { taint: false });
   }
 
-  private compile(template: Template): CompiledMatch {
+  private compile(pattern: Pattern): CompiledMatch {
     // Validates predicate/order_by paths against the kind's declaration; throws RadiaError
     // (undeclared_path, unknown_kind, unsortable_path, ...).
-    return compileTemplate(template, this.kinds.get(template.kind));
+    return compilePattern(pattern, this.kinds.get(pattern.kind));
   }
 
   private ref(lease: Lease): LeaseRef {

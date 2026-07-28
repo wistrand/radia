@@ -1,4 +1,4 @@
-// Watch endpoints (M1). POST /v0/watches creates an ephemeral, template-scoped watch;
+// Watch endpoints (M1). POST /v0/watches creates an ephemeral, pattern-scoped watch;
 // GET /v0/watches/{id}/events is an SSE stream of wakeups for matching records that are
 // available. Resumption: reconnect with `Last-Event-ID` (or ?cursor=) and delivery
 // continues after that seq. A cursor older than the retained log → 410 cursor_expired
@@ -6,7 +6,7 @@
 // source of truth; the Notifier is only a wakeup.
 
 import type { Space } from "../../core/space.ts";
-import { combineMatch, type Template } from "../../core/matching.ts";
+import { combineMatch, type Pattern } from "../../core/matching.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { problem, statusFor } from "../problem.ts";
 
@@ -19,17 +19,17 @@ export async function handleCreateWatch(space: Space, req: Request, principal: s
     j = null;
   }
   if (!j || typeof j.kind !== "string") {
-    return problem(400, "invalid_template", "watch requires a template with a kind");
+    return problem(400, "invalid_pattern", "watch requires a pattern with a kind");
   }
-  const template: Template = { kind: j.kind, match: j.match as Record<string, unknown> | undefined, orderBy: undefined };
+  const pattern: Pattern = { kind: j.kind, match: j.match as Record<string, unknown> | undefined, orderBy: undefined };
   try {
-    // Authorize like a read: the principal must hold a grant on the kind, and a template-scoped
+    // Authorize like a read: the principal must hold a grant on the kind, and a pattern-scoped
     // grant confines the watch to records it could observe (grant ∧ request), same as query/take.
-    const { constraint, createdBy } = await space.authorizeWatch(principal, template.kind);
-    if (constraint) template.match = combineMatch(template.match, constraint);
+    const { constraint, createdBy } = await space.authorizeWatch(principal, pattern.kind);
+    if (constraint) pattern.match = combineMatch(pattern.match, constraint);
     // The watch is bound to its creator and carries that principal's author scope: the stream is
     // reached by id alone, and ids are monotonic ULIDs — guessable from any adjacent record.
-    const { watchId } = await space.createWatch(template, principal, createdBy);
+    const { watchId } = await space.createWatch(pattern, principal, createdBy);
     return new Response(JSON.stringify({ watchId }), { status: 201, headers: { "content-type": "application/json" } });
   } catch (e) {
     if (e instanceof RadiaError) return problem(statusFor(e.code, 400), e.code, e.message);

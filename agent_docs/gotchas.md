@@ -48,17 +48,17 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   already eaten it by the time the server looks.
 - **A cast is still a promise, not a check — `match` was the one that got away.** The boundary
   validation added after the fuzzing covered `parentIds`, `deadlineAt`, `orderBy` and the rest, but
-  `template.match` was cast (`j.match as Record<string, unknown>`) all the way into the compiler.
+  `pattern.match` was cast (`j.match as Record<string, unknown>`) all the way into the compiler.
   `Object.keys(3)` is empty, so `match: 3` compiled to NO PREDICATE and the query returned every
   record of the kind — a malformed filter that WIDENS, answering a question the caller never asked
-  with a plausible-looking result. Validated in `compileTemplate` rather than in the handlers, for
+  with a plausible-looking result. Validated in `compilePattern` rather than in the handlers, for
   the same reason `compileOrderBy` is: the SDK, MCP and in-process callers never pass through a
   handler. Found by writing the HTTP boundary tests, not by reading the code — the fuzzing that
   found the original class was a one-off that was never checked in, so every endpoint added since
   had no such check. It is a table in `conformance/http.test.ts` now.
 - **A wrong-typed field that changes WHICH records are involved is a 400; one that only sizes the
   answer falls back to its default.** `limit: "ten"`, `leaseSeconds: "60"` and `backoffSeconds: []`
-  are ignored in favour of the default; `match`, `template`, `orderBy`, `after` and `dir` are
+  are ignored in favour of the default; `match`, `pattern`, `orderBy`, `after` and `dir` are
   rejected. The asymmetry is deliberate and easy to "fix" into inconsistency: a bad bound cannot
   answer a different question, and a bad selector can. Pinned in both directions so neither drifts.
 - **Cache what cannot change; never cache what can be revoked.** Credentials looked like a registry
@@ -166,14 +166,14 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   cannot stamp another identity. `RADIA_CHAT_SCOPE` picks between that and `{conversationId}`,
   because the right answer depends on the space: identity scoping separates a session from workers
   and operator sessions, but NOT two people sharing one space, since both are `agent:chat-user`.
-- **Tightening a grant by adding a TEMPLATE is inert on any space that already had the loose one.**
-  Scope and template are part of a grant's identity, so declaring `{message, [put,query],
-  template:{conversationId}}` beside an existing `{message, [put,query]}` creates a SECOND grant —
+- **Tightening a grant by adding a PATTERN is inert on any space that already had the loose one.**
+  Scope and pattern are part of a grant's identity, so declaring `{message, [put,query],
+  pattern:{conversationId}}` beside an existing `{message, [put,query]}` creates a SECOND grant —
   and grants union, so the narrower one changes nothing. Every test passed, because tests start on a
   fresh space; a live session on a two-day-old space kept reading every conversation after its
-  grants were scoped to one. `createAgentDefinition` now retires the untemplated twin of each grant
+  grants were scoped to one. `createAgentDefinition` now retires the unpatterned twin of each grant
   it declares — and, since testing that fix exposed the same hole one level up, every live grant on
-  the same (principal, kind, operations) whose template DIFFERS. Swapping one template for another
+  the same (principal, kind, operations) whose pattern DIFFERS. Swapping one pattern for another
   is not adding a grant: the two union and the wider view wins, so changing a session's scope
   silently widened it instead. Two boundaries worth keeping: `scope` is excluded on purpose, because
   `grantKey` excludes it (a self-scoped grant already replaces its unscoped twin in place) and
@@ -219,16 +219,16 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   promising "may drive a conversation and read its own results, nothing more" — and nothing enforced
   the "its own". A ten-minute session reconstructed two days of unrelated conversations, correctly.
   Six chat kinds index `conversationId`, so the fix is the runtime's own content scoping: the
-  session's grants are TEMPLATE-scoped to its conversation, which binds reads and writes alike.
+  session's grants are PATTERN-scoped to its conversation, which binds reads and writes alike.
   Consequences worth keeping: the conversation record is created by the OPERATOR before the session
   token is minted (a grant is minted with the token, so the conversation has to exist first), and a
   user session therefore no longer holds `conversation: put` at all. Growth is per distinct
-  CONVERSATION, not per session — the template is part of a grant's identity, so resuming re-mints
+  CONVERSATION, not per session — the pattern is part of a grant's identity, so resuming re-mints
   the same content key and writes nothing. The result kinds needed the same
   treatment and lacked the field to do it with: `llm_chunk`, `llm_result` and `tool_result` are
   keyed by `callId`, so a session holding a callId from elsewhere could read another conversation's
   streamed tokens, model output and tool results whatever the conversation scoping said. They now
-  carry `conversationId`, written by the worker that produces them and indexed so a template can
+  carry `conversationId`, written by the worker that produces them and indexed so a pattern can
   bind it. The failure mode of getting THAT wrong is not a leak but a hang — a writer that forgets
   the field produces a result its own session cannot read — so the test pins both directions.
   Artifacts were the last kind and needed a RUNTIME change, because their body is computed from the
@@ -238,10 +238,10 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   sends can forge a digest, size or media type. The chat stamps `conversationId` on every artifact
   it writes and REDECLARES the reserved `artifact` kind to index it — legal, since only `kind_def`
   is protected — repeating `digest`/`mediaType` because a redeclaration replaces rather than merges.
-  **And the narrowing had to learn about it.** Grant templates UNION, so approving an untemplated
-  self-scoped grant beside a templated one replaces "this conversation" with "everything this agent
+  **And the narrowing had to learn about it.** Grant patterns UNION, so approving an unpatterned
+  self-scoped grant beside a patterned one replaces "this conversation" with "everything this agent
   ever wrote" — a widening performed by the act of narrowing. The approval flow now inherits the
-  template of the grants it replaces. Guarded in `smoke-inspect.ts`, both directions.
+  pattern of the grants it replaces. Guarded in `smoke-inspect.ts`, both directions.
 - **A self scope must narrow the plane the agent actually READS through, and grants UNION.** Two
   mistakes, one live incident. First, `scope: {createdBy: "self"}` narrowed only the ops plane while
   ordinary `query`/`read_one` returned every record of the kind — so an approval promising "only its
@@ -382,7 +382,7 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   re-declaration replaces, and **additive** (`activeSet` — grants) where entries coexist and each is
   independently withdrawable. Revoking a grant keyed on `(principal, kind)` would silently take
   every other grant that principal holds on that kind with it, which is why `grantKey` is the whole
-  content — operations and template included. Two rules that are easy to get wrong: retirement must
+  content — operations and pattern included. Two rules that are easy to get wrong: retirement must
   be applied AFTER the newest-per-key pass, never as a filter over the input (filter first and an
   older non-retired record becomes "newest" and resurrects the entry); and the projection must
   compare ids rather than trust arrival order, for the same reason. Nothing is deleted, so the audit
@@ -399,7 +399,7 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   instances on one Postgres are still only millisecond-accurate relative to each other — do not
   race a retirement and its revival from two instances.
 - **Predicate pushdown is a SOUND pre-filter, never a second opinion.** `src/storage/pushdown.ts`
-  renders part of a compiled template into SQL, but the oracle in `core/matching.ts` still decides
+  renders part of a compiled pattern into SQL, but the oracle in `core/matching.ts` still decides
   every match. The asymmetry is the whole safety argument: over-returning is free (the oracle
   rejects the extras), under-returning is a silent lost record — and for `take`, an empty space
   reported while work sits in it. So anything not expressible EXACTLY renders as `TRUE`: object
@@ -502,7 +502,7 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   worth keeping straight: bounding the window is only safe because the SQL `order by` is the same
   key `rankClaimable` sorts by (`effective_priority desc, available_at asc, id asc`) — change one
   and you must change the other, or a claim silently prefers the wrong record; and a *selective*
-  template pages to the next window rather than truncating, so a rare match deep in a large kind
+  pattern pages to the next window rather than truncating, so a rare match deep in a large kind
   is still found. `take` at 40k went 183ms → 18.4ms, and empty takes 67/166 → 2/4 (the genuine
   tail as the queue drains). Pinned by `claimFairnessSuites` in `conformance/suites/leases.ts` —
   which fails on Postgres without the fix, so run `scripts/pg-conformance.sh`, not just the
@@ -548,8 +548,8 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   the keepalive wait against a wake promise so disconnect cleanup is prompt. Don't reintroduce
   `req.signal` here.
 
-- **`take` also ranks EXPIRED-lease records as candidates, so repeated template takes re-claim the
-  same record.** Bit two test setups in a row: seven puts followed by seven `take({template})` with
+- **`take` also ranks EXPIRED-lease records as candidates, so repeated pattern takes re-claim the
+  same record.** Bit two test setups in a row: seven puts followed by seven `take({pattern})` with
   a lapsed lease leaves ONE stranded record (each take reclaims the previous one, bumping its
   attempt) and six still available — not seven stuck leases. To strand N records, take them BY ID.
   This is correct behaviour (reclaiming lapsed work is what take is for), but it makes "claim
@@ -557,10 +557,10 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
 
 - **A cast is a promise to the type checker, not a check.** Handlers used to build a `PutRequest`
   by casting wire JSON (`j.parentIds as string[]`), so `parentIds: 42`, `deadlineAt: {}`, an
-  `orderBy` string, a `template: []`, or a JSON `null` body sailed past the boundary and failed
+  `orderBy` string, a `pattern: []`, or a JSON `null` body sailed past the boundary and failed
   deep inside matching or the adapter — a malformed request answered with a 500 instead of a 400.
   Found by fuzzing every field of every endpoint with wrong types; fixed by validating shapes at
-  the boundary (`pickPut`/`pickResult` in `handlers/records.ts`, template and numeric query-param
+  the boundary (`pickPut`/`pickResult` in `handlers/records.ts`, pattern and numeric query-param
   checks in `handlers/leases.ts` and `handlers/ops.ts`) and, for `order_by`, in `compileOrderBy`
   itself so in-process callers are covered too. Keep the rule: if it came off the wire, check it.
 
@@ -573,8 +573,8 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   is damage, never legacy plaintext. Only the plaintext-digest name may be read as plaintext.
 
 - **`esc()` must escape quotes, because record data reaches HTML attributes.** The console escaped
-  `& < >` only. A grant's `template` is rendered as JSON inside `title="…"` — and JSON always
-  contains `"` — so every template-scoped grant broke out of the attribute, and a crafted template
+  `& < >` only. A grant's `pattern` is rendered as JSON inside `title="…"` — and JSON always
+  contains `"` — so every pattern-scoped grant broke out of the attribute, and a crafted pattern
   or kind name (validated only as "a non-empty string") could inject an event handler into the
   page that carries an operator token. Escaping now covers `"` and `'`; the fix belongs in `esc`
   rather than at each call site, since new call sites keep appearing.
@@ -778,13 +778,13 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   both adapters get it for free and it stays backend-neutral. It's a claim-time skip, not a query
   predicate (taint is runtime metadata, not body — the content-routing DSL can't see it, same as the
   envelope).
-- **Template-scoped grants apply to reads/claims AND writes.** A grant's `template` is AND-ed into
+- **Pattern-scoped grants apply to reads/claims AND writes.** A grant's `pattern` is AND-ed into
   `query`/`read_one`/`take` (`grant ∧ request` via `combineMatch`), and on `put`/ack the record body
   must satisfy it (`Space.bodyMatchesGrant`) — a scoped principal writes only records inside its
-  template. Note the asymmetry: read-side ANDs the template into the *query*; write-side matches the
-  *body* against it. Also: the read constraint nests as `$and[request, $or[templates]]`, so a grant
-  template must be a flat equality map — a `$or`/`$and` inside one can exceed the depth-3 compile
-  limit. And a template's paths are validated (indexed-path check) only when it compiles at use, not
+  pattern. Note the asymmetry: read-side ANDs the pattern into the *query*; write-side matches the
+  *body* against it. Also: the read constraint nests as `$and[request, $or[patterns]]`, so a grant
+  pattern must be a flat equality map — a `$or`/`$and` inside one can exceed the depth-3 compile
+  limit. And a pattern's paths are validated (indexed-path check) only when it compiles at use, not
   at grant creation (the kind may not be registered yet) — a bad path surfaces as a 400/denied later.
 
 - **Stale-available diagnostics count only `claimable` kinds; reference records are not "stuck".**
@@ -802,11 +802,11 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   `undefined` everywhere until `register` was taught to carry it (caught by conformance). Same
   applies to `kindDefKey` — include a new field there too, or a changed value won't mint a successor.
 - **The ops query language is body-only by design; the envelope query is the ops exception.**
-  The content-routing template DSL matches record *bodies* (for routing) and deliberately can't
+  The content-routing pattern DSL matches record *bodies* (for routing) and deliberately can't
   see the runtime envelope (state/attempt/lease). So observability that needs the envelope
-  (diagnostics, "what's stuck") is NOT a template query — it's `GET /v0/ops/records?state=…`
+  (diagnostics, "what's stuck") is NOT a pattern query — it's `GET /v0/ops/records?state=…`
   (`Space.queryEnvelopes`), and diagnostics composes that. Don't try to fold envelope-state,
-  aggregation (stats), DAG-traversal (lineage/graph), or get-by-id into the template DSL:
+  aggregation (stats), DAG-traversal (lineage/graph), or get-by-id into the pattern DSL:
   those are legitimately first-class ops capabilities, not endpoints pretending to be queries.
 
 - **Idempotency is checked before lease validation, and the order is load-bearing.**
@@ -853,7 +853,7 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   contract, not a bug.
 - **Physical execution overlaps lease expiry.** A fenced worker keeps running until it
   observes `lease_lost`. "At most one valid lease" is not "at most one running process".
-- **`take(record_id=...)` is a selector, not a bypass.** The server re-verifies template,
+- **`take(record_id=...)` is a selector, not a bypass.** The server re-verifies pattern,
   grants, admission, availability, and `claim_until` every time.
 - **Encrypted content is coordination-invisible by construction.** Client-side-encrypted
   bodies are unmatchable, untaint-trackable, and invisible to diagnostics. E2E-from-the-
@@ -883,7 +883,7 @@ rejected for stated reasons.
 - **"Mongo-compatible" matching.** Rejected: the semantics diverge deliberately (missing
   ≠ null, no coercion, explicit array quantifiers). Claiming compatibility would be
   wrong. See [design-matching.md](design-matching.md).
-- **`$regex` / `$where` / `$expr` in templates.** Never. Templates are data, not code.
+- **`$regex` / `$where` / `$expr` in patterns.** Never. Patterns are data, not code.
 - **Snapshot pagination cursors.** Deferred: keyset over immutable sort keys instead.
   `effective_priority` is mutable under aging, so it can't be a cursor key.
 - **Eager (records × agents) candidate materialization in the scheduler.** Rejected for

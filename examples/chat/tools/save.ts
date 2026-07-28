@@ -8,7 +8,7 @@
 // the honest shape for content whose only source is the model's own output.
 //
 // Why not make every message an artifact instead: record bodies must stay queryable JSON or
-// matching, template scoping, windowing and the Feed all stop working. Payloads go out of line;
+// matching, pattern scoping, windowing and the Feed all stop working. Payloads go out of line;
 // the conversation itself does not.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
@@ -29,7 +29,7 @@ export function makeSaveTools(client: RadiaClient): Record<string, Tool> {
         // Lineage: conversation -> tool_call -> artifact, so a stored file can be traced back to
         // the turn that produced it.
         parentIds: ctx?.callId ? [ctx.callId] : undefined,
-        // Body metadata, not lineage: a grant template matches the body, so this is what pins the
+        // Body metadata, not lineage: a grant pattern matches the body, so this is what pins the
         // artifact to the conversation that produced it.
         meta: { conversationId: ctx?.conversationId ?? "", owner: ctx?.owner ?? "" },
         // Model-authored content, possibly derived from something it read: untrusted, like any

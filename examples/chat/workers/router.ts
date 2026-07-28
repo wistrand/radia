@@ -135,7 +135,7 @@ async function classifyLLM(text: string, toolCalls: number, tiers: string[], c: 
 
 await agentLoop(client, {
   name: "router",
-  templates: [{ kind: "llm_call", match: { tier: { $exists: false } } }],
+  patterns: [{ kind: "llm_call", match: { tier: { $exists: false } } }],
   handle: async (rec, c) => {
     const body = rec.body as { conversationId?: string; upToIndex?: number };
     // Report the claim before the classifier round-trip — it is the first sign of life the chat

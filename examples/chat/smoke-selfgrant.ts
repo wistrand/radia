@@ -262,6 +262,60 @@ check("the operator still sees both authors", all.filter((s) => s.kind === "mess
 const byRole = await session.query({ kind: "message", match: { conversationId: conv, role: "user" } }, 50);
 check("messages are countable by role", byRole.length === 4, `role=user -> ${byRole.length}`);
 
+// 9. Approving a grant for a kind that DOES NOT EXIST must not manufacture one.
+//
+// The guess is usually a tool name (`space_events` is a tool; `event_log` is nothing), and the
+// approver is warned. But approving anyway used to write a real grant record and print
+// "granted: …" while the requester was told `no_such_kind` — the human read success, the assistant
+// read failure, and the space kept a grant naming a kind nobody can hold records of. All three
+// have to agree.
+const bogus = "event_log";
+const [askedBogus] = await Promise.all([
+  callTool("request_grant", { kind: bogus, operations: ["query"], scope: "all", why: "full history" }, conv, 30_000),
+  (async () => {
+    for (let i = 0; i < 60; i++) {
+      const rows = await admin.query({ kind: "grant_request", match: { conversationId: conv } }, 20, { dir: "desc" });
+      if (rows.some((r) => {
+        const b = r.body as { kind?: string; decision?: string };
+        return b.kind === bogus && !b.decision;
+      })) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    // The human APPROVES. That is the case that used to lie.
+    await reviewGrantRequests(session, admin, CHAT_USER, conv, () => Promise.resolve("own"));
+  })(),
+]);
+const bogusOut = askedBogus.output as { ok?: boolean; decision?: string; kindsOnThisSpace?: string[] };
+check("approving a nonexistent kind reports no_such_kind", bogusOut.decision === "no_such_kind", JSON.stringify(bogusOut).slice(0, 70));
+check("…and tells the caller it got nothing", bogusOut.ok === false);
+check("…and hands back the real kind names", (bogusOut.kindsOnThisSpace ?? []).includes("message"));
+
+const bogusGrants = await admin.query({ kind: "grant", match: { principal: CHAT_USER, kind: bogus } }, 20);
+check("no grant record is written for a kind that does not exist", bogusGrants.length === 0, `${bogusGrants.length} found`);
+
+const decidedBogus = (await admin.query({ kind: "grant_request", match: { conversationId: conv } }, 50, { dir: "desc" }))
+  .map((r) => r.body as Record<string, unknown>)
+  .find((b) => b.kind === bogus && b.decision);
+check("the decision record says why", decidedBogus?.decision === "no_such_kind", String(decidedBogus?.decision));
+check("…and claims no grant", decidedBogus?.granted === undefined);
+
+const perms = await admin.permissions(CHAT_USER) as { kinds: { kind: string }[] };
+check("the bogus kind never reaches effective permissions", !perms.kinds.some((k) => k.kind === bogus));
+
+// The guard rejects the SHAPE, not the asker: the same approval on a real kind still grants.
+// Written directly rather than through `request_grant`, which blocks until a human answers.
+await session.put({
+  kind: "grant_request",
+  body: { conversationId: conv, kind: "llm_call", operations: ["query"], why: "count my calls" },
+});
+await reviewGrantRequests(session, admin, CHAT_USER, conv, () => Promise.resolve("own"));
+const realGrants = await admin.query({ kind: "grant", match: { principal: CHAT_USER, kind: "llm_call" } }, 20);
+check(
+  "the same approval on a REAL kind still writes a grant",
+  realGrants.some((r) => !(r.body as { retired?: boolean }).retired),
+  `${realGrants.length} grant records for llm_call`,
+);
+
 try {
   worker.kill();
   space.kill();

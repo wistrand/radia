@@ -31,7 +31,7 @@ servers:
   - url: /v0
 
 # Deferred matching operators are reserved now so adding them later is not breaking:
-# $ne, $nin, $not, $prefix, full-text. $regex/$where/$expr are never added (templates are
+# $ne, $nin, $not, $prefix, full-text. $regex/$where/$expr are never added (patterns are
 # data, not code).
 x-reserved-operators: ["$ne", "$nin", "$not", "$prefix", "$text"]
 
@@ -88,13 +88,13 @@ paths:
   /records/read-one:
     post:
       operationId: readOne
-      summary: First matching record, or null (template in body, never query string)
+      summary: First matching record, or null (pattern in body, never query string)
       x-stability: stable
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/Template" }
+            schema: { $ref: "#/components/schemas/Pattern" }
       responses:
         "200":
           description: record or null
@@ -109,9 +109,9 @@ paths:
   /records/query:
     post:
       operationId: query
-      summary: Matching records ordered by the template, capped at limit
+      summary: Matching records ordered by the pattern, capped at limit
       description: >
-        Ordered by the template, capped at limit. `after`/`dir` are KEYSET pagination over record
+        Ordered by the pattern, capped at limit. `after`/`dir` are KEYSET pagination over record
         id: a cursor, not an offset, so a page stays correct while records are being written.
         Records without an explicit order_by come back in ASCENDING id order, so a plain limit
         returns the OLDEST matches; `dir: desc` is what expresses "the newest N". A cursor is
@@ -126,7 +126,7 @@ paths:
           application/json:
             schema:
               allOf:
-                - { $ref: "#/components/schemas/Template" }
+                - { $ref: "#/components/schemas/Pattern" }
                 - type: object
                   properties:
                     limit: { type: integer, default: 100, maximum: 500 }
@@ -154,7 +154,7 @@ paths:
                     type: object
                     description: >
                       Present ONLY when the caller's grants narrowed this read; absent otherwise, so an
-                      unrestricted read is byte-identical to before. `narrowedBy` lists the grant templates
+                      unrestricted read is byte-identical to before. `narrowedBy` lists the grant patterns
                       ANDed into the request and `ownRecordsOnly` marks an author restriction. Without it a
                       narrowed read is indistinguishable from a complete one, and callers report their slice
                       as the whole kind.
@@ -169,8 +169,8 @@ paths:
       operationId: take
       summary: Atomically claim a record for a fenced lease
       description: >
-        Selector is a template or a specific recordId (a selector, not a bypass — the
-        server re-verifies availability and, if given, the template). Returns
+        Selector is a pattern or a specific recordId (a selector, not a bypass — the
+        server re-verifies availability and, if given, the pattern). Returns
         {record, lease} or null when nothing is claimable. Long-poll blocking is not
         implemented in M0.
       x-stability: stable
@@ -181,7 +181,7 @@ paths:
             schema:
               type: object
               properties:
-                template: { $ref: "#/components/schemas/Template" }
+                pattern: { $ref: "#/components/schemas/Pattern" }
                 recordId: { type: string }
                 leaseSeconds: { type: number }
                 requireUntainted: { type: boolean, description: "sensitive consumer: skip tainted candidates (taint barrier)" }
@@ -304,7 +304,7 @@ paths:
         to the blob store (content-addressed by sha256 of the plaintext) and an `artifact` record is
         committed carrying `{digest, mediaType, size, filename?}` — the record routes, the payload
         does not travel inside it. `digest` and `size` are server-computed, never client-submitted.
-        Authorized as a `put` on the reserved `artifact` kind; a template-scoped grant is matched
+        Authorized as a `put` on the reserved `artifact` kind; a pattern-scoped grant is matched
         against the metadata body (so a grant can be limited to one media type).
       x-stability: stable
       x-phase: "M1"
@@ -313,7 +313,7 @@ paths:
         - { name: X-Radia-Filename, in: header, required: false, schema: { type: string }, description: "Advisory download name; never used as a path." }
         - { name: X-Radia-Parent-Ids, in: header, required: false, schema: { type: string }, description: "Comma-separated data lineage parents." }
         - { name: X-Radia-Taint, in: header, required: false, schema: { type: string, enum: ["true"] }, description: "Raise taint (a client may raise it, never clear it)." }
-        - { name: X-Radia-Meta, in: header, required: false, schema: { type: string }, description: "ASCII JSON object of APPLICATION fields merged into the artifact's record body (scalars only; digest/mediaType/size/filename are runtime-computed and rejected here). This is what lets a template-scoped grant bind an artifact to something the app owns — the rest of the body is the runtime's." }
+        - { name: X-Radia-Meta, in: header, required: false, schema: { type: string }, description: "ASCII JSON object of APPLICATION fields merged into the artifact's record body (scalars only; digest/mediaType/size/filename are runtime-computed and rejected here). This is what lets a pattern-scoped grant bind an artifact to something the app owns — the rest of the body is the runtime's." }
       requestBody:
         required: true
         content:
@@ -429,7 +429,7 @@ paths:
   /watches:
     post:
       operationId: watch
-      summary: Create an ephemeral, template-scoped watch
+      summary: Create an ephemeral, pattern-scoped watch
       description: "The stream (below) starts from the event seq at creation. Watches die with the runtime; durable subscriptions are deferred."
       x-stability: stable
       x-phase: "M1"
@@ -437,7 +437,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/Template" }
+            schema: { $ref: "#/components/schemas/Pattern" }
       responses:
         "201":
           description: watch created
@@ -800,7 +800,7 @@ paths:
                         kind: { type: string }
                         operations: { type: array, items: { type: string } }
                         readsScopedToSelf: { type: boolean }
-                        templates: { type: array, items: { type: object } }
+                        patterns: { type: array, items: { type: object } }
         "400": { $ref: "#/components/responses/Problem" }
 
   /ops/records/{recordId}/children:
@@ -992,7 +992,7 @@ components:
         status: { type: string, enum: [ok, lease_lost] }
         lease: { $ref: "#/components/schemas/Lease" }
 
-    Template:
+    Pattern:
       description: >
         kind + optional match + order_by. `match` values are implicit-$eq scalars or
         operator objects ($eq, $gt/$gte/$lt/$lte, $in, $exists, $any/$each, $and/$or depth<=3).
@@ -1034,7 +1034,7 @@ components:
     GrantDef:
       description: >
         A kind-scoped authorization grant. This is the BODY of a `grant` record (writable only by
-        an operator — human/supervisor). Kind is never wildcard. Optional `template` narrows
+        an operator — human/supervisor). Kind is never wildcard. Optional `pattern` narrows
         read/take to `grant ∧ request` (applies to query/read_one/take; put ignores it).
         EXPERIMENTAL.
       x-stability: experimental
@@ -1046,7 +1046,7 @@ components:
         operations:
           type: array
           items: { type: string, enum: [put, take, query, read_one] }
-        template: { type: object, additionalProperties: true, description: "optional match object; the effective query is grant ∧ request" }
+        pattern: { type: object, additionalProperties: true, description: "optional match object; the effective query is grant ∧ request" }
 
     Event:
       description: Append-only event log entry. EXPERIMENTAL shape.

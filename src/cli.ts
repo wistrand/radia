@@ -125,7 +125,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         subject: string;
         complete: boolean;
         ops: { reachable: boolean; kinds: string[] };
-        kinds: { kind: string; operations: string[]; readsScopedToSelf: boolean; templates: unknown[] }[];
+        kinds: { kind: string; operations: string[]; readsScopedToSelf: boolean; patterns: unknown[] }[];
       };
       return out(ctx, p, () => {
         if (p.privileged) return `${who} is PRIVILEGED (operator): every kind, every operation, full ops plane.`;
@@ -133,8 +133,8 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         if (p.kinds.length === 0) lines.push("  no grants");
         for (const k of p.kinds) {
           const scope = k.readsScopedToSelf ? "   reads: own records only" : "";
-          const tmpl = k.templates.length > 0 ? `   scoped to ${JSON.stringify(k.templates)}` : "";
-          lines.push(`  ${k.kind.padEnd(20)} ${k.operations.join(",")}${scope}${tmpl}`);
+          const pat = k.patterns.length > 0 ? `   scoped to ${JSON.stringify(k.patterns)}` : "";
+          lines.push(`  ${k.kind.padEnd(20)} ${k.operations.join(",")}${scope}${pat}`);
         }
         lines.push(`  ops plane: ${p.ops.reachable ? `readable for ${p.ops.kinds.join(", ")}` : "no"}`);
         if (!p.complete) lines.push("  WARNING: the grant scan could not be exhausted; this view may be incomplete");
@@ -222,14 +222,14 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
     case "query": {
       const [kind] = positional(argv, 1);
       if (!kind) return usage("query <kind> [--match <json>]");
-      const recs = await client.query(template(kind, argv), Number(flag(argv, "--limit") ?? "50"));
+      const recs = await client.query(pattern(kind, argv), Number(flag(argv, "--limit") ?? "50"));
       return out(ctx, recs, () => recordTable(recs));
     }
 
     case "read-one": {
       const [kind] = positional(argv, 1);
       if (!kind) return usage("read-one <kind> [--match <json>]");
-      const rec = await client.readOne(template(kind, argv));
+      const rec = await client.readOne(pattern(kind, argv));
       return out(ctx, rec, () => (rec ? JSON.stringify(rec.body) : "(no match)"));
     }
 
@@ -279,7 +279,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       const ac = new AbortController();
       // Ctrl-C ends the stream cleanly rather than killing mid-frame.
       onShutdown(() => ac.abort());
-      for await (const w of client.watch(template(kind, argv), ac.signal)) {
+      for await (const w of client.watch(pattern(kind, argv), ac.signal)) {
         console.log(ctx.json ? JSON.stringify(w) : `${w.seq}  ${w.kind}  ${w.recordId}`);
       }
       return 0;
@@ -288,7 +288,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
     case "take": {
       const [kind] = positional(argv, 1);
       if (!kind) return usage("take <kind> [--lease <seconds>]");
-      const claimed = await client.take({ template: template(kind, argv) }, {
+      const claimed = await client.take({ pattern: pattern(kind, argv) }, {
         leaseSeconds: flag(argv, "--lease") ? Number(flag(argv, "--lease")) : undefined,
         requireUntainted: has(argv, "--untainted") || undefined,
       });
@@ -345,7 +345,7 @@ function json(text: string, what: string): Record<string, unknown> {
   }
 }
 
-function template(kind: string, argv: string[]) {
+function pattern(kind: string, argv: string[]) {
   const match = flag(argv, "--match");
   const order = flag(argv, "--order");
   return {

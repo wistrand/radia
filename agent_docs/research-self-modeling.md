@@ -105,14 +105,14 @@ Each of these was checked against the source; none is a guess.
 |---|---|---|
 | An agent reading its own state | `/v0/ops/*` is **binary operator privilege** — no scoped form | `src/server/http.ts` ops gate |
 | An agent raising an alarm about itself | `signal` is **write-protected** (`human:*` or the supervisor only) | `WRITE_PROTECTED_KINDS` in `src/core/kinds.ts` |
-| Scoping ops access by "my own records" | Grant templates compile against **declared body paths** (`requireIndexed`); `created_by` is runtime metadata the matcher never sees | `src/core/matching.ts` |
+| Scoping ops access by "my own records" | Grant patterns compile against **declared body paths** (`requireIndexed`); `created_by` is runtime metadata the matcher never sees | `src/core/matching.ts` |
 | Attention as scarcity (a contended focus lease) | Watches wake only on records becoming **available**, so a *claim* broadcasts nothing; and `effective_priority` is hardcoded `0` until the scheduler (M3) | `handlers/watches.ts`, `Space.putRaw` |
 | Forgetting / consolidation | `retention_until` is **stored and never swept**; crypto-shredding covers artifact blobs only, not record bodies | no delete path references it |
 | Livelock / rumination detection | Specified, unbuilt (M3) | [design-observability.md](design-observability.md) |
 
 Two of these deserve emphasis because they are easy to underestimate.
 
-**Self-scoped introspection is not "template-scoped grants, extended."** Template-scoped
+**Self-scoped introspection is not "pattern-scoped grants, extended."** Pattern-scoped
 grants narrow a *body* match. Envelope state, attempt counts and `created_by` are precisely
 what the routing language is forbidden to see — the property praised two sections above. A
 self-scope therefore needs a **second selector vocabulary over the envelope**, which is new
@@ -157,7 +157,7 @@ knowledge. The interesting act is the opposite one, and it is harder: recognizin
 shapes of work succeed**.
 
 The two are the same computation. [design-observability.md](design-observability.md)
-specifies livelock as *a repeating (agent, template) signature along ancestry with no
+specifies livelock as *a repeating (agent, pattern) signature along ancestry with no
 progress delta*. Invert the predicate:
 
 - repetition **without** progress → rumination → interrupt

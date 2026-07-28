@@ -58,12 +58,12 @@ export async function handlePutArtifact(space: Space, req: Request, principal: s
     // Header validation FIRST: a bad media type or filename is knowable before a single byte is
     // read, and buffering 32MB only to reject the headers is a free denial-of-service.
     validateArtifactDef({ digest: "", size: 0, mediaType, filename });
-    // A template-scoped artifact grant matches on the record body, which is metadata — so the
+    // A pattern-scoped artifact grant matches on the record body, which is metadata — so the
     // scope can say "this principal may only write image/png artifacts", checked before any bytes
     // are stored.
     const constraint = await space.authorize(principal, "put", ARTIFACT);
     if (constraint && !space.bodyMatchesGrant(ARTIFACT, { mediaType }, constraint)) {
-      return problem(403, "forbidden", `artifact mediaType '${mediaType}' is outside the template scope of your put grant`);
+      return problem(403, "forbidden", `artifact mediaType '${mediaType}' is outside the pattern scope of your put grant`);
     }
     const bytes = await readCapped(req, space.maxArtifactBytes);
     if (bytes === "too_large") {
@@ -123,7 +123,7 @@ export async function handleGetArtifact(
       // caller is not entitled to learn that the id exists.
       if (!space.authorAllows(createdBy, rec)) return problem(404, "not_found", `no artifact ${recordId}`);
       if (constraint && !space.bodyMatchesGrant(ARTIFACT, rec.body, constraint)) {
-        return problem(403, "forbidden", "this artifact is outside the template scope of your read grant");
+        return problem(403, "forbidden", "this artifact is outside the pattern scope of your read grant");
       }
     }
     const found = await space.readArtifact(recordId);
@@ -164,7 +164,7 @@ export async function handleMintCapability(space: Space, recordId: string, princ
     // that needs no token at all.
     if (!space.authorAllows(createdBy, rec)) return problem(404, "not_found", `no artifact ${recordId}`);
     if (constraint && !space.bodyMatchesGrant(ARTIFACT, rec.body, constraint)) {
-      return problem(403, "forbidden", "this artifact is outside the template scope of your read grant");
+      return problem(403, "forbidden", "this artifact is outside the pattern scope of your read grant");
     }
     const { capability, expiresAt } = space.mintDownloadCapability(recordId);
     return new Response(

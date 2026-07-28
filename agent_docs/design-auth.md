@@ -11,7 +11,7 @@ wildcard — `src/core/kinds.ts`). `Space.authorize(principal, op, kind)` enforc
 boundary (`src/server/http.ts` + the record/take/watch handlers): coordination `put`/`take`/
 `query`/`read_one` call `authorize`, and **`watch`** calls `Space.authorizeWatch` (a watch is
 allowed if the principal holds ANY grant on the kind — it is a participant — and the grant
-template is AND-ed into the watch match, so it wakes only on records inside its scope; no grant →
+pattern is AND-ed into the watch match, so it wakes only on records inside its scope; no grant →
 `forbidden`). `/v0/ops/*` requires a privileged principal; writing a reserved control kind
 (`grant`/`signal`/`agent_*`) requires privilege — grants are **assigned, never self-declared**.
 Every coordination verb is grant-gated; there is no unauthenticated observe path.
@@ -81,13 +81,13 @@ is real, and idempotency keys are **per principal** (two agents reusing one `Ide
 not collide). In-process callers (conformance, examples) omit the principal and default to the
 space identity.
 
-**Template-scoped grants (built):** a `grant` may carry a `template` (a match object); a
+**Pattern-scoped grants (built):** a `grant` may carry a `pattern` (a match object); a
 principal's read/take is then `grant ∧ request`, computed server-side — the handler ANDs the
-grant template(s) into the request via `combineMatch` (`src/core/matching.ts`). Multiple grants
+grant pattern(s) into the request via `combineMatch` (`src/core/matching.ts`). Multiple grants
 union (an unrestricted grant widens back to the whole kind); `Space.authorize` returns the
-constraint (`null` = unrestricted, else the template list). Applies to `query`/`read_one`/
+constraint (`null` = unrestricted, else the pattern list). Applies to `query`/`read_one`/
 `take` (`grant ∧ request` via `combineMatch`) and to `put` (write-side: the record body must
-satisfy the grant template, checked with `Space.bodyMatchesGrant` in the put handler and on
+satisfy the grant pattern, checked with `Space.bodyMatchesGrant` in the put handler and on
 ack-emitted results).
 
 **Delegation (built):** work emitted via `ack` under a managed run's lease carries a
@@ -137,7 +137,7 @@ Cross-cutting versions are in [CLAUDE.md](../CLAUDE.md); detail here is authorit
 ## Principals
 
 - `human:*` (OIDC)
-- `agent:*` (a definition: grants, budgets, templates)
+- `agent:*` (a definition: grants, budgets, patterns)
 - `run:*` (an instance)
 
 Leases belong to runs. Grants flow down the bootstrap chain; they are never
@@ -145,7 +145,7 @@ self-declared:
 
 ```mermaid
 flowchart TB
-    H[human:* — OIDC] -->|POST /agent-definitions<br/>privileged control plane assigns grants| D[agent:* definition<br/>grants, budgets, templates]
+    H[human:* — OIDC] -->|POST /agent-definitions<br/>privileged control plane assigns grants| D[agent:* definition<br/>grants, budgets, patterns]
     D -->|POST /agent-runs<br/>definition credential mints token| R[run:* — short-lived token]
     R -->|owns| L[leases]
 ```
@@ -186,8 +186,8 @@ model context.
 
 ## Grants
 
-Kind-scoped verbs, never wildcard. Template-scoped grants: the effective query is
-`grant ∧ requested template`, **computed server-side** (see
+Kind-scoped verbs, never wildcard. Pattern-scoped grants: the effective query is
+`grant ∧ requested pattern`, **computed server-side** (see
 [design-matching.md](design-matching.md)).
 
 A grant **is a record** of the reserved `grant` kind (`{principal, kind, operations}`) —
@@ -196,10 +196,10 @@ config table or a bespoke endpoint. Another instance of expressing a feature thr
 substrate (see [CLAUDE.md](../CLAUDE.md) "Design principle"): the same immutability, event-log
 visibility, and watchability every record has apply to authorization state. Wildcard kinds are
 rejected at `put` (`wildcard_grant`); kind + op scoping is enforced in `Space.authorize`.
-**Template scoping is built (read and write):** a grant's optional `template` is AND-ed into the
+**Pattern scoping is built (read and write):** a grant's optional `pattern` is AND-ed into the
 principal's read/take (`grant ∧ request`, `combineMatch`) and, on `put`, the record body must
-satisfy the template (`Space.bodyMatchesGrant`, in the put handler and on ack-emitted results) —
-so a scoped principal both *sees* and *writes* only records inside its template. Multiple grants
+satisfy the pattern (`Space.bodyMatchesGrant`, in the put handler and on ack-emitted results) —
+so a scoped principal both *sees* and *writes* only records inside its pattern. Multiple grants
 union, an unrestricted grant widens to the whole kind. See [design-matching.md](design-matching.md).
 
 ## Authorization flow (the request path)
@@ -225,8 +225,8 @@ flowchart TD
     Res -->|"yes"| E403b[["403 forbidden"]]
     Res -->|"no"| Grant{"matching grant record<br/>for (subject, kind, op)?"}
     Grant -->|"none"| E403c[["403 forbidden"]]
-    Grant -->|"yes, no template"| Allow
-    Grant -->|"yes, with template"| AllowT(["allow — AND grant ∧ request"])
+    Grant -->|"yes, no pattern"| Allow
+    Grant -->|"yes, with pattern"| AllowT(["allow — AND grant ∧ request"])
 ```
 
 ## Delegation
@@ -323,10 +323,10 @@ interrupted but cannot observe or interrupt itself
 ([research-self-modeling.md](research-self-modeling.md)). A scoped session asked "what did I create
 in this space" and got three 403s.
 
-It is deliberately **not** template-scoped grants extended. A grant `template` narrows a **body**
+It is deliberately **not** pattern-scoped grants extended. A grant `pattern` narrows a **body**
 match, and the fields a self-scope needs — `created_by`, envelope state, attempt counts — are
 precisely what the routing language is forbidden to see. That prohibition is load-bearing (it is
-what keeps templates analyzable data), so this adds a **second, closed vocabulary beside it**
+what keeps patterns analyzable data), so this adds a **second, closed vocabulary beside it**
 rather than a placeholder inside it.
 
 ### What "self" resolves to
@@ -361,15 +361,15 @@ the existing ops selectors already express and which a self-scope only has to in
 
 ### Where it lives on the record
 
-A sibling field, not a magic value inside `template`:
+A sibling field, not a magic value inside `pattern`:
 
 ```json
 {"principal": "agent:chat-user", "kind": "artifact", "operations": ["query"],
  "scope": {"createdBy": "self"}}
 ```
 
-`template` stays body-only and keeps compiling through the same oracle; `scope` is enum-valued data
-that only authorization reads. Nothing new enters the matching language, so `compileTemplate`,
+`pattern` stays body-only and keeps compiling through the same oracle; `scope` is enum-valued data
+that only authorization reads. Nothing new enters the matching language, so `compilePattern`,
 `matchesRecord` and the pushdown contract are untouched.
 
 ### Where it is enforced

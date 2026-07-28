@@ -1,7 +1,7 @@
-// Predicate pushdown — rendering a compiled template into a SQL PRE-FILTER.
+// Predicate pushdown — rendering a compiled pattern into a SQL PRE-FILTER.
 //
 // THE CONTRACT, and the only thing that makes this safe: the oracle in `core/matching.ts`
-// defines what a template matches. This file never decides a match. It produces SQL that is a
+// defines what a pattern matches. This file never decides a match. It produces SQL that is a
 // NECESSARY condition of the oracle's verdict — a filter that may return rows the oracle then
 // rejects, but must NEVER exclude a row the oracle would accept. Adapters still run
 // `matchesRecord` over whatever comes back. Sound over-approximation, in one word.
@@ -165,7 +165,7 @@ export function pushdown(node: MatchNode | undefined, d: JsonDialect): Pushed {
         return { sql: d.cmpString(p, node.op, node.value), exact: true };
       }
       // The oracle rejects an ordered comparison against a boolean/object/array outright, but
-      // saying so in SQL buys nothing — those templates are vanishingly rare.
+      // saying so in SQL buys nothing — those patterns are vanishingly rare.
       return TRUE_LOOSE;
     }
     case "quant":

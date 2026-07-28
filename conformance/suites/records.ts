@@ -183,7 +183,7 @@ export const recordSuites: Suite[] = [
     run: async (adapter) => {
       const space = new Space(adapter);
       // Artifacts were the one kind an application could not SCOPE: the body is entirely
-      // runtime-built, and a grant template matches the body — so "artifacts belonging to this
+      // runtime-built, and a grant pattern matches the body — so "artifacts belonging to this
       // conversation" was inexpressible and any holder of an id could read one.
       const { id } = await space.putArtifact(new TextEncoder().encode("hello"), {
         mediaType: "text/plain",
@@ -227,7 +227,7 @@ export const recordSuites: Suite[] = [
     },
   },
   {
-    name: "a template-scoped grant can bind an artifact to an application field",
+    name: "a pattern-scoped grant can bind an artifact to an application field",
     run: async (adapter) => {
       const space = new Space(adapter);
       // The whole point of the field: this grant is inexpressible without it.
@@ -246,7 +246,7 @@ export const recordSuites: Suite[] = [
           principal: "agent:w",
           kind: "artifact",
           operations: ["read_one"],
-          template: { conversationId: "mine" },
+          pattern: { conversationId: "mine" },
         },
       });
       const mine = await space.putArtifact(new TextEncoder().encode("mine"), {

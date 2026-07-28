@@ -25,7 +25,7 @@ interface Grant {
   operations: string[];
   /** ANDed into every read and matched against every write body — the runtime's own content
    *  scoping. Used to pin a session to ITS conversation; see `userGrants`. */
-  template?: Record<string, unknown>;
+  pattern?: Record<string, unknown>;
 }
 
 // inference-worker: claims llm_call (its tier), emits llm_result + streamed llm_chunk, advertises
@@ -102,7 +102,7 @@ const EXEC_GRANTS: Grant[] = [
 // Note what's ABSENT: no /ops/* (space_stats/doctor/events/lineage/reclaim/declassify), and
 // query is granted only per-kind — so `space_query {kind: grant}` or {kind: agent_run} is denied.
 //
-// The grants are TEMPLATE-SCOPED, and what they bind to is a choice (`RADIA_CHAT_SCOPE`):
+// The grants are PATTERN-SCOPED, and what they bind to is a choice (`RADIA_CHAT_SCOPE`):
 //
 //   identity (default) — `{owner: agent:chat-user}`. The session stamps `owner` on what it writes
 //     and workers copy it onto the results and artifacts they produce for it, so this covers
@@ -114,16 +114,16 @@ const EXEC_GRANTS: Grant[] = [
 //     sharing a space, since both would be `agent:chat-user`; the cost is that a session cannot
 //     see its own earlier threads.
 //
-// Either way it is the RUNTIME enforcing it: a grant template is ANDed into reads and matched
+// Either way it is the RUNTIME enforcing it: a grant pattern is ANDed into reads and matched
 // against write bodies, so a session cannot read outside its scope and cannot write outside it
-// either — it cannot stamp another identity's `owner`, because that write would fail the template.
+// either — it cannot stamp another identity's `owner`, because that write would fail the pattern.
 // Kind-scoping alone enforced nothing of the sort: it let any session read every message in the
 // space, and one reconstructed two days of unrelated conversations from a ten-minute session.
 //
-// Growth is bounded by distinct scopes, not sessions: the template is part of a grant's identity,
+// Growth is bounded by distinct scopes, not sessions: the pattern is part of a grant's identity,
 // so re-running under the same scope re-mints the same content key and writes nothing.
 function userGrants(scope?: Record<string, unknown>): Grant[] {
-  const scoped = scope ? { template: scope } : {};
+  const scoped = scope ? { pattern: scope } : {};
   return [
     { kind: "message", operations: ["put", "query"], ...scoped },
     { kind: "llm_call", operations: ["put"], ...scoped },
@@ -155,7 +155,7 @@ function userGrants(scope?: Record<string, unknown>): Grant[] {
 async function mint(admin: RadiaClient, agent: string, grants: Grant[]): Promise<string> {
   const { definitionToken } = await admin.createAgentDefinition(
     agent,
-    grants.map((g) => ({ principal: agent, kind: g.kind, operations: g.operations, ...(g.template ? { template: g.template } : {}) })),
+    grants.map((g) => ({ principal: agent, kind: g.kind, operations: g.operations, ...(g.pattern ? { pattern: g.pattern } : {}) })),
   );
   const { runToken } = await admin.createRun(definitionToken);
   return runToken;
@@ -174,7 +174,7 @@ export interface Bootstrapped {
 /**
  * Bootstrap the run tokens for this session (called by chat.ts as the operator).
  *
- * `scope` is the template the SESSION's grants bind to — `{owner}` or `{conversationId}`, decided by
+ * `scope` is the pattern the SESSION's grants bind to — `{owner}` or `{conversationId}`, decided by
  * the caller (see `RADIA_CHAT_SCOPE`). It is a parameter rather than something read later because a
  * grant is minted with the run token, so whatever it binds to has to exist first: that is why the
  * REPL resolves the conversation as operator before calling this.

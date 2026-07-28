@@ -1,6 +1,6 @@
 // Per-kind indexing contract (control-plane). A kind declares which body paths are
 // indexed (typed) and which are sortable. Registration VALIDATES the declaration, and
-// template compilation (core/matching.ts) validates predicates against it: a predicate on
+// pattern compilation (core/matching.ts) validates predicates against it: a predicate on
 // an undeclared path, or order_by on a non-sortable path, is a registration error.
 //
 // The in-memory registry is a per-Space cache. Declarations are NOT a side table: each is a
@@ -53,14 +53,14 @@ export interface GrantDef {
   kind: string; // the concrete record kind it applies to — never "*"
   operations: GrantOp[]; // which coordination verbs on that kind
   /** Envelope-side self scope, e.g. `{createdBy: "self"}` — see design-auth.md. Distinct from
-   *  `template`, which is a BODY match: the fields a self-scope needs are precisely the ones the
+   *  `pattern`, which is a BODY match: the fields a self-scope needs are precisely the ones the
    *  routing language is forbidden to see. */
   scope?: Record<string, "self">;
-  /** Optional template-scope: a match object AND-ed into the principal's read/take on this kind
+  /** Optional pattern-scope: a match object AND-ed into the principal's read/take on this kind
    *  (the effective query is `grant ∧ request`). Omitted → the whole kind. Applies to
    *  query/read_one/take; put ignores it. Its paths must be declared indexed paths of the kind
    *  (validated when a query compiles, not at grant creation — the kind may not exist yet). */
-  template?: Record<string, unknown>;
+  pattern?: Record<string, unknown>;
 }
 
 /** Validate a grant body. Throws RadiaError. Rejects wildcard kinds (kind-scoped invariant). */
@@ -82,11 +82,11 @@ export function validateGrantDef(def: GrantDef): void {
       throw new RadiaError("invalid_grant", `unknown grant operation '${op}'`);
     }
   }
-  if (def.template !== undefined && (def.template === null || typeof def.template !== "object" || Array.isArray(def.template))) {
-    throw new RadiaError("invalid_grant", "grant.template must be a match object");
+  if (def.pattern !== undefined && (def.pattern === null || typeof def.pattern !== "object" || Array.isArray(def.pattern))) {
+    throw new RadiaError("invalid_grant", "grant.pattern must be a match object");
   }
   // `scope` is the ENVELOPE-side selector (self-scoped ops), a closed vocabulary deliberately kept
-  // out of `template` — which stays a body match compiled by the same oracle. Validated strictly
+  // out of `pattern` — which stays a body match compiled by the same oracle. Validated strictly
   // rather than ignored: an unknown key or value here fails closed (the grant simply opens
   // nothing), and a silent no-op on an authorization record is exactly the thing that gets
   // mistaken for a working grant.
@@ -178,7 +178,7 @@ const ARTIFACT_RESERVED_FIELDS = ["digest", "mediaType", "size", "filename"];
 /**
  * Validate the application half of an artifact body.
  *
- * Kept narrow on purpose. The point is to let an app scope artifacts it owns (a grant template
+ * Kept narrow on purpose. The point is to let an app scope artifacts it owns (a grant pattern
  * matches the body, so without an app field there is nothing to bind), not to turn the artifact
  * record into a second payload — the bytes live in the blob store precisely so bodies stay small
  * and matchable.

@@ -16,7 +16,7 @@ Typical use::
     def handle(record, c):
         return {"kind": "job_result", "body": {"ok": True}}
 
-    agent_loop(client, name="worker", templates=[{"kind": "job"}], handle=handle)
+    agent_loop(client, name="worker", patterns=[{"kind": "job"}], handle=handle)
 """
 
 from __future__ import annotations
@@ -184,7 +184,7 @@ class RadiaClient:
         ``{digest, mediaType, size}`` and routes like anything else.
 
         ``meta`` adds APPLICATION fields to that record body, so an app can route and scope the
-        artifacts it owns — a grant template matches the body, and the rest of the body is computed
+        artifacts it owns — a grant pattern matches the body, and the rest of the body is computed
         by the runtime. Values must be scalars, and the object travels in a header, so it must be
         ASCII.
         """
@@ -249,16 +249,16 @@ class RadiaClient:
         principal: str,
         kind: str,
         operations: List[str],
-        template: Optional[Dict[str, Any]] = None,
+        pattern: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, str]:
         """Assign a kind-scoped grant. A grant IS a record, writable only by a human/supervisor
-        principal; ``template`` narrows read/take to ``grant AND request``."""
+        principal; ``pattern`` narrows read/take to ``grant AND request``."""
         body: Dict[str, Any] = {"principal": principal, "kind": kind, "operations": operations}
-        if template:
-            body["template"] = template
+        if pattern:
+            body["pattern"] = pattern
         key = "grant:{}:{}:{}:{}".format(
             principal, kind, ",".join(sorted(operations)),
-            json.dumps(template, sort_keys=True, separators=(",", ":")) if template else "",
+            json.dumps(pattern, sort_keys=True, separators=(",", ":")) if pattern else "",
         )
         return self.put({"kind": "grant", "body": body}, idempotency_key=key)
 
@@ -286,21 +286,21 @@ class RadiaClient:
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
         return self._req("POST", "/v0/records", request, headers)
 
-    def read_one(self, template: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        return self._req("POST", "/v0/records/read-one", template)
+    def read_one(self, pattern: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        return self._req("POST", "/v0/records/read-one", pattern)
 
     def query(
         self,
-        template: Dict[str, Any],
+        pattern: Dict[str, Any],
         limit: int = 100,
         after: Optional[str] = None,
         dir: str = "asc",
     ) -> List[Dict[str, Any]]:
-        return self.query_page(template, limit, after, dir)[0]
+        return self.query_page(pattern, limit, after, dir)[0]
 
     def query_page(
         self,
-        template: Dict[str, Any],
+        pattern: Dict[str, Any],
         limit: int = 100,
         after: Optional[str] = None,
         dir: str = "asc",
@@ -314,7 +314,7 @@ class RadiaClient:
         it with ``order_by`` is rejected, since a keyset over a body field would need the whole
         sort key. ``next_after`` is ``None`` on the last page.
         """
-        payload = dict(template)
+        payload = dict(pattern)
         payload["limit"] = limit
         if after is not None:
             payload["after"] = after
@@ -467,13 +467,13 @@ class RadiaClient:
 
     # -- watches --
 
-    def watch(self, template: Dict[str, Any], stop: Optional[threading.Event] = None) -> Iterator[Dict[str, Any]]:
+    def watch(self, pattern: Dict[str, Any], stop: Optional[threading.Event] = None) -> Iterator[Dict[str, Any]]:
         """Yield wakeups (``{seq, recordId, kind}``) for matching records that become available.
 
         Reconnects with the last cursor on a dropped stream; a 410 (cursor expired) restarts
         from the beginning. The cursor is opaque — echoed back verbatim, never parsed.
         """
-        watch_id = self._req("POST", "/v0/watches", template)["watchId"]
+        watch_id = self._req("POST", "/v0/watches", pattern)["watchId"]
         cursor: Optional[str] = None
         while stop is None or not stop.is_set():
             headers = {"Last-Event-ID": cursor} if cursor is not None else {}
@@ -527,7 +527,7 @@ def _sse_frames(res, stop: Optional[threading.Event]) -> Iterator[Dict[str, str]
 def agent_loop(
     client: RadiaClient,
     name: str,
-    templates: Sequence[Dict[str, Any]],
+    patterns: Sequence[Dict[str, Any]],
     handle: Callable[[Dict[str, Any], RadiaClient], Optional[Dict[str, Any]]],
     lease_seconds: int = 30,
     poll_seconds: float = 1.0,
@@ -561,7 +561,7 @@ def agent_loop(
                 stop.wait(1.0)
 
     threads = []
-    for kind in dict.fromkeys(t["kind"] for t in templates):
+    for kind in dict.fromkeys(t["kind"] for t in patterns):
         t = threading.Thread(target=watcher, args=(kind,), daemon=True)
         t.start()
         threads.append(t)
@@ -569,8 +569,8 @@ def agent_loop(
     while not stop.is_set():
         claimed = None
         try:
-            for template in templates:
-                claimed = client.take({"template": template}, lease_seconds=lease_seconds)
+            for pattern in patterns:
+                claimed = client.take({"pattern": pattern}, lease_seconds=lease_seconds)
                 if claimed:
                     break
         except RadiaError as e:

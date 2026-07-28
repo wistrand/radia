@@ -1,4 +1,4 @@
-// Predicate pushdown soundness. `src/storage/pushdown.ts` renders part of a template into SQL so
+// Predicate pushdown soundness. `src/storage/pushdown.ts` renders part of a pattern into SQL so
 // the database can pre-filter; `core/matching.ts` remains the oracle. The contract is asymmetric,
 // and this suite exists to pin the dangerous direction:
 //
@@ -39,13 +39,13 @@ function newSpace(adapter: Parameters<Suite["run"]>[0]): Space {
   return space;
 }
 
-/** Assert a template finds exactly the record ids given, in any order. */
+/** Assert a pattern finds exactly the record ids given, in any order. */
 async function finds(space: Space, match: Record<string, unknown>, ids: string[], why: string) {
   const got = await space.query({ kind: "doc", match });
   assertEquals(
     got.map((r) => r.id).sort(),
     [...ids].sort(),
-    `${why} — template ${JSON.stringify(match)}`,
+    `${why} — pattern ${JSON.stringify(match)}`,
   );
 }
 
@@ -221,12 +221,12 @@ export const pushdownSuites: Suite[] = [
       const { id: needle } = await space.put({ kind: "doc", body: { s: "rare" } });
       for (let i = 0; i < 200; i++) await space.put({ kind: "doc", body: { s: "common", n: i } });
 
-      const claimed = await space.take({ template: { kind: "doc", match: { s: "rare" } } }, { leaseSeconds: 60 });
+      const claimed = await space.take({ pattern: { kind: "doc", match: { s: "rare" } } }, { leaseSeconds: 60 });
       assert(claimed, "the one matching record must be claimed");
       assertEquals(claimed!.record.id, needle);
       // And a claim whose filter matches nothing is empty, not an arbitrary record of the kind.
       assertEquals(
-        await space.take({ template: { kind: "doc", match: { s: "absent" } } }, { leaseSeconds: 60 }),
+        await space.take({ pattern: { kind: "doc", match: { s: "absent" } } }, { leaseSeconds: 60 }),
         null,
       );
     },

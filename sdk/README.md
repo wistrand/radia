@@ -62,5 +62,5 @@ client.put({"kind": "job", "body": {"tag": "a"}})
 def handle(record, c):
     return {"kind": "job_result", "body": {"ok": True}}
 
-agent_loop(client, name="worker", templates=[{"kind": "job"}], handle=handle)
+agent_loop(client, name="worker", patterns=[{"kind": "job"}], handle=handle)
 ```

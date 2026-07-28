@@ -191,7 +191,7 @@ export const authSuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter); // task
       await space.put({ kind: "task", body: { tag: "t" } });
-      const claimed = await space.take({ template: { kind: "task" } }, {}, "run:a"); // owned by run:a
+      const claimed = await space.take({ pattern: { kind: "task" } }, {}, "run:a"); // owned by run:a
       assert(claimed);
       // a DIFFERENT run presenting the same VALID lease is fenced out on EVERY settle verb — not
       // just ack (impersonation) but nack/release/renew (DoS on someone else's task).
@@ -238,7 +238,7 @@ export const authSuites: Suite[] = [
 
       // seed a task and have the RUN claim it (lease owned by run:*)
       await space.put({ kind: "task", body: { tag: "q" } });
-      const claimed = await space.take({ template: { kind: "task", match: { tag: "q" } } }, {}, run);
+      const claimed = await space.take({ pattern: { kind: "task", match: { tag: "q" } } }, {}, run);
       assert(claimed);
 
       // graceful stop leaves the lease alone; quarantine force-invalidates it
@@ -252,12 +252,12 @@ export const authSuites: Suite[] = [
     },
   },
   {
-    name: "template-scoped grant: authorize returns the constraint; unrestricted returns null",
+    name: "pattern-scoped grant: authorize returns the constraint; unrestricted returns null",
     run: async (adapter) => {
       const space = new Space(adapter);
       space.registerKind({ kind: "task", indexedPaths: [{ path: "op", type: "keyword" }] });
-      // a template-scoped grant → authorize hands back the template to AND into the request
-      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "task", operations: ["query"], template: { op: "upper" } } });
+      // a pattern-scoped grant → authorize hands back the pattern to AND into the request
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "task", operations: ["query"], pattern: { op: "upper" } } });
       assertEquals(await space.authorize("agent:w", "query", "task"), [{ op: "upper" }]);
       // a privileged principal is unrestricted (null)
       assertEquals(await space.authorize("human:local", "query", "task"), null);
@@ -267,12 +267,12 @@ export const authSuites: Suite[] = [
     },
   },
   {
-    name: "template-scoped PUT grant: a principal may only write records inside its template",
+    name: "pattern-scoped PUT grant: a principal may only write records inside its pattern",
     run: async (adapter) => {
       const space = new Space(adapter);
       space.registerKind({ kind: "note", indexedPaths: [{ path: "team", type: "keyword" }] });
       // agent:w may put notes only for team=blue
-      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "note", operations: ["put"], template: { team: "blue" } } });
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "note", operations: ["put"], pattern: { team: "blue" } } });
       const c = await space.authorize("agent:w", "put", "note");
       assert(c); // constrained (not null)
       assertEquals(space.bodyMatchesGrant("note", { team: "blue", text: "x" }, c!), true); // in scope
@@ -284,13 +284,13 @@ export const authSuites: Suite[] = [
     },
   },
   {
-    name: "template-scoped grant enforced end-to-end: query returns only grant ∧ request",
+    name: "pattern-scoped grant enforced end-to-end: query returns only grant ∧ request",
     run: async (adapter) => {
       const space = new Space(adapter);
       space.registerKind({ kind: "task", indexedPaths: [{ path: "op", type: "keyword" }] });
       await space.put({ kind: "task", body: { op: "upper", n: 1 } });
       await space.put({ kind: "task", body: { op: "lower", n: 2 } });
-      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "task", operations: ["query"], template: { op: "upper" } } });
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "task", operations: ["query"], pattern: { op: "upper" } } });
 
       const query = (principal: string) =>
         handleQuery(space, new Request("http://x/v0/records/query", { method: "POST", body: JSON.stringify({ kind: "task" }) }), principal)
@@ -315,7 +315,7 @@ export const authSuites: Suite[] = [
       ]);
       const { run } = await space.mintRun(definitionToken);
       await space.put({ kind: "task", body: { tag: "t" } });
-      const claimed = await space.take({ template: { kind: "task" } }, {}, run);
+      const claimed = await space.take({ pattern: { kind: "task" } }, {}, run);
       assert(claimed);
 
       const acked = await space.ack(claimed!.lease, { kind: "result", body: { ok: true } });
@@ -347,12 +347,12 @@ export const authSuites: Suite[] = [
       const { run: runB } = await space.mintRun(db);
 
       await space.put({ kind: "task", body: { n: 1 } });
-      const t = await space.take({ template: { kind: "task" } }, {}, runA);
+      const t = await space.take({ pattern: { kind: "task" } }, {}, runA);
       const subAck = await space.ack(t!.lease, { kind: "subtask", body: { n: 1 } });
       assert(subAck.status === "ok" && subAck.resultId);
       assertEquals((await space.getRecord(subAck.resultId!))!.runtimeMeta.delegationContext!.chain, ["agent:a"]);
 
-      const s = await space.take({ template: { kind: "subtask" } }, {}, runB);
+      const s = await space.take({ pattern: { kind: "subtask" } }, {}, runB);
       const resAck = await space.ack(s!.lease, { kind: "result", body: { n: 1 } });
       assert(resAck.status === "ok" && resAck.resultId);
       // the chain accumulates the whole delegation path — b's grant alone suffices for b's own put
@@ -370,7 +370,7 @@ export const authSuites: Suite[] = [
       ]);
       const { run } = await space.mintRun(definitionToken);
       await space.put({ kind: "task", body: { tag: "t" } });
-      const claimed = await space.take({ template: { kind: "task" } }, {}, run);
+      const claimed = await space.take({ pattern: { kind: "task" } }, {}, run);
 
       // emitting the result is blocked: agent:a lacks a put grant for `result`
       assertEquals(await denied(() => space.ack(claimed!.lease, { kind: "result", body: {} })), "forbidden");
@@ -379,14 +379,14 @@ export const authSuites: Suite[] = [
     },
   },
   {
-    name: "watch authorization: any grant on the kind allows a watch; none is forbidden; template scopes it",
+    name: "watch authorization: any grant on the kind allows a watch; none is forbidden; pattern scopes it",
     run: async (adapter) => {
       const space = new Space(adapter);
       space.registerKind({ kind: "task", indexedPaths: [{ path: "op", type: "keyword" }] });
       // no grant → forbidden (the last unguarded coordination verb is now guarded)
       assertEquals(await denied(() => space.authorizeWatch("agent:w", "task")), "forbidden");
       // a take-only grant (like the agentLoop) is enough — watch is participation, not tied to query
-      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "task", operations: ["take"], template: { op: "up" } } });
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "task", operations: ["take"], pattern: { op: "up" } } });
       assertEquals((await space.authorizeWatch("agent:w", "task")).constraint, [{ op: "up" }]); // scopes the watch
       // privileged → unrestricted
       assertEquals((await space.authorizeWatch("human:local", "task")).constraint, null);
@@ -425,29 +425,29 @@ export const authSuites: Suite[] = [
     },
   },
   {
-    name: "a grant template that could never compile is rejected when the grant is written",
+    name: "a grant pattern that could never compile is rejected when the grant is written",
     run: async (adapter) => {
       const space = new Space(adapter);
       space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
 
-      // A template is otherwise checked only when it COMPILES AT USE — so a path the kind does not
+      // A pattern is otherwise checked only when it COMPILES AT USE — so a path the kind does not
       // declare produced a grant that looked assigned in every listing and then denied at the first
       // read. Authorization that appears granted and does nothing is the failure to avoid.
       assertEquals(
         await denied(() =>
           space.put({
             kind: "grant",
-            body: { principal: "agent:w", kind: "task", operations: ["query"], template: { nope: "x" } },
+            body: { principal: "agent:w", kind: "task", operations: ["query"], pattern: { nope: "x" } },
           })
         ),
         "invalid_grant",
-        "an undeclared path in a grant template is caught at write time",
+        "an undeclared path in a grant pattern is caught at write time",
       );
 
       // The declared path is fine, and still scopes reads.
       await space.put({
         kind: "grant",
-        body: { principal: "agent:w", kind: "task", operations: ["query"], template: { tag: "a" } },
+        body: { principal: "agent:w", kind: "task", operations: ["query"], pattern: { tag: "a" } },
       });
       assertEquals(await space.authorize("agent:w", "query", "task"), [{ tag: "a" }]);
     },
@@ -460,7 +460,7 @@ export const authSuites: Suite[] = [
       // kind must not be an error — the check catches what it can and leaves the rest to use.
       await space.put({
         kind: "grant",
-        body: { principal: "agent:w", kind: "later", operations: ["query"], template: { whatever: 1 } },
+        body: { principal: "agent:w", kind: "later", operations: ["query"], pattern: { whatever: 1 } },
       });
       assertEquals((await space.authorize("agent:w", "query", "later"))?.length, 1);
     },

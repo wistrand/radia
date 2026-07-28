@@ -112,7 +112,7 @@ check("every version is kept (immutable records)", rb.versions === 2);
 const readOther = await callTool("read_procedure", { name: "add_nums" }, convB);
 check("read_procedure honours the conversation boundary", !readOther.ok, String(readOther.output).slice(0, 60));
 
-// NOTE: a name that was never saved anywhere has no claim template, so no worker takes it and the
+// NOTE: a name that was never saved anywhere has no claim pattern, so no worker takes it and the
 // chat surfaces it through its existing "no worker serves X" stall path. That is the same
 // behaviour as calling any nonexistent tool, so there is nothing procedure-specific to assert.
 

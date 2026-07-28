@@ -22,7 +22,7 @@ bespoke endpoints. Most items below are compositions of primitives that already 
 Emergent flow has two halves. **What happened** — records, events, lineage — is well covered. **What
 would happen** — who is listening for what — is almost entirely absent.
 
-Workers express interest by polling `take` with a template the space never retains. Watches are
+Workers express interest by polling `take` with a pattern the space never retains. Watches are
 worse than ephemeral: **verified**, they live in an in-memory map, die with the runtime, are not
 queryable, and are never pruned (a leak, tracked in the remediation plan). The chat's `capability`
 records solve this at application level only. So the console can show every past hop but cannot draw
@@ -30,7 +30,7 @@ the prospective topology — which is exactly the "where is the workflow?" quest
 the first ten minutes.
 
 **Item: make claim interest a record.** A reserved `interest` kind (or fields on `agent_run`)
-carrying the templates a run is actively claiming — content-keyed like `capability`/`kind_def`,
+carrying the patterns a run is actively claiming — content-keyed like `capability`/`kind_def`,
 withdrawn by `retired: true` successor. `agentLoop` publishes it automatically so no agent author
 lifts a finger.
 
@@ -39,14 +39,14 @@ This one change unlocks a cascade:
 - **"Who would receive this record?"** becomes a query. The reusable machinery is `compile` +
   `matchesRecord` — **not** `matchesEvent`, which is watch-specific and only fires when
   `state === "available"` (verified, `src/core/space.ts:1257`). Note the direction is inverted from
-  normal operation: N registered templates against one candidate body, so it is a linear pass over
+  normal operation: N registered patterns against one candidate body, so it is a linear pass over
   the interest registry, O(registered interests). That is fine at per-worker scale and is not the
   deferred inverted-index work — but say so plainly, so nobody expects it to hold if interests ever
   grow per-record.
 - **A dry-run endpoint** — given this body, which interests match — answers the question *before* a
   record is written.
 - **Starvation and orphan diagnostics get real.** Today's diagnostics use age/state heuristics
-  because the substrate does not know the template population. With a registry, "record matches no
+  because the substrate does not know the pattern population. With a registry, "record matches no
   registered interest" and "interest that has not matched in an hour" are precise, and they compose
   into diagnostics the way the ops plane says diagnostics should be composed.
 - **The console gains the missing view:** a live routing diagram. Kinds as nodes, interests as edges
@@ -77,7 +77,7 @@ per-handler scoping that preceded them leaked through lineage, graph, `take` and
 before anyone noticed. Route every new one through the shared read path.
 
 - **Package B is done**, so the path exists: every read verb goes through `Space.readAccess`, which
-  returns the template constraint and the author scope together. Any view added here must use it
+  returns the pattern constraint and the author scope together. Any view added here must use it
   and add a row to the table-driven guard in `conformance/http.test.ts` — a verb with no row is a
   verb nobody checked. Omitting the scope is still only a convention, not a compile error.
 - **Package D is done**, so a churning registry is safe: a re-declaration after a retirement
@@ -100,8 +100,8 @@ interesting.
 - **Shape-aware collapsing.** A burst of 400 `llm_chunk` events is one fact, not 400 rows — collapse
   runs of same-kind/same-parent events into a count plus a sparkline. The `excludeKinds` hack in
   `getGraph` is the current workaround; aggregation is the answer.
-- **Feed filters are templates.** Let the filter box take the same match object the API takes.
-  Dogfooding, and it doubles as a teaching tool for the query language. Caveat: templates are
+- **Feed filters are patterns.** Let the filter box take the same match object the API takes.
+  Dogfooding, and it doubles as a teaching tool for the query language. Caveat: patterns are
   body-only and cannot express taint or envelope state (verified, §2.3 of the research doc), so the
   filter needs the envelope selector as a second input.
 
@@ -121,7 +121,7 @@ interesting.
     however, display an anonymous put at the single most important node, because `declassify` records
     no principal (remediation package J).
   - *Taint overlay: needs substrate work first.* Taint is one bit, lives in `runtimeMeta` rather than
-    the body (so no template can filter it anywhere), and nothing records **which** parent caused it.
+    the body (so no pattern can filter it anywhere), and nothing records **which** parent caused it.
     Rendered today it produces a field of red nodes with no explanation. Useful only once taint
     provenance is recorded — the same missing primitive the containment application needs, so do it
     once for both.
@@ -159,7 +159,7 @@ acceptance test is already specified in that doc: recover the pipeline example's
 The dry-run matcher answers *who would receive* a record. The inverse is missing and matters more for
 a substrate whose selling point is per-record policy: **which principals can currently read this
 record.** `effectivePermissions` already computes the per-principal side; running it the other way —
-given a record, which principals hold a grant whose template matches it — is the question an operator
+given a record, which principals hold a grant whose pattern matches it — is the question an operator
 asks before declassifying and an auditor asks afterward. It is the read-side twin of the dry-run
 matcher and falls out of the same machinery.
 
@@ -170,11 +170,11 @@ limits, ULID same-millisecond ordering, latest-wins projections, and bounded rea
 populations — the bug CLAUDE.md calls the most repeated in this codebase. Help means moving the
 traps' answers out of prose and into the API surface.
 
-- **`explain` on query.** Templates are data, so the server can annotate: "path not declared on this
+- **`explain` on query.** Patterns are data, so the server can annotate: "path not declared on this
   kind (declared: …)", "no `orderBy` → oldest N", "this kind is `claimable:false`, available forever
   is normal", "results hit the limit — this is a page, not a population." **Cheaper than it looks,
   because the pattern already shipped:** query responses carry a `scope` object with `narrowedBy`
-  listing the grant templates that narrowed the read, and `/ops/events` carries a `withheldNote`.
+  listing the grant patterns that narrowed the read, and `/ops/events` carries a `withheldNote`.
   `explain` extends an established convention rather than inventing one. Highest
   inspector-effectiveness per line of code on this list.
 - **A space digest endpoint.** One grant-gated read returning the projections an investigator needs
@@ -189,7 +189,7 @@ traps' answers out of prose and into the API surface.
   exposed as reads, with `activeByKey` applied server-side, so no model re-implements paging and
   dedupe.
 - **Saved lenses as records.** When an investigation query proves useful, save it — description plus
-  template plus verb chain — as a content-keyed record, discovered like capabilities, retired by
+  pattern plus verb chain — as a content-keyed record, discovered like capabilities, retired by
   successor. The space accumulates its own inspection vocabulary, and every investigator inherits
   every prior investigator's good questions. **Use the `:after:<recordId>` idempotency-key suffix
   from `examples/chat/space/model.ts`.** The chat's `save_procedure`/`retire_procedure` is the same

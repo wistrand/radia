@@ -20,7 +20,7 @@ export const adminSuites: Suite[] = [
       const space = newSpace(adapter);
       await space.put({ kind: "task", body: { tag: "a" } });
       await space.put({ kind: "task", body: { tag: "b" } });
-      await space.take({ template: { kind: "task" } }, { leaseSeconds: -1 }); // one expired lease
+      await space.take({ pattern: { kind: "task" } }, { leaseSeconds: -1 }); // one expired lease
 
       const d = await space.diagnostics();
       assert(d.counts.available >= 1, "expected an available record");
@@ -55,7 +55,7 @@ export const adminSuites: Suite[] = [
       const a = await space.put({ kind: "task", body: { tag: "a" } });
 
       // expired lease -> reclaim applies
-      const t = await space.take({ template: { kind: "task" } }, { leaseSeconds: -1 });
+      const t = await space.take({ pattern: { kind: "task" } }, { leaseSeconds: -1 });
       assertEquals(t?.record.id, a.id);
       assertEquals(await space.reclaim(a.id), true);
       const env = await space.getEnvelope(a.id);
@@ -63,7 +63,7 @@ export const adminSuites: Suite[] = [
       assertEquals(env?.attempt, 1); // bumped
 
       // valid lease -> reclaim does NOT disturb it
-      const t2 = await space.take({ template: { kind: "task" } }, { leaseSeconds: 30 });
+      const t2 = await space.take({ pattern: { kind: "task" } }, { leaseSeconds: 30 });
       assert(t2);
       assertEquals(await space.reclaim(a.id), false);
       assertEquals((await space.getEnvelope(a.id))?.state, "leased");
@@ -82,7 +82,7 @@ export const adminSuites: Suite[] = [
 
       // a consumed record can't be dead-lettered (not in available/leased)
       const b = await space.put({ kind: "task", body: { tag: "b" } });
-      const tb = await space.take({ template: { kind: "task", match: { tag: "b" } } });
+      const tb = await space.take({ pattern: { kind: "task", match: { tag: "b" } } });
       assert(tb);
       await space.ack(tb!.lease);
       assertEquals(await space.forceDeadLetter(b.id), false);
@@ -104,8 +104,8 @@ export const remediateSuites: Suite[] = [
     name: "remediate: reclaims every expired lease, and is bounded by limit with `more`",
     run: async (adapter) => {
       const space = newSpace(adapter);
-      // Claim BY ID: a template take also ranks expired-lease records as candidates, so repeated
-      // template takes would keep re-claiming the same lapsed record instead of stranding seven.
+      // Claim BY ID: a pattern take also ranks expired-lease records as candidates, so repeated
+      // pattern takes would keep re-claiming the same lapsed record instead of stranding seven.
       const ids: string[] = [];
       for (let i = 0; i < 7; i++) ids.push((await space.put({ kind: "task", body: { tag: "x" } })).id);
       for (const recordId of ids) await space.take({ recordId }, { leaseSeconds: -1 });
@@ -130,7 +130,7 @@ export const remediateSuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter);
       await space.put({ kind: "task", body: { tag: "live" } });
-      const claimed = await space.take({ template: { kind: "task" } }, { leaseSeconds: 300 });
+      const claimed = await space.take({ pattern: { kind: "task" } }, { leaseSeconds: 300 });
       assert(claimed, "expected a claim");
 
       const out = await space.remediate("reclaim", { state: "leased", expired: true });
@@ -183,7 +183,7 @@ export const remediateSuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter);
       await space.put({ kind: "task", body: { tag: "a" } });
-      await space.take({ template: { kind: "task" } }, { leaseSeconds: -1 });
+      await space.take({ pattern: { kind: "task" } }, { leaseSeconds: -1 });
       const d = await space.diagnostics();
       // A lapsed lease leaves the record in state `leased`; nothing ever writes `expired`, so
       // reporting that count would always be a confident zero beside real stuck leases.

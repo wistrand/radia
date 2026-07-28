@@ -139,8 +139,8 @@ async function runWave(n: number): Promise<Stats> {
   for (const op of ops) {
     const agent = `agent:stress-${op}-${wave}`;
     const client = await mintAgent(agent, [{ kind: "stress_result", operations: ["put"] }]);
-    // Template-scoped grant (grant ∧ request): this worker may only take ITS op's tasks, so the
-    // content routing is enforced by authorization, not just by the take template it happens to send.
+    // Pattern-scoped grant (grant ∧ request): this worker may only take ITS op's tasks, so the
+    // content routing is enforced by authorization, not just by the take pattern it happens to send.
     await admin.grant(agent, "stress_task", ["take"], { op, wave });
     workers.push({ op, client });
   }
@@ -184,7 +184,7 @@ async function runWave(n: number): Promise<Stats> {
   async function plan(): Promise<void> {
     let idle = 0;
     while (!ac.signal.aborted && idle < 20) {
-      const claimed = await planner.take({ template: { kind: "stress_job", match: { wave } } }, { leaseSeconds: 30 });
+      const claimed = await planner.take({ pattern: { kind: "stress_job", match: { wave } } }, { leaseSeconds: 30 });
       if (!claimed) {
         if (!producing) idle++;
         await sleep(60);
@@ -210,7 +210,7 @@ async function runWave(n: number): Promise<Stats> {
   async function work(op: string, client: RadiaClient): Promise<void> {
     let idle = 0;
     while (!ac.signal.aborted && idle < 25) {
-      const claimed = await client.take({ template: { kind: "stress_task", match: { wave, op } } }, { leaseSeconds: 20 });
+      const claimed = await client.take({ pattern: { kind: "stress_task", match: { wave, op } } }, { leaseSeconds: 20 });
       if (!claimed) {
         if (!producing) idle++;
         await sleep(70);
@@ -243,7 +243,7 @@ async function runWave(n: number): Promise<Stats> {
     const target = Math.ceil(tasks * CHAOS / 3);
     let idle = 0;
     while (!ac.signal.aborted && stats.stuck < target && idle < 40) {
-      const claimed = await chaos.take({ template: { kind: "stress_task", match: { wave } } }, { leaseSeconds: 900 });
+      const claimed = await chaos.take({ pattern: { kind: "stress_task", match: { wave } } }, { leaseSeconds: 900 });
       if (!claimed) {
         if (!producing) idle++;
         await sleep(120);

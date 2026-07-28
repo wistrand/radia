@@ -28,9 +28,9 @@ export const leaseSuites: Suite[] = [
       const space = newSpace(adapter);
       await space.put({ kind: "task", body: { tag: "a" } });
 
-      const first = await nonNull(space.take({ template: { kind: "task" } }));
+      const first = await nonNull(space.take({ pattern: { kind: "task" } }));
       assert(first.lease.leaseId.length > 0);
-      assertEquals(await space.take({ template: { kind: "task" } }), null);
+      assertEquals(await space.take({ pattern: { kind: "task" } }), null);
 
       const env = await space.getEnvelope(first.record.id);
       assertEquals(env?.state, "leased");
@@ -41,7 +41,7 @@ export const leaseSuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter);
       const { id } = await space.put({ kind: "task", body: { tag: "a" } });
-      const t = await nonNull(space.take({ template: { kind: "task" } }));
+      const t = await nonNull(space.take({ pattern: { kind: "task" } }));
 
       const res = await space.ack(t.lease, { kind: "result", body: { ok: true } });
       assertEquals(res.status, "ok");
@@ -58,9 +58,9 @@ export const leaseSuites: Suite[] = [
       const space = newSpace(adapter);
       await space.put({ kind: "task", body: { tag: "a" } });
 
-      const t1 = await nonNull(space.take({ template: { kind: "task" } }));
+      const t1 = await nonNull(space.take({ pattern: { kind: "task" } }));
       assertEquals((await space.nack(t1.lease, { backoffSeconds: 0 })).status, "ok"); // back to available now
-      const t2 = await nonNull(space.take({ template: { kind: "task" } }));
+      const t2 = await nonNull(space.take({ pattern: { kind: "task" } }));
       assert(t2.lease.epoch > t1.lease.epoch, "epoch should advance on reclaim");
 
       // stale operations on the old lease are fenced
@@ -79,12 +79,12 @@ export const leaseSuites: Suite[] = [
       const space = newSpace(adapter);
       const { id } = await space.put({ kind: "task", body: { tag: "a" } });
 
-      const t1 = await nonNull(space.take({ template: { kind: "task" } }));
+      const t1 = await nonNull(space.take({ pattern: { kind: "task" } }));
       await space.nack(t1.lease, { backoffSeconds: 0 });
       assertEquals((await space.getEnvelope(id))?.attempt, 1);
       assertEquals((await space.getEnvelope(id))?.state, "available");
 
-      const t2 = await nonNull(space.take({ template: { kind: "task" } }));
+      const t2 = await nonNull(space.take({ pattern: { kind: "task" } }));
       await space.release(t2.lease);
       assertEquals((await space.getEnvelope(id))?.attempt, 1); // release is +0
       assertEquals((await space.getEnvelope(id))?.state, "available");
@@ -96,10 +96,10 @@ export const leaseSuites: Suite[] = [
       const space = newSpace(adapter);
       const { id } = await space.put({ kind: "task", body: { tag: "a" } });
 
-      const t1 = await nonNull(space.take({ template: { kind: "task" } }, { leaseSeconds: -1 }));
+      const t1 = await nonNull(space.take({ pattern: { kind: "task" } }, { leaseSeconds: -1 }));
       assertEquals((await space.getEnvelope(id))?.attempt, 0);
 
-      const t2 = await nonNull(space.take({ template: { kind: "task" } }));
+      const t2 = await nonNull(space.take({ pattern: { kind: "task" } }));
       assert(t2.lease.epoch > t1.lease.epoch);
       assertEquals((await space.getEnvelope(id))?.attempt, 1); // expiry counted
     },
@@ -110,10 +110,10 @@ export const leaseSuites: Suite[] = [
       const space = newSpace(adapter, { maxAttempts: 1 });
       const { id } = await space.put({ kind: "task", body: { tag: "a" } });
 
-      await nonNull(space.take({ template: { kind: "task" } }, { leaseSeconds: -1 })); // attempt 0
-      await nonNull(space.take({ template: { kind: "task" } }, { leaseSeconds: -1 })); // reclaim -> attempt 1
+      await nonNull(space.take({ pattern: { kind: "task" } }, { leaseSeconds: -1 })); // attempt 0
+      await nonNull(space.take({ pattern: { kind: "task" } }, { leaseSeconds: -1 })); // reclaim -> attempt 1
       // next reclaim would be attempt 2 > max(1) -> dead_letter, nothing claimable
-      assertEquals(await space.take({ template: { kind: "task" } }), null);
+      assertEquals(await space.take({ pattern: { kind: "task" } }), null);
       assertEquals((await space.getEnvelope(id))?.state, "dead_letter");
     },
   },
@@ -122,7 +122,7 @@ export const leaseSuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter, { maxCumulativeSeconds: 0 });
       await space.put({ kind: "task", body: { tag: "a" } });
-      const t = await nonNull(space.take({ template: { kind: "task" } }));
+      const t = await nonNull(space.take({ pattern: { kind: "task" } }));
       // hard deadline == take time, so any later renew is fenced
       assertEquals((await space.renew(t.lease)).status, "lease_lost");
     },
@@ -164,7 +164,7 @@ export const claimFairnessSuites: Suite[] = [
       // assertion is trivially true; on a real backend they overlap, which is where locking the
       // whole candidate set shows up as a false "nothing available".
       const claims = await Promise.all(
-        Array.from({ length: N }, () => space.take({ template: { kind: "task" } }, { leaseSeconds: 60 })),
+        Array.from({ length: N }, () => space.take({ pattern: { kind: "task" } }, { leaseSeconds: 60 })),
       );
       const got = claims.filter((c) => c !== null);
       assertEquals(got.length, N, `every claimer must get one of the ${N} available records`);
@@ -184,7 +184,7 @@ export const claimFairnessSuites: Suite[] = [
       for (let i = 0; i < 300; i++) await space.put({ kind: "task", body: { tag: "common", i } });
       const { id: needle } = await space.put({ kind: "task", body: { tag: "rare" } });
 
-      const claimed = await space.take({ template: { kind: "task", match: { tag: "rare" } } }, { leaseSeconds: 60 });
+      const claimed = await space.take({ pattern: { kind: "task", match: { tag: "rare" } } }, { leaseSeconds: 60 });
       assert(claimed, "the only matching record must be found however deep it sits");
       assertEquals(claimed!.record.id, needle);
     },

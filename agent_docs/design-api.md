@@ -27,7 +27,7 @@ here is authoritative.
 - At-least-once execution with at most one valid lease at a time. Physical execution may
   overlap after lease expiry.
 - Idempotency is checked **before** lease validation, for every state-changing operation.
-- `take(record_id=...)` is a selector, never a bypass: the server re-verifies template,
+- `take(record_id=...)` is a selector, never a bypass: the server re-verifies pattern,
   grants, admission, availability, and `claim_until`.
 - Client disconnect releases nothing. Only leases hold state.
 - Pagination is keyset over immutable sort keys, not snapshot.
@@ -94,15 +94,15 @@ keys; stale `nack` retries may be terminal.
 
 ```
 put(record, idempotency_key) -> id
-read_one(template) -> record | null
-query(template, cursor, limit) -> page          # keyset cursor, see below
-take(template | record_id, lease_s, block, timeout) -> {record, lease} | null
+read_one(pattern) -> record | null
+query(pattern, cursor, limit) -> page          # keyset cursor, see below
+take(pattern | record_id, lease_s, block, timeout) -> {record, lease} | null
 ack(lease, result_record?, idempotency_key) -> ok | lease_lost | idempotency_conflict
 nack(lease, reason, backoff_s) -> ok | lease_lost
 release(lease, reason) -> ok | lease_lost       # cooperative cancel, attempt +0
 renew(lease) -> lease' | lease_lost
-watch(template) -> watch_id / event stream
-control-plane ops (kinds, templates, definitions, runs — see design-auth.md)
+watch(pattern) -> watch_id / event stream
+control-plane ops (kinds, patterns, definitions, runs — see design-auth.md)
 ops plane      (stats, events, envelope query, diagnostics, remediation — see design-observability.md)
 ```
 
@@ -114,7 +114,7 @@ stored out of line, so nothing about matching, leasing or authorization is speci
 See [design-data-model.md](design-data-model.md) §2.4.
 
 - **`take(record_id=...)` is only an efficient selector, never a bypass.** The server
-  re-verifies: a registered template of this run matches the record; grants permit the
+  re-verifies: a registered pattern of this run matches the record; grants permit the
   take; scheduler admission exists (in scheduler mode); the record is `available` and
   within `claim_until`.
 - **Pagination is keyset, not snapshot.** Stable with respect to the selected *immutable*
@@ -147,7 +147,7 @@ content-routing) rather than as scattered endpoints — see [CLAUDE.md](../CLAUD
   **Cursor older than retained events → 410 `cursor_expired`:** the client performs a
   catch-up query and opens a new watch. **M1 status (implemented):** backed by the event
   log + an in-process `Notifier` (the LISTEN/NOTIFY-equivalent wakeup; `src/core/notifier.ts`);
-  `Space.matchesEvent` filters events to available records matching the watch template
+  `Space.matchesEvent` filters events to available records matching the watch pattern
   (wakeup-by-kind, plus predicates via a record fetch); resumption via `Last-Event-ID` or
   `?cursor=`. The 410 floor is 0 until event-log GC lands (M2), so it is dormant. SDK:
   `client.watch()` (async generator); `agentLoop` consumes it (event-driven, poll fallback). Watch
@@ -157,7 +157,7 @@ content-routing) rather than as scattered endpoints — see [CLAUDE.md](../CLAUD
   the loop watches the kinds it `take`s, and the required `take` grant already authorizes the watch.)
 - Watches are **ephemeral run resources** (die with the run). Durable subscriptions are
   deferred.
-- Templates are never in query strings.
+- Patterns are never in query strings.
 - Errors: RFC 9457. `lease_lost` and lost-race are distinct non-error statuses.
 - LISTEN/NOTIFY is wakeup only; the event log is truth.
 - Layering: Postgres → runtime (sole DB client) → protocol → {SDKs, MCP adapter, CLI}.
@@ -174,7 +174,7 @@ content-routing) rather than as scattered endpoints — see [CLAUDE.md](../CLAUD
 
 ```python
 async def agent_loop(space, run):
-    async for hint in space.watch(run.templates):
+    async for hint in space.watch(run.patterns):
         claimed = await space.take(record_id=hint.record_id, lease_s=run.lease_s)
         if claimed is None:
             continue                                   # lost race / not admitted: normal

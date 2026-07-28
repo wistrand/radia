@@ -1,6 +1,6 @@
-// Template matching — compilation, validation, and the semantic ORACLE.
+// Pattern matching — compilation, validation, and the semantic ORACLE.
 //
-// The evaluator here DEFINES what a template matches. Adapters may later push predicates
+// The evaluator here DEFINES what a pattern matches. Adapters may later push predicates
 // into indexed SQL, but that SQL must agree with this function; the conformance suite uses
 // it as the reference. Keep it backend-neutral.
 //
@@ -9,7 +9,7 @@
 //   - no type coercion: cross-type comparison is false
 //   - explicit array quantifiers $any/$each: scalar predicates never distribute over arrays
 //   - $and/$or depth <= 3
-// Forbidden forever: $regex/$where/$expr (templates are data, not code).
+// Forbidden forever: $regex/$where/$expr (patterns are data, not code).
 // Deferred (rejected at compile for now): $ne/$nin/$not/$prefix.
 
 import type {
@@ -28,25 +28,25 @@ export interface OrderKey {
   dir?: "asc" | "desc";
 }
 
-/** Wire template. `match` values are implicit-$eq scalars or operator objects. */
-export interface Template {
+/** Wire pattern. `match` values are implicit-$eq scalars or operator objects. */
+export interface Pattern {
   kind: string;
   match?: Record<string, unknown>;
   orderBy?: OrderKey[];
 }
 
 /**
- * `grant ∧ request`: narrow a requested match by a set of grant templates (their union). Returns
- * a match object to compile — the request must match AND at least one grant template. Used for
- * template-scoped grants (server-side, per design-auth). `grantTemplates` must be non-empty; an
- * empty request means "all", so the result is just the constraint. Grant templates should be
+ * `grant ∧ request`: narrow a requested match by a set of grant patterns (their union). Returns
+ * a match object to compile — the request must match AND at least one grant pattern. Used for
+ * pattern-scoped grants (server-side, per design-auth). `grantPatterns` must be non-empty; an
+ * empty request means "all", so the result is just the constraint. Grant patterns should be
  * simple (flat) — a nested `$or`/`$and` inside one can exceed the compiler's depth-3 limit.
  */
 export function combineMatch(
   requestMatch: Record<string, unknown> | undefined,
-  grantTemplates: Record<string, unknown>[],
+  grantPatterns: Record<string, unknown>[],
 ): Record<string, unknown> {
-  const constraint = grantTemplates.length === 1 ? grantTemplates[0] : { $or: grantTemplates };
+  const constraint = grantPatterns.length === 1 ? grantPatterns[0] : { $or: grantPatterns };
   if (!requestMatch || Object.keys(requestMatch).length === 0) return constraint;
   return { $and: [requestMatch, constraint] };
 }
@@ -73,7 +73,7 @@ interface Ctx {
   registered: boolean;
 }
 
-export function compileTemplate(t: Template, def: KindDef | undefined): CompiledMatch {
+export function compilePattern(t: Pattern, def: KindDef | undefined): CompiledMatch {
   const ctx: Ctx = {
     kind: t.kind,
     indexed: new Map((def?.indexedPaths ?? []).map((p) => [p.path, p.type])),
@@ -89,7 +89,7 @@ export function compileTemplate(t: Template, def: KindDef | undefined): Compiled
   // caller gets a plausible answer to a question it did not ask.
   if (t.match !== undefined && t.match !== null) {
     if (typeof t.match !== "object" || Array.isArray(t.match)) {
-      throw new RadiaError("invalid_template", "template.match must be an object of path → condition");
+      throw new RadiaError("invalid_pattern", "pattern.match must be an object of path → condition");
     }
   }
   const where = t.match && Object.keys(t.match).length > 0
@@ -184,12 +184,12 @@ function compileOrderBy(orderBy: OrderKey[] | undefined, ctx: Ctx): OrderBy[] | 
   // Validate the SHAPE here rather than trusting the caller's cast: a client sending
   // `orderBy: "index"` would otherwise reach `.map` on a string and turn a bad request into a 500.
   if (!Array.isArray(orderBy)) {
-    throw new RadiaError("invalid_template", "order_by must be an array of {path, dir?}");
+    throw new RadiaError("invalid_pattern", "order_by must be an array of {path, dir?}");
   }
   if (orderBy.length === 0) return undefined;
   for (const k of orderBy) {
     if (!k || typeof k !== "object" || typeof (k as OrderKey).path !== "string") {
-      throw new RadiaError("invalid_template", "each order_by entry must be an object with a string `path`");
+      throw new RadiaError("invalid_pattern", "each order_by entry must be an object with a string `path`");
     }
   }
   return orderBy.map((k) => {
@@ -208,7 +208,7 @@ function compileOrderBy(orderBy: OrderKey[] | undefined, ctx: Ctx): OrderBy[] | 
 
 function operatorError(op: string): RadiaError {
   if (FORBIDDEN.has(op)) {
-    return new RadiaError("operator_forbidden", `operator ${op} is not allowed (templates are data, not code)`);
+    return new RadiaError("operator_forbidden", `operator ${op} is not allowed (patterns are data, not code)`);
   }
   if (DEFERRED.has(op)) {
     return new RadiaError("operator_deferred", `operator ${op} is not supported yet`);
@@ -326,7 +326,7 @@ function valueEq(a: unknown, b: unknown): boolean {
 // Ordering
 // ---------------------------------------------------------------------------
 
-/** Records sorted by the template's order (then record id, always, for determinism). */
+/** Records sorted by the pattern's order (then record id, always, for determinism). */
 export function orderRecords(
   records: RadiaRecord[],
   orderBy: OrderBy[] | undefined,
@@ -354,7 +354,7 @@ export function pageRecords(
   return ordered.slice(0, limit);
 }
 
-/** First record by the template's order (then record id, always, for determinism). */
+/** First record by the pattern's order (then record id, always, for determinism). */
 export function firstByOrder(
   records: RadiaRecord[],
   orderBy: OrderBy[] | undefined,

@@ -194,7 +194,7 @@
     <div class="panel">
       <h2>Claim work</h2>
       <div class="row">
-        <div><label>Kind (template)</label><input id="w-kind" list="kind-list" placeholder="task"></div>
+        <div><label>Kind (pattern)</label><input id="w-kind" list="kind-list" placeholder="task"></div>
         <div style="max-width:140px"><label>Lease seconds</label><input id="w-lease" type="number" value="30"></div>
       </div>
       <div class="actions"><button class="btn" onclick="takeWork()">Take</button></div>
@@ -252,7 +252,7 @@
   <section id="space">
     <div class="panel">
       <h2>Space</h2>
-      <p class="muted" style="margin-top:0">Every record placed by <b>what it is</b> — kind, envelope state, owning run — not by what it links to. Proximity approximates template matchability: two records sitting together are two records one template would likely both match. Streamed live from the ops event log; layout is deterministic, so the same events always give the same picture. Scroll to zoom (levels aggregate into supernodes), drag to pan, click a record for detail, <code>r</code>/<code>R</code> for the compass and control panels.</p>
+      <p class="muted" style="margin-top:0">Every record placed by <b>what it is</b> — kind, envelope state, owning run — not by what it links to. Proximity approximates pattern matchability: two records sitting together are two records one pattern would likely both match. Streamed live from the ops event log; layout is deterministic, so the same events always give the same picture. Scroll to zoom (levels aggregate into supernodes), drag to pan, click a record for detail, <code>r</code>/<code>R</code> for the compass and control panels.</p>
       <div class="space-bar">
         <label><input type="checkbox" id="space-live" style="width:auto" checked onchange="toggleSpaceLive()"> live</label>
         <label>colour by
@@ -316,7 +316,7 @@ async function api(method, path, body, headers = {}) {
   return { ok: res.ok, status: res.status, data };
 }
 // Escapes for BOTH text and attribute contexts. Quotes matter: record-derived values reach
-// attributes (a grant's template is JSON, which always contains `"`, and a kind name is validated
+// attributes (a grant's pattern is JSON, which always contains `"`, and a kind name is validated
 // only as a non-empty string), so escaping `& < >` alone lets a value close the attribute and
 // inject a new one — an XSS into the origin whose page carries an operator token.
 function esc(s) {
@@ -628,9 +628,9 @@ let heldLease = null;
 async function takeWork() {
   const kind = $("w-kind").value.trim();
   const leaseSeconds = Number($("w-lease").value) || 30;
-  const r = await api("POST", "/v0/takes", { template: { kind }, leaseSeconds });
+  const r = await api("POST", "/v0/takes", { pattern: { kind }, leaseSeconds });
   if (!r.ok) return note("w-msg", "err", errText(r));
-  if (r.data === null) { note("w-msg", "info", "Nothing claimable for that template."); $("w-holding").style.display = "none"; return; }
+  if (r.data === null) { note("w-msg", "info", "Nothing claimable for that pattern."); $("w-holding").style.display = "none"; return; }
   heldLease = r.data.lease;
   note("w-msg", "ok", `Claimed record ${r.data.record.id}`);
   $("w-holding").style.display = "block";
@@ -891,7 +891,7 @@ async function loadAuth() {
   for (const rl of runLatest.values()) (runsByAgent[rl.agent] ??= []).push(rl);
 
   const grantChips = (gs) => gs.length
-    ? gs.map((g) => `<span class="tag tag-grant" title="${esc(g.template ? "template-scoped: " + JSON.stringify(g.template) : "kind-scoped")}">${esc(g.kind)}: ${esc((g.operations || []).join(", "))}${g.template ? " ⋔" : ""}</span>`).join(" ")
+    ? gs.map((g) => `<span class="tag tag-grant" title="${esc(g.pattern ? "pattern-scoped: " + JSON.stringify(g.pattern) : "kind-scoped")}">${esc(g.kind)}: ${esc((g.operations || []).join(", "))}${g.pattern ? " ⋔" : ""}</span>`).join(" ")
     : `<span class="muted">none</span>`;
   const runLines = (rs) => rs.length
     ? rs.map((r) => `<div class="mono" style="font-size:12px;margin-top:3px">${esc(r.run.slice(0, 22))}… `

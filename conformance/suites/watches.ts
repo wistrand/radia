@@ -1,6 +1,6 @@
 // M1 conformance: the Space-level watch primitives that back the SSE endpoint —
-// createWatch (validates the template), matchesEvent (wakeup semantics: available records
-// matching the template), and latestCursor (the starting cursor). The SSE transport and
+// createWatch (validates the pattern), matchesEvent (wakeup semantics: available records
+// matching the pattern), and latestCursor (the starting cursor). The SSE transport and
 // resumption are covered by an HTTP smoke, not here. Runs on every adapter.
 
 import { assert, assertEquals } from "@std/assert";
@@ -23,7 +23,7 @@ const OWNER = "human:local";
 
 export const watchSuites: Suite[] = [
   {
-    name: "createWatch validates the template; undeclared path is rejected",
+    name: "createWatch validates the pattern; undeclared path is rejected",
     run: async (adapter) => {
       const space = newSpace(adapter);
       const { watchId } = await space.createWatch({ kind: "task", match: { tag: "x" } }, OWNER);
@@ -54,7 +54,7 @@ export const watchSuites: Suite[] = [
       assertEquals(await space.matchesEvent({ match: { kind: "other" }, cursor0: "0", owner: OWNER }, putEvent), false);
 
       // consume it; the ack event (state consumed) is not a wakeup
-      const t = await space.take({ template: { kind: "task" } });
+      const t = await space.take({ pattern: { kind: "task" } });
       assert(t);
       await space.ack(t!.lease);
       const ackEvent = (await eventsOf(space)).find((e) => e.operation === "ack")!;
@@ -81,7 +81,7 @@ export const watchSuites: Suite[] = [
       const wantResult = space.getWatch((await space.createWatch({ kind: "result" }, OWNER)).watchId, OWNER)!;
 
       await space.put({ kind: "task", body: { tag: "x" } });
-      const t = await space.take({ template: { kind: "task" } });
+      const t = await space.take({ pattern: { kind: "task" } });
       assert(t);
       const acked = await space.ack(t!.lease, { kind: "result", body: { ok: true } });
       assert(acked.status === "ok");

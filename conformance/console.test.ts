@@ -1,7 +1,7 @@
 // The console's HTML escaping, and the rule that the page carries no credential.
 //
 // `esc` guards an XSS into the space's own origin: record-derived values (a kind name, a grant's
-// `template` rendered as JSON inside `title="…"`) reach HTML ATTRIBUTES, so escaping `& < >` alone
+// `pattern` rendered as JSON inside `title="…"`) reach HTML ATTRIBUTES, so escaping `& < >` alone
 // lets a value close the attribute and inject a new one. That bug was real and shipped.
 //
 // The console is deliberately one file with no build step, so there is no module to import. Rather
@@ -28,7 +28,7 @@ const html = await Deno.readTextFile(new URL("../src/ui/index.html", import.meta
 const esc = new Function(`${extractFunction(html, "esc")}; return esc;`)() as (s: unknown) => string;
 
 Deno.test("console: esc escapes both quote characters, not only the markup ones", () => {
-  // `"` is the one that mattered: a grant template is JSON, so it ALWAYS contains a double quote.
+  // `"` is the one that mattered: a grant pattern is JSON, so it ALWAYS contains a double quote.
   assertEquals(esc(`a"b`), "a&quot;b");
   assertEquals(esc("a'b"), "a&#39;b");
   assertEquals(esc("<script>"), "&lt;script&gt;");
@@ -45,9 +45,9 @@ Deno.test("console: a hostile value cannot break out of an attribute", () => {
   assert(!/[<>]/.test(escaped), "no bare angle bracket survives");
   assert(!escaped.includes("' "), "no bare single quote survives");
 
-  // A realistic carrier: a grant template rendered into title="…".
-  const template = JSON.stringify({ tag: `x" onmouseover="alert(1)` });
-  assert(!esc(template).includes('"'));
+  // A realistic carrier: a grant pattern rendered into title="…".
+  const pattern = JSON.stringify({ tag: `x" onmouseover="alert(1)` });
+  assert(!esc(pattern).includes('"'));
 });
 
 Deno.test("console: esc coerces non-strings rather than throwing", () => {

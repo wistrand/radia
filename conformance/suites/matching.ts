@@ -44,7 +44,7 @@ export const matchingSuites: Suite[] = [
           await space.query({ kind: "task", orderBy: bad as never });
         } catch (e) {
           threw = true;
-          assertEquals((e as RadiaError).code, "invalid_template", `wrong code for ${JSON.stringify(bad)}`);
+          assertEquals((e as RadiaError).code, "invalid_pattern", `wrong code for ${JSON.stringify(bad)}`);
         }
         assert(threw, `order_by ${JSON.stringify(bad)} must be rejected`);
       }
@@ -93,7 +93,7 @@ export const matchingSuites: Suite[] = [
       const space = newSpace(adapter);
       await space.put({ kind: "task", body: { tag: "str", n: 5 } });
 
-      // template value "5" (string) vs stored 5 (number) -> no match
+      // pattern value "5" (string) vs stored 5 (number) -> no match
       assertEquals(await space.readOne({ kind: "task", match: { n: "5" } }), null);
       assertEquals(await space.readOne({ kind: "task", match: { n: { $gt: "3" } } }), null);
       // correct type matches

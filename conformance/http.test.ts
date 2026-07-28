@@ -278,7 +278,7 @@ Deno.test("http: a self-scoped grant narrows EVERY read verb, not just query", a
     const verbs: { verb: string; run: () => Promise<Response> }[] = [
       { verb: "query", run: () => handler(post("/v0/records/query", { kind: "task" }, auth)) },
       { verb: "read_one", run: () => handler(post("/v0/records/read-one", { kind: "task" }, auth)) },
-      { verb: "take", run: () => handler(post("/v0/takes", { template: { kind: "task" } }, auth)) },
+      { verb: "take", run: () => handler(post("/v0/takes", { pattern: { kind: "task" } }, auth)) },
       { verb: "lineage", run: () => handler(get(`/v0/ops/records/${own.id}/lineage`, auth)) },
       { verb: "children", run: () => handler(get(`/v0/ops/records/${secret.id}/children`, auth)) },
       { verb: "graph", run: () => handler(get(`/v0/ops/records/${own.id}/graph`, auth)) },
@@ -323,8 +323,8 @@ Deno.test("http: a wrong-typed field is a 400 at the boundary, never a 500 from 
       { path: "/v0/records", body: { body: { tag: "a" } }, about: "kind missing" },
 
       // NOTE the wire shapes differ per endpoint, and that is the frozen contract rather than a
-      // slip: query/read-one/watches take the template FLATTENED at the top level, `takes` nests
-      // it under `template`. Copying a row to another endpoint without checking which shape it
+      // slip: query/read-one/watches take the pattern FLATTENED at the top level, `takes` nests
+      // it under `pattern`. Copying a row to another endpoint without checking which shape it
       // uses tests nothing — the handler reads a field that was never there and rejects it for
       // the wrong reason.
       { path: "/v0/records/query", body: { kind: "task", match: 3 }, about: "match not an object" },
@@ -334,13 +334,13 @@ Deno.test("http: a wrong-typed field is a 400 at the boundary, never a 500 from 
       { path: "/v0/records/query", body: { kind: "task", dir: "sideways" }, about: "dir neither asc nor desc" },
       { path: "/v0/records/query", body: { kind: 5 }, about: "kind not a string" },
       { path: "/v0/records/query", body: { kind: "task", match: { tag: { $bogus: 1 } } }, about: "unknown operator" },
-      { path: "/v0/records/query", body: { kind: "task", match: { tag: { $regex: "a" } } }, about: "$regex is never a template" },
-      { path: "/v0/records/read-one", body: {}, about: "no template at all" },
+      { path: "/v0/records/query", body: { kind: "task", match: { tag: { $regex: "a" } } }, about: "$regex is never a pattern" },
+      { path: "/v0/records/read-one", body: {}, about: "no pattern at all" },
       { path: "/v0/records/read-one", body: { kind: "task", match: [] }, about: "match an array" },
 
       { path: "/v0/takes", body: {}, about: "no selector at all" },
-      { path: "/v0/takes", body: { template: [] }, about: "template an array" },
-      { path: "/v0/takes", body: { template: {} }, about: "template with no kind" },
+      { path: "/v0/takes", body: { pattern: [] }, about: "pattern an array" },
+      { path: "/v0/takes", body: { pattern: {} }, about: "pattern with no kind" },
       { path: "/v0/takes", body: { recordId: 5 }, about: "recordId not a string" },
       { path: "/v0/leases/ack", body: {}, about: "no lease at all" },
       { path: "/v0/leases/ack", body: { leaseId: 1, epoch: 1 }, about: "leaseId not a string" },
@@ -349,7 +349,7 @@ Deno.test("http: a wrong-typed field is a 400 at the boundary, never a 500 from 
       { path: "/v0/leases/renew", body: { leaseId: "x", epoch: 1, leaseSeconds: {} }, about: "leaseSeconds an object" },
       { path: "/v0/leases/nack", body: { leaseId: "x", epoch: 1, backoffSeconds: [] }, about: "backoffSeconds an array" },
       { path: "/v0/watches", body: { kind: 7 }, about: "watch kind not a string" },
-      { path: "/v0/watches", body: {}, about: "watch with no template" },
+      { path: "/v0/watches", body: {}, about: "watch with no pattern" },
     ];
     for (const c of cases) {
       const res = await handler(post(c.path, c.body));
@@ -408,7 +408,7 @@ Deno.test("http: a wrong-typed BOUND falls back to its default rather than faili
     assertEquals(q.status, 200, "a bad limit uses the default limit");
     assert((await q.json()).records.length >= 1);
 
-    const t = await handler(post("/v0/takes", { template: { kind: "task" }, leaseSeconds: "60" }));
+    const t = await handler(post("/v0/takes", { pattern: { kind: "task" }, leaseSeconds: "60" }));
     assertEquals(t.status, 200, "a bad leaseSeconds uses the default lease");
     await t.json();
   } finally {

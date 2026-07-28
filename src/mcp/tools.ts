@@ -13,9 +13,9 @@ const KIND = { type: "string", description: "Record kind. Discover valid kinds w
 const MATCH = {
   type: "object",
   description:
-    "Template match on the record body, e.g. {\"status\":\"open\"} or {\"n\":{\"$gt\":3}}. Operators: " +
+    "Pattern match on the record body, e.g. {\"status\":\"open\"} or {\"n\":{\"$gt\":3}}. Operators: " +
     "$eq $ne $gt $gte $lt $lte $in $nin $exists $and $or. Only paths declared indexed for the kind " +
-    "may be matched — space_kinds lists them. Templates are data: no regex, no expressions. Omit to " +
+    "may be matched — space_kinds lists them. Patterns are data: no regex, no expressions. Omit to " +
     "match every record of the kind.",
 };
 const ORDER_BY = {
@@ -78,7 +78,7 @@ export const TOOLS: McpTool[] = [
   },
   {
     name: "space_query",
-    description: "Read records matching a template. Read-only — it does not claim anything.",
+    description: "Read records matching a pattern. Read-only — it does not claim anything.",
     inputSchema: {
       type: "object",
       properties: { kind: KIND, match: MATCH, orderBy: ORDER_BY, limit: { type: "number", description: "Default 50." } },
@@ -87,7 +87,7 @@ export const TOOLS: McpTool[] = [
   },
   {
     name: "space_read_one",
-    description: "The single best record matching a template, or null. Read-only.",
+    description: "The single best record matching a pattern, or null. Read-only.",
     inputSchema: { type: "object", properties: { kind: KIND, match: MATCH, orderBy: ORDER_BY }, required: ["kind"] },
   },
   {
@@ -121,7 +121,7 @@ export const TOOLS: McpTool[] = [
   {
     name: "space_take",
     description:
-      "Claim one record matching a template so you can work on it — no other agent can claim it " +
+      "Claim one record matching a pattern so you can work on it — no other agent can claim it " +
       "while you hold it. Returns a claimId and the record, or reports that nothing is available " +
       "(a normal outcome, not an error). The lease is held and renewed for you while you think, so " +
       "there is no time pressure. ALWAYS finish with space_ack, space_nack or space_release: an " +

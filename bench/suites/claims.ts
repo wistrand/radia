@@ -18,7 +18,7 @@ export const claimBenches: Bench[] = [
       const out: Measurement[] = [];
       const leases: import("../../src/storage/adapter.ts").Lease[] = [];
       out.push(await measure("take", n, async () => {
-        const c = await ctx.space.take({ template: { kind: "task" } }, { leaseSeconds: 60 });
+        const c = await ctx.space.take({ pattern: { kind: "task" } }, { leaseSeconds: 60 });
         if (c) leases.push(c.lease);
       }, 0)); // warmup 0: each take consumes a record, and the acks below settle exactly these leases
       let k = 0;
@@ -37,7 +37,7 @@ export const claimBenches: Bench[] = [
       for (let i = 0; i < n + 20; i++) await ctx.space.put({ kind: "task", body: { i } });
       const leases: import("../../src/storage/adapter.ts").Lease[] = [];
       for (let i = 0; i < n; i++) {
-        const c = await ctx.space.take({ template: { kind: "task" } }, { leaseSeconds: 60 });
+        const c = await ctx.space.take({ pattern: { kind: "task" } }, { leaseSeconds: 60 });
         if (c) leases.push(c.lease);
       }
       let k = 0;
@@ -69,7 +69,7 @@ export const claimBenches: Bench[] = [
           while (state.claimed < total) {
             let got = false;
             const ms = await timed(async () => {
-              const c = await ctx.space.take({ template: { kind: "task" } }, { leaseSeconds: 60 });
+              const c = await ctx.space.take({ pattern: { kind: "task" } }, { leaseSeconds: 60 });
               if (c) {
                 got = true;
                 state.claimed++;

@@ -71,10 +71,10 @@ await admin.put({
     kind: "message",
     operations: ["query", "read_one"],
     scope: { createdBy: "self" },
-    // Templated to the same conversation as the base grant. Without this the grant UNIONS with the
-    // templated one and reopens every conversation — a widening performed by adding a "narrower"
-    // grant, which is why the approval flow now inherits the template it is narrowing.
-    template: { conversationId: mine },
+    // Patterned to the same conversation as the base grant. Without this the grant UNIONS with the
+    // patterned one and reopens every conversation — a widening performed by adding a "narrower"
+    // grant, which is why the approval flow now inherits the pattern it is narrowing.
+    pattern: { conversationId: mine },
   },
 });
 
@@ -108,7 +108,7 @@ check("paging further does not leak another author's events", leaked.length === 
 // The leak this closes: every chat session runs as the SAME `agent:chat-user`, so a kind-scoped
 // `message: query` grant let any session read every message in the space. A ten-minute session
 // reconstructed two days of other people's conversations from it — correctly, because nothing
-// enforced the "its own results" the grant comment claimed. The grants are now template-scoped to
+// enforced the "its own results" the grant comment claimed. The grants are now pattern-scoped to
 // the conversation the session is attached to.
 const visible = await tools.space_query({ kind: "message", limit: 25 }) as { count: number; more: boolean };
 check(
@@ -139,7 +139,7 @@ check(
   (await admin.query({ kind: "message", match: { conversationId: conv } }, 5)).length === 5,
 );
 
-// A template scope binds writes too: the body must match, so a session cannot file records into
+// A pattern scope binds writes too: the body must match, so a session cannot file records into
 // another conversation any more than it can read one.
 let wroteElsewhere = true;
 try {
@@ -176,7 +176,7 @@ check("its own tool_result is readable", (await session.readOne({ kind: "tool_re
 check("its own chunks are readable", (await session.query({ kind: "llm_chunk", match: { callId: myCall } }, 10)).length === 1);
 
 // Artifacts. The last kind a session could not be scoped on: the body is computed from the bytes,
-// so until `putArtifact` accepted application fields there was nothing for a template to bind and
+// so until `putArtifact` accepted application fields there was nothing for a pattern to bind and
 // any holder of an id could read the bytes.
 const theirArt = await admin.putArtifact(new TextEncoder().encode("their secret"), {
   mediaType: "text/plain",
@@ -241,7 +241,7 @@ check(
   JSON.stringify(claimyGrant?.operations),
 );
 check("…and says so, rather than reporting a bare success", (claimyGrant?.withheld ?? []).includes("take"));
-const canTake = await session.take({ template: { kind: "llm_call" } }, { leaseSeconds: 5 }).then(() => true).catch(() => false);
+const canTake = await session.take({ pattern: { kind: "llm_call" } }, { leaseSeconds: 5 }).then(() => true).catch(() => false);
 check("…so the session still cannot claim the fleet's work", !canTake);
 
 // An answer that is neither option must not silently become one. `y` read as plain "yes" and meant

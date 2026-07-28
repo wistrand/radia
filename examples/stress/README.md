@@ -22,9 +22,9 @@ three deliberately rather than only pushing volume:
 - **kind** — `stress_job` (fanned out), `stress_task` (claimed by content), `stress_result`,
   `stress_fact` (never claimed: a pure `available` cluster), `stress_summary` (rolling fan-in).
 - **run** — one agent per role plus **one per op**, each with its own run token, so the event log
-  attributes every record to a distinct run. Workers hold a **template-scoped grant**
+  attributes every record to a distinct run. Workers hold a **pattern-scoped grant**
   (`take stress_task` narrowed to `{op, wave}`), so content routing is enforced by authorization,
-  not just by the template a worker happens to send.
+  not just by the pattern a worker happens to send.
 - **state** — acked work lands `consumed`; **poison** records are nacked repeatedly (attempt +1,
   back to `available`, reclaimed) until the runtime **dead-letters** them past `maxAttempts`; a
   chaos agent claims a few tasks under a 900s lease and walks away, leaving them **`leased`**

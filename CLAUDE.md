@@ -5,7 +5,7 @@ Guidance for agents working in this repo. Read this first, then the relevant fil
 
 Radia is a content-routed coordination runtime for LLM agents. **All of M0 (Phases 0–7) plus a
 growing M1 slice are built** — watches (SSE), and the **authorization stack**: kind- and
-template-scoped grants (as records), the bootstrap chain + run tokens, per-run lease ownership
+pattern-scoped grants (as records), the bootstrap chain + run tokens, per-run lease ownership
 with stop/quarantine, `delegation_context`, and `taint` + declassify (Deno + TypeScript;
 embedded PGlite and SQLite adapters; artifacts/blob storage; web console; TS + Python SDKs; a public-API CLI; a bundled
 MCP adapter; runnable agent examples incl. a CLI LLM chatbot that runs with real auth roles).
@@ -17,7 +17,7 @@ functional design outline. The `design-*` docs are spec + rationale; built ones 
 [agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md).
 
 The runtime is a coordination substrate: agents exchange immutable JSON **records**
-(tasks, facts, requests, results) through a shared space and claim work by **template
+(tasks, facts, requests, results) through a shared space and claim work by **pattern
 matching**, not by preconfigured routing. Each record has an immutable content half and
 a mutable **runtime envelope** holding claim state. Work is claimed under a fenced,
 renewable **lease** with at-least-once execution. Storage is Postgres (or embedded
@@ -27,7 +27,7 @@ guarantees. Model calls and agent logic stay outside the runtime.
 ```mermaid
 flowchart LR
     A[Agent A] -->|put record| S[(Space)]
-    S -->|match template| B[Agent B]
+    S -->|match pattern| B[Agent B]
     B -->|take, get fenced lease| S
     B -->|ack result record| S
     S -->|result matches| C[Agent C]
@@ -50,7 +50,7 @@ content, not by addressing.
 | `src/ui/index.html`                     | dev web console served at `GET /` (no build, public API only); the **Space** tab streams the ops event log into a property-similarity map (bounded, evicting finished records before live ones) |
 | `src/ui/vendor/`                        | prebuilt browser assets served under `/ui/` — `blitzoom.bundle.js` (`<bz-graph>`, layout for the Space tab), pinned to an upstream commit; see the README there |
 | `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes, `resolveAuth` Bearer, ops-plane gate, operator-token injection), `problem.ts` (RFC 9457), `handlers/` (`records.ts` + authorize, `leases.ts`, `agents.ts` = bootstrap chain, `artifacts.ts` = bytes in/out + download capabilities, `ops.ts` = ops plane: stats/events/lineage/children/graph/envelope-query/diagnostics/admin/remediate/declassify, `watches.ts` SSE = grant-gated `authorizeWatch`) |
-| `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port: records/leases/idempotency/events/graph + compiled-match AST, plus the optional `prepareKind` physical hint; kinds are records, not a port concern), `blobs.ts` (the `BlobStore` port: artifact bytes, content-addressed; memory + filesystem impls), `crypto.ts` (optional blob encryption: per-blob AES-GCM DEK wrapped under a space KEK), `row.ts` (shared row/value mapping), `pushdown.ts` (compiled template → a **sound** SQL pre-filter; the oracle still decides — see the soundness contract at the top of the file), `pgbase.ts` (shared Postgres-dialect body over a minimal SQL port) + `pglite.ts`, `postgres.ts` (both bind their driver to `pgbase`), `sqlite.ts` (own dialect) |
+| `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port: records/leases/idempotency/events/graph + compiled-match AST, plus the optional `prepareKind` physical hint; kinds are records, not a port concern), `blobs.ts` (the `BlobStore` port: artifact bytes, content-addressed; memory + filesystem impls), `crypto.ts` (optional blob encryption: per-blob AES-GCM DEK wrapped under a space KEK), `row.ts` (shared row/value mapping), `pushdown.ts` (compiled pattern → a **sound** SQL pre-filter; the oracle still decides — see the soundness contract at the top of the file), `pgbase.ts` (shared Postgres-dialect body over a minimal SQL port) + `pglite.ts`, `postgres.ts` (both bind their driver to `pgbase`), `sqlite.ts` (own dialect) |
 | `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + graph, kinds-as-records, envelope query, `authorize`/grants, delegation, taint, bootstrap chain), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order + `combineMatch`), `kinds.ts` (indexing contract + `kind_def`/`grant`/`signal`/`agent_*`/`artifact` reserved kinds), `auth.ts` (token mint/hash; `CredentialStore` holds only what cannot be revoked — credentials resolve from records per request), `take.ts` (claim ranking), `registry.ts` (the latest-wins / additive projections every registry is built from, and `retired: true`), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts` (**monotonic** ULIDs — latest-wins depends on it), `errors.ts` |
 | `sdk/README.md`                         | SDK overview + parity table (TS and Python) — start here for client work |
 | `sdk/ts/`                               | TS SDK: `client.ts` (`RadiaClient` over `/v0`, incl. `watch()` SSE), `loop.ts` (`agentLoop`, event-driven, design §5) |
@@ -84,7 +84,7 @@ key), [examples/stress/](examples/stress/) (load, for the Space tab), [examples/
 - [agent_docs/architecture-surfaces.md](agent_docs/architecture-surfaces.md): the CLI, the MCP adapter, auto-provisioned credentials, the `platform.ts` host seam, and release packaging — how anything reaches a space other than raw HTTP.
 
 - [agent_docs/design-data-model.md](agent_docs/design-data-model.md): records vs. runtime envelope, kinds, timing fields, provenance vs. authority, resource limits, artifacts (§2).
-- [agent_docs/design-matching.md](agent_docs/design-matching.md): the template query language, its divergences from Mongo, per-kind indexing contract, semantic matching (§3).
+- [agent_docs/design-matching.md](agent_docs/design-matching.md): the pattern query language, its divergences from Mongo, per-kind indexing contract, semantic matching (§3).
 - [agent_docs/design-api.md](agent_docs/design-api.md): delivery guarantee, leases + fencing, idempotency ordering, the ten operations, wire protocol, agent loop (§4–5).
 - [agent_docs/design-scheduler.md](agent_docs/design-scheduler.md): optional cost-aware admission control, atomic admission-to-claim, server-computed priority (§6).
 - [agent_docs/design-marketplace.md](agent_docs/design-marketplace.md): request/bid/award capability marketplace and durable timers (§7).
@@ -95,7 +95,7 @@ key), [examples/stress/](examples/stress/) (load, for the Space tab), [examples/
 Research and planning:
 
 - [agent_docs/research-positioning.md](agent_docs/research-positioning.md): thesis, evidence, prior art, the defensible gap (§1).
-- [agent_docs/research-applications.md](agent_docs/research-applications.md): what the substrate is for, verified against `src/` — the **open `template` → `pattern` naming decision** (§1, has a closing date), the template layer as the authorization primitive and its limits, ranked applications, gated execution of LLM-generated code, and the Bank Python precedent. Carries a claim ledger of what was checked, including doc claims that turned out false.
+- [agent_docs/research-applications.md](agent_docs/research-applications.md): what the substrate is for, verified against `src/` — the `template` → `pattern` naming decision (§1, applied), the pattern layer as the authorization primitive and its limits, ranked applications, gated execution of LLM-generated code, and the Bank Python precedent. Carries a claim ledger of what was checked, including doc claims that turned out false.
 - [agent_docs/plan-milestones.md](agent_docs/plan-milestones.md): M0–M3 delivery plan, milestone scope (§11).
 - [agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md): the buildable M0 plan — Deno + TS runtime, storage decisions, phase-by-phase build with verify steps.
 - [agent_docs/plan-validation.md](agent_docs/plan-validation.md): baselines, metrics, fault-injection matrix (§12).
@@ -218,7 +218,7 @@ live at the top of the relevant `agent_docs/` file, not here.
 - **Idempotency is checked before lease validation.** Reordering these falsely returns
   `lease_lost` for an operation that already succeeded. See
   [agent_docs/design-api.md](agent_docs/design-api.md).
-- **Templates are data, not code.** No `$regex`, `$where`, `$expr`, ever. The query
+- **Patterns are data, not code.** No `$regex`, `$where`, `$expr`, ever. The query
   language is analyzable and storable.
 - **All time comparisons use the database clock.** Never a client or app-server clock.
 - **Timing fields are never overloaded.** `available_at`, `claim_until`, `deadline_at`,

@@ -7,7 +7,7 @@
 
 import type { Space } from "../../core/space.ts";
 import type { PutRequest } from "../../core/record.ts";
-import { combineMatch, type Template } from "../../core/matching.ts";
+import { combineMatch, type Pattern } from "../../core/matching.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { problem, statusFor } from "../problem.ts";
 
@@ -71,7 +71,7 @@ export async function handlePut(space: Space, req: Request, principal: string): 
   try {
     const constraint = await space.authorize(principal, "put", put.kind);
     if (constraint && !space.bodyMatchesGrant(put.kind, put.body, constraint)) {
-      return problem(403, "forbidden", `record body is outside the template scope of your put grant for '${put.kind}'`);
+      return problem(403, "forbidden", `record body is outside the pattern scope of your put grant for '${put.kind}'`);
     }
     const { id } = await space.put(put, req.headers.get("Idempotency-Key") ?? undefined, principal);
     return new Response(JSON.stringify({ id }), {
@@ -98,11 +98,11 @@ function describeReadScope(
   constraint: Record<string, unknown>[] | null,
   authors: string[] | undefined,
 ): { scope?: { narrowedBy?: Record<string, unknown>[]; ownRecordsOnly?: true; note: string } } {
-  const templates = (constraint ?? []).filter((t) => Object.keys(t).length > 0);
-  if (templates.length === 0 && !authors) return {};
+  const patterns = (constraint ?? []).filter((t) => Object.keys(t).length > 0);
+  if (patterns.length === 0 && !authors) return {};
   return {
     scope: {
-      ...(templates.length > 0 ? { narrowedBy: templates } : {}),
+      ...(patterns.length > 0 ? { narrowedBy: patterns } : {}),
       ...(authors ? { ownRecordsOnly: true as const } : {}),
       note: "your grant narrows this read — records outside it are not returned and are not counted. " +
         "This is a slice, not the whole kind.",
@@ -114,31 +114,31 @@ export async function handleQuery(space: Space, req: Request, principal: string)
   const j = await readJson(req);
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
   if (typeof j.kind !== "string" || j.kind.length === 0) {
-    return problem(400, "invalid_template", "template.kind must be a non-empty string");
+    return problem(400, "invalid_pattern", "pattern.kind must be a non-empty string");
   }
-  const template: Template = {
+  const pattern: Pattern = {
     kind: j.kind,
     match: j.match as Record<string, unknown> | undefined,
-    orderBy: j.orderBy as Template["orderBy"],
+    orderBy: j.orderBy as Pattern["orderBy"],
   };
   const limit = typeof j.limit === "number" && j.limit > 0 ? Math.min(j.limit, 500) : 100;
   // Keyset page. Validated at the boundary rather than cast: `after` reaching SQL as a non-string
   // and `dir` as anything but asc/desc are exactly the shapes that turn a bad request into a 500.
   if (j.after !== undefined && typeof j.after !== "string") {
-    return problem(400, "invalid_template", "after must be a record id string");
+    return problem(400, "invalid_pattern", "after must be a record id string");
   }
   if (j.dir !== undefined && j.dir !== "asc" && j.dir !== "desc") {
-    return problem(400, "invalid_template", "dir must be 'asc' or 'desc'");
+    return problem(400, "invalid_pattern", "dir must be 'asc' or 'desc'");
   }
   const page = j.after !== undefined || j.dir !== undefined
     ? { after: j.after as string | undefined, dir: j.dir as "asc" | "desc" | undefined }
     : undefined;
   try {
     // Both halves of the read scope in one call — a self-scoped grant narrows the coordination
-    // plane too, and asking for the template alone is how that gets forgotten.
-    const { constraint, createdBy } = await space.readAccess(principal, "query", template.kind);
-    if (constraint) template.match = combineMatch(template.match, constraint); // grant ∧ request
-    const records = await space.query(template, limit, page, createdBy ? { createdBy } : undefined);
+    // plane too, and asking for the pattern alone is how that gets forgotten.
+    const { constraint, createdBy } = await space.readAccess(principal, "query", pattern.kind);
+    if (constraint) pattern.match = combineMatch(pattern.match, constraint); // grant ∧ request
+    const records = await space.query(pattern, limit, page, createdBy ? { createdBy } : undefined);
     // The cursor for the NEXT page is the last id of this one — echoed so a caller never has to
     // know that the cursor happens to be a record id.
     return Response.json({
@@ -156,21 +156,21 @@ export async function handleReadOne(space: Space, req: Request, principal: strin
   const j = await readJson(req);
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
   if (typeof j.kind !== "string" || j.kind.length === 0) {
-    return problem(400, "invalid_template", "template.kind must be a non-empty string");
+    return problem(400, "invalid_pattern", "pattern.kind must be a non-empty string");
   }
 
-  const template: Template = {
+  const pattern: Pattern = {
     kind: j.kind,
     match: j.match as Record<string, unknown> | undefined,
-    orderBy: j.orderBy as Template["orderBy"],
+    orderBy: j.orderBy as Pattern["orderBy"],
   };
   try {
-    const { constraint, createdBy } = await space.readAccess(principal, "read_one", template.kind);
-    if (constraint) template.match = combineMatch(template.match, constraint); // grant ∧ request
-    const record = await space.readOne(template, createdBy ? { createdBy } : undefined);
+    const { constraint, createdBy } = await space.readAccess(principal, "read_one", pattern.kind);
+    if (constraint) pattern.match = combineMatch(pattern.match, constraint); // grant ∧ request
+    const record = await space.readOne(pattern, createdBy ? { createdBy } : undefined);
     return Response.json(record); // null serializes to `null`
   } catch (e) {
-    // Template validation failures (undeclared_path, unknown_kind, ...) are client errors.
+    // Pattern validation failures (undeclared_path, unknown_kind, ...) are client errors.
     if (e instanceof RadiaError) return problem(statusFor(e.code, 400), e.code, e.message);
     throw e;
   }

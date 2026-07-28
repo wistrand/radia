@@ -295,7 +295,7 @@ export const selfScopeSuites: Suite[] = [
       const space = new Space(adapter);
       space.registerKind({ kind: "message", indexedPaths: [{ path: "conversationId", type: "keyword" }] });
       const { definitionToken } = await space.createAgentDefinition("agent:w", [
-        { principal: "agent:w", kind: "message", operations: ["query"], template: { conversationId: "mine" } },
+        { principal: "agent:w", kind: "message", operations: ["query"], pattern: { conversationId: "mine" } },
       ]);
       const { runToken } = await space.mintRun(definitionToken);
       const resolved = await space.resolveToken(runToken);

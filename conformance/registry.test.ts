@@ -76,3 +76,26 @@ Deno.test("registry: the newest record decides, whatever order the rows arrive i
   const shuffled = activeByKey([rec(MS_B, "A", REVOKED), rec(MS_A, "A", GRANT)], grantKey);
   assertEquals(shuffled.size, 0, "…and still wins when the older record is processed last");
 });
+
+Deno.test("registry: a grant whose scoping field this build does not understand grants nothing", () => {
+  // `pattern` was once called `template`, and `grantKey` encodes the pattern's VALUE, not its
+  // field name — so a record from the older build is indistinguishable from an unpatterned grant
+  // here, while `authorize` reads `.pattern`, finds nothing, and would treat it as UNRESTRICTED.
+  // A narrow grant silently widening to the whole kind is the worst outcome this projection has,
+  // so an unrecognized shape must identify nothing and drop out of every projection.
+  const legacy = { principal: "agent:w", kind: "message", operations: ["query"], template: { conversationId: "c1" } };
+  assertEquals(grantKey(legacy), undefined, "a legacy-shaped grant must not produce a key");
+  assertEquals(activeByKey([rec("0000000000", "A", legacy)], grantKey).size, 0, "and must not project");
+
+  // The version tag keeps new keys out of the old key-space. Without it the same pattern VALUE
+  // produced the same key under both field names, so re-declaring a grant against a space that
+  // predates the rename hit a stored idempotency row that disagreed about the body.
+  const renamed = { principal: "agent:w", kind: "message", operations: ["query"], pattern: { conversationId: "c1" } };
+  const key = grantKey(renamed);
+  assertEquals(typeof key, "string");
+  assertEquals(
+    key,
+    JSON.stringify(["g2", "agent:w", "message", "query", { conversationId: "c1" }]),
+    "the key is version-tagged; bump the tag when the grant body's shape changes",
+  );
+});

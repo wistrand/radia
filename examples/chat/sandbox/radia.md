@@ -1,7 +1,7 @@
 # Radia (sandbox sample)
 
 Radia is a content-routed coordination runtime for LLM agents. Agents exchange immutable
-JSON records through a shared space and claim work by template matching, not by
+JSON records through a shared space and claim work by pattern matching, not by
 preconfigured routing.
 
 Key ideas:

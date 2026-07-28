@@ -21,7 +21,7 @@ export const eventSuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter);
       await space.put({ kind: "task", body: { tag: "a" } });
-      const t = await space.take({ template: { kind: "task" } });
+      const t = await space.take({ pattern: { kind: "task" } });
       assert(t);
       const acked = await space.ack(t!.lease, { kind: "result", body: { ok: true } });
       assert(acked.status === "ok");
@@ -49,7 +49,7 @@ export const eventSuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter);
       await space.put({ kind: "task", body: { tag: "a" } });
-      const t = await space.take({ template: { kind: "task" } });
+      const t = await space.take({ pattern: { kind: "task" } });
       assert(t);
       await space.ack(t!.lease, undefined, "ack-k"); // 3 events: put, take, ack
 
@@ -73,9 +73,9 @@ export const eventSuites: Suite[] = [
       space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
       await space.put({ kind: "task", body: { tag: "a" } });
 
-      const t1 = await space.take({ template: { kind: "task" } });
+      const t1 = await space.take({ pattern: { kind: "task" } });
       await space.nack(t1!.lease, { backoffSeconds: 0 }); // attempt 1 -> available
-      const t2 = await space.take({ template: { kind: "task" } });
+      const t2 = await space.take({ pattern: { kind: "task" } });
       await space.nack(t2!.lease, { backoffSeconds: 0 }); // attempt 2 > max -> dead_letter
 
       const nacks = (await space.getEvents()).filter((e) => e.operation === "nack");

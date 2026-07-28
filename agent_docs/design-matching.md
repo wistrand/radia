@@ -1,11 +1,11 @@
 # Matching and query language (design)
 
-Spec and rationale for template matching. Origin: outline §3.
+Spec and rationale for pattern matching. Origin: outline §3.
 
 **M0 status (implemented):** compilation, validation, and the equality/range/`$in`/
 `$exists`/`$any`/`$each`/`$or` operators with the divergence semantics live in
 `src/core/matching.ts`; the pure evaluator (`matchesRecord`) is the **semantic oracle**
-that defines what a template matches. The per-kind indexing contract is
+that defines what a pattern matches. The per-kind indexing contract is
 `src/core/kinds.ts` (an in-memory registry). Declarations are **not a side table**: each is a
 `kind_def` record, written via `put` and reloaded at startup by querying those records
 (`Space.loadKinds`); the registry is a cache/projection. The one bootstrap is the `kind_def`
@@ -25,12 +25,12 @@ a coordination substrate should want: records are matched far more often than wr
 
 A `kind`'s `indexedPaths` are a **validation contract**, not a per-path physical index —
 Postgres answers pushed equality from one GIN index over the whole body, so declaring a path
-needs no DDL and no migration. What `indexedPaths` buys is the guarantee that a template only
+needs no DDL and no migration. What `indexedPaths` buys is the guarantee that a pattern only
 matches on paths the kind promised, which is what keeps a query analyzable.
 
 **The keyset query is built** (`after`/`dir` on `query`): a cursor over record id rather than an
 offset, so a page stays correct while the space is written to, and `dir: "desc"` makes "the newest
-N" expressible — see Template properties below for why a plain limit cannot. Indexed SQL must
+N" expressible — see Pattern properties below for why a plain limit cannot. Indexed SQL must
 agree with the oracle; `conformance/suites/pushdown.ts` and `conformance/suites/keyset.ts` are
 where that is enforced.
 
@@ -41,11 +41,11 @@ where that is enforced.
 - Per-kind indexing contract
 - Two matching directions
 - Semantic matching (late)
-- Template properties
+- Pattern properties
 
 ## Invariants
 
-- Templates are data, not code. No `$regex`, `$where`, `$expr`, ever (also in
+- Patterns are data, not code. No `$regex`, `$where`, `$expr`, ever (also in
   [CLAUDE.md](../CLAUDE.md)).
 - "Mongo-compatible" is never claimed. The syntax is Mongo-inspired; the semantics are
   Radia's own and are conformance-suite-backed.
@@ -98,14 +98,14 @@ the one declaration defined in code (`META_KIND_DEF`), which breaks the bootstra
 own records can compile. Because they are ordinary records, kind declarations appear in the
 event log and are watchable.
 
-## Template-scoped grants (grant ∧ request)
+## Pattern-scoped grants (grant ∧ request)
 
-An authorization grant may carry a `template` (a match object). The effective query for a
+An authorization grant may carry a `pattern` (a match object). The effective query for a
 scoped principal is then `grant ∧ request`, **computed server-side**: `combineMatch`
 (`src/core/matching.ts`) ANDs the request match with the union (`$or`) of the principal's grant
-templates, and the combined match compiles + evaluates through the same oracle. Applies to
+patterns, and the combined match compiles + evaluates through the same oracle. Applies to
 `query`/`read_one`/`take` (an unrestricted grant, or a privileged principal, imposes no
-constraint). Because the constraint nests as `$and[request, $or[templates]]`, a grant template
+constraint). Because the constraint nests as `$and[request, $or[patterns]]`, a grant pattern
 must stay simple (a flat equality map) — a `$or`/`$and` *inside* one can exceed the depth-3
 limit and be rejected at compile. See [design-auth.md](design-auth.md).
 
@@ -113,9 +113,9 @@ limit and be rejected at compile. See [design-auth.md](design-auth.md).
 
 They need different machinery, and only the first ships early:
 
-- **template → records** is an indexed query (the hot claim path).
-- **new-record → templates** (wakeups, scheduler candidates) is subscription matching,
-  needing an inverted index of template atoms. Early milestones ship bounded
+- **pattern → records** is an indexed query (the hot claim path).
+- **new-record → patterns** (wakeups, scheduler candidates) is subscription matching,
+  needing an inverted index of pattern atoms. Early milestones ship bounded
   **wakeup-by-kind only**.
 
 ## Semantic matching (late)
@@ -124,10 +124,10 @@ Embeddings over declared semantic fields, computed on the structurally-filtered 
 only; per-agent LLM rerank with a cost budget; shadow mode before enforcement. See
 [plan-milestones.md](plan-milestones.md) (M3).
 
-## Template properties
+## Pattern properties
 
-Templates are storable, analyzable, and schema-validated at registration. Orphan records
-and starving templates are first-class diagnostics (see
+Patterns are storable, analyzable, and schema-validated at registration. Orphan records
+and starving patterns are first-class diagnostics (see
 [design-observability.md](design-observability.md)). Deterministic tie-breaking:
 `order_by`, then record ID.
 

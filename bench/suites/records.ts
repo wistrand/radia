@@ -23,7 +23,7 @@ export const recordBenches: Bench[] = [
   },
   {
     name: "read",
-    note: "read_one stops at the first match; query scans to the limit. Both compile the template first.",
+    note: "read_one stops at the first match; query scans to the limit. Both compile the pattern first.",
     run: async (ctx) => {
       seedKind(ctx);
       const seed = 500 * ctx.scale;

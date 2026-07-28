@@ -67,7 +67,7 @@ onStop(() => retireModel(client, AD));
 
 await agentLoop(client, {
   name: "images",
-  templates: [{ kind: "tool_call", match: { tool: "generate_image" } }],
+  patterns: [{ kind: "tool_call", match: { tool: "generate_image" } }],
   leaseSeconds: 120, // image generation is slow; the heartbeat keeps the lease alive
   handle: async (rec, c) => {
     const callId = rec.id;
@@ -87,7 +87,7 @@ await agentLoop(client, {
         filename: "generated.png",
         parentIds: [callId], // lineage: conversation -> tool_call -> artifact
         taint: true,
-        // Lineage records where it CAME from; this is what a grant can bind. Templates match the
+        // Lineage records where it CAME from; this is what a grant can bind. Patterns match the
         // body, and parent_ids is not body — so without this field an artifact is readable by any
         // session that learns its id, whatever the conversation scoping says.
         meta: { conversationId: b.conversationId ?? "", owner: b.owner ?? "" },

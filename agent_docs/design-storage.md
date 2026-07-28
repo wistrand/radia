@@ -65,7 +65,7 @@ Scaling), envelope encryption/KMS (M2). `npm`/`pip` binary wrapping is BUILT but
 | Blobs        | the `BlobStore` port (`src/storage/blobs.ts`): content-addressed by sha256, memory + filesystem impls, one conformance suite for both; the "artifact table" is the reserved `artifact` **record** kind; runtime-issued short-lived download capabilities; optional **encryption at rest** (per-blob AES-GCM DEK, AES-KW-wrapped under a space KEK, HMAC-named paths, key in a destroyable sidecar) — **built (M1)**                                                        |
 
 The claim index is what lets a candidate window be an ordered seek rather than a scan of the
-envelope table. A template with a pushable predicate does need the join, and there the two backends
+envelope table. A pattern with a pushable predicate does need the join, and there the two backends
 diverge for a reason worth knowing: SQLite walks the claim index and stops early, while Postgres
 underestimates the jsonb predicate badly enough to collect every match and sort. Fix the ESTIMATE,
 never the query: `StorageAdapter.prepareKind` (optional; implemented by the Postgres adapters,
@@ -139,7 +139,7 @@ at startup):
 
 | Cache | Source records | Staleness across instances | Fix |
 |-------|----------------|----------------------------|-----|
-| kind registry (`Space.loadKinds`)      | `kind_def`  | a kind declared on A is unknown to B → B can't compile templates for it or index it | refresh on miss / on `kind_def` write |
+| kind registry (`Space.loadKinds`)      | `kind_def`  | a kind declared on A is unknown to B → B can't compile patterns for it or index it | refresh on miss / on `kind_def` write |
 | `Notifier` (`src/core/notifier.ts`)    | event log   | a watch on B doesn't wake for a mutation on A | Postgres `LISTEN/NOTIFY` (already the design — see the watch row) |
 
 **Credentials are deliberately not in this table.** There is no token cache to go stale:

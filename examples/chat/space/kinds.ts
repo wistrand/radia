@@ -14,9 +14,9 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // trip the starvation diagnostic. Only llm_call/tool_call are claimed as work (by the workers).
   await client.registerKind({ kind: "capability", indexedPaths: [{ path: "tool", type: "keyword" }], claimable: false });
   // REDECLARING a reserved kind, on purpose. `artifact` is defined in code with {digest, mediaType}
-  // indexed; the app adds `conversationId` so a grant template can bind an artifact to the
+  // indexed; the app adds `conversationId` so a grant pattern can bind an artifact to the
   // conversation that produced it. Artifacts were otherwise the one kind a session could not be
-  // scoped on — the body is runtime-built, and a template matches the body — so any session holding
+  // scoped on — the body is runtime-built, and a pattern matches the body — so any session holding
   // an artifact id could read it. The runtime's own paths are repeated here because a redeclaration
   // REPLACES rather than merges (latest-wins), and dropping `digest` would break dedup by content.
   await client.registerKind({

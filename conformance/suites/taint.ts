@@ -44,7 +44,7 @@ export const taintSuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter);
       const t = (await space.put({ kind: "task", body: { tag: "t" }, taint: true })).id;
-      const claimed = await space.take({ template: { kind: "task", match: { tag: "t" } } });
+      const claimed = await space.take({ pattern: { kind: "task", match: { tag: "t" } } });
       const acked = await space.ack(claimed!.lease, { kind: "result", body: { ok: true } });
       assert(acked.status === "ok" && acked.resultId);
       assertEquals(await taintOf(space, acked.resultId!), true); // inherited from the leased (data) parent
@@ -61,13 +61,13 @@ export const taintSuites: Suite[] = [
       const cleanId = (await space.put({ kind: "task", body: { tag: "x" } })).id; // clean
 
       // requireUntainted claims only the clean one; the tainted one is skipped
-      const first = await space.take({ template: { kind: "task", match: { tag: "x" } } }, { requireUntainted: true });
+      const first = await space.take({ pattern: { kind: "task", match: { tag: "x" } } }, { requireUntainted: true });
       assertEquals(first!.record.id, cleanId);
       // no more untainted candidates → nothing claimable
-      const second = await space.take({ template: { kind: "task", match: { tag: "x" } } }, { requireUntainted: true });
+      const second = await space.take({ pattern: { kind: "task", match: { tag: "x" } } }, { requireUntainted: true });
       assertEquals(second, null);
       // without the filter, the tainted one is still claimable
-      const third = await space.take({ template: { kind: "task", match: { tag: "x" } } });
+      const third = await space.take({ pattern: { kind: "task", match: { tag: "x" } } });
       assert(third && third.record.runtimeMeta.taint);
     },
   },

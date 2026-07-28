@@ -287,16 +287,16 @@ export class SqliteAdapter implements StorageAdapter {
   async take(selector: TakeSelector, spec: LeaseSpec): Promise<TakeResult | null> {
     const now = await this.now();
     return this.tx(() => {
-      const template = "template" in selector ? selector.template : undefined;
+      const pattern = "pattern" in selector ? selector.pattern : undefined;
       const byId = "recordId" in selector;
       for (let offset = 0;; offset += CANDIDATE_WINDOW) {
         const candidates = this.fetchCandidates(selector, CANDIDATE_WINDOW, offset);
         if (candidates.length === 0) return null;
-        const ranked = rankClaimable(candidates, template, now, spec.requireUntainted, spec.createdBy);
+        const ranked = rankClaimable(candidates, pattern, now, spec.requireUntainted, spec.createdBy);
         const claimed = this.claimFirst(ranked, spec, now);
         if (claimed) return claimed;
         // Nothing in this window was claimable (all filtered out, or every CAS lost). A record-id
-        // take has no further windows; a template take keeps paging until the kind is exhausted.
+        // take has no further windows; a pattern take keeps paging until the kind is exhausted.
         if (byId || candidates.length < CANDIDATE_WINDOW) return null;
       }
     });
@@ -739,7 +739,12 @@ export class SqliteAdapter implements StorageAdapter {
       .get(idem.principal, idem.operation, idem.key) as RawRow | undefined;
     if (found) {
       if (String(found.request_hash) !== idem.requestHash) {
-        throw new RadiaError("idempotency_conflict", "idempotency key reused with a different request");
+        throw new RadiaError(
+          "idempotency_conflict",
+          `idempotency key reused with a different request: ${idem.operation} '${idem.key}' ` +
+            `(principal ${idem.principal}). The key is derived from the request's content, so a ` +
+            `key that matches while the content differs means the content changed shape.`,
+        );
       }
       return JSON.parse(String(found.response_json)) as T;
     }
@@ -769,9 +774,9 @@ export class SqliteAdapter implements StorageAdapter {
    * Sorting the join materializes every record body of the kind before the limit applies, which is
    * most of the cost of a claim on a large kind.
    *
-   * A template with a pushable predicate joins `records` inside that inner select so the window is
+   * A pattern with a pushable predicate joins `records` inside that inner select so the window is
    * drawn from ROWS THAT CAN MATCH. Without it the window is the head of the queue regardless of
-   * the template, so a selective take pages through the entire kind 64 rows at a time — correct,
+   * the pattern, so a selective take pages through the entire kind 64 rows at a time — correct,
    * but O(kind size) round trips to find one record. The filter is a sound over-approximation, so
    * `rankClaimable` still decides.
    *
@@ -781,9 +786,9 @@ export class SqliteAdapter implements StorageAdapter {
    * and sorts. The fix is a better ESTIMATE, not a better query: see gotchas.md, "a claim on
    * Postgres is planned on a guess".
    */
-  private windowRows(selector: { template: CompiledMatch }, limit: number, offset: number): RawRow[] {
+  private windowRows(selector: { pattern: CompiledMatch }, limit: number, offset: number): RawRow[] {
     const d = new SqliteJson("r2");
-    const filter = pushdown(selector.template.where, d);
+    const filter = pushdown(selector.pattern.where, d);
     const inner = isTrivial(filter)
       ? `select record_id from record_runtime
            where kind=? and state in ('available','leased')
@@ -797,7 +802,7 @@ export class SqliteAdapter implements StorageAdapter {
       `select ${CANDIDATE_COLS} from records r join record_runtime rt on rt.record_id=r.id
          where rt.record_id in (${inner})
          order by rt.effective_priority desc, rt.available_at asc, r.id asc`,
-    ).all(selector.template.kind, ...d.params, limit, offset) as RawRow[];
+    ).all(selector.pattern.kind, ...d.params, limit, offset) as RawRow[];
   }
 
   private fetchEnvelopeRow(recordId: string): RawRow | null {

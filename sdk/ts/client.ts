@@ -12,7 +12,7 @@ import type {
   SpaceEvent,
   TakeResult,
 } from "../../src/storage/adapter.ts";
-import type { Template } from "../../src/core/matching.ts";
+import type { Pattern } from "../../src/core/matching.ts";
 import type { Page } from "../../src/storage/adapter.ts";
 import { activeByKey } from "../../src/core/registry.ts";
 import type { PutRequest } from "../../src/core/record.ts";
@@ -23,7 +23,7 @@ export { RESERVED_KINDS };
 // copies of this loop existed before it was shared, and the failure mode is silent.
 export { activeByKey, activeSet, grantKey, isRetired, newestByKey, RETIRED } from "../../src/core/registry.ts";
 
-export type { AckResult, KindDef, Lease, Page, PutRequest, RadiaRecord, SpaceEvent, Template };
+export type { AckResult, KindDef, Lease, Page, PutRequest, RadiaRecord, SpaceEvent, Pattern };
 
 export interface KindStateCount {
   kind: string;
@@ -31,7 +31,7 @@ export interface KindStateCount {
   count: number;
 }
 
-export type TakeSelector = { template: Template } | { recordId: string; template?: Template };
+export type TakeSelector = { pattern: Pattern } | { recordId: string; pattern?: Pattern };
 
 export class RadiaClientError extends Error {
   constructor(public status: number, public code: string, detail: string) {
@@ -56,7 +56,7 @@ export interface ClientAuth {
 
 /** What a grant narrowed a read to. Absent when nothing was narrowed. */
 export interface ReadScope {
-  /** Grant templates ANDed into the request — records outside them were not returned. */
+  /** Grant patterns ANDed into the request — records outside them were not returned. */
   narrowedBy?: Record<string, unknown>[];
   /** True when the read was restricted to the caller's own records. */
   ownRecordsOnly?: true;
@@ -109,15 +109,15 @@ export class RadiaClient {
 
   /** Assign a kind-scoped grant (a `grant` record — writable only by a human/supervisor
    *  principal). `operations` are coordination verbs: put | take | query | read_one. An optional
-   *  `template` narrows read/take to `grant ∧ request` (template-scoped grant). */
+   *  `pattern` narrows read/take to `grant ∧ request` (pattern-scoped grant). */
   grant(
     principal: string,
     kind: string,
     operations: string[],
-    template?: Record<string, unknown>,
+    pattern?: Record<string, unknown>,
   ): Promise<{ id: string }> {
-    const body = template ? { principal, kind, operations, template } : { principal, kind, operations };
-    const key = `grant:${principal}:${kind}:${[...operations].sort().join(",")}:${template ? JSON.stringify(template) : ""}`;
+    const body = pattern ? { principal, kind, operations, pattern } : { principal, kind, operations };
+    const key = `grant:${principal}:${kind}:${[...operations].sort().join(",")}:${pattern ? JSON.stringify(pattern) : ""}`;
     return this.put({ kind: "grant", body }, key);
   }
 
@@ -142,12 +142,12 @@ export class RadiaClient {
     return this.req("POST", `/v0/agent-runs/${encodeURIComponent(run)}/stop`);
   }
 
-  readOne(template: Template): Promise<RadiaRecord | null> {
-    return this.req("POST", "/v0/records/read-one", template);
+  readOne(pattern: Pattern): Promise<RadiaRecord | null> {
+    return this.req("POST", "/v0/records/read-one", pattern);
   }
 
-  async query(template: Template, limit = 100, page?: Page): Promise<RadiaRecord[]> {
-    const r = await this.req("POST", "/v0/records/query", { ...template, limit, ...page });
+  async query(pattern: Pattern, limit = 100, page?: Page): Promise<RadiaRecord[]> {
+    const r = await this.req("POST", "/v0/records/query", { ...pattern, limit, ...page });
     return r.records;
   }
 
@@ -162,11 +162,11 @@ export class RadiaClient {
   /** Present when a grant narrowed the read: what it was narrowed BY. An answer that does not say
    *  it is a slice gets reported as the whole kind. */
   async queryPage(
-    template: Template,
+    pattern: Pattern,
     limit = 100,
     page?: Page,
   ): Promise<{ records: RadiaRecord[]; nextAfter?: string; scope?: ReadScope }> {
-    const r = await this.req("POST", "/v0/records/query", { ...template, limit, ...page });
+    const r = await this.req("POST", "/v0/records/query", { ...pattern, limit, ...page });
     return { records: r.records, nextAfter: r.nextAfter, scope: r.scope };
   }
 
@@ -321,7 +321,7 @@ export class RadiaClient {
       taint?: boolean;
       idempotencyKey?: string;
       /** Application fields merged into the artifact's record body, so an app can route and SCOPE
-       *  artifacts it owns — a grant template matches the body, and the rest of the body is
+       *  artifacts it owns — a grant pattern matches the body, and the rest of the body is
        *  runtime-computed. Values must be scalars; the whole object travels in a header, so it must
        *  be ASCII. */
       meta?: Record<string, string | number | boolean | null>;
@@ -373,13 +373,13 @@ export class RadiaClient {
   }
 
   /**
-   * Watch a template: an async stream of wakeups (`{seq, recordId, kind}`) for matching
+   * Watch a pattern: an async stream of wakeups (`{seq, recordId, kind}`) for matching
    * records that become available. Reconnects with a cursor on drop; on 410 cursor_expired
    * it restarts from the beginning (a real client would catch-up-query first). Ends when
-   * `signal` aborts. M0/M1: use a kind-only template for wakeup-by-kind.
+   * `signal` aborts. M0/M1: use a kind-only pattern for wakeup-by-kind.
    */
-  async *watch(template: Template, signal?: AbortSignal): AsyncGenerator<Wakeup> {
-    const { watchId } = await this.req("POST", "/v0/watches", template) as { watchId: string };
+  async *watch(pattern: Pattern, signal?: AbortSignal): AsyncGenerator<Wakeup> {
+    const { watchId } = await this.req("POST", "/v0/watches", pattern) as { watchId: string };
     let cursor: string | undefined; // opaque resume token (Last-Event-ID), never parsed
     while (!signal?.aborted) {
       let res: Response;

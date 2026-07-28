@@ -14,7 +14,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export function plannerLoop(client: RadiaClient, signal?: AbortSignal, log?: (m: string) => void, paceMs = 0): Promise<void> {
   return agentLoop(client, {
     name: "planner",
-    templates: [{ kind: "job" }],
+    patterns: [{ kind: "job" }],
     signal,
     log,
     handle: async (job: RadiaRecord, c: RadiaClient) => {
