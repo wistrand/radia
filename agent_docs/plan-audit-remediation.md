@@ -1,8 +1,10 @@
 # Plan: audit remediation
 
 > Status: A–D, F and J are done and their guards pass (`deno task conformance`: 353 passed, 0 failed);
-> E, G, H and I are open. Every item was substantiated against real code paths; items marked **reproduced**
-> were verified empirically. Line numbers drift; trust the symbol, not the number.
+> E, G, H and I are open. Each done package is a status line here; its durable lesson (the bug class,
+> why it happened, the rule that prevents it) moved to [gotchas.md](gotchas.md), which outlives this
+> plan. Every item was substantiated against real code paths; items marked **reproduced** were
+> verified empirically. Line numbers drift; trust the symbol, not the number.
 
 ## Goal
 
@@ -37,159 +39,67 @@ table), and D made a churning registry (the interest registry, saved lenses) saf
 
 ## Package A: operator credential and console bootstrap (P0, DONE)
 
-Decision taken: **the operator token authorizes coordination.** Encoded once as a distinct
-`ResolvedToken` variant, `kind: "operator"` (`src/core/auth.ts`), resolving to the space's own
-principal.
+Was: the served console page carried a substituted operator token, and the operator credential
+resolved as a definition token, so a leak converted into a durable run token. Now the operator token
+is a distinct `ResolvedToken` variant (`kind: "operator"`, `src/core/auth.ts`) that authorizes
+coordination and mints nothing, and the console prompts for a token instead.
 
-- `resolveCredential` (`src/core/space.ts`) returns `kind: "operator"`, and `resolveAuth`
-  (`src/server/http.ts`) accepts it alongside `run`. The CLI, the MCP adapter and `curl` work
-  again; a definition token is still rejected for coordination.
-- Because it is no longer a `def` token, `mintRun` refuses it, so an operator credential cannot be
-  converted into a durable run token. That closes the escalation half of A1 at the source.
-- `loadUi` no longer substitutes anything; `ServerOptions.operatorToken` is gone. The console
-  prompts for a token and keeps it in `sessionStorage` (`src/ui/index.html`). `GET /` stays public.
-  That is now safe, because it carries no credential.
+Lesson: [gotchas.md](gotchas.md), "The operator token is a server-lifetime in-memory credential" and
+"The operator token resolves as `kind: "operator"`, never `"def"`".
 
-Guards added: `conformance/http.test.ts` asserts the provisioned
-operator token reaches health, the ops plane and a `put` under `--auth required`, and that it
-cannot mint a run. `conformance/console.test.ts` asserts the served page contains no
-credential-shaped literal and no substitution placeholder.
+Guards: `conformance/http.test.ts` (the provisioned token reaches health, the ops plane and a `put`
+under `--auth required`, and cannot mint a run); `conformance/console.test.ts` (no credential-shaped
+literal and no substitution placeholder in the served page).
 
 ## Package B: scope enforcement is per-handler and inconsistent (P0, DONE)
 
-`scope.createdBy: "self"` is applied by each handler calling `space.authorScope` by hand.
-Handlers that forget it silently serve everything. Confirmed misses:
+Was: `scope.createdBy: "self"` was applied by each handler calling `space.authorScope` by hand, and
+five read paths forgot it (`handleTake`, `handleLineage`, `handleGraph`, both artifact reads, and
+`authorizeWatch`), plus watch streams were not bound to their creating principal and
+`effectivePermissions` disagreed with `opsScope`. **Reproduced.** Now every read verb resolves both
+halves of the scope through `Space.readAccess`.
 
-| Site                                                     | Leak                                              |
-|----------------------------------------------------------|---------------------------------------------------|
-| `handleTake` (`src/server/handlers/leases.ts`)             | Full foreign record bodies; drains the whole kind |
-| `handleLineage` (`src/server/handlers/ops.ts`)             | Entire ancestor DAG with bodies                   |
-| `handleGraph` (`src/server/handlers/ops.ts`)               | Foreign node ids + labels (feeds the above)       |
-| `handleGetArtifact` + capability mint (`artifacts.ts`)     | Foreign bytes; capability makes it bearer-free    |
-| `authorizeWatch` (`src/core/space.ts`)                     | Self-scope ignored: wakeups for every author      |
+Lesson: [gotchas.md](gotchas.md), "Every read verb must resolve its scope through ONE path".
 
-`handleLineage` is the worst: `put` never checks parent readability, so a scoped run can name
-any foreign id in `parentIds` and read its whole upstream. **Reproduced.**
+Guard: a table-driven case in `conformance/http.test.ts` with one row per read verb (`query`,
+`read_one`, `take`, lineage, children, graph, get record) plus the watch-attach check. **A verb with
+no row is a verb nobody checked.** Add a row when adding a read verb.
 
-Also in this package, same theme:
-
-- **Watch streams are not bound to their creating principal.** `handleWatchEvents`
-  (`src/server/handlers/watches.ts`) takes only a watch id; `Watch` (`src/core/space.ts`)
-  stores no owner. Ids come from the same monotonic ULID generator as record ids, so they are
-  enumerable. Revocation also never terminates a live stream; the compiled constraint is
-  frozen at creation. **Reproduced** (a grantless principal streamed another's watch).
-- **`effectivePermissions` disagrees with `opsScope`** about ops-reachability
-  (`src/core/space.ts`): the view ORs `scoped` and `query` across different grants, the
-  enforcement requires one grant carrying both. The comment claiming they cannot drift is
-  wrong. Per this file's own doctrine, a believed view that drifts is worse than no view.
-
-**DONE.** Every read verb now answers both halves of the scope from one place:
-
-- `Space.readAccess(principal, op, kind)` returns `{constraint, createdBy}` together. `query`,
-  `read_one`, `take` and both artifact reads go through it, so the author scope cannot be fetched
-  separately and then forgotten.
-- `take` carries the author scope into the CLAIM (`LeaseSpec.createdBy` → `rankClaimable`), beside
-  `requireUntainted`. It cannot ride in the pattern: `created_by` is envelope metadata, which
-  patterns never see.
-- `getLineage` and `getGraph` take an author scope and treat a foreign record as a WALL: traversal
-  stops there rather than skipping it, since continuing would still expose the shape above.
-- Artifact reads apply the scope before serving bytes, and before minting a download capability
-  (a bearer URL outlives the check). A foreign artifact is 404, not 403.
-- `authorizeWatch` returns `ReadAccess` and honours self-scope; `Watch` carries its `owner` and
-  author scope; `getWatch` requires the creating principal; `matchesEvent` filters wakeups by
-  author. A non-owner gets 404. Watch ids are monotonic ULIDs, so the id is not a secret.
-- `effectivePermissions` computes ops-reachability per GRANT (one grant carrying both `query` and
-  the self scope), the rule `opsScope` enforces, instead of ORing across grants.
-
-Verified against the reproductions: `take`, lineage, graph, `query` and a stolen watch attach all
-refuse a self-scoped principal foreign data.
-
-Guard added: a table-driven case in `conformance/http.test.ts` with one row per read verb
-(`query`, `read_one`, `take`, lineage, children, graph, get record) asserting a self-scoped
-principal sees no foreign record through it, plus the watch-attach check. **A verb with no row is
-a verb nobody checked.** Add a row when adding a read verb.
-
-Not done: full type-level enforcement. `readAccess` makes the right thing convenient and
-one-call, but a new handler can still call `authorize` alone. Making that a compile error needs a
-read-context type threaded through every handler signature; the table-driven guard is the backstop
-until then.
+Not done: full type-level enforcement. A new handler can still call `authorize` alone; making that a
+compile error needs a read-context type threaded through every handler signature, so the
+table-driven guard is the backstop until then.
 
 ## Package C: lease fencing is not enforced at settle (P1, DONE)
 
-`ack`, `renew`, `nack` and `release` (`src/storage/pgbase.ts`, same shape in
-`src/storage/sqlite.ts`) select the envelope without `FOR UPDATE`, validate the lease in
-application code, then run a guarded `UPDATE ... and lease_id = $ and lease_epoch = $` without
-ever inspecting the affected-row count. Under pooled Postgres at READ COMMITTED another
-connection can reclaim the lease or bump the epoch in the gap. The result record and its event
-are inserted *before* the guarded update, so the transaction commits and returns
-`{status: "ok"}`. A quarantined run can land one final result despite the epoch bump that
-exists to fence it out.
+Was: `ack`, `renew`, `nack` and `release` ran their guarded `UPDATE ... and lease_id = $ and
+lease_epoch = $` without inspecting the affected-row count, and `ack` inserted the result and its
+event first, so under pooled Postgres a fenced-out run could commit a final result and be told
+`{status: "ok"}`. Now all four check the count in both adapters, and `ack` fences before it writes.
 
-**DONE.** All four settle operations in both adapters now check the affected-row count of the
-guarded update and return `lease_lost` when it matches nothing. `ack` was additionally reordered so
-the guarded update runs BEFORE the result insert and its event. That makes the fence a plain early
-return rather than a rollback, so a fenced-out worker cannot commit a result under any path.
+Lesson: [gotchas.md](gotchas.md), "The guarded UPDATE is the fence".
 
-Guard, honestly bounded: the new branch is **unreachable on the embedded adapters**, because they
-serialize in-process and the update's `WHERE` is a subset of what `leaseValid` already checked, so
-whenever the check passes, the update matches. A conformance test there would assert nothing. The
-observable contract ("a fenced ack emits nothing") stays covered by the existing
-`conformance/suites/leases.ts` fencing case, which now holds for a second reason. Exercising the
-race itself is **fault-matrix work against a live Postgres**: "stale ack after reassignment" and
-"ack after quarantine", driven concurrently. See [plan-validation.md](plan-validation.md).
+Guard, honestly bounded: the new branch is unreachable on the embedded adapters, so the observable
+contract stays covered by the fencing case in `conformance/suites/leases.ts`, which now holds for a
+second reason. Exercising the race is fault-matrix work against a live Postgres ("stale ack after
+reassignment", "ack after quarantine", driven concurrently). See
+[plan-validation.md](plan-validation.md).
 
 ## Package D: grant supersede vs. idempotency (P1, DONE)
 
-`supersedeGrantsFor` (`src/core/space.ts`) retires live grants whose pattern differs, but
-grants are put under a content-derived idempotency key and idempotency rows never expire. So
-re-declaring a previously-used pattern writes **nothing** while the supersede still retires
-the currently-live grant. Net: zero active grants, `createAgentDefinition` returns success.
-**Reproduced:**
+Was: grants are written under a content-derived idempotency key, so re-declaring a
+previously-used pattern wrote nothing while `supersedeGrantsFor` still retired the live grant, and
+`createAgentDefinition` reported success with zero active grants. **Reproduced** (identity scope,
+then conversation scope, then identity scope again, ending in `forbidden: no 'query' grant`).
+Same mechanism also let a definition's sibling grants retire each other and allowed a grant identity
+to be retired only once, ever. Fixed in `src/core/space.ts` (revival keyed on the retirement it
+supersedes, whole-set supersede, retirements keyed on the record retired) and in both SDKs'
+`client.grant()`.
 
-```
-after identity scope:             [ { owner: "agent:w" } ]
-after conversation scope:         [ { conversationId: "c1" } ]
-after switching BACK to identity:  THROWS -> forbidden: no 'query' grant
-```
+Lesson: [gotchas.md](gotchas.md), "A content-keyed registry write cannot revive what it retired".
 
-Reachable today: chat conversation A → B → `--resume` A, or flipping `RADIA_CHAT_SCOPE`
-identity → conversation → identity (`examples/chat/space/roles.ts`, `examples/chat/chat.ts`).
-
-Two more defects in the same mechanism:
-
-- Declaring two patterned grants on one (principal, kind, operations) in a single definition
-  keeps only the last: `supersedeGrantsFor` runs per grant inside the loop and retires its own
-  sibling. `authorize` is explicitly built to union patterns; a definition can no longer
-  express that.
-- Retire records are keyed so a grant identity can be retired **at most once, ever**. A
-  re-granted wide grant then survives the next supersede silently: misauthorization in the
-  widening direction, the class CLAUDE.md flags.
-
-**DONE.** Three changes in `src/core/space.ts`, all verified against the original reproduction:
-
-- The grant write suffixes its idempotency key with `:after:<recordId>` when the newest record for
-  that grant identity is a retirement, the shape `examples/chat/space/model.ts` already uses. This
-  needed `RegistryView.newest` (`src/core/registry.ts`), which exposes the newest record per key
-  *including* retirements; `entries` drops them, so a writer could not see what it had to revive.
-- `supersedeGrantsFor` takes the WHOLE declared set instead of one grant at a time, and skips any
-  grant whose key is in that set, so siblings no longer retire each other.
-- Retirements are keyed on the record being retired, not on the grant identity alone, so an
-  identity can be retired more than once.
-
-`createAgentDefinition` now reads the grant registry once per principal before writing, and
-**throws `registry_incomplete` rather than superseding on a partial view**. A truncated read would
-silently leave stale grants live.
-
-The SDK helpers had the same defect on the public path and are fixed too: `client.grant()` in both
-SDKs anchors its idempotency key on the NEWEST RETIREMENT of that grant identity
-(`:after:<recordId>`), so a re-grant after a revocation or supersede writes a new record instead of
-replaying the retirement. Anchoring on "is the newest record retired" is NOT enough: after a
-revival that falls back to the plain key the original record already consumed, so a repeat returns
-the retired record. Covered by `examples/chat/smoke-selfgrant.ts` (assign → retire → revive →
-repeat).
-
-Guards added in `conformance/suites/retire.ts` (they run on both adapters): the round trip (A → B → A), two patterns
-on one triple in one definition, and re-narrowing a grant that was retired and re-granted.
+Guards: `conformance/suites/retire.ts` on both adapters (the round trip A to B to A, two patterns on
+one triple in one definition, and re-narrowing a grant that was retired and re-granted), plus
+`examples/chat/smoke-selfgrant.ts` (assign, retire, revive, repeat).
 
 ## Package E: pushdown soundness (P1)
 
@@ -217,30 +127,15 @@ array paths, digit segments, leading zeros, and prototype-shaped names.
 
 ## Package F: bounded reads treated as populations (P2, DONE)
 
-CLAUDE.md calls this the most repeated bug in the codebase; the audit found five more.
+Was: five more instances of the class CLAUDE.md calls the most repeated bug in this codebase, the
+one that mattered being `runPrincipalsOf` (`src/core/space.ts`), which decides a principal's self
+scope and therefore what package B lets it `take`, trace, and read bytes for. Now it pages to
+exhaustion through `readRegistry` and throws `registry_incomplete`; the client-side sites
+(`listKinds`, `list_kinds`, the chat's grant and `agent_run` reads, the exec worker's
+capability/procedure reads) route through `RadiaClient.queryAll` / `query_all` in both SDKs.
 
-| Site                                              | Consequence                                        |
-|---------------------------------------------------|----------------------------------------------------|
-| `runPrincipalsOf` (`src/core/space.ts`, 1000 rows) | Long-lived agent's oldest records vanish from its own self-scoped reads, the exact failure its doc comment claims to prevent |
-| `listKinds` (`sdk/ts/client.ts`)                   | Asks 1000, server clamps to 500, never pages        |
-| `list_kinds` (`sdk/py/radia.py`)                   | Reads **oldest-first** and ignores `retired`, so withdrawn kinds reappear |
-| `client/grants.ts` (grants 100, `agent_run` 200)   | `selfExposure` misreports exposure, steering a human toward the wide grant |
-| `workers/exec.ts` (capability/procedure 500)       | A miss re-opens the tool-name hijack the check exists to block |
-
-Fix: route each through `readRegistry` (`src/core/registry.ts`), which pages to exhaustion and
-reports `complete: false` rather than a plausible prefix. Where a true registry read is wrong
-(`runPrincipalsOf` is relevance-bounded by design), bound it by *relevance* (only credentials
-that can still be presented) and say so at the call site.
-
-**DONE.** `runPrincipalsOf` pages to exhaustion through `readRegistry` and throws
-`registry_incomplete` rather than narrowing silently. That was the failure that mattered, since
-package B made that list the allowlist for `take`, lineage, graph, artifact bytes and watch
-wakeups, so a truncated one makes the agent's own older records unclaimable and `rankClaimable`
-skips them indistinguishably from an empty queue. The client-side sites route through a new
-`RadiaClient.queryAll` / `query_all` (both SDKs), which keyset-pages newest-first and THROWS rather
-than returning a plausible prefix: `listKinds`/`list_kinds` (Python also now reads newest-first and
-drops retired kinds), the chat's grant and `agent_run` reads, and the exec worker's
-capability/procedure reads.
+Lesson: [gotchas.md](gotchas.md), "A bounded read that decides a SCOPE is not a performance
+question".
 
 Guard: `conformance/suites/auth.ts` seeds 1201 `agent_run` records for one agent and asserts its
 OLDEST run is still in the self scope, past the old 1000-row cap, on both adapters.
@@ -303,25 +198,14 @@ can read the operator token.
 
 ## Package J: declassify is unattributed (P1, DONE)
 
-`declassify` (`src/core/space.ts`) calls `putRaw` with **no principal**, so the successor's
-`created_by` (and therefore the emitted event's `runId`) is the space's own `ctx.principal`, not
-the operator who approved. The event carries `operation: "put"`; there is no `declassify` operation
-in the event log at all (operations are put/take/ack/nack/release/expire/admin/quarantine). The
-entire audit trail for a clearance is the successor's `parentIds` plus an anonymous put.
+Was: `declassify` called `putRaw` with no principal and emitted an ordinary `put` event, so the one
+operation whose purpose is accountability named no approver and was not greppable. Now
+`Space.declassify(recordId, principal)` threads the approver and the commit records a distinct
+`declassify` operation carrying `{declassifiedFrom}`. See
+[research-applications.md](research-applications.md) §5 for why this outranks the hash-chained log.
 
-This is the wrong thing to be missing for the one operation whose purpose is accountability, and it
-outranks the hash-chained log (M1–M2): a tamper-evident chain over a record that omits the approver
-protects the wrong fact. See [research-applications.md](research-applications.md) §5.
-
-Fix: thread the invoking principal through `declassify` into `putRaw`, and give the event log a
-distinct `declassify` operation so the clearance is greppable rather than hidden among ordinary
-puts.
-
-**DONE.** `Space.declassify(recordId, principal)` threads the approver, so the successor's
-`created_by` (and the event's `runId`) name the human who cleared it. The commit also records a
-distinct `declassify` operation carrying `{declassifiedFrom}`, via a new optional `event` override
-on `PutInput` honoured by both adapters, so a clearance is greppable instead of hiding among
-ordinary puts.
+Lesson: [gotchas.md](gotchas.md), "The one operation whose purpose is accountability must name its
+actor".
 
 Guard: `conformance/suites/taint.ts` asserts the successor is authored by the approver, that exactly
 one `declassify` event exists naming them, and that ordinary puts are unchanged.

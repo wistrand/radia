@@ -80,6 +80,7 @@ export async function handleTake(space: Space, req: Request, principal: string):
     let kind = pattern?.kind;
     if (!kind && recordId) kind = (await space.getRecord(recordId))?.kind;
     let createdBy: string[] | undefined;
+    let grantRequiresUntainted = false;
     if (kind) {
       const access = await space.readAccess(principal, "take", kind);
       // A pattern-scoped grant narrows the claim: the record must also match the grant (grant ∧
@@ -91,9 +92,17 @@ export async function handleTake(space: Space, req: Request, principal: string):
       // narrows `query`. Otherwise draining the queue reads every record of the kind. It cannot
       // ride in the pattern: `created_by` is envelope metadata, which patterns never see.
       createdBy = access.createdBy;
+      // The grant's barrier is ORed with the caller's own flag: a worker may always be MORE
+      // careful than its grants require, never less. Without this, `scope: {taint: "none"}` would
+      // be advice rather than enforcement.
+      grantRequiresUntainted = access.requireUntainted === true;
     }
     const sel: TakeInput = recordId ? { recordId, pattern } : { pattern: pattern! };
-    const result = await space.take(sel, { leaseSeconds, requireUntainted, createdBy }, principal);
+    const result = await space.take(
+      sel,
+      { leaseSeconds, requireUntainted: requireUntainted || grantRequiresUntainted, createdBy },
+      principal,
+    );
     return ok(result); // {record, lease} or null
   } catch (e) {
     if (e instanceof RadiaError) return problem(e.code === "forbidden" ? 403 : 400, e.code, e.message);

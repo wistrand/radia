@@ -16,6 +16,7 @@ Watches are implemented (see Wire protocol below), as is the artifact payload pl
 - Leases with fencing
 - Idempotency (ordering is critical)
 - API surface (ten operations)
+- Stability policy: what "frozen" covers
 - Wire protocol
 - Agent loop (client contract)
 
@@ -124,6 +125,44 @@ See [design-data-model.md](design-data-model.md) §2.4.
   real snapshot implementation, deferred.
 - **Long-poll cancellation:** client disconnect releases nothing; only leases hold
   state. Reactive mode retains priority aging so low-priority work cannot starve.
+
+## Stability policy: what "frozen" covers
+
+`openapi/radia.yaml` is the frozen wire contract, but only the validated parts are frozen.
+The rule: freeze the data-plane core, and mark control-plane and auth experimental until they
+are exercised. Never freeze a surface no client has used.
+
+Frozen as **v0-stable** (additive-only: new optional fields and new enum values
+allowed, no removals or renames):
+
+- the nine data-plane verbs: `put`, `read_one`, `query`, `take`, `ack`, `nack`,
+  `release`, `renew`, `watch`;
+- record / runtime-envelope / lease JSON shapes;
+- status values `lease_lost`, `idempotency_conflict`, and the `dead_letter` state;
+- the RFC 9457 error model;
+- the matching operator whitelist and its divergence semantics (see
+  [design-matching.md](design-matching.md)).
+
+Marked **experimental** (may change without a major bump):
+
+- control-plane: kinds, patterns, agent-definitions, runs, grants;
+- auth and credential exchange (auto-provisioned locally; see design-auth.md).
+
+Mechanism:
+
+- **Per-element `x-stability: stable | beta | experimental`** on every operation and
+  schema in the spec, so stability is granular and self-documenting.
+- **SemVer 0.x**, where `0.x` signals the whole surface may still move; the additive-only
+  rule above is what makes the frozen subset dependable within 0.x.
+- **Reserved names now** so later additions aren't breaking: the deferred operators
+  (`$ne`, `$nin`, `$not`, `$prefix`, full-text) and room for future status values are
+  reserved; frozen request bodies use `additionalProperties: false`.
+- **Version signaling** via a `/v0/` path prefix (or `Radia-Api-Version` header) so
+  clients pin.
+
+This honors the CLAUDE.md invariant *the wire contract is what's frozen, not the
+implementation* for the parts M0 actually exercises, without committing to the
+grant/auth/scheduler shapes that aren't validated until M1–M3.
 
 ## Wire protocol
 

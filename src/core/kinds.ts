@@ -45,17 +45,26 @@ const VALID_OPS = new Set<GrantOp>(["put", "take", "query", "read_one"]);
 
 /** The envelope-side selectors a grant may carry. Closed by design; extended only when a real
  *  failure names the field it needs (see design-auth.md, "Self-scoped ops grants"). */
-const VALID_SCOPE_KEYS = new Set(["createdBy", "leaseOwner"]);
+// The envelope-side selector vocabulary. Each key has its OWN value vocabulary: `createdBy` and
+// `leaseOwner` narrow to the principal ("self"), while `taint` is a classification barrier whose
+// only value is "none". Keep this closed; an unknown key or value must fail rather than be ignored.
+const VALID_SCOPE_VALUES = new Map<string, Set<string>>([
+  ["createdBy", new Set(["self"])],
+  ["leaseOwner", new Set(["self"])],
+  ["taint", new Set(["none"])],
+]);
 
 /** A kind-scoped authorization grant. Never wildcard; assigned by a privileged writer. */
 export interface GrantDef {
   principal: string; // the principal the grant is FOR (e.g. agent:summarizer, run:...)
   kind: string; // the concrete record kind it applies to; never "*"
   operations: GrantOp[]; // which coordination verbs on that kind
-  /** Envelope-side self scope, e.g. `{createdBy: "self"}` (see design-auth.md). Distinct from
-   *  `pattern`, which is a BODY match: the fields a self-scope needs are precisely the ones the
-   *  routing language is forbidden to see. */
-  scope?: Record<string, "self">;
+  /** Envelope-side scope, e.g. `{createdBy: "self"}` or `{taint: "none"}` (see design-auth.md).
+   *  Distinct from `pattern`, which is a BODY match: the envelope fields a scope selects on are
+   *  precisely the ones the routing language is forbidden to see. `{taint: "none"}` is a claim
+   *  barrier an OPERATOR imposes, so containment stops depending on the worker passing
+   *  `requireUntainted` itself. */
+  scope?: Record<string, string>;
   /** Optional pattern-scope: a match object AND-ed into the principal's read/take on this kind
    *  (the effective query is `grant ∧ request`). Omitted → the whole kind. Applies to
    *  query/read_one/take; put ignores it. Its paths must be declared indexed paths of the kind
@@ -96,11 +105,18 @@ export function validateGrantDef(def: GrantDef): void {
       throw new RadiaError("invalid_grant", "grant.scope must be an object");
     }
     for (const [key, value] of Object.entries(scope)) {
-      if (!VALID_SCOPE_KEYS.has(key)) {
-        throw new RadiaError("invalid_grant", `unknown grant scope '${key}' (expected ${[...VALID_SCOPE_KEYS].join(", ")})`);
+      const allowed = VALID_SCOPE_VALUES.get(key);
+      if (!allowed) {
+        throw new RadiaError(
+          "invalid_grant",
+          `unknown grant scope '${key}' (expected ${[...VALID_SCOPE_VALUES.keys()].join(", ")})`,
+        );
       }
-      if (value !== "self") {
-        throw new RadiaError("invalid_grant", `grant.scope.${key} must be "self"`);
+      if (typeof value !== "string" || !allowed.has(value)) {
+        throw new RadiaError(
+          "invalid_grant",
+          `grant.scope.${key} must be one of ${[...allowed].map((v) => `"${v}"`).join(", ")}`,
+        );
       }
     }
   }

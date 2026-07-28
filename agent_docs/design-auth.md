@@ -132,7 +132,10 @@ Cross-cutting versions are in [CLAUDE.md](../CLAUDE.md); detail here is authorit
 - `delegation_context` is server-derived from the claimed lease; data parents contribute
   no authority.
 - Taint clears only via privileged **declassify**. Ordinary agents cannot write
-  `taint: false`.
+  `taint: false`, and a declassify records the principal that performed it.
+- A grant may bar tainted work with `scope: {taint: "none"}`. `requireUntainted` on a take is the
+  worker's own flag, so on its own it is a convention; the grant-side barrier is what an operator
+  imposes. It applies only when every applicable grant carries it, because grants union.
 
 ## Principals
 
@@ -201,6 +204,28 @@ principal's read/take (`grant ∧ request`, `combineMatch`) and, on `put`, the r
 satisfy the pattern (`Space.bodyMatchesGrant`, in the put handler and on ack-emitted results),
 so a scoped principal both *sees* and *writes* only records inside its pattern. Multiple grants
 union, an unrestricted grant widens to the whole kind. See [design-matching.md](design-matching.md).
+
+The two directions answer different questions and use different machinery:
+
+| Direction  | Mechanism          | Question                                    | Where                                                     |
+|------------|--------------------|---------------------------------------------|-----------------------------------------------------------|
+| Write      | `bodyMatchesGrant` | May this principal *produce* this content?  | `handlers/records.ts` (put), `handlers/artifacts.ts`, and `Space.ack` for emitted results, before anything is consumed |
+| Read/claim | `combineMatch`     | Which records may this principal *observe*? | `handlers/records.ts` (query, read_one), `handlers/leases.ts` (take, including a synthesized pattern for a take by record id), `handlers/watches.ts` |
+
+An uncompilable grant pattern grants nothing (fail-closed). On the read side the AND is applied
+server-side *after* the client's own pattern, so a wrong or malicious client pattern can only
+narrow what it sees.
+
+A grant may also carry `scope`, the envelope-side selector for the fields a `pattern` is forbidden
+to see (`{createdBy: "self"}`, `{taint: "none"}`). It is a closed enum vocabulary that only
+authorization reads. Never extend `pattern` to reach envelope state instead; see
+[design-matching.md](design-matching.md) "What patterns cannot express".
+
+**Enforcement is at the HTTP boundary, and only there.** The handlers resolve the constraint and
+apply it; `Space.take`/`Space.query` do no grant work of their own, and the ack-side body check
+inside `Space.ack` runs only against a constraint the handler passed in. An in-process consumer of
+`Space` (embedded mode, an example launcher, the conformance suite) bypasses grants entirely. Read
+every "the runtime enforces X" here as "the HTTP boundary enforces X".
 
 ## Authorization flow (the request path)
 
@@ -285,6 +310,20 @@ parent). A sensitive consumer avoids tainted work with `take {requireUntainted}`
 taint barrier, `core/take.ts`). See [design-data-model.md](design-data-model.md) "Provenance vs.
 authority". Deferred: per-principal trust classification (auto-tainting untrusted principals'
 puts) and the taint-composed chain-intersection policy (M3).
+
+The grant-side barrier (invariant above) is `Space.taintBarrier`: it reports whether every
+applicable grant carries `scope: {taint: "none"}`, and `handleTake` ORs the answer into the
+caller's own `requireUntainted`, so the principal cannot decline it.
+
+**Known limits of the model, both real today:**
+
+- Taint is **one bit with no provenance**. A client-raised taint and an inherited one are
+  indistinguishable, and nothing records which parent raised it. Re-deriving "untrusted because of
+  which parent" means walking lineage and reading each ancestor's bit, which is ambiguous once more
+  than one ancestor is tainted.
+- Taint is envelope state, so **no pattern can filter on it** in a query, a watch, or a grant
+  pattern ([design-matching.md](design-matching.md)). Classification is enforced at claim time but
+  is invisible to the language used for routing.
 
 ## Revocation semantics
 

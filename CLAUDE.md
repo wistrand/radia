@@ -100,7 +100,8 @@ Research and planning:
 - [agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md): the buildable M0 plan: Deno + TS runtime, storage decisions, phase-by-phase build with verify steps.
 - [agent_docs/plan-validation.md](agent_docs/plan-validation.md): baselines, metrics, fault-injection matrix (§12).
 - [agent_docs/plan-audit-remediation.md](agent_docs/plan-audit-remediation.md): confirmed defects from the 2026-07-27 full-codebase audit, grouped by root cause with the guard each one needs. Read before touching auth scope enforcement, lease settle, grant supersede, or declassify.
-- [agent_docs/plan-inspection.md](agent_docs/plan-inspection.md): making emergent flows visible: standing claim interest as records, the Flows view, and helping LLM inspectors. Gated on remediation packages B and D; read those before starting.
+- [agent_docs/design-inspection.md](agent_docs/design-inspection.md): inspecting emergent flows. Why a content-routed substrate cannot render its own workflow, the three audiences that ask different questions, what shape each mechanism has to take, and the constraints that turn an inspection feature into a defect. Read before adding any view or read verb.
+- [agent_docs/plan-inspection.md](agent_docs/plan-inspection.md): the inspection backlog: order, audience per item, and the one open prerequisite (watch lifecycle).
 - [agent_docs/research-self-modeling.md](agent_docs/research-self-modeling.md): whether a space can hold an agent's model of its own process in the same medium as its model of the world. Covers the paired self-report/measurement claim, the verified blockers, and the calibration baseline. Research, gated like the marketplace; nothing scheduled.
 - [agent_docs/gotchas.md](agent_docs/gotchas.md): rejected approaches, the risk register, and non-obvious "why is it like this" decisions. Skim before proposing a change to signing, encryption, idempotency ordering, or storage backends.
 

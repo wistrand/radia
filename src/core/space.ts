@@ -121,6 +121,9 @@ export interface ReadAccess {
   constraint: Record<string, unknown>[] | null;
   /** Principals whose records are readable, or `undefined` for no author restriction. */
   createdBy?: string[];
+  /** True when the grants themselves bar tainted records from this claim. Distinct from the
+   *  caller's own `requireUntainted`: this one the principal cannot decline. */
+  requireUntainted?: boolean;
 }
 
 export interface GraphNode {
@@ -414,6 +417,27 @@ export class Space {
   }
 
   /**
+   * Does this principal's own grants bar it from claiming TAINTED records of `kind`?
+   *
+   * `requireUntainted` on a take is a courtesy the worker pays: a worker that omits it receives
+   * tainted work normally, so containment depended on every claimant opting in. That is a
+   * convention, not a control. A grant carrying `scope: {taint: "none"}` moves the barrier to the
+   * side that assigns authority, where an operator can impose it.
+   *
+   * Applied only when EVERY applicable grant carries it, the same rule `authorScope` uses and for
+   * the same reason: grants UNION, so one grant without the barrier already permits tainted work,
+   * and enforcing it anyway would deny something that was granted.
+   */
+  async taintBarrier(principal: string, op: GrantOp, kind: string): Promise<boolean> {
+    if (this.isPrivileged(principal)) return false;
+    const subject = this.grantSubject(principal);
+    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject, kind })).entries.values()]
+      .map((g) => g.body as GrantDef & { scope?: Record<string, string> })
+      .filter((g) => Array.isArray(g.operations) && g.operations.includes(op));
+    return grants.length > 0 && grants.every((g) => g.scope?.taint === "none");
+  }
+
+  /**
    * Everything a READ of `kind` is allowed to see: the pattern constraint AND the author
    * restriction, in one answer.
    *
@@ -426,7 +450,8 @@ export class Space {
   async readAccess(principal: string, op: GrantOp, kind: string): Promise<ReadAccess> {
     const constraint = await this.authorize(principal, op, kind);
     const createdBy = await this.authorScope(principal, op, kind);
-    return { constraint, createdBy };
+    const requireUntainted = await this.taintBarrier(principal, op, kind);
+    return { constraint, createdBy, requireUntainted };
   }
 
   /** Does `record` fall inside an author restriction? `undefined` restriction means unrestricted. */

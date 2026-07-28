@@ -136,6 +136,23 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   not live credentials, so it would have shrunk as the space aged and quietly narrowed "what did I
   create". It is now `Space.runPrincipalsOf`, querying `agent_run` by `agent` (a declared indexed
   path).
+- **A bounded read that decides a SCOPE is not a performance question, it is an authorization one.**
+  `runPrincipalsOf` (`src/core/space.ts`) answered "which principals count as me" from 1000 rows of
+  `agent_run`, so a long-lived agent's OLDEST records dropped out of its own self-scoped reads, the
+  exact failure its doc comment claimed to prevent. That list is the allowlist for `take`, lineage,
+  graph, artifact bytes and watch wakeups, so a truncated one makes an agent's own older records
+  unclaimable and `rankClaimable` skips them indistinguishably from an empty queue: it fails
+  silently, and it looks like a drained queue. It pages to exhaustion through `readRegistry` now and
+  throws `registry_incomplete` rather than narrowing. The client side had the same shape in five
+  places (`listKinds`, Python's `list_kinds`, the chat's grant and `agent_run` reads, and the exec
+  worker's capability and procedure reads, where a miss re-opens the tool-name hijack that check
+  exists to block), all routed through `RadiaClient.queryAll` / `query_all`, which keyset-pages
+  newest-first and THROWS instead of returning a plausible prefix. Python's `list_kinds` was
+  additionally reading OLDEST-first and ignoring `retired`, so withdrawn kinds reappeared. Guarded
+  by `conformance/suites/auth.ts`, which seeds 1201 `agent_run` records for one agent and asserts
+  its oldest run is still in the self scope on both adapters. Where a bound is genuinely right,
+  bound it by RELEVANCE (only what can still be presented) rather than by page size, and say so at
+  the call site.
 - **Every grant read is a bounded page over records that ACCUMULATE, and truncation misauthorizes
   silently.** Re-defining an agent used to append a fresh record per grant on every boot, so a
   long-lived principal crossed the page cap in ordinary use, and `authorize`/`authorizeWatch`/
@@ -180,6 +197,30 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   including it made the rule retire the grant it had just written, since the two share a key; and it is
   bounded to the exact triple declared, so a grant a human assigned out of band survives restarts. The general shape: when identity includes the thing you are changing, a
   change is an ADD, and the old value stays in force until something withdraws it.
+- **A content-keyed registry write cannot revive what it retired, and a supersede that runs per
+  entry retires its own siblings.** Grants are written under a content-derived idempotency key and
+  idempotency rows never expire, so re-declaring a previously-used grant pattern wrote NOTHING while
+  `supersedeGrantsFor` still retired the live one. Net: zero active grants, and
+  `createAgentDefinition` returning success. Reproduced as identity scope, then conversation scope,
+  then identity scope again, where the third step ends in `forbidden: no 'query' grant`, reachable
+  from an ordinary chat resume. Three changes in `src/core/space.ts`. The grant write suffixes its
+  idempotency key with `:after:<recordId>` when the newest record for that grant identity is a
+  retirement, which needed `RegistryView.newest` (`src/core/registry.ts`) because `entries` drops
+  retirements, so a writer could not see the record it had to supersede. `supersedeGrantsFor` takes
+  the WHOLE declared set and skips any grant whose key is in it, so two patterns on one (principal,
+  kind, operations) survive together, which `authorize` is built to union. And retirements are keyed
+  on the RECORD being retired rather than on the grant identity alone, so an identity can be retired
+  more than once: keyed the old way, a re-granted wide grant survived the next supersede silently,
+  misauthorization in the widening direction. Always anchor the revival on the newest RETIREMENT,
+  never on "is the newest record retired": that test was tried, and after one revival it falls back
+  to the plain key the original record already consumed, so the next repeat replays and returns the
+  RETIRED record. Both SDK `grant()` helpers had the same defect on the public path and anchor the
+  same way. `createAgentDefinition` reads the grant registry once per principal and throws
+  `registry_incomplete` rather than superseding on a partial view, because a truncated read leaves
+  stale grants live. Guarded by `conformance/suites/retire.ts` on both adapters (round trip, two
+  patterns on one triple, re-narrowing a retired-then-re-granted grant) and by
+  `examples/chat/smoke-selfgrant.ts` (assign, retire, revive, repeat). Same class as "the
+  retire/republish trap" under Rejected approaches.
 - **A withheld count with no reason sends every agent hunting for a grant that cannot exist.**
   `/v0/ops/events` filters by which principal PERFORMED the operation, so no grant on any record
   kind widens it, but the response only said `withheld: 65923`, which reads as "you are missing a
@@ -260,6 +301,30 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   could no longer write its own messages: the chat died on the next turn with "no 'put' grant for
   kind 'message'". A grant carrying operations that were not being narrowed is now replaced by one
   that keeps them.
+- **Every read verb must resolve its scope through ONE path, or the verbs that forget serve
+  everything.** `scope.createdBy: "self"` used to be applied by each handler calling
+  `space.authorScope` by hand, and five sites did not: `handleTake` returned full foreign bodies and
+  drained the kind, `handleLineage` returned an entire ancestor DAG (and `put` never checks parent
+  readability, so a scoped run could name any foreign id in `parentIds` and read its whole
+  upstream), `handleGraph` leaked foreign node ids and labels, artifact reads served foreign bytes
+  and minted a bearer capability over them, and `authorizeWatch` ignored the scope, so wakeups
+  arrived for every author. `Space.readAccess(principal, op, kind)` now returns `{constraint,
+  createdBy}` TOGETHER, so the author scope cannot be fetched separately and then forgotten. Five
+  details worth keeping. `take` carries the scope into the CLAIM (`LeaseSpec.createdBy` →
+  `rankClaimable`) and it cannot ride in the pattern, because `created_by` is envelope metadata that
+  patterns never see. `getLineage`/`getGraph` treat a foreign record as a WALL and stop there rather
+  than skipping it, since continuing still exposes the shape. Artifact reads apply the scope before
+  the bytes AND before minting a download capability, because a bearer URL outlives the check, and a
+  foreign artifact answers 404 rather than 403. A `Watch` carries its `owner` and its author scope,
+  `getWatch` requires the creating principal and `matchesEvent` filters wakeups, because watch ids
+  come from the same monotonic ULID generator as record ids and are enumerable, so the id was never
+  a secret. And `effectivePermissions` computes ops-reachability per GRANT (one grant carrying both
+  `query` and the self scope), the rule `opsScope` actually enforces, instead of ORing `scoped` and
+  `query` across different grants: a believed view that drifts from enforcement is worse than no
+  view. The guard is a table in `conformance/http.test.ts` with one row per read verb, plus the
+  watch-attach check. **A read verb with no row is a verb nobody checked.** Add a row when you add a
+  verb. This is a convention, not a type: a new handler can still call `authorize` alone, and making
+  that a compile error needs a read-context type threaded through every handler signature.
 - **`listKinds()` does not list every kind.** It reads `kind_def` RECORDS, and six kinds are defined
   in code instead (`kind_def`, `grant`, `signal`, `agent_definition`, `agent_run`, `artifact`; see
   `RESERVED_KINDS`). Anything answering "does this kind exist" must add them, or it will report that
@@ -701,6 +766,23 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   with `lease_lost`, on top of the `leaseId`+`epoch` fencing. This closes lease-leak impersonation, which
   matters because an ack-emitted result is authorized as, and carries the delegation chain of, the
   lease owner. In-process/operator callers (no principal / privileged) skip the check.
+- **The guarded UPDATE is the fence, so always check its affected-row count, and always fence
+  BEFORE writing.** `ack`, `renew`, `nack` and `release` (`src/storage/pgbase.ts`, same shape in
+  `src/storage/sqlite.ts`) selected the envelope without `FOR UPDATE`, validated the lease in
+  application code, then ran `update … and lease_id = $ and lease_epoch = $` without ever inspecting
+  how many rows it touched. Under pooled Postgres at READ COMMITTED another connection can reclaim
+  the lease or bump the epoch in that gap, so the guard matched nothing and the transaction still
+  committed and returned `{status: "ok"}`: a quarantined run landing one final result despite the
+  epoch bump that exists to fence it out. All four settle verbs in both adapters check the count now
+  and return `lease_lost` on zero, and `ack` was REORDERED so the guarded update runs before the
+  result insert and its event. That makes the fence a plain early return instead of a rollback, so
+  no path lets a fenced-out worker commit a result and be told `ok`. Keep the guard's limits
+  straight: the new branch is unreachable on the embedded adapters, which serialize in-process and
+  whose update `WHERE` is a subset of what `leaseValid` already checked, so a conformance case there
+  would assert nothing. The observable contract stays covered by the fencing case in
+  `conformance/suites/leases.ts`; exercising the race itself is fault-matrix work against a live
+  Postgres ("stale ack after reassignment", "ack after quarantine", driven concurrently). See
+  [plan-validation.md](plan-validation.md).
 - **Default principal is the operator, so dev stays open; enforcement only bites a real token.**
   An unauthenticated request resolves to `human:local` (privileged), so the UI, demo, and examples
   work with no auth. To act as a scoped principal you must mint a real run token via the bootstrap
@@ -721,12 +803,20 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   public so the console can bootstrap under `--auth required`, so an embedded token is readable by
   anyone who can reach the port, and it authorizes every verb. The console prompts for a token and
   keeps it in `sessionStorage`; `conformance/console.test.ts` fails if a credential-shaped literal
-  or a substitution placeholder reappears in the page.
+  or a substitution placeholder reappears in the page. The substitution machinery is gone rather
+  than disabled: `loadUi` interpolates nothing and `ServerOptions.operatorToken` no longer exists,
+  so there is no path to reinstate it by passing an option.
 - **The operator token resolves as `kind: "operator"`, never `"def"`.** It authorizes coordination
   directly, as the space's own principal. The CLI, the MCP adapter and `curl` all present it, so
   resolving it to anything that 401s breaks every local tool. Resolving it as a DEFINITION token
   breaks the other way: definition tokens mint runs, so a leaked operator credential would convert
-  into a long-lived run token. It authorizes everything and mints nothing.
+  into a long-lived run token, and a credential that cannot be revoked would become one that
+  outlives the process. It authorizes everything and mints nothing. Encoded once as a distinct
+  `ResolvedToken` variant (`src/core/auth.ts`): `Space.resolveCredential` returns
+  `kind: "operator"`, `resolveAuth` (`src/server/http.ts`) accepts it beside `run`, and `mintRun`
+  refuses it, so the escalation is closed at the source rather than at each caller. Guarded by
+  `conformance/http.test.ts`, which asserts the provisioned operator token reaches health, the ops
+  plane and a `put` under `--auth required`, and that it cannot mint a run.
 - **A presented `Authorization: Bearer` token must resolve; a bad one is 401, never a silent
   fall-through to the operator.** Only the *absence* of any credential defaults to `human:local`;
   `resolveAuth` in `src/server/http.ts` encodes it (Bearer → run principal, else operator).
@@ -775,6 +865,20 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   declassify** (`Space.declassify`), which, because records are immutable, emits a **clean successor**
   (same body, `taint:false`, tainted original as its data parent) rather than mutating anything.
   Don't add a way for an ordinary agent to write `taint:false`.
+- **The one operation whose purpose is accountability must name its actor, and must be its own event
+  operation.** `Space.declassify` called `putRaw` with NO principal, so the clean successor's
+  `created_by` (and therefore the emitted event's `runId`) was the space's own `ctx.principal`, not
+  the operator who approved the clearance, and the event carried `operation: "put"` because there
+  was no `declassify` operation in the log at all. The entire audit trail for a clearance was the
+  successor's `parentIds` plus an anonymous put. That outranks the hash-chained log (M1–M2): a
+  tamper-evident chain over a record that omits the approver protects the wrong fact.
+  `Space.declassify(recordId, principal)` threads the approver, and the commit records a distinct
+  `declassify` operation carrying `{declassifiedFrom}`, via an optional `event` override on
+  `PutInput` that both adapters honour, so a clearance is greppable instead of hiding among ordinary
+  puts. Guarded by `conformance/suites/taint.ts`: the successor is authored by the approver, exactly
+  one `declassify` event names them, and ordinary puts are unchanged. The general shape: if an
+  operation exists to be audited, it needs its own verb in the log, because an entry that looks like
+  every other write is not findable after the fact.
 - **`take {requireUntainted}` filters candidates in core, not SQL.** The barrier lives in
   `rankClaimable` (skips `record.runtimeMeta.taint`), threaded via `LeaseSpec.requireUntainted`, so
   both adapters get it for free and it stays backend-neutral. It's a claim-time skip, not a query
@@ -944,6 +1048,23 @@ rejected for stated reasons.
   what makes it a trap: correctness would depend on who is calling. A revival must therefore key on
   the retirement it supersedes (`…:after:<retirement id>`). Caught by `smoke-fleet.ts` on the first
   run; it would not have been caught by any test that used a fresh principal per step.
+
+- **The matching construct is a `pattern`, and never a `selector`.** It was called a `template`
+  until the whole surface was renamed (wire contract, code, both SDKs, CLI, MCP tool definitions,
+  docs; the inner field stayed `match`). The reason: to most engineers a template is a GENERATOR,
+  something filled in to produce instances, and Radia's is the opposite, a recognizer. The
+  misreading had somewhere to land because `kind_def` genuinely is blueprint-shaped. The word had
+  also drifted from what justified it: once `$in`, `$gt` and `$or` existed it was no longer a
+  partial instance but a small query expression.
+  - **Never rename it to `selector`.** That word is already taken by the ENVELOPE selector on the
+    ops plane (`{state:"leased", expired:true}`), and the body/envelope split is the distinction
+    these docs work hardest to keep sharp. One word across both planes would blur it.
+  - **Never reintroduce "repeated-pattern" for the livelock feature.** It owned the word first and
+    was renamed to repeated-SHAPE detection to free it ([design-observability.md](design-observability.md)).
+  - `notes/` keeps the old vocabulary deliberately: it is the origin outline, provenance rather
+    than a maintained doc, so renaming it would falsify the record. Older prior-art reading uses
+    the old word too, because Linda and JavaSpaces call this argument a template.
+  - Do the rename totally or not at all. A codebase that says both is worse than either.
 
 ## Risk register
 

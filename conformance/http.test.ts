@@ -307,6 +307,72 @@ Deno.test("http: a self-scoped grant narrows EVERY read verb, not just query", a
   }
 });
 
+Deno.test("http: a grant can BAR a principal from claiming tainted work, and it cannot opt out", async () => {
+  // `requireUntainted` on a take is the worker's own flag, so containment used to depend on every
+  // claimant volunteering it: omit the flag and tainted work arrives normally. That is a
+  // convention, not a control. `scope: {taint: "none"}` moves the barrier to the side that assigns
+  // authority, where an operator can impose it.
+  const { space, handler, close } = await newHandler();
+  try {
+    await space.put({ kind: "task", body: { tag: "clean" } });
+    await space.put({ kind: "task", body: { tag: "dirty" }, taint: true });
+
+    const barred = await space.createAgentDefinition("agent:barred", [
+      { principal: "agent:barred", kind: "task", operations: ["take"], scope: { taint: "none" } },
+    ]);
+    const { runToken: barredToken } = await space.mintRun(barred.definitionToken);
+
+    // It never asks for the barrier, and still cannot reach the tainted record.
+    const first = await (await handler(post("/v0/takes", { pattern: { kind: "task" } }, {
+      authorization: `Bearer ${barredToken}`,
+    }))).json();
+    assertEquals(first.record.body.tag, "clean", "the untainted record is claimable");
+    const second = await (await handler(post("/v0/takes", { pattern: { kind: "task" } }, {
+      authorization: `Bearer ${barredToken}`,
+    }))).json();
+    assertEquals(second, null, "the tainted record is barred by the grant, not by the caller's flag");
+
+    // A principal WITHOUT the barrier still claims it: the barrier is a property of the grant.
+    const open = await space.createAgentDefinition("agent:open", [
+      { principal: "agent:open", kind: "task", operations: ["take"] },
+    ]);
+    const { runToken: openToken } = await space.mintRun(open.definitionToken);
+    const got = await (await handler(post("/v0/takes", { pattern: { kind: "task" } }, {
+      authorization: `Bearer ${openToken}`,
+    }))).json();
+    assertEquals(got.record.body.tag, "dirty", "an unbarred grant still reaches tainted work");
+  } finally {
+    await close();
+  }
+});
+
+Deno.test("http: an unbarred grant beside a barred one lifts the barrier (grants union)", async () => {
+  // Grants UNION, so one grant without the barrier already permits tainted work. Enforcing the
+  // barrier anyway would deny something that was granted. Same rule `authorScope` uses.
+  const { space, handler, close } = await newHandler();
+  try {
+    await space.put({ kind: "task", body: { tag: "dirty" }, taint: true });
+    const mixed = await space.createAgentDefinition("agent:mixed", [
+      { principal: "agent:mixed", kind: "task", operations: ["take"], scope: { taint: "none" } },
+      { principal: "agent:mixed", kind: "task", operations: ["take"], pattern: { tag: "dirty" } },
+    ]);
+    const { runToken } = await space.mintRun(mixed.definitionToken);
+    const got = await (await handler(post("/v0/takes", { pattern: { kind: "task" } }, {
+      authorization: `Bearer ${runToken}`,
+    }))).json();
+    assertEquals(got?.record?.body?.tag, "dirty", "a grant without the barrier permits tainted work");
+
+    // …and the worker can still impose it on itself, voluntarily.
+    await space.nack(got.lease, { backoffSeconds: 0 });
+    const refused = await (await handler(post("/v0/takes", { pattern: { kind: "task" }, requireUntainted: true }, {
+      authorization: `Bearer ${runToken}`,
+    }))).json();
+    assertEquals(refused, null, "a worker may always be more careful than its grants require");
+  } finally {
+    await close();
+  }
+});
+
 Deno.test("http: a wrong-typed field is a 400 at the boundary, never a 500 from inside", async () => {
   const { handler, close } = await newHandler();
   try {

@@ -38,6 +38,16 @@ database you care about. The live-server run adds its own storage tests to the e
 is the only run that actually *contends* for claims, which is why a claim-path change needs it (see
 "Writing a suite" below).
 
+## What "done" means
+
+- **Write the suite before or alongside the behavior**, never after. A contract test written
+  afterwards documents what the implementation happens to do.
+- **A behavior is not done until it is green on every adapter**, not just the one it was written
+  against. Running two embedded adapters from the first commit is what keeps that real rather than
+  aspirational, and it is why the port stayed honest before Postgres arrived.
+- **Never let a test's output be interactive**, and never make the suite depend on a live model.
+  Per repo conventions the agent writes tests and states how to run them.
+
 ## Layout
 
 | File | Role |

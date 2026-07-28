@@ -53,43 +53,11 @@ This is a focused prototype (2–3 careful weeks), explicitly **not** production
   so it is not a dependency. No web framework, no ORM. Each further dependency is a cost
   to justify.
 
-## OpenAPI freeze policy (M0)
+## OpenAPI freeze policy
 
-`openapi/radia.yaml` is the frozen wire contract, but only the validated parts are
-frozen at M0. Scope: **freeze the data-plane core; mark control-plane and auth
-experimental.**
-
-Frozen at M0 as **v0-stable** (additive-only: new optional fields and new enum values
-allowed, no removals or renames):
-
-- the nine data-plane verbs: `put`, `read_one`, `query`, `take`, `ack`, `nack`,
-  `release`, `renew`, `watch`;
-- record / runtime-envelope / lease JSON shapes;
-- status values `lease_lost`, `idempotency_conflict`, and the `dead_letter` state;
-- the RFC 9457 error model;
-- the matching operator whitelist and its divergence semantics (see
-  [design-matching.md](design-matching.md)).
-
-Marked **experimental** (may change without a major bump) at M0:
-
-- control-plane: kinds, patterns, agent-definitions, runs, grants;
-- auth and credential exchange (auto-provisioned locally at M0; real at M1).
-
-Mechanism:
-
-- **Per-element `x-stability: stable | beta | experimental`** on every operation and
-  schema in the spec, so stability is granular and self-documenting.
-- **SemVer 0.x**, where `0.x` signals the whole surface may still move; the additive-only
-  rule above is what makes the frozen subset dependable within 0.x.
-- **Reserved names now** so later additions aren't breaking: the deferred operators
-  (`$ne`, `$nin`, `$not`, `$prefix`, full-text) and room for future status values are
-  reserved; frozen request bodies use `additionalProperties: false`.
-- **Version signaling** via a `/v0/` path prefix (or `Radia-Api-Version` header) so
-  clients pin.
-
-This honors the CLAUDE.md invariant *the wire contract is what's frozen, not the
-implementation* for the parts M0 actually exercises, without committing to the
-grant/auth/scheduler shapes that aren't validated until M1–M3.
+The standing stability policy (what `v0-stable` covers, what stays experimental, and the
+additive-only rule) is in [design-api.md](design-api.md). It outlived M0, so it lives with the
+contract rather than with the milestone that set it.
 
 ## Current state
 
@@ -144,21 +112,18 @@ The tree is in [CLAUDE.md](../CLAUDE.md).
 
 ## Testing methodology
 
-- **Conformance suite is the contract.** It targets the `StorageAdapter` interface, not a
-  concrete backend, and is written *before or alongside* each behavior. `deno task
-  conformance` runs it against **every registered adapter**, PGlite *and* SQLite at M0;
-  Postgres joins at M1 without the tests changing. A behavior is not done until it is green
-  on both M0 adapters. This is the standing guard against storage-adapter drift (the
-  CLAUDE.md invariant), and running two adapters from the first commit is what keeps it
-  real rather than aspirational.
-- **Fault cases** live in the same suite, driving crashes/retries through adapter and
-  handler seams (not real process kills at M0): crash-before-effect, after-effect-before-ack,
-  after-commit-before-response, duplicate ack, stale ack after reassignment. Full matrix in
-  [plan-validation.md](plan-validation.md); M0 takes the subset that the kernel can exercise.
-- **"Done" for a phase** = its Verify block passes and no earlier phase's conformance
-  tests regress.
-- No automated LLM in the loop; no interactive test output. Per repo conventions, the
-  agent writes tests and states how to run them rather than running them here.
+The standing rules (the conformance suite is the port contract, it runs against every
+implementation, and a behavior is not done until it is green on all of them) belong to
+[conformance/README.md](../conformance/README.md) and are stated there.
+
+What was M0-specific:
+
+- **"Done" for a phase** = its Verify block passes and no earlier phase's conformance tests
+  regress.
+- The **fault subset** M0 took: crash-before-effect, after-effect-before-ack,
+  after-commit-before-response, duplicate ack, stale ack after reassignment. Driven through
+  adapter and handler seams rather than real process kills. The full matrix is in
+  [plan-validation.md](plan-validation.md).
 
 ## Dev UI (radia dev web console)
 

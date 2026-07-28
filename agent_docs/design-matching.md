@@ -23,6 +23,11 @@ its cost is then flat as the space grows rather than linear (`deno task bench --
 Postgres pays for the body index on the write side (`put` roughly 1ms → 2.5ms), which is the trade
 a coordination substrate should want: records are matched far more often than written.
 
+The soundness contract binds anyone extending the language. Every new operator is also an
+extension to the pushdown, and an unsound pushdown does not merely slow a query down: it makes
+matching records **invisible to `take`**, which presents as an idle space rather than as an error.
+Always render an inexpressible construct as `TRUE` and let the oracle decide.
+
 A `kind`'s `indexedPaths` are a **validation contract**, not a per-path physical index.
 Postgres answers pushed equality from one GIN index over the whole body, so declaring a path
 needs no DDL and no migration. What `indexedPaths` buys is the guarantee that a pattern only
@@ -38,6 +43,7 @@ where that is enforced.
 - Invariants
 - Semantics (divergences from Mongo)
 - Operator whitelist
+- What patterns cannot express
 - Per-kind indexing contract
 - Two matching directions
 - Semantic matching (late)
@@ -70,7 +76,27 @@ Explicit, deterministic, conformance-tested:
 - **Deferred:** `$ne` / `$nin` / `$not` (poor selectivity; slow lane if ever);
   `$prefix` and full-text (indexable, later; semantic matching is not a substitute for
   deterministic prefix/token/filename matching).
-- **Never:** `$regex`, `$where`, `$expr`.
+- **Never:** `$regex`, `$where`, `$expr`. Rejected at compile as `operator_forbidden`
+  ("patterns are data, not code", `FORBIDDEN` in `src/core/matching.ts`). An unknown `$` key at
+  object level throws too, so the whitelist is closed rather than advisory.
+
+## What patterns cannot express
+
+A pattern evaluates the record **body** and nothing else (`matchesRecord` → `evalNode(rec.body, …)`).
+The runtime envelope is invisible to it: `taint`, lease state, attempt counts, `created_by`,
+timestamps.
+
+- Never expect a pattern to filter on envelope state, in a query, a watch, or a grant pattern.
+- The envelope has its own two selectors, deliberately separate vocabularies: the ops
+  envelope-query (`GET /v0/ops/records?state=…&expired=…&stale=…`), and `scope` on a grant
+  (`{createdBy: "self"}`, `{taint: "none"}`), see [design-auth.md](design-auth.md).
+- Taint therefore affects routing in exactly one place, a skip in `rankClaimable`
+  (`src/core/take.ts`), reached when the caller passes `requireUntainted` or a grant-side barrier
+  forces it on.
+
+Keeping envelope fields out of the matching language is what keeps patterns analyzable, storable
+data. Never mirror an envelope field into record bodies to make it matchable: a body field is
+client-shaped and forgeable, which is the property authorization cannot tolerate.
 
 ## Per-kind indexing contract
 
@@ -126,8 +152,20 @@ only; per-agent LLM rerank with a cost budget; shadow mode before enforcement. S
 
 ## Pattern properties
 
-Patterns are storable, analyzable, and schema-validated at registration. Orphan records
-and starving patterns are first-class diagnostics (see
+Patterns are storable, analyzable, and schema-validated at registration. Being a finite structure
+rather than a predicate function is what four other subsystems depend on:
+
+| Property                   | What it buys                                                                       |
+|----------------------------|------------------------------------------------------------------------------------|
+| Storable in a record       | a grant is a `grant` record, not a config table ([design-auth.md](design-auth.md)) |
+| Compilable to SQL          | the sound pre-filter (`src/storage/pushdown.ts`)                                   |
+| Intersectable server-side  | `grant ∧ request` via `combineMatch`, so authority can be scoped                   |
+| Inspectable before it runs | a human or an agent can read the routing rule and refuse it                        |
+
+Never add an operator that cannot be analyzed. Once a pattern can execute, grants stop being
+inspectable and the pushdown stops being sound.
+
+Orphan records and starving patterns are first-class diagnostics (see
 [design-observability.md](design-observability.md)). Deterministic tie-breaking:
 `order_by`, then record ID.
 

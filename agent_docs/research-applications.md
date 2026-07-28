@@ -10,7 +10,8 @@
 > a doc and the code disagree, the code wins.
 >
 > Companion docs: [plan-audit-remediation.md](plan-audit-remediation.md) (defects) and
-> [plan-inspection.md](plan-inspection.md) (the emergent-flow backlog, which depends on both).
+> [design-inspection.md](design-inspection.md) with its backlog
+> [plan-inspection.md](plan-inspection.md) (inspecting emergent flows, which depends on both).
 
 ## Contents
 
@@ -44,119 +45,50 @@ applications worth pursuing need all three at once.
 **Decided and applied.** The matching construct is a **pattern** everywhere: wire contract, code,
 both SDKs, CLI, MCP tool definitions, docs. The inner field stays `match`.
 
-Why it moved: to most engineers a *template* is a generator, something filled in to produce
-instances (HTML, C++, string templates). Radia's is the opposite, a recognizer, and the
-misreading had somewhere to land, because `kind_def` genuinely is blueprint-shaped. The word had
-also drifted from what once justified it: with `$in`, `$gt` and `$or` in the language it stopped
-being a partial instance and became a small query expression, which wants a word about selection.
-
-Why not `selector`, the other serious candidate: **it is already taken**, by the envelope selector
-on the ops plane (`{state:"leased", expired:true}`). The body/envelope split is the distinction
-these docs work hardest to keep sharp, and reusing one word across both planes would blur it.
-Never rename the body matcher to `selector`.
-
-Two consequences, both important:
-
-- The livelock feature became **repeated-shape** detection
-  ([design-observability.md](design-observability.md)) because it had owned the word "pattern"
-  first. Never reintroduce "repeated-pattern" for it.
-- `notes/` keeps the old vocabulary deliberately. It is the origin outline (provenance, not a
-  maintained doc), so renaming it would falsify the record.
-
-One sentence of lineage, because older prior-art reading uses the other word: Linda and JavaSpaces,
-the tuple-space tradition Radia's name honours, call this argument a *template*.
+It is named here because everything from §2 onward argues from the construct being a recognizer
+rather than a generator, and that argument is unreadable if the word is still in dispute. The
+reasoning, the rejected alternatives, and the standing rules that came out of it (never `selector`,
+never "repeated-pattern" for the livelock feature) are in
+[gotchas.md](gotchas.md) with the other decisions of that kind.
 
 ## 2. The pattern layer
 
 Patterns are why the interesting applications are possible, and their limits are why some are
-harder than they look.
+harder than they look. The mechanics live in the design docs and are not repeated here: the
+language itself in [design-matching.md](design-matching.md), its use as an authorization primitive
+in [design-auth.md](design-auth.md). What follows is only what the applications below rest on.
+Where a claim below is verified, its evidence pointer is in §8.
 
-### 2.1 Patterns are data, and that is what makes the rest work
+**A pattern is a finite, analyzable structure, not a predicate function**, and that one property is
+what this whole document trades on. It is why a grant can be a record instead of config, why the
+matcher compiles to a SQL pre-filter, why two patterns can be intersected server-side, and why a
+routing rule can be read and refused before anything runs. "Routing you can inspect and refuse"
+(§3) is a restatement of it. So the prohibition on executable operators is not fastidiousness:
+the moment a pattern can execute, grants stop being inspectable and the pushdown stops being sound.
 
-**Verified.** `src/core/matching.ts` holds `FORBIDDEN = new Set(["$regex", "$where", "$expr"])`,
-rejected at compile with `operator_forbidden` and the message "patterns are data, not code". Any
-unknown `$` key at object level also throws. Allowed:
-`$eq/$gt/$gte/$lt/$lte/$in/$exists/$any/$each/$and/$or`, with `$and`/`$or` nesting capped at depth
-3 (`MAX_DEPTH`). `$ne`/`$nin`/`$not`/`$prefix`/`$text` are deferred.
+**The same construct scopes authority in both directions**, write side and read/claim side
+([design-auth.md](design-auth.md), "Grants"). For applications that means environment tiering falls
+out with no additional mechanism: a supervisor whose grant is `put runnable {env:"ci"}` cannot mint
+a prod runnable, and an executor whose take grant is patterned `{env:"ci"}` is incapable of
+claiming prod work whatever its own pattern asks for. That is the mechanism §5 is built on. Read
+every "the runtime enforces X" as "the HTTP boundary enforces X", since an in-process caller of
+`Space` bypasses all of it (§8, newly found gaps).
 
-Everything downstream depends on this. Because a pattern is a finite, analyzable structure rather
-than a predicate function, it can be **stored in a record** (which is what makes a grant a record
-rather than config), **compiled to SQL** as a pre-filter, **intersected with another pattern**
-server-side (which is what makes scoped authorization possible at all), and **shown to a human or
-an agent** and reasoned about before anything runs.
+**Classification is the seam that does not fit.** Patterns see record bodies, taint is envelope
+state, so nothing in the routing language can filter on it; the envelope-side vocabulary that can
+is `scope` on a grant. Both facts are stated where they are enforced
+([design-matching.md](design-matching.md) "What patterns cannot express",
+[design-auth.md](design-auth.md) "Taint"). What is left open is provenance rather than enforcement:
+one bit lets a barrier refuse untrusted work but not say what made it untrusted, and recording
+which parent raised the taint is the same missing join the graph overlay in
+[design-inspection.md](design-inspection.md) needs.
 
-Never add an operator that cannot be analyzed. The moment a pattern can execute, grants stop
-being inspectable and the pushdown stops being sound.
+**The price is the pushdown contract**, and the applications here are what makes it expensive:
+an unsound pre-filter hides records from `take`, and a false-empty space presents as idleness
+rather than as an error, which is the worst failure mode a coordination substrate can have. Three
+live violations are recorded in [plan-audit-remediation.md](plan-audit-remediation.md) package E.
 
-### 2.2 Patterns are the authorization primitive, on both sides
-
-The strongest thing in the codebase, and easy to miss. A grant carries an optional `pattern`,
-enforced differently by direction.
-
-| Direction   | Mechanism          | Question it answers                         |
-|-------------|--------------------|---------------------------------------------|
-| Write       | `bodyMatchesGrant` | May this principal *produce* this content?  |
-| Read/claim  | `combineMatch`     | Which records may this principal *observe*? |
-
-**Write side (verified, `src/core/space.ts`).** Each grant pattern is compiled against the kind
-and evaluated against the body being written; an uncompilable pattern grants nothing
-(fail-closed). Enforced in `handlers/records.ts` for `put`, `handlers/artifacts.ts` for artifact
-writes, and, importantly, **in core** for ack-emitted results, checked before anything is
-consumed.
-
-**Read/claim side (verified, `src/core/matching.ts`).** The grant's pattern (or the `$or` union of
-several) is ANDed with the client's own match: `{$and: [requestMatch, constraint]}`. Because the
-AND is applied server-side *after* the client's pattern, a wrong or buggy client pattern can only
-narrow. Applied in `handlers/records.ts` (query, read_one), `handlers/leases.ts` (take, including a
-synthesized pattern for a record-id take), and `handlers/watches.ts`.
-
-Together these give environment tiering for free: a supervisor holding `put runnable {env:"ci"}`
-cannot mint a prod runnable, and a CI executor whose take grant is patterned `{env:"ci"}` is
-*incapable* of claiming prod work regardless of what its own pattern says. This is the mechanism
-behind §5.
-
-**Caveat, verified and important.** `Space.take` and `Space.query` do no grant work themselves.
-`authorize`, `combineMatch` and `bodyMatchesGrant` all live in the HTTP handlers. An in-process
-consumer of `Space` (embedded mode, an example's launcher, the conformance suite) bypasses grants
-entirely. Read every "the runtime enforces X" as "the HTTP boundary enforces X".
-
-### 2.3 What patterns cannot express
-
-**Verified.** Pattern matching evaluates `rec.body` only (`matchesRecord` → `evalNode(rec.body,…)`).
-`taint` lives in `runtimeMeta`, not the body. Therefore:
-
-- **No pattern can filter on taint**: not in a query, not in a watch, not in a grant.
-- The ops envelope-query plane (`GET /v0/ops/records`) accepts `state`, `expired`, `stale`,
-  `limit`; there is no taint dimension there either.
-- The only place taint affects routing is a boolean skip in `rankClaimable`
-  (`src/core/take.ts`), reached only when the *caller* passes `requireUntainted`.
-
-This is the substrate's sharpest internal seam: classification is enforced at claim time but is
-invisible to the language used for everything else. Two consequences follow directly.
-
-- `requireUntainted` is a **per-call opt-in by the worker**, not a property of a grant or an
-  identity. An operator cannot force a principal's takes to be untainted; a worker that omits the
-  flag receives tainted records normally.
-- Taint is **one bit with no provenance**. A client-raised `taint:true` and an inherited one are
-  indistinguishable, and nothing records which parent caused it. "Untrusted because of which
-  parent" is re-derivable only by walking lineage and inspecting each ancestor's bit, which is
-  ambiguous when several ancestors are tainted.
-
-If taint ever needs to be a policy dimension rather than a barrier, the honest fix is to stop
-treating it as envelope state: either mirror a classification into the body (matchable, but then
-client-shaped) or extend the constraint language to cover envelope fields. Both are real design
-work.
-
-### 2.4 The soundness contract is the price
-
-Because patterns compile to SQL, the pre-filter must **over-include, never over-exclude**; the
-in-memory oracle decides (`src/storage/pushdown.ts`). Three live violations are recorded in
-[plan-audit-remediation.md](plan-audit-remediation.md) package E. The structural lesson: **every
-extension to the pattern language is also an extension to the pushdown, and an unsound pushdown
-makes records invisible to `take` rather than merely slow.** A false-empty space is the worst
-failure this system has, because it looks like idleness.
-
-### 2.5 Addressing versus content-routing
+### 2.1 Addressing versus content-routing
 
 Barbara is hierarchically addressed (`/Instruments/UKGILT201510yZXhhbXBsZQ==`), so every consumer
 must know the key path. That is a routing table spelled as a folder hierarchy, and it works because
@@ -169,7 +101,7 @@ The interchange format carries the same split. Barbara stores pickles: opaque to
 arbitrary-code-execution channel, tolerable only inside a hard perimeter. "Patterns are data, not
 code" is the opposite commitment. **You cannot taint-track a pickle, and you cannot route on one.**
 
-### 2.6 The recurring patterns
+### 2.2 The recurring patterns
 
 Five appear repeatedly. Four are built; the fifth is the notable absence.
 
@@ -294,7 +226,8 @@ carries the risk there. No comment or test asserts this as intent, so treat it a
 current code rather than a documented decision.
 
 **"On what" is the grants axis**, because one bit cannot distinguish "cleared for CI" from "cleared
-for prod". Pattern-scoped grants do, on both sides, per §2.2.
+for prod". Pattern-scoped grants do, on both sides (§2, and
+[design-auth.md](design-auth.md) "Grants" for the enforcement points).
 
 **The bytes are bound to the approval by content addressing.** Artifact digests are over plaintext,
 computed server-side, never taken from the client; records are immutable and carry `body_sha256`.
@@ -403,7 +336,7 @@ State these to avoid misdirected effort.
   invariant exists because payload volume breaks matching.
 - **End-to-end encrypted content.** Encrypted content is coordination-invisible by construction.
 - **Anything security-critical needing in-process enforcement**, since grants live at the HTTP
-  boundary (§2.2).
+  boundary (§8, newly found gaps).
 
 ---
 
