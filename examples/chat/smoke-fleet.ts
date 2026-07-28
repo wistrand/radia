@@ -11,6 +11,7 @@
 // This is a script, not a `*.test.ts`: `deno task conformance` is for PORT contracts, not examples.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
+import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { publishModel, retireModel } from "./space/model.ts";
 import { activeByKey } from "../../src/core/registry.ts";
@@ -23,15 +24,17 @@ const space = new Deno.Command(Deno.execPath(), {
   stderr: "inherit",
 }).spawn();
 
-const client = new RadiaClient(url);
+const probe = new RadiaClient(url); // liveness only: /v0/health is public
+let client: RadiaClient;
 for (let i = 0; i < 100; i++) {
   try {
-    await client.health();
+    await probe.health();
     break;
   } catch {
     await new Promise((r) => setTimeout(r, 200));
   }
 }
+client = new RadiaClient(url, { token: operatorToken(url) });
 await registerChatKinds(client);
 
 let failed = 0;

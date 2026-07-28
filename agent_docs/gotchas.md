@@ -793,12 +793,12 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   chain; there is **no impersonation shortcut** (the old dev-only `X-Radia-Principal` assume-header
   was removed, because a client must never choose its own identity, so a single Bearer channel is
   the whole story).
-- **The no-header operator default is only safe locally, so the server binds loopback and offers a
-  close switch.** `radia dev` binds `127.0.0.1` by default (not all interfaces); `--host 0.0.0.0`
-  is an explicit opt-in to expose it. `--auth required` (`ServerOptions.authRequired`) drops the
-  no-header shortcut entirely: no bearer → `401 auth_required`. `GET /` and `GET /v0/health` stay
-  public so the console still bootstraps; neither carries a credential, and neither may (see the
-  operator-token bullet below). The loopback default is what keeps the local case safe.
+- **`--auth` defaults to REQUIRED, and the loopback bind is the second layer, not the first.**
+  No bearer → `401 auth_required` (`ServerOptions.authRequired`). `--auth open` opts back into the
+  no-header operator shortcut, which is only ever safe locally. `radia dev` also binds `127.0.0.1`
+  by default; `--host 0.0.0.0` is an explicit opt-in to expose it. `GET /` and `GET /v0/health`
+  stay public in both modes so the console can bootstrap and a client can tell "no space here" from
+  "not allowed"; neither carries a credential, and neither may (see the operator-token bullet).
 - **The operator token is a server-lifetime in-memory credential, not a record, and it never
   travels in the served page.** `Space.mintOperatorToken` (startup) registers a hash in `CredentialStore`
   that resolves to the privileged `human:local`, never expires, and is NOT persisted (like the
@@ -821,6 +821,30 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   refuses it, so the escalation is closed at the source rather than at each caller. Guarded by
   `conformance/http.test.ts`, which asserts the provisioned operator token reaches health, the ops
   plane and a `put` under `--auth required`, and that it cannot mint a run.
+- **The open-mode no-header shortcut is for `curl`, and nothing radia ships may rely on it.** A
+  request with no credential resolves to `human:local`, the operator, which is the largest authority
+  a space has and the least visible way to acquire it: a client gets it by nobody having typed
+  anything. The CLI and MCP adapter always presented a token; the console and the chat did not, and
+  both silently ran privileged. Both now refuse to start without one (`api()` in `src/ui/index.html`
+  short-circuits any non-public path; `examples/chat/chat.ts` exits before touching the space), and
+  the chat's two credentials are separate on purpose, since the person at the keyboard is not the
+  operator that bootstraps the fleet. The shortcut is now behind an explicit `--auth open`, so a
+  space nobody configured is closed. The examples were the last holdouts and now read the
+  provisioned operator credential (`examples/operator.ts`) instead of sending no header, which also
+  means they exercise the authenticated path they exist to demonstrate.
+- **A role flag that picks between "scoped" and "operator" makes the privileged posture the
+  default.** `RADIA_CHAT_ROLE` defaulted to `admin`, so the chat ran as the operator unless you knew
+  to say otherwise, and the flag described how the process was launched rather than who was using
+  it. It is gone: the session is whatever credential the person supplies, and whether that reaches
+  the ops plane follows from the grants that principal holds. Never reintroduce an out-of-band
+  switch for authority; make it a property of the credential.
+- **The provisioned credential is keyed by HOST, so `localhost` and `127.0.0.1` are two spaces.**
+  `baseKey` (`src/credentials.ts`) keys on `protocol//host`, and `radia dev` binds `127.0.0.1`, so
+  anything defaulting to `http://localhost:7788` finds no credential for a space it can otherwise
+  reach. Two examples and the TS SDK defaulted to `localhost` and started failing the moment auth
+  became required. Every default now agrees on `127.0.0.1`. The aliasing was NOT fixed in
+  `baseKey`: two names for one host is exactly the kind of helpful normalization that surprises
+  someone later, and the error message names the trap instead.
 - **Two tools that reach the same outcome are chosen by their DESCRIPTIONS, so an unconditional
   claim beats a conditional one.** `save_content` (authored text) and `run_code` + `save_as`
   (computed bytes) both produce an artifact, so nothing fails when the wrong one is picked. The

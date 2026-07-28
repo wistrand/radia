@@ -114,14 +114,20 @@ deno task dev:pg                                               # radia dev again
 Tables are created on first connect (no migration step). `docker compose down` keeps the data
 (named volume); `down -v` wipes it.
 
-The server binds loopback (`127.0.0.1`) by default, because the no-header operator shortcut is
-only safe locally. To expose it, pass `--host 0.0.0.0`, and harden with `--auth required` so every
-request needs `Authorization: Bearer <run-token>` (no-header requests get `401`; the console at
-`/` and `/v0/health` stay public, and the operator token is printed at startup for `curl`):
+**Auth is required by default.** Every request needs `Authorization: Bearer <token>`; without one
+it is `401`. `GET /` (the console) and `GET /v0/health` stay public so the console can bootstrap and
+a client can tell "no space here" from "not allowed". `radia dev` prints an operator token at
+startup and writes it to your credential file, so the CLI, the MCP adapter and the bundled examples
+authenticate with no extra step.
+
+The server also binds loopback (`127.0.0.1`) by default. To expose it, pass `--host 0.0.0.0`.
 
 ```bash
-deno task dev --host 0.0.0.0 --auth required   # exposed + token-gated
+deno task dev --auth open   # a header-less request is the OPERATOR: local throwaways and curl
 ```
+
+`--auth open` exists because it is convenient, and it is a real hole: it resolves a credential-less
+request to `human:local`, which authorizes every verb. Nothing radia ships depends on it.
 
 Open the console and watch records and events stream through the **Feed** tab, use the
 **Graph** tab to see how records relate (`parent_ids` DAG: a conversation's messages, a

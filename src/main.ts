@@ -20,7 +20,7 @@ import { args as argv, env, exit, onShutdown, UsageError } from "./platform.ts";
 const USAGE = `radia <command>
 
   dev [--port <n>] [--host <addr>] [--storage pglite|sqlite|postgres] [--db <path|url>]
-      [--blobs <dir>] [--blob-kek <file>] [--auth open|required] [--artifact-port <n>]
+      [--blobs <dir>] [--blob-kek <file>] [--auth required|open] [--artifact-port <n>]
       Run an embedded space + web console.
   mcp [--url <base>]
       Serve the space to an MCP-capable harness over stdio.
@@ -43,7 +43,12 @@ async function dev(args: string[]): Promise<void> {
   if (artifactPort !== undefined && !Number.isFinite(artifactPort)) {
     throw new UsageError(`--artifact-port must be a number (or 0 to disable), got '${artifactPortArg}'`);
   }
-  const authMode = flag(args, "--auth") ?? "open";
+  // REQUIRED by default. The open-mode no-header shortcut resolves a credential-less request to
+  // `human:local`, the operator: the largest authority a space has, handed out for typing nothing.
+  // Defaulting to it meant every space started life fully open and stayed that way unless someone
+  // knew the flag. `--auth open` is still there for a throwaway local space and for `curl`, but it
+  // is now a decision someone makes rather than the state they land in.
+  const authMode = flag(args, "--auth") ?? "required";
   if (authMode !== "open" && authMode !== "required") {
     throw new UsageError(`unknown --auth: ${authMode} (expected open|required)`);
   }
@@ -86,11 +91,13 @@ async function dev(args: string[]): Promise<void> {
   const saved = saveCredential(base, { token: operatorToken, mintedAt: new Date().toISOString(), storage: storage.name });
   if (saved.ok) console.log(`radia dev: operator credential provisioned at ${saved.path} (radia <cmd> and radia mcp use it)`);
   else console.log(`radia dev: could not write ${saved.path} (${saved.error}). Set RADIA_TOKEN to use the CLI`);
-  if (authRequired) {
-    // In required mode the no-header shortcut is gone, so hand the operator a credential for curl
-    // and for the console, which asks for one (GET / bootstraps but carries no token itself).
-    console.log(`radia dev: --auth required. Operator credential: Authorization: Bearer ${operatorToken}`);
-    console.log(`radia dev: paste that token into the console's principal pill to authenticate it`);
+  // The console requires a credential in EVERY mode, not only `--auth required`, so print one
+  // unconditionally. It used to be shown only in required mode, which left the operator hunting
+  // for a token the sign-in screen asks for.
+  // The console and `curl` both need this; the CLI and MCP adapter read the file above instead.
+  console.log(`radia dev: operator token (console sign-in, curl): ${operatorToken}`);
+  if (!authRequired) {
+    console.log(`radia dev: --auth open. A request with no Authorization header is the OPERATOR.`);
   }
   // Shut down on a signal instead of being killed mid-flight, so the cleanup below actually runs.
   // Without this, Ctrl-C or SIGTERM leaves a dead token on disk and the next CLI call 401s with

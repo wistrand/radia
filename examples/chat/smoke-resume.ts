@@ -8,6 +8,7 @@
 // space would make every assertion below pass for the wrong reason.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
+import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { type Identity, Thread } from "./client/thread.ts";
 
@@ -26,11 +27,11 @@ function startSpace(): Deno.ChildProcess {
   }).spawn();
 }
 
-const client = new RadiaClient(url);
+const probe = new RadiaClient(url); // liveness only: /v0/health is public
 async function waitUp() {
   for (let i = 0; i < 100; i++) {
     try {
-      await client.health();
+      await probe.health();
       return;
     } catch {
       await new Promise((r) => setTimeout(r, 200));
@@ -44,6 +45,10 @@ const check = (label: string, pass: boolean, detail = "") => console.log(`  ${pa
 // ---- session one ----
 let space = startSpace();
 await waitUp();
+// The space is listening, so it has already written its credential file: authenticate now. The
+// second session below restarts the SAME space (same --db), and `radia dev` rewrites the file on
+// every start, so the token has to be re-read there rather than reused.
+let client = new RadiaClient(url, { token: operatorToken(url) });
 await registerChatKinds(client);
 
 const first = await Thread.open(client, ADMIN, (await client.put({ kind: "conversation", body: {} })).id);
@@ -72,6 +77,10 @@ check("the space really went away", down);
 
 space = startSpace();
 await waitUp();
+// A restarted space mints a NEW operator token (they are process-lifetime and never records), so
+// the credential from before the restart is dead. Re-read it, which is the same thing any CLI
+// invocation does; a client that cached one would 401 here and look like data loss.
+client = new RadiaClient(url, { token: operatorToken(url) });
 check("and comes back on the same database", (await client.query({ kind: "message", match: { conversationId: convId } }, 50)).length > 0);
 
 // ---- session two: reattach ----

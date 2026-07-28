@@ -8,8 +8,9 @@
 // present in the same space to prove it.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
+import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
-import { bootstrap, CHAT_USER } from "./space/roles.ts";
+import { bootstrap, CHAT_USER, mintSession } from "./space/roles.ts";
 import { ToolSet } from "./client/turn.ts";
 import { reviewGrantRequests } from "./client/grants.ts";
 
@@ -21,21 +22,24 @@ const space = new Deno.Command(Deno.execPath(), {
   stderr: "inherit",
 }).spawn();
 
-const admin = new RadiaClient(url); // operator: the REPL's bootstrap credential
+const probe = new RadiaClient(url); // liveness only: /v0/health is public
+let admin: RadiaClient; // operator: the REPL's bootstrap credential
 for (let i = 0; i < 100; i++) {
   try {
-    await admin.health();
+    await probe.health();
     break;
   } catch {
     await new Promise((r) => setTimeout(r, 200));
   }
 }
+admin = new RadiaClient(url, { token: operatorToken(url) });
 await registerChatKinds(admin);
 // The conversation exists BEFORE the session credential, because the session's grants are scoped
 // to it. That is the same order chat.ts uses, and the reason a user session no longer holds
 // `conversation: put` at all.
 const conv = (await admin.put({ kind: "conversation", body: { title: "mine" } })).id;
-const { sessionToken, toolsToken } = await bootstrap(admin, "user", { conversationId: conv });
+const { toolsToken } = await bootstrap(admin);
+const sessionToken = await mintSession(admin, CHAT_USER, { conversationId: conv });
 const session = new RadiaClient(url, { token: sessionToken! });
 
 // A BUSY space must not hide the newest tool. Discovery reads a bounded page, and a limited query

@@ -21,6 +21,7 @@
 // something broken.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
+import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { publishCapability } from "./space/capability.ts";
 import { makeSaveTools, SAVE_SCHEMAS } from "./tools/save.ts";
@@ -35,15 +36,17 @@ const space = new Deno.Command(Deno.execPath(), {
   stderr: "inherit",
 }).spawn();
 
-const admin = new RadiaClient(url);
+const probe = new RadiaClient(url); // liveness only: /v0/health is public
+let admin: RadiaClient;
 for (let i = 0; i < 100; i++) {
   try {
-    await admin.health();
+    await probe.health();
     break;
   } catch {
     await new Promise((r) => setTimeout(r, 200));
   }
 }
+admin = new RadiaClient(url, { token: operatorToken(url) });
 await registerChatKinds(admin);
 
 let failed = 0;
@@ -58,7 +61,7 @@ function check(name: string, ok: boolean, detail = "") {
 // pass an import-based test while the running fleet still advertised the old text. So `run_code`'s
 // comes from the exec-worker PROCESS, launched here exactly as the chat launches it.
 for (const def of SAVE_SCHEMAS) await publishCapability(admin, def);
-const tokens = await bootstrap(admin, "admin");
+const tokens = await bootstrap(admin);
 const worker = new Deno.Command(Deno.execPath(), {
   args: [
     "run",

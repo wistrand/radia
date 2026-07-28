@@ -43,9 +43,11 @@ the DB clock (`SpaceContext.runTokenSeconds`, default 900s). `Authorization: Bea
 is the **only** auth channel, and exactly two token kinds authorize it (`ResolvedToken.kind`): a
 **run** token, and the **operator** token. A **definition** token authorizes one thing only,
 minting a run, and is rejected everywhere else, because it is long-lived and accepting it would
-hand out unexpiring coordination authority. In **open mode** (the default) a request with no header
-is the operator `human:local`, so local dev/UI/examples stay open; to act as a scoped principal,
-mint a real run token (there is no impersonation shortcut). `radia login human:alice` does exactly
+hand out unexpiring coordination authority. **`--auth required` is the default.** A request with no header is `401 auth_required`. Under
+`--auth open`, which is now an explicit choice, that request is instead the operator `human:local`.
+Open mode is a genuine hole (it authorizes every verb for typing nothing), so nothing radia ships
+relies on it: the CLI, the MCP adapter, the console and the examples all present a token. To act as
+a scoped principal, mint a real run token; there is no impersonation shortcut. `radia login human:alice` does exactly
 that for a PERSON, through the same chain (`src/cli.ts`), and the console's Auth tab does it in the
 browser. That is what makes identity-scoped grants usable: a grant pinned to `{owner: <principal>}`
 separates two people only if they are two principals, so an app that shares one constant between
@@ -58,17 +60,19 @@ as a definition token: that would let a leaked operator credential mint a run an
 `.withToken()`, `client.createAgentDefinition/createRun/stopRun/grant`. Conformance:
 `conformance/suites/auth.ts`.
 
-**Bind + auth hardening (`radia dev`):** the server binds **loopback (`127.0.0.1`) by default**.
-The no-header operator shortcut is only safe locally; `--host 0.0.0.0` deliberately exposes it.
-`--auth required` (`src/main.ts` → `ServerOptions.authRequired`) drops the no-header shortcut: a
-request with no bearer token is rejected `401 auth_required` (`resolveAuth` in `src/server/http.ts`).
+**Bind + auth hardening (`radia dev`):** the server binds **loopback (`127.0.0.1`) by default**, and
+`--host 0.0.0.0` deliberately exposes it. `--auth` defaults to **required** (`src/main.ts` →
+`ServerOptions.authRequired`): a request with no bearer token is rejected `401 auth_required`
+(`resolveAuth` in `src/server/http.ts`). `--auth open` opts back into the no-header operator
+shortcut, which is only ever safe locally.
 `GET /` (the console) and `GET /v0/health` stay public so the console can still bootstrap. **Never
 inject a credential into the served page**: it is public, so anything baked in is readable by
 anyone who can reach the port, and a harvested operator token authorizes every verb. The console
-prompts for a token and keeps it in `sessionStorage`; required mode prints one at startup for that
-and for `curl` use. The token it holds is any session token, an operator's or a person's, and the
-console resolves WHO it is through `GET /v0/ops/permissions` rather than assuming a token means
-operator. That assumption was the bug: a console signed in as a scoped principal still labelled
+requires a token in EVERY mode, not only `--auth required`: it shows a sign-in screen until one is
+present and `api()` refuses to send an unauthenticated request, so the no-header shortcut stays
+reachable from `curl` and unreachable from the browser. `radia dev` prints one at startup for that.
+The token it holds is any session token, an operator's or a person's, and the console resolves WHO
+it is through `GET /v0/ops/permissions` rather than assuming a token means operator. That assumption was the bug: a console signed in as a scoped principal still labelled
 itself "operator token", which is the promise-vs-enforcement gap every grant defect here has had.
 
 **Per-run lease ownership + revocation (built):** a lease is owned by the claiming principal

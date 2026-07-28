@@ -477,9 +477,9 @@ paths:
 
   # --- bootstrap chain (auth): definition -> run token -> stop. EXPERIMENTAL --------------
   # Requests authenticate with `Authorization: Bearer <run-token>` (a run:* principal that
-  # inherits its agent definition's grants). That is the only auth channel. Absent any credential, the
-  # caller defaults to the operator `human:local` (act as a scoped principal by minting a run
-  # token). See design-auth.md. Definitions/runs are records (agent_definition/agent_run); only the
+  # inherits its agent definition's grants). That is the only auth channel. `radia dev` requires
+  # one by default; the explicit `--auth open` makes a credential-less request the operator
+  # `human:local` instead. See design-auth.md. Definitions/runs are records (agent_definition/agent_run); only the
   # token HASH is stored; the plaintext token is returned once and never persisted.
 
   /agent-definitions:

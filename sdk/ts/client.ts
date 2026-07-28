@@ -40,12 +40,14 @@ export class RadiaClientError extends Error {
   }
 }
 
-/** Read RADIA_URL if env access is permitted; a no --allow-env worker falls back to the default. */
+/** Read RADIA_URL if env access is permitted; a no --allow-env worker falls back to the default.
+ *  `127.0.0.1`, not `localhost`: `radia dev` binds the former and keys its provisioned credential
+ *  by host, so the two names are two different spaces to anything that looks a credential up. */
 function defaultBase(): string {
   try {
-    return globalThis.Deno?.env.get("RADIA_URL") ?? "http://localhost:7788";
+    return globalThis.Deno?.env.get("RADIA_URL") ?? "http://127.0.0.1:7788";
   } catch {
-    return "http://localhost:7788";
+    return "http://127.0.0.1:7788";
   }
 }
 

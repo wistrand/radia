@@ -39,7 +39,7 @@ export class Thread {
     // (which kind, which match, which order) stays in the tool descriptions. Without it the
     // "retrieve rather than recall" disposition is unusable: the reconstructed thread carries no
     // conversationId, the `conversation` record has an empty body and no indexed path, and
-    // role=user cannot enumerate conversations at all.
+    // a scoped session cannot enumerate conversations at all.
     await thread.append({ role: "system", content: `${systemPrompt(who)}\nThis conversation's id is ${id}.` });
     return thread;
   }
@@ -106,10 +106,9 @@ export class Thread {
  * Who this session IS. Not a role name: the principal the session's credential resolves to, and
  * whether the space treats it as privileged.
  *
- * `Role` is the launcher's config (`RADIA_CHAT_ROLE`) and stops describing the session the moment a
- * login token is supplied, since the token brings its own identity. The prompt told the assistant
- * it was `agent:chat-user` while it was actually running as a named person, so "whoami" answered
- * with a constant from this file.
+ * It used to be a role name from the launcher's config, which described how the process was started
+ * rather than who was using it. The prompt told the assistant it was `agent:chat-user` while it ran
+ * as a named person, so "whoami" answered with a constant from this file.
  */
 export interface Identity {
   principal: string;

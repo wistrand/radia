@@ -36,8 +36,8 @@
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./space/kinds.ts";
-import { assignUserGrants, bootstrap, CHAT_USER, setSessionOwner } from "./space/roles.ts";
-import { apiKey, execRoots, loginToken, resume, role, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
+import { assignUserGrants, bootstrap, setSessionOwner } from "./space/roles.ts";
+import { apiKey, execRoots, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
 import { launchFleet, spawnSpace } from "./client/fleet.ts";
 import { ToolSet } from "./client/turn.ts";
 import { Thread } from "./client/thread.ts";
@@ -55,11 +55,15 @@ if (toolRoots.length === 0) {
   console.error("No readable sandbox directories (RADIA_CHAT_DIRS).");
   Deno.exit(1);
 }
+// Both credentials are REQUIRED. Neither falls back to the space's open-mode no-header shortcut,
+// which answers as the operator and would silently give a session the whole control plane.
+if (!loginToken) {
+  console.error("Set RADIA_CHAT_TOKEN (or --token) to your session token.");
+  console.error("  Mint one:  radia login human:<you>");
+  console.error("  There is no default identity: the chat will not run as an unnamed principal.");
+  Deno.exit(1);
+}
 
-// `admin` is the OPERATOR client used to bootstrap (register kinds, assign grants, mint run
-// tokens). `session` is what the REPL uses: the operator for role=admin, or a scoped
-// agent:chat-user run token for role=user.
-const admin = new RadiaClient(url);
 const procs: Deno.ChildProcess[] = [];
 const shutdown = new AbortController();
 
@@ -72,9 +76,12 @@ function cleanup() {
   }
 }
 
+// Liveness only, and the one call that legitimately carries no credential: `/v0/health` is public
+// so a client can tell "no space here" apart from "not allowed", even under `--auth required`.
+const probe = new RadiaClient(url);
 async function healthy(): Promise<boolean> {
   try {
-    await admin.health();
+    await probe.health();
     return true;
   } catch {
     return false;
@@ -92,6 +99,22 @@ if (!usingRunning) {
     Deno.exit(1);
   }
 }
+
+// Two clients, two credentials, and they are NOT the same principal. `admin` bootstraps (register
+// kinds, assign grants, mint the worker run tokens), all of which is privileged. `session` is the
+// person at the keyboard, holding only what was granted to them.
+//
+// Resolved here rather than at import: a space this process just spawned writes its credential file
+// during startup, so reading earlier always misses.
+const opToken = operatorToken();
+if (!opToken) {
+  console.error(`No operator credential for ${url}.`);
+  console.error("  `radia dev` provisions one automatically; set RADIA_TOKEN to override.");
+  console.error("  The chat bootstraps the fleet, which is privileged, and will not do it unauthenticated.");
+  cleanup();
+  Deno.exit(1);
+}
+const admin = new RadiaClient(url, { token: opToken });
 
 // Bootstrap as operator, then hand each worker its own least-privilege run token.
 await registerChatKinds(admin);
@@ -112,35 +135,27 @@ async function resolveConversation(): Promise<{ id: string; resumed: boolean }> 
 }
 const conversation = await resolveConversation();
 
-// Who is at the keyboard. Without a login token this is the shared `agent:chat-user`; with one it
-// is the person that token belongs to, resolved from the SPACE rather than taken on trust, so a
-// forged body field cannot claim someone else's identity.
-let owner = CHAT_USER;
-let privileged = role === "admin";
-if (loginToken) {
-  const who = (await new RadiaClient(url, { token: loginToken }).health()).principal;
-  const perms = await admin.permissions(who) as { subject: string; privileged: boolean };
-  owner = perms.subject;
-  privileged = perms.privileged;
-  setSessionOwner(owner);
-}
+// Who is at the keyboard, resolved from the SPACE rather than taken on trust: the token names a
+// run, and its subject is the person. Nothing the caller says is consulted, so a forged body field
+// cannot claim someone else's identity.
+const session = new RadiaClient(url, { token: loginToken });
+const who = (await session.health()).principal;
+const perms = await admin.permissions(who) as { subject: string; privileged: boolean };
+const owner = perms.subject;
+const privileged = perms.privileged;
+setSessionOwner(owner);
 
 // What the session's grants bind to. `owner` is this identity across all its conversations;
 // `conversationId` is this thread only. See RADIA_CHAT_SCOPE.
 const scope = scopeMode === "conversation"
   ? { conversationId: conversation.id }
   : { owner };
-// A login token brings its own identity, so the bootstrap does not mint a session for it. It still
-// mints the worker tokens, which is what the fleet runs on.
-const tokens = await bootstrap(admin, loginToken ? "admin" : role, scope);
-let session: RadiaClient;
-if (loginToken) {
-  await assignUserGrants(admin, owner, scope);
-  session = new RadiaClient(url, { token: loginToken });
-} else {
-  session = new RadiaClient(url, tokens.sessionToken ? { token: tokens.sessionToken } : {});
-}
-procs.push(...launchFleet(tokens));
+// The session brought its own credential, so the bootstrap mints only the WORKER tokens. The
+// operator still assigns this person's grants: a session chooses its credential, never its
+// authority.
+const tokens = await bootstrap(admin, scope);
+await assignUserGrants(admin, owner, scope);
+procs.push(...launchFleet(tokens, loginToken));
 
 const tools = new ToolSet(session);
 tools.watch(shutdown.signal); // background: keep the tool set live from capability records
@@ -151,7 +166,7 @@ Deno.addSignalListener("SIGINT", () => {
   Deno.exit(0);
 });
 
-console.log(`radia chat: ${loginToken ? `logged in as ${owner}` : `role ${role}`}`);
+console.log(`radia chat: logged in as ${owner}`);
 console.log(`tiers: ${Object.entries(TIERS).map(([t, m]) => `${t}=${m}`).join("  ")}`);
 console.log("routing: automatic. A router-worker classifies each turn and picks the tier; workers escalate when out of depth (no /commands).");
 console.log(

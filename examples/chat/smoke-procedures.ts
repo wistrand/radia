@@ -9,6 +9,7 @@
 // This is a script, not a `*.test.ts`: it is not part of `deno task conformance` (that suite is for
 // PORT contracts, not for an example). Run it after changing the exec worker.
 import { RadiaClient } from "../../sdk/ts/client.ts";
+import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { bootstrap } from "./space/roles.ts";
 import { ToolSet } from "./client/turn.ts";
@@ -21,18 +22,20 @@ const space = new Deno.Command(Deno.execPath(), {
   stderr: "inherit",
 }).spawn();
 
-const admin = new RadiaClient(url);
+const probe = new RadiaClient(url); // liveness only: /v0/health is public
+let admin: RadiaClient;
 for (let i = 0; i < 100; i++) {
   try {
-    await admin.health();
+    await probe.health();
     break;
   } catch {
     await new Promise((r) => setTimeout(r, 200));
   }
 }
+admin = new RadiaClient(url, { token: operatorToken(url) });
 
 await registerChatKinds(admin);
-const { execToken } = await bootstrap(admin, "admin");
+const { execToken } = await bootstrap(admin);
 
 const worker = new Deno.Command(Deno.execPath(), {
   args: [

@@ -17,12 +17,18 @@ import { publishCapability } from "../space/capability.ts";
 
 const url = arg("--url") ?? "http://127.0.0.1:7788";
 const token = arg("--token"); // agent:chat-tools run token (the worker's own identity)
-const sessionToken = arg("--session-token"); // the session principal for space_* tools (absent = operator)
+const sessionToken = arg("--session-token"); // the session principal the space_* tools act as
 const roots = argAll("--dir");
-const client = new RadiaClient(url, token ? { token } : {}); // claims tool_calls, publishes capabilities
-// The space_* inspection/remediation tools act as the SESSION principal, not the worker: operator
-// for role=admin (full /ops access), the scoped session principal for role=user (so /ops calls 403).
-const spaceClient = new RadiaClient(url, sessionToken ? { token: sessionToken } : {});
+if (!token || !sessionToken) {
+  // No credential means no default: an unauthenticated client would resolve to the operator under
+  // the space's open mode, so a missing flag would silently hand this worker the control plane.
+  console.error("tools worker: --token and --session-token are both required");
+  Deno.exit(1);
+}
+const client = new RadiaClient(url, { token }); // claims tool_calls, publishes capabilities
+// The space_* inspection/remediation tools act as the SESSION principal, not the worker, so the
+// answer matches what the person asking is allowed to see (a scoped session gets 403 on /ops).
+const spaceClient = new RadiaClient(url, { token: sessionToken });
 // File/compute tools (sandboxed, no client) + space inspection + remediation (session-scoped).
 // `save_content` writes artifacts as the WORKER (its own token, `artifact: put`), not as the
 // session: storing a file is the worker's own action, unlike the space_* tools, which act as the

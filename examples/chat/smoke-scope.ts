@@ -16,8 +16,9 @@
 // waiting for results it could no longer read. Hence a field the session stamps and workers copy.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
+import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
-import { bootstrap, CHAT_USER } from "./space/roles.ts";
+import { CHAT_USER, mintSession } from "./space/roles.ts";
 
 const PORT = 7803;
 const url = `http://127.0.0.1:${PORT}`;
@@ -27,15 +28,17 @@ const space = new Deno.Command(Deno.execPath(), {
   stderr: "inherit",
 }).spawn();
 
-const admin = new RadiaClient(url);
+const probe = new RadiaClient(url); // liveness only: /v0/health is public
+let admin: RadiaClient;
 for (let i = 0; i < 100; i++) {
   try {
-    await admin.health();
+    await probe.health();
     break;
   } catch {
     await new Promise((r) => setTimeout(r, 200));
   }
 }
+admin = new RadiaClient(url, { token: operatorToken(url) });
 await registerChatKinds(admin);
 
 let failed = 0;
@@ -86,7 +89,7 @@ async function canRead(client: RadiaClient, id: string): Promise<boolean> {
 // ---------------------------------------------------------------------------
 console.log("\n  identity scope: everything this identity produced");
 // ---------------------------------------------------------------------------
-const idToken = (await bootstrap(admin, "user", { owner: CHAT_USER })).sessionToken!;
+const idToken = await mintSession(admin, CHAT_USER, { owner: CHAT_USER });
 const byIdentity = new RadiaClient(url, { token: idToken });
 
 const idMessages = await byIdentity.queryPage({ kind: "message" }, 50);
@@ -135,7 +138,7 @@ check("…nor omit it to escape the scope", !unowned);
 // ---------------------------------------------------------------------------
 console.log("\n  conversation scope: this thread only, whoever produced it");
 // ---------------------------------------------------------------------------
-const convToken = (await bootstrap(admin, "user", { conversationId: current })).sessionToken!;
+const convToken = await mintSession(admin, CHAT_USER, { conversationId: current });
 const byConversation = new RadiaClient(url, { token: convToken });
 
 const convMessages = await byConversation.queryPage({ kind: "message" }, 50);

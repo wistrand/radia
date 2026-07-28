@@ -28,9 +28,16 @@ function spawn(args: string[]): Deno.ChildProcess {
   return new Deno.Command("deno", { args: ["run", ...args], stdout: "null", stderr: "inherit", stdin: "null" }).spawn();
 }
 
-/** Start every worker; returns the processes so the caller can kill them on exit. */
-export function launchFleet(tokens: Bootstrapped): Deno.ChildProcess[] {
-  const { inferenceToken, routerToken, toolsToken, imagesToken, execToken, sessionToken } = tokens;
+/**
+ * Start every worker; returns the processes so the caller can kill them on exit.
+ *
+ * `sessionToken` is REQUIRED, and it is the session's own credential rather than anything minted
+ * here. The tools-worker runs the `space_*` verbs under it, so a scoped session cannot launder /ops
+ * access through a worker that happens to hold more. It used to be optional, which meant the
+ * privileged path was the one you got by not passing it.
+ */
+export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.ChildProcess[] {
+  const { inferenceToken, routerToken, toolsToken, imagesToken, execToken } = tokens;
   const procs: Deno.ChildProcess[] = [];
 
   // One inference-worker per tier, all the same agent: each claims only `{llm_call, tier}` and
@@ -80,7 +87,7 @@ export function launchFleet(tokens: Bootstrapped): Deno.ChildProcess[] {
     "examples/chat/workers/tools.ts",
     "--url", local,
     "--token", toolsToken,
-    ...(sessionToken ? ["--session-token", sessionToken] : []),
+    "--session-token", sessionToken,
     ...toolRoots.flatMap((r) => ["--dir", r]),
   ]));
 

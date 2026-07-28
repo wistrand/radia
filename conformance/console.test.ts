@@ -16,10 +16,20 @@ import { assert, assertEquals } from "@std/assert";
 function extractFunction(source: string, name: string): string {
   const start = source.indexOf(`function ${name}(`);
   assert(start >= 0, `console no longer defines function ${name}(); update this test with it`);
+  // Skip the PARAMETER LIST before looking for the body's opening brace. A default value that is
+  // an object literal (`headers = {}`) otherwise reads as the body, and the extraction silently
+  // returns `{}`: a test asserting on the contents of that would pass or fail for reasons having
+  // nothing to do with the function.
+  let paren = 0;
+  let i = source.indexOf("(", start);
+  for (; i < source.length; i++) {
+    if (source[i] === "(") paren++;
+    else if (source[i] === ")" && --paren === 0) break;
+  }
   let depth = 0;
-  for (let i = source.indexOf("{", start); i < source.length; i++) {
-    if (source[i] === "{") depth++;
-    else if (source[i] === "}" && --depth === 0) return source.slice(start, i + 1);
+  for (let j = source.indexOf("{", i); j < source.length; j++) {
+    if (source[j] === "{") depth++;
+    else if (source[j] === "}" && --depth === 0) return source.slice(start, j + 1);
   }
   throw new Error(`unbalanced braces while extracting ${name}()`);
 }
@@ -134,4 +144,45 @@ Deno.test("console: minting parses a grant list the same way the CLI does", () =
     try { parseGrants("human:alice", bad); } catch { threw = true; }
     assert(threw, `'${bad}' should be rejected, not parsed into a grant`);
   }
+});
+
+Deno.test("console: no credential means no request, not an operator default", () => {
+  // The space's open mode answers a header-less request as `human:local`, the operator. A console
+  // that leaned on that held the entire control plane because nobody had typed anything: the
+  // largest possible authority acquired the least visible way. The page now gates on a token in
+  // EVERY mode, so the shortcut stays available to curl and is unreachable from the browser.
+  assert(
+    /PUBLIC_PATHS\s*=\s*new Set\(\["\/v0\/health"\]\)/.test(html),
+    "the public-path allowlist is gone or widened; only /v0/health may be called unauthenticated",
+  );
+  // The guard must sit in `api()`, the one funnel every panel uses. A per-caller check is a check
+  // somebody will forget to add to the next panel.
+  const api = extractFunction(html, "api");
+  assert(/AUTH_TOKEN/.test(api) && /PUBLIC_PATHS/.test(api), "api() does not gate on the token");
+  assert(/return\s*\{\s*ok:\s*false,\s*status:\s*401/.test(api), "api() does not short-circuit unauthenticated calls");
+
+  // And the gate has to actually run: a sign-in screen nothing displays is decoration.
+  assert(/id="signin"/.test(html), "no sign-in panel");
+  assert(/\nstart\(\);/.test(html), "the sign-in gate is never invoked at init");
+});
+
+Deno.test("console: a pasted token is verified before it is stored", () => {
+  // Storing an unusable token leaves the console signed in and uniformly broken: every panel
+  // reports 401 and nothing says the credential was the problem.
+  const signIn = extractFunction(html, "signIn");
+  const verifyAt = signIn.indexOf("/v0/health");
+  const storeAt = signIn.indexOf("useToken");
+  assert(verifyAt >= 0, "signIn() does not verify the token against the space");
+  assert(storeAt > verifyAt, "signIn() stores the token before verifying it");
+});
+
+Deno.test("dev: --auth defaults to required", async () => {
+  // The default IS the security posture for every space nobody configured. Open mode resolves a
+  // header-less request to the operator, so defaulting to it meant a space started life fully open
+  // and stayed there unless someone knew the flag existed. Reading the source rather than starting
+  // a server: this is one literal, and the assertion should fail on the literal changing.
+  const main = await Deno.readTextFile(new URL("../src/main.ts", import.meta.url));
+  const m = main.match(/const authMode = flag\(args, "--auth"\) \?\? "(\w+)"/);
+  assert(m, "src/main.ts no longer resolves --auth this way; update this test with it");
+  assertEquals(m[1], "required", "--auth must default to required");
 });

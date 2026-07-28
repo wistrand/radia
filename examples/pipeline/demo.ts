@@ -8,13 +8,14 @@
 // and exit. That is the self-contained integration smoke test used in CI.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
+import { operatorToken } from "../operator.ts";
 import { registerDemoKinds } from "./kinds.ts";
 import { plannerLoop } from "./planner.ts";
 import { workerLoop } from "./worker.ts";
 import { aggregatorLoop } from "./aggregator.ts";
 
 const once = Deno.args.includes("--once");
-const url = Deno.env.get("RADIA_URL") ?? "http://localhost:7788";
+const url = Deno.env.get("RADIA_URL") ?? "http://127.0.0.1:7788";
 const port = new URL(url).port || "7788";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // Stagger the pipeline so it animates in the Feed tab. Instant for --once (CI).
@@ -38,12 +39,13 @@ async function waitHealthy(client: RadiaClient, timeoutMs = 15000): Promise<bool
   return false;
 }
 
-const client = new RadiaClient(url);
+const probe = new RadiaClient(url); // liveness only: /v0/health is public
+let client: RadiaClient;
 const ac = new AbortController();
 const log = (m: string) => console.log(m);
 
 let server: Deno.ChildProcess | null = null;
-const usingRunning = await healthy(client);
+const usingRunning = await healthy(probe);
 
 if (usingRunning) {
   console.log(`Using the space already running at ${url}`);
@@ -55,13 +57,16 @@ if (usingRunning) {
     stdout: "null",
     stderr: "null",
   }).spawn();
-  if (!await waitHealthy(client)) {
+  if (!await waitHealthy(probe)) {
     console.error("server did not become healthy");
     server.kill();
     Deno.exit(1);
   }
   console.log(`Space up at ${url}. Open it and watch the Feed tab.\n`);
 }
+
+// The space is up either way, so its credential file exists: authenticate before the first verb.
+client = new RadiaClient(url, { token: operatorToken(url) });
 
 try {
   await registerDemoKinds(client);

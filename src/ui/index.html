@@ -93,6 +93,23 @@
   <span class="sub">dev console</span>
   <div class="health" id="health"><span class="pill">connecting…</span></div>
 </header>
+<!-- SIGN IN. Shown until a token is present; the console runs nothing without one. -->
+<div id="signin" style="display:none">
+  <div class="panel" style="max-width:640px;margin:40px auto">
+    <h2>Sign in</h2>
+    <p class="muted">This console does not run without a credential. There is no anonymous mode and no
+    operator default: whatever you paste here decides what the page can see and do, and the space
+    enforces it.</p>
+    <div class="row">
+      <input id="signin-token" placeholder="paste a session token" style="flex:1" autocomplete="off" spellcheck="false">
+      <button class="btn" onclick="signIn()">Sign in</button>
+    </div>
+    <div id="signin-note"></div>
+    <p class="muted" style="margin-bottom:0">Where to get one: <code>radia dev</code> prints an operator
+    token at startup and writes it to your credential file; <code>radia login human:you</code> mints a
+    scoped session for a person. Held in <code>sessionStorage</code> for this tab only.</p>
+  </div>
+</div>
 <nav id="nav">
   <button data-tab="overview" class="active">Overview</button>
   <button data-tab="records">Records</button>
@@ -283,7 +300,7 @@
     </div>
     <div class="panel">
       <h2>Authorization <button class="btn ghost" style="float:right" onclick="loadAuth()">Refresh</button></h2>
-      <p class="muted" style="margin-top:0">The bootstrap chain, read straight from the substrate: <code>agent_definition</code> → its <code>agent_run</code>s (run tokens) → the <code>grant</code> records that scope each principal. All are ordinary records (only the token <i>hash</i> is stored). A definition is an <code>agent:</code> worker or a <code>human:</code> person; the namespace confers no privilege, so a person here holds exactly what was assigned. The chat example creates these when run with auth (<code>RADIA_CHAT_ROLE=user deno task chat</code>).</p>
+      <p class="muted" style="margin-top:0">The bootstrap chain, read straight from the substrate: <code>agent_definition</code> → its <code>agent_run</code>s (run tokens) → the <code>grant</code> records that scope each principal. All are ordinary records (only the token <i>hash</i> is stored). A definition is an <code>agent:</code> worker or a <code>human:</code> person; the namespace confers no privilege, so a person here holds exactly what was assigned. The chat example creates these on every run (<code>deno task chat</code>).</p>
       <div id="auth-body"><div class="empty">loading…</div></div>
     </div>
   </section>
@@ -294,10 +311,16 @@
 const $ = (id) => document.getElementById(id);
 
 // This page carries NO credential: it is served publicly so it can bootstrap in `--auth required`
-// mode, so anything baked in would be readable by anyone who can reach the port. In open mode no
-// token is needed (the no-header operator default applies). Otherwise paste a token: the operator
-// one `radia dev` prints, or a PERSON's session token (`radia login human:alice`, or minted on the
-// Auth tab below). It is held in sessionStorage for this tab only.
+// mode, so anything baked in would be readable by anyone who can reach the port. It asks for one
+// instead, and REFUSES TO RUN WITHOUT IT, in every mode: the operator token `radia dev` prints, or
+// a person's session token (`radia login human:alice`, or minted on the Auth tab below). Held in
+// sessionStorage for this tab only.
+//
+// The open-mode no-header shortcut is deliberately not used here even though the space still offers
+// it. A console that relies on it holds the entire control plane because nobody typed anything,
+// which is both the largest possible authority and the least visible way to acquire it. Requiring a
+// credential also makes the page's identity a thing someone CHOSE, which is what lets a person see
+// the space as themselves.
 //
 // The token decides the identity, so nothing here assumes the console is the operator. WHO the
 // pasted token belongs to and what it may do are read back from the space (`ops/permissions`,
@@ -307,9 +330,9 @@ const $ = (id) => document.getElementById(id);
 let AUTH_TOKEN = sessionStorage.getItem("radia.token");
 let IDENTITY = null; // {principal, subject, privileged} once loadHealth has asked
 function setToken() {
-  const t = prompt("Session token: the operator token `radia dev` prints, or a person's (`radia login human:alice`). Empty clears it:", AUTH_TOKEN ?? "");
+  const t = prompt("Session token: the operator token `radia dev` prints, or a person's (`radia login human:alice`). Empty signs out:", AUTH_TOKEN ?? "");
   if (t === null) return;
-  useToken(t.trim() || null);
+  useToken(t.trim() || null); // empty -> back to the sign-in screen, not to an operator default
 }
 function useToken(t) {
   AUTH_TOKEN = t || null;
@@ -318,7 +341,17 @@ function useToken(t) {
   location.reload();
 }
 
+/** The one path that legitimately carries no credential: it is public so the page can tell "no
+ *  space here" apart from "not allowed", which is what the sign-in screen needs to say. */
+const PUBLIC_PATHS = new Set(["/v0/health"]);
+
 async function api(method, path, body, headers = {}) {
+  // Refuse to send an unauthenticated request rather than let the space answer it as the operator.
+  // The open-mode no-header shortcut is a real credential-shaped hole: a console that used it would
+  // hold the whole control plane by virtue of nobody having typed anything.
+  if (!AUTH_TOKEN && !PUBLIC_PATHS.has(path.split("?")[0])) {
+    return { ok: false, status: 401, data: { title: "not signed in", detail: "this console sends no unauthenticated requests" } };
+  }
   const h = { ...headers };
   if (body !== undefined) h["content-type"] = "application/json";
   if (AUTH_TOKEN) h["Authorization"] = "Bearer " + AUTH_TOKEN;
@@ -397,7 +430,6 @@ async function loadHealth() {
       : IDENTITY.privileged
       ? `<span class="tag tag-grant">operator</span>`
       : `<span class="tag tag-taint">scoped</span> <span class="muted">${IDENTITY.kinds.length} kind${IDENTITY.kinds.length === 1 ? "" : "s"} granted; the ops plane (stats, events, remediation) will 403</span>`)
-    + (AUTH_TOKEN ? "" : ` <span class="muted">(no token, operator default)</span>`)
     + ` <button class="btn ghost" onclick="setToken()">${AUTH_TOKEN ? "change token" : "set token"}</button>`
     + (AUTH_TOKEN ? ` <button class="btn ghost" onclick="useToken(null)" title="drop the token and fall back to the no-header default (which is the operator in open mode, and nothing in --auth required)">sign out</button>` : "")
     + `</div>`
@@ -986,7 +1018,7 @@ async function loadAuth() {
       + `</div>`);
   }
 
-  $("auth-body").innerHTML = cards.length ? cards.join("") : `<div class="empty">No agent definitions yet. Run the chat example with auth: <code>RADIA_CHAT_ROLE=user deno task chat</code></div>`;
+  $("auth-body").innerHTML = cards.length ? cards.join("") : `<div class="empty">No agent definitions yet. Run the chat example: <code>deno task chat</code></div>`;
   renderMint();
 }
 
@@ -1042,11 +1074,38 @@ async function mintSession() {
   loadAuth();
 }
 
-// init
-loadHealth();
-loadStats();
-loadKinds();
-setInterval(loadHealth, 5000);
+// ---- sign-in gate ----
+async function signIn() {
+  const t = $("signin-token").value.trim();
+  if (!t) { note("signin-note", "err", "paste a token"); return; }
+  // Verify BEFORE storing it. Storing an unusable token leaves the console signed in and broken,
+  // with every panel reporting 401 and nothing saying why.
+  const res = await fetch("/v0/health", { headers: { "Authorization": "Bearer " + t } });
+  if (!res.ok) { note("signin-note", "err", res.status === 401 ? "that token is not valid on this space" : `HTTP ${res.status}`); return; }
+  useToken(t);
+}
+
+async function start() {
+  if (AUTH_TOKEN) {
+    $("signin").style.display = "none";
+    loadHealth();
+    loadStats();
+    loadKinds();
+    setInterval(loadHealth, 5000);
+    return;
+  }
+  $("signin").style.display = "";
+  $("nav").style.display = "none";
+  document.querySelector("main").style.display = "none";
+  // Say which of the two failures this is, using the one public endpoint.
+  const r = await fetch("/v0/health").catch(() => null);
+  $("health").innerHTML = r && r.ok
+    ? `<span class="pill">not signed in</span>`
+    : `<span class="pill">offline</span>`;
+  if (!r || !r.ok) note("signin-note", "err", `no space is answering at ${location.origin}. Start one with \`radia dev\`.`);
+  $("signin-token").focus();
+}
+start();
 // Deep link: /?tab=space opens a tab directly (handy for sharing a view, and for screenshots).
 const wantTab = new URLSearchParams(location.search).get("tab");
 if (wantTab) {

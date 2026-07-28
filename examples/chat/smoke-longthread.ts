@@ -13,6 +13,7 @@
 // window expansion, and the real assembly. Nothing here is a re-implementation.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
+import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { assembleContext, selectWindow, type ThreadRow } from "./provider/context.ts";
 
@@ -24,15 +25,17 @@ const space = new Deno.Command(Deno.execPath(), {
   stderr: "inherit",
 }).spawn();
 
-const client = new RadiaClient(url);
+const probe = new RadiaClient(url); // liveness only: /v0/health is public
+let client: RadiaClient;
 for (let i = 0; i < 100; i++) {
   try {
-    await client.health();
+    await probe.health();
     break;
   } catch {
     await new Promise((r) => setTimeout(r, 200));
   }
 }
+client = new RadiaClient(url, { token: operatorToken(url) });
 await registerChatKinds(client);
 
 const check = (label: string, pass: boolean, detail = "") => console.log(`  ${pass ? "OK  " : "FAIL"} ${label}${detail ? `  ${detail}` : ""}`);

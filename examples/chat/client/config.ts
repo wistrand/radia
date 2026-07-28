@@ -6,26 +6,40 @@
 // (CLAUDE.md, "discover, don't hardcode").
 
 import { arg } from "../util.ts";
-import type { Role } from "../space/roles.ts";
+import { resolveToken } from "../../../src/credentials.ts";
 
 /** Same port as `deno task dev` by default, so a console you already have open shows this run. */
 export const url = Deno.env.get("RADIA_URL") ?? "http://127.0.0.1:7788";
 export const port = new URL(url).port || "7788";
 
-export const role: Role = (arg("--role") ?? Deno.env.get("RADIA_CHAT_ROLE")) === "user" ? "user" : "admin";
-
 /**
- * A session token minted for a PERSON (`radia login human:alice --grant …`).
+ * The session credential, minted for a PERSON: `radia login human:alice`. REQUIRED.
  *
- * Supplying one replaces the shared `agent:chat-user` identity with whoever the token belongs to,
- * so two people on one space are two principals and the identity scope actually separates them.
- * The launcher still bootstraps as the operator: it registers kinds, mints the worker tokens and
- * approves grant requests. Only the REPL becomes you.
+ * There is no default and no fallback. The chat used to run as a shared `agent:chat-user`, or as
+ * the operator, on a request that carried no credential at all: the space's open-mode no-header
+ * shortcut answered as `human:local` and everything worked. That is a convenience with no upper
+ * bound on what it authorizes, and it made the identity of a session a property of how the process
+ * was launched rather than of who is using it. Requiring a token means the answer to "who is this"
+ * is always a credential the space issued, never an absence.
  */
 export const loginToken = arg("--token") ?? Deno.env.get("RADIA_CHAT_TOKEN");
 
 /**
- * What a `user`-role session may READ: its own identity's records, or only this conversation's.
+ * The OPERATOR credential the launcher bootstraps with: registering kinds, minting the worker run
+ * tokens, and approving grant requests are all privileged. REQUIRED, for the same reason.
+ *
+ * `radia dev` writes one to the per-user credential file, which is where this reads it from unless
+ * `RADIA_TOKEN` overrides. Separate from `loginToken` on purpose: the person at the keyboard is not
+ * the operator, and conflating them is how a scoped session ends up holding the control plane.
+ */
+export function operatorToken(): string | undefined {
+  // A FUNCTION, not a constant: when the chat brings its own space up, `radia dev` writes the
+  // credential file during startup, so a value captured at import time would always be undefined.
+  return arg("--operator-token") ?? Deno.env.get("RADIA_TOKEN") ?? resolveToken(url);
+}
+
+/**
+ * What the session may READ: its own identity's records, or only this conversation's.
  *
  * Both are real postures, and which is right depends on the space rather than the code:
  *

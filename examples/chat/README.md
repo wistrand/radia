@@ -391,7 +391,7 @@ own `conversationId`; the mechanism stays in `space_query`'s description, which 
 `kind 'message'`, `match {conversationId}`, `order_by index`. Identity in the prompt is not
 substrate knowledge. It's the agent's handle on itself, like a run token, and it is what makes
 the disposition usable: the reconstructed thread strips `conversationId`, the `conversation` record
-has an empty body and no indexed path, and `role=user` cannot enumerate conversations, so without
+has an empty body and no indexed path, and a scoped session cannot enumerate conversations, so without
 being told the id the model could not name the thread it is in.
 
 **Which is what makes windowing safe.** The inference-worker sends the newest `RADIA_CHAT_WINDOW`
@@ -477,43 +477,41 @@ router/inference fleet running?` instead of sitting silent until its timeout, an
 names the last stage reached. This works for a scoped session too (a `progress` query grant), with
 no `/ops/*` access.
 
-**Run it with auth (`space/roles.ts`).** The launcher is the OPERATOR of its local space, so it
-bootstraps the chain (design-auth): it registers kinds and, as operator, mints **least-privilege
-run tokens** for the two workers (`agent:chat-inference` = take `llm_call`, put
-`llm_result`/`llm_chunk`; `agent:chat-tools` = take `tool_call`, put `tool_result`/`capability`).
-The **session role** picks who the REPL (and its `space_*` tools) run as:
+**A credential is required; there is no default identity.** Two of them, and they are not the same
+principal:
 
 ```bash
-deno task chat                       # role=admin (default): session is the OPERATOR
-RADIA_CHAT_ROLE=user deno task chat  # role=user: session is a scoped agent:chat-user run token
+radia login human:alice                  # mints your session token
+RADIA_CHAT_TOKEN=<token> deno task chat  # the REPL runs as human:alice
 ```
 
-As **admin** the `space_*` inspect/remediate tools have full `/ops/*` access. As a **user** the
-session is `agent:chat-user` and is granted only the conversational kinds, so it can chat, query its
-own thread, and discover tools, but `space_stats`/`space_doctor`/`space_reclaim`/`declassify`
-return **403** (try "is the space healthy?"), and `space_query {kind: grant}` is denied too. This
-is the same enforcement the conformance suite covers, exercised by a real agent: workers are
-least-privileged, the user is scoped, and the operator is the only principal on the control plane.
+`RADIA_CHAT_TOKEN` (or `--token`) is **you**, and the chat will not start without it. The
+**operator** credential is separate: the launcher bootstraps the chain (design-auth) by registering
+kinds and minting **least-privilege run tokens** for the workers (`agent:chat-inference` = take
+`llm_call`, put `llm_result`/`llm_chunk`; `agent:chat-tools` = take `tool_call`, put
+`tool_result`/`capability`), all of which is privileged. It reads that from the credential file
+`radia dev` provisions, or `RADIA_TOKEN`, and refuses to bootstrap unauthenticated.
 
-**Log in as yourself (`RADIA_CHAT_TOKEN`).** Both roles above are a single shared identity, which
-is fine on a laptop and wrong on a shared space: two people are the same `agent:chat-user`, so
-identity scope cannot tell them apart. Mint a credential per person instead:
+Neither falls back to the space's open-mode no-header shortcut, which answers as `human:local`, the
+operator. That shortcut is why the chat used to work with no credential at all, and it made a
+session's identity a property of how the process was launched rather than of who was using it. It
+also silently handed the REPL the whole control plane.
 
-```bash
-radia login human:alice                              # prints a session token
-RADIA_CHAT_TOKEN=<token> deno task chat              # the REPL runs as human:alice
-```
+Your grants are ASSIGNED by the operator (`assignUserGrants`), never chosen by the session, so
+bringing your own credential does not let you widen yourself. You get the conversational kinds and
+nothing else: `space_stats`/`space_doctor`/`space_reclaim`/`declassify` return **403** (try "is the
+space healthy?"), and `space_query {kind: grant}` is denied too. The tools-worker runs every
+`space_*` verb under YOUR token, so a scoped session cannot launder /ops access through a worker
+that holds more.
 
-The launcher still bootstraps as the operator (kinds, worker tokens, grant approvals); only the
-REPL becomes you, and the operator assigns your grants (`assignUserGrants`). The chat resolves who
-the token belongs to from the SPACE, never from a body field, so it cannot be told to be someone
-else. What that buys, covered by `deno run -A examples/chat/smoke-login.ts`: two people in the same
-conversation each read only their own records, neither can write a record stamped with the other's
-`owner` (the grant pattern is matched against the write body), and neither can grant itself
-anything. Re-logging in assigns no duplicate grants, because grants are content-keyed.
+The chat resolves who the token belongs to from the SPACE, never from a body field, so it cannot be
+told to be someone else. What that buys, covered by `deno run -A examples/chat/smoke-login.ts`: two
+people in the same conversation each read only their own records, neither can write a record stamped
+with the other's `owner` (the grant pattern is matched against the write body), and neither can
+grant itself anything. Re-logging in assigns no duplicate grants, because grants are content-keyed.
 
-Config: `OPENROUTER_API_KEY`, `RADIA_CHAT_TOKEN` (a `radia login` session token, or `--token`),
-`RADIA_CHAT_ROLE` (`admin`|`user`, or `--role`),
+Config: `OPENROUTER_API_KEY`, `RADIA_CHAT_TOKEN` (required; a `radia login` session token, or
+`--token`), `RADIA_TOKEN` (the operator credential, defaulting to the file `radia dev` writes),
 `RADIA_CHAT_MODEL_{FAST,BALANCED,DEEP}` (per-tier model overrides), `RADIA_CHAT_CLASSIFY_MODEL`
 (the router's classifier), `RADIA_CHAT_DIRS`, `RADIA_URL`,
 `RADIA_CHAT_API_BASE` (any OpenAI-compatible endpoint: a local stub for offline testing, or a

@@ -2,19 +2,16 @@
 // local space, so it bootstraps: it registers kinds and, as operator, creates least-privilege
 // agent definitions + grants and mints short-lived run tokens (the bootstrap chain, design-auth).
 //
-// Two session roles:
-//   admin: the REPL (and its space_* inspection/remediation tools) run as the operator with full
-//          access, including the /ops/* observability+control plane.
-//   user:  the REPL runs under a scoped run token. It can converse (put/query the conversation
-//          kinds) but is DENIED the /ops/* plane and any kind it wasn't granted. The principal is
-//          the shared `agent:chat-user` unless a login token names a person (see `sessionOwner`).
+// There are no session roles. The REPL runs under the credential the person supplies
+// (`RADIA_CHAT_TOKEN`, from `radia login`), and the space decides what that is worth. Whether the
+// space_* tools reach the /ops/* plane follows from the grants that principal holds, not from a
+// flag the launcher passed. A role flag chose between "scoped" and "operator" out of band, so the
+// most privileged posture was the one you got by omitting it.
 //
 // The two workers are ALWAYS scoped agents (least privilege), regardless of role. Each holds
 // only the grants it needs to do its job.
 
 import { RadiaClient } from "../../../sdk/ts/client.ts";
-
-export type Role = "admin" | "user";
 
 /** The scoped principal a `user`-role session runs as. Exported because the REPL grants TO it when
  *  a human approves a request. The subject comes from what this process minted, never from the
@@ -191,6 +188,21 @@ export async function assignUserGrants(
   for (const g of userGrants(scope)) await admin.grant(principal, g.kind, g.operations, g.pattern);
 }
 
+/**
+ * Operator action: mint a scoped session credential for `principal`.
+ *
+ * The chat no longer calls this: a person brings their own token (`radia login`), and the operator
+ * only assigns the grants (`assignUserGrants`). It stays for the suites, which need a scoped
+ * credential without a human to mint one, and it is the same two steps `radia login` performs.
+ */
+export function mintSession(
+  admin: RadiaClient,
+  principal: string,
+  scope?: Record<string, unknown>,
+): Promise<string> {
+  return mint(admin, principal, userGrants(scope));
+}
+
 /** Operator action: define an agent with its grants and mint a short-lived run token. */
 async function mint(admin: RadiaClient, agent: string, grants: Grant[]): Promise<string> {
   const { definitionToken } = await admin.createAgentDefinition(
@@ -207,21 +219,22 @@ export interface Bootstrapped {
   toolsToken: string;
   imagesToken: string;
   execToken: string;
-  /** The REPL/session token: undefined for admin (operator), a scoped run token for user. */
-  sessionToken?: string;
 }
 
 /**
  * Bootstrap the run tokens for this session (called by chat.ts as the operator).
  *
- * `scope` is the pattern the SESSION's grants bind to: `{owner}` or `{conversationId}`, decided by
+ * `scope` is the pattern the session's grants bind to: `{owner}` or `{conversationId}`, decided by
  * the caller (see `RADIA_CHAT_SCOPE`). It is a parameter rather than something read later because a
  * grant is minted with the run token, so whatever it binds to has to exist first: that is why the
  * REPL resolves the conversation as operator before calling this.
+ *
+ * It mints WORKER tokens only. The session's credential comes from the person running the chat
+ * (`RADIA_CHAT_TOKEN`), which is why there is no role parameter: the chat cannot choose to be
+ * privileged, the space decides that from the credential presented.
  */
 export async function bootstrap(
   admin: RadiaClient,
-  role: Role,
   scope?: Record<string, unknown>,
 ): Promise<Bootstrapped> {
   const inferenceToken = await mint(admin, "agent:chat-inference", INFERENCE_GRANTS);
@@ -229,6 +242,5 @@ export async function bootstrap(
   const toolsToken = await mint(admin, "agent:chat-tools", TOOLS_GRANTS);
   const imagesToken = await mint(admin, "agent:chat-images", IMAGE_GRANTS);
   const execToken = await mint(admin, "agent:chat-exec", EXEC_GRANTS);
-  const sessionToken = role === "user" ? await mint(admin, CHAT_USER, userGrants(scope)) : undefined;
-  return { inferenceToken, routerToken, toolsToken, imagesToken, execToken, sessionToken };
+  return { inferenceToken, routerToken, toolsToken, imagesToken, execToken };
 }

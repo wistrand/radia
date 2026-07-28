@@ -13,8 +13,9 @@
 // reach the session's own activity.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
+import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
-import { bootstrap } from "./space/roles.ts";
+import { CHAT_USER, mintSession } from "./space/roles.ts";
 import { makeInspectTools } from "./tools/space.ts";
 import { reviewGrantRequests } from "./client/grants.ts";
 
@@ -26,19 +27,21 @@ const space = new Deno.Command(Deno.execPath(), {
   stderr: "inherit",
 }).spawn();
 
-const admin = new RadiaClient(url);
+const probe = new RadiaClient(url); // liveness only: /v0/health is public
+let admin: RadiaClient;
 for (let i = 0; i < 100; i++) {
   try {
-    await admin.health();
+    await probe.health();
     break;
   } catch {
     await new Promise((r) => setTimeout(r, 200));
   }
 }
+admin = new RadiaClient(url, { token: operatorToken(url) });
 await registerChatKinds(admin);
 // The conversation exists before the credential that is scoped to it (see chat.ts).
 const mine = (await admin.put({ kind: "conversation", body: { title: "mine" } })).id;
-const { sessionToken } = await bootstrap(admin, "user", { conversationId: mine });
+const sessionToken = await mintSession(admin, CHAT_USER, { conversationId: mine });
 const session = new RadiaClient(url, { token: sessionToken! });
 const tools = makeInspectTools(session);
 

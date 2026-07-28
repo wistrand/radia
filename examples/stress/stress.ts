@@ -19,6 +19,7 @@
 // Flags: --waves N --tasks N --facts N --workers N --rate N --chaos PCT --once
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
+import { operatorToken } from "../operator.ts";
 
 // ---- knobs ----
 function num(name: string, def: number): number {
@@ -26,7 +27,7 @@ function num(name: string, def: number): number {
   const v = i >= 0 ? Number(Deno.args[i + 1]) : NaN;
   return Number.isFinite(v) ? v : def;
 }
-const url = Deno.env.get("RADIA_URL") ?? "http://localhost:7788";
+const url = Deno.env.get("RADIA_URL") ?? "http://127.0.0.1:7788";
 const port = new URL(url).port || "7788";
 const WAVES = Math.max(1, num("waves", 1));
 const TASKS = Math.max(1, num("tasks", 240)); // work items per wave
@@ -51,11 +52,14 @@ const write = (s: string) => Deno.stdout.writeSync(enc.encode(s));
 const tty = Deno.stdout.isTerminal();
 
 // ---- space ----
-const admin = new RadiaClient(url); // the launcher is the OPERATOR of its local space
+// The launcher is the OPERATOR of its local space, and now says so with a credential instead of by
+// sending no header. `probe` is liveness only, the one call that is legitimately public.
+const probe = new RadiaClient(url);
+let admin: RadiaClient;
 
 async function healthy(): Promise<boolean> {
   try {
-    await admin.health();
+    await probe.health();
     return true;
   } catch {
     return false;
@@ -78,6 +82,8 @@ if (await healthy()) {
     Deno.exit(1);
   }
 }
+// The space is up either way, so its credential file exists: authenticate before the first verb.
+admin = new RadiaClient(url, { token: operatorToken(url) });
 console.log(`Open ${url} and switch to the Space tab (colour by kind / state / run).\n`);
 
 // Kinds are records: redeclaring the same contract is content-keyed, so re-running is a no-op

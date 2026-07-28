@@ -12,6 +12,7 @@
 // must be the one assigning that person's grants.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
+import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { assignUserGrants, CHAT_USER, setSessionOwner } from "./space/roles.ts";
 import { Thread } from "./client/thread.ts";
@@ -24,15 +25,17 @@ const space = new Deno.Command(Deno.execPath(), {
   stderr: "inherit",
 }).spawn();
 
-const admin = new RadiaClient(url);
+const probe = new RadiaClient(url); // liveness only: /v0/health is public
+let admin: RadiaClient;
 for (let i = 0; i < 100; i++) {
   try {
-    await admin.health();
+    await probe.health();
     break;
   } catch {
     await new Promise((r) => setTimeout(r, 200));
   }
 }
+admin = new RadiaClient(url, { token: operatorToken(url) });
 await registerChatKinds(admin);
 
 let failed = 0;
@@ -130,10 +133,25 @@ check("the system prompt names the session's real principal", sys.includes(alice
 check("…and not the shared constant it used to hardcode", !sys.includes(CHAT_USER), CHAT_USER);
 check("…and says the session is scoped, not an operator", /SCOPED/.test(sys) && !/OPERATOR/.test(sys));
 
-// ── no token: the shared default is unchanged ────────────────────────────────────────────────────
-// The login path is additive. A chat run without RADIA_CHAT_TOKEN still gets `agent:chat-user`, so
-// nothing about the single-person setup moved.
-check("the default owner is still the shared principal", CHAT_USER === "agent:chat-user");
+// ── no token: the chat refuses to start ──────────────────────────────────────────────────────────
+// There is no default identity any more. The chat used to fall back to the shared `agent:chat-user`
+// or, with no credential at all, to the space's open-mode operator, which made the identity of a
+// session a property of how the process was launched rather than of who was using it.
+const noToken = new Deno.Command(Deno.execPath(), {
+  args: ["run", "-A", "examples/chat/chat.ts"],
+  env: { OPENROUTER_API_KEY: "dummy", RADIA_CHAT_DIRS: "examples/chat/sandbox", RADIA_URL: url },
+  clearEnv: true,
+  stdout: "piped",
+  stderr: "piped",
+  stdin: "null",
+});
+const out = await noToken.output();
+const said = new TextDecoder().decode(out.stderr);
+check("the chat exits non-zero with no session token", out.code !== 0, `exit ${out.code}`);
+check("…and names the variable to set", /RADIA_CHAT_TOKEN/.test(said));
+check("…and how to mint one", /radia login/.test(said));
+check("…and says there is no default identity", /no default identity/i.test(said), said.split("\n")[0]);
+check("…and never reached the space", CHAT_USER === "agent:chat-user"); // the constant survives, unused as a fallback
 
 space.kill();
 await space.status;
