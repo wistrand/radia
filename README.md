@@ -68,8 +68,9 @@ are encouraging and workload-specific, not proof of general superiority. See
 - **Language-neutral:** one HTTP + JSON protocol (OpenAPI-first) behind SDKs, an MCP
   adapter, and a CLI. Agents can be implemented in any stack.
 - **Zero-setup start:** `deno task dev` brings up a space, a web inspector, and a bundled
-  MCP adapter in one process. The wrapped `npx radia dev` / `pipx run` packaging is built
-  (`deno task release`) but not yet published to a registry.
+  MCP adapter in one process, with no build step. The wrapped `npx radia dev` / `pipx run`
+  packaging is built (`deno task release`) but unpublished and untested, so today the CLI is
+  `deno run -A src/main.ts` or a `deno task compile` binary.
 
 ## Quick start
 
@@ -84,6 +85,18 @@ deno task stress       # fill a space with waves of activity to watch in the Spa
 deno task conformance  # the port contract suites (storage adapters + the blob store)
 deno task bench        # throughput, latency percentiles, scaling curves; see bench/README.md
 ```
+
+**The `radia` command.** Examples below use `radia <verb>` for the CLI. Nothing installs it for you,
+so pick one:
+
+```bash
+deno run -A src/main.ts <verb>   # from source, no build (what the tasks above do)
+deno task compile                # → ./radia, a self-contained binary; then ./radia <verb>
+```
+
+Putting the compiled binary on your `PATH` makes the examples read literally. The `npx radia` /
+`pipx run radia` packaging is built by `deno task release` but is **not published**, so neither
+works today.
 
 Storage is in-memory by default. To persist across restarts, pass `--db`:
 
@@ -145,6 +158,9 @@ pipeline, a load generator, and the full LLM agent), each with its own directory
 
 ### The CLI
 
+Every verb below is `radia <verb>`, which means the compiled binary or `deno run -A src/main.ts
+<verb>` from a checkout (see Quick start).
+
 `radia dev` provisions a real operator credential on startup (`$XDG_STATE_HOME/radia/credentials.json`,
 `0600`), so every other command authenticates the same way a deployed client does. There is no
 "no tokens locally" mode to grow out of. Override with `RADIA_TOKEN`, point elsewhere with
@@ -192,9 +208,10 @@ the tool list.
 ./scripts/build-release.sh host     # just this machine, for a quick check
 ```
 
-`deno compile` produces one self-contained binary (console and its vendored asset included);
-the npm and pip packages are thin launchers that exec it, so `npx radia dev` and
-`pipx run radia dev` need neither Deno nor a compile step.
+`deno compile` produces one self-contained binary (console and its vendored asset included); the npm
+and pip packages are thin launchers that exec it, so once published `npx radia dev` and
+`pipx run radia dev` will need neither Deno nor a compile step. Nothing is on npm or PyPI yet, and
+neither launcher has been run end to end, so treat both as untested.
 
 ## How it works
 

@@ -832,12 +832,12 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   space nobody configured is closed. The examples were the last holdouts and now read the
   provisioned operator credential (`examples/operator.ts`) instead of sending no header, which also
   means they exercise the authenticated path they exist to demonstrate.
-- **A role flag that picks between "scoped" and "operator" makes the privileged posture the
-  default.** `RADIA_CHAT_ROLE` defaulted to `admin`, so the chat ran as the operator unless you knew
-  to say otherwise, and the flag described how the process was launched rather than who was using
-  it. It is gone: the session is whatever credential the person supplies, and whether that reaches
-  the ops plane follows from the grants that principal holds. Never reintroduce an out-of-band
-  switch for authority; make it a property of the credential.
+- **Never let a launch flag pick between "scoped" and "operator": the privileged posture becomes the
+  default.** The chat once took a role setting that defaulted to operator, so it ran privileged
+  unless you knew to say otherwise, and the flag described how the process was started rather than
+  who was using it. Authority is a property of the CREDENTIAL: the session is whoever the supplied
+  token belongs to, and whether that reaches the ops plane follows from the grants that principal
+  holds.
 - **A public endpoint still rejects a BAD credential, so `401` never means "the space is down".**
   `/v0/health` and `GET /` skip the auth requirement, but `resolveAuth` rejects a presented token
   that does not resolve, on every path. So an expired run token `401`s on the one endpoint a client
