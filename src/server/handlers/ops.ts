@@ -264,7 +264,20 @@ export async function handleDryRun(space: Space, req: Request): Promise<Response
 /** One read that orients an investigator: what kinds exist, what is in them, who is listening,
  *  and what the caller may do. Generated from records so it cannot drift. */
 export async function handleDigest(space: Space, principal: string, scope?: StatsScope | null): Promise<Response> {
-  return Response.json({ ...await space.digest(principal, scope), scope: describeScope(scope) });
+  const d = await space.digest(principal, scope);
+  return Response.json({
+    ...d,
+    scope: describeScope(scope),
+    // Never let an empty scoped list read as an empty space. A session sees only the interests it
+    // published, and it publishes none unless it is a worker, so without this it reports "nothing
+    // is listening" about a fleet that is running.
+    ...(d.interestsWithheld
+      ? {
+        interestsNote: `${d.interestsWithheld} interests belong to other principals and are not shown. ` +
+          "This does NOT mean nothing is listening; seeing the whole routing table needs an operator session.",
+      }
+      : {}),
+  });
 }
 
 /** The causally ordered story around a record: its lineage root, then everything descended from it. */

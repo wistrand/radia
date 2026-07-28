@@ -180,7 +180,10 @@ export class RadiaClient {
     api: string;
     kinds: { kind: string; indexedPaths: string[]; sortablePaths?: string[]; claimable: boolean; reserved: boolean }[];
     counts: { kind: string; state: string; count: number }[];
-    interests: { kind: string; run: string; agent?: string; match?: Record<string, unknown> }[];
+    /** Routing topology as an edge list: one row per (kind, agent). */
+    interests: { kind: string; agent: string; runs: number; patterns: number }[];
+    interestsWithheld?: number;
+    interestsNote?: string;
     permissions: unknown;
     complete: boolean;
   }> {
@@ -260,9 +263,10 @@ export class RadiaClient {
     pattern: Pattern,
     limit = 100,
     page?: Page,
-  ): Promise<{ records: RadiaRecord[]; nextAfter?: string; scope?: ReadScope }> {
-    const r = await this.req("POST", "/v0/records/query", { ...pattern, limit, ...page });
-    return { records: r.records, nextAfter: r.nextAfter, scope: r.scope };
+    opts: { explain?: boolean } = {},
+  ): Promise<{ records: RadiaRecord[]; nextAfter?: string; scope?: ReadScope; explain?: string[] }> {
+    const r = await this.req("POST", "/v0/records/query", { ...pattern, limit, ...page, ...(opts.explain ? { explain: true } : {}) });
+    return { records: r.records, nextAfter: r.nextAfter, scope: r.scope, explain: r.explain };
   }
 
   take(sel: TakeSelector, opts: { leaseSeconds?: number; requireUntainted?: boolean } = {}): Promise<TakeResult | null> {
@@ -305,8 +309,6 @@ export class RadiaClient {
     return r.events;
   }
 
-  /** Stats plus, for a SCOPED caller, what the answer was narrowed to. Prefer this when the result
-   *  will be shown to someone (or something) that could read an empty list as an empty space. */
   /** What a principal can actually do: the fold over its grants, computed and shown. Operator
    *  only. Use it before and after changing grants: the difference is whether the change did what
    *  was promised. */
@@ -314,6 +316,8 @@ export class RadiaClient {
     return this.req("GET", `/v0/ops/permissions?principal=${encodeURIComponent(principal)}`);
   }
 
+  /** Stats plus, for a SCOPED caller, what the answer was narrowed to. Prefer this when the result
+   *  will be shown to someone (or something) that could read an empty list as an empty space. */
   async getStatsReport(): Promise<{ stats: KindStateCount[]; scope?: { self: boolean; kinds: string[]; note: string } }> {
     const r = await this.req("GET", "/v0/ops/stats");
     return { stats: r.stats, scope: r.scope };

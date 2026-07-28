@@ -100,10 +100,45 @@ they die with the process. The file is therefore rewritten at every start and re
 which is why `src/main.ts` installs `onShutdown`. Without it, `SIGTERM` killed the process
 before the `finally` ran, and the next command 401'd against a dead token with no explanation.
 
+## Logging a PERSON in: `radia login`
+
+The operator token above is the space's own credential, and for a long time it was the only human
+one: a definition principal had to be `agent:`, and every `human:*` was privileged by name shape.
+So the only way to be a person on a space was to be god. `radia login human:alice [--grant k:ops]…`
+mints an ordinary session for a named human through the same bootstrap chain every agent uses
+(definition → run token), privileged only if the space names them an operator.
+
+It exists because identity scope is worthless without distinct identities. An app that pins a
+session's grants to `{owner: <principal>}` separates two people only if they ARE two principals;
+sharing one constant (as `examples/chat` did with `agent:chat-user`) makes the pattern bind to the
+same value for everybody. The chat consumes this via `RADIA_CHAT_TOKEN`.
+
+It reports what the principal can ACTUALLY do, by asking `permissions` after minting, rather than
+echoing the `--grant` flags it was passed. Grants may come from an earlier login or from an app
+that assigns its own, so a report derived from argv would say "nothing yet" about a fully-granted
+principal. That gap between a promise and the enforcement is the shape of every grant bug here.
+
+The console does the same thing at `GET /`. Its Auth tab mints a person's session (operator only,
+enforced by the server: a scoped session gets 403 on `/v0/agent-definitions`), shows the token once,
+and can adopt it in the tab. Two rules the page holds to, both of which it previously broke by
+assuming:
+
+- **The token decides the identity, and the space is asked what that is.** A pasted token reports
+  `run:…` at `/v0/health`; the console resolves the subject and `privileged` through
+  `ops/permissions`. It used to render "operator token" purely because a token existed, so a console
+  signed in as a scoped principal claimed authority it did not have.
+- **A 403 is shown, never rendered as emptiness.** A scoped console cannot reach the ops plane, and
+  a blanked stats panel is indistinguishable from a healthy idle space.
+
+The minted token lives in a variable, not in an `onclick` attribute, so no credential is written
+into the DOM as executable markup (`conformance/console.test.ts`).
+
 ## The CLI: `src/cli.ts`
 
-Verbs: `health stats doctor kinds get lineage children events watch put query read-one take ack
-nack release`, plus `--json` on every one and `--url` to point elsewhere.
+Four verb groups (inspect, coordinate, remediate, and the two identity verbs `login` /
+`permissions`), plus `--json` on every one and `--url` to point elsewhere. `radia help` prints the
+authoritative list with flags; it is not restated here, because a hand-copied verb list is the
+drift this doc exists to avoid.
 
 Discovery-first, per the CLAUDE.md corollary: `kinds` is a query for `kind_def` records, `lineage`
 and `children` walk the graph, and no verb carries a table of known kinds.

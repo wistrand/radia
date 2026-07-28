@@ -36,8 +36,8 @@
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./space/kinds.ts";
-import { bootstrap, CHAT_USER } from "./space/roles.ts";
-import { apiKey, execRoots, resume, role, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
+import { assignUserGrants, bootstrap, CHAT_USER, setSessionOwner } from "./space/roles.ts";
+import { apiKey, execRoots, loginToken, resume, role, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
 import { launchFleet, spawnSpace } from "./client/fleet.ts";
 import { ToolSet } from "./client/turn.ts";
 import { Thread } from "./client/thread.ts";
@@ -112,13 +112,34 @@ async function resolveConversation(): Promise<{ id: string; resumed: boolean }> 
 }
 const conversation = await resolveConversation();
 
+// Who is at the keyboard. Without a login token this is the shared `agent:chat-user`; with one it
+// is the person that token belongs to, resolved from the SPACE rather than taken on trust, so a
+// forged body field cannot claim someone else's identity.
+let owner = CHAT_USER;
+let privileged = role === "admin";
+if (loginToken) {
+  const who = (await new RadiaClient(url, { token: loginToken }).health()).principal;
+  const perms = await admin.permissions(who) as { subject: string; privileged: boolean };
+  owner = perms.subject;
+  privileged = perms.privileged;
+  setSessionOwner(owner);
+}
+
 // What the session's grants bind to. `owner` is this identity across all its conversations;
 // `conversationId` is this thread only. See RADIA_CHAT_SCOPE.
 const scope = scopeMode === "conversation"
   ? { conversationId: conversation.id }
-  : { owner: CHAT_USER };
-const tokens = await bootstrap(admin, role, scope);
-const session = new RadiaClient(url, tokens.sessionToken ? { token: tokens.sessionToken } : {});
+  : { owner };
+// A login token brings its own identity, so the bootstrap does not mint a session for it. It still
+// mints the worker tokens, which is what the fleet runs on.
+const tokens = await bootstrap(admin, loginToken ? "admin" : role, scope);
+let session: RadiaClient;
+if (loginToken) {
+  await assignUserGrants(admin, owner, scope);
+  session = new RadiaClient(url, { token: loginToken });
+} else {
+  session = new RadiaClient(url, tokens.sessionToken ? { token: tokens.sessionToken } : {});
+}
 procs.push(...launchFleet(tokens));
 
 const tools = new ToolSet(session);
@@ -130,13 +151,13 @@ Deno.addSignalListener("SIGINT", () => {
   Deno.exit(0);
 });
 
-console.log(`radia chat: role ${role}`);
+console.log(`radia chat: ${loginToken ? `logged in as ${owner}` : `role ${role}`}`);
 console.log(`tiers: ${Object.entries(TIERS).map(([t, m]) => `${t}=${m}`).join("  ")}`);
 console.log("routing: automatic. A router-worker classifies each turn and picks the tier; workers escalate when out of depth (no /commands).");
 console.log(
-  role === "admin"
-    ? "auth: session runs as the OPERATOR, so space_* inspect/remediate tools have full /ops access."
-    : "auth: session runs as scoped agent:chat-user. It can converse, but space_* /ops tools will 403 (try 'is the space healthy?').",
+  privileged
+    ? `auth: session runs PRIVILEGED as ${owner}, so space_* inspect/remediate tools have full /ops access.`
+    : `auth: session runs as scoped ${owner}. It can converse, but space_* /ops tools will 403 (try 'is the space healthy?').`,
 );
 console.log(`sandbox: ${toolRoots.join(", ")}`);
 console.log(
@@ -151,8 +172,8 @@ console.log(
 let thread: Thread;
 try {
   thread = conversation.resumed
-    ? await Thread.resume(session, conversation.id, role)
-    : await Thread.open(session, role, conversation.id);
+    ? await Thread.resume(session, conversation.id, { principal: owner, privileged })
+    : await Thread.open(session, { principal: owner, privileged }, conversation.id);
 } catch (e) {
   console.error(`could not resume: ${e}`);
   cleanup();
@@ -186,7 +207,7 @@ while (true) {
       if (tool !== "request_grant" || Date.now() - lastReview < 1000) return;
       lastReview = Date.now();
       try {
-        await reviewGrantRequests(session, admin, CHAT_USER, thread.id, nextLine);
+        await reviewGrantRequests(session, admin, owner, thread.id, nextLine);
         await tools.scopeTo(thread.id); // a new grant may have changed what is reachable
       } catch (e) {
         write(`\n[grant review failed] ${e}\n`);
@@ -200,7 +221,7 @@ while (true) {
   // `admin` is the operator credential this process bootstrapped with. The session itself cannot
   // write a grant, which is the point.
   try {
-    await reviewGrantRequests(session, admin, CHAT_USER, thread.id, nextLine);
+    await reviewGrantRequests(session, admin, owner, thread.id, nextLine);
     await tools.scopeTo(thread.id); // a new grant may have changed what is reachable
   } catch (e) {
     write(`\n[grant review failed] ${e}\n`);

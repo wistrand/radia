@@ -15,17 +15,30 @@ export const port = new URL(url).port || "7788";
 export const role: Role = (arg("--role") ?? Deno.env.get("RADIA_CHAT_ROLE")) === "user" ? "user" : "admin";
 
 /**
+ * A session token minted for a PERSON (`radia login human:alice --grant …`).
+ *
+ * Supplying one replaces the shared `agent:chat-user` identity with whoever the token belongs to,
+ * so two people on one space are two principals and the identity scope actually separates them.
+ * The launcher still bootstraps as the operator: it registers kinds, mints the worker tokens and
+ * approves grant requests. Only the REPL becomes you.
+ */
+export const loginToken = arg("--token") ?? Deno.env.get("RADIA_CHAT_TOKEN");
+
+/**
  * What a `user`-role session may READ: its own identity's records, or only this conversation's.
  *
- * Both are real postures, and which is right depends on the space rather than the code. Every chat
- * session runs as the SAME `agent:chat-user`, so:
+ * Both are real postures, and which is right depends on the space rather than the code:
  *
  *   identity (default): everything this identity produced, across ALL its conversations. Your own
  *     history, including the results and artifacts workers made for it. Operator-role sessions,
- *     worker internals and other agents stay invisible. Does NOT separate two people sharing one
- *     space, because they would both be `agent:chat-user`.
- *   conversation: this conversation only, whoever produced the record. The strict posture, and the
- *     one to use on a shared space; the cost is that a session cannot see your earlier threads.
+ *     worker internals and other agents stay invisible.
+ *   conversation: this conversation only, whoever produced the record. The strict posture; the cost
+ *     is that a session cannot see your earlier threads.
+ *
+ * WHICH IDENTITY that is depends on `loginToken`. Without one every session is the same
+ * `agent:chat-user`, so identity scope cannot separate two people sharing a space and only
+ * `conversation` keeps them apart. With one, the identity is the person, and `identity` scope
+ * separates them while still showing each their own history.
  */
 export const scopeMode: "identity" | "conversation" =
   (arg("--scope") ?? Deno.env.get("RADIA_CHAT_SCOPE")) === "conversation" ? "conversation" : "identity";

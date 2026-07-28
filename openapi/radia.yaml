@@ -13,10 +13,13 @@ info:
     `x-stability`. SemVer 0.x means the surface may still move; the additive-only rule is
     what makes the stable subset dependable.
 
-    Authorization (M1): kind-scoped grants are reserved `grant` records (assigned by a human/
-    supervisor; discovered by query). Requests authenticate with `Authorization: Bearer
+    Authorization (M1): kind-scoped grants are reserved `grant` records (assigned by an operator
+    or the supervisor; discovered by query). Requests authenticate with `Authorization: Bearer
     <run-token>` minted through the bootstrap chain (agent-definitions → agent-runs → stop); a
-    run:* principal inherits its agent definition's grants. `Authorization: Bearer` is the only
+    run:* principal inherits its definition's grants. A definition's principal may be agent:* or
+    human:*, so a person gets a session the same way a worker does; the namespace never confers
+    privilege, which is the space's named operator set. `GET /v0/ops/permissions` maps a run back
+    to that subject and reports what it may do, and any principal may ask about ITSELF. `Authorization: Bearer` is the only
     auth channel. Absent a credential the caller defaults to the operator `human:local` (act as a
     scoped principal by minting a real run token). `put`/`take`/`query`/`read_one` are
     grant-checked; `/v0/ops/*` and writing `grant`/`signal`/`agent_*` records require an operator
@@ -492,7 +495,7 @@ paths:
               type: object
               required: [agent]
               properties:
-                agent: { type: string, description: "the agent:* principal" }
+                agent: { type: string, description: "the principal this definition mints runs for: agent:* for a worker, human:* for a person (radia login). A human: principal is NOT privileged by its name; privilege is the space's named operator set." }
                 grants: { type: array, items: { $ref: "#/components/schemas/GrantDef" } }
       responses:
         "201":
@@ -634,7 +637,18 @@ paths:
                         claimable: { type: boolean, description: "false means reference data; sitting available forever is normal" }
                         reserved: { type: boolean }
                   counts: { type: array, items: { type: object } }
-                  interests: { type: array, items: { type: object } }
+                  interests:
+                    type: array
+                    description: "routing topology as an edge list: one row per (kind, agent), never one per pattern"
+                    items:
+                      type: object
+                      properties:
+                        kind: { type: string }
+                        agent: { type: string }
+                        runs: { type: integer, description: "how many live runs of that agent listen" }
+                        patterns: { type: integer, description: "how many patterns they registered; ask dry-run which one a record reaches" }
+                  interestsWithheld: { type: integer, description: "interests hidden by the caller's scope" }
+                  interestsNote: { type: string, description: "present when interests were withheld, so an empty list is not read as an idle fleet" }
                   permissions: { type: object, description: "what the CALLING principal may do" }
                   complete: { type: boolean, description: "false when a registry read was truncated" }
 

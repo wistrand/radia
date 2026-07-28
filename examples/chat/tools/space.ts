@@ -10,7 +10,7 @@
 import type { RadiaClient, RadiaRecord } from "../../../sdk/ts/client.ts";
 import type { Tool } from "./files.ts";
 import type { ToolDef } from "../provider/openrouter.ts";
-import { CHAT_USER as OWNER } from "../space/roles.ts";
+import { sessionOwner } from "../space/roles.ts";
 
 /** A record trimmed for the prompt: id, kind, createdAt, and a size-capped body. */
 function compact(rec: RadiaRecord): unknown {
@@ -54,7 +54,7 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
       // conversation exists, and the approver is the person in this one.
       await client.put({
         kind: "grant_request",
-        body: { conversationId: ctx?.conversationId, owner: OWNER, kind, operations: ops, why, scope },
+        body: { conversationId: ctx?.conversationId, owner: sessionOwner(), kind, operations: ops, why, scope },
       });
 
       // …and WAIT for the answer, rather than returning "I asked, retry later".
@@ -125,6 +125,8 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
       const page = await client.queryPage(
         { kind: String(a.kind ?? ""), match: a.match as Record<string, unknown> | undefined, orderBy: normalizeOrderBy(a.orderBy) as never },
         limit + 1,
+        undefined,
+        { explain: true },
       );
       const records = page.records.slice(0, limit);
       const more = page.records.length > limit;
@@ -138,6 +140,10 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
         // only the first was ever reported. A session whose reads are scoped to its conversation
         // queried `message`, got its own, and told the user that was the space's whole history.
         ...(page.scope ? { scope: page.scope } : {}),
+        // The server's own notes about this query: an undeclared kind, a match on an unindexed
+        // path, the default oldest-first order. They come from the same code that answered, so
+        // repeat them to the user instead of reasoning around them.
+        ...(page.explain && page.explain.length > 0 ? { notes: page.explain } : {}),
         records: records.map(compact),
       };
     },
@@ -255,6 +261,24 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
       return { principal, ...(await client.permissions(principal) as Record<string, unknown>) };
     },
 
+    space_digest: async () => {
+      const d = await client.digest();
+      return {
+        ...d,
+        ...(d.complete ? {} : { warning: "a registry read was truncated; this digest is a prefix, not the whole space" }),
+      };
+    },
+
+    space_thread: async (a) => {
+      const t = await client.thread(String(a.recordId ?? ""));
+      return {
+        root: t.root,
+        count: t.records.length,
+        ...(t.truncated ? { warning: "truncated at the node cap; this is a prefix of the story, not all of it" } : {}),
+        records: t.records.map(compact),
+      };
+    },
+
     space_doctor: () => client.diagnostics(),
   };
 }
@@ -270,6 +294,8 @@ export const INSPECT_SCHEMAS: ToolDef[] = [
   { type: "function", function: { name: "space_children", description: "Records that REFERENCE this record via parent_ids: its children (DOWN, the reverse of lineage), with bodies. Use this to follow links from a root: a conversation's messages (kind:message) and llm_calls, an llm_call's chunks + result, a task's results. Optional `kind` filter (e.g. 'message'). Returns up to `limit` (default 25).", parameters: { type: "object", properties: { recordId: { type: "string" }, kind: { type: "string" }, limit: { type: "integer" } }, required: ["recordId"] } } },
   { type: "function", function: { name: "space_events", description: "The most recent event-log entries (put/take/ack/nack/…) this session may see: {seq, op, kind, state, recordId}. It pages to the end of the log for you, so a scoped session still reaches its own activity past events belonging to others. `withheld` counts what was filtered out: activity performed by OTHER principals, not an error and not something a grant fixes, because the log is filtered by who acted, not by record kind, so do not request kind grants to widen it (say it needs an operator session instead), `complete` is false only if it ran out of paging budget, and `scope` says what the answer was narrowed to. An empty result with a `scope` means you saw everything you are allowed to see, NOT that the space is idle. Say so that way.", parameters: { type: "object", properties: { after: { type: "integer" }, limit: { type: "integer" } } } } },
   { type: "function", function: { name: "space_permissions", description: "What THIS session is actually allowed to do: the fold over its grants, per kind, with whether reads are narrowed to its own records. Use it whenever authority is in question: before claiming a grant is missing or still pending, and after a human approves a request, since the answer here is the enforcement itself rather than an inference from some other call's scope line. A grant on a kind that does not exist authorizes nothing, and will show up here as exactly that.", parameters: { type: "object", properties: {} } } },
+  { type: "function", function: { name: "space_digest", description: "Orient yourself in one call: every kind with its indexed/sortable paths and whether it is claimable, record counts by state, which workers are LISTENING for what (live interests), and what this session may do. Use it FIRST when asked what this space is or does, instead of stitching together space_kinds + space_stats + space_permissions. An `interestsNote` means other principals' interests were withheld from you: an empty or short interest list then says nothing about whether workers are running, so never report the fleet as idle on that basis.", parameters: { type: "object", properties: {} } } },
+  { type: "function", function: { name: "space_thread", description: "The WHOLE story around one record, in the order it happened: walks up to the root it descends from, then down through everything derived from it. Use for 'what led to this and what came of it' instead of chaining space_lineage + space_children yourself. A `warning` means the story was cut off at a cap; say so rather than presenting it as complete.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
   { type: "function", function: { name: "space_doctor", description: "A derived health report: counts by state, dead-lettered records, expired-but-stuck leases, and records that have sat available/unclaimed. Use to answer 'is the space healthy / what's stuck?'.", parameters: { type: "object", properties: {} } } },
 ];
 

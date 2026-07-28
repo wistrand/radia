@@ -5,8 +5,9 @@
 // Two session roles:
 //   admin: the REPL (and its space_* inspection/remediation tools) run as the operator with full
 //          access, including the /ops/* observability+control plane.
-//   user:  the REPL runs under a scoped `agent:chat-user` run token. It can converse (put/query
-//          the conversation kinds) but is DENIED the /ops/* plane and any kind it wasn't granted.
+//   user:  the REPL runs under a scoped run token. It can converse (put/query the conversation
+//          kinds) but is DENIED the /ops/* plane and any kind it wasn't granted. The principal is
+//          the shared `agent:chat-user` unless a login token names a person (see `sessionOwner`).
 //
 // The two workers are ALWAYS scoped agents (least privilege), regardless of role. Each holds
 // only the grants it needs to do its job.
@@ -19,6 +20,22 @@ export type Role = "admin" | "user";
  *  a human approves a request. The subject comes from what this process minted, never from the
  *  request record, so an approval cannot be redirected by anything the model wrote. */
 export const CHAT_USER = "agent:chat-user";
+
+/**
+ * Who this session's records belong to.
+ *
+ * Defaults to the shared `agent:chat-user`, which is fine for one person on a laptop and wrong the
+ * moment two people share a space: they would be the same principal, so identity scope could not
+ * separate them. A login token replaces it with the person behind that token, and everything the
+ * session writes is stamped with the result.
+ */
+let SESSION_OWNER = CHAT_USER;
+export function sessionOwner(): string {
+  return SESSION_OWNER;
+}
+export function setSessionOwner(principal: string): void {
+  SESSION_OWNER = principal;
+}
 
 interface Grant {
   kind: string;
@@ -33,6 +50,7 @@ interface Grant {
 // self-escalation it re-dispatches an llm_call to a stronger tier (put llm_call) and reads the
 // `model` fleet to find that tier. One token serves all tier-workers.
 const INFERENCE_GRANTS: Grant[] = [
+  { kind: "interest", operations: ["put", "query"] }, // agentLoop declares what this worker listens for
   { kind: "llm_call", operations: ["take", "put"] },
   { kind: "llm_result", operations: ["put"] },
   { kind: "llm_chunk", operations: ["put"] },
@@ -47,6 +65,7 @@ const INFERENCE_GRANTS: Grant[] = [
 // in the chat client. It reads the newest messages (to classify) and its own classifier call's
 // result; it never holds the API key: the classification is itself an llm_call served by the fleet.
 const ROUTER_GRANTS: Grant[] = [
+  { kind: "interest", operations: ["put", "query"] }, // agentLoop declares what this worker listens for
   { kind: "llm_call", operations: ["take", "put"] },
   { kind: "llm_result", operations: ["read_one"] }, // reads its classifier call's result
   { kind: "message", operations: ["query"] },
@@ -58,6 +77,7 @@ const ROUTER_GRANTS: Grant[] = [
 // an ARTIFACT and acks a reference to it. Holds the API key (its own process, no file access), so
 // it needs egress. On the space, though, it can only do these five things.
 const IMAGE_GRANTS: Grant[] = [
+  { kind: "interest", operations: ["put", "query"] }, // agentLoop declares what this worker listens for
   { kind: "tool_call", operations: ["take"] },
   { kind: "tool_result", operations: ["put"] },
   { kind: "artifact", operations: ["put"] }, // the bytes; the record carries only a reference
@@ -68,6 +88,7 @@ const IMAGE_GRANTS: Grant[] = [
 
 // tool-worker: claims tool_call, emits tool_result, and publishes its capability records.
 const TOOLS_GRANTS: Grant[] = [
+  { kind: "interest", operations: ["put", "query"] }, // agentLoop declares what this worker listens for
   { kind: "tool_call", operations: ["take"] },
   { kind: "tool_result", operations: ["put"] },
   { kind: "artifact", operations: ["put"] }, // save_content: WRITE only, it never reads one back
@@ -88,6 +109,7 @@ const TOOLS_GRANTS: Grant[] = [
 // session (below) has no such grant, so a saved procedure is always code this worker stored on the
 // assistant's behalf, not a record the model wrote directly.
 const EXEC_GRANTS: Grant[] = [
+  { kind: "interest", operations: ["put", "query"] }, // agentLoop declares what this worker listens for
   { kind: "tool_call", operations: ["take"] },
   { kind: "tool_result", operations: ["put"] },
   { kind: "artifact", operations: ["put", "read_one"] },
@@ -122,7 +144,7 @@ const EXEC_GRANTS: Grant[] = [
 //
 // Growth is bounded by distinct scopes, not sessions: the pattern is part of a grant's identity,
 // so re-running under the same scope re-mints the same content key and writes nothing.
-function userGrants(scope?: Record<string, unknown>): Grant[] {
+export function userGrants(scope?: Record<string, unknown>): Grant[] {
   const scoped = scope ? { pattern: scope } : {};
   return [
     { kind: "message", operations: ["put", "query"], ...scoped },
@@ -149,6 +171,24 @@ function userGrants(scope?: Record<string, unknown>): Grant[] {
     // them, and the kind is redeclared to index them.
     { kind: "artifact", operations: ["read_one"], ...scoped },
   ];
+}
+
+/**
+ * Operator action: assign this app's session grants to whoever logged in.
+ *
+ * The login path splits what `bootstrap` does in one step: the credential already exists (the
+ * person minted it with `radia login`), so only the grants are missing. It stays here, beside
+ * `userGrants`, so the set a session gets does not depend on how it authenticated.
+ *
+ * Grants are ASSIGNED, never self-declared, and this is the operator doing the assigning. A session
+ * that brought its own token still cannot widen itself.
+ */
+export async function assignUserGrants(
+  admin: RadiaClient,
+  principal: string,
+  scope?: Record<string, unknown>,
+): Promise<void> {
+  for (const g of userGrants(scope)) await admin.grant(principal, g.kind, g.operations, g.pattern);
 }
 
 /** Operator action: define an agent with its grants and mint a short-lived run token. */

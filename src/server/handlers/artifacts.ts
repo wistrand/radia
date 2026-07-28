@@ -24,6 +24,16 @@ function renderable(mediaType: string): boolean {
   return RENDERABLE.test(mediaType);
 }
 
+/**
+ * Media types the ISOLATED artifact origin may render inline.
+ *
+ * Everything the main origin renders, plus the scriptable text formats. This list is only safe
+ * because the caller reaches it on a different origin from the console, presents no credential to
+ * get there (capability URLs only), and the response pins the document into an opaque origin with
+ * no network access. Never widen this on the main origin.
+ */
+const RENDERABLE_ISOLATED = /^(?:text\/(?:html|plain|css|markdown)|image\/svg\+xml|application\/(?:xhtml\+xml|json))$/i;
+
 /** Read the request body with a hard ceiling, without trusting Content-Length. */
 async function readCapped(req: Request, limit: number): Promise<Uint8Array | "too_large"> {
   const declared = Number(req.headers.get("content-length") ?? "");
@@ -113,6 +123,9 @@ export async function handleGetArtifact(
   space: Space,
   recordId: string,
   principal: string | null,
+  /** True when serving from the isolated artifact origin, where scriptable content is safe to
+   *  render because it shares no origin with the console and can reach nothing. */
+  isolated = false,
 ): Promise<Response> {
   try {
     if (principal !== null) {
@@ -136,16 +149,27 @@ export async function handleGetArtifact(
       // still be private, though, so the cache must not be shared.
       "cache-control": "private, max-age=31536000, immutable",
       "etag": `"${def.digest}"`,
-      // Only media a browser can safely PAINT renders inline; everything else downloads. An
-      // artifact is attacker-supplied bytes served from the SPACE'S OWN ORIGIN (the origin whose
-      // console page carries an operator token), so anything scriptable rendered here (text/html,
-      // and image/svg+xml, which is why the allowlist names raster formats instead of `image/`)
-      // would be a same-origin XSS reachable by anyone holding an `artifact: put` grant.
-      "content-disposition": `${renderable(def.mediaType) ? "inline" : "attachment"}${def.filename ? `; filename="${def.filename}"` : ""}`,
+      // On the MAIN origin only media a browser can safely PAINT renders inline; everything else
+      // downloads. An artifact is attacker-supplied bytes, and on that origin they would share a
+      // document origin with the console, so anything scriptable (text/html, and image/svg+xml,
+      // which is why the allowlist names raster formats rather than `image/`) would be a
+      // same-origin XSS reachable by anyone holding an `artifact: put` grant.
+      //
+      // The ISOLATED origin renders those types, because there the same bytes share no origin with
+      // anything and the policy below denies them the network.
+      "content-disposition": `${
+        renderable(def.mediaType) || (isolated && RENDERABLE_ISOLATED.test(def.mediaType)) ? "inline" : "attachment"
+      }${def.filename ? `; filename="${def.filename}"` : ""}`,
       "x-content-type-options": "nosniff",
-      // Defence in depth: even if a future allowlist entry turns out to be scriptable, nothing
-      // here may load, execute or phone home.
-      "content-security-policy": "default-src 'none'; sandbox",
+      // `sandbox` without `allow-same-origin` pins the document into an OPAQUE origin, so it cannot
+      // reach the console's storage even if it were served beside it. `default-src 'none'` is the
+      // fallback for connect-src, so fetch, XHR and WebSocket are all denied: that, not the origin
+      // split, is what stops a script calling the API with no header and being served as the
+      // operator in open mode. On the isolated origin scripts and styles are allowed to run, since
+      // rendering a page is the point and there is nothing left for them to reach.
+      "content-security-policy": isolated
+        ? "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:"
+        : "default-src 'none'; sandbox",
     };
     return new Response(found.stream, { status: 200, headers });
   } catch (e) {
@@ -171,7 +195,10 @@ export async function handleMintCapability(space: Space, recordId: string, princ
       JSON.stringify({
         capability,
         expiresAt,
-        url: `/v0/artifacts/${encodeURIComponent(recordId)}?capability=${capability}`,
+        // Against the isolated origin when one is running, so opening the URL renders the bytes
+        // somewhere that shares nothing with the console. Falls back to a main-origin relative URL,
+        // where scriptable types still download.
+        url: `${space.artifactOrigin}/v0/artifacts/${encodeURIComponent(recordId)}?capability=${capability}`,
       }),
       { status: 201, headers: { "content-type": "application/json" } },
     );

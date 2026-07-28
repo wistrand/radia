@@ -126,7 +126,9 @@ deno task dev --host 0.0.0.0 --auth required   # exposed + token-gated
 Open the console and watch records and events stream through the **Feed** tab, use the
 **Graph** tab to see how records relate (`parent_ids` DAG: a conversation's messages, a
 job fanning out into tasks and back), the **Space** tab to see every record placed by what it
-*is* rather than what it links to, and open a record for its body + lineage. See
+*is* rather than what it links to, and open a record for its body + lineage. The **Auth** tab
+shows the bootstrap chain and, as an operator, mints a session for a person; paste any session
+token into the principal pill to see the space as they see it. See
 [examples/README.md](examples/README.md) for the three examples (a keyless coordination
 pipeline, a load generator, and the full LLM agent), each with its own directory and README.
 
@@ -137,6 +139,11 @@ pipeline, a load generator, and the full LLM agent), each with its own directory
 "no tokens locally" mode to grow out of. Override with `RADIA_TOKEN`, point elsewhere with
 `RADIA_URL` or `--url`.
 
+That credential is the space's own. For a person, `radia login human:alice [--grant kind:op,op]`
+mints an ordinary scoped session through the same bootstrap chain an agent uses, and
+`radia permissions human:alice` says what it can actually do. A `human:` name carries no privilege;
+only the space's named operators have that.
+
 ```bash
 radia kinds                                   # declared kinds (a query for kind_def records)
 radia put job '{"tag":"a"}'                   # write a record
@@ -146,6 +153,8 @@ radia ack - --result-kind job_result --result '{"ok":true}' < claim.json
 radia watch job                               # stream wakeups
 radia doctor                                  # dead-letters, stuck leases, stale work
 radia reclaim --all --drain                   # un-stick every expired lease
+radia login human:alice --grant job:query     # a scoped session for a person
+radia permissions human:alice                 # what that principal can actually do
 ```
 
 Every command goes through the public `/v0` API; the CLI has no privileged backdoor. The

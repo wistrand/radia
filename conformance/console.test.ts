@@ -89,3 +89,49 @@ Deno.test("console: the served page carries no credential", () => {
   const tokenShaped = [...html.matchAll(/\b[0-9a-f]{48}\b/g)].map((m) => m[0]);
   assertEquals(tokenShaped, [], "a credential-shaped literal is baked into the served page");
 });
+
+Deno.test("console: no event handler interpolates a credential", () => {
+  // The console can now MINT a session token (the Auth tab, operator only) and offers two buttons
+  // beside it. Interpolating that token into `onclick="…"` would write a live credential into the
+  // DOM as executable markup, where any injection elsewhere on the page can read it back out. It is
+  // held in a variable (`MINTED`) that the handlers name instead.
+  //
+  // This checks the credential specifically, not every handler interpolation. The three existing
+  // `onclick="…('${rec.id}')"` sites carry server-assigned ULIDs and are out of scope here.
+  const offenders: string[] = [];
+  for (const m of html.matchAll(/\son[a-z]+="[^"\n]*\$\{([^}]*)\}/g)) {
+    if (/token|credential|secret/i.test(m[1])) offenders.push(m[0]);
+  }
+  assertEquals(offenders, [], "an event handler attribute interpolates something token-shaped");
+});
+
+Deno.test("console: minting parses a grant list the same way the CLI does", () => {
+  // `radia login human:alice --grant message:put,query` and the Auth tab's grant box must mean the
+  // same thing, or the console teaches a syntax nothing else accepts.
+  const parseGrants = new Function(`${extractFunction(html, "parseGrants")}; return parseGrants;`)() as (
+    who: string,
+    text: string,
+  ) => { principal: string; kind: string; operations: string[] }[];
+
+  assertEquals(parseGrants("human:alice", "message:put,query"), [
+    { principal: "human:alice", kind: "message", operations: ["put", "query"] },
+  ]);
+  // Several grants, whitespace-separated. Whitespace SEPARATES grants, so it cannot also appear
+  // inside one: `message:put, query` is two grants, the second of which is malformed. That is the
+  // CLI's rule too (it splits argv), and matching it is the point of this test.
+  assertEquals(parseGrants("human:alice", "  message:put,query   conversation:query "), [
+    { principal: "human:alice", kind: "message", operations: ["put", "query"] },
+    { principal: "human:alice", kind: "conversation", operations: ["query"] },
+  ]);
+  // Empty is legitimate: an app (the chat) may assign the session's grants itself.
+  assertEquals(parseGrants("human:alice", ""), []);
+  assertEquals(parseGrants("human:alice", "   "), []);
+
+  // Malformed input throws rather than silently minting a grant on kind "" or with no operations.
+  // A grant that quietly means nothing is worse than a rejected form: it looks assigned.
+  for (const bad of ["message", ":put", "message:"]) {
+    let threw = false;
+    try { parseGrants("human:alice", bad); } catch { threw = true; }
+    assert(threw, `'${bad}' should be rejected, not parsed into a grant`);
+  }
+});

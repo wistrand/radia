@@ -24,6 +24,8 @@ const SUITES = [
   { name: "resume", file: "smoke-resume.ts", about: "resuming a conversation across a real process restart" },
   { name: "selfgrant", file: "smoke-selfgrant.ts", about: "escalation: forbidden → request → approve → self-scoped reads, on both planes" },
   { name: "inspect", file: "smoke-inspect.ts", about: "the space_* tools on a busy space: paging past foreign events, and answering what the session may do" },
+  { name: "save", file: "smoke-save.ts", about: "the two routes to a stored file, and the tool descriptions that choose between them" },
+  { name: "login", file: "smoke-login.ts", about: "a person's own credential: who the session is, and that two people on one space cannot read each other" },
   { name: "scope", file: "smoke-scope.ts", about: "what a scoped session may read: identity (all its own conversations) vs conversation (this thread only)" },
   { name: "fleet", file: "smoke-fleet.ts", about: "model advertisements the router discovers: publish, restart, withdraw, revive" },
 ];

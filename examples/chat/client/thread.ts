@@ -10,7 +10,7 @@
 // claim-and-append protocol, which would obscure the thing this example exists to show.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
-import { CHAT_USER as OWNER, type Role } from "../space/roles.ts";
+import { sessionOwner } from "../space/roles.ts";
 
 export interface OutgoingMessage {
   role: string;
@@ -32,7 +32,7 @@ export class Thread {
    * grants are scoped to this conversation and a grant is minted with the token. That also means a
    * user-role session no longer needs `conversation: put` at all.
    */
-  static async open(client: RadiaClient, role: Role, id: string): Promise<Thread> {
+  static async open(client: RadiaClient, who: Identity, id: string): Promise<Thread> {
     const thread = new Thread(client, id);
     // The assistant is told its OWN id, not how to use it. Identity is data an agent needs to act
     // on its own behalf (the same category as handing a worker a run token), while the mechanism
@@ -40,7 +40,7 @@ export class Thread {
     // "retrieve rather than recall" disposition is unusable: the reconstructed thread carries no
     // conversationId, the `conversation` record has an empty body and no indexed path, and
     // role=user cannot enumerate conversations at all.
-    await thread.append({ role: "system", content: `${systemPrompt(role)}\nThis conversation's id is ${id}.` });
+    await thread.append({ role: "system", content: `${systemPrompt(who)}\nThis conversation's id is ${id}.` });
     return thread;
   }
 
@@ -57,7 +57,7 @@ export class Thread {
    * months ago. Two system messages in the thread is the lesser problem: the model reads the later
    * one as the standing instructions, and the earlier is honest history.
    */
-  static async resume(client: RadiaClient, id: string, role: Role): Promise<Thread> {
+  static async resume(client: RadiaClient, id: string, who: Identity): Promise<Thread> {
     const last = await client.query(
       { kind: "message", match: { conversationId: id }, orderBy: [{ path: "index", dir: "desc" }] },
       1,
@@ -68,7 +68,7 @@ export class Thread {
     thread.startedAt = thread.nextIndex;
     await thread.append({
       role: "system",
-      content: `${systemPrompt(role)}\nThis conversation's id is ${id}.\n` +
+      content: `${systemPrompt(who)}\nThis conversation's id is ${id}.\n` +
         `This conversation was resumed; everything above happened in an earlier session.`,
     });
     return thread;
@@ -92,7 +92,7 @@ export class Thread {
       // either posture, so switching RADIA_CHAT_SCOPE does not blind a session to its own history.
       // The runtime enforces it rather than trusting it: under identity scoping the write pattern
       // is `{owner}`, so a session physically cannot stamp another identity here.
-      body: { conversationId: this.id, owner: OWNER, index: this.nextIndex++, ...msg },
+      body: { conversationId: this.id, owner: sessionOwner(), index: this.nextIndex++, ...msg },
       parentIds: [this.id, ...parentIds],
     });
   }
@@ -102,7 +102,21 @@ export class Thread {
 // The assistant discovers kinds with space_kinds and learns each tool from its own description.
 // Baking that knowledge here is the anti-pattern the design principle warns against. What a prompt
 // MAY carry is a disposition (when to reach for a tool at all) and the agent's own identity.
-function systemPrompt(role: Role): string {
+/**
+ * Who this session IS. Not a role name: the principal the session's credential resolves to, and
+ * whether the space treats it as privileged.
+ *
+ * `Role` is the launcher's config (`RADIA_CHAT_ROLE`) and stops describing the session the moment a
+ * login token is supplied, since the token brings its own identity. The prompt told the assistant
+ * it was `agent:chat-user` while it was actually running as a named person, so "whoami" answered
+ * with a constant from this file.
+ */
+export interface Identity {
+  principal: string;
+  privileged: boolean;
+}
+
+function systemPrompt(who: Identity): string {
   return "You are a concise assistant on Radia, a content-routed coordination runtime. Your tools are " +
     "provided to you (discovered from the space, so the set may change between turns); each tool's " +
     "description says what it does and how to use it. Rely on those, not on assumptions, and do " +
@@ -113,9 +127,9 @@ function systemPrompt(role: Role): string {
     "this session, retrieve it rather than recall it: your own history is inspectable, and a checked " +
     "answer is worth a tool call where a remembered one is a guess. Do not spend a call on something " +
     "you can already see.\n" +
-    (role === "admin"
-      ? "This session runs as the OPERATOR: your space_* tools have full access to the space's control plane."
-      : "This session runs as a SCOPED USER (agent:chat-user). Use any tool you are given normally: the " +
+    (who.privileged
+      ? `You are ${who.principal}, and this session runs as an OPERATOR: your space_* tools have full access to the space's control plane.`
+      : `You are ${who.principal}, a SCOPED principal on this space. Use any tool you are given normally: the ` +
         "file, compute, and conversation tools all work. Some space_* tools touch the control plane and the " +
         "space may refuse them for this principal. ALWAYS call the tool the task needs; never refuse or skip " +
         "a tool without calling it. A forbidden/403 is NOT a dead end and not something to work around: it " +

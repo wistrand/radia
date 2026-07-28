@@ -10,8 +10,8 @@ import { handlePut } from "../../src/server/handlers/records.ts";
 import type { RadiaError } from "../../src/core/errors.ts";
 
 /** Register the kinds these suites match on (predicates require declared indexed paths). */
-function newSpace(adapter: Parameters<Suite["run"]>[0]): Space {
-  const space = new Space(adapter);
+function newSpace(adapter: Parameters<Suite["run"]>[0], operators?: string[]): Space {
+  const space = new Space(adapter, operators ? { operators } : {});
   space.registerKind({
     kind: "task",
     indexedPaths: [
@@ -111,7 +111,7 @@ export const recordSuites: Suite[] = [
   {
     name: "idempotency keys are scoped per principal (no cross-principal collision)",
     run: async (adapter) => {
-      const space = newSpace(adapter);
+      const space = newSpace(adapter, ["human:a", "human:b"]);
       const put = (principal: string, tag: string) =>
         handlePut(
           space,
@@ -122,7 +122,8 @@ export const recordSuites: Suite[] = [
           }),
           principal,
         );
-      // two principals reuse the SAME Idempotency-Key with different bodies
+      // Two principals reuse the SAME Idempotency-Key with different bodies. Both are operators
+      // here only so the write is allowed: the subject under test is key scoping, not authority.
       const a = await put("human:a", "from-a");
       const b = await put("human:b", "from-b");
       assertEquals(a.status, 201);

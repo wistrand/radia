@@ -1,6 +1,6 @@
 # Plan: audit remediation
 
-> Status: A–D, F and J are done and their guards pass (`deno task conformance`: 353 passed, 0 failed);
+> Status: E, G, H and I are open; everything else is closed and its guards pass (`deno task conformance`: 353 passed, 0 failed);
 > E, G, H and I are open. Each done package is a status line here; its durable lesson (the bug class,
 > why it happened, the rule that prevents it) moved to [gotchas.md](gotchas.md), which outlives this
 > plan. Every item was substantiated against real code paths; items marked **reproduced** were
@@ -19,16 +19,14 @@ correctness/security; P2 is durability and drift.
 
 | Pkg | Theme                                   | Severity | Blast radius                          |
 |-----|-----------------------------------------|----------|---------------------------------------|
-| A   | Operator credential + console bootstrap | P0       | **DONE** (was: auth bypass; CLI/MCP unusable) |
-| B   | Per-handler scope enforcement           | P0       | **DONE** (was: cross-principal leak)  |
-| C   | Lease fencing not enforced at settle    | P1       | **DONE** (was: fenced writes commit)  |
-| D   | Grant supersede vs. idempotency         | P1       | **DONE** (was: permanent silent lockout) |
 | E   | Pushdown soundness                      | P1       | Records invisible to `take` on SQLite |
-| F   | Bounded reads treated as populations    | P2       | **DONE** (was: silent shrinkage)      |
 | G   | Blob write durability                   | P2       | Permanent unhealable corruption       |
 | H   | `lease_lost` unobservable in clients    | P2       | Side effects continue after fencing   |
 | I   | SDK parity + chat example               | P2       | Drift; example-specific data loss     |
-| J   | Declassify is unattributed              | P1       | **DONE** (was: no approver recorded)  |
+
+Packages A, B, C, D, F and J are closed. Their lessons are rules in
+[gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
+chat suites. Git holds the rest.
 
 **Downstream dependencies, now satisfied.** Both gates on
 [plan-inspection.md](plan-inspection.md) are cleared: B gave the inspection backlog a scoped-read
@@ -36,70 +34,6 @@ path to build on (every new view must route through `readAccess` and add a row t
 table), and D made a churning registry (the interest registry, saved lenses) safe to write.
 
 ---
-
-## Package A: operator credential and console bootstrap (P0, DONE)
-
-Was: the served console page carried a substituted operator token, and the operator credential
-resolved as a definition token, so a leak converted into a durable run token. Now the operator token
-is a distinct `ResolvedToken` variant (`kind: "operator"`, `src/core/auth.ts`) that authorizes
-coordination and mints nothing, and the console prompts for a token instead.
-
-Lesson: [gotchas.md](gotchas.md), "The operator token is a server-lifetime in-memory credential" and
-"The operator token resolves as `kind: "operator"`, never `"def"`".
-
-Guards: `conformance/http.test.ts` (the provisioned token reaches health, the ops plane and a `put`
-under `--auth required`, and cannot mint a run); `conformance/console.test.ts` (no credential-shaped
-literal and no substitution placeholder in the served page).
-
-## Package B: scope enforcement is per-handler and inconsistent (P0, DONE)
-
-Was: `scope.createdBy: "self"` was applied by each handler calling `space.authorScope` by hand, and
-five read paths forgot it (`handleTake`, `handleLineage`, `handleGraph`, both artifact reads, and
-`authorizeWatch`), plus watch streams were not bound to their creating principal and
-`effectivePermissions` disagreed with `opsScope`. **Reproduced.** Now every read verb resolves both
-halves of the scope through `Space.readAccess`.
-
-Lesson: [gotchas.md](gotchas.md), "Every read verb must resolve its scope through ONE path".
-
-Guard: a table-driven case in `conformance/http.test.ts` with one row per read verb (`query`,
-`read_one`, `take`, lineage, children, graph, get record) plus the watch-attach check. **A verb with
-no row is a verb nobody checked.** Add a row when adding a read verb.
-
-Not done: full type-level enforcement. A new handler can still call `authorize` alone; making that a
-compile error needs a read-context type threaded through every handler signature, so the
-table-driven guard is the backstop until then.
-
-## Package C: lease fencing is not enforced at settle (P1, DONE)
-
-Was: `ack`, `renew`, `nack` and `release` ran their guarded `UPDATE ... and lease_id = $ and
-lease_epoch = $` without inspecting the affected-row count, and `ack` inserted the result and its
-event first, so under pooled Postgres a fenced-out run could commit a final result and be told
-`{status: "ok"}`. Now all four check the count in both adapters, and `ack` fences before it writes.
-
-Lesson: [gotchas.md](gotchas.md), "The guarded UPDATE is the fence".
-
-Guard, honestly bounded: the new branch is unreachable on the embedded adapters, so the observable
-contract stays covered by the fencing case in `conformance/suites/leases.ts`, which now holds for a
-second reason. Exercising the race is fault-matrix work against a live Postgres ("stale ack after
-reassignment", "ack after quarantine", driven concurrently). See
-[plan-validation.md](plan-validation.md).
-
-## Package D: grant supersede vs. idempotency (P1, DONE)
-
-Was: grants are written under a content-derived idempotency key, so re-declaring a
-previously-used pattern wrote nothing while `supersedeGrantsFor` still retired the live grant, and
-`createAgentDefinition` reported success with zero active grants. **Reproduced** (identity scope,
-then conversation scope, then identity scope again, ending in `forbidden: no 'query' grant`).
-Same mechanism also let a definition's sibling grants retire each other and allowed a grant identity
-to be retired only once, ever. Fixed in `src/core/space.ts` (revival keyed on the retirement it
-supersedes, whole-set supersede, retirements keyed on the record retired) and in both SDKs'
-`client.grant()`.
-
-Lesson: [gotchas.md](gotchas.md), "A content-keyed registry write cannot revive what it retired".
-
-Guards: `conformance/suites/retire.ts` on both adapters (the round trip A to B to A, two patterns on
-one triple in one definition, and re-narrowing a grant that was retired and re-granted), plus
-`examples/chat/smoke-selfgrant.ts` (assign, retire, revive, repeat).
 
 ## Package E: pushdown soundness (P1)
 
@@ -124,21 +58,6 @@ dialect cannot promise it for the third.
 Guard: a differential conformance test running the same pattern and fixture set against every
 adapter and the bare oracle, asserting identical result sets, over a fixture corpus that includes
 array paths, digit segments, leading zeros, and prototype-shaped names.
-
-## Package F: bounded reads treated as populations (P2, DONE)
-
-Was: five more instances of the class CLAUDE.md calls the most repeated bug in this codebase, the
-one that mattered being `runPrincipalsOf` (`src/core/space.ts`), which decides a principal's self
-scope and therefore what package B lets it `take`, trace, and read bytes for. Now it pages to
-exhaustion through `readRegistry` and throws `registry_incomplete`; the client-side sites
-(`listKinds`, `list_kinds`, the chat's grant and `agent_run` reads, the exec worker's
-capability/procedure reads) route through `RadiaClient.queryAll` / `query_all` in both SDKs.
-
-Lesson: [gotchas.md](gotchas.md), "A bounded read that decides a SCOPE is not a performance
-question".
-
-Guard: `conformance/suites/auth.ts` seeds 1201 `agent_run` records for one agent and asserts its
-OLDEST run is still in the self scope, past the old 1000-row cap, on both adapters.
 
 ## Package G: blob write durability (P2)
 
@@ -170,61 +89,21 @@ obvious shape). This is an SDK surface addition, so land it in both SDKs togethe
 Guard: conformance case asserting a quarantined run's heartbeat stops and its handler observes
 cancellation.
 
-## Package I: SDK parity and the chat example (P2)
+## Package I: SDK drift and the chat example (P2)
 
-**SDK.** `watch()` in `sdk/ts/client.ts` omits `Authorization` on the SSE GET, so in any
-token-authenticated space every connect 401s and retries every 300ms forever with no surfaced
-error, and `agentLoop` silently degrades to poll-only. **Reproduced.** Python sends it. Also:
-neither SDK re-creates a watch after a server restart (watches are in-memory; both treat the
-404 as transient and hammer the dead id); Python lacks `permissions`, event/children paging and
-the `query_page` `scope` field, so a scoped Python caller cannot page past withheld events or
-tell a narrowed query from a complete one; the two SDKs derive different idempotency keys for
-identical registry writes, so a mixed fleet appends duplicates, which feeds package F.
+**Parity is no longer the goal.** Python is frozen to the core coordination surface and TS carries
+the full one; [sdk/README.md](../sdk/README.md) states the policy. What remains here are defects,
+not gaps:
 
-**Chat.** Adding `owner` to the context match (`examples/chat/workers/inference.ts`) blinds
-resumed pre-upgrade conversations: older messages carry no `owner`, so the assistant loses all
-history while the UI still prints "resumed conversation <id>: N earlier messages are in context".
-Needs a backfill or an `$exists`-tolerant match. Admin-role sessions stamp
-`owner: agent:chat-user` anyway (`client/thread.ts`, `client/turn.ts`), contradicting the
-posture `client/config.ts` documents; `smoke-scope.ts` passes only because it hand-writes
-owner-less operator records, testing a model the client does not implement. The escalation
-ladder reads `model` records without `activeByKey` (`workers/inference.ts`) and can escalate to
-a gracefully-stopped tier, hanging for the full deadline. `save_procedure`/`retire_procedure`
-idempotency keys replay against their own successors (`workers/exec.ts`), so the advertised
-"save it again to bring it back" silently no-ops, the same root cause as package D. The exec
-sandbox denies `~/.radia` but the credential resolves via `RADIA_CREDENTIALS` and
-`$XDG_STATE_HOME/radia` first (`client/fleet.ts`), so on a typical Linux box model-written code
-can read the operator token.
-
-## Package J: declassify is unattributed (P1, DONE)
-
-Was: `declassify` called `putRaw` with no principal and emitted an ordinary `put` event, so the one
-operation whose purpose is accountability named no approver and was not greppable. Now
-`Space.declassify(recordId, principal)` threads the approver and the commit records a distinct
-`declassify` operation carrying `{declassifiedFrom}`. See
-[research-applications.md](research-applications.md) §5 for why this outranks the hash-chained log.
-
-Lesson: [gotchas.md](gotchas.md), "The one operation whose purpose is accountability must name its
-actor".
-
-Guard: `conformance/suites/taint.ts` asserts the successor is authored by the approver, that exactly
-one `declassify` event exists naming them, and that ordinary puts are unchanged.
-
-Related, same area, lower severity:
-
-- **Taint launders by omission.** `parent_ids` on a direct put is client-asserted
-  (`src/core/record.ts` says so). An agent that reads tainted content and writes a fresh record
-  without naming the parent produces an untainted record; only `ack` force-prepends the leased
-  record. Containment therefore holds for lease-mediated work, not arbitrary writes. This is
-  arguably by design, but it is undocumented as a limit and should be stated in
-  [design-auth.md](design-auth.md) rather than discovered.
-- **`requireUntainted` is per-call, not bindable.** It is a worker's own flag, not a property of a
-  grant or identity, so an operator cannot force a principal's takes to be untainted.
-- **`declassify` mints a new record id** with the same `body_sha256`, so a clearance keyed on record
-  id and one keyed on digest behave differently across it. Pick one and say which.
-- **`body_sha256` is never re-verified on read**, and unencrypted blob `get` streams bytes without
-  re-hashing (the encrypted path is fine; the digest is the AES-GCM AAD). Integrity against a
-  compromised blob store is unverified in the default configuration.
+- The TS `watch()` omits `Authorization` on the SSE connect, so in a token-authenticated space
+  every connect 401s and silently retries; `agentLoop` degrades to poll-only. Python sends it.
+- Neither SDK re-creates a watch after a server restart: watches are in-memory, both treat the 404
+  as transient and hammer the dead id forever.
+- Python `get_children` takes no paging arguments despite the paged endpoint, and `query_page`
+  drops the `scope` field, so a scoped Python caller cannot tell a narrowed read from a complete
+  one. These are core-surface bugs, in scope despite the freeze.
+- Chat example: the escalation ladder reads `model` records without the registry projection and can
+  route to a gracefully stopped tier, hanging until the deadline.
 
 ## Deferred: low severity
 

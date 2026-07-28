@@ -276,8 +276,14 @@
   <!-- AUTH -->
   <section id="auth">
     <div class="panel">
+      <h2>Sign in as a person</h2>
+      <p class="muted" style="margin-top:0">Mint a session for a named human through the same bootstrap chain every agent uses (<code>agent_definition</code> → <code>agent_run</code>), the console's equivalent of <code>radia login</code>. Operator only: grants are assigned, never self-declared. Use it to see the space as someone else sees it, and to hand a person a credential of their own so identity-scoped grants can tell two people apart.</p>
+      <div id="mint-form"></div>
+      <div id="mint-out"></div>
+    </div>
+    <div class="panel">
       <h2>Authorization <button class="btn ghost" style="float:right" onclick="loadAuth()">Refresh</button></h2>
-      <p class="muted" style="margin-top:0">The bootstrap chain, read straight from the substrate: <code>agent_definition</code> → its <code>agent_run</code>s (run tokens) → the <code>grant</code> records that scope each agent. All are ordinary records (only the token <i>hash</i> is stored). The chat example creates these when run with auth (<code>RADIA_CHAT_ROLE=user deno task chat</code>).</p>
+      <p class="muted" style="margin-top:0">The bootstrap chain, read straight from the substrate: <code>agent_definition</code> → its <code>agent_run</code>s (run tokens) → the <code>grant</code> records that scope each principal. All are ordinary records (only the token <i>hash</i> is stored). A definition is an <code>agent:</code> worker or a <code>human:</code> person; the namespace confers no privilege, so a person here holds exactly what was assigned. The chat example creates these when run with auth (<code>RADIA_CHAT_ROLE=user deno task chat</code>).</p>
       <div id="auth-body"><div class="empty">loading…</div></div>
     </div>
   </section>
@@ -289,13 +295,24 @@ const $ = (id) => document.getElementById(id);
 
 // This page carries NO credential: it is served publicly so it can bootstrap in `--auth required`
 // mode, so anything baked in would be readable by anyone who can reach the port. In open mode no
-// token is needed (the no-header operator default applies). In required mode, paste the token
-// `radia dev` prints; it is held in sessionStorage for this tab only.
+// token is needed (the no-header operator default applies). Otherwise paste a token: the operator
+// one `radia dev` prints, or a PERSON's session token (`radia login human:alice`, or minted on the
+// Auth tab below). It is held in sessionStorage for this tab only.
+//
+// The token decides the identity, so nothing here assumes the console is the operator. WHO the
+// pasted token belongs to and what it may do are read back from the space (`ops/permissions`,
+// which every principal may call about ITSELF), never inferred from the fact that a token exists.
+// The console showing "operator" while running scoped is the promise-vs-enforcement gap that every
+// grant bug in this codebase has had.
 let AUTH_TOKEN = sessionStorage.getItem("radia.token");
+let IDENTITY = null; // {principal, subject, privileged} once loadHealth has asked
 function setToken() {
-  const t = prompt("Operator token (printed by `radia dev --auth required`). Empty clears it:", AUTH_TOKEN ?? "");
+  const t = prompt("Session token: the operator token `radia dev` prints, or a person's (`radia login human:alice`). Empty clears it:", AUTH_TOKEN ?? "");
   if (t === null) return;
-  AUTH_TOKEN = t.trim() || null;
+  useToken(t.trim() || null);
+}
+function useToken(t) {
+  AUTH_TOKEN = t || null;
   if (AUTH_TOKEN) sessionStorage.setItem("radia.token", AUTH_TOKEN);
   else sessionStorage.removeItem("radia.token");
   location.reload();
@@ -360,19 +377,45 @@ async function loadHealth() {
   const r = await api("GET", "/v0/health");
   if (!r.ok) { $("health").innerHTML = `<span class="pill">offline</span>`; return; }
   const d = r.data;
+  // Ask the space who this is. A run token reports `run:…` at /v0/health; the SUBJECT (the person
+  // or agent whose grants it carries) is what the rest of the console should name.
+  const who = await api("GET", "/v0/ops/permissions?principal=" + encodeURIComponent(d.principal || ""));
+  IDENTITY = who.ok
+    ? { principal: d.principal, subject: who.data.subject, privileged: !!who.data.privileged, kinds: who.data.kinds || [] }
+    : { principal: d.principal, subject: d.principal, privileged: false, kinds: [], unknown: true };
+  const label = esc(IDENTITY.subject || d.principal || "?");
+  const badge = IDENTITY.privileged ? "operator" : (IDENTITY.unknown ? "?" : "scoped");
   $("health").innerHTML = `<span class="pill">storage: ${esc(d.storage)}</span>`
     + `<span class="pill">api ${esc(d.api)}</span>`
     + `<span class="pill">v${esc(d.version)}</span>`
-    + `<span class="pill" style="cursor:pointer" onclick="setToken()" title="${AUTH_TOKEN ? "authenticated with an operator token (Authorization: Bearer). Click to change" : "no token, relying on the operator default. Click to paste one (needed with --auth required)"}">as ${esc(d.principal || "?")}${AUTH_TOKEN ? " · token" : ""}</span>`;
+    + `<span class="pill" style="cursor:pointer" onclick="setToken()" title="${IDENTITY.privileged ? "operator: every kind, full ops plane. Click to change token" : "a scoped session: only its own grants, and the ops plane will 403. Click to change token"}">as ${label} · ${badge}</span>`;
   $("overview-health").innerHTML =
-    `<div><b>Principal:</b> <span class="mono">${esc(d.principal || "?")}</span>${AUTH_TOKEN ? ` <span class="tag tag-grant">operator token</span>` : ` <span class="muted">(no token, operator default)</span>`} <button class="btn ghost" onclick="setToken()">${AUTH_TOKEN ? "change token" : "set token"}</button></div>`
+    `<div><b>Principal:</b> <span class="mono">${label}</span> `
+    + (IDENTITY.unknown
+      // Never guess. "scoped, 0 kinds" would be a claim about authority derived from a failed read.
+      ? `<span class="muted">could not read this principal's permissions, so what it may do is unknown</span>`
+      : IDENTITY.privileged
+      ? `<span class="tag tag-grant">operator</span>`
+      : `<span class="tag tag-taint">scoped</span> <span class="muted">${IDENTITY.kinds.length} kind${IDENTITY.kinds.length === 1 ? "" : "s"} granted; the ops plane (stats, events, remediation) will 403</span>`)
+    + (AUTH_TOKEN ? "" : ` <span class="muted">(no token, operator default)</span>`)
+    + ` <button class="btn ghost" onclick="setToken()">${AUTH_TOKEN ? "change token" : "set token"}</button>`
+    + (AUTH_TOKEN ? ` <button class="btn ghost" onclick="useToken(null)" title="drop the token and fall back to the no-header default (which is the operator in open mode, and nothing in --auth required)">sign out</button>` : "")
+    + `</div>`
+    + (IDENTITY.principal && IDENTITY.subject !== IDENTITY.principal
+      ? `<div class="muted">credential: <span class="mono">${esc(IDENTITY.principal)}</span> (a run; its grants are held by ${label})</div>`
+      : "")
     + `<div><b>Storage backend:</b> <span class="mono">${esc(d.storage)}</span></div>`
     + `<div><b>DB clock:</b> <span class="mono">${esc(d.now)}</span></div>`
     + `<div><b>Version:</b> <span class="mono">${esc(d.version)}</span> · <b>API:</b> ${esc(d.api)}</div>`;
 }
 async function loadStats() {
   const r = await api("GET", "/v0/ops/stats");
-  if (!r.ok) return;
+  // A scoped session cannot reach the ops plane at all. Blanking here read as "empty space", which
+  // is the worst answer: it is indistinguishable from a healthy idle one.
+  if (!r.ok) {
+    $("stats").innerHTML = `<div class="note ${r.status === 403 ? "info" : "err"}">${esc(errText(r))}${r.status === 403 ? " — this console is signed in as a scoped principal, so the ops plane is closed to it. Sign out or paste an operator token." : ""}</div>`;
+    return;
+  }
   const rows = r.data.stats;
   if (!rows.length) { $("stats").innerHTML = `<div class="empty">No records yet.</div>`; return; }
   $("stats").innerHTML = `<table><thead><tr><th>Kind</th><th>State</th><th>Count</th></tr></thead><tbody>`
@@ -764,7 +807,31 @@ async function pollSpace() {
     for (const e of evs) {
       if (!e.recordId) continue;
       const n = spaceNodeFor(e);
-      (spaceSeen.has(e.recordId) ? updates : adds).set(e.recordId, n);
+      const prev = spaceSeen.get(e.recordId);
+      if (adds.has(e.recordId)) {
+        // Born and moved inside the same poll, which is the common case for short-lived work: the
+        // chat's chunks and results are put, taken and acked between two ticks. Overwrite the
+        // pending insert rather than following it with an update, so the record costs ONE layout
+        // pass instead of two and never appears in its starting state.
+        adds.set(e.recordId, n);
+        spaceSeen.set(e.recordId, n);
+      } else if (!prev) {
+        adds.set(e.recordId, n);
+        spaceSeen.set(e.recordId, n);
+      } else {
+        // delete + set moves the entry to the END of the Map: activity refreshes eviction rank,
+        // whether or not anything visible about the record changed.
+        spaceSeen.delete(e.recordId);
+        spaceSeen.set(e.recordId, n);
+        // Only hand `updateNodes` a record that MOVED or REPAINTED. It re-projects and re-blends
+        // every node it is given without checking whether a value changed, so a no-op update costs
+        // a full layout pass over the graph and cancels whatever animation is running. `op` is not
+        // one of these: it changes on every event, carries no strength, and is not a colour
+        // option, so including it would make every event a redraw.
+        if (prev.group !== n.group || prev.state !== n.state || prev.run !== n.run || prev.label !== n.label) {
+          updates.set(e.recordId, n);
+        }
+      }
       if (e.operation === "ack" && e.detail && e.detail.resultId) results.push([e.recordId, e.detail.resultId]);
     }
 
@@ -772,19 +839,23 @@ async function pollSpace() {
     // above; the ack's `detail.resultId` is only needed for the parent -> result edge.
     for (const [parentId, resultId] of results) edges.push({ src: parentId, dst: resultId });
 
+    // Evict BEFORE drawing, so a record that arrives straight into the evicted tail is never added
+    // and then removed in the same tick.
+    const dropped = evictSpace();
+    for (const id of dropped) { adds.delete(id); updates.delete(id); }
+
+    // ORDER MATTERS: each of these cancels the animation in flight, so the animated call goes
+    // last. Removing after updating is what made a busy space flicker: the prune killed the
+    // update's tween every second, so records jumped instead of gliding.
+    if (dropped.length) await g.removeNodes(dropped, { animate: false });
     if (adds.size) {
       const list = [...adds.values()];
-      for (const n of list) spaceSeen.set(n.id, n);
       await g.addNodes(list, edges.filter((x) => spaceSeen.has(x.src) && spaceSeen.has(x.dst)), { animate: false });
     }
     if (updates.size) {
-      const list = [...updates.values()];
-      // delete + set moves the entry to the END of the Map: activity refreshes eviction rank.
-      for (const n of list) { spaceSeen.delete(n.id); spaceSeen.set(n.id, n); }
       // A state change moves the record slightly (state is a layout property), so animate it.
-      await g.updateNodes(list, { animate: true, animMs: 300 });
+      await g.updateNodes([...updates.values()], { animate: true, animMs: 300 });
     }
-    await pruneSpace(g);
     $("space-count").textContent = `${spaceSeen.size} records`;
   } finally {
     spacePolling = false;
@@ -797,9 +868,9 @@ async function pollSpace() {
  * busy space the interesting nodes are the ones still moving, so activity (not arrival) sets the
  * rank, and a record that keeps being taken, renewed and acked keeps its place.
  */
-async function pruneSpace(g) {
+function evictSpace() {
   const excess = spaceSeen.size - SPACE_CAP;
-  if (excess <= 0) return;
+  if (excess <= 0) return [];
   const drop = [];
   // Pass 1: finished records, oldest activity first (Map order).
   for (const [id, n] of spaceSeen) {
@@ -814,7 +885,7 @@ async function pruneSpace(g) {
     }
   }
   for (const id of drop) spaceSeen.delete(id);
-  await g.removeNodes(drop, { animate: false });
+  return drop;
 }
 
 async function startSpace() {
@@ -916,6 +987,59 @@ async function loadAuth() {
   }
 
   $("auth-body").innerHTML = cards.length ? cards.join("") : `<div class="empty">No agent definitions yet. Run the chat example with auth: <code>RADIA_CHAT_ROLE=user deno task chat</code></div>`;
+  renderMint();
+}
+
+// ---- minting a person's session (operator only) ----
+function renderMint() {
+  if (!IDENTITY || !IDENTITY.privileged) {
+    $("mint-form").innerHTML = `<div class="note info">Only an operator may mint a session. This console is ${IDENTITY ? "signed in as <span class=\"mono\">" + esc(IDENTITY.subject) + "</span>, which is scoped" : "not identified yet"}.</div>`;
+    return;
+  }
+  $("mint-form").innerHTML =
+    `<div class="row"><input id="mint-who" placeholder="human:alice" style="max-width:240px">`
+    + `<input id="mint-grants" placeholder="grants, e.g. message:put,query  conversation:query" style="flex:1">`
+    + `<button class="btn" onclick="mintSession()">Mint</button></div>`
+    + `<p class="muted" style="margin-bottom:0">Grants are optional here: an app may assign its own (the chat does, per <code>RADIA_CHAT_TOKEN</code>). A session with none can authenticate and nothing else.</p>`;
+}
+
+let MINTED = null; // the plaintext of the last token minted here, for the two buttons beside it
+
+/** `kind:op,op kind:op` → the grant list the definition endpoint takes. */
+function parseGrants(who, text) {
+  return (text || "").trim().split(/\s+/).filter(Boolean).map((g) => {
+    const i = g.indexOf(":");
+    if (i <= 0 || i === g.length - 1) throw new Error(`grant wants <kind>:<op,op>, got '${g}'`);
+    return { principal: who, kind: g.slice(0, i), operations: g.slice(i + 1).split(",").map((o) => o.trim()).filter(Boolean) };
+  });
+}
+
+async function mintSession() {
+  const who = $("mint-who").value.trim();
+  if (!who.startsWith("human:")) { note("mint-out", "err", "principal must start with 'human:'"); return; }
+  let grants;
+  try { grants = parseGrants(who, $("mint-grants").value); } catch (e) { note("mint-out", "err", e.message); return; }
+  const def = await api("POST", "/v0/agent-definitions", { agent: who, grants });
+  if (!def.ok) { note("mint-out", "err", errText(def)); return; }
+  const run = await api("POST", "/v0/agent-runs", {}, { "Authorization": "Bearer " + def.data.definitionToken });
+  if (!run.ok) { note("mint-out", "err", errText(run)); return; }
+  // What the principal can ACTUALLY do, asked of the space rather than echoed from the form: an
+  // earlier login or an app may already have granted it more than this call did.
+  const held = await api("GET", "/v0/ops/permissions?principal=" + encodeURIComponent(who));
+  const can = held.ok && held.data.kinds && held.data.kinds.length
+    ? held.data.kinds.map((k) => `<span class="tag tag-grant">${esc(k.kind)}: ${esc((k.operations || []).join(", "))}</span>`).join(" ")
+    : `<span class="muted">nothing yet: it can authenticate but not read or write</span>`;
+  // Shown ONCE. Only the hash is stored, so there is no way to display it again. Held in a variable
+  // rather than interpolated into an onclick, so no credential is ever written into the DOM as
+  // executable markup.
+  MINTED = run.data.runToken;
+  $("mint-out").innerHTML = `<div class="note ok"><b>${esc(who)}</b> signed in as <span class="mono">${esc(run.data.run)}</span>, expires ${esc(run.data.expiresAt)}`
+    + `<div style="margin-top:8px">can: ${can}</div>`
+    + `<div class="mono" style="margin-top:8px;word-break:break-all;user-select:all">${esc(run.data.runToken)}</div>`
+    + `<div class="muted" style="margin-top:4px">Shown once: only the sha256 hash is stored. Copy it before leaving this page.</div>`
+    + `<div class="row" style="margin-top:8px"><button class="btn ghost" onclick="useToken(MINTED)">Use in this tab</button>`
+    + `<button class="btn ghost" onclick="navigator.clipboard.writeText(MINTED)">Copy</button></div></div>`;
+  loadAuth();
 }
 
 // init

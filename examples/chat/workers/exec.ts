@@ -60,11 +60,15 @@ const RUN_CODE: ToolDef = {
     name: "run_code",
     description:
       `Run JavaScript in a sandbox and get its output back. Use it for calculation, parsing, ` +
-      `data transformation, generating file content, and checking your own reasoning (anything ` +
+      `data transformation, COMPUTING file content from data, and checking your own reasoning ` +
+      `(anything ` +
       `where running beats guessing). Print results with console.log; stdout is what you get back. ` +
-      `Pass save_as to STORE stdout as an artifact instead of only returning it. That is how you ` +
-      `save a file (SVG, JSON, CSV, Markdown, code) for the user: write the content with ` +
-      `console.log and give save_as a filename. For binary formats, print base64 and set ` +
+      `Pass save_as to STORE stdout as an artifact instead of only returning it. Use that ONLY for ` +
+      `bytes the program COMPUTED. If you already know the content, you are not computing it: ` +
+      `wrapping text you wrote in a console.log and printing it back is a roundtrip that sends ` +
+      `the same content twice and stores exactly what you would have passed directly. Content ` +
+      `you authored (a page, an SVG, a config, a document) goes to save_content in ONE call, ` +
+      `whether or not the user said the word "save". For binary formats, print base64 and set ` +
       `encoding:"base64". Output larger than ${INLINE_MAX} characters is stored as an artifact ` +
       `automatically and you get a preview plus its id. The sandbox has NO network, NO filesystem, ` +
       `NO environment variables and cannot start processes, so do not attempt ` +
@@ -82,7 +86,7 @@ const RUN_CODE: ToolDef = {
       type: "object",
       properties: {
         code: { type: "string", description: "The JavaScript program. Use console.log to return anything." },
-        save_as: { type: "string", description: "Filename to store stdout under as an artifact, e.g. 'koala.svg'. The media type is taken from the extension unless media_type says otherwise." },
+        save_as: { type: "string", description: "Filename to store COMPUTED stdout under as an artifact, e.g. 'koala.svg'. The media type is taken from the extension unless media_type says otherwise. For content you already wrote, use save_content rather than printing it back." },
         media_type: { type: "string", description: "Override the stored artifact's media type, e.g. 'text/csv'." },
         encoding: { type: "string", enum: ["utf8", "base64"], description: "How stdout encodes the artifact's bytes. Use 'base64' for binary formats (PNG, zip)." },
       },

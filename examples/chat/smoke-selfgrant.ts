@@ -343,6 +343,38 @@ check("…and the grant is in force again", revived.kinds.some((k) => k.kind ===
 const third = await admin.grant(D1, "llm_call", ["query"]);
 check("…while re-granting a live grant is still deduped", third.id === second.id, `${second.id} -> ${third.id}`);
 
+// 11. The fleet's topology is visible, and a scoped session is told when it is not.
+//
+// This is the payoff of interests-as-records: a real worker is running above, `agentLoop` published
+// what it listens for without the worker author doing anything, and the operator can now see it.
+const opDigest = await admin.digest();
+const edge = opDigest.interests.find((i) => i.kind === "tool_call" && i.agent === "agent:chat-tools");
+check(
+  "a running worker's interest is visible to the operator",
+  Boolean(edge),
+  `${opDigest.interests.length} edges: ${opDigest.interests.map((i) => `${i.agent}->${i.kind}`).join(", ")}`,
+);
+check(
+  "…grouped as ONE edge per (kind, agent), with the pattern count beside it",
+  (edge?.patterns ?? 0) > 1 && edge?.runs === 1,
+  `${edge?.patterns} patterns across ${edge?.runs} run`,
+);
+check("the operator's digest withholds nothing", opDigest.interestsWithheld === undefined);
+
+// The scoped session sees only its own, which is none: it is not a worker. Reporting that as an
+// empty list would have the model announce an idle fleet while five workers are running.
+const sessionDigest = await session.digest();
+check(
+  "a scoped session is TOLD its interest list is partial",
+  (sessionDigest.interestsWithheld ?? 0) > 0 && Boolean(sessionDigest.interestsNote),
+  `withheld ${sessionDigest.interestsWithheld}`,
+);
+check(
+  "…and the note says an empty list is not an idle fleet",
+  (sessionDigest.interestsNote ?? "").includes("does NOT mean nothing is listening"),
+);
+check("…while the rest of the digest still answers", sessionDigest.kinds.length > 0, `${sessionDigest.kinds.length} kinds`);
+
 try {
   worker.kill();
   space.kill();

@@ -14,7 +14,7 @@
 // add a field.
 
 import { assert, assertEquals } from "@std/assert";
-import { makeHandler } from "../src/server/http.ts";
+import { makeArtifactHandler, makeHandler } from "../src/server/http.ts";
 import { Space } from "../src/core/space.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
 
@@ -95,6 +95,42 @@ Deno.test("http: only non-scriptable media renders inline; everything else downl
 // ---------------------------------------------------------------------------
 // Authentication: the only channel, and its failure modes.
 // ---------------------------------------------------------------------------
+
+Deno.test("artifact origin: renders scriptable content the main origin refuses, and exposes nothing else", async () => {
+  // The main origin cannot render HTML: it shares a document origin with the console, so a
+  // generated page could read the console's storage. A second PORT is a second origin, and the
+  // isolated handler is reachable only by capability, so no credential is ever presented to the
+  // place untrusted content runs.
+  const { space, close } = await newHandler();
+  const bytes = makeArtifactHandler(space);
+  try {
+    const html = new TextEncoder().encode("<!doctype html><script>1</script>");
+    const { id } = await space.putArtifact(html, { mediaType: "text/html", filename: "p.html" });
+    const cap = space.mintDownloadCapability(id).capability;
+
+    const rendered = await bytes(get(`/v0/artifacts/${id}?capability=${cap}`));
+    assertEquals(rendered.status, 200);
+    assertEquals(rendered.headers.get("content-disposition")?.split(";")[0], "inline", "HTML renders here");
+    const csp = rendered.headers.get("content-security-policy") ?? "";
+    assert(csp.includes("sandbox allow-scripts"), `opaque origin, scripts allowed: ${csp}`);
+    assert(!csp.includes("allow-same-origin"), "never allow-same-origin: that undoes the isolation");
+    assert(csp.includes("default-src 'none'"), "connect-src falls back to none, so fetch is denied");
+    await drain(rendered);
+
+    // Nothing but bytes-by-capability is reachable from the origin that runs untrusted scripts.
+    for (const path of ["/v0/ops/stats", "/v0/health", "/", "/v0/records/query"]) {
+      const res = await bytes(get(path));
+      assertEquals(res.status, 404, `${path} must not exist on the artifact origin`);
+      await drain(res);
+    }
+    // …and a bearer token buys nothing here, so there is no credential to steal.
+    const noCap = await bytes(get(`/v0/artifacts/${id}`, { authorization: "Bearer anything" }));
+    assertEquals(noCap.status, 403, "capability or nothing");
+    await drain(noCap);
+  } finally {
+    await close();
+  }
+});
 
 Deno.test("http: a bad bearer token is 401 and never falls through to the operator", async () => {
   const { handler, close } = await newHandler();
@@ -424,11 +460,19 @@ Deno.test("http: the digest orients an investigator, and scopes the part that is
     await space.put({ kind: "interest", body: { kind: "note" } }, undefined, run);
     await space.put({ kind: "interest", body: { kind: "note", match: { topic: "other" } } });
 
+    // Grouped as one edge per (kind, agent): the operator's two interests come from two different
+    // authors, so they stay two rows.
     const operator = await (await handler(get("/v0/ops/digest"))).json();
     assertEquals(operator.interests.length, 2, "the operator sees the whole routing table");
+    assert(operator.interests.every((e: { patterns: number }) => e.patterns >= 1));
+
     const scoped = await (await handler(get("/v0/ops/digest", { authorization: `Bearer ${runToken}` }))).json();
     assertEquals(scoped.interests.length, 1, "a scoped caller sees only its own interest");
-    assertEquals(scoped.interests[0].run, run);
+    assertEquals(scoped.interests[0].agent, "agent:w", "the edge names the agent, not the run");
+    assertEquals(scoped.interests[0].runs, 1);
+    // …and it is TOLD the list is partial, so an empty one is never read as an idle fleet.
+    assertEquals(scoped.interestsWithheld, 1);
+    assert(String(scoped.interestsNote).includes("does NOT mean nothing is listening"));
   } finally {
     await close();
   }

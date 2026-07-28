@@ -104,7 +104,7 @@ Each of these was checked against the source; none is a guess.
 | Capability | Blocker | Where |
 |---|---|---|
 | An agent reading its own state | `/v0/ops/*` is **binary operator privilege**, with no scoped form | `src/server/http.ts` ops gate |
-| An agent raising an alarm about itself | `signal` is **write-protected** (`human:*` or the supervisor only) | `WRITE_PROTECTED_KINDS` in `src/core/kinds.ts` |
+| An agent raising an alarm about itself | `signal` is **write-protected** (an operator or the supervisor; not every `human:*`) | `WRITE_PROTECTED_KINDS` in `src/core/kinds.ts` |
 | Scoping ops access by "my own records" | Grant patterns compile against **declared body paths** (`requireIndexed`); `created_by` is runtime metadata the matcher never sees | `src/core/matching.ts` |
 | Attention as scarcity (a contended focus lease) | Watches wake only on records becoming **available**, so a *claim* broadcasts nothing; and `effective_priority` is hardcoded `0` until the scheduler (M3) | `handlers/watches.ts`, `Space.putRaw` |
 | Forgetting / consolidation | `retention_until` is **stored and never swept**; crypto-shredding covers artifact blobs only, not record bodies | no delete path references it |

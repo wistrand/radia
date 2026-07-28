@@ -10,7 +10,7 @@
 import { RadiaClient, RadiaClientError } from "../sdk/ts/client.ts";
 import { defaultBase, resolveToken } from "./credentials.ts";
 import { flag, flags, has, positional } from "./flags.ts";
-import { onShutdown, stdin } from "./platform.ts";
+import { onShutdown, stdin, UsageError } from "./platform.ts";
 import type { Lease } from "./storage/adapter.ts";
 
 const HELP = `radia <command> [options]
@@ -24,6 +24,7 @@ Inspect
   stats                               record counts by kind and state
   doctor                              diagnostics: dead-letters, stuck leases, stale work
   permissions <principal>             what that principal can actually do (the fold over its grants)
+  login <principal> [--grant k:ops]…  mint a session token for a person (repeatable --grant)
   kinds                               declared kinds (a query for kind_def records)
   get <record-id>                     one record
   lineage <record-id>                 ancestry via parent_ids
@@ -113,6 +114,43 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           ? table(["KIND", "STATE", "COUNT"], rows.map((r) => [r.kind, r.state, String(r.count)]))
           : "(empty space)"
       );
+    }
+
+    case "login": {
+      // Log a PERSON in as themselves, with the grants an operator chooses.
+      //
+      // There was no way to do this: a definition principal had to be `agent:`, and every
+      // `human:*` was an operator by name shape, so the only human credential available was
+      // god-mode. Now a person is an ordinary principal unless the space names them an operator,
+      // and this mints their session through the same bootstrap chain every agent uses.
+      const who = argv[0];
+      if (!who) return usage("login <principal> [--grant <kind>:<op,op>]…");
+      if (!who.startsWith("human:")) return usage("login <principal>  (principal must start with 'human:')");
+      const grants = flags(argv, "--grant").map((g) => {
+        const [kind, ops] = String(g).split(":");
+        if (!kind || !ops) throw new UsageError(`--grant wants <kind>:<op,op>, got '${g}'`);
+        return { principal: who, kind, operations: ops.split(",").map((o) => o.trim()).filter(Boolean) };
+      });
+      const def = await client.createAgentDefinition(who, grants as never);
+      const run = await client.createRun(def.definitionToken);
+      // Report what the person can ACTUALLY do, not what this command just added. A `--grant`-less
+      // login is not necessarily a powerless one: grants are assigned by whoever holds the ops
+      // plane, so an app (the chat) or an earlier login may already have given this principal its
+      // set. Saying "nothing yet" on the strength of an empty argv is the promise-vs-enforcement
+      // gap this codebase keeps rediscovering; ask the space instead.
+      const held = await client.permissions(who) as { kinds: { kind: string; operations: string[] }[] };
+      return out(ctx, { principal: who, run: run.run, token: run.runToken, expiresAt: run.expiresAt, kinds: held.kinds }, () =>
+        [
+          `${who} signed in as ${run.run} (expires ${run.expiresAt})`,
+          held.kinds.length > 0
+            ? `  can: ${held.kinds.map((k) => `${k.kind}:${k.operations.join(",")}`).join("  ")}`
+            : "  can: nothing. This session authenticates but cannot read or write until someone grants it something (--grant, or an app that assigns its own).",
+          "",
+          `  ${run.runToken}`,
+          "",
+          "  Paste that into the console's principal pill, or send it as Authorization: Bearer.",
+          "  It is shown once and expires; mint another with the same command.",
+        ].join("\n"));
     }
 
     case "permissions": {

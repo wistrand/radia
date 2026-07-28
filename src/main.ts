@@ -20,7 +20,7 @@ import { args as argv, env, exit, onShutdown, UsageError } from "./platform.ts";
 const USAGE = `radia <command>
 
   dev [--port <n>] [--host <addr>] [--storage pglite|sqlite|postgres] [--db <path|url>]
-      [--blobs <dir>] [--blob-kek <file>] [--auth open|required]
+      [--blobs <dir>] [--blob-kek <file>] [--auth open|required] [--artifact-port <n>]
       Run an embedded space + web console.
   mcp [--url <base>]
       Serve the space to an MCP-capable harness over stdio.
@@ -35,6 +35,14 @@ async function dev(args: string[]): Promise<void> {
   // --db persists to disk: a file for sqlite, a data directory for pglite. Omit = in-memory.
   // For --storage postgres, --db is the connection URL (or set RADIA_PG_URL).
   const dbPath = flag(args, "--db");
+  // Artifact bytes get their own ORIGIN (see startServer): a second port is a different origin to
+  // a browser, so generated content cannot reach the console. `--artifact-port 0` disables it and
+  // artifacts stay downloads from the main origin.
+  const artifactPortArg = flag(args, "--artifact-port");
+  const artifactPort = artifactPortArg === "0" ? undefined : Number(artifactPortArg ?? String(port + 1));
+  if (artifactPort !== undefined && !Number.isFinite(artifactPort)) {
+    throw new UsageError(`--artifact-port must be a number (or 0 to disable), got '${artifactPortArg}'`);
+  }
   const authMode = flag(args, "--auth") ?? "open";
   if (authMode !== "open" && authMode !== "required") {
     throw new UsageError(`unknown --auth: ${authMode} (expected open|required)`);
@@ -91,7 +99,7 @@ async function dev(args: string[]): Promise<void> {
   const unlisten = onShutdown(() => stopping.abort());
 
   try {
-    const { finished } = startServer({ port, space, host, authRequired, signal: stopping.signal });
+    const { finished } = startServer({ port, space, host, authRequired, artifactPort, signal: stopping.signal });
     await finished;
   } finally {
     unlisten();

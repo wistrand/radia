@@ -16,9 +16,12 @@ whatever an SDK can do, a plain HTTP client can too.
 | Bootstrap   | `grant` / `createAgentDefinition` / `createRun` / `stopRun` | `grant` / `create_agent_definition` / `create_run` / `stop_run` |
 | Dependencies| none beyond the runtime | none, standard library only (3.9+) |
 
-The two are at feature parity, checked rather than assumed: every public method on `RadiaClient` in
-`ts/client.ts` has a snake_case peer in `py/radia.py`. Differences are idiomatic only (camelCase vs
-snake_case, `AbortSignal` vs `threading.Event`).
+**TypeScript is the full surface; Python is frozen to the core.** The table above is the frozen
+core: coordination verbs, watches, artifacts, remediation, the basic ops reads, and bootstrap.
+Python tracks that set and nothing more. The inspection surface (`digest`, `thread`, `dryRun`,
+`queryExplained` / `explain`, `publishInterest`, `queryAll`) is TS-only, because the one consumer
+that drives it (the chat example) is TS. Never add a Python method for parity's own sake; extend
+Python when a Python consumer needs the call.
 
 ## Credentials
 

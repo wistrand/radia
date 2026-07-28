@@ -418,6 +418,45 @@ const requests = await session.query({ kind: "grant_request", match: { conversat
 const scopes = new Set(requests.map((r) => (r.body as { kind: string; scope?: string }).kind + ":" + ((r.body as { scope?: string }).scope ?? "own")));
 check("a re-ask at a different scope is its own request", scopes.has("kind_def:all") && scopes.has("procedure:own"), [...scopes].join(" "));
 
+// The point of the recent surface: the chat can inspect ITSELF through the same tools the model
+// holds. Driven as the operator (admin) because the scoped session's route to these is the
+// escalation flow, which smoke-selfgrant already covers.
+const adminTools = makeInspectTools(admin);
+const digest = await adminTools.space_digest({}, undefined) as {
+  kinds: { kind: string }[];
+  interests: { kind: string; agent?: string }[];
+  complete: boolean;
+  permissions: unknown;
+};
+check("space_digest orients in one call", digest.kinds.some((k) => k.kind === "message"), `${digest.kinds.length} kinds`);
+check("…and is complete, never a silent prefix", digest.complete === true);
+check("…and includes what the caller may do", digest.permissions !== undefined);
+
+// A conversation is a thread: ask from a record in the MIDDLE and get the whole story. The other
+// messages in this suite are written flat (no parentIds) because nothing above needed lineage; the
+// real client parents every message, so this one is written the way the chat writes it.
+const linked = await admin.put({
+  kind: "message",
+  body: { conversationId: mine, role: "user", index: 100, content: "linked" },
+  parentIds: [mine],
+});
+await admin.put({ kind: "llm_call", body: { conversationId: mine, messages: [] }, parentIds: [linked.id] });
+const story = await adminTools.space_thread({ recordId: linked.id }, undefined) as {
+  root: string;
+  count: number;
+  records: { id: string }[];
+};
+check("space_thread finds the conversation from one of its messages", story.root === mine, `root ${story.root}`);
+check("…and the story holds the ancestor and the descendant too", story.count >= 3, `${story.count} records`);
+
+// The server explains a bad query instead of letting it succeed silently.
+const misquery = await adminTools.space_query({ kind: "no_such_kind" }, undefined) as { notes?: string[] };
+check(
+  "space_query carries the server's notes for an undeclared kind",
+  (misquery.notes ?? []).some((n) => n.includes("no kind 'no_such_kind'")),
+  (misquery.notes ?? []).join(" | ").slice(0, 80),
+);
+
 space.kill();
 await space.status;
 console.log(failed === 0 ? "\nok" : `\nFAILED (${failed})`);

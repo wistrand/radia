@@ -96,17 +96,40 @@ export const authSuites: Suite[] = [
   },
 
   {
-    name: "privileged principals (human:* and the supervisor) have operator access",
+    name: "operator access is a NAMED SET, so a person can be an ordinary principal",
     run: async (adapter) => {
       const space = newSpace(adapter);
-      assert(space.isPrivileged("human:local"));
+      assert(space.isPrivileged("human:local"), "the no-header dev identity is an operator");
       assert(space.isPrivileged("agent:supervisor"));
       assert(!space.isPrivileged("agent:worker"));
       assert(!space.isPrivileged("run:123"));
-      // no grants exist, yet privileged principals pass every op
+      // No grants exist, yet operators pass every op.
       await space.authorize("human:local", "put", "task");
       await space.authorize("agent:supervisor", "take", "task");
-      await space.authorize("human:ceo", "query", "anything");
+
+      // The point of the set: `human:*` used to confer operator authority by NAME SHAPE, so there
+      // was no way to have a person who was merely a user, and logging someone in handed them
+      // everything. An unlisted person is now ordinary however they are named.
+      assert(!space.isPrivileged("human:ceo"), "being called human: is not authority");
+      assertEquals(await denied(() => space.authorize("human:ceo", "query", "task")), "forbidden");
+
+      // …and they can hold ordinary scoped grants, like any other principal.
+      await space.createAgentDefinition("human:ceo", [
+        { principal: "human:ceo", kind: "task", operations: ["query"] },
+      ]);
+      assertEquals(await space.authorize("human:ceo", "query", "task"), null, "granted, still not an operator");
+      assertEquals(await denied(() => space.authorize("human:ceo", "take", "task")), "forbidden");
+    },
+  },
+  {
+    name: "a named operator keeps operator access",
+    run: async (adapter) => {
+      // The set is configuration: a space can name whoever it trusts.
+      const space = new Space(adapter, { operators: ["human:local", "human:ada"] });
+      space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
+      assert(space.isPrivileged("human:ada"));
+      await space.authorize("human:ada", "put", "task");
+      assert(!space.isPrivileged("human:grace"), "…and only whoever it names");
     },
   },
   {

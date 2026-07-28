@@ -47,14 +47,17 @@ export const SAVE_SCHEMAS: ToolDef[] = [
     function: {
       name: "save_content",
       description:
-        "Store text you have written as a file (an artifact) the user can open and keep: SVG, " +
-        "JSON, CSV, Markdown, code, anything textual. Use this when the user asks you to save, " +
-        "store or keep something you produced in the conversation. Pass the exact content and a " +
+        "Store text you have written as a file (an artifact) the user can open and keep: HTML, SVG, " +
+        "JSON, CSV, Markdown, code, anything textual. This is the DEFAULT way to give the user a " +
+        "file. Use it whenever the answer IS a document rather than prose: \"create a web page\", " +
+        "\"write me a config\", \"draw an SVG\" all want this, and none of them contain the word " +
+        "save. Do not print your content through run_code to store it; that sends the same text " +
+        "twice and stores what you would have passed here. Pass the exact content and a " +
         "filename; the media type comes from the extension unless media_type overrides it. For " +
         "binary formats, pass base64 and set encoding:\"base64\". Returns {artifactId, mediaType, " +
         "size}. The user is shown a link automatically, so refer to it in words rather than " +
-        "inventing a path. To save the OUTPUT OF A PROGRAM instead, use run_code with save_as, " +
-        "which avoids repeating the content here.",
+        "inventing a path. Only when the bytes must be COMPUTED (a program derives them from data " +
+        "you do not already have in hand) use run_code with save_as instead.",
       parameters: {
         type: "object",
         properties: {

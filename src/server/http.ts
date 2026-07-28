@@ -34,6 +34,9 @@ export interface ServerOptions {
   /** When true, a request with no `Authorization` is rejected (`401`) instead of resolving to the
    *  operator. `GET /` (console) and `GET /v0/health` stay public so the console can bootstrap. */
   authRequired?: boolean;
+  /** Port for the isolated artifact origin. Omit to serve artifact bytes only from the main
+   *  origin, where scriptable types stay downloads. */
+  artifactPort?: number;
 }
 
 /** The dev UI, loaded once at startup. Single file (see src/ui/index.html); the only asset it
@@ -66,7 +69,51 @@ export function startServer(opts: ServerOptions): { finished: Promise<void> } {
   const handler = makeHandler(opts.space, loadUi(), opts.authRequired ?? false);
   const { finished } = serve({ port: opts.port, hostname, signal: opts.signal }, handler);
   console.log(`radia dev listening on http://${hostname}:${opts.port} (web console at /). Auth ${opts.authRequired ? "required" : "open (no-header → operator)"}`);
+
+  // Artifact BYTES get their own origin. An origin is scheme + host + PORT, so a second port is a
+  // different origin to a browser: content served here cannot read the console's storage and its
+  // requests back to the API are cross-origin, which no CORS header permits. That is what makes it
+  // safe to render an artifact someone's agent generated.
+  //
+  // Capability URLs are the ONLY way in. No bearer token is ever presented to this origin, so
+  // there is no credential here to steal, and a capability names one artifact and expires.
+  if (opts.artifactPort !== undefined) {
+    // Tell the space where to point capability URLs. Loopback is reachable as-is; a wildcard bind
+    // has no single public name, so 127.0.0.1 is the honest default for a local console.
+    const advertised = hostname === "0.0.0.0" ? "127.0.0.1" : hostname;
+    opts.space.artifactOrigin = `http://${advertised}:${opts.artifactPort}`;
+    const bytes = makeArtifactHandler(opts.space);
+    serve({ port: opts.artifactPort, hostname, signal: opts.signal }, bytes);
+    console.log(`radia dev: artifact origin http://${hostname}:${opts.artifactPort} (capability URLs only, isolated from the console)`);
+  }
   return { finished };
+}
+
+/**
+ * The isolated artifact origin: capability-authenticated bytes, and nothing else.
+ *
+ * Deliberately tiny. It serves one route and rejects everything else, so no control-plane surface
+ * is reachable from the origin that renders untrusted content. Never add a route here that reads a
+ * token: the value of this origin is that presenting a credential to it is impossible.
+ */
+export function makeArtifactHandler(space: Space) {
+  return async function handler(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+    const capability = url.searchParams.get("capability");
+    if (req.method !== "GET" || !url.pathname.startsWith("/v0/artifacts/")) {
+      return problem(404, "not_found", "this origin serves artifact bytes by capability URL only");
+    }
+    const id = decodeURIComponent(url.pathname.slice("/v0/artifacts/".length));
+    if (!capability || !space.checkDownloadCapability(capability, id)) {
+      return problem(
+        403,
+        "forbidden",
+        `this origin accepts only capability URLs, and this one is missing, wrong or expired. ` +
+          `Capabilities last ${space.downloadCapabilitySeconds}s and do not survive a restart; mint a fresh one.`,
+      );
+    }
+    return await handleGetArtifact(space, id, null, true);
+  };
 }
 
 type Auth = { principal: string } | { error: string; detail: string };

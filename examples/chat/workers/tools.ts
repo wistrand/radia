@@ -21,7 +21,7 @@ const sessionToken = arg("--session-token"); // the session principal for space_
 const roots = argAll("--dir");
 const client = new RadiaClient(url, token ? { token } : {}); // claims tool_calls, publishes capabilities
 // The space_* inspection/remediation tools act as the SESSION principal, not the worker: operator
-// for role=admin (full /ops access), the scoped agent:chat-user for role=user (so /ops calls 403).
+// for role=admin (full /ops access), the scoped session principal for role=user (so /ops calls 403).
 const spaceClient = new RadiaClient(url, sessionToken ? { token: sessionToken } : {});
 // File/compute tools (sandboxed, no client) + space inspection + remediation (session-scoped).
 // `save_content` writes artifacts as the WORKER (its own token, `artifact: put`), not as the

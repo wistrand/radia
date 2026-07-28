@@ -182,7 +182,11 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   produce for that call, and the grant binds `{owner}`, enforced on writes too, so a session
   cannot stamp another identity. `RADIA_CHAT_SCOPE` picks between that and `{conversationId}`,
   because the right answer depends on the space: identity scoping separates a session from workers
-  and operator sessions, but NOT two people sharing one space, since both are `agent:chat-user`.
+  and operator sessions, and separates two PEOPLE only if they are two principals. They were not:
+  `agent:chat-user` is one constant, so every person running the chat was the same principal and the
+  scope bound to the same value for all of them. `RADIA_CHAT_TOKEN` (a `radia login` session) fixes
+  the identity rather than the scope, which is the level the defect was at. Without one, only
+  `{conversationId}` keeps two people apart.
 - **Tightening a grant by adding a PATTERN is inert on any space that already had the loose one.**
   Scope and pattern are part of a grant's identity, so declaring `{message, [put,query],
   pattern:{conversationId}}` beside an existing `{message, [put,query]}` creates a SECOND grant,
@@ -817,6 +821,34 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   refuses it, so the escalation is closed at the source rather than at each caller. Guarded by
   `conformance/http.test.ts`, which asserts the provisioned operator token reaches health, the ops
   plane and a `put` under `--auth required`, and that it cannot mint a run.
+- **Two tools that reach the same outcome are chosen by their DESCRIPTIONS, so an unconditional
+  claim beats a conditional one.** `save_content` (authored text) and `run_code` + `save_as`
+  (computed bytes) both produce an artifact, so nothing fails when the wrong one is picked. The
+  model consistently picked `run_code` because its description said "that is how you save a file"
+  with no condition and never named `save_content`, while `save_content` deferred to `run_code`,
+  gated its trigger on the user saying "save", and did not list HTML. Asked to "create a web page",
+  the assistant wrapped the HTML in a `console.log` and stored stdout, sending the content twice.
+  When two tools overlap, each must name the other AND state the condition that selects it; a
+  one-way cross-reference is what produces the silent-but-wasteful path. Guarded by
+  `examples/chat/smoke-save.ts`, which reads the descriptions back from the `capability` records the
+  running fleet publishes rather than importing them, since a fix that is never republished changes
+  nothing for the model.
+- **Privilege is a NAMED SET, not a name prefix, and `human:` is a namespace.** `isPrivileged`
+  (`src/core/space.ts`) checks `ctx.operators` (default `["human:local"]`), the supervisor, and the
+  space's own identity. It used to treat every `human:*` as an operator, which meant a space could
+  not have ordinary people on it: a definition principal had to be `agent:`, so the only human
+  credential obtainable was god-mode, and a console holding one held everything. `radia login
+  human:alice` and the console's Auth tab depend on this being a set. Two consequences that read as
+  bugs if the old rule is assumed: a logged-in `human:alice` is refused a `grant`/`signal`/`agent_*`
+  write like any other principal, and a run token whose subject is a human is still just a scoped
+  session.
+- **Ask the space who a credential belongs to; never infer it from the fact that one exists.**
+  `GET /v0/health` reports the CREDENTIAL (`run:…`); `GET /v0/ops/permissions` reports its subject
+  and whether it is privileged, and any principal may ask about itself. The console labelled itself
+  "operator token" whenever a token was set, so a scoped session displayed authority it did not
+  have; the chat resolves the login token's owner this way rather than trusting a body field. This
+  is the same promise-vs-enforcement gap behind every grant defect here, which is why the canonical
+  form (`Space.effectivePermissions`) exists at all.
 - **A presented `Authorization: Bearer` token must resolve; a bad one is 401, never a silent
   fall-through to the operator.** Only the *absence* of any credential defaults to `human:local`;
   `resolveAuth` in `src/server/http.ts` encodes it (Bearer → run principal, else operator).

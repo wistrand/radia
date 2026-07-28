@@ -64,8 +64,17 @@ export interface SpaceContext {
   defaultBackoffSeconds: number;
   maxAttempts: number;
   maxCumulativeSeconds: number;
-  /** The one supervisor agent that, like `human:*`, may write grants/signal and reach `/ops/*`. */
+  /** The one supervisor agent that, like an operator, may write grants/signal and reach `/ops/*`. */
   supervisor: string;
+  /**
+   * The human principals with operator authority, named one by one.
+   *
+   * `human:*` used to confer it by PREFIX, which made every person an operator and left no way to
+   * express a person with ordinary grants. A space with real users needs both, so membership is
+   * explicit: `human:local` is here because unauthenticated dev requests resolve to it, and any
+   * other person is an ordinary principal until someone puts them in this set.
+   */
+  operators: string[];
   /** How long a minted run token stays valid (short-lived; the run refreshes by re-minting). */
   runTokenSeconds: number;
   /** Age past which an unclaimed *claimable* record counts as stale in diagnostics (starvation). */
@@ -86,6 +95,7 @@ const DEFAULT_CONTEXT: SpaceContext = {
   maxAttempts: 5,
   maxCumulativeSeconds: 300,
   supervisor: "agent:supervisor",
+  operators: ["human:local"], // the no-header dev identity; add people deliberately
   runTokenSeconds: 900, // 15 min; a live run re-mints before expiry
   diagnosticsStaleSeconds: 60,
   maxArtifactBytes: 32 * 1024 * 1024,
@@ -338,20 +348,30 @@ export class Space {
     return principal;
   }
 
-  /** A privileged principal has operator access: `/ops/*`, grant/signal writes, and any op
-   *  without a grant. That is `human:*`, the one supervisor agent (reached directly or via a run
-   *  of it), and the space's OWN configured runtime identity (`ctx.principal`/`ctx.runId`): the
-   *  trusted in-process/operator plane that unauthenticated dev requests resolve to. */
+  /**
+   * A privileged principal has operator access: `/ops/*`, grant and signal writes, and any
+   * operation without a grant.
+   *
+   * Membership is a NAMED SET, never a prefix. `human:*` conferred operator authority by name
+   * shape, so there was no way to have a person who was merely a user: logging someone in made
+   * them an operator, and a console holding their credential held everything. `ctx.operators` says
+   * who, and everyone else is ordinary however they are named.
+   *
+   * The supervisor agent (reached directly or through a run of it) and the space's own runtime
+   * identity stay privileged: they are the in-process plane that unauthenticated dev requests
+   * resolve to.
+   */
   isPrivileged(principal: string): boolean {
     const subject = this.grantSubject(principal);
-    return subject.startsWith("human:") || subject === this.ctx.supervisor ||
+    return this.ctx.operators.includes(subject) || subject === this.ctx.supervisor ||
       subject === this.ctx.runId || subject === this.ctx.principal;
   }
 
   /**
    * Authorize `principal` to run coordination `op` on records of `kind`. Throws
    * RadiaError("forbidden") if denied. Writing a reserved control kind (grant/signal/agent_*)
-   * requires privilege (assigned, never self-declared). Any other principal needs a matching
+   * requires privilege, which means an OPERATOR or the supervisor, not a `human:` name (assigned,
+   * never self-declared). Any other principal needs a matching
    * **grant record** (kind-scoped, op-scoped); a run inherits its agent definition's grants.
    *
    * Returns the **pattern constraint** for pattern-scoped grants: `null` when unrestricted
@@ -364,7 +384,14 @@ export class Space {
   async authorize(principal: string, op: GrantOp, kind: string): Promise<Record<string, unknown>[] | null> {
     if (this.isPrivileged(principal)) return null;
     if ((op === "put" || op === "take") && WRITE_PROTECTED_KINDS.has(kind)) {
-      throw new RadiaError("forbidden", `writing '${kind}' records requires a human or supervisor principal`);
+      // Name the rule that actually applies. "requires a human principal" was true when every
+      // `human:*` was privileged by NAME SHAPE; now an operator is a NAMED principal
+      // (`ctx.operators`), so `human:alice` hits this too and being told to be a human is advice
+      // that cannot be followed.
+      throw new RadiaError(
+        "forbidden",
+        `writing '${kind}' records requires an operator or the supervisor: it is assigned, never self-declared`,
+      );
     }
     const subject = this.grantSubject(principal);
     // Grants are records: query the ones for this (subject, kind) and check the op.
@@ -648,8 +675,10 @@ export class Space {
    * token once. The definition token mints runs (`mintRun`); it is never stored in plaintext.
    */
   async createAgentDefinition(agent: string, grants: GrantDef[] = []): Promise<{ agent: string; definitionToken: string }> {
-    if (!agent.startsWith("agent:")) {
-      throw new RadiaError("invalid_principal", "an agent definition principal must start with 'agent:'");
+    // `human:` is allowed so a PERSON can hold ordinary scoped grants and log in as themselves.
+    // They are not an operator unless `ctx.operators` names them; see `isPrivileged`.
+    if (!agent.startsWith("agent:") && !agent.startsWith("human:")) {
+      throw new RadiaError("invalid_principal", "a definition principal must start with 'agent:' or 'human:'");
     }
     const { token, hash } = await mintCredential();
     await this.putRaw({ kind: AGENT_DEFINITION, body: { agent, tokenHash: hash } });
@@ -1200,7 +1229,14 @@ export class Space {
     api: string;
     kinds: { kind: string; indexedPaths: string[]; sortablePaths?: string[]; claimable: boolean; reserved: boolean }[];
     counts: { kind: string; state: string; count: number }[];
-    interests: { kind: string; run: string; agent?: string; match?: Record<string, unknown> }[];
+    /** The routing topology as an EDGE LIST, one row per (kind, agent), not one per pattern. A
+     *  worker that serves twenty tools publishes twenty interests; listing them all buries the
+     *  shape this read exists to show. `patterns` counts them, and `POST /v0/ops/dry-run` answers
+     *  which one a given record would reach. */
+    interests: { kind: string; agent: string; runs: number; patterns: number }[];
+    /** Interests hidden by the caller's scope. An empty list means "none you may see", never
+     *  "nobody is listening", and the difference has to be stated or it gets reported as fact. */
+    interestsWithheld?: number;
     permissions: EffectivePermissions;
     complete: boolean;
   }> {
@@ -1217,8 +1253,9 @@ export class Space {
 
     // The prospective half of the topology. Reported per kind so "who is listening for X" is
     // answerable without a second call; liveness is still the run's, as everywhere else.
-    const interests: { kind: string; run: string; agent?: string; match?: Record<string, unknown> }[] = [];
+    const edges = new Map<string, { kind: string; agent: string; runs: Set<string>; patterns: number }>();
     let complete = true;
+    let withheld = 0;
     for (const k of kinds) {
       const found = await this.matchingInterests(k.kind); // listing mode: no candidate body
       if (!found.complete) complete = false;
@@ -1226,15 +1263,26 @@ export class Space {
         // Interests are the one cross-principal part of the digest: the full set IS the routing
         // table, which `POST /v0/ops/dry-run` keeps operator-only. A scoped caller sees its own,
         // matching the rule that any principal may read its own authorization and no one else's.
-        if (scope?.createdBy && !scope.createdBy.includes(i.run)) continue;
-        interests.push({ kind: k.kind, ...i });
+        if (scope?.createdBy && !scope.createdBy.includes(i.run)) {
+          withheld++;
+          continue;
+        }
+        const agent = i.agent ?? i.run;
+        const key = `${k.kind}|${agent}`;
+        const edge = edges.get(key) ?? { kind: k.kind, agent, runs: new Set<string>(), patterns: 0 };
+        edge.runs.add(i.run);
+        edge.patterns++;
+        edges.set(key, edge);
       }
     }
     return {
       api: "v0",
       kinds,
       counts: await this.stats(),
-      interests,
+      interests: [...edges.values()]
+        .map((e) => ({ kind: e.kind, agent: e.agent, runs: e.runs.size, patterns: e.patterns }))
+        .sort((a, b) => (a.kind === b.kind ? (a.agent < b.agent ? -1 : 1) : a.kind < b.kind ? -1 : 1)),
+      ...(withheld > 0 ? { interestsWithheld: withheld } : {}),
       permissions: await this.effectivePermissions(principal),
       complete,
     };
@@ -1288,6 +1336,11 @@ export class Space {
     const records = [...seen.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     return { root, records, truncated };
   }
+
+  /** Public base URL of the isolated artifact origin, when one is running. Capability URLs are
+   *  built against it so a browser opens artifact bytes somewhere that shares no origin with the
+   *  console. Empty means artifacts are served only from the main origin, as downloads. */
+  artifactOrigin = "";
 
   /** Registered kind declarations (dev UI). */
   listKinds(): KindDef[] {

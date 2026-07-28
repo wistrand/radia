@@ -6,14 +6,19 @@ Origin: outline §8.
 **M1 status (grants + bootstrap chain + run tokens built):** kind-scoped **grants are records**
 (reserved `grant` kind; body `{principal, kind, operations}`, indexed on principal+kind, never
 wildcard; `src/core/kinds.ts`). `Space.authorize(principal, op, kind)` enforces them and
-`Space.isPrivileged` marks operators (`human:*` or the one configured supervisor,
-`SpaceContext.supervisor`, default `agent:supervisor`). Enforcement is wired at the HTTP
+`Space.isPrivileged` marks operators: a principal NAMED in `SpaceContext.operators` (default
+`["human:local"]`, the no-header dev identity), the one configured supervisor
+(`SpaceContext.supervisor`, default `agent:supervisor`), or the space's own identity. It is a named
+set, not a name shape: `human:` is a namespace, not a privilege. That was the earlier rule, and it
+meant a space could not have ordinary people on it at all, so the only human credential available
+was god-mode. Enforcement is wired at the HTTP
 boundary (`src/server/http.ts` + the record/take/watch handlers): coordination `put`/`take`/
 `query`/`read_one` call `authorize`, and **`watch`** calls `Space.authorizeWatch` (a watch is
 allowed if the principal holds ANY grant on the kind, which makes it a participant, and the grant
 pattern is AND-ed into the watch match, so it wakes only on records inside its scope; no grant →
 `forbidden`). `/v0/ops/*` requires a privileged principal; writing a reserved control kind
-(`grant`/`signal`/`agent_*`) requires privilege. Grants are **assigned, never self-declared**.
+(`grant`/`signal`/`agent_*`) requires privilege, meaning an operator or the supervisor: a logged-in
+`human:alice` is refused like any other principal. Grants are **assigned, never self-declared**.
 Every coordination verb is grant-gated; there is no unauthenticated observe path.
 
 The **bootstrap chain is built** (`src/core/auth.ts`, `src/server/handlers/agents.ts`):
@@ -40,7 +45,12 @@ is the **only** auth channel, and exactly two token kinds authorize it (`Resolve
 minting a run, and is rejected everywhere else, because it is long-lived and accepting it would
 hand out unexpiring coordination authority. In **open mode** (the default) a request with no header
 is the operator `human:local`, so local dev/UI/examples stay open; to act as a scoped principal,
-mint a real run token (there is no impersonation shortcut). `Space.mintOperatorToken` mints the
+mint a real run token (there is no impersonation shortcut). `radia login human:alice` does exactly
+that for a PERSON, through the same chain (`src/cli.ts`), and the console's Auth tab does it in the
+browser. That is what makes identity-scoped grants usable: a grant pinned to `{owner: <principal>}`
+separates two people only if they are two principals, so an app that shares one constant between
+everyone (as `examples/chat` did with `agent:chat-user`) has a scope that binds to the same value
+for all of them. `Space.mintOperatorToken` mints the
 operator credential at startup. It resolves to the space's own principal, is server-lifetime, and
 is not a record; `radia dev` writes it where the CLI and the MCP adapter read it. Never resolve it
 as a definition token: that would let a leaked operator credential mint a run and become durable.
@@ -56,7 +66,10 @@ request with no bearer token is rejected `401 auth_required` (`resolveAuth` in `
 inject a credential into the served page**: it is public, so anything baked in is readable by
 anyone who can reach the port, and a harvested operator token authorizes every verb. The console
 prompts for a token and keeps it in `sessionStorage`; required mode prints one at startup for that
-and for `curl` use.
+and for `curl` use. The token it holds is any session token, an operator's or a person's, and the
+console resolves WHO it is through `GET /v0/ops/permissions` rather than assuming a token means
+operator. That assumption was the bug: a console signed in as a scoped principal still labelled
+itself "operator token", which is the promise-vs-enforcement gap every grant defect here has had.
 
 **Per-run lease ownership + revocation (built):** a lease is owned by the claiming principal
 (`take` threads it into `lease_owner`; a run token → `run:*`). A **stopped** run's token stops
@@ -128,7 +141,9 @@ Cross-cutting versions are in [CLAUDE.md](../CLAUDE.md); detail here is authorit
 
 - Grants are kind-scoped, never wildcard, and assigned by a privileged control plane,
   never self-declared.
-- `signal` and grant management are writable only by `human:*` and one supervisor agent.
+- `signal` and grant management are writable only by an OPERATOR (a principal named in
+  `SpaceContext.operators`) or the supervisor agent. Not by every `human:*`: a logged-in person is
+  an ordinary principal.
 - `delegation_context` is server-derived from the claimed lease; data parents contribute
   no authority.
 - Taint clears only via privileged **declassify**. Ordinary agents cannot write
@@ -139,24 +154,34 @@ Cross-cutting versions are in [CLAUDE.md](../CLAUDE.md); detail here is authorit
 
 ## Principals
 
-- `human:*` (OIDC)
+- `human:*` (a person; OIDC deferred, `radia login` today)
 - `agent:*` (a definition: grants, budgets, patterns)
 - `run:*` (an instance)
+
+The namespace says what KIND of principal it is, never what it may do. Privilege is the named set in
+`SpaceContext.operators` plus the supervisor, so `human:alice` is an ordinary principal that holds
+exactly the grants assigned to it, and `agent:supervisor` is privileged while looking like any other
+agent. Reading privilege off the prefix is the mistake this design used to make.
+
+A person and an agent take the SAME path to a credential: a definition (which may be a `human:` or
+an `agent:` principal) mints short-lived run tokens. So there is one bootstrap chain to reason
+about, not a human one beside a machine one, and a person's session expires like a worker's.
 
 Leases belong to runs. Grants flow down the bootstrap chain; they are never
 self-declared:
 
 ```mermaid
 flowchart TB
-    H[human:*, OIDC] -->|POST /agent-definitions<br/>privileged control plane assigns grants| D[agent:* definition<br/>grants, budgets, patterns]
-    D -->|POST /agent-runs<br/>definition credential mints token| R[run:*, short-lived token]
+    H[human:* or agent:* definition<br/>grants, budgets, patterns] -->|POST /agent-runs<br/>definition credential mints token| R[run:*, short-lived token]
+    O[operator<br/>ctx.operators, or the supervisor] -->|POST /agent-definitions<br/>privileged control plane assigns grants| H
     R -->|owns| L[leases]
 ```
 
 ## Bootstrap: grants assigned, never self-declared
 
 - `POST /v0/agent-definitions`: a privileged (operator) control plane creates a definition
-  and assigns its grants; returns a **definition token** (once). **Built.**
+  and assigns its grants; returns a **definition token** (once). The principal may be `agent:` or
+  `human:`. **Built.**
 - `POST /v0/agent-runs`: a definition token mints a short-lived **run token** + `agent_run`
   record. **Built.**
 - `POST /v0/agent-runs/{id}/stop`: stops a run (operator or the run's own token); the token
@@ -230,8 +255,11 @@ every "the runtime enforces X" here as "the HTTP boundary enforces X".
 ## Authorization flow (the request path)
 
 Every request resolves a principal, passes the ops-plane gate, then runs `authorize`. A `run:*`
-principal authorizes as its **agent** (`grantSubject`; grants inherit down the chain), so the
-grant lookup is keyed by `(subject, kind, op)`.
+principal authorizes as its **subject** (`grantSubject`; grants inherit down the chain), which is
+the `agent:` or `human:` the run instantiates, so the grant lookup is keyed by
+`(subject, kind, op)`. That mapping is also the only trustworthy way to learn who a session is:
+`GET /v0/health` reports the credential (`run:…`), and `GET /v0/ops/permissions` reports the
+subject behind it. A client that wants to display or scope by identity asks for the second.
 
 ```mermaid
 flowchart TD
@@ -244,7 +272,7 @@ flowchart TD
     Oper --> Ops
     Ops{"path under /v0/ops/* ?"} -->|"yes, not privileged"| E403a[["403"]]
     Ops -->|"no, or privileged"| Az["authorize(principal, op, kind)"]
-    Az --> Priv{"privileged?<br/>human:* / supervisor / operator run"}
+    Az --> Priv{"privileged?<br/>subject in ctx.operators,<br/>supervisor, or the space itself"}
     Priv -->|"yes"| Allow(["allow, no constraint"])
     Priv -->|"no"| Res{"reserved-kind write?<br/>grant / signal / agent_*"}
     Res -->|"yes"| E403b[["403 forbidden"]]
