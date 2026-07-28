@@ -1,11 +1,11 @@
 # Radia SDKs
 
-Client libraries for talking to a Radia space. Both wrap the public `/v0` API and nothing else —
+Client libraries for talking to a Radia space. Both wrap the public `/v0` API and nothing else:
 whatever an SDK can do, a plain HTTP client can too.
 
 | | TypeScript | Python |
 |-|------------|--------|
-| Path        | [`ts/`](ts/) — `client.ts`, `loop.ts` | [`py/radia.py`](py/radia.py) |
+| Path        | [`ts/`](ts/): `client.ts`, `loop.ts` | [`py/radia.py`](py/radia.py) |
 | Client      | `RadiaClient`      | `RadiaClient` |
 | Worker loop | `agentLoop`        | `agent_loop` |
 | Paging      | `query` / `queryPage` (keyset: `{after, dir}`) | `query` / `query_page` (keyset: `after=`, `dir=`) |
@@ -14,9 +14,9 @@ whatever an SDK can do, a plain HTTP client can too.
 | Remediation | `admin(action, id)` / `remediate(action, selector)` | `admin(action, id)` / `remediate(action, state=…, expired=…)` |
 | Ops queries | `queryEnvelopes` / `diagnostics` / `getStats` / `getEvents` | `query_envelopes` / `diagnostics` / `get_stats` / `get_events` |
 | Bootstrap   | `grant` / `createAgentDefinition` / `createRun` / `stopRun` | `grant` / `create_agent_definition` / `create_run` / `stop_run` |
-| Dependencies| none beyond the runtime | none — standard library only (3.9+) |
+| Dependencies| none beyond the runtime | none, standard library only (3.9+) |
 
-The two are at feature parity — checked, not assumed: every public method on `RadiaClient` in
+The two are at feature parity, checked rather than assumed: every public method on `RadiaClient` in
 `ts/client.ts` has a snake_case peer in `py/radia.py`. Differences are idiomatic only (camelCase vs
 snake_case, `AbortSignal` vs `threading.Event`).
 
@@ -28,7 +28,7 @@ SDK reads it via `resolve_token()`, and the CLI and MCP adapter do the same thro
 [agent_docs/architecture-surfaces.md](../agent_docs/architecture-surfaces.md).
 
 The TS client resolves `RADIA_URL` through a guarded `globalThis.Deno?.env` read so it still
-works in a worker without `--allow-env`, and does not depend on the runtime's platform seam — it
+works in a worker without `--allow-env`, and does not depend on the runtime's platform seam. It
 is meant to ship standalone.
 
 ## The worker loop
@@ -38,7 +38,7 @@ watch-driven with a poll fallback, a renewal heartbeat at lease/3 while a handle
 per-attempt idempotency key on ack, and a nack on any handler failure.
 
 Delivery is **at-least-once**. A handler with side effects must be idempotent at the effect
-boundary — a fenced worker keeps running until it observes `lease_lost`, so physical execution can
+boundary. A fenced worker keeps running until it observes `lease_lost`, so physical execution can
 overlap.
 
 A `403` on a watch is treated as permanent (the run has no grant for that kind): both loops log it
@@ -47,7 +47,7 @@ worse failure than "loudly wrong".
 
 ## Usage
 
-TypeScript — see [`examples/`](../examples/) for runnable agents; every one of them imports only
+TypeScript: see [`examples/`](../examples/) for runnable agents; every one of them imports only
 from `sdk/ts/`, which is the boundary that keeps them honest about what an external author can do.
 
 Python:

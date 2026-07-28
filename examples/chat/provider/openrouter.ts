@@ -1,5 +1,5 @@
 // Thin OpenRouter client (OpenAI-compatible chat completions, streaming + tool calling).
-// Only the inference-worker imports this — it is the sole holder of the API key.
+// Only the inference-worker imports this; it is the sole holder of the API key.
 
 export interface ToolCall {
   id: string;
@@ -34,7 +34,7 @@ export interface StreamResult {
   usage?: Record<string, unknown>;
 }
 
-// `RADIA_CHAT_API_BASE` points the fleet at any OpenAI-compatible endpoint — a local stub for
+// `RADIA_CHAT_API_BASE` points the fleet at any OpenAI-compatible endpoint: a local stub for
 // offline testing (escalation, streaming, image generation) or a self-hosted gateway.
 export const API_BASE = Deno.env.get("RADIA_CHAT_API_BASE") ?? "https://openrouter.ai/api/v1";
 const ENDPOINT = `${API_BASE}/chat/completions`;

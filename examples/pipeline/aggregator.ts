@@ -1,5 +1,5 @@
 // An aggregator agent (fan-in). Unlike workers, it READS results (facts) rather than
-// claiming them — results are knowledge, not work. When every result for a job has
+// claiming them. Results are knowledge, not work. When every result for a job has
 // arrived it emits one `summary`, linked to all of them. The idempotency key
 // `summary:<jobId>` makes the emit safe even if two aggregators race.
 //

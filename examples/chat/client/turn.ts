@@ -17,7 +17,7 @@ import { Waiter, waitWake } from "./waiting.ts";
 const MAX_ROUNDS = 8;
 const INFERENCE_DEADLINE_MS = 120_000;
 const TOOL_DEADLINE_MS = 30_000;
-/** `request_grant` waits on a PERSON, so it gets a human deadline rather than a worker one — and a
+/** `request_grant` waits on a PERSON, so it gets a human deadline rather than a worker one, and a
  *  longer one than the tool's own wait, or the REPL would give up on a decision still being made. */
 const HUMAN_DEADLINE_MS = 300_000;
 
@@ -26,8 +26,8 @@ const HUMAN_DEADLINE_MS = 300_000;
  *
  * This exists for exactly one thing: a `request_grant` in flight is waiting for the person at this
  * terminal, and the REPL is the only part of the system that can ask them. Reviewing pending
- * requests only BETWEEN turns cost two turns and two human inputs per grant — ask, end the turn,
- * approve, type "retry" — and the loop usually broke before it converged.
+ * requests only BETWEEN turns cost two turns and two human inputs per grant (ask, end the turn,
+ * approve, type "retry"), and the loop usually broke before it converged.
  */
 export type ToolWaitHook = (tool: string) => Promise<void>;
 
@@ -39,23 +39,23 @@ export async function runTurn(
 ): Promise<void> {
   for (let round = 0; round < MAX_ROUNDS; round++) {
     write("\nassistant> ");
-    // The chat picks no model — it references the thread by (conversationId, upToIndex) and lets
+    // The chat picks no model. It references the thread by (conversationId, upToIndex) and lets
     // the substrate decide who serves it.
     const { id: callId } = await client.put({
       kind: "llm_call",
-      // `owner` rides along so a worker can copy it onto the result and chunks — that is what lets
+      // `owner` rides along so a worker can copy it onto the result and chunks. That is what lets
       // a grant bind records the SESSION did not write but that were produced for it.
       body: { conversationId: thread.id, owner: OWNER, upToIndex: thread.upToIndex, tools: tools.all() },
       parentIds: [thread.id],
     });
     const { message, finishReason, streamed, tier, context, announced } = await streamResult(client, callId);
 
-    // Show the context window only when it actually dropped something — otherwise it is noise.
+    // Show the context window only when it actually dropped something; otherwise it is noise.
     // It is reported by the inference-worker, so unlike the tier it cannot be known up front.
     const win = context && context.hidden > 0 ? ` · ${context.sent} msgs, ${context.hidden} older not sent` : "";
     // The label normally went up before the first token (see streamResult). This is the fallback
-    // for when it could not: no progress record was visible — the session may lack a grant to read
-    // them — so the tier is only knowable from the result.
+    // for when it could not: no progress record was visible (the session may lack a grant to read
+    // them), so the tier is only knowable from the result.
     if (!announced && tier) write(`  ${dim(`[routed → ${tier}${win}]`)}\n`);
     else if (win) write(`${dim(`[context${win}]`)}\n`);
     await thread.append({ role: "assistant", content: message.content ?? null, tool_calls: message.tool_calls }, [callId]);
@@ -69,7 +69,7 @@ export async function runTurn(
     }
 
     // Final answer. If nothing streamed (an inference error, or a non-streamed reply), print the
-    // message content — otherwise errors would be invisible.
+    // message content, or errors would be invisible.
     if (!streamed) write(message.content || `(no content; finish_reason=${finishReason})`);
     write("\n");
     return;
@@ -117,7 +117,7 @@ interface StreamedResult {
 
 /** Follow one call: print `llm_chunk` deltas as they land, return when the `llm_result` arrives. */
 async function streamResult(client: RadiaClient, callId: string): Promise<StreamedResult> {
-  const stall = "no worker claimed this call — is the router/inference fleet running?";
+  const stall = "no worker claimed this call. Is the router/inference fleet running?";
   let lastIndex = -1; // watermark over ONE monotonic stream: an escalation hands it on, never resets
   let printed = false; // any visible text on the line yet
   let announced = false; // the routing label is on screen
@@ -129,7 +129,7 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
   const label = (text: string) => {
     endStatus(waiter.prefix);
     write(`${dim(`[${text}]`)}\n`);
-    waiter.prefix = ""; // the prompt is spent — later status lines must not reprint it
+    waiter.prefix = ""; // the prompt is spent, so later status lines must not reprint it
     announced = true;
   };
   const waiter = new Waiter(client, "assistant> ", (p) => {
@@ -183,7 +183,7 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
     if (!printed) await waiter.pump(callId, stall); // status only until output takes the line
     await waitWake();
   }
-  throw waiter.timeout(stall, "timed out waiting for inference — is OPENROUTER_API_KEY valid and the model available?");
+  throw waiter.timeout(stall, "timed out waiting for inference. Is OPENROUTER_API_KEY valid and the model available?");
 }
 
 async function awaitToolResult(
@@ -215,7 +215,7 @@ async function awaitToolResult(
 //
 // Each worker publishes what it serves as a `capability` record. The chat keeps a live set by
 // WATCHING those records: a new worker's capability streams in and the tool is available on the
-// next turn — no code change here, no per-turn re-query. The chat never learns that `calc` or
+// next turn, with no code change here and no per-turn re-query. The chat never learns that `calc` or
 // `run_code` exist; it learns that whatever is advertised exists, and dispatches by content.
 
 interface ProcedureBody {
@@ -226,12 +226,12 @@ interface ProcedureBody {
 }
 
 /**
- * The tool list, discovered rather than declared — from two sources with different lifetimes.
+ * The tool list, discovered rather than declared, from two sources with different lifetimes.
  *
  * `capability` records are what the WORKERS serve: global, and the same for every conversation.
  * `procedure` records are code this conversation's assistant wrote and named; they are offered
  * only back to that conversation, which is why the set has to be scoped before it is complete.
- * Neither is a list in this file — adding a worker or saving a procedure changes what the model
+ * Neither is a list in this file. Adding a worker or saving a procedure changes what the model
  * can do with no edit here.
  */
 export class ToolSet {
@@ -263,14 +263,14 @@ export class ToolSet {
     }
   }
 
-  /** Latest record per tool name wins — a redefined tool is a successor record, the same
+  /** Latest record per tool name wins: a redefined tool is a successor record, the same
    *  latest-wins rule as `kind_def`, so a restart with a changed description is not a duplicate.
    *  A procedure may not shadow a worker's tool: the built-in is the one that has a worker behind
    *  it, and a saved name that collided would silently change what a call does. */
   private async refresh(): Promise<void> {
     // Capabilities first: what the workers serve, one per tool name.
-    // `dir: "desc"` is load-bearing, not a flourish. A limited query returns the OLDEST matches,
-    // and a busy space accumulates capability records faster than it has tools — so an ascending
+    // `dir: "desc"` is essential, not a flourish. A limited query returns the OLDEST matches,
+    // and a busy space accumulates capability records faster than it has tools, so an ascending
     // page of 500 on a space with 505 records showed every tool EXCEPT the one published most
     // recently. The chat then ran without a tool it had been given, and the model correctly
     // reported it did not have it.
@@ -279,7 +279,7 @@ export class ToolSet {
       (b) => b.tool,
     );
     // A capability whose `def` is not a tool definition is skipped rather than passed on. One
-    // malformed record would otherwise break EVERY turn — the whole list goes to the model — and
+    // malformed record would otherwise break EVERY turn (the whole list goes to the model), and
     // publishing is only as trustworthy as the workers holding a `capability: put` grant.
     const tools = [...caps.values()]
       .map((r) => (r.body as { def?: ToolDef }).def)

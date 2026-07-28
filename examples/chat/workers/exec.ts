@@ -1,7 +1,7 @@
 // Code-execution worker. Claims `tool_call{tool:"run_code"}` and runs the model's program in a
 // permissionless subprocess (tools/exec-sandbox.ts), then acks the output as a TAINTED `tool_result`.
 //
-// Three processes, three blast radii — the worker never executes, the executor never holds
+// Three processes, three blast radii. The worker never executes, the executor never holds
 // anything:
 //
 //   workers/exec.ts   run token + space access + --allow-run   claims work, acks results
@@ -10,7 +10,7 @@
 // This is why it is a separate worker rather than a tool in `workers/tools.ts`: spawning needs
 // `--allow-run` (which that process deliberately lacks), and it holds a run token that model-written
 // code must never reach. Code running inside a process with a credential could `put`/`take` records
-// as that agent — the local space is a more attractive target than the internet.
+// as that agent; the local space is a more attractive target than the internet.
 //
 // The result is TAINTED, always. Output of model-written code operating on possibly-injected input
 // is untrusted by construction, and taint is exactly the machinery for that: it propagates through
@@ -18,7 +18,7 @@
 // privileged declassify.
 //
 // A note on retries: `tool_call` is claimable work, so a lease that expires is retried. That is
-// only sound because the sandbox has no side effects to double — a permissionless child cannot
+// only sound because the sandbox has no side effects to double: a permissionless child cannot
 // write, post, or spend. Granting the sandbox any capability would break the at-least-once
 // guarantee as well as the security story.
 
@@ -52,23 +52,23 @@ const client = new RadiaClient(url, token ? { token } : {});
 const INLINE_MAX = 4096;
 
 // The description is the documentation: the model learns the dialect and the limits from here,
-// never from the chat's system prompt. Saying what is DENIED matters as much as what is allowed —
-// a model that knows there is no network will not waste a turn discovering it.
+// never from the chat's system prompt. Saying what is DENIED matters as much as what is allowed.
+// A model that knows there is no network will not waste a turn discovering it.
 const RUN_CODE: ToolDef = {
   type: "function",
   function: {
     name: "run_code",
     description:
       `Run JavaScript in a sandbox and get its output back. Use it for calculation, parsing, ` +
-      `data transformation, generating file content, and checking your own reasoning — anything ` +
-      `where running beats guessing. Print results with console.log; stdout is what you get back. ` +
-      `Pass save_as to STORE stdout as an artifact instead of only returning it — that is how you ` +
+      `data transformation, generating file content, and checking your own reasoning (anything ` +
+      `where running beats guessing). Print results with console.log; stdout is what you get back. ` +
+      `Pass save_as to STORE stdout as an artifact instead of only returning it. That is how you ` +
       `save a file (SVG, JSON, CSV, Markdown, code) for the user: write the content with ` +
       `console.log and give save_as a filename. For binary formats, print base64 and set ` +
       `encoding:"base64". Output larger than ${INLINE_MAX} characters is stored as an artifact ` +
       `automatically and you get a preview plus its id. The sandbox has NO network, NO filesystem, ` +
       `NO environment variables and cannot start processes, so do not attempt ` +
-      `fetch/Deno.env — they fail. ` +
+      `fetch/Deno.env; they fail. ` +
       (readRoots.length
         ? `It CAN read files under: ${readRoots.join(", ")} (read-only, with Deno.readTextFileSync/` +
           `Deno.readDirSync); anything outside those paths is denied. `
@@ -99,7 +99,7 @@ const SAVE_PROCEDURE: ToolDef = {
       "Save a program under a NAME so it can be run again later without you re-typing it. The " +
       "saved procedure becomes one of your tools in this conversation: call it by name, and the " +
       "object you pass is available inside the code as `args`. Use this when you have written " +
-      "code you expect to run more than once — a calculation you will repeat with different " +
+      "code you expect to run more than once: a calculation you will repeat with different " +
       "inputs, a parser, a checker. Saving costs one call; re-pasting the same program every " +
       "time costs its full length in every message that follows. The code runs in the SAME " +
       "sandbox as run_code, with the same limits. Re-saving the same name replaces it. Returns " +
@@ -108,7 +108,7 @@ const SAVE_PROCEDURE: ToolDef = {
       type: "object",
       properties: {
         name: { type: "string", description: "Tool name to save it under: lowercase letters, digits and underscores, e.g. 'hash_text'." },
-        description: { type: "string", description: "What it does and what `args` it expects — this becomes the tool description you will see later, so write it for your future self." },
+        description: { type: "string", description: "What it does and what `args` it expects. This becomes the tool description you will see later, so write it for your future self." },
         code: { type: "string", description: "The JavaScript program. Read inputs from the `args` object; print results with console.log." },
         parameters: { type: "object", description: "Optional JSON Schema for `args`, same shape as any tool's parameters. Omit for a procedure that takes no input." },
       },
@@ -125,7 +125,7 @@ const READ_PROCEDURE: ToolDef = {
       "Read back the source of a procedure you saved earlier. Use this BEFORE changing one: the " +
       "code is not in your context once the turn that wrote it has scrolled away, and rewriting " +
       "from memory risks losing behaviour you had already got right. To fix or extend a " +
-      "procedure, read it, edit the text, and save_procedure under the SAME name — that replaces " +
+      "procedure, read it, edit the text, and save_procedure under the SAME name, which replaces " +
       "it. Returns {name, description, code, versions}, where versions counts how many times it " +
       "has been saved.",
     parameters: {
@@ -142,7 +142,7 @@ const RETIRE_PROCEDURE: ToolDef = {
     name: "retire_procedure",
     description:
       "Stop offering a procedure you saved. Use it when one turned out to be wrong, was a bad " +
-      "idea, or is no longer worth its place in your tool list — every tool you carry costs " +
+      "idea, or is no longer worth its place in your tool list. Every tool you carry costs " +
       "tokens on every request, so a procedure you will not call again is worth retiring. This " +
       "does not erase anything: the code stays readable with read_procedure and saving the same " +
       "name again brings it back. Returns {name, retired}.",
@@ -165,19 +165,19 @@ await publishCapability(client, RETIRE_PROCEDURE);
 // EVERYTHING the handler reads must be declared above `agentLoop`, which never returns: a `const`
 // placed after it is never evaluated, so it stays in the temporal dead zone for the life of the
 // process and the first handler that touches it throws `Cannot access '<name>' before
-// initialization` — silently, since a handler that throws just nacks and retries.
+// initialization` (silently, since a handler that throws just nacks and retries).
 
 /** This worker's own tools. A fallback for the check below, for the moment before capabilities
  *  have been read (or if this run has no grant to read them). */
 const RESERVED = new Set(["run_code", "save_procedure", "read_procedure", "retire_procedure"]);
 
 /**
- * Tool names a procedure must not take — every tool ANY worker advertises, discovered rather than
+ * Tool names a procedure must not take: every tool ANY worker advertises, discovered rather than
  * listed.
  *
  * A hardcoded list would only ever cover this worker's own tools, and the names that matter most
  * belong to others: `read_file`, `generate_image`, `save_content`, `space_query`. Letting a
- * procedure take one of those is not a naming annoyance, it is a HIJACK — this worker would add a
+ * procedure take one of those is not a naming annoyance, it is a HIJACK. This worker would add a
  * claim pattern for `tool_call{tool:"read_file"}` alongside the tools-worker's, both would race
  * for each call, and whichever claimed first would answer. The model would meanwhile see the real
  * tool's description in its list, because the chat prefers a capability over a procedure of the
@@ -196,8 +196,8 @@ async function capabilityNames(c: RadiaClient): Promise<Set<string>> {
 const NAME_RE = /^[a-z][a-z0-9_]{0,40}$/;
 
 // The claim patterns, MUTABLE on purpose. `agentLoop` re-reads this array on every pass, so
-// appending to it is how this worker starts serving a procedure the assistant saved a moment ago —
-// without a restart, and without claiming `tool_call` wholesale (which would steal other workers'
+// appending to it is how this worker starts serving a procedure the assistant saved a moment ago,
+// without a restart and without claiming `tool_call` wholesale (which would steal other workers'
 // work). Every procedure the space already holds is added at startup; new ones arrive on the watch
 // below. Dispatch stays content-routed: one pattern per tool name, exactly like a built-in tool.
 const patterns = [
@@ -213,7 +213,7 @@ async function adoptProcedures(): Promise<void> {
     const builtin = await capabilityNames(client);
     for (const rec of await client.queryAll({ kind: "procedure" })) {
       const name = String((rec.body as { name?: string }).name ?? "");
-      // Never claim a name a worker serves — that is the race described on `capabilityNames`. A
+      // Never claim a name a worker serves: that is the race described on `capabilityNames`. A
       // procedure saved before that worker published simply stops being claimed here.
       if (!NAME_RE.test(name) || served.has(name) || builtin.has(name)) continue;
       served.add(name);
@@ -232,7 +232,7 @@ await adoptProcedures();
  * The procedure a call is asking for, or a refusal.
  *
  * The conversation check is a BOUNDARY, not a filter. The chat only offers a procedure to the
- * conversation that wrote it, but "not offered" is not "not callable" — a model can name any tool
+ * conversation that wrote it, but "not offered" is not "not callable". A model can name any tool
  * it likes, and a tool_call is just a record anyone may write. So the scope is enforced here,
  * where the code would actually run.
  */
@@ -243,7 +243,7 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
   const latest = newestByKey<{ name?: string }>(rows, (b) => b?.name).get(name);
   if (!latest) return null;
   // The RECORD, not just its body: a caller has to be able to name the exact version it used.
-  // Re-saving a name is a successor, so "the procedure called X" is not a stable referent — only
+  // Re-saving a name is a successor, so "the procedure called X" is not a stable referent; only
   // a record id is.
   return { id: latest.id, ...(latest.body as { name: string; artifactId: string; description?: string; retired?: boolean }) };
 }
@@ -265,13 +265,13 @@ await agentLoop(client, {
     //
     // PROVENANCE. For `run_code` the program is in the tool_call body, so "what exactly ran" is a
     // query. A procedure call carries only {tool, args}, and the code lives elsewhere and can be
-    // re-saved — so without this the result could never be attributed to the version that produced
+    // re-saved, so without this the result could never be attributed to the version that produced
     // it. `provenance` becomes a parent link plus a body field on the result below.
     let provenance: { name: string; recordId: string; artifactId: string } | undefined;
     let code = String(b.args?.code ?? "");
     if (b.tool && b.tool !== "run_code") {
       // Checked at execution too, not just at save: a worker may have started serving this name
-      // since. The real tool wins — this worker refuses rather than answering for it.
+      // since. The real tool wins: this worker refuses rather than answering for it.
       if ((await capabilityNames(c)).has(b.tool)) {
         return {
           kind: "tool_result",
@@ -284,7 +284,7 @@ await agentLoop(client, {
         // A retired name is still claimed on purpose, so this answers at once instead of leaving
         // the caller to wait out the tool deadline. Saving the name again un-retires it.
         const why = proc?.retired
-          ? `procedure '${b.tool}' has been retired — save it again to bring it back`
+          ? `procedure '${b.tool}' has been retired; save it again to bring it back`
           : `no procedure '${b.tool}' saved in this conversation`;
         return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: why }, taint: true };
       }
@@ -292,12 +292,12 @@ await agentLoop(client, {
       const source = new TextDecoder().decode(await c.getArtifact(proc.artifactId));
       // `args` is injected as a literal rather than passed on argv: the sandbox takes its program
       // on stdin and has no environment, and a JSON literal is the one channel that needs no
-      // permission. JSON.stringify also means the model's arguments arrive as DATA — they are
+      // permission. JSON.stringify also means the model's arguments arrive as DATA. They are
       // never concatenated into executable positions.
       code = `const args = ${JSON.stringify(b.args ?? {})};\n${source}`;
     }
     // The source is already in the tool_call record, so every program the model ever ran is
-    // auditable by query — `{kind: tool_call, tool: "run_code"}` is the execution log, with the
+    // auditable by query: `{kind: tool_call, tool: "run_code"}` is the execution log, with the
     // result and any artifact as its children.
     await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "executing", by: ME, note: `${code.length} chars` }, [callId]);
     if (!code.trim()) {
@@ -352,8 +352,8 @@ await agentLoop(client, {
         },
       },
       // The procedure record becomes a PARENT of the result, so "which code produced this?" is a
-      // lineage walk rather than a guess — the question a model answered wrong from memory, and
-      // then invented a reason for. The claimed tool_call is added as a parent by `ack`.
+      // lineage walk rather than a guess. That is the question a model answered wrong from memory,
+      // and then invented a reason for. The claimed tool_call is added as a parent by `ack`.
       ...(provenance ? { parentIds: [provenance.recordId] } : {}),
       taint: true, // executed-code output is untrusted by construction
     };
@@ -363,8 +363,8 @@ await agentLoop(client, {
 /**
  * Store a named program: the code becomes an artifact, the name becomes a `procedure` record.
  *
- * The write is content-keyed the same way `capability` and `kind_def` are — an identical re-save
- * dedups, a changed one is a successor and latest wins — so "save it again under the same name"
+ * The write is content-keyed the same way `capability` and `kind_def` are (an identical re-save
+ * dedups, a changed one is a successor and latest wins), so "save it again under the same name"
  * is an update, never a 409.
  */
 async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
@@ -377,9 +377,9 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
   const fail = (output: string) => ({ kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output }, taint: true });
 
   if (!NAME_RE.test(name)) return fail("`name` must be lowercase letters, digits and underscores, starting with a letter");
-  if ((await capabilityNames(c)).has(name)) return fail(`'${name}' is already a tool served by a worker — choose another name`);
+  if ((await capabilityNames(c)).has(name)) return fail(`'${name}' is already a tool served by a worker; choose another name`);
   if (!code.trim()) return fail("save_procedure needs a `code` argument");
-  if (!description.trim()) return fail("save_procedure needs a `description` — it is what you will read when deciding to call it later");
+  if (!description.trim()) return fail("save_procedure needs a `description`: it is what you will read when deciding to call it later");
   if (!b.conversationId) return fail("save_procedure needs a conversation to belong to");
 
   await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "saving", by: ME, note: name }, [callId]);
@@ -410,7 +410,7 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
     patterns.push({ kind: "tool_call", match: { tool: name } });
   }
   // Say so when it takes no input. A procedure saved without `parameters` can only ever do the one
-  // thing its literals encode — which is easy to write by accident and expensive to discover three
+  // thing its literals encode, which is easy to write by accident and expensive to discover three
   // turns later, when the model reaches for it with an argument and finds it ignores them. The
   // feedback belongs here, at the moment it can still be acted on, not in the description (which is
   // read before the code is written, when the limitation is not yet visible).
@@ -420,7 +420,7 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
   const note = takesInput
     ? undefined
     : usesArgs
-    ? "saved with no `parameters` schema, but the code reads `args` — callers will not know what to pass"
+    ? "saved with no `parameters` schema, but the code reads `args`, so callers will not know what to pass"
     : "saved with no `parameters`: it takes no input and will do the same thing on every call";
   return {
     kind: "tool_result",
@@ -439,8 +439,8 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
  * This is what makes a saved procedure maintainable instead of write-once: the code leaves the
  * model's context as soon as the turn that wrote it scrolls out of the window, and without a way
  * to read it back, "fix the bug in X" means reconstructing X from its description and hoping.
- * Every version is still on the space — records are immutable, so a re-save is a successor, not an
- * overwrite — which is why this also reports how many there have been.
+ * Every version is still on the space (records are immutable, so a re-save is a successor, not an
+ * overwrite), which is why this also reports how many there have been.
  */
 async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
   const callId = rec.id;
@@ -475,7 +475,7 @@ async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
 /**
  * Retire a procedure: stop offering it, without erasing it.
  *
- * Records are immutable, so this is a SUCCESSOR carrying `retired: true` — the same latest-wins
+ * Records are immutable, so this is a SUCCESSOR carrying `retired: true`: the same latest-wins
  * rule that makes re-saving a name an update. Nothing is deleted, which is the point: the code
  * stays readable, the history stays intact, and saving the name again simply writes a newer record
  * that is not retired. A delete would also be the wrong shape for a space where every earlier
@@ -498,7 +498,7 @@ async function retireProcedure(rec: RadiaRecord, c: RadiaClient) {
     parentIds: [callId],
   }, `procedure:${b.conversationId}:${name}:retired:${await shortHash(String(b.args?.reason ?? ""))}`);
 
-  // The claim pattern deliberately STAYS. Two reasons, and the second is the load-bearing one:
+  // The claim pattern deliberately STAYS. Two reasons, and the second is the critical one:
   // a retired name that is still claimed answers "it has been retired" immediately, where an
   // unclaimed one would leave the caller waiting out the tool deadline for a stall diagnosis; and
   // this handler runs INSIDE agentLoop's iteration over `patterns`, so splicing it here would

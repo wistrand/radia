@@ -18,7 +18,7 @@ export interface RankedCandidate extends Candidate {
 
 /**
  * Filter to claimable candidates and rank them in claim order
- * (effective_priority desc, available_at asc, record id asc — the partial-index order).
+ * (effective_priority desc, available_at asc, record id asc: the partial-index order).
  * `match` (when present) is re-checked here; `now` is the DB clock.
  */
 export function rankClaimable(
@@ -33,7 +33,7 @@ export function rankClaimable(
     if (match && !matchesRecord(c.record, match)) continue;
     if (requireUntainted && c.record.runtimeMeta.taint) continue; // sensitive consumer skips tainted work
     // A self-scoped grant restricts a claim to the principal's own records. `created_by` is
-    // envelope metadata, not body, so no pattern can express this — it has to be a claim filter.
+    // envelope metadata, not body, so no pattern can express this. It has to be a claim filter.
     if (createdBy && !createdBy.includes(c.record.runtimeMeta.createdBy)) continue;
     const e = c.env;
     if (e.state === "available" && e.availableAt <= now) {

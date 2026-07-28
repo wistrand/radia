@@ -1,21 +1,21 @@
-// Router-worker — model selection delegated to the substrate. The chat puts an UNTIERED `llm_call`
+// Router-worker: model selection delegated to the substrate. The chat puts an UNTIERED `llm_call`
 // (no routing logic in the client); this worker claims those (`{tier: {$exists:false}}`), classifies
 // the turn, and re-dispatches a TIERED `llm_call` that the matching inference-worker serves. The
 // result stays keyed to the ORIGINAL call the chat awaits (`replyTo`), so the chat is oblivious to
 // the indirection.
 //
 // Classification is itself an `llm_call`: the router puts a cheap, model-overridden call
-// (`--classify-model`) that an inference-worker serves, then reads the tier word back — so the API
-// key stays isolated in the inference fleet and routing is expressed through the substrate, not a
-// direct model call here.
+// (`--classify-model`) that an inference-worker serves, then reads the tier word back. The API
+// key therefore stays isolated in the inference fleet, and routing is expressed through the
+// substrate rather than a direct model call here.
 //
 // WHY A CLASSIFIER, given that escalation exists. This was removed once, on the argument that
 // dispatching to the cheapest tier and letting a worker escalate when out of depth pays for routing
 // only on the turns that were misrouted. That argument assumes the cheap model can RECOGNIZE it is
 // out of depth. Measured on real traffic it does not: across a tool-heavy analytical session the
 // cheap tier escalated on nothing and answered from invented numbers instead. Self-assessment is
-// the weakest available judge, so the judgment is made by a different model — at ~0.5-1.2s added
-// before the first token. Escalation stays as the catch for what the classifier under-routes; two
+// the weakest available judge, so the judgment is made by a different model, at a cost of ~0.5-1.2s
+// added before the first token. Escalation stays as the catch for what the classifier under-routes; two
 // mechanisms for one decision is a deliberate trade here, not an oversight.
 //
 // Tier NAMES never appear in this file. Live tiers come from `model` records ordered by `rank`, the
@@ -42,7 +42,7 @@ const client = new RadiaClient(url, token ? { token } : {});
  *  `modalities` is text, so this stays backward compatible with workers that predate the field. */
 async function liveTiers(c: RadiaClient): Promise<string[]> {
   // A latest-wins registry like any other: one entry per tier, and a retired `model` record takes
-  // its tier out of rotation — so a tier-worker that goes away stops being routed to, instead of
+  // its tier out of rotation, so a tier-worker that goes away stops being routed to, instead of
   // leaving its advertisement behind for the router to dispatch into silence.
   const models = [...activeByKey<{ tier?: string }>(await c.query({ kind: "model" }, 100), (b) => b?.tier).values()]
     .map((m) => m.body as { tier: string; rank?: number; modalities?: string[] })
@@ -52,7 +52,7 @@ async function liveTiers(c: RadiaClient): Promise<string[]> {
 
 /** Fallback for a classifier error/timeout: choose by POSITION in the discovered list, so a renamed
  *  or added tier still routes. Hard/analytical → most capable, small talk → cheapest, else middle.
- *  An UNKNOWN question is never scored as small talk — a zero-length string used to look like "hi"
+ *  An UNKNOWN question is never scored as small talk: a zero-length string used to look like "hi"
  *  and route the hardest round of a turn to the cheapest model. */
 function heuristicIndex(text: string, n: number, toolCalls: number): number {
   const t = text.toLowerCase();
@@ -67,7 +67,7 @@ function heuristicIndex(text: string, n: number, toolCalls: number): number {
 }
 
 /** The turn being routed: the newest `user` message, and how much tool work has happened since it.
- *  Expands the read until that message is in view — a tool-heavy round pushes it far back, and a
+ *  Expands the read until that message is in view. A tool-heavy round pushes it far back, and a
  *  fixed peek at the newest messages silently classifies an EMPTY question. Every round of a turn
  *  is a separate llm_call and is classified independently, so this runs per round. */
 async function currentTurn(
@@ -98,8 +98,8 @@ async function currentTurn(
 }
 
 /** Ask a cheap model which tier this turn needs. Returns a LIVE tier, or null on timeout/parse
- *  failure so the caller falls back. The call is `stream:false` — no chunk records for a routing
- *  decision — and carries `model`, which overrides whichever tier-worker picks it up. */
+ *  failure so the caller falls back. The call is `stream:false` (no chunk records for a routing
+ *  decision) and carries `model`, which overrides whichever tier-worker picks it up. */
 async function classifyLLM(text: string, toolCalls: number, tiers: string[], c: RadiaClient): Promise<string | null> {
   if (!text.trim() || tiers.length === 0) return null;
   const live = new Set(tiers);
@@ -138,7 +138,7 @@ await agentLoop(client, {
   patterns: [{ kind: "llm_call", match: { tier: { $exists: false } } }],
   handle: async (rec, c) => {
     const body = rec.body as { conversationId?: string; upToIndex?: number };
-    // Report the claim before the classifier round-trip — it is the first sign of life the chat
+    // Report the claim before the classifier round-trip. It is the first sign of life the chat
     // gets, and with a classifier in the path there is now a visible gap to explain.
     await progress(c, { conversationId: body.conversationId, callId: rec.id, stage: "routing", by: ME }, [rec.id]);
     const tiers = await liveTiers(c);

@@ -1,6 +1,6 @@
 // In-process wakeup for watch streams. A mutation calls notify(); SSE loops await wait()
 // so they react near-instantly instead of polling. This is the embedded equivalent of
-// Postgres LISTEN/NOTIFY: a wakeup only — the event log remains the source of truth.
+// Postgres LISTEN/NOTIFY: a wakeup only. The event log remains the source of truth.
 
 export class Notifier {
   #waiters: Array<() => void> = [];

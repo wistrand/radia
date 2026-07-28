@@ -25,7 +25,7 @@ export interface PutRequest {
   deadlineAt?: string;
   retentionUntil?: string;
   /** Source attestation: a client may RAISE taint (`true`) to mark its output as untrusted data.
-   *  `false`/absent is ignored — the server never lets a client clear taint (only declassify does). */
+   *  `false`/absent is ignored. The server never lets a client clear taint (only declassify does). */
   taint?: boolean;
 }
 
@@ -33,7 +33,7 @@ export interface BuildContext {
   principal: string; // server-known caller (auto-provisioned locally in M0)
   schemaVersion: number; // post-validation schema version (registry lands in M1)
   now: string; // DB clock, ISO 8601
-  /** Server-derived authority chain — set only for work emitted under a lease (ack). */
+  /** Server-derived authority chain. Set only for work emitted under a lease (ack). */
   delegationContext?: DelegationContext;
   /** Server-computed taint (client-raise OR any data-parent tainted). Defaults untainted. */
   taint?: boolean;
@@ -57,7 +57,7 @@ export async function buildRecord(
   const bodyJson = JSON.stringify(req.body ?? null);
   // U+0000 is valid in a JSON string and CANNOT be represented in Postgres `jsonb`. Postgres and
   // PGlite parse bodies into `body_jsonb` for predicate pushdown, so such a body is unstorable
-  // there — and fails as a 500 from deep inside the driver — while SQLite accepts it. Rejected
+  // there (and fails as a 500 from deep inside the driver) while SQLite accepts it. Rejected
   // here, in core, so every adapter agrees and the caller gets an answer, not an internal error.
   //
   // The pattern matches a genuine NUL ESCAPE: an even number of preceding backslashes. The literal

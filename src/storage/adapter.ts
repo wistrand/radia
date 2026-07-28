@@ -1,4 +1,4 @@
-// StorageAdapter — the port every storage backend implements.
+// StorageAdapter: the port every storage backend implements.
 //
 // This interface IS the storage-adapter contract. The conformance suite targets it,
 // not any concrete backend, so PGlite, SQLite (both M0), and Postgres (M1) satisfy the
@@ -21,7 +21,7 @@ export type Ulid = string;
 /**
  * The states a record's envelope can actually be IN. There is deliberately no `expired`: a lapsed
  * lease leaves the record `leased` and a later take reclaims it, so nothing ever writes such a row.
- * Never add one: `state=expired` then becomes a query that always answers zero — a confident
+ * Never add one: `state=expired` then becomes a query that always answers zero, a confident
  * nothing beside hundreds of demonstrably lapsed leases. Expiry is a PREDICATE over `leased`
  * records (`?state=leased&expired=1`), not a state.
  */
@@ -32,7 +32,7 @@ export type RecordState =
   | "dead_letter";
 
 /**
- * The single authorization chain for delegated work — server-derived from the CLAIMED LEASE,
+ * The single authorization chain for delegated work, server-derived from the CLAIMED LEASE and
  * never from `parent_ids` (data parents contribute no authority). Present only on records emitted
  * via `ack` under a managed run's lease; a direct put or operator-owned work carries none.
  */
@@ -89,7 +89,7 @@ export interface Lease {
 }
 
 // ---------------------------------------------------------------------------
-// Compiled match — backend-neutral pattern AST
+// Compiled match: backend-neutral pattern AST
 // ---------------------------------------------------------------------------
 //
 // core/matching.ts compiles a wire pattern into this neutral AST over declared indexed
@@ -122,10 +122,10 @@ export interface OrderBy {
 /**
  * What an ops-plane read is narrowed to: the principal's own records (`createdBy`) on `kinds`.
  * Both filters are ANDed and both are applied in SQL, never after the fact. `createdBy` holds
- * PRINCIPALS as stored on the record (`run:…` for a token-bearing session), not agent names — what
+ * PRINCIPALS as stored on the record (`run:…` for a token-bearing session), not agent names. What
  * "my records" means is resolved by the runtime before it gets here.
  *
- * `alsoReadable` filters NOTHING — it is carried so the answer can describe itself honestly. A
+ * `alsoReadable` filters NOTHING. It is carried so the answer can describe itself honestly. A
  * principal's authority is not uniform across kinds: it can hold a self-scoped read grant on one
  * and an unscoped one on another, and then the ops aggregate (always self-scoped, by design) counts
  * fewer records than its own `query` returns for the same kind. With no hint in the aggregate, the
@@ -138,7 +138,7 @@ export interface StatsScope {
   /** Kinds the aggregate covers, narrowed to `createdBy`. */
   kinds?: string[];
   /** Descriptive only: kinds whose READS are not narrowed, so a query on them returns more than
-   *  these counts. Never used as a filter — see the note above. */
+   *  these counts. Never used as a filter; see the note above. */
   alsoReadable?: string[];
 }
 
@@ -162,10 +162,10 @@ export interface EventInput {
 
 export interface SpaceEvent extends EventInput {
   seq: number; // unique per-event identity (display / dedup)
-  // Gap-safe resume cursor — OPAQUE to callers (transport echoes it via SSE id / Last-Event-ID;
+  // Gap-safe resume cursor, OPAQUE to callers (transport echoes it via SSE id / Last-Event-ID;
   // only the adapter interprets it). On single-connection backends it is the seq; on pooled
   // Postgres it is the inserting transaction id (xid), and `getEvents` only returns events below
-  // the snapshot watermark — so a watcher advancing by `cursor` never skips an event that
+  // the snapshot watermark, so a watcher advancing by `cursor` never skips an event that
   // committed out of seq order (see agent_docs/design-storage.md "Watch delivery under concurrency").
   cursor: string;
   id: Ulid;
@@ -180,13 +180,13 @@ export interface CompiledMatch {
 
 /**
  * Keyset pagination over record id. `after` is EXCLUSIVE and is read in the direction of `dir`,
- * so it is "the last id of the previous page" either way — ids strictly greater for `asc`,
+ * so it is "the last id of the previous page" either way: ids strictly greater for `asc`,
  * strictly smaller for `desc`.
  *
  * Note what a ULID cursor does and does not promise. Ids sort by creation time only to the
  * MILLISECOND; records written inside the same millisecond differ in their random half, so `desc`
  * is "newest first" at millisecond resolution, not a strict write order. What it does guarantee is
- * a total, stable order — which is all pagination needs, and is exactly what an offset cannot give
+ * a total, stable order, which is all pagination needs, and is exactly what an offset cannot give
  * while the space is being written to.
  */
 export interface Page {
@@ -296,14 +296,14 @@ export interface StorageAdapter {
   put(input: PutInput): Promise<PutResult>;
 
   /** First matching record, or null. (Phase 1) */
-  /** `scope.createdBy` restricts reads to records written by those principals — how a self-scoped
-   *  grant narrows the coordination plane, not only the ops plane. */
+  /** `scope.createdBy` restricts reads to records written by those principals. This is how a
+   *  self-scoped grant narrows the coordination plane, not only the ops plane. */
   readOne(match: CompiledMatch, scope?: StatsScope): Promise<RadiaRecord | null>;
 
   /**
    * Matching records, ordered by the pattern, capped at `limit`.
    *
-   * `page` is KEYSET pagination over record id — a cursor, not an offset, so a page stays stable
+   * `page` is KEYSET pagination over record id: a cursor, not an offset, so a page stays stable
    * while records are being written. It is defined only for the natural (id) order, i.e. when the
    * pattern carries no `orderBy`: a keyset cursor has to be the whole sort key, and for a body
    * field that means (value, id) pairs plus the type semantics of the oracle. Refusing the
@@ -319,7 +319,7 @@ export interface StorageAdapter {
    * Counts by kind and state.
    *
    * `scope` makes this a GENUINE aggregate over a subset, not a whole-space total filtered
-   * afterwards — the difference matters because a wrongly-filtered count is invisible in the
+   * afterwards. The difference matters because a wrongly-filtered count is invisible in the
    * output, it just looks plausible. `createdBy` is a set of principals (an agent's run
    * principals, resolved by the runtime; the run → agent mapping is not a column), `kinds` limits
    * which kinds are counted at all.
@@ -361,18 +361,18 @@ export interface StorageAdapter {
 
   /**
    * Records for a set of ids, in one round trip. Missing ids are simply absent from the result,
-   * and order is not guaranteed — callers that need one must impose it. This exists so a graph
+   * and order is not guaranteed, so callers that need one must impose it. This exists so a graph
    * walk costs a round trip per LEVEL rather than per node; `getLineage` is the caller that
    * makes the difference visible on a deep DAG.
    */
   getRecords(ids: Ulid[]): Promise<RadiaRecord[]>;
 
   /**
-   * Records whose parent_ids include this id — the reverse of lineage (relationship graph).
+   * Records whose parent_ids include this id: the reverse of lineage (relationship graph).
    *
    * BOUNDED, and paged by the same keyset contract as `query`: `page.after` is the last child id of
-   * the previous page. Fan-out is unbounded in principle — a conversation accumulates a child per
-   * message, a task per result — so an unlimited read here materializes a whole subtree to answer
+   * the previous page. Fan-out is unbounded in principle (a conversation accumulates a child per
+   * message, a task per result), so an unlimited read here materializes a whole subtree to answer
    * "who references this", and a caller that walks the graph would do it per node.
    */
   childrenOf(recordId: Ulid, limit: number, page?: Page): Promise<RadiaRecord[]>;
@@ -381,7 +381,7 @@ export interface StorageAdapter {
    *  start). The cursor is adapter-defined and opaque to callers (see SpaceEvent.cursor). (Phase 5) */
   getEvents(afterCursor: string, limit: number): Promise<SpaceEvent[]>;
 
-  /** The current high-water cursor — a fresh watch's starting point, so only future events are
+  /** The current high-water cursor: a fresh watch's starting point, so only future events are
    *  delivered. Opaque; pass it back to getEvents. (M1) */
   latestCursor(): Promise<string>;
 
@@ -390,12 +390,12 @@ export interface StorageAdapter {
 
   /**
    * OPTIONAL physical hint: this kind declares these body paths, and predicates on them are about
-   * to be pushed down. Purely an optimization — an adapter that ignores it must return identical
+   * to be pushed down. Purely an optimization: an adapter that ignores it must return identical
    * results, and the default is to have no implementation at all.
    *
    * It exists because one adapter cannot plan a claim without it. Postgres estimates a jsonb
    * predicate at ~26 rows where 5,715 match, concludes a sort is free, and collects every match
-   * through the body index instead of walking the claim index — 200× off, and not fixable by
+   * through the body index instead of walking the claim index. That is 200× off, and not fixable by
    * rewriting the query (see gotchas.md, "a claim on Postgres is planned on a guess"). The fix is
    * to give the planner a real estimate for the expression, which is per-path DDL, which means the
    * adapter has to be told the paths. It is deliberately NOT "create an index": what a path costs
@@ -406,7 +406,7 @@ export interface StorageAdapter {
   prepareKind?(kind: string, paths: string[]): Promise<void>;
 
   /** Envelopes currently in a given state, capped (diagnostics). `excludeKinds` filters them out
-   *  at the query level (before the cap) — used to skip reference kinds in the starvation check. */
+   *  at the query level (before the cap), used to skip reference kinds in the starvation check. */
   envelopesInState(
     state: RecordState,
     limit: number,
@@ -418,12 +418,12 @@ export interface StorageAdapter {
    * Emergency quarantine: force every `leased` record owned by `ownerRun` back to `available`,
    * bumping the epoch (so a late `ack`/`renew` from that run fences out as `lease_lost`) and the
    * attempt, and appending a `quarantine` event per record. Returns how many were invalidated.
-   * Not a lease settlement — used when a run is stopped-with-quarantine.
+   * Not a lease settlement; used when a run is stopped-with-quarantine.
    */
   quarantineLeasesOf(ownerRun: string, now: string): Promise<number>;
 
   /**
-   * Admin/control-plane forced state transition (bypasses lease fencing — used to remediate
+   * Admin/control-plane forced state transition (bypasses lease fencing, used to remediate
    * another worker's stuck records). Moves a record from one of `fromStates` to `toState`
    * (optionally only if its lease is expired, and/or bumping attempt), appends an event, and
    * returns whether a row actually changed. Not a lease settlement.

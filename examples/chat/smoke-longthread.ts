@@ -1,4 +1,4 @@
-// A LONG, awkward conversation — the shape that has actually broken this app.
+// A LONG, awkward conversation: the shape that has actually broken this app.
 //
 //   deno run -A examples/chat/smoke-longthread.ts
 //
@@ -10,7 +10,7 @@
 //
 // No API key: a message is a record, and the context path is a pure function over rows the space
 // returns. What is exercised here is the real query (`orderBy index desc`, limited), the real
-// window expansion, and the real assembly — not a re-implementation.
+// window expansion, and the real assembly. Nothing here is a re-implementation.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./space/kinds.ts";
@@ -162,8 +162,8 @@ const big = await client.query({ kind: "message", match: { conversationId: conv,
 check("a 20k message round-trips intact", big.some((r) => String((r.body as ThreadRow).content ?? "").length === 20_000));
 
 // U+0000 is valid JSON and has no representation in Postgres `jsonb`, so it must be refused at the
-// boundary rather than exploding inside the driver — and refused identically on every adapter,
-// which is the property that broke when a parsed body column arrived.
+// boundary rather than exploding inside the driver. It must also be refused identically on every
+// adapter, which is the property that broke when a parsed body column arrived.
 const nul = String.fromCharCode(0);
 let nulRejected = "";
 try {

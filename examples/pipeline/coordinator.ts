@@ -1,5 +1,5 @@
 // The coordinator seeds work and reads outcomes. It knows nothing about which agent will
-// do what — it just posts a `job` and a standalone `task`, then waits for the results to
+// do what. It just posts a `job` and a standalone `task`, then waits for the results to
 // appear. Run it against a space that has a planner, workers, and an aggregator running.
 //
 //   deno run --allow-net --allow-env examples/coordinator.ts

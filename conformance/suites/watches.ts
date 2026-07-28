@@ -1,4 +1,4 @@
-// M1 conformance: the Space-level watch primitives that back the SSE endpoint —
+// M1 conformance: the Space-level watch primitives that back the SSE endpoint.
 // createWatch (validates the pattern), matchesEvent (wakeup semantics: available records
 // matching the pattern), and latestCursor (the starting cursor). The SSE transport and
 // resumption are covered by an HTTP smoke, not here. Runs on every adapter.
@@ -87,7 +87,7 @@ export const watchSuites: Suite[] = [
       assert(acked.status === "ok");
 
       // The ack event is `consumed` and carries the parent's kind, so it can never be the
-      // wakeup — the result needs a `put` event of its own or the watcher sleeps forever.
+      // wakeup: the result needs a `put` event of its own or the watcher sleeps forever.
       const wakeups: SpaceEvent[] = [];
       for (const e of await eventsOf(space)) {
         if (await space.matchesEvent(wantResult, e)) wakeups.push(e);

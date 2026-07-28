@@ -1,5 +1,5 @@
 // The kinds the demo agents coordinate over. Registering declares which body paths are
-// matchable — that is what lets a worker claim `{kind:task, match:{op}}` and the
+// matchable. That is what lets a worker claim `{kind:task, match:{op}}` and the
 // aggregator group results by job.
 
 import type { RadiaClient } from "../../sdk/ts/client.ts";

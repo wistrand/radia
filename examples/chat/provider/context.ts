@@ -44,9 +44,9 @@ export function assembleContext(
   const note = hidden === 0
     ? ""
     : hidden === 1
-    ? "\n\n[1 earlier message in this conversation is not included here. It is not lost — retrieve it if you need it.]"
+    ? "\n\n[1 earlier message in this conversation is not included here. It is not lost; retrieve it if you need it.]"
     : `\n\n[${hidden} earlier messages in this conversation are not included here. ` +
-      `They are not lost — retrieve them if you need them.]`;
+      `They are not lost; retrieve them if you need them.]`;
   const head: ChatMessage[] = system ? [{ role: "system", content: `${system.content ?? ""}${note}` }] : [];
   return { messages: [...head, ...body.map(toMessage)], hidden };
 }
@@ -63,7 +63,7 @@ export function toMessage(m: ThreadRow): ChatMessage {
  * Choose the window of thread rows to send, expanding until the CURRENT TURN is inside it.
  *
  * `read(limit)` returns the newest `limit` rows at or below the caller's high-water index, newest
- * first — i.e. one `query` with `orderBy index desc`. Injected rather than called directly so this
+ * first, i.e. one `query` with `orderBy index desc`. Injected rather than called directly so this
  * is testable against a synthetic thread as well as a real space.
  *
  * The expansion is the whole point. One tool-heavy turn is a dozen messages on its own (an

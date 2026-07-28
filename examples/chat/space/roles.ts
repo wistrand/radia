@@ -3,12 +3,12 @@
 // agent definitions + grants and mints short-lived run tokens (the bootstrap chain, design-auth).
 //
 // Two session roles:
-//   admin — the REPL (and its space_* inspection/remediation tools) run as the operator: full
-//           access, including the /ops/* observability+control plane.
-//   user  — the REPL runs under a scoped `agent:chat-user` run token: it can converse (put/query
-//           the conversation kinds) but is DENIED the /ops/* plane and any kind it wasn't granted.
+//   admin: the REPL (and its space_* inspection/remediation tools) run as the operator with full
+//          access, including the /ops/* observability+control plane.
+//   user:  the REPL runs under a scoped `agent:chat-user` run token. It can converse (put/query
+//          the conversation kinds) but is DENIED the /ops/* plane and any kind it wasn't granted.
 //
-// The two workers are ALWAYS scoped agents (least privilege), regardless of role — each holds
+// The two workers are ALWAYS scoped agents (least privilege), regardless of role. Each holds
 // only the grants it needs to do its job.
 
 import { RadiaClient } from "../../../sdk/ts/client.ts";
@@ -16,15 +16,15 @@ import { RadiaClient } from "../../../sdk/ts/client.ts";
 export type Role = "admin" | "user";
 
 /** The scoped principal a `user`-role session runs as. Exported because the REPL grants TO it when
- *  a human approves a request — the subject comes from what this process minted, never from the
+ *  a human approves a request. The subject comes from what this process minted, never from the
  *  request record, so an approval cannot be redirected by anything the model wrote. */
 export const CHAT_USER = "agent:chat-user";
 
 interface Grant {
   kind: string;
   operations: string[];
-  /** ANDed into every read and matched against every write body — the runtime's own content
-   *  scoping. Used to pin a session to ITS conversation; see `userGrants`. */
+  /** ANDed into every read and matched against every write body (the runtime's own content
+   *  scoping). Used to pin a session to ITS conversation; see `userGrants`. */
   pattern?: Record<string, unknown>;
 }
 
@@ -45,7 +45,7 @@ const INFERENCE_GRANTS: Grant[] = [
 // router-worker: claims UNTIERED llm_calls, classifies the turn with a cheap model, and
 // re-dispatches a tiered one. Model selection is delegated here (a substrate worker), not decided
 // in the chat client. It reads the newest messages (to classify) and its own classifier call's
-// result; it never holds the API key — the classification is itself an llm_call served by the fleet.
+// result; it never holds the API key: the classification is itself an llm_call served by the fleet.
 const ROUTER_GRANTS: Grant[] = [
   { kind: "llm_call", operations: ["take", "put"] },
   { kind: "llm_result", operations: ["read_one"] }, // reads its classifier call's result
@@ -56,7 +56,7 @@ const ROUTER_GRANTS: Grant[] = [
 
 // image-worker: claims `tool_call{tool:generate_image}`, calls an image model, stores the bytes as
 // an ARTIFACT and acks a reference to it. Holds the API key (its own process, no file access), so
-// it needs egress — but on the space it can only do these five things.
+// it needs egress. On the space, though, it can only do these five things.
 const IMAGE_GRANTS: Grant[] = [
   { kind: "tool_call", operations: ["take"] },
   { kind: "tool_result", operations: ["put"] },
@@ -79,13 +79,13 @@ const TOOLS_GRANTS: Grant[] = [
 // subprocess. It needs --allow-run (to spawn) but holds no API key and reads no files itself.
 //
 // Saved procedures widened this set, and it is worth being precise about how much. The worker now
-// reads and writes `procedure` records, and reads artifacts — it previously did neither. What is
+// reads and writes `procedure` records, and reads artifacts; it previously did neither. What is
 // still ABSENT is the part that mattered: it cannot query `message`, `llm_call` or `llm_result`,
 // so a code runner still has no way to read the conversation. `procedure: query` lets it learn
 // which names to claim and whose conversation each belongs to; `artifact: read_one` lets it fetch
 // the source it saved, and it only ever fetches the id named by a procedure record it just looked
-// up — never an id the model supplied. And note who CANNOT write a procedure: the user session
-// (below) has no such grant, so a saved procedure is always code this worker stored on the
+// up. It never fetches an id the model supplied. And note who CANNOT write a procedure: the user
+// session (below) has no such grant, so a saved procedure is always code this worker stored on the
 // assistant's behalf, not a record the model wrote directly.
 const EXEC_GRANTS: Grant[] = [
   { kind: "tool_call", operations: ["take"] },
@@ -100,23 +100,23 @@ const EXEC_GRANTS: Grant[] = [
 
 // plain user (the REPL): may drive its own conversations and read its own results, nothing more.
 // Note what's ABSENT: no /ops/* (space_stats/doctor/events/lineage/reclaim/declassify), and
-// query is granted only per-kind — so `space_query {kind: grant}` or {kind: agent_run} is denied.
+// query is granted only per-kind. `space_query {kind: grant}` or {kind: agent_run} is denied.
 //
 // The grants are PATTERN-SCOPED, and what they bind to is a choice (`RADIA_CHAT_SCOPE`):
 //
-//   identity (default) — `{owner: agent:chat-user}`. The session stamps `owner` on what it writes
+//   identity (default): `{owner: agent:chat-user}`. The session stamps `owner` on what it writes
 //     and workers copy it onto the results and artifacts they produce for it, so this covers
 //     everything this identity produced across ALL its conversations. Scoping by AUTHOR instead
 //     would not work: the results, chunks and artifacts are written by WORKERS under their own
 //     principals, so `createdBy: self` would hide the session's own tool output and the chat would
 //     hang waiting for results it could no longer read.
-//   conversation — `{conversationId}`. Strict, and the only posture that separates two people
+//   conversation: `{conversationId}`. Strict, and the only posture that separates two people
 //     sharing a space, since both would be `agent:chat-user`; the cost is that a session cannot
 //     see its own earlier threads.
 //
 // Either way it is the RUNTIME enforcing it: a grant pattern is ANDed into reads and matched
 // against write bodies, so a session cannot read outside its scope and cannot write outside it
-// either — it cannot stamp another identity's `owner`, because that write would fail the pattern.
+// either: it cannot stamp another identity's `owner`, because that write would fail the pattern.
 // Kind-scoping alone enforced nothing of the sort: it let any session read every message in the
 // space, and one reconstructed two days of unrelated conversations from a ten-minute session.
 //
@@ -137,7 +137,7 @@ function userGrants(scope?: Record<string, unknown>): Grant[] {
     { kind: "capability", operations: ["query"] }, // a registry: the fleet's tools, not session data
     // READ-ONLY on purpose: the session builds its tool list from the procedures its conversation
     // saved, but cannot write one. Only the exec-worker can, and only as the result of a
-    // `save_procedure` call it actually ran — so "the assistant saved a procedure" always means code
+    // `save_procedure` call it actually ran. So "the assistant saved a procedure" always means code
     // that went through the sandbox's own path.
     { kind: "procedure", operations: ["query"], ...scoped },
     // ASK for authority, never take it. The session may write a grant_request and read its own; it
@@ -174,7 +174,7 @@ export interface Bootstrapped {
 /**
  * Bootstrap the run tokens for this session (called by chat.ts as the operator).
  *
- * `scope` is the pattern the SESSION's grants bind to — `{owner}` or `{conversationId}`, decided by
+ * `scope` is the pattern the SESSION's grants bind to: `{owner}` or `{conversationId}`, decided by
  * the caller (see `RADIA_CHAT_SCOPE`). It is a parameter rather than something read later because a
  * grant is minted with the run token, so whatever it binds to has to exist first: that is why the
  * REPL resolves the conversation as operator before calling this.

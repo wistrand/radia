@@ -1,7 +1,7 @@
 // The bootstrap-chain endpoints: human/operator creates an agent DEFINITION (assigns grants,
 // gets a definition token); a definition token MINTS a short-lived run token; a run can be
 // STOPPED. Tokens are returned once and never stored (only their hash). These are the auth
-// substrate — each does its own principal check, so they sit outside the blanket /ops/* gate.
+// substrate. Each does its own principal check, so they sit outside the blanket /ops/* gate.
 
 import type { Space } from "../../core/space.ts";
 import type { GrantDef } from "../../core/kinds.ts";
@@ -22,7 +22,7 @@ function bearer(req: Request): string | undefined {
   return h?.startsWith("Bearer ") ? h.slice("Bearer ".length).trim() : undefined;
 }
 
-/** POST /v0/agent-definitions — operator only. Body {agent, grants?}. Returns {agent, definitionToken}. */
+/** POST /v0/agent-definitions: operator only. Body {agent, grants?}. Returns {agent, definitionToken}. */
 export async function handleCreateDefinition(space: Space, req: Request, principal: string): Promise<Response> {
   if (!space.isPrivileged(principal)) {
     return problem(403, "forbidden", `principal '${principal}' may not create agent definitions`);
@@ -41,7 +41,7 @@ export async function handleCreateDefinition(space: Space, req: Request, princip
   }
 }
 
-/** POST /v0/agent-runs — presents a definition token (Bearer). Returns {run, agent, runToken, expiresAt}. */
+/** POST /v0/agent-runs: presents a definition token (Bearer). Returns {run, agent, runToken, expiresAt}. */
 export async function handleCreateRun(space: Space, req: Request): Promise<Response> {
   const token = bearer(req);
   if (!token) return problem(401, "missing_credential", "minting a run requires a definition token (Authorization: Bearer)");
@@ -54,7 +54,7 @@ export async function handleCreateRun(space: Space, req: Request): Promise<Respo
   }
 }
 
-/** POST /v0/agent-runs/{id}/stop — operator, or the run's own definition token (Bearer).
+/** POST /v0/agent-runs/{id}/stop: operator, or the run's own definition token (Bearer).
  *  Body `{quarantine: true}` upgrades graceful stop to emergency revocation (invalidate leases). */
 export async function handleStopRun(space: Space, req: Request, principal: string, runId: string): Promise<Response> {
   let allowed = space.isPrivileged(principal);

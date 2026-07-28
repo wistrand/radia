@@ -19,7 +19,7 @@ function systemPlacementOk(messages: { role: string }[]): boolean {
 }
 
 // A resumed conversation: the original system message, a prior session, then FRESH standing
-// instructions appended at index 11 — the exact shape that returned a 400.
+// instructions appended at index 11. That is the exact shape that returned a 400.
 const resumed = [
   row(0, "system", "old instructions"),
   ...Array.from({ length: 10 }, (_, i) => row(i + 1, i % 2 === 0 ? "user" : "assistant")),
@@ -34,7 +34,7 @@ check("the stale one is gone from the body", !a.messages.slice(1).some((m) => St
 // 13 rows in, 2 of them system: one leading system message plus the 11 non-system turns.
 check("every non-system turn is kept", a.messages.length === 12, `${a.messages.length} messages`);
 
-// Windowing: the notice used to be its own system message right after the head — same violation,
+// Windowing: the notice used to be its own system message right after the head. Same violation,
 // on any conversation long enough to drop messages.
 const windowed = [row(7, "user"), row(8, "assistant"), row(9, "user")];
 const b = assembleContext(row(0, "system", "instructions"), windowed);

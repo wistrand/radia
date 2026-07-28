@@ -25,7 +25,7 @@ export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /**
  * Run `fn` when this worker is asked to stop, then exit.
  *
- * For withdrawing what the worker advertised — a `model` record, in practice — so a stopped worker
+ * For withdrawing what the worker advertised (a `model` record, in practice), so a stopped worker
  * stops being routed to instead of leaving an offer nobody serves. Best effort by nature: it covers
  * SIGINT/SIGTERM (how a launcher stops a fleet, and how Ctrl-C stops one by hand) and nothing else,
  * so a `kill -9` or a crash still leaves the advertisement behind.

@@ -24,9 +24,10 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
 
 /**
  * Build a `PutRequest` from wire JSON: pick only client-submittable fields, and VALIDATE their
- * types rather than casting. A cast is a promise to the type checker, not a check — `parentIds: 42`
- * or `deadlineAt: {}` otherwise sails through and fails deep in the adapter, turning a malformed
- * request into a 500. Returns a problem message instead of throwing so the caller can answer 400.
+ * types rather than casting. A cast is a promise to the type checker, not a check. Otherwise
+ * `parentIds: 42` or `deadlineAt: {}` sails through and fails deep in the adapter, turning a
+ * malformed request into a 500. Returns a problem message instead of throwing so the caller can
+ * answer 400.
  */
 function pickPut(j: Record<string, unknown>): PutRequest | string {
   if (typeof j.kind !== "string" || j.kind.length === 0) return "kind must be a non-empty string";
@@ -54,7 +55,7 @@ function pickPut(j: Record<string, unknown>): PutRequest | string {
   };
 }
 
-/** The same validation for a result record emitted with `ack` — it is a PutRequest too. */
+/** The same validation for a result record emitted with `ack`, which is a PutRequest too. */
 export function pickResult(v: unknown): PutRequest | string | undefined {
   if (v === undefined || v === null) return undefined;
   if (typeof v !== "object" || Array.isArray(v)) return "result must be an object";
@@ -89,7 +90,7 @@ export async function handlePut(space: Space, req: Request, principal: string): 
  *
  * A read that narrows silently makes a scoped caller confidently wrong: one whose grants limit
  * `message` to a single conversation queries `message`, gets its own conversation, and cannot tell
- * that from "this is every message there is" — so it reports its slice as the space and goes
+ * that from "this is every message there is". It then reports its slice as the space and goes
  * looking for a grant to fix a gap it cannot see. The ops plane says this; so must this plane.
  *
  * Absent when nothing was narrowed, so an unrestricted read stays exactly as it was on the wire.
@@ -104,7 +105,7 @@ function describeReadScope(
     scope: {
       ...(patterns.length > 0 ? { narrowedBy: patterns } : {}),
       ...(authors ? { ownRecordsOnly: true as const } : {}),
-      note: "your grant narrows this read — records outside it are not returned and are not counted. " +
+      note: "your grant narrows this read. Records outside it are not returned and are not counted. " +
         "This is a slice, not the whole kind.",
     },
   };
@@ -134,12 +135,12 @@ export async function handleQuery(space: Space, req: Request, principal: string)
     ? { after: j.after as string | undefined, dir: j.dir as "asc" | "desc" | undefined }
     : undefined;
   try {
-    // Both halves of the read scope in one call — a self-scoped grant narrows the coordination
+    // Both halves of the read scope in one call. A self-scoped grant narrows the coordination
     // plane too, and asking for the pattern alone is how that gets forgotten.
     const { constraint, createdBy } = await space.readAccess(principal, "query", pattern.kind);
     if (constraint) pattern.match = combineMatch(pattern.match, constraint); // grant ∧ request
     const records = await space.query(pattern, limit, page, createdBy ? { createdBy } : undefined);
-    // The cursor for the NEXT page is the last id of this one — echoed so a caller never has to
+    // The cursor for the NEXT page is the last id of this one, echoed so a caller never has to
     // know that the cursor happens to be a record id.
     return Response.json({
       records,

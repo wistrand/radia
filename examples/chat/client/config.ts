@@ -1,7 +1,7 @@
 // Everything the chat reads from its environment, in one place.
 //
-// The rule these obey: this file is SETUP — which space, which models serve which tier, which
-// directories are readable. It never decides per-turn behaviour. Which tier answers a turn, which
+// The rule these obey: this file is SETUP, meaning which space, which models serve which tier,
+// which directories are readable. It never decides per-turn behaviour. Which tier answers a turn, which
 // tool runs, how records relate: those are discovered from the substrate or delegated to a worker
 // (CLAUDE.md, "discover, don't hardcode").
 
@@ -20,18 +20,18 @@ export const role: Role = (arg("--role") ?? Deno.env.get("RADIA_CHAT_ROLE")) ===
  * Both are real postures, and which is right depends on the space rather than the code. Every chat
  * session runs as the SAME `agent:chat-user`, so:
  *
- *   identity (default) — everything this identity produced, across ALL its conversations: your own
+ *   identity (default): everything this identity produced, across ALL its conversations. Your own
  *     history, including the results and artifacts workers made for it. Operator-role sessions,
  *     worker internals and other agents stay invisible. Does NOT separate two people sharing one
  *     space, because they would both be `agent:chat-user`.
- *   conversation — this conversation only, whoever produced the record. The strict posture, and the
+ *   conversation: this conversation only, whoever produced the record. The strict posture, and the
  *     one to use on a shared space; the cost is that a session cannot see your earlier threads.
  */
 export const scopeMode: "identity" | "conversation" =
   (arg("--scope") ?? Deno.env.get("RADIA_CHAT_SCOPE")) === "conversation" ? "conversation" : "identity";
 
 /** Where a chat-spawned space keeps its data. A space with no `--db` is IN-MEMORY, so without this
- *  every restart lost the conversation, the saved procedures and the artifacts — the thread lives
+ *  every restart lost the conversation, the saved procedures and the artifacts. The thread lives
  *  on the space, which only helps if the space outlives the process. Blobs land beside it. */
 export const spaceDb = Deno.env.get("RADIA_CHAT_DB") ?? ".radia-chat-space.db";
 
@@ -48,7 +48,7 @@ export const TIERS: Record<string, string> = {
   deep: Deno.env.get("RADIA_CHAT_MODEL_DEEP") ?? "anthropic/claude-opus-5",
 };
 
-/** The router classifies each turn with this cheap model — as an `llm_call` served by the fleet,
+/** The router classifies each turn with this cheap model, as an `llm_call` served by the fleet,
  *  so the router never holds the API key. */
 export const CLASSIFY_MODEL = Deno.env.get("RADIA_CHAT_CLASSIFY_MODEL") ?? "google/gemini-2.5-flash-lite";
 

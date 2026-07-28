@@ -1,14 +1,14 @@
 // Registry projections, driven by hand-made ids.
 //
 // A unit test, not an adapter suite: the thing under test is what `activeByKey` does with a SET of
-// records, and the interesting sets are ones a single process will not produce on demand — a
+// records, and the interesting sets are ones a single process will not produce on demand: a
 // retirement and its revival in the same millisecond, records processed out of id order. Building
 // the ids directly is the only way to pin those deterministically.
 //
 // One case is deliberately absent: two records for the same key from DIFFERENT instances in the
 // same millisecond. Their order is genuinely undefined (ULID monotonicity is per process), and the
-// fail-closed rule that would define it was implemented, measured against the suite, and reverted —
-// it broke same-millisecond revival, which is common, to fix a cross-instance race, which is not.
+// fail-closed rule that would define it was implemented, measured against the suite, and reverted.
+// It broke same-millisecond revival, which is common, to fix a cross-instance race, which is not.
 // See `activeByKey`'s comment and gotchas.md.
 
 import { assertEquals } from "@std/assert";
@@ -63,8 +63,8 @@ Deno.test("registry: a genuinely later re-declaration revives a retired key", ()
 
 Deno.test("registry: retirement is per KEY, not across the registry", () => {
   const other = { principal: "agent:w", kind: "note", operations: ["query"] };
-  // Revoking one grant must not take an unrelated one with it — the same mistake as keying a
-  // grant on (principal, kind) instead of on its whole content.
+  // Revoking one grant must not take an unrelated one with it. That is the same mistake as keying
+  // a grant on (principal, kind) instead of on its whole content.
   const view = activeByKey([rec(MS_A, "AAA", REVOKED), rec(MS_A, "ZZZ", other)], grantKey);
   assertEquals([...view.values()].length, 1);
   assertEquals((view.values().next().value!.body as { kind: string }).kind, "note");
@@ -79,7 +79,7 @@ Deno.test("registry: the newest record decides, whatever order the rows arrive i
 
 Deno.test("registry: a grant whose scoping field this build does not understand grants nothing", () => {
   // `pattern` was once called `template`, and `grantKey` encodes the pattern's VALUE, not its
-  // field name — so a record from the older build is indistinguishable from an unpatterned grant
+  // field name, so a record from the older build is indistinguishable from an unpatterned grant
   // here, while `authorize` reads `.pattern`, finds nothing, and would treat it as UNRESTRICTED.
   // A narrow grant silently widening to the whole kind is the worst outcome this projection has,
   // so an unrecognized shape must identify nothing and drop out of every projection.

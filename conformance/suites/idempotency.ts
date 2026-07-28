@@ -1,4 +1,4 @@
-// Phase 4 conformance: idempotency with the load-bearing ordering — the stored response
+// Phase 4 conformance: idempotency with the critical ordering. The stored response
 // is checked BEFORE lease validation, so a retry after a lost response replays the
 // original outcome instead of falsely returning lease_lost. Runs on every adapter.
 

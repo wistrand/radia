@@ -25,7 +25,7 @@ const USAGE = `radia <command>
   mcp [--url <base>]
       Serve the space to an MCP-capable harness over stdio.
   <cli command>
-      Everything else is a verb over the public /v0 API — listed below.`;
+      Everything else is a verb over the public /v0 API. Those verbs are listed below.`;
 
 async function dev(args: string[]): Promise<void> {
   const port = Number(flag(args, "--port") ?? "7788");
@@ -58,7 +58,7 @@ async function dev(args: string[]): Promise<void> {
   const where = backend === "postgres" ? "shared server" : (dbPath ? `persisted at ${dbPath}` : "in-memory");
   console.log(`radia dev: storage=${storage.name} (${where})`);
   // Artifact BYTES live beside the data they belong to: a directory next to --db (or --blobs), and
-  // in memory otherwise — an ephemeral space must not leave blobs behind on disk. `--blobs` is what
+  // in memory otherwise, since an ephemeral space must not leave blobs behind on disk. `--blobs` is what
   // a postgres deployment uses, since its --db is a connection URL with no local home.
   const blobDir = flag(args, "--blobs") ?? (backend !== "postgres" && dbPath ? `${dbPath}-blobs` : undefined);
   // Encryption at rest is OPT-IN and only as strong as where the key lives: `RADIA_BLOB_KEK`
@@ -68,7 +68,7 @@ async function dev(args: string[]): Promise<void> {
   const kek = loadKek({ env: env("RADIA_BLOB_KEK"), file: flag(args, "--blob-kek") });
   const cipher = kek ? await BlobCipher.fromKey(kek.key) : undefined;
   const blobs = blobDir ? new FileBlobStore(blobDir, cipher) : new MemoryBlobStore(cipher);
-  console.log(`radia dev: blobs=${blobs.name}${blobDir ? ` (${blobDir})` : " (in-memory)"}${kek ? ` — encrypted, KEK from ${kek.source}` : ""}`);
+  console.log(`radia dev: blobs=${blobs.name}${blobDir ? ` (${blobDir})` : " (in-memory)"}${kek ? ` (encrypted, KEK from ${kek.source})` : ""}`);
   const space = new Space(storage, {}, blobs);
   await space.loadKinds(); // restore persisted kind declarations
   const operatorToken = await space.mintOperatorToken(); // for the CLI, the MCP adapter and curl
@@ -77,11 +77,11 @@ async function dev(args: string[]): Promise<void> {
   const base = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
   const saved = saveCredential(base, { token: operatorToken, mintedAt: new Date().toISOString(), storage: storage.name });
   if (saved.ok) console.log(`radia dev: operator credential provisioned at ${saved.path} (radia <cmd> and radia mcp use it)`);
-  else console.log(`radia dev: could not write ${saved.path} (${saved.error}) — set RADIA_TOKEN to use the CLI`);
+  else console.log(`radia dev: could not write ${saved.path} (${saved.error}). Set RADIA_TOKEN to use the CLI`);
   if (authRequired) {
     // In required mode the no-header shortcut is gone, so hand the operator a credential for curl
     // and for the console, which asks for one (GET / bootstraps but carries no token itself).
-    console.log(`radia dev: --auth required — operator credential: Authorization: Bearer ${operatorToken}`);
+    console.log(`radia dev: --auth required. Operator credential: Authorization: Bearer ${operatorToken}`);
     console.log(`radia dev: paste that token into the console's principal pill to authenticate it`);
   }
   // Shut down on a signal instead of being killed mid-flight, so the cleanup below actually runs.
@@ -119,7 +119,7 @@ async function main(argsIn: string[]): Promise<number> {
       case "--help":
       case "-h":
         // Print BOTH: the launcher's commands and the CLI verbs. Stopping at USAGE leaves the
-        // CLI's own help — the only place the verbs and their flags are documented — unreachable
+        // CLI's own help (the only place the verbs and their flags are documented) unreachable
         // behind a pointer back to this text.
         console.log(USAGE);
         console.log("");

@@ -1,6 +1,6 @@
 // Deterministic demo tools, keyed by `op`. These stand in for the model call / real work
-// a production agent would do in its handler — deterministic so the demo has no keys and
-// no flakiness. The seam where a tool runs is exactly where an LLM step would go.
+// a production agent would do in its handler (deterministic, so the demo has no keys and
+// no flakiness). The seam where a tool runs is exactly where an LLM step would go.
 
 export type Tool = (input: unknown) => unknown;
 

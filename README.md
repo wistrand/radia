@@ -12,17 +12,17 @@ The name honors Radia Perlman, whose Spanning Tree Protocol showed independent n
 building a shared structure with no central controller. In the tradition of Linda, it
 is a lineage homage.
 
-> Status: all of M0 built (Phases 0–7) plus a growing M1 slice — put/take/ack/nack/release/renew,
-> record+envelope split, fencing, idempotency, matching, transactional event log +
-> lineage, dead-letter, and SSE watches; the **authorization stack**: kind- and
-> pattern-scoped grants (as records), the run-token bootstrap chain, per-run leases with
-> stop/quarantine, `delegation_context`, and `taint` + declassify; and **artifacts** — a
-> content-addressed blob port with `artifact` records, short-lived download capabilities, and
-> optional encryption at rest (per-blob AES-GCM key wrapped under a space KEK). Running on three
-> storage adapters (embedded PGlite and SQLite, plus real Postgres) behind the frozen wire
-> contract, with a web console, TS and Python SDKs, a CLI, a bundled MCP adapter, and runnable
-> agent examples (including a CLI chatbot with real auth roles, image generation, and code
-> execution in a permissionless sandbox). Not production-ready.
+> Status: all of M0 built (Phases 0–7) plus a growing M1 slice. That covers
+> put/take/ack/nack/release/renew, record+envelope split, fencing, idempotency, matching,
+> transactional event log + lineage, dead-letter, and SSE watches; the **authorization
+> stack**: kind- and pattern-scoped grants (as records), the run-token bootstrap chain,
+> per-run leases with stop/quarantine, `delegation_context`, and `taint` + declassify; and
+> **artifacts**, a content-addressed blob port with `artifact` records, short-lived download
+> capabilities, and optional encryption at rest (per-blob AES-GCM key wrapped under a space
+> KEK). Running on three storage adapters (embedded PGlite and SQLite, plus real Postgres)
+> behind the frozen wire contract, with a web console, TS and Python SDKs, a CLI, a bundled
+> MCP adapter, and runnable agent examples (including a CLI chatbot with real auth roles,
+> image generation, and code execution in a permissionless sandbox). Not production-ready.
 > See `agent_docs/` for the structured design and
 > [notes/radia-runtime-outline-v0.3.md](notes/radia-runtime-outline-v0.3.md) for the origin
 > outline (v0.3).
@@ -38,7 +38,7 @@ flowchart LR
 ```
 
 Nobody addressed anyone. B claimed the work because it *described* what it can handle, and the
-result B acked is itself a record C can match — so work flows by content, through one durable,
+result B acked is itself a record C can match. Work flows by content, through one durable,
 authorized, observable place.
 
 ## Why it exists
@@ -63,7 +63,7 @@ are encouraging and workload-specific, not proof of general superiority. See
 - **Policy-aware:** agent-scoped grants, provenance lineage, taint tracking, and an
   optional cost-aware scheduler decide what runs and what it may touch.
 - **Payload-aware:** anything too large for a JSON body (an image, an audio clip) is an
-  **artifact** — a small record that routes, plus content-addressed bytes in a blob store,
+  **artifact**: a small record that routes, plus content-addressed bytes in a blob store,
   optionally encrypted at rest under a destroyable per-blob key.
 - **Language-neutral:** one HTTP + JSON protocol (OpenAPI-first) behind SDKs, an MCP
   adapter, and a CLI. Agents can be implemented in any stack.
@@ -78,11 +78,11 @@ Requires [Deno](https://deno.com). No build step.
 ```bash
 deno task dev          # embedded space + web console at http://localhost:7788
 deno task demo         # a coordination demo (planner + workers + aggregator) against it
-deno task chat         # a CLI LLM chatbot (needs OPENROUTER_API_KEY) — thinking, tools, images
+deno task chat         # a CLI LLM chatbot (needs OPENROUTER_API_KEY): thinking, tools, images
                        # and sandboxed code execution are all records; watch the Feed tab
 deno task stress       # fill a space with waves of activity to watch in the Space tab
 deno task conformance  # the port contract suites (storage adapters + the blob store)
-deno task bench        # throughput, latency percentiles, scaling curves — see bench/README.md
+deno task bench        # throughput, latency percentiles, scaling curves; see bench/README.md
 ```
 
 Storage is in-memory by default. To persist across restarts, pass `--db`:
@@ -95,11 +95,12 @@ deno task dev --storage pglite --db ./.radia/radia-pg   # PGlite data directory
 Records, envelopes, events, idempotency, and kind declarations all persist and reload on
 restart. (Leases held by processes that crashed expire on their own clocks, as designed.)
 
-Artifact *bytes* live beside them, in a directory rather than the database — derived from `--db`,
-or set explicitly with `--blobs <dir>` (which is what a Postgres deployment needs, since its
-`--db` is a connection URL). Without one, blobs are in-memory and do not survive a restart.
+Artifact *bytes* live beside them, in a directory rather than the database. That directory is
+derived from `--db`, or set explicitly with `--blobs <dir>` (which is what a Postgres deployment
+needs, since its `--db` is a connection URL). Without one, blobs are in-memory and do not
+survive a restart.
 Encryption at rest is opt-in: `--blob-kek <file>` (generated on first use) or `RADIA_BLOB_KEK`
-(base64, 32 bytes). The startup line reports which you got — `blobs=file+aes-gcm (…)` versus
+(base64, 32 bytes). The startup line reports which you got: `blobs=file+aes-gcm (…)` versus
 `blobs=memory (in-memory)`.
 
 For a real Postgres (the multi-instance backend), the compose file under `docker/postgres/`
@@ -113,8 +114,8 @@ deno task dev:pg                                               # radia dev again
 Tables are created on first connect (no migration step). `docker compose down` keeps the data
 (named volume); `down -v` wipes it.
 
-The server binds loopback (`127.0.0.1`) by default — the no-header operator shortcut is only
-safe locally. To expose it, pass `--host 0.0.0.0`, and harden with `--auth required` so every
+The server binds loopback (`127.0.0.1`) by default, because the no-header operator shortcut is
+only safe locally. To expose it, pass `--host 0.0.0.0`, and harden with `--auth required` so every
 request needs `Authorization: Bearer <run-token>` (no-header requests get `401`; the console at
 `/` and `/v0/health` stay public, and the operator token is printed at startup for `curl`):
 
@@ -123,16 +124,16 @@ deno task dev --host 0.0.0.0 --auth required   # exposed + token-gated
 ```
 
 Open the console and watch records and events stream through the **Feed** tab, use the
-**Graph** tab to see how records relate (`parent_ids` DAG — a conversation's messages, a
+**Graph** tab to see how records relate (`parent_ids` DAG: a conversation's messages, a
 job fanning out into tasks and back), the **Space** tab to see every record placed by what it
 *is* rather than what it links to, and open a record for its body + lineage. See
-[examples/README.md](examples/README.md) for the three examples — a keyless coordination
-pipeline, a load generator, and the full LLM agent — each with its own directory and README.
+[examples/README.md](examples/README.md) for the three examples (a keyless coordination
+pipeline, a load generator, and the full LLM agent), each with its own directory and README.
 
 ### The CLI
 
 `radia dev` provisions a real operator credential on startup (`$XDG_STATE_HOME/radia/credentials.json`,
-`0600`), so every other command authenticates the same way a deployed client does — there is no
+`0600`), so every other command authenticates the same way a deployed client does. There is no
 "no tokens locally" mode to grow out of. Override with `RADIA_TOKEN`, point elsewhere with
 `RADIA_URL` or `--url`.
 
@@ -147,7 +148,7 @@ radia doctor                                  # dead-letters, stuck leases, stal
 radia reclaim --all --drain                   # un-stick every expired lease
 ```
 
-Every command goes through the public `/v0` API — the CLI has no privileged backdoor. The
+Every command goes through the public `/v0` API; the CLI has no privileged backdoor. The
 list above is a taste; `radia help` prints the authoritative one.
 
 ### Joining from an MCP harness
@@ -161,8 +162,8 @@ list above is a taste; `radia help` prints the authoritative one.
 The adapter holds the credential and the fenced lease itself: `space_take` hands the model an
 opaque `claimId`, and the lease is renewed at lease/3 in the background, so a model that spends
 minutes thinking keeps its claim without ever seeing (or being able to leak) a token or a lease.
-Kinds are discovered at runtime via `space_kinds` — nothing about your space is baked into the
-tool list.
+Kinds are discovered at runtime via `space_kinds`, so nothing about your space is baked into
+the tool list.
 
 ### Distribution
 

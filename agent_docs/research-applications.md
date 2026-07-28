@@ -5,7 +5,7 @@
 > Mechanism claims are marked **verified** (read in `src/`), **doc-only** (asserted by a design
 > doc, not re-checked), or **inferred**.
 >
-> Always re-verify a doc claim against the code before building on it — §8 lists plausible claims
+> Always re-verify a doc claim against the code before building on it. §8 lists plausible claims
 > about this codebase that are false, several of which came from other `agent_docs/` files. Where
 > a doc and the code disagree, the code wins.
 >
@@ -14,11 +14,11 @@
 
 ## Contents
 
-- §1 Naming: `pattern`, not `template` — decided and applied
+- §1 Naming: `pattern`, not `template` (decided and applied)
 - §2 The pattern layer, and why it is the primitive everything rests on
 - §3 What the substrate uniquely provides
 - §4 Applications, ranked
-- §5 Gated execution of LLM-generated code — the sharpest specialization
+- §5 Gated execution of LLM-generated code (the sharpest specialization)
 - §6 Prior art: Bank Python
 - §7 Anti-applications
 - §8 Claim ledger
@@ -26,14 +26,14 @@
 ## Why this doc exists
 
 Two questions kept being answered from memory and from stale docs: *what is this substrate
-actually good for*, and *which of its advertised properties are real today*. Those interact — an
+actually good for*, and *which of its advertised properties are real today*. Those interact. An
 application only matters for Radia if it needs something nothing else has, and that judgement is
 worthless if the property turns out to be aspirational. So the applications analysis and the
 verification live in one document, with receipts attached.
 
-The short version: Radia's leverage is **not** durable execution (Temporal owns that, and
+The short version: Radia's advantage is **not** durable execution (Temporal owns that, and
 [research-positioning.md](research-positioning.md) is honest about it). It is three things
-nothing else combines — routing you can inspect and refuse, per-record authority and
+nothing else combines: routing you can inspect and refuse, per-record authority and
 classification, and one medium for work, knowledge, and the system's own configuration. The
 applications worth pursuing need all three at once.
 
@@ -41,11 +41,11 @@ applications worth pursuing need all three at once.
 
 ## 1. Naming: `pattern`, not `template`
 
-**Decided and applied.** The matching construct is a **pattern** everywhere — wire contract, code,
+**Decided and applied.** The matching construct is a **pattern** everywhere: wire contract, code,
 both SDKs, CLI, MCP tool definitions, docs. The inner field stays `match`.
 
 Why it moved: to most engineers a *template* is a generator, something filled in to produce
-instances (HTML, C++, string templates). Radia's is the opposite — a recognizer — and the
+instances (HTML, C++, string templates). Radia's is the opposite, a recognizer, and the
 misreading had somewhere to land, because `kind_def` genuinely is blueprint-shaped. The word had
 also drifted from what once justified it: with `$in`, `$gt` and `$or` in the language it stopped
 being a partial instance and became a small query expression, which wants a word about selection.
@@ -55,13 +55,13 @@ on the ops plane (`{state:"leased", expired:true}`). The body/envelope split is 
 these docs work hardest to keep sharp, and reusing one word across both planes would blur it.
 Never rename the body matcher to `selector`.
 
-Two consequences, both load-bearing:
+Two consequences, both important:
 
 - The livelock feature became **repeated-shape** detection
   ([design-observability.md](design-observability.md)) because it had owned the word "pattern"
   first. Never reintroduce "repeated-pattern" for it.
-- `notes/` keeps the old vocabulary deliberately. It is the origin outline — provenance, not a
-  maintained doc — so renaming it would falsify the record.
+- `notes/` keeps the old vocabulary deliberately. It is the origin outline (provenance, not a
+  maintained doc), so renaming it would falsify the record.
 
 One sentence of lineage, because older prior-art reading uses the other word: Linda and JavaSpaces,
 the tuple-space tradition Radia's name honours, call this argument a *template*.
@@ -71,7 +71,7 @@ the tuple-space tradition Radia's name honours, call this argument a *template*.
 Patterns are why the interesting applications are possible, and their limits are why some are
 harder than they look.
 
-### 2.1 Patterns are data, and that is load-bearing
+### 2.1 Patterns are data, and that is what makes the rest work
 
 **Verified.** `src/core/matching.ts` holds `FORBIDDEN = new Set(["$regex", "$where", "$expr"])`,
 rejected at compile with `operator_forbidden` and the message "patterns are data, not code". Any
@@ -101,7 +101,7 @@ enforced differently by direction.
 **Write side (verified, `src/core/space.ts`).** Each grant pattern is compiled against the kind
 and evaluated against the body being written; an uncompilable pattern grants nothing
 (fail-closed). Enforced in `handlers/records.ts` for `put`, `handlers/artifacts.ts` for artifact
-writes, and — importantly — **in core** for ack-emitted results, checked before anything is
+writes, and, importantly, **in core** for ack-emitted results, checked before anything is
 consumed.
 
 **Read/claim side (verified, `src/core/matching.ts`).** The grant's pattern (or the `$or` union of
@@ -115,7 +115,7 @@ cannot mint a prod runnable, and a CI executor whose take grant is patterned `{e
 *incapable* of claiming prod work regardless of what its own pattern says. This is the mechanism
 behind §5.
 
-**Caveat, verified and important.** `Space.take` and `Space.query` do no grant work themselves —
+**Caveat, verified and important.** `Space.take` and `Space.query` do no grant work themselves.
 `authorize`, `combineMatch` and `bodyMatchesGrant` all live in the HTTP handlers. An in-process
 consumer of `Space` (embedded mode, an example's launcher, the conformance suite) bypasses grants
 entirely. Read every "the runtime enforces X" as "the HTTP boundary enforces X".
@@ -125,7 +125,7 @@ entirely. Read every "the runtime enforces X" as "the HTTP boundary enforces X".
 **Verified.** Pattern matching evaluates `rec.body` only (`matchesRecord` → `evalNode(rec.body,…)`).
 `taint` lives in `runtimeMeta`, not the body. Therefore:
 
-- **No pattern can filter on taint** — not in a query, not in a watch, not in a grant.
+- **No pattern can filter on taint**: not in a query, not in a watch, not in a grant.
 - The ops envelope-query plane (`GET /v0/ops/records`) accepts `state`, `expired`, `stale`,
   `limit`; there is no taint dimension there either.
 - The only place taint affects routing is a boolean skip in `rankClaimable`
@@ -139,8 +139,8 @@ invisible to the language used for everything else. Two consequences follow dire
   flag receives tainted records normally.
 - Taint is **one bit with no provenance**. A client-raised `taint:true` and an inherited one are
   indistinguishable, and nothing records which parent caused it. "Untrusted because of which
-  parent" is re-derivable only by walking lineage and inspecting each ancestor's bit — ambiguous
-  when several ancestors are tainted.
+  parent" is re-derivable only by walking lineage and inspecting each ancestor's bit, which is
+  ambiguous when several ancestors are tainted.
 
 If taint ever needs to be a policy dimension rather than a barrier, the honest fix is to stop
 treating it as envelope state: either mirror a classification into the body (matchable, but then
@@ -149,7 +149,7 @@ work.
 
 ### 2.4 The soundness contract is the price
 
-Because patterns compile to SQL, the pre-filter must **over-include, never over-exclude** — the
+Because patterns compile to SQL, the pre-filter must **over-include, never over-exclude**; the
 in-memory oracle decides (`src/storage/pushdown.ts`). Three live violations are recorded in
 [plan-audit-remediation.md](plan-audit-remediation.md) package E. The structural lesson: **every
 extension to the pattern language is also an extension to the pushdown, and an unsound pushdown
@@ -158,13 +158,13 @@ failure this system has, because it looks like idleness.
 
 ### 2.5 Addressing versus content-routing
 
-Barbara is hierarchically addressed — `/Instruments/UKGILT201510yZXhhbXBsZQ==` — so every consumer
+Barbara is hierarchically addressed (`/Instruments/UKGILT201510yZXhhbXBsZQ==`), so every consumer
 must know the key path. That is a routing table spelled as a folder hierarchy, and it works because
 one firm's employees share conventions. Radia inverts it: consumers declare *shapes*, producers
 never learn who consumes. A fleet of independently built agents cannot share naming conventions the
 way one organization's engineers can, which is the whole argument for content-routing.
 
-The interchange format carries the same split. Barbara stores pickles — opaque to the substrate
+The interchange format carries the same split. Barbara stores pickles: opaque to the substrate
 (unmatchable, unauditable) and executing code on load, so the storage format is itself an
 arbitrary-code-execution channel, tolerable only inside a hard perimeter. "Patterns are data, not
 code" is the opposite commitment. **You cannot taint-track a pickle, and you cannot route on one.**
@@ -183,7 +183,7 @@ here; this pass found five more instances.
 
 **Request → human approval → privileged write (the "vouch").** The assistant writes a
 `grant_request` record and stops; a human approves; an operator-privileged principal writes the
-grant (`examples/chat/client/grants.ts`). **Verified — built**, for authority. It is structurally
+grant (`examples/chat/client/grants.ts`). **Verified as built**, for authority. It is structurally
 Bank Python's vouch (§6) and the pattern §5 reuses for code.
 
 **Capability discovery.** Tool-workers publish `capability` records; agents watch or query them to
@@ -192,7 +192,7 @@ build a tool list and dispatch by content. Add a worker, the agent gains a tool.
 **Blackboard.** Heterogeneous producers publish partial results; consumers match on shape; no
 producer knows the fleet topology. `examples/pipeline/` is the miniature.
 
-**Derived/reactive fact — absent.** Nothing recomputes when an upstream input changes (§4.6).
+**Derived/reactive fact: absent.** Nothing recomputes when an upstream input changes (§4.6).
 
 ---
 
@@ -201,11 +201,11 @@ producer knows the fleet topology. `examples/pipeline/` is the miniature.
 - **Dispatch is a queryable artifact.** Queues bury routing in code; agent frameworks bury it in
   the model. Here it is stored, authorizable data.
 - **Record-scoped policy.** `taint` + `requireUntainted` answers "may this payload reach this
-  step" — the question Temporal has no place to ask. `delegation_context` (authority) is separate
+  step", the question Temporal has no place to ask. `delegation_context` (authority) is separate
   from `parent_ids` (provenance), server-derived, and not a `PutRequest` field at all (verified).
 - **One medium for work, knowledge, and configuration.** "What does the system currently
   know/permit/offer" is a query, and every answer has lineage.
-- **Fenced, competitive claims** among independently implemented workers — real contention, not a
+- **Fenced, competitive claims** among independently implemented workers: real contention, not a
   DAG one team owns.
 - **Embedded-to-Postgres portability** behind one frozen wire contract.
 
@@ -219,7 +219,7 @@ Build-state marked from verification, not from docs.
 
 Ingestion workers write tainted records; taint propagates along data parents; side-effecting
 workers take with `requireUntainted`; a human declassifies through the ops plane. The barrier is at
-claim time in the runtime, not in executor discipline — which no incumbent offers.
+claim time in the runtime, not in executor discipline, and no incumbent offers that.
 
 Limits, all verified: enforcement is HTTP-boundary-only; `requireUntainted` is opt-in per call
 rather than bindable to an identity; and taint launders by omitting the parent edge on a direct put
@@ -248,19 +248,19 @@ amount to a personal agent activity monitor. Low revenue, high demo value.
 
 ### 4.6 Derived facts that stay current ("Dagger for agents")
 
-Bank Python's Dagger — automatic revaluation of everything downstream of a changed input — was the
+Bank Python's Dagger (automatic revaluation of everything downstream of a changed input) was the
 killer app that funded the platform. Radia has the DAG but not the semantics: lineage is
 backward-looking provenance and **nothing recomputes** (verified: no invalidation, no
 dirty-marking, no dependency edges beyond `parent_ids`).
 
 The indexing this needs exists: given a successor to record A, `record_edges` answers "what was
-derived from A." What is missing is narrower and conceptual — **records are immutable, so there is
+derived from A." What is missing is narrower and conceptual: **records are immutable, so there is
 no "changed" event to react to**, only "a successor was written," and nothing links a successor
 back to the consumers of its predecessor. Closing that is design work (staleness semantics,
 recompute storms, glitch-freedom), not indexing work.
 
 Nearest in-repo prior art is the proposed `flow` record in
-[research-self-modeling.md](research-self-modeling.md) — a derived record whose `parent_ids` point
+[research-self-modeling.md](research-self-modeling.md): a derived record whose `parent_ids` point
 at exemplars, revised by successor.
 
 ### 4.7 Gated on M2+
@@ -273,7 +273,7 @@ them.
 
 ## 5. Gated execution of LLM-generated code
 
-The requirement — *know when generated code may run, and on what* — decomposes onto two mechanisms,
+The requirement (*know when generated code may run, and on what*) decomposes onto two mechanisms,
 which is what makes it a good fit.
 
 **"When it may run" is the taint axis.** Taint is one bit, so it expresses exactly one thing.
@@ -281,14 +281,14 @@ which is what makes it a good fit.
 ```
 code_candidate (tainted; source as content-addressed artifact)
   → scanner workers claim by pattern: lint, tests-in-sandbox, SAST, license
-  → each acks an attestation record (parent: the candidate) — tainted, as descendants
+  → each acks an attestation record (parent: the candidate), tainted as descendants
   → a human or supervisor reviews the attestations
   → privileged DECLASSIFY emits the clean successor
   → only now can a requireUntainted executor claim it
 ```
 
 The sandbox tier sits *before* clearance: a permissionless sandbox is the cheap first attestation,
-and its run result is evidence for the gate. **Verified nuance** — the exec worker imposes no taint
+and its run result is evidence for the gate. **Verified nuance:** the exec worker imposes no taint
 barrier, so tainted work *would* be claimed and run; it is the isolation, not a taint check, that
 carries the risk there. No comment or test asserts this as intent, so treat it as a property of the
 current code rather than a documented decision.
@@ -309,7 +309,7 @@ reconstructable and separate from data lineage.
 Note that the first item outranks the tamper-evident log, which is the intuitive first answer.
 
 1. **Declassify does not record who performed it.** Verified: `declassify` calls `putRaw` with no
-   principal, so `created_by` — and the event's `runId` — is the space's own identity, not the
+   principal, so `created_by` (and the event's `runId`) is the space's own identity, not the
    approving operator. The event carries `operation: "put"`; there is no `declassify` operation in
    the log. The trail is the successor's `parentIds` plus an anonymous put. Bank Python's vouch, for
    all its faults, recorded *which* code owner clicked the button. A tamper-evident chain over a
@@ -320,7 +320,8 @@ Note that the first item outranks the tamper-evident log, which is the intuitive
    record. Only `ack` force-prepends the leased record. Containment holds for lease-mediated work,
    not arbitrary writes.
 3. **The execution log is incomplete and operator-only.** Saved-procedure invocations carry only
-   `{tool, args}` — no code in the body — so a `{kind:tool_call, tool:run_code}` query misses them.
+   `{tool, args}`, with no code in the body, so a `{kind:tool_call, tool:run_code}` query misses
+   them.
    The executed text is synthesized (the worker prepends an `args` line), so what ran is never
    exactly what is stored. The scoped session holds no `query` grant on `tool_call`, so the audit
    query is operator-only.
@@ -331,16 +332,16 @@ Note that the first item outranks the tamper-evident log, which is the intuitive
    anchored signed checkpoints are M2). Append-only and transactional is real, but nothing defends
    against a DB admin.
 6. **Integrity is not re-verified on read.** `body_sha256` is never re-checked, and unencrypted blob
-   `get` streams bytes without re-hashing. The encrypted path is fine — the digest is the AES-GCM
+   `get` streams bytes without re-hashing. The encrypted path is fine; the digest is the AES-GCM
    AAD.
 
 Items 1–3 are ordinary work against built machinery. Only 4 and 5 are milestone-gated.
 
 **Why this beats the incumbent shapes.** CI systems gate code on checks, but the gate is pipeline
-convention — nothing prevents a path that skips it, which is why SLSA-style frameworks bolt
+convention. Nothing prevents a path that skips it, which is why SLSA-style frameworks bolt
 signatures onto artifacts after the fact. Radia inverts it: the medium is the enforcement point, and
 attestation, clearance and audit log are one substrate. And it covers the case the industry has no
-answer for — code generated at runtime by an agent, seconds before it wants to run, where there is
+answer for: code generated at runtime by an agent, seconds before it wants to run, where there is
 no build pipeline to attest.
 
 ---
@@ -353,38 +354,38 @@ cautionary tale for §5.
 
 | Bank Python                                                      | Radia                                              | Where the rhyme breaks                                          |
 |-------------------------------------------------------------------|----------------------------------------------------|------------------------------------------------------------------|
-| **Barbara** — hierarchical KV of pickled objects, ~16MB soft limit | The space: records + content-addressed artifacts   | Barbara is name-addressed and mutable; Radia content-routed, append-only |
-| **Rings** — namespaces, stackable as overlays                      | Kinds + grants; scoping via patterns              | Radia has no overlay/shadowing; rings are also how devs test     |
+| **Barbara**: hierarchical KV of pickled objects, ~16MB soft limit  | The space: records + content-addressed artifacts   | Barbara is name-addressed and mutable; Radia content-routed, append-only |
+| **Rings**: namespaces, stackable as overlays                       | Kinds + grants; scoping via patterns              | Radia has no overlay/shadowing; rings are also how devs test     |
 | Multiple instances, strongly consistent within, eventual across    | Embedded SQLite/PGlite vs. shared Postgres         | Radia's cross-instance gap is the kind registry, not auth        |
-| **Dagger** — DAG of instruments, auto-revalues dependents          | `parent_ids` lineage DAG                           | Dagger is forward recompute; Radia's DAG is backward provenance  |
-| **Walpole** — "mega Jenkins combined with mega systemd"            | Leases, take/ack, retries, watches                 | Radia's is a competitive work exchange, not a supervisor         |
+| **Dagger**: DAG of instruments, auto-revalues dependents           | `parent_ids` lineage DAG                           | Dagger is forward recompute; Radia's DAG is backward provenance  |
+| **Walpole**: "mega Jenkins combined with mega systemd"             | Leases, take/ack, retries, watches                 | Radia's is a competitive work exchange, not a supervisor         |
 | Source code in Barbara's `sourcecode` ring                         | Saved procedures: source as artifact + record      | Bank Python did this for the whole firm's code                   |
-| **The vouch** — one code owner signs off, instantly in prod        | `grant_request` → human approval → privileged write | Radia's approval is an immutable record with lineage — but currently unattributed (§5) |
+| **The vouch**: one code owner signs off, instantly in prod         | `grant_request` → human approval → privileged write | Radia's approval is an immutable record with lineage, though currently unattributed (§5) |
 | Pickle + zip                                                       | JSON records, analyzable patterns, frozen OpenAPI | Pickle executes on load; it is the anti-Radia                    |
 
 **Where they agree.** Integration is the product: positions, market data, code and jobs in one
-queryable place is almost word-for-word Radia's data-plane pitch. Both dogfood — Bank Python stores
-its own source in Barbara, Radia stores its own kinds, grants and capabilities as records. And both
-make deployment nearly free: "Anyone can put a job into Walpole - you need only a small ini-style
-config file" is the same gravity as "start a worker, every agent gains the tool."
+queryable place is almost word-for-word Radia's data-plane pitch. Both dogfood: Bank Python stores
+its own source in Barbara, and Radia stores its own kinds, grants and capabilities as records. And
+both make deployment nearly free: "Anyone can put a job into Walpole - you need only a small
+ini-style config file" is the same gravity as "start a worker, every agent gains the tool."
 
 **The governance divergence is the point.** Bank Python let thousands of people write code straight
 into the production substrate and managed the risk with trusted employment, code ownership and
-compliance process — controls living entirely outside the system. The article notes no mandatory
+compliance process, all controls living entirely outside the system. The article notes no mandatory
 test suite or CI gate before vouching. When Paterson described this to an outside programmer, the
 response was disbelief, "asking who in the world would trust such a bank."
 
-The answer was: accountable employees inside a legal perimeter. When the code's author is a model —
-unaccountable, prompt-injectable, generating at machine rate — every one of those controls
+The answer was: accountable employees inside a legal perimeter. When the code's author is a model
+(unaccountable, prompt-injectable, generating at machine rate), every one of those controls
 evaporates, and the only place left for the gate is the medium itself. **Radia's gated-execution
 story is Barbara's source-in-database pattern with the bank's human change control compiled into the
 substrate.** That is the one-line thesis of this document.
 
-**Lessons to take.** Substrates win by gravity, not feature comparison — Barbara became unremovable
+**Lessons to take.** Substrates win by gravity, not feature comparison. Barbara became unremovable
 because it was the cheapest place to put anything, so the metric that matters is "seconds until a
 new agent's output lands in the space." Find the Dagger: Minerva was funded by pricing and risk, not
 elegance, and §5 is the candidate here precisely because no organizational control can substitute
-for it. Heed the exit costs the article is candid about — skill atrophy, "even months in, new
+for it. Heed the exit costs the article is candid about: skill atrophy, "even months in, new
 starters are still learning quite fundamental new things", and the circular answer that the way to
 read Barbara is to use the Minerva source code. Radia's mitigations (frozen wire contract,
 language-neutral JSON, SDK parity, examples using only the public API) are the right ones and should
@@ -398,7 +399,7 @@ mandatory in-house IDE, then came to value shipping to prod within the hour.
 State these to avoid misdirected effort.
 
 - **Durable execution as workflow-as-code.** Compose with Temporal; do not compete.
-- **High-throughput event streaming.** Records are a coordination medium, not Kafka — the artifact
+- **High-throughput event streaming.** Records are a coordination medium, not Kafka; the artifact
   invariant exists because payload volume breaks matching.
 - **End-to-end encrypted content.** Encrypted content is coordination-invisible by construction.
 - **Anything security-critical needing in-process enforcement**, since grants live at the HTTP
@@ -425,7 +426,7 @@ What was checked, with evidence pointers.
 | `$regex`/`$where`/`$expr` forbidden at compile                                     | `FORBIDDEN`, `src/core/matching.ts`             |
 | Taint is a bare boolean, not in the body, therefore not pattern-matchable          | `RuntimeMeta`, both adapter schemas, `matchesRecord` |
 | `pattern` is wire-visible on the take selector and in grant bodies                | `openapi/radia.yaml:184`, `:1049`               |
-| **`record_edges` reverse index exists** — indexed, keyset-paged, same-transaction, backfilled | both adapters; `conformance/backfill.test.ts` |
+| **`record_edges` reverse index exists**: indexed, keyset-paged, same-transaction, backfilled | both adapters; `conformance/backfill.test.ts` |
 | Graph BFS calls `childrenOf` per node under a `GRAPH_FANOUT = 200` budget           | `src/core/space.ts:1181`, `:1238`               |
 | `matchesEvent` fires only on `state === "available"` and is watch-specific          | `src/core/space.ts:1257`                        |
 | Event log carries no bodies (`seq, cursor, id, ts` + operation/record/kind/state)   | `SpaceEvent`, `src/storage/adapter.ts:164`      |
@@ -434,13 +435,13 @@ What was checked, with evidence pointers.
 | Hash-chained log unbuilt; events table has no hash column                          | both adapters; `design-observability.md`        |
 | No sweeper exists; expiry evaluated lazily                                         | only `setInterval` in `src/` is the MCP heartbeat |
 | `GrantDef` has no TTL/expiry field                                                 | `src/core/kinds.ts`                             |
-| Retention GC absent — `retention_until` stored, never consulted                     | no delete path in `src/storage/`                |
+| Retention GC absent: `retention_until` stored, never consulted                      | no delete path in `src/storage/`                |
 | No reactive recomputation or invalidation primitive                                | no dependency edges beyond `parent_ids`         |
 | Budgets entirely unbuilt                                                           | zero hits for `budget` in `src/`                |
 
 ### Plausible but false
 
-These circulate — some appeared in other `agent_docs/` files. Check here before repeating one.
+These circulate, and some appeared in other `agent_docs/` files. Check here before repeating one.
 
 | Claim                                                    | Reality                                                                  |
 |------------------------------------------------------------|---------------------------------------------------------------------------|
@@ -451,15 +452,15 @@ These circulate — some appeared in other `agent_docs/` files. Check here befor
 | "Only the exec worker can write `procedure` records"       | **Configuration, not invariant.** `role` defaults to `admin`, whose session sends no bearer and resolves to the `human:local` operator |
 | "Three processes at three privilege levels"                | The repo's own diagram shows two; the third is the REPL/launcher         |
 | "Resource limits are hard and enforced"                    | Only `$and`/`$or` depth ≤ 3 and the 32 MiB artifact cap                  |
-| "`Pattern` is not wire-visible"                           | It is — the take selector request field, plus the grant body field       |
+| "`Pattern` is not wire-visible"                           | It is: the take selector request field, plus the grant body field       |
 
 ### Newly found gaps
 
 - `declassify` records no principal; the event's operation is `put`, not `declassify`.
 - Taint launders by omitting the parent edge on a direct put.
 - `requireUntainted` is per-call, not bindable to a grant or identity.
-- `authorize`/`combineMatch`/`bodyMatchesGrant` live in handlers — in-process `Space` callers bypass
-  all of it.
+- `authorize`/`combineMatch`/`bodyMatchesGrant` live in handlers, so in-process `Space` callers
+  bypass all of it.
 - `body_sha256` never re-verified on read; unencrypted blob `get` does not re-hash.
 - `declassify` mints a new record id with the same `body_sha256`, so a clearance keyed on record id
   and one keyed on digest diverge across it.

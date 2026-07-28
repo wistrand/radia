@@ -1,7 +1,7 @@
 # Scheduler (design)
 
 Spec and rationale for the optional cost-aware admission scheduler. Origin: outline §6.
-Not yet implemented (M3 — see [plan-milestones.md](plan-milestones.md)).
+Not yet implemented (M3; see [plan-milestones.md](plan-milestones.md)).
 
 ## Contents
 - Invariants
@@ -53,7 +53,7 @@ flowchart TB
 
 Settlement: `ack` reconciles estimated vs. actual cost; `nack` / `release` / expiry
 adjust or release reservations; activation expiry re-opens admission to other candidates.
-Budget reservation ties into [design-auth.md](design-auth.md) §Budgets — two readers of
+Budget reservation ties into [design-auth.md](design-auth.md) §Budgets. Two readers of
 one budget must not both spend it.
 
 ## Server-computed priority

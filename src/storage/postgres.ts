@@ -1,14 +1,14 @@
 // Standalone Postgres adapter (M1). The multi-instance / HA backend: N runtime instances over
 // one shared server, with a checked compare-and-set giving the atomic claim across connections
 // (see agent_docs/design-storage.md "Scaling"). All SQL lives in the shared
-// PgSqlAdapter body — this is only the driver binding (deno-postgres, pure-Deno TCP, no npm).
+// PgSqlAdapter body. This file is only the driver binding (deno-postgres, pure-Deno TCP, no npm).
 //
 // Connection pooling: each op acquires a pooled connection and releases it, so concurrent takes
 // genuinely race on distinct connections. This adapter is therefore the only one that exercises
-// the concurrent claim path at all — the embedded adapters serialize it away, which is why a
+// the concurrent claim path at all. The embedded adapters serialize it away, which is why a
 // claim-path change must be run through `scripts/pg-conformance.sh`, not just `deno task
 // conformance` (gotchas.md, "a claim must not lock what it does not claim"). An
-// optional `schema` isolates a run into its own namespace — used by the conformance harness,
+// optional `schema` isolates a run into its own namespace, used by the conformance harness,
 // which spins up an ephemeral schema per adapter and drops it on close.
 
 import { Pool, type PoolClient } from "@db/postgres";
@@ -17,11 +17,11 @@ import type { RawRow } from "./row.ts";
 import { newUlid } from "../core/ids.ts";
 
 // deno-postgres (0.19.x) does not set TCP_NODELAY, so its extended-protocol (parameterized)
-// queries send several small packets and hit Nagle + delayed-ACK — ~40ms PER query, which is
+// queries send several small packets and hit Nagle + delayed-ACK, costing ~40ms PER query, which is
 // catastrophic for a chatty coordination workload (measured 42ms → 0.18ms with NODELAY). The
 // driver connects via `Deno.connect` and exposes no socket hook, so enable NODELAY by wrapping
-// `Deno.connect` once. Only raw TCP connects are affected — radia's other I/O is `Deno.serve` and
-// `fetch` (native HTTP client, not `Deno.connect`) — and NODELAY on a Postgres socket is
+// `Deno.connect` once. Only raw TCP connects are affected (radia's other I/O is `Deno.serve` and
+// `fetch`, a native HTTP client rather than `Deno.connect`), and NODELAY on a Postgres socket is
 // unconditionally correct. Remove if deno-postgres starts setting it. Idempotent.
 let noDelayEnabled = false;
 function enableTcpNoDelay(): void {
@@ -84,7 +84,7 @@ class PostgresBackend implements SqlBackend {
     // so split the DDL and run each statement on one connection (in-schema via search_path).
     // Strip `--` line comments FIRST: the split is naive, so a semicolon inside a comment would
     // otherwise cut it in half and feed the tail to the parser as SQL. (Assumes no `--` appears
-    // inside a string literal in the DDL, which holds — see DDL in pgbase.ts.)
+    // inside a string literal in the DDL, which holds; see DDL in pgbase.ts.)
     const statements = ddl
       .replace(/--[^\n]*/g, "")
       .split(";").map((s) => s.trim()).filter((s) => s.length > 0);

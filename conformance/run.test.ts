@@ -48,8 +48,8 @@ conformance(adapters, [
   ...taintSuites,
 ]);
 
-// The blob port (artifact bytes) runs the same drift guard: every implementation, same suite —
-// and ENCRYPTED stores are implementations, not a variant that gets its own weaker contract. If
+// The blob port (artifact bytes) runs the same drift guard: every implementation, same suite.
+// ENCRYPTED stores are implementations, not a variant that gets its own weaker contract. If
 // sealing a payload changed any observable behaviour, these four columns would disagree.
 const kekBytes = new Uint8Array(32).fill(7); // fixed key: conformance must be deterministic
 const cipher = await BlobCipher.fromKey(kekBytes);

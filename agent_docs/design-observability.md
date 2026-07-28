@@ -4,25 +4,25 @@ Spec and rationale for the event log, diagnostics, livelock detection, re-execut
 the integrity and confidentiality architectures. Origin: outline §9.
 
 **M0/M1 status:** the **transactional event log** (append-only, same-transaction, run
-identity), **lineage** query, and `body_sha256` are built — event append lives in each
+identity), **lineage** query, and `body_sha256` are built. Event append lives in each
 adapter (`appendEvent`), lineage in `src/core/space.ts` (`getLineage`), read via
 `GET /v0/ops/events` and `GET /v0/ops/records/{id}/lineage` (ancestors, UP) with its reverse
-`GET /v0/ops/records/{id}/children` (records that reference this one, DOWN — `childrenOf`); watches
+`GET /v0/ops/records/{id}/children` (records that reference this one, DOWN, `childrenOf`); watches
 consume the log (`src/core/notifier.ts`). The web console surfaces these: a live event **Feed**, and a
 **relationship graph** (`Space.getGraph` over `childrenOf`, `GET /v0/ops/records/{id}/graph`)
 that renders the `parent_ids` DAG around a record. The runtime **envelope** (state/attempt/
-lease — the dimension the content-routing query language deliberately omits) is queryable at
+lease, the dimension the content-routing query language deliberately omits) is queryable at
 `GET /v0/ops/records?state=…[&expired=1&stale=<s>]` (`Space.queryEnvelopes`); a first
 **derived-diagnostics** report (`Space.diagnostics`, `GET /v0/ops/diagnostics`) is a
-*composition* of those envelope queries — counts, dead-letters, expired-but-stuck leases, and
-stale-available records — and **remediation** (`adminTransition`,
+*composition* of those envelope queries (counts, dead-letters, expired-but-stuck leases, and
+stale-available records), and **remediation** (`adminTransition`,
 `POST /v0/ops/records/{id}/{reclaim|dead-letter|requeue}`) can act on them. The taint-clearing
-**declassify** (`POST /v0/ops/records/{id}/declassify`, operator-gated — see
+**declassify** (`POST /v0/ops/records/{id}/declassify`, operator-gated; see
 [design-auth.md](design-auth.md)) is the other operator action on this plane. All `/v0/ops/*` is
 grant-gated to operator principals (enforced). **Not
 implemented:** the hash-chained/anchored tamper-evident log (§9.1, M1–M2), envelope
 encryption / crypto-shredding (§9.2, M2), repeated-shape livelock detection (M3),
-re-execution tooling (M3), and the full orphan/starving-pattern analysis (M1 — the current
+re-execution tooling (M3), and the full orphan/starving-pattern analysis (M1; the current
 diagnostics use age/state heuristics, not pattern-match analysis).
 
 ## Contents
@@ -43,7 +43,7 @@ diagnostics use age/state heuristics, not pattern-match analysis).
   [design-data-model.md](design-data-model.md)); livelock is a *repeating signature along
   a chain*, not a cycle.
 - `body_sha256` hashes **plaintext**, and the event chain hashes content hashes, not
-  content — so crypto-shredding a body leaves the chain verifiable.
+  content, so crypto-shredding a body leaves the chain verifiable.
 
 ## Event log
 
@@ -62,31 +62,31 @@ records by runtime state, plus `expired` (lapsed lease) and `stale` (seconds sat
 Query-where-possible has a real boundary here: the content-routing pattern language matches
 record *bodies* (for routing) and deliberately can't see the envelope, so envelope filtering,
 aggregation (stats), and DAG-traversal (lineage/graph) are first-class ops capabilities rather
-than pattern queries — pushing them into the body-match DSL would corrupt it. What *can* be a
+than pattern queries. Pushing them into the body-match DSL would corrupt it. What *can* be a
 query is one (the envelope filter); what genuinely can't stays a derived capability.
 
 **Remediation shares the diagnostic's selector.** `POST /v0/ops/remediate` takes the same envelope
 selector as `GET /v0/ops/records` (`{state, expired, stale, limit}`), so "what is wrong" and "fix
-it" are one query language — `radia reclaim --all --drain` is the CLI spelling. Per-id remediation
+it" are one query language. `radia reclaim --all --drain` is the CLI spelling. Per-id remediation
 remains for surgical cases; a backlog is one call per page, not one call per record.
 
 One guard is not optional: a selector on `state: available` **excludes `claimable:false` kinds**.
 Reference records (the kind registry itself, grants, agent runs, facts) sit available forever by
 design, so the broadest selector would otherwise sweep them into `dead_letter` and break the space.
-`dead_letter` is deliberately not filtered — that is the recovery path.
+`dead_letter` is deliberately not filtered, since that is the recovery path.
 
-**There is no `expired` record state.** A lapsed lease leaves the record `leased` — a later take
-reclaims it, bumping the attempt — so nothing ever writes `expired`, and diagnostics deliberately
+**There is no `expired` record state.** A lapsed lease leaves the record `leased` (a later take
+reclaims it, bumping the attempt), so nothing ever writes `expired`, and diagnostics deliberately
 does not report a count for it. The real number is `stuckLeases`, which carries `atLeast` when its
 scan hit the sample cap: a bounded scan must not present itself as a census.
 
-The **stale-available** (starvation) check counts only **claimable** kinds — a record of a
+The **stale-available** (starvation) check counts only **claimable** kinds. A record of a
 `claimable:false` reference kind (facts, config, grants, history) sitting `available` forever is
 normal, not stale, so it is excluded at the query level (`excludeKinds`, before the sample cap, so
 real starved work is never crowded out by reference records). See
 [design-matching.md](design-matching.md) `claimable`.
 
-## Livelock detection — repeated shapes, not cycles
+## Livelock detection: repeated shapes, not cycles
 
 The lineage DAG is acyclic by construction; ping-pong livelock is a repeating signature
 along a chain. Detect via:
@@ -106,13 +106,13 @@ External effects are suppressed / mocked / routed through replay-aware adapters.
 ## Schema/pattern lifecycle
 
 Patterns pin validated schema versions; migration re-validates or quarantines
-(fault-injection case: migration with live patterns — see
+(fault-injection case: migration with live patterns; see
 [plan-validation.md](plan-validation.md)).
 
 ## Integrity architecture (why records are NOT signed)
 
 Per-agent record signatures are **rejected** for the single-space case. The reasoning
-(the "why" — do not undo this without revisiting it, see [gotchas.md](gotchas.md)):
+(the "why"; do not undo this without revisiting it, see [gotchas.md](gotchas.md)):
 
 - The runtime authenticates every `put` via run tokens and is the sole DB writer, so
   origin is already established authoritatively.
@@ -122,20 +122,20 @@ Per-agent record signatures are **rejected** for the single-space case. The reas
   poisoned output).
 - Server-assigned `runtime_meta` cannot be agent-signed, so only fragments would be
   covered.
-- Costs (per-agent PKI, rotation/revocation, JSON canonicalization — a classic vuln
-  class) buy nothing against the actual threats.
+- Costs (per-agent PKI, rotation/revocation, and JSON canonicalization, which is a classic
+  vuln class) buy nothing against the actual threats.
 
 Three-tier posture instead:
 
 ```mermaid
 flowchart TB
-    T1[Tier 1 — content hashes<br/>body_sha256 over plaintext, every record<br/>M0]
-    T2[Tier 2 — tamper-evident event log<br/>each event embeds predecessor hash;<br/>signed checkpoints anchored externally<br/>M1-M2]
-    T3[Tier 3 — signatures at trust boundaries<br/>export bundles, cross-space transfers<br/>federation-time]
+    T1[Tier 1: content hashes<br/>body_sha256 over plaintext, every record<br/>M0]
+    T2[Tier 2: tamper-evident event log<br/>each event embeds predecessor hash;<br/>signed checkpoints anchored externally<br/>M1-M2]
+    T3[Tier 3: signatures at trust boundaries<br/>export bundles, cross-space transfers<br/>federation-time]
     T1 --> T2 --> T3
 ```
 
-1. **Content hashes everywhere (M0):** `body_sha256` on every record, over plaintext —
+1. **Content hashes everywhere (M0):** `body_sha256` on every record, over plaintext,
    already needed for artifacts, dedup, and no-progress detection; nearly free.
 2. **Tamper-evident event log (M1–M2):** each event embeds its predecessor's hash; the
    runtime signs periodic checkpoints; checkpoints are anchored externally (secondary
@@ -152,22 +152,22 @@ flowchart TB
 
 1. **Infrastructure encryption** (disk/TDE, TLS, object-store SSE): a deployment
    prerequisite, stated as such; not a runtime feature.
-2. **Runtime-managed envelope encryption — required, not optional.** *(M1: built for artifact
-   BLOBS — `src/storage/crypto.ts`, per-blob AES-GCM DEK wrapped under a space KEK, opt-in via
+2. **Runtime-managed envelope encryption: required, not optional.** *(M1: built for artifact
+   BLOBS in `src/storage/crypto.ts`, per-blob AES-GCM DEK wrapped under a space KEK, opt-in via
    `RADIA_BLOB_KEK` / `--blob-kek`. Record bodies are still plaintext; KMS wrapping and rotation
    are open.)* The crypto-shredding commitment *is* application-layer encryption:
    deletion-by-key-destruction requires bodies and artifact blobs encrypted under destroyable data
-   keys (per kind / tenant / data-subject grouping, KMS-wrapped). This also covers the realistic leak vectors —
-   backups, snapshots, misconfigured replicas — that disk encryption does not. The
+   keys (per kind / tenant / data-subject grouping, KMS-wrapped). This also covers the realistic leak vectors that
+   disk encryption does not: backups, snapshots, misconfigured replicas. The
    runtime decrypts on read, so matching is unaffected. `body_sha256` and the event chain
    hash plaintext, so verifiability survives shredding (a retained hash is irreversible).
-3. **Client-held-key E2E encryption — client responsibility, supported but never
+3. **Client-held-key E2E encryption: client responsibility, supported but never
    managed.** Content-routing is the product: matching, taint, schema validation,
    no-progress hashing, and the inspector all require the runtime to read content, and any
    consuming agent must decrypt into a prompt anyway. Convention for clients who need it
-   regardless: **hybrid records** — a plaintext routing envelope (`kind`, verb, priority,
+   regardless: **hybrid records**, meaning a plaintext routing envelope (`kind`, verb, priority,
    deadline, declared indexed paths) + an opaque payload (`body.ciphertext` +
    `body.enc_meta`); artifacts may carry client-side-encrypted blobs. Stated plainly:
-   **encrypted content is coordination-invisible by construction** — unmatchable,
+   **encrypted content is coordination-invisible by construction**: unmatchable,
    untaint-trackable, invisible to diagnostics. Recipient-keyed encryption as a runtime
    feature has the same trigger as boundary signing: federation.

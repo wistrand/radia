@@ -1,14 +1,14 @@
 // Auto-provisioned local credentials (Phase 7). `radia dev` mints a real operator token at
 // startup and writes it here; the CLI and the MCP adapter read it. The point is that a local
-// developer gets the SAME API shape as production — an `Authorization: Bearer <token>` on every
-// request — instead of a "no tokens locally" special case that then breaks on first deploy.
+// developer gets the SAME API shape as production (an `Authorization: Bearer <token>` on every
+// request) instead of a "no tokens locally" special case that then breaks on first deploy.
 //
 // The no-header operator default in `--auth open` still exists for curl and the browser console,
 // but nothing radia ships relies on it: the CLI and MCP adapter always present a token.
 //
 // The file is per-user, 0600, and keyed by base URL so several spaces can run side by side.
-// Tokens are server-lifetime (operator tokens are not persisted as records — see
-// `CredentialStore`), so the entry is rewritten on every `radia dev` start and removed on a
+// Tokens are server-lifetime (see `CredentialStore`: operator tokens are not persisted as
+// records), so the entry is rewritten on every `radia dev` start and removed on a
 // clean shutdown. A stale entry simply fails to resolve, which is a 401, not a silent downgrade.
 
 import { dirname, join } from "@std/path";
@@ -89,9 +89,9 @@ export function clearCredential(base: string): void {
 
 /**
  * Resolve the token a client should present, in precedence order:
- *   1. `RADIA_TOKEN` — explicit, wins (CI, a scoped run token, a remote space).
- *   2. the stored credential for this base URL — what `radia dev` provisioned.
- *   3. none — the caller falls back to the no-header operator default of an open local space.
+ *   1. `RADIA_TOKEN`: explicit, wins (CI, a scoped run token, a remote space).
+ *   2. the stored credential for this base URL, which `radia dev` provisioned.
+ *   3. none, so the caller falls back to the no-header operator default of an open local space.
  */
 export function resolveToken(base: string): string | undefined {
   const explicit = env("RADIA_TOKEN");

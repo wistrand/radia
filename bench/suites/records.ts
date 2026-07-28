@@ -1,4 +1,4 @@
-// The write and read path: put, read_one, query — the operations every agent does constantly.
+// The write and read path: put, read_one, query. These are the operations every agent does constantly.
 
 import type { Bench, Measurement } from "../harness.ts";
 import { measure } from "../harness.ts";

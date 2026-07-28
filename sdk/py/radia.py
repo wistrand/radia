@@ -1,8 +1,8 @@
-"""Radia Python SDK — parity with sdk/ts/client.ts (Phase 7).
+"""Radia Python SDK, at parity with sdk/ts/client.ts (Phase 7).
 
 Thin wrappers over the public ``/v0`` API: exactly what an external agent uses, with no
 privileged access. Standard library only (``urllib``), so ``pip install radia`` pulls nothing
-else in and the SDK works on any Python 3.9+ without a build step — the minimal-dependency
+else in and the SDK works on any Python 3.9+ without a build step. That is the minimal-dependency
 invariant applied to the client side.
 
 Typical use::
@@ -54,7 +54,7 @@ class RadiaError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Credentials — mirrors src/credentials.ts so `radia dev` provisioning works here too.
+# Credentials: mirrors src/credentials.ts so `radia dev` provisioning works here too.
 # ---------------------------------------------------------------------------
 
 
@@ -181,10 +181,10 @@ class RadiaClient:
         )
 
     def list_kinds(self) -> List[Dict[str, Any]]:
-        """Every declared kind — latest ``kind_def`` per name (a redeclaration is a successor).
+        """Every declared kind: the latest ``kind_def`` per name (a redeclaration is a successor).
 
         Paged to exhaustion and newest-first: the server clamps ``limit`` to 500, so one bounded
-        ascending read returns the OLDEST declarations and silently drops everything past the cap —
+        ascending read returns the OLDEST declarations and silently drops everything past the cap,
         rebuilding the view from declarations that have since been superseded. Retired kinds are
         dropped, matching the projection the runtime uses.
         """
@@ -219,7 +219,7 @@ class RadiaClient:
         ``{digest, mediaType, size}`` and routes like anything else.
 
         ``meta`` adds APPLICATION fields to that record body, so an app can route and scope the
-        artifacts it owns — a grant pattern matches the body, and the rest of the body is computed
+        artifacts it owns. A grant pattern matches the body, and the rest of the body is computed
         by the runtime. Values must be scalars, and the object travels in a header, so it must be
         ASCII.
         """
@@ -377,7 +377,7 @@ class RadiaClient:
     ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
         """One page plus the cursor for the next, as ``(records, next_after)``.
 
-        ``after``/``dir`` are KEYSET pagination over record id — a cursor, not an offset, so a
+        ``after``/``dir`` are KEYSET pagination over record id: a cursor, not an offset, so a
         page stays correct while records are being written. Records come back in ASCENDING id
         order by default, which means a plain ``limit`` gives the OLDEST matches; pass
         ``dir="desc"`` for the newest. A cursor is defined for that natural order only: combining
@@ -472,7 +472,7 @@ class RadiaClient:
         stale: Optional[int] = None,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """Records filtered by runtime ENVELOPE state — the dimension the content-routing query
+        """Records filtered by runtime ENVELOPE state, the dimension the content-routing query
         language deliberately omits, since that one matches record bodies for routing.
 
         ``expired`` keeps only leased rows whose lease has lapsed; ``stale`` keeps only
@@ -505,8 +505,8 @@ class RadiaClient:
         stale: Optional[int] = None,
         limit: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Remediate EVERY record matching an envelope selector — the same selector
-        :meth:`query_envelopes` takes, so diagnosing and fixing use one vocabulary.
+        """Remediate EVERY record matching an envelope selector. It takes the same selector
+        :meth:`query_envelopes` does, so diagnosing and fixing use one vocabulary.
 
         Fixing a backlog one id at a time is a call per record, preceded by diagnostics calls just
         to learn the ids (and that report only samples ten). Returns ``{matched, applied, more}``;
@@ -541,7 +541,7 @@ class RadiaClient:
         """Yield wakeups (``{seq, recordId, kind}``) for matching records that become available.
 
         Reconnects with the last cursor on a dropped stream; a 410 (cursor expired) restarts
-        from the beginning. The cursor is opaque — echoed back verbatim, never parsed.
+        from the beginning. The cursor is opaque: echoed back verbatim, never parsed.
         """
         watch_id = self._req("POST", "/v0/watches", pattern)["watchId"]
         cursor: Optional[str] = None
@@ -590,7 +590,7 @@ def _sse_frames(res, stop: Optional[threading.Event]) -> Iterator[Dict[str, str]
 
 
 # ---------------------------------------------------------------------------
-# agent_loop — parity with sdk/ts/loop.ts
+# agent_loop: parity with sdk/ts/loop.ts
 # ---------------------------------------------------------------------------
 
 
@@ -624,10 +624,10 @@ def agent_loop(
             except RadiaError as e:
                 if e.status == 403:
                     # Permanent: this run has no grant to watch the kind. Say so loudly once and
-                    # fall back to polling — "silently slow" would be worse than "loudly wrong".
-                    say(f"[{name}] watch on '{kind}' FORBIDDEN ({e.code}) — using the poll fallback")
+                    # fall back to polling. "Silently slow" would be worse than "loudly wrong".
+                    say(f"[{name}] watch on '{kind}' FORBIDDEN ({e.code}): using the poll fallback")
                     return
-                say(f"[{name}] watch on '{kind}' dropped: {e} — retrying")
+                say(f"[{name}] watch on '{kind}' dropped: {e}. Retrying")
                 stop.wait(1.0)
 
     threads = []
@@ -660,10 +660,10 @@ def agent_loop(
             key = f"ack:{record['id']}:{lease['epoch']}"
             res = client.ack(lease, result, idempotency_key=key)
             if res.get("status") == "lease_lost":
-                say(f"[{name}] fenced on {record['id'][-6:]} — duplicate work possible (at-least-once)")
+                say(f"[{name}] fenced on {record['id'][-6:]}: duplicate work possible (at-least-once)")
             else:
                 say(f"[{name}] {record['kind']} {record['id'][-6:]} -> ok")
-        except Exception as e:  # noqa: BLE001 — any handler failure is a nack, never a loop crash
+        except Exception as e:  # noqa: BLE001. Any handler failure is a nack, never a loop crash
             try:
                 client.nack(lease)
             except RadiaError:

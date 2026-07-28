@@ -2,7 +2,7 @@
 //
 // A `conversation` record anchors an append-only thread of `message` records. The chat appends
 // (assigning the index); the inference-worker reconstructs the context by querying the thread. So
-// history is stored once — linear, not quadratic, with no re-embedding — the whole conversation is
+// history is stored once (linear, not quadratic, with no re-embedding), the whole conversation is
 // reconstructible from the space, and every message is a record you can watch in the Feed.
 //
 // The one piece of client-held state is `nextIndex`, and it is a single-writer assumption: two
@@ -35,7 +35,7 @@ export class Thread {
   static async open(client: RadiaClient, role: Role, id: string): Promise<Thread> {
     const thread = new Thread(client, id);
     // The assistant is told its OWN id, not how to use it. Identity is data an agent needs to act
-    // on its own behalf — the same category as handing a worker a run token — while the mechanism
+    // on its own behalf (the same category as handing a worker a run token), while the mechanism
     // (which kind, which match, which order) stays in the tool descriptions. Without it the
     // "retrieve rather than recall" disposition is unusable: the reconstructed thread carries no
     // conversationId, the `conversation` record has an empty body and no indexed path, and
@@ -48,11 +48,11 @@ export class Thread {
    * Reattach to an existing conversation.
    *
    * `nextIndex` is the only state this class holds, so resuming is entirely a matter of recovering
-   * it — the transcript itself was never in the process. The highest existing index gives it in one
+   * it. The transcript itself was never in the process. The highest existing index gives it in one
    * query, which is exactly what `index` being a declared SORTABLE path is for.
    *
    * A fresh system message is appended rather than inheriting the old one. The prompt is a record
-   * written at creation and the inference-worker always sends it, never windowing it out — so a
+   * written at creation and the inference-worker always sends it, never windowing it out, so a
    * resumed conversation would otherwise keep running under whatever disposition was current
    * months ago. Two system messages in the thread is the lesser problem: the model reads the later
    * one as the standing instructions, and the earlier is honest history.
@@ -74,7 +74,7 @@ export class Thread {
     return thread;
   }
 
-  /** How many messages precede this session — 0 for a fresh conversation. */
+  /** How many messages precede this session; 0 for a fresh conversation. */
   get resumedFrom(): number {
     return this.startedAt;
   }
@@ -88,7 +88,7 @@ export class Thread {
     await this.client.put({
       kind: "message",
       // `owner` is the identity binding a grant can scope on, and it is stamped even when the
-      // session is scoped by conversation instead — a record that carries both can be read under
+      // session is scoped by conversation instead: a record that carries both can be read under
       // either posture, so switching RADIA_CHAT_SCOPE does not blind a session to its own history.
       // The runtime enforces it rather than trusting it: under identity scoping the write pattern
       // is `{owner}`, so a session physically cannot stamp another identity here.
@@ -98,14 +98,14 @@ export class Thread {
   }
 }
 
-// Generic role framing only — NO substrate specifics (kind names, matching patterns, tool usage).
+// Generic role framing only, with NO substrate specifics (kind names, matching patterns, tool usage).
 // The assistant discovers kinds with space_kinds and learns each tool from its own description.
 // Baking that knowledge here is the anti-pattern the design principle warns against. What a prompt
 // MAY carry is a disposition (when to reach for a tool at all) and the agent's own identity.
 function systemPrompt(role: Role): string {
   return "You are a concise assistant on Radia, a content-routed coordination runtime. Your tools are " +
     "provided to you (discovered from the space, so the set may change between turns); each tool's " +
-    "description says what it does and how to use it — rely on those, not on assumptions, and do " +
+    "description says what it does and how to use it. Rely on those, not on assumptions, and do " +
     "not confuse tools with record kinds. Everything in Radia is a record, including this " +
     "conversation and your own reasoning, so your space_* tools can inspect and even operate on the " +
     "space itself (use space_kinds to see what record kinds exist). Use state-changing tools " +
@@ -115,12 +115,12 @@ function systemPrompt(role: Role): string {
     "you can already see.\n" +
     (role === "admin"
       ? "This session runs as the OPERATOR: your space_* tools have full access to the space's control plane."
-      : "This session runs as a SCOPED USER (agent:chat-user). Use any tool you are given normally — the " +
+      : "This session runs as a SCOPED USER (agent:chat-user). Use any tool you are given normally: the " +
         "file, compute, and conversation tools all work. Some space_* tools touch the control plane and the " +
         "space may refuse them for this principal. ALWAYS call the tool the task needs; never refuse or skip " +
         "a tool without calling it. A forbidden/403 is NOT a dead end and not something to work around: it " +
         "means a human has to grant you that authority, so ask for it with request_grant and say in your " +
-        "reply what you asked for. Do not substitute a weaker approach that answers a narrower question — " +
-        "reconstructing by hand what a refused call would have told you produces a worse answer AND hides " +
+        "reply what you asked for. Do not substitute a weaker approach that answers a narrower question. " +
+        "Reconstructing by hand what a refused call would have told you produces a worse answer AND hides " +
         "that a grant was needed. Do not retry the refused call until the human has answered.");
 }

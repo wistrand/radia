@@ -1,8 +1,8 @@
-// Predicate pushdown — rendering a compiled pattern into a SQL PRE-FILTER.
+// Predicate pushdown: rendering a compiled pattern into a SQL PRE-FILTER.
 //
 // THE CONTRACT, and the only thing that makes this safe: the oracle in `core/matching.ts`
 // defines what a pattern matches. This file never decides a match. It produces SQL that is a
-// NECESSARY condition of the oracle's verdict — a filter that may return rows the oracle then
+// NECESSARY condition of the oracle's verdict: a filter that may return rows the oracle then
 // rejects, but must NEVER exclude a row the oracle would accept. Adapters still run
 // `matchesRecord` over whatever comes back. Sound over-approximation, in one word.
 //
@@ -23,7 +23,7 @@
 //     jsonb equality normalizes key order. Object and array literals are therefore never pushed.
 //   - **String ordering is UTF-16 code-unit order** in the oracle and collation order in SQL.
 //     Range comparisons on strings are pushed only against an ASCII bound, under byte-order
-//     collation — see `asciiBound`.
+//     collation. See `asciiBound`.
 //   - **Array quantifiers** (`$any`/`$each`) are not pushed at all yet.
 
 import type { CmpOp, MatchNode } from "./adapter.ts";
@@ -34,7 +34,7 @@ export const SQL_TRUE = "(1=1)";
 /**
  * A rendered filter, and whether it is EQUIVALENT to the oracle rather than merely implied by it.
  *
- * Soundness alone lets the database narrow. Exactness lets it also DECIDE — which is what allows
+ * Soundness alone lets the database narrow. Exactness lets it also DECIDE, and that is what allows
  * `LIMIT` to move into SQL. With an inexact filter a pushed limit is a correctness bug, not a
  * missed optimization: SQL returns its first N rows, the oracle rejects some, and the matching
  * rows further down were never fetched, so the caller silently gets fewer records than exist.
@@ -53,20 +53,20 @@ export type JsonScalar = "string" | "number" | "boolean" | "null";
 /**
  * The per-dialect half. Each method returns a SQL boolean expression over one record row, and
  * registers its own bound parameters. `path` arrives pre-validated (see `pushablePath`), so an
- * implementation may safely inline it into a JSON path literal — which is what lets the planner
+ * implementation may safely inline it into a JSON path literal, which is what lets the planner
  * match an expression index.
  */
 export interface JsonDialect {
   /**
    * How many parameters are bound so far. Rendering a node binds parameters as a SIDE EFFECT, so a
-   * caller that then DISCARDS that node's SQL — every `TRUE` fallback does — must also discard its
+   * caller that then DISCARDS that node's SQL (every `TRUE` fallback does) must also discard its
    * parameters, or the statement carries bindings no placeholder refers to. Take a mark before
    * rendering a subtree you might throw away.
    */
   mark(): number;
   /** Drop every parameter bound since `mark`. */
   rollback(mark: number): void;
-  /** The JSON value at `path` exists — a JSON `null` counts as existing, an absent key does not. */
+  /** The JSON value at `path` exists. A JSON `null` counts as existing, an absent key does not. */
   present(path: string[]): string;
   /** The JSON value at `path` is exactly `value` (same JSON type, same value). */
   eqScalar(path: string[], value: string | number | boolean | null): string;
@@ -77,7 +77,7 @@ export interface JsonDialect {
 }
 
 /**
- * Only identifier-shaped path segments are pushed. Two reasons, both load-bearing: the segment is
+ * Only identifier-shaped path segments are pushed. Two reasons, both essential: the segment is
  * inlined into a JSON path literal (a bound parameter would defeat expression-index matching), so
  * restricting the alphabet is what makes that injection-proof; and both dialects' path grammars
  * accept an unquoted identifier without any escaping question. Anything else falls back to the
@@ -90,12 +90,12 @@ export function pushablePath(path: string): string[] | null {
   return parts.length > 0 && parts.every((p) => SEGMENT.test(p)) ? parts : null;
 }
 
-/** A bound whose ordering is identical under UTF-16 code units and UTF-8 bytes — see below. */
+/** A bound whose ordering is identical under UTF-16 code units and UTF-8 bytes (see below). */
 function asciiBound(v: string): boolean {
   // For an ASCII bound the two orderings cannot disagree. Comparison runs left to right; while
   // both strings are ASCII the code unit IS the byte. At the first non-ASCII character the
   // candidate's code unit is >= 0x80 and its lead byte is >= 0xC2, both strictly greater than any
-  // ASCII character it is being compared against — so both orderings put it on the same side.
+  // ASCII character it is being compared against. Both orderings put it on the same side.
   // (Restricted to the bound, not the data: the data is whatever records hold.)
   // deno-lint-ignore no-control-regex
   return /^[\x00-\x7F]*$/.test(v);
@@ -106,11 +106,11 @@ function isScalar(v: unknown): v is string | number | boolean | null {
 }
 
 /**
- * Render `node` as a sound SQL pre-filter. Returns `SQL_TRUE` for anything not expressible —
- * callers must still apply the oracle.
+ * Render `node` as a sound SQL pre-filter. Returns `SQL_TRUE` for anything not expressible.
+ * Callers must still apply the oracle.
  */
 export function pushdown(node: MatchNode | undefined, d: JsonDialect): Pushed {
-  if (!node) return TRUE_EXACT; // "every record of the kind" — trivial, but exactly right
+  if (!node) return TRUE_EXACT; // "every record of the kind": trivial, but exactly right
   switch (node.t) {
     case "and": {
       // A conjunct that cannot be pushed simply drops out: the remaining conjuncts are still a
@@ -128,7 +128,7 @@ export function pushdown(node: MatchNode | undefined, d: JsonDialect): Pushed {
       return { sql: parts.length === 0 ? SQL_TRUE : `(${parts.join(" and ")})`, exact };
     }
     case "or": {
-      // A disjunct that cannot be pushed makes the WHOLE disjunction unusable — the unpushed
+      // A disjunct that cannot be pushed makes the WHOLE disjunction unusable: the unpushed
       // branch might be the one that matches, and dropping it would exclude those rows. When that
       // happens the branches already rendered are abandoned, parameters included.
       const mark = d.mark();
@@ -165,11 +165,11 @@ export function pushdown(node: MatchNode | undefined, d: JsonDialect): Pushed {
         return { sql: d.cmpString(p, node.op, node.value), exact: true };
       }
       // The oracle rejects an ordered comparison against a boolean/object/array outright, but
-      // saying so in SQL buys nothing — those patterns are vanishingly rare.
+      // saying so in SQL buys nothing, since those patterns are vanishingly rare.
       return TRUE_LOOSE;
     }
     case "quant":
-      return TRUE_LOOSE; // $any/$each over arrays — not pushed yet
+      return TRUE_LOOSE; // $any/$each over arrays: not pushed yet
   }
 }
 

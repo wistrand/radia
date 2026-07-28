@@ -4,7 +4,7 @@ Guidance for agents working in this repo. Read this first, then the relevant fil
 ## What this is
 
 Radia is a content-routed coordination runtime for LLM agents. **All of M0 (Phases 0–7) plus a
-growing M1 slice are built** — watches (SSE), and the **authorization stack**: kind- and
+growing M1 slice are built.** That covers watches (SSE) and the **authorization stack**: kind- and
 pattern-scoped grants (as records), the bootstrap chain + run tokens, per-run lease ownership
 with stop/quarantine, `delegation_context`, and `taint` + declassify (Deno + TypeScript;
 embedded PGlite and SQLite adapters; artifacts/blob storage; web console; TS + Python SDKs; a public-API CLI; a bundled
@@ -44,26 +44,26 @@ content, not by addressing.
 | `src/main.ts`                           | `radia` entry: `dev` (embedded space + console), `mcp`, else a CLI verb |
 | `src/cli.ts`                            | the CLI verbs (health/stats/doctor/kinds/put/query/take/ack/watch/…), public `/v0` only |
 | `src/mcp/`                              | MCP adapter over stdio: `server.ts` (JSON-RPC, credential + lease held outside the model, internal heartbeat), `tools.ts` (tool defs; descriptions ARE the docs) |
-| `src/credentials.ts`                    | auto-provisioned local credential — `radia dev` writes it, CLI/MCP/Python SDK read it |
-| `src/platform.ts`                       | **the platform seam** — every host operation (process/files/streams/signals/serve) in one file; nothing else in `src/` touches `Deno.*` |
+| `src/credentials.ts`                    | auto-provisioned local credential; `radia dev` writes it, CLI/MCP/Python SDK read it |
+| `src/platform.ts`                       | **the platform seam**: every host operation (process/files/streams/signals/serve) in one file; nothing else in `src/` touches `Deno.*` |
 | `src/flags.ts`                          | shared CLI flag parsing (`flag`/`flags`/`has`/`positional`) |
 | `src/ui/index.html`                     | dev web console served at `GET /` (no build, public API only); the **Space** tab streams the ops event log into a property-similarity map (bounded, evicting finished records before live ones) |
-| `src/ui/vendor/`                        | prebuilt browser assets served under `/ui/` — `blitzoom.bundle.js` (`<bz-graph>`, layout for the Space tab), pinned to an upstream commit; see the README there |
+| `src/ui/vendor/`                        | prebuilt browser assets served under `/ui/`: `blitzoom.bundle.js` (`<bz-graph>`, layout for the Space tab), pinned to an upstream commit; see the README there |
 | `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes, `resolveAuth` Bearer, ops-plane gate, operator-token injection), `problem.ts` (RFC 9457), `handlers/` (`records.ts` + authorize, `leases.ts`, `agents.ts` = bootstrap chain, `artifacts.ts` = bytes in/out + download capabilities, `ops.ts` = ops plane: stats/events/lineage/children/graph/envelope-query/diagnostics/admin/remediate/declassify, `watches.ts` SSE = grant-gated `authorizeWatch`) |
-| `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port: records/leases/idempotency/events/graph + compiled-match AST, plus the optional `prepareKind` physical hint; kinds are records, not a port concern), `blobs.ts` (the `BlobStore` port: artifact bytes, content-addressed; memory + filesystem impls), `crypto.ts` (optional blob encryption: per-blob AES-GCM DEK wrapped under a space KEK), `row.ts` (shared row/value mapping), `pushdown.ts` (compiled pattern → a **sound** SQL pre-filter; the oracle still decides — see the soundness contract at the top of the file), `pgbase.ts` (shared Postgres-dialect body over a minimal SQL port) + `pglite.ts`, `postgres.ts` (both bind their driver to `pgbase`), `sqlite.ts` (own dialect) |
-| `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + graph, kinds-as-records, envelope query, `authorize`/grants, delegation, taint, bootstrap chain), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order + `combineMatch`), `kinds.ts` (indexing contract + `kind_def`/`grant`/`signal`/`agent_*`/`artifact` reserved kinds), `auth.ts` (token mint/hash; `CredentialStore` holds only what cannot be revoked — credentials resolve from records per request), `take.ts` (claim ranking), `registry.ts` (the latest-wins / additive projections every registry is built from, and `retired: true`), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts` (**monotonic** ULIDs — latest-wins depends on it), `errors.ts` |
-| `sdk/README.md`                         | SDK overview + parity table (TS and Python) — start here for client work |
+| `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port: records/leases/idempotency/events/graph + compiled-match AST, plus the optional `prepareKind` physical hint; kinds are records, not a port concern), `blobs.ts` (the `BlobStore` port: artifact bytes, content-addressed; memory + filesystem impls), `crypto.ts` (optional blob encryption: per-blob AES-GCM DEK wrapped under a space KEK), `row.ts` (shared row/value mapping), `pushdown.ts` (compiled pattern → a **sound** SQL pre-filter; the oracle still decides, see the soundness contract at the top of the file), `pgbase.ts` (shared Postgres-dialect body over a minimal SQL port) + `pglite.ts`, `postgres.ts` (both bind their driver to `pgbase`), `sqlite.ts` (own dialect) |
+| `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + graph, kinds-as-records, envelope query, `authorize`/grants, delegation, taint, bootstrap chain), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order + `combineMatch`), `kinds.ts` (indexing contract + `kind_def`/`grant`/`signal`/`agent_*`/`artifact` reserved kinds), `auth.ts` (token mint/hash; `CredentialStore` holds only what cannot be revoked, so credentials resolve from records per request), `take.ts` (claim ranking), `registry.ts` (the latest-wins / additive projections every registry is built from, and `retired: true`), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts` (**monotonic** ULIDs; latest-wins depends on it), `errors.ts` |
+| `sdk/README.md`                         | SDK overview + parity table (TS and Python); start here for client work |
 | `sdk/ts/`                               | TS SDK: `client.ts` (`RadiaClient` over `/v0`, incl. `watch()` SSE), `loop.ts` (`agentLoop`, event-driven, design §5) |
 | `sdk/py/radia.py`                       | Python SDK at parity (stdlib only): `RadiaClient`, `watch()`, `agent_loop` with heartbeat |
 | `scripts/build-release.sh`              | `deno compile` per OS + staged npm/pip launcher packages (`deno task release`) |
-| `examples/`                             | one directory per example, each with its own README: `pipeline/` (planner + workers + aggregator, `deno task demo`), `stress/` (wave load generator for the Space tab), `chat/` (the full LLM agent — llm + tool calls, images, artifacts and sandboxed code execution, all as records; `deno task chat-test` runs its eight suites with NO API key — this app is where bugs surface first, so it has its own harness) — see [examples/README.md](examples/README.md) |
-| `bench/`                                | benchmark suite (`deno task bench`): throughput, latency percentiles, scaling curves per adapter. Nothing asserts — see the README there for what the numbers mean and what the first run found |
-| `conformance/`                          | port contract suites — storage adapters and the blob store (`run.test.ts`, `harness.ts`, `suites/`), plus standalone `*.test.ts` for what is not adapter-parameterized: `http.test.ts` (the HTTP boundary, via `makeHandler`), `backfill.test.ts` (the schema's one migration), `planner.test.ts` (Postgres statistics), `registry.test.ts`, `console.test.ts`; see the README there |
+| `examples/`                             | one directory per example, each with its own README: `pipeline/` (planner + workers + aggregator, `deno task demo`), `stress/` (wave load generator for the Space tab), `chat/` (the full LLM agent: llm + tool calls, images, artifacts and sandboxed code execution, all as records; `deno task chat-test` runs its eight suites with NO API key, and this app is where bugs surface first, so it has its own harness). See [examples/README.md](examples/README.md) |
+| `bench/`                                | benchmark suite (`deno task bench`): throughput, latency percentiles, scaling curves per adapter. Nothing asserts; see the README there for what the numbers mean and what the first run found |
+| `conformance/`                          | port contract suites for storage adapters and the blob store (`run.test.ts`, `harness.ts`, `suites/`), plus standalone `*.test.ts` for what is not adapter-parameterized: `http.test.ts` (the HTTP boundary, via `makeHandler`), `backfill.test.ts` (the schema's one migration), `planner.test.ts` (Postgres statistics), `registry.test.ts`, `console.test.ts`; see the README there |
 | `openapi/radia.yaml`                    | the frozen wire contract (source of truth)                 |
 | `agent_docs/`                           | design deep dives, one topic per file (linked below)       |
 | `notes/radia-runtime-outline-v0.3.md`   | origin design outline; provenance, not maintained doc      |
 
-Build/run: `deno task dev` (no build step; `--db <path>` persists — SQLite file / PGlite
+Build/run: `deno task dev` (no build step; `--db <path>` persists to a SQLite file or PGlite
 dir, in-memory otherwise), `deno task conformance` (both adapters), `deno task chat-test` (the chat example, no API key), `deno task bench` (hotspots + scaling), `deno task demo`
 (end-to-end agent demo over HTTP), `deno task compile` (single binary), `deno task release`
 (per-OS binaries + npm/pip launcher packages). All of M0 is built;
@@ -79,9 +79,9 @@ conflict about current behavior:
 
 Each example carries its own README: [examples/pipeline/](examples/pipeline/) (coordination, no
 key), [examples/stress/](examples/stress/) (load, for the Space tab), [examples/chat/](examples/chat/)
-(the full LLM agent — `client/`, `workers/`, `tools/`, `space/`, `provider/`).
+(the full LLM agent: `client/`, `workers/`, `tools/`, `space/`, `provider/`).
 
-- [agent_docs/architecture-surfaces.md](agent_docs/architecture-surfaces.md): the CLI, the MCP adapter, auto-provisioned credentials, the `platform.ts` host seam, and release packaging — how anything reaches a space other than raw HTTP.
+- [agent_docs/architecture-surfaces.md](agent_docs/architecture-surfaces.md): the CLI, the MCP adapter, auto-provisioned credentials, the `platform.ts` host seam, and release packaging; how anything reaches a space other than raw HTTP.
 
 - [agent_docs/design-data-model.md](agent_docs/design-data-model.md): records vs. runtime envelope, kinds, timing fields, provenance vs. authority, resource limits, artifacts (§2).
 - [agent_docs/design-matching.md](agent_docs/design-matching.md): the pattern query language, its divergences from Mongo, per-kind indexing contract, semantic matching (§3).
@@ -95,27 +95,27 @@ key), [examples/stress/](examples/stress/) (load, for the Space tab), [examples/
 Research and planning:
 
 - [agent_docs/research-positioning.md](agent_docs/research-positioning.md): thesis, evidence, prior art, the defensible gap (§1).
-- [agent_docs/research-applications.md](agent_docs/research-applications.md): what the substrate is for, verified against `src/` — the `template` → `pattern` naming decision (§1, applied), the pattern layer as the authorization primitive and its limits, ranked applications, gated execution of LLM-generated code, and the Bank Python precedent. Carries a claim ledger of what was checked, including doc claims that turned out false.
+- [agent_docs/research-applications.md](agent_docs/research-applications.md): what the substrate is for, verified against `src/`: the `template` → `pattern` naming decision (§1, applied), the pattern layer as the authorization primitive and its limits, ranked applications, gated execution of LLM-generated code, and the Bank Python precedent. Carries a claim ledger of what was checked, including doc claims that turned out false.
 - [agent_docs/plan-milestones.md](agent_docs/plan-milestones.md): M0–M3 delivery plan, milestone scope (§11).
-- [agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md): the buildable M0 plan — Deno + TS runtime, storage decisions, phase-by-phase build with verify steps.
+- [agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md): the buildable M0 plan: Deno + TS runtime, storage decisions, phase-by-phase build with verify steps.
 - [agent_docs/plan-validation.md](agent_docs/plan-validation.md): baselines, metrics, fault-injection matrix (§12).
 - [agent_docs/plan-audit-remediation.md](agent_docs/plan-audit-remediation.md): confirmed defects from the 2026-07-27 full-codebase audit, grouped by root cause with the guard each one needs. Read before touching auth scope enforcement, lease settle, grant supersede, or declassify.
-- [agent_docs/plan-inspection.md](agent_docs/plan-inspection.md): making emergent flows visible — standing claim interest as records, the Flows view, and helping LLM inspectors. Gated on remediation packages B and D; read those before starting.
-- [agent_docs/research-self-modeling.md](agent_docs/research-self-modeling.md): whether a space can hold an agent's model of its own process in the same medium as its model of the world — the paired self-report/measurement claim, the verified blockers, and the calibration baseline. Research, gated like the marketplace; nothing scheduled.
+- [agent_docs/plan-inspection.md](agent_docs/plan-inspection.md): making emergent flows visible: standing claim interest as records, the Flows view, and helping LLM inspectors. Gated on remediation packages B and D; read those before starting.
+- [agent_docs/research-self-modeling.md](agent_docs/research-self-modeling.md): whether a space can hold an agent's model of its own process in the same medium as its model of the world. Covers the paired self-report/measurement claim, the verified blockers, and the calibration baseline. Research, gated like the marketplace; nothing scheduled.
 - [agent_docs/gotchas.md](agent_docs/gotchas.md): rejected approaches, the risk register, and non-obvious "why is it like this" decisions. Skim before proposing a change to signing, encryption, idempotency ordering, or storage backends.
 
 ## Design principle: express features through the substrate, not beside it
 
 Before adding a bespoke endpoint, a hard-coded list, or out-of-band config, ask whether the
-feature can be a **record, a query, or content-routed dispatch** — Radia's own primitives.
+feature can be a **record, a query, or content-routed dispatch**, all of them Radia's own primitives.
 Radia is a coordination substrate; it should coordinate its *own* capabilities and
 operations through itself (dogfooding). Symptoms of violating this: a growing flat API of
 one-off endpoints, static tool/route tables, features that only the operator can reach
 out-of-band. Four applications already made:
 
 - **Kinds are records, not a side table.** A kind declaration is a `kind_def` record
-  (body = the indexing contract), written via `put` and discovered by `query {kind:kind_def}`
-  — no `kinds` table, no `/v0/kinds` endpoint. The registry is a cache/projection rebuilt from
+  (body = the indexing contract), written via `put` and discovered by `query {kind:kind_def}`.
+  There is no `kinds` table and no `/v0/kinds` endpoint. The registry is a cache/projection rebuilt from
   those records at startup; a redeclaration is a successor record (latest wins), not a mutation.
   One bootstrap: the `kind_def` meta-kind is defined in code so its own records can compile.
   See `src/core/kinds.ts` (`KIND_DEF`, `META_KIND_DEF`) and `Space.put`/`loadKinds`.
@@ -124,34 +124,34 @@ out-of-band. Four applications already made:
   diagnostics, record + envelope introspection, remediation) lives under `/v0/ops/*`, one
   prefix that is also the (future) auth boundary. Push what *can* be a query onto a query:
   the envelope (runtime state) is queryable at `GET /v0/ops/records?state=…`, and diagnostics
-  is a *composition* of those queries, not hand-rolled scans — and remediation takes the SAME
+  is a *composition* of those queries, not hand-rolled scans. Remediation takes the SAME
   selector (`POST /v0/ops/remediate` with `{state:"leased", expired:true}`), so diagnosing and
   fixing are one vocabulary instead of a report plus a loop over ids. What genuinely can't be a
-  body-match query stays a derived capability by design — the content-routing query language
+  body-match query stays a derived capability by design. The content-routing query language
   matches record *bodies* (for routing), so aggregation (stats), DAG-traversal (lineage/graph),
   and get-by-id are legitimately first-class, not endpoints pretending to be queries.
 - **Capabilities are records the substrate routes and the agent discovers.** Tool-workers
   publish `capability` records ({tool, schema}); an agent *watches/queries* them to build its
-  tool list and dispatches by content (`tool_call{tool}` → whichever worker registered it) — no
+  tool list and dispatches by content (`tool_call{tool}` → whichever worker registered it), with no
   preconfigured routing table (§7). Add a worker → the agent gains the tool, no code change.
-- **Withdrawal is a successor record, not a delete — and the projection is shared.** Kinds, grants,
+- **Withdrawal is a successor record, not a delete, and the projection is shared.** Kinds, grants,
   capabilities, models and saved procedures are all registries: mutable-looking views over an
   append-only stream. So removing one is a successor carrying `retired: true`, honoured once in
   `src/core/registry.ts` (`activeByKey` for latest-wins, `activeSet` for additive entries like
-  grants) rather than re-implemented per consumer — which it was, six times, before it was shared.
+  grants) rather than re-implemented per consumer, which it was, six times, before it was shared.
   Revoking a grant is exactly this, and the audit trail survives it. See
   [agent_docs/gotchas.md](agent_docs/gotchas.md).
 - **Grants are records the runtime reads, not a config table.** A kind-scoped grant is a
   reserved `grant` record ({principal, kind, operations}); a human/supervisor `put`s one and
   `Space.authorize` discovers it by `query`. Authorization state gets the same immutability,
   event-log visibility, and watchability as any record. `signal`/`grant` writes and `/v0/ops/*`
-  are the grant-gated boundary — see [agent_docs/design-auth.md](agent_docs/design-auth.md).
+  are the grant-gated boundary. See [agent_docs/design-auth.md](agent_docs/design-auth.md).
 
 **The principle has a stopping rule, and it was learned the hard way.** Expressing a feature as
 records means its current state is a PROJECTION over an append-only log: writes are unbounded, reads
 are bounded, and every consumer must page, order and dedupe correctly. That is a fine trade for
 kinds and capabilities, where a stale read is a missing tool. It is a bad trade for anything whose
-failure mode is SILENT MISAUTHORIZATION — a revocation that fell off a page kept a grant alive, and
+failure mode is SILENT MISAUTHORIZATION: a revocation that fell off a page kept a grant alive, and
 a stopped run's token kept resolving after a restart. So:
 
 - Registry state is read through `readRegistry` (`src/core/registry.ts`), never a hand-rolled
@@ -164,36 +164,36 @@ a stopped run's token kept resolving after a restart. So:
   `GET /v0/ops/permissions` / `radia permissions <principal>` / the chat's `space_permissions`.
   Every grant bug so far was a promise that did not match the enforcement; this is how you check
   before believing. **Any principal may read its OWN permissions**, including one with no grants at
-  all — that is the caller most likely to need the answer, and gating it behind the ops plane left
+  all. That is the caller most likely to need the answer, and gating it behind the ops plane left
   an agent unable to tell an approved grant from a pending one. Reading anyone else's stays
   operator-only.
 - State that is high-churn AND security-critical (credentials) is a poor fit for this shape. Prefer
   bounded relevance (only what can still be presented) over replaying history.
 
-**The corollary binds agents, not just the runtime: discover, don't hardcode.** An agent (and
+**The corollary binds agents as well as the runtime: discover, don't hardcode.** An agent (and
 every example client) learns its tools and models from records (`capability`/`model`), *how* to
 use them from the descriptions those records carry, routes by content, and follows relationships
 by querying (lineage up, `children` down). It must not bake substrate-provided knowledge into
 client code or a system prompt. **Fine:** an app defining and writing its *own* record kinds (the
-chat owns `message`/`llm_call`/…), and a launcher spawning the worker fleet — that's setup.
+chat owns `message`/`llm_call`/…), and a launcher spawning the worker fleet. That's setup.
 **Not fine (all bit the chat example):** a `/command` or client branch that encodes a *decision*
 that should be delegated (the model tier is picked by a router-worker, not the REPL); a hard-coded
 tool list (watch `capability` records); a redeclared capability that 409s instead of a successor
 (content-key it, latest-wins, like `kind_def`); tool-usage hints or kind names taught in the
 system prompt (put usage in the tool's *description*, discover kinds with `space_kinds`). The
-line is **setup vs. behavior**: launching workers is client config; per-turn behavior — which
-tool, which model, how records relate, how a tool is used — is discovered from the substrate or
+line is **setup vs. behavior**: launching workers is client config; per-turn behavior (which
+tool, which model, how records relate, how a tool is used) is discovered from the substrate or
 delegated to a worker. Symptom to catch in review: a client growing a `switch` on kinds, a
 `/tier`-style command, or a prompt that teaches the substrate.
 
 **Two things a prompt may still carry: a disposition and the agent's own identity.** A disposition
 says *when to reach for a tool at all* ("prefer to inspect before acting"; "if unsure what happened
-earlier, retrieve rather than recall") and survives every kind being renamed — a tool description
+earlier, retrieve rather than recall") and survives every kind being renamed. A tool description
 cannot do that job, because it is only attended to once the model is already considering that tool.
 Identity is the agent's own handle on itself (the chat tells the assistant its `conversationId`,
-the same category as handing a worker a run token) — without it a disposition is unusable, since
-the agent cannot name the thing it should look up. Neither is substrate knowledge: the mechanism —
-which kind, which match, which order — stays in the tool's description.
+the same category as handing a worker a run token). Without it a disposition is unusable, since
+the agent cannot name the thing it should look up. Neither is substrate knowledge: the mechanism
+(which kind, which match, which order) stays in the tool's description.
 
 ## Invariants
 
@@ -234,7 +234,7 @@ live at the top of the relevant `agent_docs/` file, not here.
   record body defeats matching, windowing, the Feed, and every size assumption downstream.
 - **A blob's digest is over plaintext, and its key is destroyable.** Encryption is optional, but
   when it is on the content address still hashes the plaintext (so integrity and the event chain
-  survive crypto-shredding), and the wrapped DEK lives beside the blob — never in the immutable
+  survive crypto-shredding), and the wrapped DEK lives beside the blob, never in the immutable
   record, because shredding means deleting it.
 - **Embedded mode is never a semantically weaker cousin of Postgres.** The full
   conformance + fault-injection suite runs against every implementation of every port
@@ -257,7 +257,7 @@ Subsystem docs are `design-*` (spec + rationale). Built ones now open with an "M
 status" note pointing into `src/`; **auth is substantially built (M1)** and its doc carries a
 status note (OIDC, budgets, and the chain-intersection policy stay deferred). Still pure design:
 scheduler (M3), marketplace (M2). Full rename to `architecture-*` is deferred to avoid link
-churn — the status note + source pointers serve the same purpose for now. `plan-*` docs
+churn; the status note + source pointers serve the same purpose for now. `plan-*` docs
 track milestone progress; `plan-m0-implementation.md` is the phase-by-phase record.
 
 ## Conventions
@@ -280,8 +280,10 @@ track milestone progress; `plan-m0-implementation.md` is the phase-by-phase reco
 
 - Markdown links for docs an agent should follow; backticks for source paths and inline
   code. Align table columns.
-- No AI-isms (no "powerful", "seamlessly", "leverage", rule-of-three, "not just X but
-  Y"). No emojis in project copy. State the point directly.
+- No AI-isms (no em dash `—`, no "powerful", "seamlessly", "leverage", rule-of-three, "not
+  just X but Y"). Recast the sentence instead of swapping the em dash for a comma: a period,
+  colon, or parentheses almost always reads better. No emojis in project copy. State the
+  point directly.
 - Concise; assume a competent agent. Add only what it can't infer: names, rules,
   constraints, and the why. Cut explanations of general concepts.
 - State each rule on its own line as always/never; a rule buried mid-paragraph gets

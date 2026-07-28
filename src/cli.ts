@@ -1,5 +1,5 @@
 // The `radia` CLI (Phase 7). Every command goes through the public `/v0` surface via the TS
-// SDK — no privileged backdoor, no direct storage access. If the CLI can do it, so can any
+// SDK: no privileged backdoor, no direct storage access. If the CLI can do it, so can any
 // client. Credentials come from `src/credentials.ts` (RADIA_TOKEN, else the token `radia dev`
 // provisioned), so local invocations authenticate exactly like a deployed client would.
 //
@@ -51,7 +51,7 @@ Remediate (operator)
 \`take\` prints the claimed record together with its lease; pass that lease object straight back
 to \`ack\`/\`nack\`/\`release\` (as a JSON string, or - to read it from stdin).
 
-The \`--all\` forms take an envelope SELECTOR rather than an id — the same one \`doctor\` reports on —
+The \`--all\` forms take an envelope SELECTOR rather than an id (the same one \`doctor\` reports on),
 so draining a backlog is one call per page instead of one per record. \`--drain\` repeats until
 nothing matches; without it a single page runs (default 200) and the output says whether more
 remain.`;
@@ -59,7 +59,7 @@ remain.`;
 interface Ctx {
   client: RadiaClient;
   json: boolean;
-  /** Whether a credential was found and presented — used to explain an `anonymous` principal. */
+  /** Whether a credential was found and presented. Used to explain an `anonymous` principal. */
   token: boolean;
 }
 
@@ -80,7 +80,7 @@ export async function runCli(cmd: string, argv: string[]): Promise<number> {
     }
     const msg = (e as Error).message ?? String(e);
     if (/error sending request|connection refused|Fetch failed|ConnectionRefused/i.test(msg)) {
-      console.error(`error: cannot reach a space at ${base} — is \`radia dev\` running? (override with --url or $RADIA_URL)`);
+      console.error(`error: cannot reach a space at ${base}. Is \`radia dev\` running? (override with --url or $RADIA_URL)`);
       return 1;
     }
     console.error(`error: ${msg}`);
@@ -95,12 +95,12 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       const h = await client.health();
       return out(ctx, h, () => {
         let line = `${h.storage}  principal=${h.principal}  now=${h.now}  v${h.version}`;
-        // `GET /v0/health` is public, so a REJECTED token still returns 200 — as `anonymous`.
+        // `GET /v0/health` is public, so a REJECTED token still returns 200, as `anonymous`.
         // Without this note that reads as "no credential" rather than "bad credential".
         if (ctx.token && h.principal === "anonymous") {
           line += `\nwarning: a credential was presented but the space rejected it (stale or wrong token).`;
         } else if (!ctx.token) {
-          line += `\nnote: no credential presented — relying on this space's open-mode operator default.`;
+          line += `\nnote: no credential presented. Relying on this space's open-mode operator default.`;
         }
         return line;
       });
@@ -116,7 +116,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
     }
 
     case "permissions": {
-      // "What can this principal do?" — the question behind every grant bug in this codebase,
+      // "What can this principal do?" is the question behind every grant bug in this codebase,
       // asked directly instead of inferred from a denial.
       const who = argv[0];
       if (!who) return usage("permissions <principal>");
@@ -192,7 +192,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       const more = pages[pages.length - 1].more;
       return out(ctx, { action, selector, pages: pages.length, matched, applied, more }, () => {
         const head = `${action}: ${applied} applied of ${matched} matched, in ${pages.length} call${pages.length === 1 ? "" : "s"}`;
-        return more ? `${head}\nmore remain — re-run with --drain (or a larger --limit)` : head;
+        return more ? `${head}\nmore remain: re-run with --drain (or a larger --limit)` : head;
       });
     }
 
@@ -293,7 +293,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         requireUntainted: has(argv, "--untainted") || undefined,
       });
       if (!claimed) {
-        // Nothing claimable is a normal outcome, not a failure — exit 0 so scripts can loop.
+        // Nothing claimable is a normal outcome, not a failure, so exit 0 and let scripts loop.
         if (ctx.json) console.log("null");
         else console.log("(nothing available)");
         return 0;

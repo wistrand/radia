@@ -6,8 +6,8 @@
 #   deno task dev:pg   # radia dev against postgres://radia:radia@localhost:5432/radia
 #
 # Data persists in the named volume across `up`/`down`; add `-v` to `down` to wipe it. No
-# restart policy — the server runs only while up. Dev-only credentials. This is the persistent
-# dev DB — distinct from the throwaway server scripts/pg-conformance.sh starts for the tests.
+# restart policy: the server runs only while up. Dev-only credentials. This is the persistent
+# dev DB, distinct from the throwaway server scripts/pg-conformance.sh starts for the tests.
 services:
   postgres:
     image: postgres:16

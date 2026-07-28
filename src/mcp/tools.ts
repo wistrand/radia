@@ -1,4 +1,4 @@
-// MCP tool definitions. The descriptions are the documentation — a model learns HOW to use a
+// MCP tool definitions. The descriptions are the documentation: a model learns HOW to use a
 // tool from its description, not from a system prompt that teaches the substrate (see the
 // "discover, don't hardcode" corollary in CLAUDE.md). Nothing here names a specific record kind:
 // the space's kinds are discovered at runtime through `space_kinds`.
@@ -15,8 +15,8 @@ const MATCH = {
   description:
     "Pattern match on the record body, e.g. {\"status\":\"open\"} or {\"n\":{\"$gt\":3}}. Operators: " +
     "$eq $ne $gt $gte $lt $lte $in $nin $exists $and $or. Only paths declared indexed for the kind " +
-    "may be matched — space_kinds lists them. Patterns are data: no regex, no expressions. Omit to " +
-    "match every record of the kind.",
+    "may be matched, and space_kinds lists them. Patterns are data: no regex, no expressions. Omit " +
+    "to match every record of the kind.",
 };
 const ORDER_BY = {
   type: "array",
@@ -61,7 +61,7 @@ export const TOOLS: McpTool[] = [
   {
     name: "space_put",
     description:
-      "Write a new record. Records are immutable once written — to 'update' something, consume it " +
+      "Write a new record. Records are immutable once written. To 'update' something, consume it " +
       "and emit a successor rather than trying to modify it. Set parentIds to record which records " +
       "this one was derived from (data lineage; it grants no authority). Pass idempotencyKey if a " +
       "retry must not create a second record.",
@@ -78,7 +78,7 @@ export const TOOLS: McpTool[] = [
   },
   {
     name: "space_query",
-    description: "Read records matching a pattern. Read-only — it does not claim anything.",
+    description: "Read records matching a pattern. Read-only. It does not claim anything.",
     inputSchema: {
       type: "object",
       properties: { kind: KIND, match: MATCH, orderBy: ORDER_BY, limit: { type: "number", description: "Default 50." } },
@@ -97,12 +97,12 @@ export const TOOLS: McpTool[] = [
   },
   {
     name: "space_lineage",
-    description: "Walk a record's ancestry through parentIds — what it was derived from, and so on up.",
+    description: "Walk a record's ancestry through parentIds: what it was derived from, and so on up.",
     inputSchema: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] },
   },
   {
     name: "space_children",
-    description: "Records derived FROM this one (the reverse of space_lineage) — what came of it.",
+    description: "Records derived FROM this one (the reverse of space_lineage): what came of it.",
     inputSchema: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] },
   },
   {
@@ -121,7 +121,7 @@ export const TOOLS: McpTool[] = [
   {
     name: "space_take",
     description:
-      "Claim one record matching a pattern so you can work on it — no other agent can claim it " +
+      "Claim one record matching a pattern so you can work on it. No other agent can claim it " +
       "while you hold it. Returns a claimId and the record, or reports that nothing is available " +
       "(a normal outcome, not an error). The lease is held and renewed for you while you think, so " +
       "there is no time pressure. ALWAYS finish with space_ack, space_nack or space_release: an " +
@@ -141,7 +141,7 @@ export const TOOLS: McpTool[] = [
     name: "space_ack",
     description:
       "Finish a claim successfully. Set resultKind/resultBody to emit a result record in the same " +
-      "step — that result is itself a record others match on, which is how work flows onward. A " +
+      "step. That result is itself a record others match on, which is how work flows onward. A " +
       "status of lease_lost means the claim had already been reclaimed and someone else may have " +
       "redone the work (delivery is at-least-once).",
     inputSchema: {
@@ -168,7 +168,7 @@ export const TOOLS: McpTool[] = [
   {
     name: "space_release",
     description:
-      "Return a claim untouched, with no failure recorded — use it when you claimed something you " +
+      "Return a claim untouched, with no failure recorded. Use it when you claimed something you " +
       "should not have, or cannot act on right now.",
     inputSchema: { type: "object", properties: { claimId: CLAIM_ID }, required: ["claimId"] },
   },

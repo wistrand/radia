@@ -70,7 +70,7 @@ export interface SpaceContext {
   diagnosticsStaleSeconds: number;
   /** Hard ceiling on one artifact's bytes (design-data-model §2 resource limits). */
   maxArtifactBytes: number;
-  /** Lifetime of a download capability — the short-lived, single-artifact grant that lets a
+  /** Lifetime of a download capability: the short-lived, single-artifact grant that lets a
    *  browser fetch bytes it cannot attach an Authorization header to. */
   downloadCapabilitySeconds: number;
 }
@@ -100,7 +100,7 @@ export interface TakeOptions {
   /** Sensitive consumer: skip tainted candidates (taint barrier). */
   requireUntainted?: boolean;
   /** Author restriction from a self-scoped grant: skip candidates authored by anyone else.
-   *  Enforced in the claim, not by the caller — a claim returns the record BODY, so a take that
+   *  Enforced in the claim, not by the caller. A claim returns the record BODY, so a take that
    *  ignores the scope reads everything a scoped `query` correctly refuses. */
   createdBy?: string[];
 }
@@ -109,7 +109,7 @@ export interface Watch {
   match: CompiledMatch;
   cursor0: string; // opaque high-water cursor at creation; the stream starts here unless resumed
   /** The principal that created it. A watch is scoped by ITS creator's grants, so attaching must
-   *  be restricted to that creator — otherwise the scope belongs to somebody else. */
+   *  be restricted to that creator. Otherwise the scope belongs to somebody else. */
   owner: string;
   /** Author restriction from a self-scoped grant, applied to wakeups as well as to reads. */
   createdBy?: string[];
@@ -134,7 +134,7 @@ export interface GraphNode {
 
 export interface EffectivePermissions {
   principal: string;
-  /** The agent a run resolves to — grants are held by agents, not by individual runs. */
+  /** The agent a run resolves to. Grants are held by agents, not by individual runs. */
   subject: string;
   privileged: boolean;
   kinds: {
@@ -144,12 +144,12 @@ export interface EffectivePermissions {
     patterns: Record<string, unknown>[];
     /** Set when NO such kind is declared on this space, so the grant authorizes nothing. A grant
      *  may legitimately precede its kind (an operator bootstraps an agent before the fleet declares
-     *  its kinds), so this is a flag rather than an error — but an agent that guessed a kind name
+     *  its kinds), so this is a flag rather than an error. But an agent that guessed a kind name
      *  and got it approved otherwise reads this row as working access. */
     kindNotDeclared?: true;
   }[];
   ops: { reachable: boolean; kinds: string[] };
-  /** False if the grant scan could not be exhausted — the picture may be missing entries. */
+  /** False if the grant scan could not be exhausted. The picture may be missing entries. */
   complete: boolean;
 }
 
@@ -158,13 +158,13 @@ export interface Diagnostics {
   counts: Record<string, number>;
   deadLetter: { count: number; sample: unknown[] };
   stuckLeases: { count: number; atLeast: boolean; sampledFrom: number; sample: unknown[] };
-  /** Unclaimed *claimable* (work) records older than the threshold — a starvation signal.
+  /** Unclaimed *claimable* (work) records older than the threshold: a starvation signal.
    *  Reference kinds (`claimable:false`: facts, config, grants, history) are excluded: they sit
    *  available forever by design and are not stale. */
   staleAvailable: { count: number; thresholdSeconds: number; sample: unknown[] };
 }
 
-/** A short, generic label for a graph node — kind plus a common discriminating field. */
+/** A short, generic label for a graph node: kind plus a common discriminating field. */
 function labelFor(rec: RadiaRecord): string {
   const b = (rec.body ?? {}) as Record<string, unknown>;
   const hint = b.role ?? b.op ?? b.tool ?? "";
@@ -182,7 +182,7 @@ export class Space {
   private readonly notifier = new Notifier();
   private readonly watches = new Map<string, Watch>();
   /** Live download capabilities: token -> the one artifact it opens, and when it lapses. In
-   *  memory and short-lived by design — a capability is a delegation of a read the caller already
+   *  memory and short-lived by design. A capability is a delegation of a read the caller already
    *  held, not a credential, and it must not outlive the process that issued it. */
   private readonly downloadCaps = new Map<string, { recordId: string; expiresAt: number }>();
 
@@ -220,12 +220,12 @@ export class Space {
 
   /**
    * Tell the adapter which body paths this kind declares, so it can do whatever it physically
-   * needs to plan predicates on them (`StorageAdapter.prepareKind`, optional — Postgres creates
+   * needs to plan predicates on them (`StorageAdapter.prepareKind`, optional: Postgres creates
    * planner statistics, SQLite implements nothing).
    *
    * Advisory in both directions: an adapter without the hook is skipped, and a failure inside it
-   * is swallowed. A kind declaration must not fail because an optimization could not be applied —
-   * the difference is how fast the answer comes back, never what it is.
+   * is swallowed. A kind declaration must not fail because an optimization could not be applied.
+   * The difference is how fast the answer comes back, never what it is.
    *
    * Only the DURABLE declaration paths call this. `registerKind` is synchronous by contract (its
    * callers rely on the kind being usable on the next line), and an in-memory declaration is a
@@ -240,8 +240,8 @@ export class Space {
   }
 
   /**
-   * Read one registry kind completely and project it — the ONE place limit and direction are
-   * decided, rather than at each call site.
+   * Read one registry kind completely and project it. This is the ONE place limit and direction
+   * are decided, rather than at each call site.
    */
   private registry<T = unknown>(
     kind: string,
@@ -293,7 +293,7 @@ export class Space {
   }
 
   /**
-   * Reject a grant whose `pattern` could never compile — while the kind is known.
+   * Reject a grant whose `pattern` could never compile (while the kind is known).
    *
    * A grant pattern is otherwise validated only when it COMPILES AT USE, which is late in a way
    * that matters: a pattern naming a path the kind does not declare is accepted, looks assigned in
@@ -302,7 +302,7 @@ export class Space {
    *
    * It stays conditional on the kind being registered, because it legitimately may not be: grants
    * are routinely assigned before the kinds they scope exist (an operator bootstraps an agent, the
-   * fleet declares its kinds at startup). An unknown kind is therefore not an error here — this
+   * fleet declares its kinds at startup). An unknown kind is therefore not an error here. This
    * catches the mistake it can catch and leaves the rest to use, as before.
    */
   private checkGrantPattern(def: GrantDef): void {
@@ -321,21 +321,21 @@ export class Space {
    *  grants (grants flow down the chain), so it authorizes as `agent:<name>`. Everything else
    *  authorizes as itself.
    *
-   *  Public because the HTTP layer needs it to answer "is this principal asking about itself?" —
-   *  a run token asking for its AGENT's permissions is asking about itself, and refusing that is
+   *  Public because the HTTP layer needs it to answer "is this principal asking about itself?"
+   *  A run token asking for its AGENT's permissions is asking about itself, and refusing that is
    *  what left a scoped agent unable to tell an approved grant from a pending one. */
   grantSubject(principal: string): string {
     // Memo only, deliberately, so this stays synchronous on the hot path. Safe because the fact is
     // IMMUTABLE (a run's agent never changes) and because authentication populates it: every
     // request presenting a run token resolves that token first, from records. A miss falls back to
-    // the run itself, which holds no grants — fail-closed, never fail-open.
+    // the run itself, which holds no grants (fail-closed, never fail-open).
     if (principal.startsWith("run:")) return this.creds.agentForRun(principal) ?? principal;
     return principal;
   }
 
   /** A privileged principal has operator access: `/ops/*`, grant/signal writes, and any op
    *  without a grant. That is `human:*`, the one supervisor agent (reached directly or via a run
-   *  of it), and the space's OWN configured runtime identity (`ctx.principal`/`ctx.runId`) — the
+   *  of it), and the space's OWN configured runtime identity (`ctx.principal`/`ctx.runId`): the
    *  trusted in-process/operator plane that unauthenticated dev requests resolve to. */
   isPrivileged(principal: string): boolean {
     const subject = this.grantSubject(principal);
@@ -347,13 +347,13 @@ export class Space {
    * Authorize `principal` to run coordination `op` on records of `kind`. Throws
    * RadiaError("forbidden") if denied. Writing a reserved control kind (grant/signal/agent_*)
    * requires privilege (assigned, never self-declared). Any other principal needs a matching
-   * **grant record** (kind-scoped, op-scoped) — a run inherits its agent definition's grants.
+   * **grant record** (kind-scoped, op-scoped); a run inherits its agent definition's grants.
    *
    * Returns the **pattern constraint** for pattern-scoped grants: `null` when unrestricted
    * (privileged, or at least one matching grant has no pattern), or the list of grant patterns
    * (their union) the request must additionally satisfy. For read/take, callers AND it into the
    * query via `combineMatch` (`grant ∧ request`); for `put`, callers check the record body against
-   * it with `bodyMatchesGrant` (write-side scoping — the principal may only write records inside
+   * it with `bodyMatchesGrant` (write-side scoping: the principal may only write records inside
    * the grant's pattern).
    */
   async authorize(principal: string, op: GrantOp, kind: string): Promise<Record<string, unknown>[] | null> {
@@ -390,13 +390,13 @@ export class Space {
    * The author restriction a principal's grants impose on READS of `kind`, or `undefined` for none.
    *
    * A self-scoped grant (`scope: {createdBy: "self"}`) has to narrow the coordination plane too,
-   * not only the ops plane — otherwise approving "its own records of that kind" hands over every
+   * not only the ops plane. Otherwise approving "its own records of that kind" hands over every
    * record of that kind through `query`, which is the plane an agent actually reads records
    * through. The gap is not hypothetical: a session granted self-scoped `message` access sees its
    * own records in `ops/stats` and every author's through `query`.
    *
-   * Applied only when EVERY applicable grant is self-scoped. Grants union — a record is readable if
-   * any grant permits it — so one unscoped grant already permits other authors' records, and
+   * Applied only when EVERY applicable grant is self-scoped. Grants union (a record is readable if
+   * any grant permits it), so one unscoped grant already permits other authors' records, and
    * filtering by author would then deny something granted. Mixed sets therefore keep today's
    * behaviour, which is the permissive-but-consistent reading of a union.
    */
@@ -417,7 +417,7 @@ export class Space {
    * Everything a READ of `kind` is allowed to see: the pattern constraint AND the author
    * restriction, in one answer.
    *
-   * Both halves are needed on every read verb, and asking for them separately is how they drift —
+   * Both halves are needed on every read verb, and asking for them separately is how they drift.
    * `take`, lineage, graph and the artifact reads each authorized on the pattern and silently
    * skipped the author scope, so a self-scoped grant returned other principals' records through
    * them while `query` correctly returned none. Never call `authorize` alone on a read path; call
@@ -436,7 +436,7 @@ export class Space {
 
   /**
    * Every principal whose records count as "mine": the agent itself, the presented principal, and
-   * the agent's RUNS — all of them, including runs that have since stopped or expired.
+   * the agent's RUNS (all of them, including runs that have since stopped or expired).
    *
    * This is deliberately a different question from authentication, which asks only about
    * credentials that can still be PRESENTED. A self scope needs the opposite: the historical run
@@ -446,11 +446,11 @@ export class Space {
    */
   private async runPrincipalsOf(subject: string, principal: string): Promise<string[]> {
     // PAGED TO EXHAUSTION, never a bounded `query(kind, N)`. `agent_run` grows by one record per
-    // mint plus one per stop, and a live run re-mints before expiry — so a long-lived agent passes
+    // mint plus one per stop, and a live run re-mints before expiry, so a long-lived agent passes
     // any fixed limit, and the records that fall off a newest-first page are its OLDEST runs. This
     // list is what `take`, lineage, graph, artifact bytes and watch wakeups narrow to, so a
     // truncated one does not merely hide old history: the agent's own older records become
-    // unclaimable, and `rankClaimable` skips them silently — indistinguishable from an empty queue.
+    // unclaimable, and `rankClaimable` skips them silently, indistinguishable from an empty queue.
     //
     // One entry per run (a stop is a successor carrying the same `run`), so the projection key is
     // the run id.
@@ -464,7 +464,7 @@ export class Space {
       // records, which reads as work vanishing rather than as an authorization fault.
       throw new RadiaError(
         "registry_incomplete",
-        `could not read all runs of '${subject}' (${view.scanned} scanned) — refusing to compute a ` +
+        `could not read all runs of '${subject}' (${view.scanned} scanned); refusing to compute a ` +
           `self scope from a partial list, which would silently hide the agent's own records`,
       );
     }
@@ -472,13 +472,13 @@ export class Space {
   }
 
   /**
-   * What a principal can actually do — computed once and shown, rather than only ever recomputed
+   * What a principal can actually do, computed once and shown, rather than only ever recomputed
    * inside a decision nobody can see.
    *
    * Effective permission here is a FOLD over an unbounded record set: union across grants, per
    * operation, self-scope only when every applicable grant is scoped, retirement applied after
    * newest-per-key. That is four rules interacting, and every grant bug so far has been the same
-   * shape — the promise made to a human did not match the enforcement, and there was no way to look.
+   * shape: the promise made to a human did not match the enforcement, and there was no way to look.
    * This is the way to look. Use it before and after changing a principal's grants; the difference
    * is the answer to "did that do what I said it would".
    */
@@ -498,16 +498,16 @@ export class Space {
       if (g.scope?.createdBy === "self") row.scoped = true;
       else row.unscoped = true;
       // Ops reachability is a property of a SINGLE grant carrying both the read op and the self
-      // scope — never of the union across grants. `opsScope` asks it that way, so asking it any
+      // scope, never of the union across grants. `opsScope` asks it that way, so asking it any
       // other way here reports a plane the caller is then refused.
       if (g.scope?.createdBy === "self" && g.operations.includes("query")) row.opsEligible = true;
       if (g.pattern && Object.keys(g.pattern).length > 0) row.patterns.push(g.pattern);
       byKind.set(g.kind, row);
     }
     // The ops plane is reachable for kinds holding ONE grant that is both a `query` grant and
-    // self-scoped — the rule `opsScope` enforces. ORing `scoped` against the union of operations
-    // instead reports `{put, self-scoped}` beside `{query, unscoped}` as reachable, and `opsScope`
-    // then throws `forbidden` for it.
+    // self-scoped, which is the rule `opsScope` enforces. ORing `scoped` against the union of
+    // operations instead reports `{put, self-scoped}` beside `{query, unscoped}` as reachable, and
+    // `opsScope` then throws `forbidden` for it.
     const opsKinds = [...byKind.values()].filter((r) => r.opsEligible).map((r) => r.kind);
     const kinds = [];
     for (const r of [...byKind.values()].sort((a, b) => (a.kind < b.kind ? -1 : 1))) {
@@ -515,7 +515,7 @@ export class Space {
         kind: r.kind,
         operations: [...r.operations].sort(),
         // A grant naming a kind that does not exist is the shape a guessing agent produces: one
-        // asked for `space_event` — the name of a TOOL — had it approved, and then read its own
+        // asked for `space_event` (the name of a TOOL), had it approved, and then read its own
         // scope line as evidence of access it did not have. The grant is honoured as written (kinds
         // may be declared later), and said to be empty.
         ...(this.kinds.get(r.kind) ? {} : { kindNotDeclared: true as const }),
@@ -541,10 +541,10 @@ export class Space {
   /**
    * Authorize a watch on `kind`. A watch OBSERVES matching records (its SSE payload is record
    * existence + ids + kind + timing), so it is allowed if the principal holds ANY grant on the kind
-   * — it is a participant — regardless of op (a watcher may hold only `take`, like the agentLoop, or
+   * (it is a participant), regardless of op (a watcher may hold only `take`, like the agentLoop, or
    * only `read_one`, like a result consumer). Returns the UNION of those grants' patterns to AND
    * into the watch match (`null` = unrestricted / privileged), so a watcher only wakes on records
-   * inside its grant scope — the same content-scoping `query`/`take` get. Throws `forbidden` if the
+   * inside its grant scope, the same content-scoping `query`/`take` get. Throws `forbidden` if the
    * principal has no grant for the kind (closing the last unguarded coordination verb).
    */
   async authorizeWatch(principal: string, kind: string): Promise<ReadAccess> {
@@ -559,7 +559,7 @@ export class Space {
     }
     // A self scope narrows a watch for the same reason it narrows `query`: otherwise approving
     // "its own records" streams every author's record ids, kinds and activity timing on the kind.
-    // Applied only when EVERY grant on the kind is self-scoped, matching `authorScope` — grants
+    // Applied only when EVERY grant on the kind is self-scoped, matching `authorScope`. Grants
     // union, so one unscoped grant already permits observing other authors.
     const createdBy = grants.every((g) => g.scope?.createdBy === "self")
       ? await this.runPrincipalsOf(subject, principal)
@@ -589,15 +589,15 @@ export class Space {
 
   /**
    * Derive the `delegation_context` for work emitted under a lease owned by `owner`. The authority
-   * comes from the CLAIMED LEASE — `owner` (the record's authoritative `lease_owner`) → its agent
-   * (`grantSubject`) — extending the leased record's own chain. INVARIANT: never derived from
+   * comes from the CLAIMED LEASE: `owner` (the record's authoritative `lease_owner`) → its agent
+   * (`grantSubject`), extending the leased record's own chain. INVARIANT: never derived from
    * `parent_ids` (data parents grant nothing). Returns undefined for operator/root-owned leases
    * (privileged): such work carries full authority and no delegation record. The chain is an
    * audit/authority record; full chain-intersection enforcement composes with taint (M3).
    */
   private async deriveDelegation(owner: string, leasedRecordId: string): Promise<DelegationContext | undefined> {
     if (this.isPrivileged(owner)) return undefined; // root/operator work is not delegated
-    const actor = this.grantSubject(owner); // the agent behind the run — grants live here
+    const actor = this.grantSubject(owner); // the agent behind the run; grants live here
     const parent = await this.storage.getRecord(leasedRecordId);
     const parentChain = parent?.runtimeMeta.delegationContext?.chain ?? [];
     return { chain: [...parentChain, actor], origin: leasedRecordId };
@@ -640,7 +640,7 @@ export class Space {
       if (!view.complete) {
         throw new RadiaError(
           "registry_incomplete",
-          `could not read all grants for '${p}' — refusing to supersede on a partial view`,
+          `could not read all grants for '${p}'; refusing to supersede on a partial view`,
         );
       }
       views.set(p, view);
@@ -649,7 +649,7 @@ export class Space {
       const key = grantKey(g) ?? "";
       // CONTENT-KEYED, so re-defining an agent with the same grants writes nothing new. Without
       // this, every bootstrap appended a fresh record per grant and a long-lived principal
-      // accumulated hundreds — which then outran the bounded page every authorization read takes,
+      // accumulated hundreds. Those then outran the bounded page every authorization read takes,
       // silently. Unlike a worker republishing a capability, this key does dedup across restarts:
       // agent definitions are an OPERATOR action, and an idempotency key is scoped to the acting
       // principal, which here is stable.
@@ -672,24 +672,24 @@ export class Space {
    * Make an agent definition AUTHORITATIVE for the exact grants it declares.
    *
    * A grant's identity includes its pattern, so declaring a differently-scoped version of an
-   * existing grant creates a SECOND grant rather than replacing the first — and grants union, so
+   * existing grant creates a SECOND grant rather than replacing the first, and grants union, so
    * the new one changes nothing. Every live grant on the same (principal, kind, operations) whose
    * pattern differs from the declared one is therefore retired here.
    *
    * This covers both ways it bites: adding a pattern beside an unpatterned grant (tightening an
    * existing space), and REPLACING one pattern with another (switching a session's scope from one
-   * binding to another). Without the retire, both silently do nothing — the two grants union and
+   * binding to another). Without the retire, both silently do nothing: the two grants union and
    * the wider view wins.
    *
    * Bounded to the triple it declares, deliberately. Different operations or a different kind are
    * left alone, because an agent definition speaks for the grants IT declares and not for every
-   * grant the principal holds — otherwise each restart would quietly revoke what a person approved.
+   * grant the principal holds. Otherwise each restart would quietly revoke what a person approved.
    * Note `scope` is absent from `grantKey` on purpose, so a self-scoped grant already replaces its
    * unscoped twin in place. Never include it in the filter below: the declared grant shares a key
    * with the live one, so it would retire the grant it just wrote.
    *
    * Takes the WHOLE declared set, never one grant at a time, so grants declared together do not
-   * retire each other — a definition may legitimately declare two patterns on one triple, and
+   * retire each other. A definition may legitimately declare two patterns on one triple, and
    * `authorize` unions them.
    */
   private async supersedeGrantsFor(declared: GrantDef[], views: Map<string, RegistryView>): Promise<void> {
@@ -710,7 +710,7 @@ export class Space {
       const body = rec.body as GrantDef;
       // Keyed on the RECORD being retired, not on the grant identity alone: one key per identity
       // means a grant can be retired only ONCE, ever, so a later re-grant of the same content
-      // would survive the next supersede and stay live — silent misauthorization, widening.
+      // would survive the next supersede and stay live: silent misauthorization, widening.
       await this.putRaw(
         { kind: GRANT, body: { ...body, retired: true } },
         `grant-retire:${await sha256Hex(grantKey(body) ?? "")}:after:${rec.id}`,
@@ -739,12 +739,12 @@ export class Space {
   /**
    * Stop a run: emit a successor `agent_run` record (status stopped) and invalidate its token so
    * no new operations resolve. Default (graceful) revocation leaves held leases to expire on
-   * their own clocks. `quarantine: true` is emergency revocation — it additionally force-releases
+   * their own clocks. `quarantine: true` is emergency revocation: it additionally force-releases
    * the run's in-flight leases now (epoch-bumped, so a late ack/renew fences out as `lease_lost`).
    */
   async stopRun(run: string, opts: { quarantine?: boolean } = {}): Promise<{ applied: boolean; quarantined: number }> {
     // Looked up in the SPACE, never in a cache. Consulting an in-memory index here makes stopping
-    // a run this process has not seen — another instance's run, or one written before a restart —
+    // a run this process has not seen (another instance's run, or one written before a restart)
     // silently report `applied: false` and leave the token working.
     const mint = await this.runRecord(run);
     if (!mint?.agent) return { applied: false, quarantined: 0 };
@@ -771,8 +771,9 @@ export class Space {
   }
 
   /** Mint an operator token (resolves to the privileged `human:local`, no expiry) for the bundled
-   *  dev console. Not a record — a server-lifetime bootstrap credential; the server re-mints one
-   *  at startup and injects it into the served UI so the console authenticates like any client. */
+   *  dev console. Not a record: it is a server-lifetime bootstrap credential; the server re-mints
+   *  one at startup and injects it into the served UI so the console authenticates like any
+   *  client. */
   async mintOperatorToken(): Promise<string> {
     const { token, hash } = await mintCredential();
     this.creds.addOperator(hash);
@@ -789,7 +790,7 @@ export class Space {
    *
    * There is no credential cache to go stale: a stopped run, an expired token and a token minted on
    * another instance are all discovered here rather than remembered. Both kinds index `tokenHash`,
-   * so this is an indexed lookup, not a scan — and because a stop successor carries the same hash,
+   * so this is an indexed lookup, not a scan. And because a stop successor carries the same hash,
    * the newest record for that hash IS the current state of the credential.
    */
   private async resolveCredential(token: string, now: string): Promise<ResolvedToken> {
@@ -797,7 +798,7 @@ export class Space {
     // Operator tokens are process-lifetime and never records (a credential is needed before any
     // agent exists), so they are the one thing answered from memory. They resolve to the space's
     // own principal: presenting the provisioned credential is exactly as authorized as presenting
-    // no header at all in open mode. Never resolve one as `def` — that would let it mint a run,
+    // no header at all in open mode. Never resolve one as `def`: that would let it mint a run,
     // turning a leaked operator token into a durable one.
     if (this.creds.isOperator(hash)) return { ok: true, kind: "operator", principal: this.ctx.principal };
     if (!/^[0-9a-f]{48}$/.test(token)) return { ok: false, reason: "invalid_token" };
@@ -817,8 +818,8 @@ export class Space {
     return agent ? { ok: true, kind: "def", agent } : { ok: false, reason: "invalid_token" };
   }
 
-  /** The newest record of `kind` carrying this token hash — the current state of that credential,
-   *  because a stop is written as a successor with the same hash. */
+  /** The newest record of `kind` carrying this token hash. That is the current state of that
+   *  credential, because a stop is written as a successor with the same hash. */
   private async newestByHash(kind: string, tokenHash: string): Promise<unknown | undefined> {
     const rows = await this.query({ kind, match: { tokenHash } }, 1, { dir: "desc" });
     return rows[0]?.body;
@@ -864,8 +865,8 @@ export class Space {
       await this.prepareStorageFor(def);
       return id;
     }
-    // A grant record IS an authorization grant: validate its body before commit (write-protection
-    // — that only a privileged principal may put one — is enforced at the API boundary).
+    // A grant record IS an authorization grant: validate its body before commit. Write-protection
+    // (that only a privileged principal may put one) is enforced at the API boundary.
     if (req.kind === GRANT) {
       const def = this.grantDefFromBody(req.body);
       validateGrantDef(def);
@@ -914,7 +915,7 @@ export class Space {
   // ---- artifacts (design-data-model §2.4) --------------------------------------------------
   //
   // An artifact is a RECORD whose body describes bytes held in the blob store. Everything that
-  // makes records useful — grants, taint, lineage, the event log, retention — therefore applies
+  // makes records useful (grants, taint, lineage, the event log, retention) therefore applies
   // to it with no new machinery, and only the payload sits outside. The reference clients hold is
   // the record id: stable, immutable, and never a signed URL (which would expire inside a record
   // that cannot be rewritten).
@@ -932,7 +933,7 @@ export class Space {
   }
 
   /** Store bytes and commit the `artifact` record that references them. The digest and size are
-   *  computed here, never taken from the client — they are runtime-authoritative like any other
+   *  computed here, never taken from the client. They are runtime-authoritative like any other
    *  server-assigned field. */
   async putArtifact(
     bytes: Uint8Array,
@@ -949,7 +950,7 @@ export class Space {
        * an application cannot scope: a grant pattern matches the body, so with nothing of the
        * app's in there, "artifacts belonging to this conversation" is inexpressible and any
        * holder of an artifact id can read it. These are client CLAIMS like any other body
-       * content — the runtime routes on them, never trusts them — and the authoritative fields
+       * content (the runtime routes on them, never trusts them), and the authoritative fields
        * below always win, so nothing here can forge a digest, size or media type.
        */
       appFields?: Record<string, unknown>;
@@ -982,7 +983,7 @@ export class Space {
   }
 
   /** The artifact record plus a byte stream, or null if the id is not an artifact / the blob is
-   *  gone. Callers authorize FIRST — this is the read itself, not the check. */
+   *  gone. Callers authorize FIRST: this is the read itself, not the check. */
   async readArtifact(recordId: string): Promise<{ record: RadiaRecord; def: ArtifactDef; stream: ReadableStream<Uint8Array> } | null> {
     const record = await this.storage.getRecord(recordId);
     if (!record || record.kind !== ARTIFACT) return null;
@@ -1028,7 +1029,7 @@ export class Space {
   /**
    * Matching records ordered by the pattern, capped at `limit`.
    *
-   * `page` is a KEYSET cursor over record id (`after` exclusive, `dir` to walk backwards) — the
+   * `page` is a KEYSET cursor over record id (`after` exclusive, `dir` to walk backwards): the
    * stable way to paginate a space that is still being written to, and the only way to ask for the
    * NEWEST records rather than the oldest. It is defined for the natural id order only: an
    * explicit `order_by` already answers "in what order", and a cursor over a body field would need
@@ -1040,14 +1041,14 @@ export class Space {
     if (page && (page.after || page.dir) && compiled.orderBy?.length) {
       throw new RadiaError(
         "invalid_pattern",
-        "a keyset page (after/dir) is only defined for the natural id order — drop order_by, or page without a cursor",
+        "a keyset page (after/dir) is only defined for the natural id order; drop order_by, or page without a cursor",
       );
     }
     return this.storage.query(compiled, limit, page, scope);
   }
 
-  /** Record counts by kind and state (dev UI overview). `scope` makes it a genuine self-aggregate
-   *  — computed over the subset, never a whole-space total filtered afterwards. */
+  /** Record counts by kind and state (dev UI overview). `scope` makes it a genuine self-aggregate,
+   *  computed over the subset, never a whole-space total filtered afterwards. */
   stats(scope?: StatsScope): Promise<KindStateCount[]> {
     return this.storage.stats(scope);
   }
@@ -1074,16 +1075,16 @@ export class Space {
     if (!grants.some((g) => g.scope?.createdBy === "self")) {
       throw new RadiaError("forbidden", `principal '${principal}' may not access the ops plane`);
     }
-    // Which of those kinds are actually NARROWED is asked of `authorScope` — the same function the
-    // read path uses — and never restated here. A restatement filters on "has a self-scoped
+    // Which of those kinds are actually NARROWED is asked of `authorScope` (the same function the
+    // read path uses) and never restated here. A restatement filters on "has a self-scoped
     // grant", while a read is narrowed only when EVERY grant permitting it is self-scoped. The two
     // disagree for a principal holding an unscoped `{put, query}` beside a self-scoped `{query}` on
     // one kind (different operation sets, so different grant identities, so both live), which can
-    // LIST every record of that kind while `ops/stats` counts only its own — and a number that
+    // LIST every record of that kind while `ops/stats` counts only its own. And a number that
     // disagrees with the caller's own query is believed.
     const kinds = [...new Set(grants.filter((g) => g.scope?.createdBy === "self").map((g) => g.kind))];
-    // …and which of those the caller can actually read MORE of. This does not widen the aggregate —
-    // the ops plane stays self-scoped on purpose — it makes the aggregate able to say so. A read is
+    // …and which of those the caller can actually read MORE of. This does not widen the aggregate
+    // (the ops plane stays self-scoped on purpose); it makes the aggregate able to say so. A read is
     // narrowed only when EVERY grant permitting it is self-scoped, so a principal holding an
     // unscoped `{put, query}` beside a self-scoped `{query}` (different operation sets, different
     // grant identities, both live) can LIST every record of the kind while these counts cover only
@@ -1150,7 +1151,7 @@ export class Space {
         ...(result.parentIds ?? []).filter((p) => p !== lease.recordId),
       ];
       // Emitting a result IS a put: authorize the ACTING principal to put this kind (this closes
-      // the gap where ack-emitted records bypassed put-authorization). Pipeline-friendly — each
+      // the gap where ack-emitted records bypassed put-authorization). Pipeline-friendly: each
       // agent needs only its own grant. A pattern-scoped grant also constrains the result body.
       // Throws forbidden before anything is consumed.
       if (owner) {
@@ -1215,16 +1216,16 @@ export class Space {
 
   /**
    * Owner-match guard for lease settlement (ack/nack/release/renew). A non-operator principal may
-   * settle only a lease it OWNS — defense-in-depth on top of fencing. It closes lease-leak
+   * settle only a lease it OWNS: defense-in-depth on top of fencing. It closes lease-leak
    * IMPERSONATION (ack, whose emitted result carries the owner's authority + delegation chain) and
    * lease-leak DoS (nack/release/renew driving someone else's task to available/dead-letter). A
-   * stranger presenting a leaked lease gets the SAME opaque `lease_lost` fencing returns — never a
+   * stranger presenting a leaked lease gets the SAME opaque `lease_lost` fencing returns, never a
    * distinguishable error, which would leak lease existence. In-process/operator callers (no
    * principal / privileged) skip the check. Returns the authoritative `lease_owner` on success (ack
    * needs it to derive authority).
    *
    * The mismatch is logged: the caller only ever sees `lease_lost`, which the SDK's agentLoop treats
-   * as ordinary fencing ("duplicate work possible") and retries forever — so a misconfigured agent
+   * as ordinary fencing ("duplicate work possible") and retries forever, so a misconfigured agent
    * presenting the wrong identity would spin silently. The server-side warn makes that diagnosable.
    *
    * Ordering: this reads `lease_owner`, NOT the `lease_id`/epoch fencing check, and runs before the
@@ -1285,7 +1286,7 @@ export class Space {
       seen.add(id);
       const rec = await this.storage.getRecord(id);
       if (!rec || exclude.has(rec.kind)) continue;
-      // A foreign node is a wall, not a skip — traversing through it would still expose the shape
+      // A foreign node is a wall, not a skip. Traversing through it would still expose the shape
       // of what hangs off it, and the node's own id and label are enough to feed a lineage probe.
       if (!this.authorAllows(opts.createdBy, rec)) continue;
       nodes.set(id, rec);
@@ -1334,19 +1335,19 @@ export class Space {
     let frontier: string[] = [recordId];
     // One round trip per DEPTH LEVEL, not per node: a level's records are fetched together, and
     // only then does the walk decide what the next level is. Walking node by node costs a
-    // sequential round trip per ancestor — which on a networked Postgres is latency, not work.
+    // sequential round trip per ancestor, which on a networked Postgres is latency, not work.
     for (let depth = 0; frontier.length > 0 && out.length < maxNodes; depth++) {
       const fresh = frontier.filter((id) => !seen.has(id));
       for (const id of fresh) seen.add(id);
       const records = await this.storage.getRecords(fresh);
       // getRecords does not promise an order, and lineage output should not depend on one. A
-      // single-record level — every level of a plain chain — is already sorted.
+      // single-record level (every level of a plain chain) is already sorted.
       if (records.length > 1) records.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const next: string[] = [];
       for (const rec of records) {
         // A self-scoped reader walks only its OWN lineage. Stop at a foreign ancestor rather than
         // skipping past it: `put` never checks that a parent is readable, so a scoped principal can
-        // name any id as a parent of its own record — and an unfiltered walk then hands back that
+        // name any id as a parent of its own record, and an unfiltered walk then hands back that
         // record's whole upstream, bodies included.
         if (!this.authorAllows(createdBy, rec)) continue;
         out.push({ record: rec, depth });
@@ -1357,7 +1358,7 @@ export class Space {
     return out;
   }
 
-  /** Records that reference this record via `parent_ids` — its direct **children** (the reverse of
+  /** Records that reference this record via `parent_ids`: its direct **children** (the reverse of
    *  lineage). E.g. a conversation's messages/llm_calls, an llm_call's chunks + result, a task's
    *  results. Lineage goes up (ancestors); this goes down. */
   getChildren(recordId: string, limit = 100, page?: Page): Promise<RadiaRecord[]> {
@@ -1380,7 +1381,7 @@ export class Space {
    *
    * A watch carries a compiled scope derived from its creator's grants, so handing the stream to
    * anyone who knows the id hands them that scope. Ids come from the same monotonic ULID generator
-   * as record ids, so they are guessable from an adjacent record — never treat the id as the
+   * as record ids, so they are guessable from an adjacent record. Never treat the id as the
    * secret. Returns undefined for a non-owner, which the caller reports as 404 rather than 403 so
    * the id is not confirmed.
    */
@@ -1413,7 +1414,7 @@ export class Space {
   // ---- envelope query + diagnostics + remediation (ops plane; would be grant-gated) ----
 
   /**
-   * Query records by their runtime ENVELOPE state — the dimension the content-routing query
+   * Query records by their runtime ENVELOPE state, the dimension the content-routing query
    * language deliberately omits (it matches record bodies, for routing). This is the ops-plane
    * substrate primitive: `expired` keeps only leased rows whose lease has lapsed; `staleSeconds`
    * keeps only first-attempt rows that have sat available longer than that. Diagnostics composes
@@ -1447,7 +1448,7 @@ export class Space {
    * Remediate every record matching an envelope SELECTOR, not one id at a time.
    *
    * Per-record remediation (`POST /v0/ops/records/{id}/{action}`) makes draining 500 stuck leases
-   * 500 calls, preceded by diagnostics calls just to learn the ids — and the diagnostics report
+   * 500 calls, preceded by diagnostics calls just to learn the ids, and the diagnostics report
    * only samples ten. The selector here is deliberately the SAME shape `queryEnvelopes` accepts, so
    * "what is wrong" and "fix it" are one query language rather than two: `{state:"leased",
    * expired:true}` is the stuck-lease set in both.
@@ -1461,8 +1462,8 @@ export class Space {
     selector: { state: RecordState; expired?: boolean; staleSeconds?: number; limit?: number },
   ): Promise<{ action: string; matched: number; applied: number; more: boolean; sample: string[] }> {
     const limit = Math.min(Math.max(selector.limit ?? 200, 1), 2000);
-    // Remediation acts on WORK. A `claimable:false` kind — kind_def, grant, agent_run, facts,
-    // history — sits `available` forever by design, so a broad `{state:"available"}` selector would
+    // Remediation acts on WORK. A `claimable:false` kind (kind_def, grant, agent_run, facts,
+    // history) sits `available` forever by design, so a broad `{state:"available"}` selector would
     // otherwise sweep the kind registry and the grants into dead_letter and break the space. The
     // starvation check excludes them for the same reason; here it is not a heuristic but a guard.
     // `dead_letter` is NOT filtered: that is the recovery path, and a reference record that
@@ -1496,7 +1497,7 @@ export class Space {
     const SAMPLE = 500;
     const STALE_S = this.ctx.diagnosticsStaleSeconds;
     // Starvation is only meaningful for CLAIMABLE (work) kinds: reference records (facts, config,
-    // grants, kind_defs, history) sit `available` forever by design — not stale, so exclude them
+    // grants, kind_defs, history) sit `available` forever by design and are not stale, so exclude them
     // (filtered in the query, before the sample cap, so real stale work is never crowded out).
     const referenceKinds = this.kinds.list().filter((d) => !isClaimable(d)).map((d) => d.kind);
 
@@ -1520,7 +1521,7 @@ export class Space {
       deadLetter: { count: total("dead_letter"), sample: deadLetter.slice(0, 10).map((r) => ({ recordId: env(r).recordId, kind: env(r).kind, attempt: env(r).attempt })) },
       stuckLeases: {
         count: stuck.length,
-        // The scan is capped, so a full page means "at least this many" — otherwise a reader (or a
+        // The scan is capped, so a full page means "at least this many". Otherwise a reader (or a
         // model) reports a cap as if it were a census.
         atLeast: stuck.length >= SAMPLE,
         sampledFrom: Math.min(total("leased"), SAMPLE),
@@ -1531,7 +1532,7 @@ export class Space {
   }
 
   /** Un-stick an expired lease: force it back to available (attempt +1). Only if the lease
-   *  has actually expired — never disturbs a valid lease. Returns whether it applied. */
+   *  has actually expired; never disturbs a valid lease. Returns whether it applied. */
   async reclaim(recordId: string): Promise<boolean> {
     const now = await this.storage.now();
     const applied = await this.storage.adminTransition(recordId, ["leased"] as RecordState[], "available", { now, bumpAttempt: true, onlyExpired: true });
@@ -1557,15 +1558,15 @@ export class Space {
 
   /**
    * Privileged declassify: the only way to clear taint. Records are immutable, so this emits a
-   * **clean successor** — same kind + body, taint forced `false` (overriding propagation), with the
+   * **clean successor**: same kind + body, taint forced `false` (overriding propagation), with the
    * tainted original as its data parent (audit trail). Downstream work should consume the successor.
    * Grant-gated to operators via the `/ops/*` boundary. Returns the successor id, or null if absent.
    */
   async declassify(recordId: string, principal?: string): Promise<{ id: string } | null> {
     const rec = await this.storage.getRecord(recordId);
     if (!rec) return null;
-    // ATTRIBUTED. Declassify is the one operation whose whole purpose is accountability — it is
-    // the human decision that lets untrusted data reach a side-effecting worker — so it must name
+    // ATTRIBUTED. Declassify is the one operation whose whole purpose is accountability (it is
+    // the human decision that lets untrusted data reach a side-effecting worker), so it must name
     // who made it. Writing it with no principal made `created_by` (and the event's `runId`) the
     // space's own identity, leaving the clearance anonymous: the successor said what was cleared
     // and never who cleared it. A tamper-evident event log over that record would have protected

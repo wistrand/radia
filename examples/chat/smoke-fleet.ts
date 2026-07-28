@@ -2,7 +2,7 @@
 //
 //   deno run -A examples/chat/smoke-fleet.ts
 //
-// No model, no API key — an advertisement is a record, so publishing, withdrawing and reviving one
+// No model, no API key. An advertisement is a record, so publishing, withdrawing and reviving one
 // are all record operations. The two properties worth pinning both have a history: an unconditional
 // publish grew the space by the whole fleet per restart until discovery's bounded page stopped
 // reaching the newest entry, and a worker that goes away must leave rotation or the router
@@ -68,7 +68,7 @@ for (let restart = 0; restart < 5; restart++) {
 }
 check("re-publishing an unchanged advertisement writes nothing", await countModels() === afterFirst, `${afterFirst} records`);
 
-// A real change IS a successor — that is how a worker moves to a new model.
+// A real change IS a successor. That is how a worker moves to a new model.
 await publishModel(client, { ...FAST, model: "vendor/small-v2" });
 check("a changed advertisement is a successor", await countModels() === afterFirst + 1);
 const moved = (await client.query({ kind: "model", match: { tier: "fast" } }, 1, { dir: "desc" }))[0];

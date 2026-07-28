@@ -5,7 +5,7 @@
 // rewritten on every restart until the set outgrew its read. Example-based tests reach those only
 // if someone imagines the exact sequence first.
 //
-// So this generates sequences instead — grant, revoke, re-bootstrap, narrow — and after EVERY step
+// So this generates sequences instead (grant, revoke, re-bootstrap, narrow) and after EVERY step
 // checks the runtime against an independent model of what the rules say. The model is written out
 // longhand below rather than sharing code with the implementation, because a model that calls the
 // thing it is checking proves nothing.
@@ -18,7 +18,7 @@ import type { Suite } from "../harness.ts";
 import { Space } from "../../src/core/space.ts";
 import type { GrantOp } from "../../src/core/kinds.ts";
 
-/** xorshift32 — small, seeded, and identical on every run and every adapter. */
+/** xorshift32: small, seeded, and identical on every run and every adapter. */
 function prng(seed: number) {
   let x = seed | 0 || 1;
   return () => {
@@ -45,7 +45,7 @@ class Model {
   readonly entries = new Map<string, ModelGrant>();
 
   /**
-   * A grant's identity is what it PERMITS — principal, kind, operations, pattern — and pointedly
+   * A grant's identity is what it PERMITS (principal, kind, operations, pattern) and pointedly
    * NOT its scope. So writing a scoped successor with the same operations narrows that grant in
    * place rather than coexisting with the unscoped one, which is the behaviour you want from
    * "restrict this to its own records": the alternative is two grants whose union is the wider of
@@ -65,7 +65,7 @@ class Model {
     return this.active().some((g) => g.kind === kind && g.operations.includes(op));
   }
   /** Reads narrow to the principal's own records only when EVERY grant permitting that read is
-   *  scoped — one unscoped grant already permits other authors. */
+   *  scoped. One unscoped grant already permits other authors. */
   readsScoped(kind: string, op: GrantOp): boolean {
     const relevant = this.active().filter((g) => g.kind === kind && g.operations.includes(op));
     return relevant.length > 0 && relevant.every((g) => g.scoped);
@@ -112,7 +112,7 @@ export const authHistorySuites: Suite[] = [
           });
           model.write(g);
         } else if (roll < 0.7) {
-          // REVOKE one existing entry — the operation that used to be lost off the end of a page.
+          // REVOKE one existing entry: the operation that used to be lost off the end of a page.
           const live = model.active();
           if (live.length === 0) continue;
           const g = pick(live);
@@ -163,7 +163,7 @@ export const authHistorySuites: Suite[] = [
           }
         }
 
-        // The published view must agree with the decisions — the two drifted before, and the
+        // The published view must agree with the decisions. The two drifted before, and the
         // divergence is exactly what made a human approve something that did not hold.
         const view = await space.effectivePermissions("agent:w");
         assert(view.complete, `step ${step}: the grant scan could not be exhausted`);

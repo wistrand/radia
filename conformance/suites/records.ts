@@ -183,7 +183,7 @@ export const recordSuites: Suite[] = [
     run: async (adapter) => {
       const space = new Space(adapter);
       // Artifacts were the one kind an application could not SCOPE: the body is entirely
-      // runtime-built, and a grant pattern matches the body — so "artifacts belonging to this
+      // runtime-built, and a grant pattern matches the body, so "artifacts belonging to this
       // conversation" was inexpressible and any holder of an id could read one.
       const { id } = await space.putArtifact(new TextEncoder().encode("hello"), {
         mediaType: "text/plain",

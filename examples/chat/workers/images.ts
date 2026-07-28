@@ -1,5 +1,5 @@
 // Image-generation worker. Claims `tool_call{tool:"generate_image"}`, calls an image model, stores
-// the bytes as an ARTIFACT, and acks a `tool_result` carrying the artifact's id — never the bytes.
+// the bytes as an ARTIFACT, and acks a `tool_result` carrying the artifact's id, never the bytes.
 //
 // It is its own process for the same reason the inference-worker is: it holds OPENROUTER_API_KEY
 // and needs outbound network. The tool-worker deliberately has neither (`--allow-read=<sandbox>`,
@@ -39,10 +39,10 @@ const GENERATE_IMAGE: ToolDef = {
   function: {
     name: "generate_image",
     description: "Generate an image from a text description. Describe the subject, composition and " +
-      "style in the prompt — the image model sees ONLY this prompt, not the conversation, so make it " +
+      "style in the prompt. The image model sees ONLY this prompt, not the conversation, so make it " +
       "self-contained. Returns a reference {artifactId, mediaType, size}, not image data: the picture " +
       "is stored in the space and the user is shown it automatically. Refer to the result in words " +
-      "('the image above') — never invent a link, path or URL to it, and do not ask for or expect " +
+      "('the image above'). Never invent a link, path or URL to it, and do not ask for or expect " +
       "base64. Takes 5-20s.",
     parameters: {
       type: "object",
@@ -57,12 +57,12 @@ const GENERATE_IMAGE: ToolDef = {
 
 // Advertise the tool (discovery, like any capability) and the model (fleet inventory). `modalities`
 // is what keeps this out of TEXT routing: the router and the escalation ladder select tiers that
-// serve text, and this one does not — the same array the request sends as `modalities: ["image"]`.
+// serve text, and this one does not. It is the same array the request sends as `modalities: ["image"]`.
 await publishCapability(client, GENERATE_IMAGE);
 const AD = { tier: "image", model, rank: 0, modalities: ["image"] };
 await publishModel(client, AD);
 // Withdraw the advertisement on a graceful stop, so the tier leaves rotation instead of sitting
-// there as an offer nobody serves. A crash still leaves it — see space/model.ts.
+// there as an offer nobody serves. A crash still leaves it (see space/model.ts).
 onStop(() => retireModel(client, AD));
 
 await agentLoop(client, {
@@ -80,7 +80,7 @@ await agentLoop(client, {
       const { bytes, mediaType } = await generateImage({ apiKey, model, prompt, safetySettings });
       // Tainted on purpose. The bytes come from a provider (and in two of the response formats,
       // from a URL the MODEL chose), and an image is a prompt-injection vector the moment anything
-      // reads it back — instructions render as pixels. A sensitive consumer can refuse it with
+      // reads it back: instructions render as pixels. A sensitive consumer can refuse it with
       // `requireUntainted`; clearing it needs a privileged declassify.
       const artifact = await c.putArtifact(bytes, {
         mediaType,
@@ -88,7 +88,7 @@ await agentLoop(client, {
         parentIds: [callId], // lineage: conversation -> tool_call -> artifact
         taint: true,
         // Lineage records where it CAME from; this is what a grant can bind. Patterns match the
-        // body, and parent_ids is not body — so without this field an artifact is readable by any
+        // body, and parent_ids is not body, so without this field an artifact is readable by any
         // session that learns its id, whatever the conversation scoping says.
         meta: { conversationId: b.conversationId ?? "", owner: b.owner ?? "" },
       });

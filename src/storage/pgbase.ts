@@ -1,5 +1,5 @@
 // Shared Postgres-dialect adapter body. Both the embedded PGlite adapter (WASM Postgres) and
-// the standalone Postgres adapter speak the SAME SQL — the only difference is the driver — so
+// the standalone Postgres adapter speak the SAME SQL (the only difference is the driver), so
 // the entire StorageAdapter implementation lives here once, parameterized over a minimal SQL
 // port (`SqlBackend`). Each backend wraps its driver to that port; drift between the two is
 // impossible because there is only one copy of the logic (and the conformance suite runs both).
@@ -53,7 +53,7 @@ export interface SqlResult<T> {
   affectedRows: number;
 }
 
-/** A statement executor — either the backend itself (autocommit) or a transaction handle. */
+/** A statement executor: either the backend itself (autocommit) or a transaction handle. */
 export interface Sql {
   query<T = RawRow>(text: string, params?: unknown[]): Promise<SqlResult<T>>;
 }
@@ -67,7 +67,7 @@ export interface SqlBackend extends Sql {
   exec(ddl: string): Promise<void>;
   /** The DB clock, ISO 8601 UTC (INVARIANT: all lease/timing math uses this). */
   now(): Promise<string>;
-  /** Open the backend (connect / instantiate); does NOT create tables — the base runs DDL. */
+  /** Open the backend (connect / instantiate); does NOT create tables. The base runs DDL. */
   init(): Promise<void>;
   close(): Promise<void>;
 }
@@ -75,8 +75,8 @@ export interface SqlBackend extends Sql {
 /** Every column of `records` EXCEPT the generated `body_jsonb`. Never `select *` from this table:
  *  `body_jsonb` is a second, larger copy of the body that exists only so the DATABASE can filter
  *  on it, and shipping it to the runtime would cost more than pushdown saves. `rowToRecord`
- *  ignores unknown columns, so a wildcard would fail silently — as bytes on the wire, not as an
- *  error. */
+ *  ignores unknown columns, so a wildcard would fail silently, as bytes on the wire rather than as
+ *  an error. */
 const RECORD_COLS = "id, kind, body_json, body_sha256, client_meta, created_by, delegation_context, " +
   "parent_ids, taint, schema_version, created_at, deadline_at, retention_until";
 
@@ -89,13 +89,13 @@ const CANDIDATE_COLS = `${RECORD_COLS_R}, rt.record_id, rt.state, rt.attempt, rt
 /** The DB clock as ISO 8601 UTC. Shared so the backends' `now()` and the in-transaction
  *  `txNow` read it identically. */
 /** Claim order, identical to `rankClaimable`'s: highest priority, then oldest eligible, then id.
- *  The window is only safe to bound because SQL sorts by the same key the ranker does — the head
+ *  The window is only safe to bound because SQL sorts by the same key the ranker does. The head
  *  of this ordering IS the winner the unbounded scan would have picked. Ordering also gives every
  *  claimer the same traversal, so two transactions cannot deadlock updating rows in opposite
  *  orders. */
 const CLAIM_ORDER = "order by rt.effective_priority desc, rt.available_at asc, r.id asc";
 
-/** How many candidates one claim examines at a time. Never fetch — and row-lock — EVERY
+/** How many candidates one claim examines at a time. Never fetch (and row-lock) EVERY
  *  available-or-leased record of the kind: it makes a claim O(kind size) and, worse, lets one
  *  claimer's open transaction hide the whole queue from everyone else (`skip locked` finds nothing
  *  unlocked, so a peer is told "empty" while work remains). A pattern with a selective match
@@ -105,13 +105,13 @@ const CANDIDATE_WINDOW = 64;
 export const NOW_SQL =
   "select to_char(now() at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') as now";
 
-/** Schema DDL, portable across PGlite and Postgres. Idempotent — but note that `create table if
+/** Schema DDL, portable across PGlite and Postgres. Idempotent, but note that `create table if
  *  not exists` only ever creates: it does NOT reshape a table that already exists. Any column
  *  added after the initial schema therefore also needs an `alter table ... add column if not
  *  exists` in the migrations block at the end, or databases created by an older build keep the
  *  old shape and fail at query time.
  *
- *  NOTE: this is a template literal — a backtick anywhere inside, including in a `-- comment`,
+ *  NOTE: this is a template literal. A backtick anywhere inside, including in a `-- comment`,
  *  ends the string and produces a wall of TS syntax errors pointing at the SQL. Quote identifiers
  *  in comments some other way. */
 export const DDL = `
@@ -150,7 +150,7 @@ create index if not exists idx_runtime_claim
   where state = 'available';
 -- The claim window's ordering, column for column. Two things make this index and not the one
 -- above the one a claim uses, and both are easy to get wrong: the columns must be in the ORDER
--- BY's order (priority leads, not available_at), and state must NOT appear before them — an
+-- BY's order (priority leads, not available_at), and state must NOT appear before them. An
 -- index on (kind, state, ...) can satisfy state in ('available','leased') but only sorts WITHIN
 -- each state, so the database still sorts the whole set and the index buys nothing. Measured:
 -- adding the state-first version changed a claim by 1.4ms; this one took it from 19.5ms to 0.8ms
@@ -159,7 +159,7 @@ create index if not exists idx_runtime_claim
 create index if not exists idx_runtime_claim_order
   on record_runtime (kind, effective_priority desc, available_at asc, record_id asc);
 -- The lineage DAG's edges, one row per (parent, child). records.parent_ids stays the source of
--- truth — this table is a derived REVERSE index, because parent_ids answers "who are my parents"
+-- truth. This table is a derived REVERSE index, because parent_ids answers "who are my parents"
 -- for free and "who are my children" only by scanning every record. Written in the same
 -- transaction as the record, so it cannot lag; rebuilt from parent_ids by the backfill below.
 create table if not exists record_edges (
@@ -204,14 +204,14 @@ alter table events add column if not exists xid xid8 not null default pg_current
 -- ALTER; the cast is immutable, which is what makes it legal in a generated column.
 alter table records add column if not exists body_jsonb jsonb generated always as (body_json::jsonb) stored;
 -- One GIN index serves equality on EVERY path, so a kind declaring a new indexed path needs no
--- DDL and no migration — which is what keeps kinds-as-records from dragging a schema change
+-- DDL and no migration, which is what keeps kinds-as-records from dragging a schema change
 -- behind it. jsonb_path_ops (rather than the default operator class) indexes hashed path/value
 -- pairs: smaller, faster to search, and it supports exactly the one operator pushdown emits, @>.
 -- Range predicates cannot use it and still scan.
 create index if not exists idx_records_body_gin on records using gin (body_jsonb jsonb_path_ops);
 -- Record ids under BYTE order, which is what the oracle's id tie-break means (a JS string
 -- comparison). The primary key index sorts under the database's collation instead, and a
--- linguistic collation is free to order the same ids differently — so a pushed ordered limit
+-- linguistic collation is free to order the same ids differently, so a pushed ordered limit
 -- would otherwise have to sort the whole match set to be correct, and read_one could answer with
 -- a different record here than on SQLite. This index is what keeps the limit cheap AND identical
 -- across adapters.
@@ -229,7 +229,7 @@ insert into record_edges (parent_id, child_id)
 
 const SQL_CMP: Record<string, string> = { gt: ">", gte: ">=", lt: "<", lte: "<=" };
 
-/** `["a","b"], 1` -> `{a: {b: 1}}` — the containment probe for a value at a dotted path. */
+/** `["a","b"], 1` -> `{a: {b: 1}}`, the containment probe for a value at a dotted path. */
 function nest(path: string[], value: unknown): unknown {
   return path.reduceRight<unknown>((acc, key) => ({ [key]: acc }), value);
 }
@@ -239,16 +239,16 @@ function nest(path: string[], value: unknown): unknown {
  *
  * Scalar equality is a single `jsonb =`, which is already the oracle's rule for scalars: typed,
  * exact, and numerically aware (`5` equals `5.0`, and neither equals `"5"`). That does NOT extend
- * to objects and arrays — jsonb normalizes key order while the oracle compares serialized text —
- * which is why `pushdown` refuses to hand them here.
+ * to objects and arrays, because jsonb normalizes key order while the oracle compares serialized
+ * text, which is why `pushdown` refuses to hand them here.
  *
  * Ordered comparison always guards on `jsonb_typeof` first. jsonb has a total order ACROSS types
  * (object > array > boolean > number > string > null), so an unguarded `>` would happily compare a
- * string to a number and match rows the oracle rejects — sound, but it would also mean the guard
- * is doing the real work, so it is stated explicitly. Numbers compare as jsonb (no cast, so no
- * chance of a cast error on a row that a reordered plan reaches before the guard); strings compare
- * as extracted text under `COLLATE "C"`, which is byte order — what `pushdown`'s ASCII-bound rule
- * assumes, and what the database's default collation would NOT give.
+ * string to a number and match rows the oracle rejects. That stays sound, but it would also mean
+ * the guard is doing the real work, so it is stated explicitly. Numbers compare as jsonb (no cast,
+ * so no chance of a cast error on a row that a reordered plan reaches before the guard); strings
+ * compare as extracted text under `COLLATE "C"`, which is byte order: what `pushdown`'s ASCII-bound
+ * rule assumes, and what the database's default collation would NOT give.
  */
 class PgJson implements JsonDialect {
   readonly params: unknown[] = [];
@@ -285,7 +285,7 @@ class PgJson implements JsonDialect {
 
   eqScalar(path: string[], value: string | number | boolean | null): string {
     // Two terms doing different jobs. `@>` is the only operator the GIN index answers, so it is
-    // what turns this from a scan into a lookup — but containment is WEAKER than the oracle's
+    // what turns this from a scan into a lookup. But containment is WEAKER than the oracle's
     // equality (jsonb treats a scalar as contained in an array at the same key, so {"a":["x"]}
     // contains {"a":"x"}). The `=` term restores exactness. Weaker-then-exact is the sound order:
     // the index narrows, the comparison decides.
@@ -316,10 +316,10 @@ class IdempotencyReplay extends Error {}
 
 /**
  * The full StorageAdapter, in Postgres SQL, over a `SqlBackend`. Single-winner claiming rests on
- * a CHECKED compare-and-set — the state transition names the state it expects, and a claimer
+ * a CHECKED compare-and-set: the state transition names the state it expects, and a claimer
  * whose update affects zero rows lost the race and moves to the next candidate. That holds on a
  * real server (concurrent claims race, exactly one wins) and on the single-connection embedded
- * backend (where transactions serialize in-process anyway) — the same contract either way. A
+ * backend (where transactions serialize in-process anyway), the same contract either way. A
  * take by record id additionally uses `FOR UPDATE SKIP LOCKED`, which is safe because it locks
  * exactly the one row it intends to claim; see `CANDIDATE_WINDOW` for why a pattern take must
  * not.
@@ -335,19 +335,20 @@ export class PgSqlAdapter implements StorageAdapter {
   /**
    * Give the planner a real estimate for the body paths this kind declares.
    *
-   * The problem this solves is not a missing index — the GIN index is there and gets used. It is
+   * The problem this solves is not a missing index. The GIN index is there and gets used. It is
    * that Postgres has no statistics for a JSON EXPRESSION, so it falls back to a generic guess:
    * ~26 rows for a predicate matching 5,715 of 40,000. On that estimate a sort looks free, so a
    * claim collects every matching record through the body index and sorts it, instead of walking
    * the claim index and stopping at the window. Measured: 15.07ms → 1.92ms with the statistics,
    * with the planner choosing the ordered walk unprompted. No query rewrite reproduces this, and
-   * forcing the planner with enable_* flags makes it worse — the estimate is the whole problem.
+   * forcing the planner with enable_* flags makes it worse, because the estimate is the whole
+   * problem.
    *
    * The expression must match what `PgJson.at` emits (`body_jsonb #> '{a,b}'`) character for
    * character, or the planner will not associate the statistics with the predicate.
    *
    * Statistics are read at ANALYZE time, not at write time, so this costs nothing on the hot path.
-   * The ANALYZE is run only when something was actually created — declaring a kind is idempotent
+   * The ANALYZE is run only when something was actually created. Declaring a kind is idempotent
    * and happens at startup, so this is once per path for the life of the database, and a no-op on
    * every later boot.
    */
@@ -374,7 +375,7 @@ export class PgSqlAdapter implements StorageAdapter {
       } catch {
         // Statistics are an optimization. A server too old for expression statistics (pre-14), a
         // concurrent creator, or a permission that does not allow DDL must not fail a kind
-        // declaration — the query still returns the right rows, just planned on a guess.
+        // declaration. The query still returns the right rows, just planned on a guess.
       }
     }
     if (created > 0) {
@@ -414,20 +415,20 @@ export class PgSqlAdapter implements StorageAdapter {
   }
 
   /**
-   * Rows of the kind that survive the SQL pre-filter — a superset of what the oracle accepts.
+   * Rows of the kind that survive the SQL pre-filter: a superset of what the oracle accepts.
    *
    * `want` is how many records the caller will ultimately keep. It becomes a SQL `LIMIT` only when
    * the filter is EXACT and the caller has no `orderBy`, because only then does the database agree
    * with the oracle about both which rows match and which come first: with no `orderBy` the
    * oracle's order is `x.id < y.id`, its deterministic tie-break, which `order by id asc` matches
-   * exactly. Any other case fetches everything and lets the oracle sort — see `Pushed.exact`.
+   * exactly. Any other case fetches everything and lets the oracle sort; see `Pushed.exact`.
    */
   private async candidateRows(match: CompiledMatch, want?: number, page?: Page, scope?: StatsScope): Promise<RawRow[]> {
     const d = new PgJson(1); // $1 is the kind
     const filter = pushdown(match.where, d);
     const where = isTrivial(filter) ? "" : ` and ${filter.sql}`;
     const params: unknown[] = [match.kind, ...d.params];
-    // The cursor is an id comparison, so it is always EXACT — it constrains nothing the oracle
+    // The cursor is an id comparison, so it is always EXACT: it constrains nothing the oracle
     // would have to re-check, and it applies whether or not the body filter could be pushed.
     // `collate "C"` for the same reason the ordering uses it: the oracle compares ids as JS
     // strings, and a linguistic collation would put a different set of records "after" the cursor.
@@ -467,7 +468,7 @@ export class PgSqlAdapter implements StorageAdapter {
 
   async stats(scope?: StatsScope): Promise<KindStateCount[]> {
     // Scoped counts JOIN records, because `created_by` lives there. Unscoped stays a pure
-    // record_runtime aggregate — the common path pays nothing for the scoped one.
+    // record_runtime aggregate, so the common path pays nothing for the scoped one.
     const params: unknown[] = [];
     const conds: string[] = [];
     if (scope?.createdBy) {
@@ -591,7 +592,7 @@ export class PgSqlAdapter implements StorageAdapter {
       if (hard !== undefined && now >= hard) return { status: "lease_lost" };
       const wanted = addSeconds(now, leaseSeconds);
       const until = hard !== undefined ? minIso(wanted, hard) : wanted;
-      // The guarded update IS the fence — always check that it matched. The row read above is not
+      // The guarded update IS the fence. Always check that it matched. The row read above is not
       // locked, so on a pooled backend another claimer can take the reopened record or a
       // quarantine can bump the epoch in between; then this matches nothing and the lease is gone.
       const renewed = await tx.query(
@@ -612,7 +613,7 @@ export class PgSqlAdapter implements StorageAdapter {
       const row = await this.fetchEnvelopeRow(tx, ref.recordId);
       if (!this.leaseValid(row, ref)) return { status: "lease_lost" };
       // Fence BEFORE writing anything. The row read above is not locked, so another claimer can
-      // take the reopened record or a quarantine can bump the epoch in between — and then this
+      // take the reopened record or a quarantine can bump the epoch in between, and then this
       // update matches nothing. Never insert the result first: a fenced-out worker would commit
       // its result into the space and report `ok`, which is exactly what the epoch bump exists to
       // prevent.
@@ -623,7 +624,7 @@ export class PgSqlAdapter implements StorageAdapter {
       if (consumed.affectedRows === 0) return { status: "lease_lost" };
       if (result) {
         await this.insertRecord(tx, result);
-        // The result is a new record entering the space, so it gets its own `put` event — same
+        // The result is a new record entering the space, so it gets its own `put` event, the same
         // shape as a direct put. Without it the record would exist with no `available` event of
         // its own kind, and `matchesEvent` would never wake a watcher on that kind (the ack
         // event below is `consumed` and carries the PARENT's kind). Emitted before the ack event.
@@ -782,7 +783,7 @@ export class PgSqlAdapter implements StorageAdapter {
       params.push(scope.kinds);
       where += ` and rt.kind = any($${params.length}::text[])`;
     }
-    // The scope is applied BEFORE the cap, like `excludeKinds` — a limit taken first and filtered
+    // The scope is applied BEFORE the cap, like `excludeKinds`. A limit taken first and filtered
     // after would return a short page and read as "that is all of them".
     const join = scope?.createdBy ? " join records r on r.id = rt.record_id" : "";
     if (scope?.createdBy) {
@@ -888,16 +889,17 @@ export class PgSqlAdapter implements StorageAdapter {
    *
    * Pick the window from the narrow envelope table FIRST, then fetch bodies for only those rows.
    * Ordering the join instead makes the database materialize every record body of the kind before
-   * the limit applies — most of the cost of a claim on a large kind.
+   * the limit applies, which is most of the cost of a claim on a large kind.
    *
    * A pattern with a pushable predicate joins `records` inside that inner select so the window is
    * drawn from ROWS THAT CAN MATCH. Without it the window is the head of the queue regardless of
-   * the pattern, so a selective take pages through the entire kind 64 rows at a time — correct,
-   * but O(kind size) round trips to find one record. The filter is a sound over-approximation, so
+   * the pattern, so a selective take pages through the entire kind 64 rows at a time. That is
+   * correct, but O(kind size) round trips to find one record. The filter is a sound
+   * over-approximation, so
    * `rankClaimable` still decides.
    *
    * SQLite answers this from `idx_runtime_claim_order`: an ordered seek that stops once the window
-   * is full. Postgres does NOT, and cannot be talked into it by rewriting the SQL — it estimates a
+   * is full. Postgres does NOT, and cannot be talked into it by rewriting the SQL: it estimates a
    * jsonb predicate at ~26 rows when 5,715 match, so it collects every match through the body index
    * and sorts. The fix is a better ESTIMATE, not a better query: see gotchas.md, "a claim on
    * Postgres is planned on a guess".
@@ -953,7 +955,7 @@ export class PgSqlAdapter implements StorageAdapter {
        values ($1, $2, 'available', 0, $3, $4, $5, $6)`,
       runtimeInsertValues(input),
     );
-    // The reverse edge, in the SAME transaction as the record — a derived index that can never
+    // The reverse edge, in the SAME transaction as the record: a derived index that can never
     // lag the thing it indexes. One statement regardless of parent count.
     if (parents.length > 0) {
       await tx.query(
@@ -968,7 +970,7 @@ export class PgSqlAdapter implements StorageAdapter {
     return this.withRetry(() => this.sql.transaction((tx) => this.withIdem(tx, idem, () => body(tx))));
   }
 
-  // The DB clock, read on the transaction's OWN connection — so a settle op is one connection and
+  // The DB clock, read on the transaction's OWN connection, so a settle op is one connection and
   // one round-trip is saved versus a separate pre-transaction `now()` acquire.
   private async txNow(tx: Sql): Promise<string> {
     const r = await tx.query<{ now: string }>(NOW_SQL);
@@ -1011,7 +1013,7 @@ export class PgSqlAdapter implements StorageAdapter {
   }
 
   // Re-run an idempotent op that lost the insert race (its transaction rolled back), so the
-  // replay reads the now-committed response. Bounded; only IdempotencyReplay is retried — a
+  // replay reads the now-committed response. Bounded; only IdempotencyReplay is retried, and a
   // real error (including idempotency_conflict) propagates.
   private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) {

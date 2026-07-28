@@ -4,7 +4,7 @@
 //
 // A scoped session hits `forbidden` on the ops plane, asks for authority as a record, a human
 // approves (here: the script, standing in for the person at the REPL), and the same call then
-// succeeds — answering over the session's OWN records only, with another principal's records
+// succeeds, answering over the session's OWN records only, with another principal's records
 // present in the same space to prove it.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
@@ -32,14 +32,14 @@ for (let i = 0; i < 100; i++) {
 }
 await registerChatKinds(admin);
 // The conversation exists BEFORE the session credential, because the session's grants are scoped
-// to it — the same order chat.ts uses, and the reason a user session no longer holds
+// to it. That is the same order chat.ts uses, and the reason a user session no longer holds
 // `conversation: put` at all.
 const conv = (await admin.put({ kind: "conversation", body: { title: "mine" } })).id;
 const { sessionToken, toolsToken } = await bootstrap(admin, "user", { conversationId: conv });
 const session = new RadiaClient(url, { token: sessionToken! });
 
 // A BUSY space must not hide the newest tool. Discovery reads a bounded page, and a limited query
-// returns the OLDEST matches — so on a space holding more capability records than that page, an
+// returns the OLDEST matches, so on a space holding more capability records than that page, an
 // ascending read shows every tool EXCEPT the most recently published. That is the exact failure
 // that made a live session report "I don't have a request_grant tool": these fillers stand in for
 // the records a long-lived space accumulates, and the worker below publishes the real tools after
@@ -54,7 +54,7 @@ for (let i = 0; i < 520; i++) {
   });
 }
 
-// The tools worker, running space_* as the SESSION principal — the arrangement that produces the
+// The tools worker, running space_* as the SESSION principal: the arrangement that produces the
 // 403s, and the one that serves request_grant.
 const worker = new Deno.Command(Deno.execPath(), {
   args: [
@@ -77,7 +77,7 @@ const worker = new Deno.Command(Deno.execPath(), {
 
 const check = (label: string, pass: boolean, detail = "") => console.log(`  ${pass ? "OK  " : "FAIL"} ${label}${detail ? `  ${detail}` : ""}`);
 
-/** Call a tool the way the chat does — a record — and wait for its result. */
+/** Call a tool the way the chat does (as a record) and wait for its result. */
 async function callTool(tool: string, args: unknown, conversationId: string, timeoutMs = 20_000) {
   const { id } = await admin.put({ kind: "tool_call", body: { tool, args, conversationId }, parentIds: [conversationId] });
   const deadline = Date.now() + timeoutMs;
@@ -110,7 +110,7 @@ for (let i = 0; i < 3; i++) {
 check("a scoped session cannot reach ops/stats", await forbidden(() => session.getStats()));
 check("…nor diagnostics", await forbidden(() => session.diagnostics()));
 
-// 2. The escalation tool is DISCOVERABLE — the transcript's failure was a tool that existed but
+// 2. The escalation tool is DISCOVERABLE. The transcript's failure was a tool that existed but
 //    was never reached, so its presence in the published capability set is worth asserting.
 //    Waiting on the tool ITSELF, not on "any capability": the fillers above mean the set is never
 //    empty, and a wait that only checks for non-emptiness returns before the worker has published
@@ -132,12 +132,12 @@ check(
   `${discovered.all().length} tools visible, ${published.length} newest records read`,
 );
 
-// 3. It asks THROUGH THE TOOL, as the session. It cannot grant — only ask.
+// 3. It asks THROUGH THE TOOL, as the session. It cannot grant, only ask.
 //
-// The tool BLOCKS on the decision, and the human answers while it is in flight — the shape the REPL
-// now drives (`onToolWait`). Running them concurrently is not test convenience: sequentially, the
-// ask would wait out its full deadline before anyone was asked, which is precisely the two-turn
-// dance this replaced.
+// The tool BLOCKS on the decision, and the human answers while it is in flight. That is the shape
+// the REPL now drives (`onToolWait`). Running them concurrently is not test convenience:
+// sequentially, the ask would wait out its full deadline before anyone was asked, which is
+// precisely the two-turn dance this replaced.
 const [asked0] = await Promise.all([
   callTool("request_grant", { kind: "message", operations: ["query"], why: "to count what I created" }, conv, 30_000),
   (async () => {
@@ -155,7 +155,7 @@ const [asked0] = await Promise.all([
 ]);
 check("request_grant succeeds", asked0.ok, JSON.stringify(asked0.output).slice(0, 70));
 // The whole point of blocking: the answer comes back to the ASKER, in the same turn, and says what
-// it actually got — the requester asked for one scope and may have been given another.
+// it actually got. The requester asked for one scope and may have been given another.
 const decision = asked0.output as { decision?: string; granted?: { scope?: string } };
 check("…and returns the human's decision to the caller", decision.decision === "granted", JSON.stringify(decision).slice(0, 90));
 check("…including the scope actually granted", decision.granted?.scope === "own records only", decision.granted?.scope ?? "(none)");
@@ -180,7 +180,7 @@ check(
 
 // 4. The same call now works, and answers over the session's own records only.
 // An empty scoped answer must be distinguishable from an empty space. A session once read
-// `stats: []` and told its user "the space is empty and healthy" — the data was right, the claim
+// `stats: []` and told its user "the space is empty and healthy". The data was right, the claim
 // was not, and nothing in the response contradicted it.
 const report = await session.getStatsReport();
 check("a scoped response says it is scoped", Boolean(report.scope?.self), JSON.stringify(report.scope?.kinds));
@@ -200,15 +200,15 @@ const diag = await session.diagnostics() as { counts: Record<string, number> };
 check("diagnostics is a genuine self-aggregate", diag.counts.available === 4, `available = ${diag.counts.available}`);
 
 // 5. THE EVENT LOG IS FILTERED. A scope that opened `ops/events` unfiltered would hand over every
-//    record id, kind and operation in the space — the whole point of scoping, undone by the one
+//    record id, kind and operation in the space: the whole point of scoping, undone by the one
 //    endpoint whose payload is a list of everything that happened.
 // Page to the END of the log: `getEvents` walks forward from a cursor, so reading only the first
-// page of a busy space says nothing about events written recently — which is exactly where this
+// page of a busy space says nothing about events written recently, which is exactly where this
 // session's own activity is.
 async function drainEvents(c: typeof admin) {
   const out: { runId: string; kind?: string }[] = [];
   let cursor: string | undefined = "0";
-  // Paged by `nextAfter`, not by "did this page have anything" — for a scoped caller a page can be
+  // Paged by `nextAfter`, not by "did this page have anything": for a scoped caller a page can be
   // empty while the log continues, so an empty-page break would stop at the first run of events it
   // is not allowed to see.
   for (let page = 0; page < 20 && cursor !== undefined; page++) {
@@ -237,7 +237,7 @@ check(
 check("remediation is still refused", await forbidden(() => session.remediate("reclaim", { state: "leased" })));
 
 // 6b. THE PROMISE THE PROMPT MAKES: "only its OWN records of that kind" must hold on the plane the
-//     agent actually reads records through, not only on the ops aggregates. This was live — a
+//     agent actually reads records through, not only on the ops aggregates. This was live: a
 //     session granted self-scoped `message` saw its own records in ops/stats and ALL of them via
 //     query, and noticed the contradiction itself.
 const viaQuery = await session.query({ kind: "message" }, 100);
@@ -254,7 +254,7 @@ check(
 const someoneElses = await admin.query({ kind: "message", match: { conversationId: "other" } }, 10);
 check("the other author's records exist but are unreachable", someoneElses.length === 2);
 
-// 7. An operator still sees everything — the scope narrowed the caller, not the space.
+// 7. An operator still sees everything. The scope narrowed the caller, not the space.
 const all = await admin.getStats();
 check("the operator still sees both authors", all.filter((s) => s.kind === "message").reduce((a, s) => a + s.count, 0) === 6);
 
@@ -266,7 +266,7 @@ check("messages are countable by role", byRole.length === 4, `role=user -> ${byR
 //
 // The guess is usually a tool name (`space_events` is a tool; `event_log` is nothing), and the
 // approver is warned. But approving anyway used to write a real grant record and print
-// "granted: …" while the requester was told `no_such_kind` — the human read success, the assistant
+// "granted: …" while the requester was told `no_such_kind`. The human read success, the assistant
 // read failure, and the space kept a grant naming a kind nobody can hold records of. All three
 // have to agree.
 const bogus = "event_log";
@@ -320,7 +320,7 @@ check(
 //
 // The helper is content-keyed so re-running a fleet does not append a duplicate per grant. That
 // key alone cannot revive: once a retirement is the newest record, re-granting the same content
-// replays the retirement — nothing is written, the call reports success, and the principal keeps
+// replays the retirement. Nothing is written, the call reports success, and the principal keeps
 // nothing. `createAgentDefinition` was fixed for this; the SDK helper is the other way in, and
 // `examples/stress/stress.ts` uses it.
 const D1 = "agent:d1-revive";

@@ -1,4 +1,4 @@
-// CLI chatbot — pure record I/O. It makes NO external calls; it only reads and writes records.
+// CLI chatbot: pure record I/O. It makes NO external calls; it only reads and writes records.
 // Thinking (`llm_call` → `llm_result`, streamed as `llm_chunk`), acting (`tool_call` →
 // `tool_result`), drawing, code execution and saved files all flow through the space, served by
 // workers this launches as scoped subprocesses. Watch the whole loop in the console's Feed tab.
@@ -7,7 +7,7 @@
 //
 // The map. Five areas, each answering one question:
 //
-//   chat.ts       this file — bootstrap, launch, banner, the REPL loop
+//   chat.ts       this file: bootstrap, launch, banner, the REPL loop
 //   util.ts       worker argument parsing and artifact media helpers
 //
 //   client/       what the REPL itself does
@@ -95,15 +95,15 @@ if (!usingRunning) {
 
 // Bootstrap as operator, then hand each worker its own least-privilege run token.
 await registerChatKinds(admin);
-// Which conversation this session is for, decided BEFORE its credential exists — the session's
+// Which conversation this session is for, decided BEFORE its credential exists: the session's
 // grants are scoped to it, and a grant is minted with the run token. Resolved (and created) with
 // the OPERATOR client on purpose: enumerating conversations would otherwise need a
 // `conversation: query` grant on the scoped session, which would let a user session list every
-// conversation on the space — a real widening to save a keystroke.
+// conversation on the space. That is a real widening to save a keystroke.
 async function resolveConversation(): Promise<{ id: string; resumed: boolean }> {
   if (resume && resume !== "last") return { id: resume, resumed: true };
   if (resume === "last") {
-    // Newest first — the keyset direction, which is the only way to ask for the most recent.
+    // Newest first. That is the keyset direction, which is the only way to ask for the most recent.
     const recent = await admin.query({ kind: "conversation" }, 1, { dir: "desc" });
     if (recent.length > 0) return { id: recent[0].id, resumed: true };
     write("no conversation to resume; starting a new one\n");
@@ -130,13 +130,13 @@ Deno.addSignalListener("SIGINT", () => {
   Deno.exit(0);
 });
 
-console.log(`radia chat — role ${role}`);
+console.log(`radia chat: role ${role}`);
 console.log(`tiers: ${Object.entries(TIERS).map(([t, m]) => `${t}=${m}`).join("  ")}`);
-console.log("routing: automatic — a router-worker classifies each turn and picks the tier; workers escalate when out of depth (no /commands).");
+console.log("routing: automatic. A router-worker classifies each turn and picks the tier; workers escalate when out of depth (no /commands).");
 console.log(
   role === "admin"
-    ? "auth: session runs as the OPERATOR — space_* inspect/remediate tools have full /ops access."
-    : "auth: session runs as scoped agent:chat-user — it can converse, but space_* /ops tools will 403 (try 'is the space healthy?').",
+    ? "auth: session runs as the OPERATOR, so space_* inspect/remediate tools have full /ops access."
+    : "auth: session runs as scoped agent:chat-user. It can converse, but space_* /ops tools will 403 (try 'is the space healthy?').",
 );
 console.log(`sandbox: ${toolRoots.join(", ")}`);
 console.log(
@@ -145,7 +145,7 @@ console.log(
     : "code execution: no filesystem (set RADIA_CHAT_EXEC_DIRS to grant read-only roots)",
 );
 console.log(
-  `space ${url}${usingRunning ? " (existing)" : ` (spawned, persisted at ${spaceDb})`} — open it and watch the Feed tab. Ctrl-D to quit.`,
+  `space ${url}${usingRunning ? " (existing)" : ` (spawned, persisted at ${spaceDb})`}. Open it and watch the Feed tab. Ctrl-D to quit.`,
 );
 
 let thread: Thread;
@@ -159,9 +159,9 @@ try {
   Deno.exit(1);
 }
 if (thread.resumedFrom > 0) {
-  console.log(`resumed conversation ${thread.id} — ${thread.resumedFrom} earlier messages are in context`);
+  console.log(`resumed conversation ${thread.id}: ${thread.resumedFrom} earlier messages are in context`);
 } else {
-  console.log(`conversation ${thread.id} — resume it later with --conversation ${thread.id} (or --conversation last)`);
+  console.log(`conversation ${thread.id}. Resume it later with --conversation ${thread.id} (or --conversation last)`);
 }
 // Procedures belong to a conversation, so the tool set can only be complete once there is one.
 await tools.scopeTo(thread.id);
@@ -179,7 +179,7 @@ while (true) {
   try {
     // The hook is what collapses the escalation loop into ONE turn: while a `request_grant` is in
     // flight the person is asked here, the decision is written back as a record, and the tool call
-    // returns with it — so the assistant can retry inside its remaining rounds. Throttled, because
+    // returns with it, so the assistant can retry inside its remaining rounds. Throttled, because
     // this runs on every poll of the wait loop and each pass is a query.
     let lastReview = 0;
     await runTurn(session, thread, tools, async (tool) => {
@@ -197,7 +197,7 @@ while (true) {
   }
   // Between turns as well, as the backstop: a request written by a worker rather than asked for
   // through the blocking tool (or one whose turn died) would otherwise sit pending forever.
-  // `admin` is the operator credential this process bootstrapped with — the session itself cannot
+  // `admin` is the operator credential this process bootstrapped with. The session itself cannot
   // write a grant, which is the point.
   try {
     await reviewGrantRequests(session, admin, CHAT_USER, thread.id, nextLine);

@@ -1,6 +1,6 @@
 // Phase 5 conformance: the transactional event log and lineage. Every MUTATION appends exactly
 // one event, in the same transaction that performs it; no-op outcomes (lease_lost, idempotency
-// replay) append nothing. Usually one op means one mutation — the exception is `ack` with a
+// replay) append nothing. Usually one op means one mutation. The exception is `ack` with a
 // result, which both consumes the parent and inserts a new record, so it appends two: the
 // result's `put` then the parent's `ack`. Runs on every adapter.
 

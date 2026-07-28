@@ -1,4 +1,4 @@
-// A worker agent. It claims ONLY tasks whose `op` matches the tool it runs — content
+// A worker agent. It claims ONLY tasks whose `op` matches the tool it runs: content
 // routing, no routing table. Run two with different ops and each self-selects its work.
 //
 //   deno run --allow-net --allow-env examples/worker.ts upper

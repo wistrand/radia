@@ -1,6 +1,6 @@
 // Artifact bytes: the blob port, and what encryption costs.
 //
-// The pair of rows that matters is `file` vs `file+aes-gcm` at the same payload size — that
+// The pair of rows that matters is `file` vs `file+aes-gcm` at the same payload size. That
 // difference is the price of confidentiality at rest, and it is the number to quote when someone
 // asks whether to turn the KEK on.
 
@@ -25,7 +25,7 @@ async function drain(s: ReadableStream<Uint8Array> | null): Promise<number> {
 export const blobBenches: Bench[] = [
   {
     name: "blobs",
-    note: "put hashes (sha256 over plaintext) then writes; get streams. Encrypted rows add AES-GCM plus a wrapped-key sidecar, and cannot stream — the tag is verified over the whole ciphertext.",
+    note: "put hashes (sha256 over plaintext) then writes; get streams. Encrypted rows add AES-GCM plus a wrapped-key sidecar, and cannot stream, since the tag is verified over the whole ciphertext.",
     run: async (ctx) => {
       const out: Measurement[] = [];
       const cipher = await BlobCipher.fromKey(new Uint8Array(32).fill(11));

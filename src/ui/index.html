@@ -79,7 +79,7 @@
   @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
   #g-canvas svg text { pointer-events: none; }
   #g-canvas g:hover rect { fill: var(--code); }
-  /* Space tab — BlitZoom <bz-graph> (vendored, see src/ui/vendor/README.md) */
+  /* Space tab: BlitZoom <bz-graph> (vendored, see src/ui/vendor/README.md) */
   bz-graph:not(:defined) { visibility: hidden; }
   #space-graph { display: block; width: 100%; height: 620px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; --bz-bg: var(--bg); }
   .space-bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; font-size: 12px; }
@@ -164,7 +164,7 @@
       <label>Kind</label><input id="p-kind" list="kind-list" placeholder="task">
       <label>Body (JSON)</label>
       <textarea id="p-body">{ "tag": "hello", "n": 42 }</textarea>
-      <label>Idempotency-Key (optional — replay the same key to dedup)</label>
+      <label>Idempotency-Key (optional; replay the same key to dedup)</label>
       <input id="p-idem" placeholder="leave blank for none">
       <div class="actions"><button class="btn" onclick="putRecord()">Put</button></div>
       <div id="p-msg"></div>
@@ -205,7 +205,7 @@
       <div id="w-lease-view"></div>
       <label>Result body on ack (JSON, optional)</label>
       <textarea id="w-result" style="min-height:52px">{ "ok": true }</textarea>
-      <label>Idempotency-Key for ack (optional — retry to replay the stored result)</label>
+      <label>Idempotency-Key for ack (optional; retry to replay the stored result)</label>
       <input id="w-idem" placeholder="leave blank for none">
       <div class="actions">
         <button class="btn" onclick="settle('renew')">Renew</button>
@@ -233,7 +233,7 @@
   <section id="graph">
     <div class="panel">
       <h2>Relationship graph</h2>
-      <p class="muted" style="margin-top:0">Pick a record to see its <code>parent_ids</code> graph — how records relate (a conversation and its messages/calls/results, a job fanning out into tasks and back into a summary).</p>
+      <p class="muted" style="margin-top:0">Pick a record to see its <code>parent_ids</code> graph: how records relate (a conversation and its messages/calls/results, a job fanning out into tasks and back into a summary).</p>
       <div class="row">
         <div><label>Kind to pick from</label><input id="g-kind" list="kind-list" value="conversation"></div>
         <div style="max-width:180px"><label>&nbsp;</label>
@@ -252,7 +252,7 @@
   <section id="space">
     <div class="panel">
       <h2>Space</h2>
-      <p class="muted" style="margin-top:0">Every record placed by <b>what it is</b> — kind, envelope state, owning run — not by what it links to. Proximity approximates pattern matchability: two records sitting together are two records one pattern would likely both match. Streamed live from the ops event log; layout is deterministic, so the same events always give the same picture. Scroll to zoom (levels aggregate into supernodes), drag to pan, click a record for detail, <code>r</code>/<code>R</code> for the compass and control panels.</p>
+      <p class="muted" style="margin-top:0">Every record placed by <b>what it is</b> (kind, envelope state, owning run), not by what it links to. Proximity approximates pattern matchability: two records sitting together are two records one pattern would likely both match. Streamed live from the ops event log; layout is deterministic, so the same events always give the same picture. Scroll to zoom (levels aggregate into supernodes), drag to pan, click a record for detail, <code>r</code>/<code>R</code> for the compass and control panels.</p>
       <div class="space-bar">
         <label><input type="checkbox" id="space-live" style="width:auto" checked onchange="toggleSpaceLive()"> live</label>
         <label>colour by
@@ -277,7 +277,7 @@
   <section id="auth">
     <div class="panel">
       <h2>Authorization <button class="btn ghost" style="float:right" onclick="loadAuth()">Refresh</button></h2>
-      <p class="muted" style="margin-top:0">The bootstrap chain, read straight from the substrate — <code>agent_definition</code> → its <code>agent_run</code>s (run tokens) → the <code>grant</code> records that scope each agent. All are ordinary records (only the token <i>hash</i> is stored). The chat example creates these when run with auth (<code>RADIA_CHAT_ROLE=user deno task chat</code>).</p>
+      <p class="muted" style="margin-top:0">The bootstrap chain, read straight from the substrate: <code>agent_definition</code> → its <code>agent_run</code>s (run tokens) → the <code>grant</code> records that scope each agent. All are ordinary records (only the token <i>hash</i> is stored). The chat example creates these when run with auth (<code>RADIA_CHAT_ROLE=user deno task chat</code>).</p>
       <div id="auth-body"><div class="empty">loading…</div></div>
     </div>
   </section>
@@ -318,7 +318,7 @@ async function api(method, path, body, headers = {}) {
 // Escapes for BOTH text and attribute contexts. Quotes matter: record-derived values reach
 // attributes (a grant's pattern is JSON, which always contains `"`, and a kind name is validated
 // only as a non-empty string), so escaping `& < >` alone lets a value close the attribute and
-// inject a new one — an XSS into the origin whose page carries an operator token.
+// inject a new one, an XSS into the origin whose page carries an operator token.
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
@@ -363,9 +363,9 @@ async function loadHealth() {
   $("health").innerHTML = `<span class="pill">storage: ${esc(d.storage)}</span>`
     + `<span class="pill">api ${esc(d.api)}</span>`
     + `<span class="pill">v${esc(d.version)}</span>`
-    + `<span class="pill" style="cursor:pointer" onclick="setToken()" title="${AUTH_TOKEN ? "authenticated with an operator token (Authorization: Bearer) — click to change" : "no token — relying on the operator default. Click to paste one (needed with --auth required)"}">as ${esc(d.principal || "?")}${AUTH_TOKEN ? " · token" : ""}</span>`;
+    + `<span class="pill" style="cursor:pointer" onclick="setToken()" title="${AUTH_TOKEN ? "authenticated with an operator token (Authorization: Bearer). Click to change" : "no token, relying on the operator default. Click to paste one (needed with --auth required)"}">as ${esc(d.principal || "?")}${AUTH_TOKEN ? " · token" : ""}</span>`;
   $("overview-health").innerHTML =
-    `<div><b>Principal:</b> <span class="mono">${esc(d.principal || "?")}</span>${AUTH_TOKEN ? ` <span class="tag tag-grant">operator token</span>` : ` <span class="muted">(no token — operator default)</span>`} <button class="btn ghost" onclick="setToken()">${AUTH_TOKEN ? "change token" : "set token"}</button></div>`
+    `<div><b>Principal:</b> <span class="mono">${esc(d.principal || "?")}</span>${AUTH_TOKEN ? ` <span class="tag tag-grant">operator token</span>` : ` <span class="muted">(no token, operator default)</span>`} <button class="btn ghost" onclick="setToken()">${AUTH_TOKEN ? "change token" : "set token"}</button></div>`
     + `<div><b>Storage backend:</b> <span class="mono">${esc(d.storage)}</span></div>`
     + `<div><b>DB clock:</b> <span class="mono">${esc(d.now)}</span></div>`
     + `<div><b>Version:</b> <span class="mono">${esc(d.version)}</span> · <b>API:</b> ${esc(d.api)}</div>`;
@@ -396,8 +396,8 @@ async function loadKinds() {
   if (!kinds.length) { $("kinds-list").innerHTML = `<div class="empty">No kinds registered.</div>`; return; }
   $("kinds-list").innerHTML = kinds.map((k) =>
     `<div class="panel" style="background:var(--bg)"><b class="mono">${esc(k.kind)}</b>`
-    + `<div class="muted" style="margin-top:6px">indexed: ${(k.indexedPaths || []).map((p) => `<code>${esc(p.path)}</code>:${esc(p.type)}`).join(", ") || "—"}</div>`
-    + `<div class="muted">sortable: ${(k.sortablePaths || []).map((p) => `<code>${esc(p)}</code>`).join(", ") || "—"}</div></div>`
+    + `<div class="muted" style="margin-top:6px">indexed: ${(k.indexedPaths || []).map((p) => `<code>${esc(p.path)}</code>:${esc(p.type)}`).join(", ") || "none"}</div>`
+    + `<div class="muted">sortable: ${(k.sortablePaths || []).map((p) => `<code>${esc(p)}</code>`).join(", ") || "none"}</div></div>`
   ).join("");
 }
 async function registerKind() {
@@ -471,7 +471,7 @@ async function showDetail(id, target = "rec-detail") {
     + `<div>taint: ${m.taint ? `<span class="tag tag-taint">tainted</span> <span class="muted">untrusted data lineage</span>` : `<span class="muted">clean</span>`}</div>`
     + `<div>delegation: ${dc ? `<span class="tag tag-deleg">${esc(dc.chain.join(" → "))}</span> <span class="muted">from lease ${esc((dc.origin || "").slice(-8))}</span>` : `<span class="muted">none (root / operator authority)</span>`}</div>`
     + `<div>created_by: <span class="muted">${esc(m.createdBy || "")}</span></div></div>`;
-  // An artifact record describes bytes held outside it. Preview them inline — and note HOW: the
+  // An artifact record describes bytes held outside it. Preview them inline, and note HOW: the
   // console cannot put an Authorization header on an <img>, so it mints a short-lived, single-
   // artifact download capability and puts that in the URL. That constraint is why capabilities
   // exist at all (design-data-model 2.4).
@@ -653,7 +653,7 @@ async function settle(op) {
   const r = await api("POST", "/v0/leases/" + op, payload, headers);
   if (!r.ok) return note("w-settle", "err", errText(r));
   const status = r.data.status;
-  if (status === "lease_lost") note("w-settle", "err", `${op}: lease_lost (fenced — the lease was reassigned or expired)`);
+  if (status === "lease_lost") note("w-settle", "err", `${op}: lease_lost (fenced; the lease was reassigned or expired)`);
   else {
     note("w-settle", "ok", `${op}: ok${r.data.resultId ? " · emitted " + r.data.resultId : ""}`);
     if (op === "ack" || op === "release" || op === "nack") { heldLease = null; $("w-holding").style.display = "none"; }
@@ -691,7 +691,7 @@ function toggleLive() { stopFeed(); if ($("feed-live").checked) feedTimer = setI
 
 // ---- space (BlitZoom property-similarity view of the whole space) ----
 // Position is derived from a record's *properties* (kind, envelope state, owning run), never
-// from its links — the visual analogue of content routing. The layout is a pure function of
+// from its links. That is the visual analogue of content routing. The layout is a pure function of
 // those properties (MinHash -> fixed Gaussian projection -> uint16 grid), so insertion never
 // displaces what is already on screen and the same event log always renders the same picture.
 // Everything here is a consumer of GET /v0/ops/events; no new server surface.
@@ -704,7 +704,7 @@ let spaceTimer = null;
 let spacePolling = false;
 // recordId -> last node props pushed (drives add-vs-update) AND the eviction order: a Map iterates
 // in insertion order, so re-inserting on every event makes this least-recently-ACTIVE first.
-// Arrival order would be wrong for the case you actually watch — a busy space — because a record's
+// Arrival order would be wrong for the case you actually watch (a busy space), because a record's
 // rank would freeze at first sighting, so a lease renewed twenty times would be evicted before
 // newer records that have done nothing since.
 const spaceSeen = new Map();
@@ -794,7 +794,7 @@ async function pollSpace() {
 /**
  * Bound the working set, evicting what you are least likely to be looking at: finished records
  * (consumed / dead-lettered) in least-recently-active order first, and only then live ones. In a
- * busy space the interesting nodes are the ones still moving, so activity — not arrival — sets the
+ * busy space the interesting nodes are the ones still moving, so activity (not arrival) sets the
  * rank, and a record that keeps being taken, renewed and acked keeps its place.
  */
 async function pruneSpace(g) {
@@ -806,7 +806,7 @@ async function pruneSpace(g) {
     if (drop.length >= excess) break;
     if (TERMINAL_STATES.has(n.state)) drop.push(id);
   }
-  // Pass 2: still not enough room — take the least-recently-active live ones.
+  // Pass 2: still not enough room, so take the least-recently-active live ones.
   if (drop.length < excess) {
     for (const id of spaceSeen.keys()) {
       if (drop.length >= excess) break;

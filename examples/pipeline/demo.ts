@@ -5,7 +5,7 @@
 // web console **Feed** tab. Start `deno task dev`, open http://localhost:7788, then run
 // `deno task demo` and watch it. If no space is running, the demo starts one and leaves it
 // up so you can open it (Ctrl-C to stop). Pass `--once` to spawn an ephemeral space, run,
-// and exit — the self-contained integration smoke test used in CI.
+// and exit. That is the self-contained integration smoke test used in CI.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerDemoKinds } from "./kinds.ts";
@@ -60,13 +60,13 @@ if (usingRunning) {
     server.kill();
     Deno.exit(1);
   }
-  console.log(`Space up at ${url} — open it and watch the Feed tab.\n`);
+  console.log(`Space up at ${url}. Open it and watch the Feed tab.\n`);
 }
 
 try {
   await registerDemoKinds(client);
 
-  // Independent agents, no routing table — each self-selects by content.
+  // Independent agents, no routing table; each self-selects by content.
   const agents = [
     plannerLoop(client, ac.signal, log, pace),
     workerLoop(client, "upper", ac.signal, log, pace),
@@ -89,7 +89,7 @@ try {
   console.log(summary ? `RESULT: "${(summary.body as { text: string }).text}"` : "RESULT: (timed out)");
 
   const events = await client.getEvents("0", 200);
-  console.log(`\nEVENT LOG (${events.length} events) — also visible in the Feed tab:`);
+  console.log(`\nEVENT LOG (${events.length} events), also visible in the Feed tab:`);
   for (const e of events) {
     console.log(`  ${String(e.seq).padStart(2)} ${e.operation.padEnd(8)} ${(e.kind ?? "").padEnd(8)} ${e.state ?? ""}`);
   }
@@ -106,7 +106,7 @@ try {
 }
 
 if (server && !once) {
-  console.log(`\nSpace still running at ${url} — open it to explore, then press Ctrl-C to stop.`);
+  console.log(`\nSpace still running at ${url}. Open it to explore, then press Ctrl-C to stop.`);
   Deno.addSignalListener("SIGINT", async () => {
     server!.kill();
     await server!.status.catch(() => {});

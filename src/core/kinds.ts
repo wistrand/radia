@@ -6,10 +6,10 @@
 // The in-memory registry is a per-Space cache. Declarations are NOT a side table: each is a
 // record of the reserved `kind_def` kind (body = a KindDef), committed through the normal
 // `put` path, discoverable by query, and watchable like any record. `Space.loadKinds` rebuilds
-// the cache at startup by querying those records (latest per kind wins — a redeclaration is a
+// the cache at startup by querying those records (latest per kind wins; a redeclaration is a
 // successor record, not a mutation). The one bootstrap is the `kind_def` meta-kind itself,
 // registered in code (META_KIND_DEF) so a query for `kind_def` records can compile. Still
-// deferred: the physical expression indexes for declared paths (predicate pushdown) — the
+// deferred: the physical expression indexes for declared paths (predicate pushdown). The
 // semantic oracle, not an index, defines correctness. See
 // agent_docs/plan-m0-implementation.md Phase 2 and agent_docs/design-matching.md.
 
@@ -24,14 +24,14 @@ export const GRANT = "grant";
 /** Reserved control kind: operator/supervisor broadcasts (grant-management adjacent). */
 export const SIGNAL = "signal";
 
-/** Reserved kind: an agent definition (body {agent, tokenHash}) — mints runs. */
+/** Reserved kind: an agent definition (body {agent, tokenHash}) that mints runs. */
 export const AGENT_DEFINITION = "agent_definition";
 
 /** Reserved kind: an agent run instance (body {run, agent, tokenHash, status, expiresAt}). */
 export const AGENT_RUN = "agent_run";
 
 /** Reserved kind: a reference to bytes held in the blob store (body = an ArtifactDef). The RECORD
- *  is the artifact as far as coordination is concerned — it routes, carries taint and lineage, and
+ *  is the artifact as far as coordination is concerned: it routes, carries taint and lineage, and
  *  is grant-gated like anything else; only the payload lives outside. */
 export const ARTIFACT = "artifact";
 
@@ -43,23 +43,23 @@ export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL, AGENT_DEFIN
 export type GrantOp = "put" | "take" | "query" | "read_one";
 const VALID_OPS = new Set<GrantOp>(["put", "take", "query", "read_one"]);
 
-/** The envelope-side selectors a grant may carry. Closed by design — extended only when a real
+/** The envelope-side selectors a grant may carry. Closed by design; extended only when a real
  *  failure names the field it needs (see design-auth.md, "Self-scoped ops grants"). */
 const VALID_SCOPE_KEYS = new Set(["createdBy", "leaseOwner"]);
 
 /** A kind-scoped authorization grant. Never wildcard; assigned by a privileged writer. */
 export interface GrantDef {
   principal: string; // the principal the grant is FOR (e.g. agent:summarizer, run:...)
-  kind: string; // the concrete record kind it applies to — never "*"
+  kind: string; // the concrete record kind it applies to; never "*"
   operations: GrantOp[]; // which coordination verbs on that kind
-  /** Envelope-side self scope, e.g. `{createdBy: "self"}` — see design-auth.md. Distinct from
+  /** Envelope-side self scope, e.g. `{createdBy: "self"}` (see design-auth.md). Distinct from
    *  `pattern`, which is a BODY match: the fields a self-scope needs are precisely the ones the
    *  routing language is forbidden to see. */
   scope?: Record<string, "self">;
   /** Optional pattern-scope: a match object AND-ed into the principal's read/take on this kind
    *  (the effective query is `grant ∧ request`). Omitted → the whole kind. Applies to
    *  query/read_one/take; put ignores it. Its paths must be declared indexed paths of the kind
-   *  (validated when a query compiles, not at grant creation — the kind may not exist yet). */
+   *  (validated when a query compiles, not at grant creation, since the kind may not exist yet). */
   pattern?: Record<string, unknown>;
 }
 
@@ -86,7 +86,7 @@ export function validateGrantDef(def: GrantDef): void {
     throw new RadiaError("invalid_grant", "grant.pattern must be a match object");
   }
   // `scope` is the ENVELOPE-side selector (self-scoped ops), a closed vocabulary deliberately kept
-  // out of `pattern` — which stays a body match compiled by the same oracle. Validated strictly
+  // out of `pattern`, which stays a body match compiled by the same oracle. Validated strictly
   // rather than ignored: an unknown key or value here fails closed (the grant simply opens
   // nothing), and a silent no-op on an authorization record is exactly the thing that gets
   // mistaken for a working grant.
@@ -126,7 +126,7 @@ export interface KindDef {
   /** Paths order_by may use. Must each be a declared indexed path. */
   sortablePaths?: string[];
   /** Whether records of this kind are *claimed as work* (`take`n by a worker) vs. *reference*
-   *  data (facts, config, history — written once, read by `query`, never taken). Default true.
+   *  data (facts, config, history; written once, read by `query`, never taken). Default true.
    *  `false` opts the kind out of the starvation check: a reference record sitting `available`
    *  forever is normal, not stale work. See `Space.diagnostics`. */
   claimable?: boolean;
@@ -150,7 +150,7 @@ export const META_KIND_DEF: KindDef = {
  *  a principal's grants for a kind directly. */
 /** The body of an `artifact` record: what the bytes are, never the bytes. */
 export interface ArtifactDef {
-  digest: string; // sha256 of the plaintext bytes — integrity, and the blob store's address
+  digest: string; // sha256 of the plaintext bytes: integrity, and the blob store's address
   mediaType: string; // validated against MEDIA_TYPE_RE on write
   size: number; // bytes
   filename?: string; // advisory, for downloads; never used as a path
@@ -180,7 +180,7 @@ const ARTIFACT_RESERVED_FIELDS = ["digest", "mediaType", "size", "filename"];
  *
  * Kept narrow on purpose. The point is to let an app scope artifacts it owns (a grant pattern
  * matches the body, so without an app field there is nothing to bind), not to turn the artifact
- * record into a second payload — the bytes live in the blob store precisely so bodies stay small
+ * record into a second payload. The bytes live in the blob store precisely so bodies stay small
  * and matchable.
  */
 export function validateArtifactFields(fields: unknown): void {
@@ -202,8 +202,8 @@ export function validateArtifactFields(fields: unknown): void {
   }
 }
 
-/** Kinds defined in CODE, not as `kind_def` records — so they never appear in `listKinds()`, which
- *  reads those records. Anything asking "does this kind exist" must consider these too. */
+/** Kinds defined in CODE, not as `kind_def` records. That is why they never appear in
+ *  `listKinds()`, which reads those records. Anything asking "does this kind exist" must consider these too. */
 export const RESERVED_KINDS = [KIND_DEF, GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, ARTIFACT];
 
 export const META_RESERVED: KindDef[] = [
@@ -223,7 +223,7 @@ export const META_RESERVED: KindDef[] = [
     claimable: false,
   },
   // Indexed on digest (find every record referencing the same bytes) and mediaType (route by what
-  // it is — an image worker claims `{mediaType: "image/png"}` without a routing table).
+  // it is: an image worker claims `{mediaType: "image/png"}` without a routing table).
   {
     kind: ARTIFACT,
     indexedPaths: [{ path: "digest", type: "keyword" }, { path: "mediaType", type: "keyword" }],

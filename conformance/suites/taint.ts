@@ -1,7 +1,7 @@
 // Taint (M1): untrusted-DATA lineage. A client may RAISE taint (source attestation) but never
 // clear it; taint propagates along data parents (put + ack); a sensitive consumer can skip
 // tainted work (`requireUntainted`); and only a privileged DECLASSIFY yields a clean successor.
-// Runs on every adapter — propagation is core policy, so both backends must agree.
+// Runs on every adapter: propagation is core policy, so both backends must agree.
 
 import { assert, assertEquals } from "@std/assert";
 import type { Suite } from "../harness.ts";
@@ -40,7 +40,7 @@ export const taintSuites: Suite[] = [
     },
   },
   {
-    name: "taint: propagates through ack — a tainted task yields a tainted result",
+    name: "taint: propagates through ack, so a tainted task yields a tainted result",
     run: async (adapter) => {
       const space = newSpace(adapter);
       const t = (await space.put({ kind: "task", body: { tag: "t" }, taint: true })).id;
@@ -97,7 +97,7 @@ export const taintSuites: Suite[] = [
 
       // Declassify is the human decision that lets untrusted data reach a side-effecting worker.
       // Written with no principal it was ANONYMOUS: `created_by` (and so the event's `runId`) was
-      // the space's own identity, so the trail said what was cleared and never who cleared it —
+      // the space's own identity, so the trail said what was cleared and never who cleared it,
       // and a tamper-evident log over that record would protect the wrong fact.
       const approver = "human:auditor";
       const out = await space.declassify(dirty, approver);

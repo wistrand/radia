@@ -4,12 +4,12 @@
 // layer in front of them, and that is where several rules with security consequences live:
 // authentication (a bad token must not become the operator), the artifact allowlist (attacker bytes
 // on the origin that serves an operator token), and shape validation (a wrong-typed field must be
-// a 400, not a 500 raised deep inside matching). Those rules cannot be reached from a Space test —
-// there is no request — and binding a real port to reach them buys flakes, not coverage. So this
-// drives `makeHandler` directly: a function from Request to Response, no socket, no ports.
+// a 400, not a 500 raised deep inside matching). Those rules cannot be reached from a Space test,
+// since there is no request, and binding a real port to reach them buys flakes, not coverage. So
+// this drives `makeHandler` directly: a function from Request to Response, no socket, no ports.
 //
 // The wire-shape section is the one to extend. The bugs it guards were found by fuzzing every
-// field of every endpoint with wrong types ONCE, by hand, and the fuzzer was never checked in — so
+// field of every endpoint with wrong types ONCE, by hand, and the fuzzer was never checked in, so
 // every endpoint added since has had no such check at all. It is a table now: add a row when you
 // add a field.
 
@@ -104,8 +104,8 @@ Deno.test("http: a bad bearer token is 401 and never falls through to the operat
     assertEquals(open.status, 200);
     assertEquals((await open.json()).principal, "human:local");
 
-    // A PRESENTED token is a claim to be someone. Failing it open — the shape of the bug this
-    // guards — would silently upgrade every garbage token to full operator rights. Note this holds
+    // A PRESENTED token is a claim to be someone. Failing it open (the shape of the bug this
+    // guards) would silently upgrade every garbage token to full operator rights. Note this holds
     // on `/v0/health` too, which is otherwise PUBLIC: "public" means no credential is needed, not
     // that a bad one is ignored, and health is the endpoint a client calls to ask whether its
     // token still works.
@@ -217,7 +217,7 @@ Deno.test("http: a principal may read its OWN permissions, and only its own", as
     const { runToken } = await space.mintRun(definitionToken);
     const auth = { authorization: `Bearer ${runToken}` };
 
-    // Note this principal has NO self-scoped grant, so the ops plane is shut to it entirely — and
+    // Note this principal has NO self-scoped grant, so the ops plane is shut to it entirely, and
     // that is precisely the caller that needs to ask what it may do. Gating this behind the plane
     // left an agent unable to tell an approved grant from a pending one.
     const own = await handler(get("/v0/ops/permissions?principal=agent:w", auth));
@@ -248,7 +248,7 @@ Deno.test("http: a principal may read its OWN permissions, and only its own", as
 
 Deno.test("http: a self-scoped grant narrows EVERY read verb, not just query", async () => {
   // One row per verb that returns record data. Scope was applied per handler, so the verbs that
-  // forgot it — take, lineage, graph, the artifact reads — served other principals' records while
+  // forgot it (take, lineage, graph, the artifact reads) served other principals' records while
   // `query` correctly served none. Add a row when a read verb is added; a verb with no row here is
   // a verb nobody checked.
   const { space, handler, close } = await newHandler();
@@ -293,7 +293,7 @@ Deno.test("http: a self-scoped grant narrows EVERY read verb, not just query", a
       );
     }
 
-    // A watch is reached by id alone, and ids are monotonic ULIDs — so the id is not the secret.
+    // A watch is reached by id alone, and ids are monotonic ULIDs, so the id is not the secret.
     const { definitionToken: other } = await space.createAgentDefinition("agent:b", [
       { principal: "agent:b", kind: "task", operations: ["query"] },
     ]);
@@ -311,7 +311,7 @@ Deno.test("http: a wrong-typed field is a 400 at the boundary, never a 500 from 
   const { handler, close } = await newHandler();
   try {
     // Each row is a field that USED to be cast straight out of the JSON and blow up somewhere
-    // deep — in matching, in the adapter, in ULID parsing. The assertion is deliberately weak on
+    // deep: in matching, in the adapter, in ULID parsing. The assertion is deliberately weak on
     // the code and strict on the class: any 4xx is a boundary that held, a 5xx is one that did not.
     const cases: Array<{ path: string; body: unknown; about: string }> = [
       { path: "/v0/records", body: { kind: "task", body: { tag: "a" }, parentIds: 42 }, about: "parentIds not an array" },
@@ -325,7 +325,7 @@ Deno.test("http: a wrong-typed field is a 400 at the boundary, never a 500 from 
       // NOTE the wire shapes differ per endpoint, and that is the frozen contract rather than a
       // slip: query/read-one/watches take the pattern FLATTENED at the top level, `takes` nests
       // it under `pattern`. Copying a row to another endpoint without checking which shape it
-      // uses tests nothing — the handler reads a field that was never there and rejects it for
+      // uses tests nothing. The handler reads a field that was never there and rejects it for
       // the wrong reason.
       { path: "/v0/records/query", body: { kind: "task", match: 3 }, about: "match not an object" },
       { path: "/v0/records/query", body: { kind: "task", match: [] }, about: "match an array" },
@@ -371,7 +371,7 @@ Deno.test("http: a body of any JSON type is accepted, and does not poison the re
   const { handler, close } = await newHandler();
   try {
     // The wire contract puts NO constraint on `body` (`body: {}`, only `kind` required), so these
-    // are legal records, not malformed requests — which is why they belong here rather than in the
+    // are legal records, not malformed requests, which is why they belong here rather than in the
     // 400 table above. What must hold is that a body the matcher cannot destructure does not break
     // the queries that run over the same kind afterwards: the failure mode was a 500 from inside
     // matching, reached by a record someone else wrote.
@@ -467,7 +467,7 @@ Deno.test("http: a scoped caller can page PAST a run of events it cannot see", a
   try {
     // Another agent fills the log first. This is the shape that broke: the scoped caller's own
     // events sit behind a wall of foreign ones, and a page that filters instead of scanning
-    // returns empty — which every caller reads as "end of log".
+    // returns empty, which every caller reads as "end of log".
     for (let i = 0; i < 60; i++) await space.put({ kind: "task", body: { tag: `theirs${i}` } });
 
     const { definitionToken } = await space.createAgentDefinition("agent:w", [
@@ -494,7 +494,7 @@ Deno.test("http: a scoped caller can page PAST a run of events it cannot see", a
     }
     assert(seen.length > 0, "the caller reached its own events instead of stopping at the first empty page");
 
-    // And the answer says it is narrowed — an empty or short scoped page with no stated scope is
+    // And the answer says it is narrowed. An empty or short scoped page with no stated scope is
     // how a caller concludes the space is empty.
     const one = await handler(get("/v0/ops/events?limit=5", { authorization: `Bearer ${runToken}` }));
     const body = await one.json();

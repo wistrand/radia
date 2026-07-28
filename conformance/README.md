@@ -1,8 +1,8 @@
 # Conformance suite
 
-Port contracts, executed against every implementation. This is the only guard against drift — the
-CLAUDE.md invariant that *embedded is never a semantically weaker cousin of Postgres*, applied to
-each port the runtime depends on.
+Port contracts, executed against every implementation. This is the only guard against drift. It is
+the CLAUDE.md invariant that *embedded is never a semantically weaker cousin of Postgres*, applied
+to each port the runtime depends on.
 
 Two ports are under contract, and encryption is treated as an implementation of one of them rather
 than a variant with a weaker contract:
@@ -30,11 +30,11 @@ RADIA_PG_URL=postgres://… scripts/pg-conformance.sh   # against your own serve
 
 Without `RADIA_PG_URL`, `pg-conformance.sh` starts a throwaway Docker Postgres and removes it
 afterwards, on a host port docker picks (it used to hardcode 55432, which is inside Linux's
-ephemeral range — an unrelated outbound connection holding it, even in TIME_WAIT, made the script
+ephemeral range; an unrelated outbound connection holding it, even in TIME_WAIT, made the script
 fail with a docker "address already in use" that reads like a stale container and is not one).
 
 Each Postgres test runs in its own ephemeral schema, dropped on close, so it is safe to point at a
-database you care about. The live-server run adds its own storage tests to the embedded 322 — and it
+database you care about. The live-server run adds its own storage tests to the embedded 322, and it
 is the only run that actually *contends* for claims, which is why a claim-path change needs it (see
 "Writing a suite" below).
 
@@ -45,7 +45,7 @@ is the only run that actually *contends* for claims, which is why a claim-path c
 | `run.test.ts` | entry point: enumerates implementations, registers every suite against each |
 | `harness.ts`  | the `Suite` / `BlobSuite` / `BlobCryptoSuite` types and setup/teardown |
 | `suites/`     | one file per behavior area (records, matching, **pushdown soundness**, **graph: children + lineage**, leases + claim fairness, idempotency, events, watches, faults, auth, taint, admin + selector-driven remediation, blobs + encryption) |
-| `http.test.ts` | the HTTP boundary, driving `makeHandler` directly — authentication, the artifact inline/download allowlist, and a table of wrong-typed fields per endpoint |
+| `http.test.ts` | the HTTP boundary, driving `makeHandler` directly: authentication, the artifact inline/download allowlist, and a table of wrong-typed fields per endpoint |
 | `backfill.test.ts` | the schema's one migration: rebuilding `record_edges` for a database written before that table existed |
 | `planner.test.ts`  | Postgres planner statistics for declared body paths (`prepareKind`) |
 | `registry.test.ts` | latest-wins projections over hand-made ids |
@@ -59,7 +59,7 @@ HTTP surface, the console) or knows a specific dialect (the backfill, the planne
 ## Writing a suite
 
 A suite is a name plus a `run(...)` function; the harness runs it once per implementation. Assert on
-observable behavior, never on a specific backend's SQL or on-disk layout — a test that only passes
+observable behavior, never on a specific backend's SQL or on-disk layout. A test that only passes
 on one implementation is testing the implementation, not the contract.
 
 Six conventions worth copying rather than reinventing:
@@ -78,7 +78,7 @@ Six conventions worth copying rather than reinventing:
   `scripts/pg-conformance.sh`.
 - **A persistent database is not `:memory:`, and a "restart" needs one.** `init()` opens a fresh
   connection, so re-initializing an in-memory adapter gives you an EMPTY database rather than the
-  one you just wrote — a restart test that skips this passes by finding nothing. `backfill.test.ts`
+  one you just wrote, so a restart test that skips this passes by finding nothing. `backfill.test.ts`
   uses a temp file/dir per dialect for exactly this reason.
 - **Never assume ULID insertion order is id order.** Ids minted inside the same millisecond differ
   only in their random half, so a test asserting "the records I put, in that order" passes on a

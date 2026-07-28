@@ -1,6 +1,6 @@
 // Phase 6 conformance: the fault-injection subset. These compose the mechanisms built in
 // Phases 3-5 (fencing, lazy expiry, idempotency, transactional events) to show they
-// recover correctly under worker crashes. Crashes are simulated deterministically — a
+// recover correctly under worker crashes. Crashes are simulated deterministically: a
 // crashed worker is one that took a lease and never acked, and its lease is forced to
 // expire with a negative lease (leased_until in the past) so recovery needs no sleep. A
 // "lost response" is simulated by discarding a committed ack's return and retrying. No
@@ -60,7 +60,7 @@ export const faultSuites: Suite[] = [
       effects++;
       assertEquals((await space.ack(b!.lease)).status, "ok");
 
-      assertEquals(effects, 2); // duplicate side effect — the documented at-least-once cost
+      assertEquals(effects, 2); // duplicate side effect: the documented at-least-once cost
       assertEquals((await space.getEnvelope(id))?.state, "consumed"); // space state consistent
     },
   },

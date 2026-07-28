@@ -2,8 +2,8 @@
 //
 //   deno run -A examples/chat/smoke-procedures.ts
 //
-// A tool call is just a record, so every step the assistant would take here can be taken directly
-// — which makes the whole save/run/read path testable without an OPENROUTER_API_KEY. It spawns its
+// A tool call is just a record, so every step the assistant would take here can be taken directly.
+// That makes the whole save/run/read path testable without an OPENROUTER_API_KEY. It spawns its
 // own space and exec-worker on port 7799 and cleans them up.
 //
 // This is a script, not a `*.test.ts`: it is not part of `deno task conformance` (that suite is for
@@ -84,7 +84,7 @@ check("a procedure record exists, scoped to the conversation", procs.length === 
 const source = body?.artifactId ? new TextDecoder().decode(await admin.getArtifact(body.artifactId)) : "";
 check("its code is stored as an artifact", source.includes("console.log(args.a + args.b)"));
 
-// 3. Call it by name — the args reach the code.
+// 3. Call it by name: the args reach the code.
 const ran = await callTool("add_nums", { a: 2, b: 40 }, convA);
 const out = ran.output as { stdout?: string };
 check("calling it by name runs the saved code with args", ran.ok && out.stdout?.trim() === "42", `stdout=${JSON.stringify(out.stdout)}`);
@@ -139,7 +139,7 @@ const afterRetire = await callTool("add_nums", { a: 1, b: 1 }, convA);
 check("calling a retired procedure is refused, promptly", !afterRetire.ok, String(afterRetire.output).slice(0, 60));
 
 const readRetired = await callTool("read_procedure", { name: "add_nums" }, convA);
-check("but its code is still readable — retire is not delete", readRetired.ok);
+check("but its code is still readable (retire is not delete)", readRetired.ok);
 check("retiring twice is refused", !(await callTool("retire_procedure", { name: "add_nums" }, convA)).ok);
 
 // 10. Saving the name again brings it back: the successor is newer, so latest-wins un-retires it
@@ -156,12 +156,12 @@ const ran3 = await callTool("add_nums", { a: 20, b: 22 }, convA);
 check("and it runs again", ran3.ok && (ran3.output as { stdout?: string }).stdout?.trim() === "42");
 
 // 11. PROVENANCE: a result must name the exact procedure version that produced it. This is the
-//     question a model answered wrong from memory ("yes I ran the saved code" — it had not), and
+//     question a model answered wrong from memory ("yes I ran the saved code"; it had not), and
 //     it should be answerable from the space instead of from recall.
 const provRun = await callTool("add_nums", { a: 1, b: 2 }, convA);
 check("the procedure still runs", provRun.ok);
 const results = await admin.query({ kind: "tool_result" }, 200);
-// One record, read both ways — citing the last result but reading the first one's parents is how
+// One record, read both ways. Citing the last result but reading the first one's parents is how
 // this test failed the first time.
 const withProc = results.filter((r) => (r.body as { procedure?: unknown }).procedure);
 check("a procedure call records which procedure served it", withProc.length > 0);
@@ -197,7 +197,7 @@ check("a parameterised save does not warn", !(withParams.output as { note?: stri
 
 // 13. SHADOWING: a procedure must not take a name a worker already serves. The exec worker
 //     publishes run_code/save_procedure/read_procedure/retire_procedure as capabilities, so those
-//     are the names available to test here — the check is against DISCOVERED capabilities, not a
+//     are the names available to test here. The check is against DISCOVERED capabilities, not a
 //     hardcoded list, which is what makes it cover other workers' tools too.
 for (const taken of ["run_code", "read_procedure"]) {
   const clash = await callTool("save_procedure", {

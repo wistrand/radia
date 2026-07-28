@@ -27,7 +27,7 @@ NAME="radia-pg-conformance-$$"
 echo "Starting throwaway Postgres container ($NAME)…"
 # Let DOCKER choose the host port rather than hardcoding one. A fixed port here used to be 55432,
 # which sits inside Linux's default ephemeral range (see /proc/sys/net/ipv4/ip_local_port_range,
-# typically 32768-60999) — so an unrelated outbound connection could hold it, even just in
+# typically 32768-60999), so an unrelated outbound connection could hold it, even just in
 # TIME_WAIT, and this script would die with a docker "address already in use" that looks like a
 # stale container but is not one. Port 0 asks the kernel for a free port; we read back which.
 docker run -d --rm --name "$NAME" -e POSTGRES_PASSWORD=radia -e POSTGRES_DB=radia -p 127.0.0.1::5432 postgres:16 >/dev/null

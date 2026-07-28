@@ -16,7 +16,7 @@
 // model-written code holds no credential at all, so compromising it yields a process that can
 // print bytes to its parent.
 //
-// Tokens travel as argv, which `ps` can see. Fine for a local demo, wrong for a deployment — a
+// Tokens travel as argv, which `ps` can see. Fine for a local demo, wrong for a deployment: a
 // real one would use a secret channel.
 
 import { CLASSIFY_MODEL, EXEC_TIMEOUT_MS, execRoots, IMAGE_MODEL, port, spaceDb, TIERS, toolRoots, url } from "./config.ts";
@@ -49,8 +49,8 @@ export function launchFleet(tokens: Bootstrapped): Deno.ChildProcess[] {
     ]));
   }
 
-  // Router: claims UNTIERED calls, classifies, re-dispatches. Holds no key — its classifier is
-  // itself an `llm_call` served by the fleet.
+  // Router: claims UNTIERED calls, classifies, re-dispatches. Holds no key, because its classifier
+  // is itself an `llm_call` served by the fleet.
   procs.push(spawn([
     "--allow-net",
     "--allow-env",

@@ -75,7 +75,7 @@ export const kindSuites: Suite[] = [
       assertEquals(before, "unknown_kind");
 
       await reloaded.loadKinds();
-      // now the persisted declaration is back — the predicate query is valid again
+      // now the persisted declaration is back, so the predicate query is valid again
       assertEquals(await reloaded.readOne({ kind: "task", match: { tag: "x" } }), null);
     },
   },

@@ -1,11 +1,11 @@
 // Self-scoped ops: an agent observing its OWN process state without operator privilege.
 //
-// The asymmetry this closes is that every reflexive capability used to be reserved to the outside
-// — a participant could be observed but could not observe itself (research-self-modeling.md).
+// The asymmetry this closes is that every reflexive capability used to be reserved to the outside.
+// A participant could be observed but could not observe itself (research-self-modeling.md).
 //
 // The thing to test hardest is the AGGREGATE. A scoped list that leaks is obvious: a foreign
-// record shows up and someone notices. A scoped count that leaks is invisible — the number just
-// looks plausible. So every case here puts ANOTHER principal's records in the same space and
+// record shows up and someone notices. A scoped count that leaks is invisible, because the number
+// just looks plausible. So every case here puts ANOTHER principal's records in the same space and
 // asserts on what the scoped caller is told, not merely on what it can reach.
 
 import { assert, assertEquals } from "@std/assert";
@@ -43,7 +43,7 @@ export const selfScopeSuites: Suite[] = [
       assertEquals(countOf(all, "note"), 8, "unscoped sees both authors");
 
       const scoped = await mine.stats(scope);
-      assertEquals(countOf(scoped, "note"), 3, "scoped counts ONLY my three — not 8, and not a trimmed 8");
+      assertEquals(countOf(scoped, "note"), 3, "scoped counts ONLY my three: not 8, and not a trimmed 8");
       assertEquals(countOf(scoped, "secret"), 0, "a kind outside the scope contributes nothing");
       assert(!scoped.some((r) => r.kind === "secret"), "and does not appear at all, so the shape leaks nothing");
     },
@@ -80,7 +80,7 @@ export const selfScopeSuites: Suite[] = [
       const full = await mine.diagnostics();
       const scoped = await mine.diagnostics({ createdBy: ["run:mine"], kinds: ["note"] });
       assertEquals(full.counts.available, 10, "the operator sees everything");
-      assertEquals(scoped.counts.available, 3, "the scoped caller sees its own, counted — not filtered after");
+      assertEquals(scoped.counts.available, 3, "the scoped caller sees its own, counted, not filtered after");
     },
   },
   {
@@ -115,7 +115,7 @@ export const selfScopeSuites: Suite[] = [
       };
       assert(await denied("agent:w"), "no grant at all: denied");
 
-      // An ordinary query grant is not enough — it authorizes the coordination plane, not
+      // An ordinary query grant is not enough. It authorizes the coordination plane, not
       // introspection of the envelope.
       await space.put({ kind: "grant", body: { principal: "agent:w", kind: "note", operations: ["query"] } });
       assert(await denied("agent:w"), "a plain query grant does not open the ops plane");
@@ -133,7 +133,7 @@ export const selfScopeSuites: Suite[] = [
     name: "a self-scoped grant narrows the COORDINATION plane, not only the ops plane",
     run: async (adapter) => {
       // The WRITER is configured as agent:w so its records carry that author; the CHECKER is a
-      // separate Space, because a space treats its own configured identity as privileged — and a
+      // separate Space, because a space treats its own configured identity as privileged, and a
       // privileged caller is unrestricted by definition.
       const mine = new Space(adapter, { principal: "agent:w" });
       const theirs = new Space(adapter, { principal: "run:someone-else" });
@@ -163,19 +163,19 @@ export const selfScopeSuites: Suite[] = [
   {
     name: "an UNSCOPED grant on the same kind lifts the author restriction",
     run: async (adapter) => {
-      const space = new Space(adapter); // not agent:w — a space's own identity is privileged
+      const space = new Space(adapter); // not agent:w, because a space's own identity is privileged
       space.registerKind({ kind: "note", indexedPaths: [] });
       await space.put({
         kind: "grant",
         body: { principal: "agent:w", kind: "note", operations: ["query"], scope: { createdBy: "self" } },
       });
       assert(await space.authorScope("agent:w", "query", "note"), "self-scoped alone: restricted");
-      // A grant for a DIFFERENT operation is irrelevant to read scoping — narrowing reads while
+      // A grant for a DIFFERENT operation is irrelevant to read scoping. Narrowing reads while
       // keeping a write grant must not lift the restriction.
       await space.put({ kind: "grant", body: { principal: "agent:w", kind: "note", operations: ["put"] } });
       assert(await space.authorScope("agent:w", "query", "note"), "an unscoped PUT grant does not widen reads");
 
-      // Grants UNION — a record is readable if any grant permits it — so one unscoped grant already
+      // Grants UNION (a record is readable if any grant permits it), so one unscoped grant already
       // permits other authors, and filtering by author would deny something granted.
       await space.put({ kind: "grant", body: { principal: "agent:w", kind: "note", operations: ["query"] } });
       assertEquals(
@@ -231,7 +231,7 @@ export const selfScopeSuites: Suite[] = [
 
       // The state that produced a wrong number in a live session: an unscoped {put, query} grant
       // (written by the fleet's bootstrap) beside a self-scoped {query} one (a human narrowing it
-      // once). Different operation sets means different grant identities, so BOTH are in force —
+      // once). Different operation sets means different grant identities, so BOTH are in force,
       // and the union rule says reads are therefore NOT narrowed.
       await space.put({ kind: "grant", body: { principal: "agent:w", kind: "message", operations: ["put", "query"] } });
       await space.put({
@@ -248,7 +248,7 @@ export const selfScopeSuites: Suite[] = [
       const stats = await space.stats(scope ?? undefined);
       const count = (kind: string) => stats.filter((s) => s.kind === kind).reduce((n, s) => n + s.count, 0);
 
-      // The ops plane is self-scoped BY DESIGN, so both counts are the caller's own records — that
+      // The ops plane is self-scoped BY DESIGN, so both counts are the caller's own records. That
       // part is deliberate and stays. What must not happen is the number quietly disagreeing with
       // the caller's own `query` on the same kind with nothing to signal it: reads on `message` are
       // NOT narrowed (an unscoped grant permits them), so the caller can list 7 while this counts
@@ -282,7 +282,7 @@ export const selfScopeSuites: Suite[] = [
       });
 
       const scope = await space.opsScope(principal);
-      // The per-record ops reads stay self-scoped along with the aggregate — a caller that can LIST
+      // The per-record ops reads stay self-scoped along with the aggregate. A caller that can LIST
       // another author's record still gets 404 for it here. That is the deliberate posture; what
       // the scope owes the caller is to say the two planes differ, not to quietly widen one.
       assert((scope?.alsoReadable ?? []).includes("message"), "the discrepancy is reported");
@@ -323,7 +323,7 @@ export const selfScopeSuites: Suite[] = [
       assertEquals(scopedBody.scope.narrowedBy, [{ conversationId: "mine" }]);
       assert(String(scopedBody.scope.note).includes("slice"), "and says what that means");
 
-      // An unrestricted caller's answer is unchanged — no scope to explain away.
+      // An unrestricted caller's answer is unchanged: no scope to explain away.
       const openBody = await (await ask("human:local")).json();
       assertEquals(openBody.records.length, 5);
       assertEquals(openBody.scope, undefined, "nothing narrowed, nothing reported");

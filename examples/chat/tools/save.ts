@@ -1,8 +1,8 @@
-// `save_content` — persist something the assistant wrote as an artifact.
+// `save_content`: persist something the assistant wrote as an artifact.
 //
 // The counterpart to `run_code`'s `save_as`, which only covers bytes a PROGRAM produced. Content
-// the model composed directly — an SVG it drew in prose, a config it drafted, a summary worth
-// keeping — has no other route out of the conversation, and telling it to re-emit the same text
+// the model composed directly (an SVG it drew in prose, a config it drafted, a summary worth
+// keeping) has no other route out of the conversation, and telling it to re-emit the same text
 // inside a `run_code` literal costs the identical tokens and lands in the thread identically. So
 // the direct tool is not a shortcut around the "bytes never travel inside a record" rule; it is
 // the honest shape for content whose only source is the model's own output.
@@ -47,12 +47,12 @@ export const SAVE_SCHEMAS: ToolDef[] = [
     function: {
       name: "save_content",
       description:
-        "Store text you have written as a file (an artifact) the user can open and keep — SVG, " +
+        "Store text you have written as a file (an artifact) the user can open and keep: SVG, " +
         "JSON, CSV, Markdown, code, anything textual. Use this when the user asks you to save, " +
         "store or keep something you produced in the conversation. Pass the exact content and a " +
         "filename; the media type comes from the extension unless media_type overrides it. For " +
         "binary formats, pass base64 and set encoding:\"base64\". Returns {artifactId, mediaType, " +
-        "size} — the user is shown a link automatically, so refer to it in words rather than " +
+        "size}. The user is shown a link automatically, so refer to it in words rather than " +
         "inventing a path. To save the OUTPUT OF A PROGRAM instead, use run_code with save_as, " +
         "which avoids repeating the content here.",
       parameters: {

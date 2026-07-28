@@ -1,4 +1,4 @@
-// Image generation over the SAME OpenAI-compatible chat-completions endpoint — there is no
+// Image generation over the SAME OpenAI-compatible chat-completions endpoint. There is no
 // separate images API. What turns a chat model into an image generator is `modalities: ["image"]`
 // on the request; the picture comes back inside the message.
 //
@@ -7,7 +7,7 @@
 // normalizer below is ported from a known-good implementation rather than guessed
 // (melker/src/ai/image-extract.ts); five of the branches are provider quirks nobody would predict.
 //
-// Unlike the text path this is NOT streamed — one POST, one JSON response — so a caller has
+// Unlike the text path this is NOT streamed (one POST, one JSON response), so a caller has
 // nothing to show for 5-20s. That is what `progress` records are for (see workers/images.ts).
 
 import { API_BASE } from "./openrouter.ts";
@@ -21,7 +21,7 @@ export interface GenerateOpts {
   apiKey: string;
   model: string;
   prompt: string;
-  /** Gemini-style passthrough: [{category, threshold}] — provider-specific, sent only if present. */
+  /** Gemini-style passthrough: [{category, threshold}]. Provider-specific, sent only if present. */
   safetySettings?: { category: string; threshold: string }[];
   signal?: AbortSignal;
 }
@@ -31,7 +31,7 @@ export interface GenerateOpts {
 export async function generateImage(opts: GenerateOpts): Promise<ImageBytes> {
   // Two prompt conventions that matter in practice: tell the model not to answer in prose (some
   // will happily describe the image instead of drawing it), and vary a seed so a repeated prompt
-  // is a new image rather than a cache hit. In Radia the second one has a visible consequence —
+  // is a new image rather than a cache hit. In Radia the second one has a visible consequence:
   // identical bytes dedup to one blob, so two artifact records would share a digest.
   const seeded = `Do not respond with text. Only output an image. ` +
     `(seed: ${Math.floor(Math.random() * 2147483647)})\n\n${opts.prompt}`;
@@ -56,7 +56,7 @@ export async function generateImage(opts: GenerateOpts): Promise<ImageBytes> {
   return await toBytes(extractImage(await res.json()), opts.signal);
 }
 
-/** OpenRouter nests the provider's real error at `error.metadata.raw` — as a JSON *string*, so it
+/** OpenRouter nests the provider's real error at `error.metadata.raw`, as a JSON *string*, so it
  *  takes two parses to get a message worth showing. */
 function errorMessage(text: string): string {
   try {

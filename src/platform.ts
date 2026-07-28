@@ -1,17 +1,17 @@
 // The platform seam: every non-portable host operation the runtime performs, in one file.
 //
-// Why this exists. The CLAUDE.md invariant is *maximal platform independence* — the code should
+// Why this exists. The CLAUDE.md invariant is *maximal platform independence*: the code should
 // be portable across runtimes, not bound to one. Scattering `Deno.exit`, `Deno.env.get`, and
 // `Deno.readTextFileSync` through `src/` binds every module to Deno for operations every runtime
 // has. Behind this seam, porting to Node or Bun means reimplementing THIS FILE and nothing else.
 //
 // What is deliberately NOT here, and why:
-//   - `Deno.test` in `conformance/harness.ts` — a test-runner binding, not a runtime operation.
+//   - `Deno.test` in `conformance/harness.ts`: a test-runner binding, not a runtime operation.
 //     A port swaps the harness, not the suites.
-//   - `Deno.connect` in `src/storage/postgres.ts` — that patches the *driver's* socket layer to
+//   - `Deno.connect` in `src/storage/postgres.ts`: it patches the *driver's* socket layer to
 //     set TCP_NODELAY, which only makes sense against deno-postgres. It is adapter-local by
 //     nature and documented at the call site.
-//   - `examples/` — those are SDK-only by design (they import nothing from `src/`), so they
+//   - `examples/`: those are SDK-only by design (they import nothing from `src/`), so they
 //     model what an external agent author writes. They are Deno scripts by construction.
 //
 // Style rule for the rest of `src/`: never reach for `Deno.*` directly. If something is missing
@@ -28,7 +28,7 @@ export function args(): string[] {
 }
 
 /**
- * Terminate the process. Call this ONLY from a top-level entry point — a function deep in a
+ * Terminate the process. Call this ONLY from a top-level entry point. A function deep in a
  * module that exits denies its caller any chance to clean up, and makes the function untestable.
  * Everywhere else, return a status or throw `UsageError`.
  */
@@ -36,7 +36,7 @@ export function exit(code: number): never {
   Deno.exit(code);
 }
 
-/** An environment variable, or undefined — including when the permission is not granted, so a
+/** An environment variable, or undefined (including when the permission is not granted), so a
  *  worker running without `--allow-env` degrades to defaults instead of crashing. */
 export function env(name: string): string | undefined {
   try {
@@ -78,7 +78,7 @@ export function readTextFile(path: string | URL): string | undefined {
   }
 }
 
-/** Write a file, creating parent directories. Throws on failure — callers decide what that means. */
+/** Write a file, creating parent directories. Throws on failure. Callers decide what that means. */
 export function writeTextFile(path: string, text: string): void {
   Deno.writeTextFileSync(path, text);
 }
@@ -87,7 +87,7 @@ export function mkdirp(path: string): void {
   Deno.mkdirSync(path, { recursive: true });
 }
 
-/** Delete a file. Missing is not an error — the goal is "gone", and it is. */
+/** Delete a file. Missing is not an error. The goal is "gone", and it is. */
 export function removeFile(path: string): void {
   try {
     Deno.removeSync(path);
@@ -103,8 +103,8 @@ export function restrictToOwner(path: string): void {
   } catch { /* best-effort hardening; the caller already handled the write */ }
 }
 
-/** Resolve a path relative to a module URL — how bundled assets are located both from source
- *  and inside a compiled binary. */
+/** Resolve a path relative to a module URL. This is how bundled assets are located both from
+ *  source and inside a compiled binary. */
 export function moduleRelative(url: string, path: string): URL {
   return new URL(path, url);
 }
@@ -184,7 +184,7 @@ export function writeStderr(text: string): void {
  * Run `handler` on an interrupt or termination signal; returns an unsubscribe function.
  *
  * Without this, a SIGTERM kills the process before any `finally` runs, and the provisioned
- * credential outlives the space that minted it — 401ing the next command. SIGTERM does not
+ * credential outlives the space that minted it, 401ing the next command. SIGTERM does not
  * exist on Windows; SIGINT does, so the set is platform-dependent.
  */
 export function onShutdown(handler: () => void): () => void {
@@ -207,7 +207,7 @@ export interface ServeOptions {
 }
 
 /** Serve HTTP. Narrowed to what the runtime uses, so a port implements this signature rather
- *  than all of `Deno.serve`. `onListen` is suppressed — startup logging is the caller's. */
+ *  than all of `Deno.serve`. `onListen` is suppressed. Startup logging is the caller's. */
 export function serve(
   opts: ServeOptions,
   handler: (req: Request) => Response | Promise<Response>,

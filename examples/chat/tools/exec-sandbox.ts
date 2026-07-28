@@ -1,7 +1,7 @@
 // The sandbox: run model-written JavaScript with nothing.
 //
-// A fresh `deno` subprocess with (by default) ZERO permissions — no `--allow-net`, `--allow-read`,
-// `--allow-env`, `--allow-run`, nothing — so every capability check inside it fails. The program
+// A fresh `deno` subprocess with (by default) ZERO permissions: no `--allow-net`, `--allow-read`,
+// `--allow-env`, `--allow-run`, nothing. Every capability check inside it therefore fails. The program
 // arrives on stdin (`deno run -`), which is also why no file needs to be readable. The only thing
 // that crosses back is bytes on stdout/stderr.
 //
@@ -14,7 +14,7 @@
 // a run token. Why not the tool-worker (`workers/tools.ts`): spawning needs `--allow-run`, which that
 // process deliberately lacks, and it holds a credential this code must never reach.
 //
-// What this IS: a boundary against accidents and ordinary malice — exfiltration, snooping,
+// What this IS: a boundary against accidents and ordinary malice, meaning exfiltration, snooping,
 // clobbering, runaway loops. What it is NOT: a hard boundary against a V8 or Deno 0-day. For a
 // local example that is proportionate; anything multi-tenant or internet-facing wants OS-level
 // isolation (container, gVisor, Firecracker) around this same worker.
@@ -24,10 +24,10 @@
 //   - Memory is bounded only for V8's OLD SPACE. `--max-old-space-size` kills an ordinary
 //     object-allocation loop in ~0.3s ("Reached heap limit", exit 133), but a TypedArray's backing
 //     store is external to that heap, so `while(true) a.push(new Uint8Array(1e7))` is bounded by
-//     the TIMEOUT, not the flag — it can chew host RAM for the whole window. Keep the timeout
+//     the TIMEOUT, not the flag; it can chew host RAM for the whole window. Keep the timeout
 //     short, and use `ulimit -v` or a container for anything beyond local single-user use.
 //   - `Date.now()` / `Math.random()` work, so executions are not reproducible (re-execution, not
-//     replay — see design-observability).
+//     replay; see design-observability).
 //   - Output is capped; a program that prints forever gets truncated, not obeyed.
 
 export interface RunOptions {
@@ -35,7 +35,7 @@ export interface RunOptions {
   maxOutputBytes?: number;
   memoryMb?: number;
   /** Absolute paths the program may READ. Empty (the default) means no filesystem at all. Granting
-   *  a root grants everything under it, so this is an operator decision made at launch — never
+   *  a root grants everything under it, so this is an operator decision made at launch, never
    *  something the model can widen per call. */
   readRoots?: string[];
   /** Paths denied even inside a granted root. `--deny-read` beats `--allow-read` in Deno, so this
@@ -105,7 +105,7 @@ export async function runCode(source: string, opts: RunOptions = {}): Promise<Ru
       "--ext=js", // stdin has no filename, so the dialect must be stated
       `--v8-flags=--max-old-space-size=${memoryMb}`,
       // READ is the one capability that can be granted, and only to explicit roots. Write, net,
-      // env and run stay denied whatever happens here — reading data is a different risk from
+      // env and run stay denied whatever happens here. Reading data is a different risk from
       // being able to change it or send it anywhere.
       ...(readRoots.length ? [`--allow-read=${readRoots.join(",")}`] : []),
       ...(denyRead.length ? [`--deny-read=${denyRead.join(",")}`] : []),

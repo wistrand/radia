@@ -17,7 +17,7 @@ info:
     supervisor; discovered by query). Requests authenticate with `Authorization: Bearer
     <run-token>` minted through the bootstrap chain (agent-definitions → agent-runs → stop); a
     run:* principal inherits its agent definition's grants. `Authorization: Bearer` is the only
-    auth channel — absent a credential the caller defaults to the operator `human:local` (act as a
+    auth channel. Absent a credential the caller defaults to the operator `human:local` (act as a
     scoped principal by minting a real run token). `put`/`take`/`query`/`read_one` are
     grant-checked; `/v0/ops/*` and writing `grant`/`signal`/`agent_*` records require an operator
     (`403`); an invalid/expired/stopped bearer token is `401`.
@@ -115,7 +115,7 @@ paths:
         id: a cursor, not an offset, so a page stays correct while records are being written.
         Records without an explicit order_by come back in ASCENDING id order, so a plain limit
         returns the OLDEST matches; `dir: desc` is what expresses "the newest N". A cursor is
-        defined for that natural id order only — combining after/dir with order_by is a 400,
+        defined for that natural id order only. Combining after/dir with order_by is a 400,
         because a keyset over a body field would need the whole sort key plus the matcher's type
         rules. Note that ids order by time only to the millisecond (ULID), so `desc` is
         newest-first at that resolution, not a strict write order.
@@ -132,7 +132,7 @@ paths:
                     limit: { type: integer, default: 100, maximum: 500 }
                     after:
                       type: string
-                      description: Exclusive record-id cursor, read in the direction of `dir` — the last id of the previous page.
+                      description: Exclusive record-id cursor, read in the direction of `dir` (the last id of the previous page).
                     dir:
                       type: string
                       enum: [asc, desc]
@@ -169,7 +169,7 @@ paths:
       operationId: take
       summary: Atomically claim a record for a fenced lease
       description: >
-        Selector is a pattern or a specific recordId (a selector, not a bypass — the
+        Selector is a pattern or a specific recordId (a selector, not a bypass; the
         server re-verifies availability and, if given, the pattern). Returns
         {record, lease} or null when nothing is claimable. Long-poll blocking is not
         implemented in M0.
@@ -302,7 +302,7 @@ paths:
       description: |
         The body is the raw payload; `Content-Type` becomes the artifact's media type. The bytes go
         to the blob store (content-addressed by sha256 of the plaintext) and an `artifact` record is
-        committed carrying `{digest, mediaType, size, filename?}` — the record routes, the payload
+        committed carrying `{digest, mediaType, size, filename?}`. The record routes; the payload
         does not travel inside it. `digest` and `size` are server-computed, never client-submitted.
         Authorized as a `put` on the reserved `artifact` kind; a pattern-scoped grant is matched
         against the metadata body (so a grant can be limited to one media type).
@@ -313,7 +313,7 @@ paths:
         - { name: X-Radia-Filename, in: header, required: false, schema: { type: string }, description: "Advisory download name; never used as a path." }
         - { name: X-Radia-Parent-Ids, in: header, required: false, schema: { type: string }, description: "Comma-separated data lineage parents." }
         - { name: X-Radia-Taint, in: header, required: false, schema: { type: string, enum: ["true"] }, description: "Raise taint (a client may raise it, never clear it)." }
-        - { name: X-Radia-Meta, in: header, required: false, schema: { type: string }, description: "ASCII JSON object of APPLICATION fields merged into the artifact's record body (scalars only; digest/mediaType/size/filename are runtime-computed and rejected here). This is what lets a pattern-scoped grant bind an artifact to something the app owns — the rest of the body is the runtime's." }
+        - { name: X-Radia-Meta, in: header, required: false, schema: { type: string }, description: "ASCII JSON object of APPLICATION fields merged into the artifact's record body (scalars only; digest/mediaType/size/filename are runtime-computed and rejected here). This is what lets a pattern-scoped grant bind an artifact to something the app owns. The rest of the body is the runtime's." }
       requestBody:
         required: true
         content:
@@ -328,7 +328,7 @@ paths:
                 type: object
                 required: [id, digest, size]
                 properties:
-                  id: { type: string, description: "the artifact record id — the stable reference" }
+                  id: { type: string, description: "the artifact record id, which is the stable reference" }
                   digest: { type: string, description: "sha256 hex of the plaintext bytes" }
                   size: { type: integer }
         "400": { $ref: "#/components/responses/Problem" }
@@ -342,7 +342,7 @@ paths:
       description: |
         Authorized as `read_one` on the `artifact` kind, or by a `capability` query parameter
         (below) for callers that cannot set an Authorization header. The id is a stable record id,
-        never a signed URL — a URL would expire inside an immutable record.
+        never a signed URL, because a URL would expire inside an immutable record.
       x-stability: stable
       x-phase: "M1"
       parameters:
@@ -361,7 +361,7 @@ paths:
       operationId: artifactCapability
       summary: Mint a short-lived download capability for one artifact
       description: |
-        For contexts that cannot attach an Authorization header — an `<img src>` in a browser. The
+        For contexts that cannot attach an Authorization header, such as an `<img src>` in a browser. The
         capability is scoped to a single artifact, expires in minutes, and is minted only for a
         caller already authorized to read it. It is a delegation of that read, not a credential.
       x-stability: stable
@@ -392,7 +392,7 @@ paths:
         share one vocabulary: `{state: leased, expired: true}` is the stuck-lease set in both.
 
         Every transition is state-guarded per record, so this is safe to re-run and safe to race
-        with a worker that returns — a record that has moved on is simply not applied. Bounded by
+        with a worker that returns: a record that has moved on is simply not applied. Bounded by
         `limit`; `more` reports that the page was full, so a caller draining a backlog repeats
         until it is false.
       x-stability: experimental
@@ -474,10 +474,10 @@ paths:
 
   # --- bootstrap chain (auth): definition -> run token -> stop. EXPERIMENTAL --------------
   # Requests authenticate with `Authorization: Bearer <run-token>` (a run:* principal that
-  # inherits its agent definition's grants) — the only auth channel. Absent any credential, the
+  # inherits its agent definition's grants). That is the only auth channel. Absent any credential, the
   # caller defaults to the operator `human:local` (act as a scoped principal by minting a run
   # token). See design-auth.md. Definitions/runs are records (agent_definition/agent_run); only the
-  # token HASH is stored — the plaintext token is returned once and never persisted.
+  # token HASH is stored; the plaintext token is returned once and never persisted.
 
   /agent-definitions:
     post:
@@ -533,7 +533,7 @@ paths:
       summary: Stop a run (operator or the run's own definition/run token)
       description: >
         The run's token stops resolving. Graceful by default (held leases expire on their own
-        clocks); `{quarantine: true}` is emergency revocation — the run's in-flight leases are
+        clocks); `{quarantine: true}` is emergency revocation, so the run's in-flight leases are
         force-released now (epoch-bumped), so a late ack/renew fences out as lease_lost.
       x-stability: experimental
       parameters:
@@ -563,7 +563,7 @@ paths:
   # There is NO /kinds endpoint. A kind declaration is a record of the reserved `kind_def`
   # kind (body = a KindDef): declare a kind with `POST /records` {kind: kind_def, body: <KindDef>}
   # and discover kinds with `POST /records/query` {kind: kind_def}. Expressing kinds through the
-  # substrate (records + query) rather than a bespoke endpoint — see CLAUDE.md "Design principle".
+  # substrate (records + query) rather than a bespoke endpoint. See CLAUDE.md "Design principle".
   # Re-declaring a kind emits a successor record (records are immutable; latest per name wins).
   #
   # Likewise there is NO /grants endpoint. Reserved kinds `grant` (body {principal, kind,
@@ -606,7 +606,7 @@ paths:
   /ops/diagnostics:
     get:
       operationId: diagnostics
-      summary: Derived health report — counts, dead-letters, stuck leases, stale-available (dev console)
+      summary: Derived health report covering counts, dead-letters, stuck leases, stale-available (dev console)
       x-stability: experimental
       responses:
         "200":
@@ -647,7 +647,7 @@ paths:
   /ops/records/{recordId}/declassify:
     post:
       operationId: declassify
-      summary: Privileged declassify — clear taint by emitting a clean successor (operator only)
+      summary: Privileged declassify that clears taint by emitting a clean successor (operator only)
       description: >
         Records are immutable, so declassify emits a NEW record with the same kind + body,
         `taint:false`, and the tainted original as its data parent (audit trail). The only way to
@@ -657,7 +657,7 @@ paths:
         - { name: recordId, in: path, required: true, schema: { type: string } }
       responses:
         "200":
-          description: "{declassifiedFrom, id} — the clean successor's id"
+          description: "{declassifiedFrom, id}, carrying the clean successor's id"
           content:
             application/json:
               schema:
@@ -763,13 +763,13 @@ paths:
   /ops/permissions:
     get:
       operationId: permissions
-      summary: What a principal can actually do — the fold over its grants, computed and shown
+      summary: What a principal can actually do, the fold over its grants, computed and shown
       description: >
         Effective permission is a fold over an unbounded record set: union across grants, per
         operation, self-scope applied only when every grant permitting that read is scoped, and
         retirement applied after newest-per-key. Recomputing that inside each decision left no way
         to check it, and every grant defect so far has been a promise that did not match the
-        enforcement. Operator only — reading another principal's authorization is not something a
+        enforcement. Operator only, because reading another principal's authorization is not something a
         self scope may reach. `complete: false` means the grant scan could not be exhausted and the
         view may be missing entries.
       x-stability: experimental
@@ -806,10 +806,10 @@ paths:
   /ops/records/{recordId}/children:
     get:
       operationId: children
-      summary: Records that reference this one via parent_ids — its children (the reverse of lineage)
+      summary: Records that reference this one via parent_ids, its children (the reverse of lineage)
       description: >
         Lineage walks parent_ids UP (ancestors); this returns records that name this id as a parent
-        (DOWN) — e.g. a conversation's messages, an llm_call's chunks + result. BOUNDED and keyset-
+        (DOWN), e.g. a conversation's messages, an llm_call's chunks + result. BOUNDED and keyset-
         paged, by the same contract as the record query: fan-out is unbounded in principle (a child
         per message, a result per task), so this is a PAGE. `after` is the last child id of the
         previous one, and `nextAfter` is absent on the last page.
@@ -901,7 +901,7 @@ components:
         parentIds: { type: array, items: { type: string }, description: "data lineage; all must exist at commit" }
         deadlineAt: { type: string }
         retentionUntil: { type: string }
-        taint: { type: boolean, description: "source attestation: true RAISES taint (untrusted data); false/absent is ignored — a client can never clear taint" }
+        taint: { type: boolean, description: "source attestation: true RAISES taint (untrusted data); false/absent is ignored, since a client can never clear taint" }
 
     Record:
       description: Immutable content half of a record.
@@ -1014,7 +1014,7 @@ components:
 
     KindDef:
       description: >
-        Per-kind indexing contract. This is the BODY of a `kind_def` record — declare a kind by
+        Per-kind indexing contract. This is the BODY of a `kind_def` record. Declare a kind by
         putting one (there is no /kinds endpoint). EXPERIMENTAL.
       x-stability: experimental
       type: object
@@ -1029,12 +1029,12 @@ components:
               path: { type: string }
               type: { type: string, enum: [keyword, integer, timestamp, array] }
         sortablePaths: { type: array, items: { type: string } }
-        claimable: { type: boolean, default: true, description: "records of this kind are claimed as work (take); false = reference data (facts/config/history, never taken) — excluded from the starvation diagnostic" }
+        claimable: { type: boolean, default: true, description: "records of this kind are claimed as work (take); false = reference data (facts/config/history, never taken), and excluded from the starvation diagnostic" }
 
     GrantDef:
       description: >
         A kind-scoped authorization grant. This is the BODY of a `grant` record (writable only by
-        an operator — human/supervisor). Kind is never wildcard. Optional `pattern` narrows
+        an operator, meaning a human or supervisor). Kind is never wildcard. Optional `pattern` narrows
         read/take to `grant ∧ request` (applies to query/read_one/take; put ignores it).
         EXPERIMENTAL.
       x-stability: experimental
@@ -1042,7 +1042,7 @@ components:
       required: [principal, kind, operations]
       properties:
         principal: { type: string, description: "the principal the grant is FOR (agent:* or run:*)" }
-        kind: { type: string, description: "a concrete record kind — never '*'" }
+        kind: { type: string, description: "a concrete record kind, never '*'" }
         operations:
           type: array
           items: { type: string, enum: [put, take, query, read_one] }

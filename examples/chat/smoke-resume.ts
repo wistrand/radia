@@ -3,9 +3,9 @@
 //   deno run -A examples/chat/smoke-resume.ts
 //
 // The conversation lives on the space, so "resume" means recovering the one piece of state the
-// client held (`nextIndex`) and reattaching. This drives a real space through a genuine restart —
-// the process is killed and a new one started against the same `--db` — because an in-memory space
-// would make every assertion below pass for the wrong reason.
+// client held (`nextIndex`) and reattaching. This drives a real space through a genuine restart
+// (the process is killed and a new one started against the same `--db`), because an in-memory
+// space would make every assertion below pass for the wrong reason.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./space/kinds.ts";
@@ -90,11 +90,11 @@ const systems = all.filter((r) => (r.body as { role: string }).role === "system"
 check("resume appends a current system message", systems.length === 2);
 check("and says the conversation was resumed", String((systems[1].body as { content: string }).content).includes("resumed"));
 
-// The conversation-scoped things come back too — the real payoff of resuming.
+// The conversation-scoped things come back too (the real payoff of resuming).
 const procs = await client.query({ kind: "procedure", match: { conversationId: convId } }, 10);
 check("conversation-scoped procedures survive the restart", procs.length === 1);
 
-// `last` resolves to the newest conversation — the keyset direction in use.
+// `last` resolves to the newest conversation. That is the keyset direction in use.
 await Thread.open(client, "admin", (await client.put({ kind: "conversation", body: {} })).id); // a newer conversation
 const newest = await client.query({ kind: "conversation" }, 1, { dir: "desc" });
 check("'last' resolves to the most recent conversation", newest.length === 1 && newest[0].id !== convId);

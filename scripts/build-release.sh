@@ -2,8 +2,8 @@
 # Build per-OS `radia` binaries and stage the npm + pip shim packages (Phase 7).
 #
 # The distribution shape is the esbuild/uv pattern: one thin wrapper package per ecosystem that
-# resolves and execs a real binary. No install-time compilation, no Deno on the user's machine —
-# `npx radia dev` and `pipx run radia dev` just run.
+# resolves and execs a real binary. There is no install-time compilation and no Deno on the
+# user's machine: `npx radia dev` and `pipx run radia dev` just run.
 #
 #   ./scripts/build-release.sh              # every target
 #   ./scripts/build-release.sh host         # only this machine's target (fast local check)
@@ -107,7 +107,7 @@ try {
   process.exit(1);
 }
 
-// stdio: "inherit" matters — `radia mcp` speaks JSON-RPC on stdin/stdout and must not be buffered.
+// stdio: "inherit" matters. `radia mcp` speaks JSON-RPC on stdin/stdout and must not be buffered.
 const r = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
 if (r.error) {
   console.error(`radia: ${r.error.message}`);
@@ -167,7 +167,7 @@ def main() -> int:
     if not binary.exists():
         sys.stderr.write(
             f"radia: no bundled binary at {binary}.\n"
-            "This wheel was built without one — install a platform wheel, or run from source.\n"
+            "This wheel was built without one. Install a platform wheel, or run from source.\n"
         )
         return 1
     args = [str(binary), *sys.argv[1:]]
@@ -175,7 +175,7 @@ def main() -> int:
         import subprocess
 
         return subprocess.call(args)
-    # exec so stdin/stdout stay a direct pipe — `radia mcp` speaks JSON-RPC over them.
+    # exec so stdin/stdout stay a direct pipe: `radia mcp` speaks JSON-RPC over them.
     os.execv(str(binary), args)
 
 

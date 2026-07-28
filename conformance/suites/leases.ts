@@ -146,7 +146,7 @@ export const leaseSuites: Suite[] = [
 //
 // `take` must hand out work that exists. The original implementation locked its ENTIRE candidate
 // set (`for update ... skip locked` over every available-or-leased record of the kind) and relied
-// on that lock — not on the compare-and-set update — for single-winner. Under real concurrency
+// on that lock (not on the compare-and-set update) for single-winner. Under real concurrency
 // that starves: one claimer's open transaction holds every candidate, so everyone else is told
 // the queue is empty while it is full. Measured on Postgres at 16 concurrent claimers: 166 empty
 // takes against 120 records that were never claimed by anyone.

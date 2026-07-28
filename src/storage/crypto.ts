@@ -2,8 +2,8 @@
 //
 // Per-blob random DEK (AES-GCM-256) sealing the payload; the DEK wrapped under a space KEK
 // (AES-KW) that comes from the environment or a key file. This is confidentiality layer 2 of
-// design-observability: it covers the leak vectors disk encryption does not — backups, snapshots,
-// a copied data directory — and it is what makes deletion-by-key-destruction possible.
+// design-observability: it covers the leak vectors disk encryption does not (backups, snapshots,
+// a copied data directory) and it is what makes deletion-by-key-destruction possible.
 //
 // What it does NOT defend against, stated plainly so nobody mistakes the guarantee: a compromised
 // runtime, or anyone who has the KEK. The runtime decrypts for any principal holding a read grant,
@@ -14,12 +14,12 @@
 //   - The DEK is per BLOB, not per artifact record. The store is content-addressed by the
 //     PLAINTEXT digest, so identical bytes are one blob that several artifact records reference;
 //     they share its key. Dedup survives encryption, and shredding a blob shreds it for every
-//     record referencing it — correct, since there is one payload.
+//     record referencing it. That is correct, since there is one payload.
 //   - The plaintext digest is the AAD. Ciphertext moved to a different address fails to open, so
 //     the content address is authenticated rather than merely conventional.
 //   - Storage paths are HMAC(KEK, digest), not the digest. A content-addressed encrypted store
 //     whose filenames are plaintext hashes still answers "do you hold this exact file?" to anyone
-//     who steals the disk — a confirmation attack that costs nothing to close.
+//     who steals the disk. That is a confirmation attack that costs nothing to close.
 //   - The wrapped DEK lives in a sidecar beside the blob, never in the artifact record. Records
 //     are immutable and crypto-shredding means DELETING the key.
 
@@ -31,7 +31,7 @@ export interface SealedKey {
   wrapped: string; // base64
   /** AES-GCM nonce for the payload. */
   nonce: string; // base64
-  /** Plaintext byte length — the ciphertext is 16 bytes longer (the GCM tag). */
+  /** Plaintext byte length. The ciphertext is 16 bytes longer (the GCM tag). */
   size: number;
 }
 
@@ -70,7 +70,7 @@ export class BlobCipher {
     return new BlobCipher(kek, namer);
   }
 
-  /** The storage name for a plaintext digest — reveals nothing about the content it addresses. */
+  /** The storage name for a plaintext digest. Reveals nothing about the content it addresses. */
   async storageName(digest: string): Promise<string> {
     const mac = new Uint8Array(await crypto.subtle.sign("HMAC", this.namer, buf(new TextEncoder().encode(digest))));
     return [...mac].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -125,7 +125,7 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
 
 /**
  * Resolve the space KEK: `RADIA_BLOB_KEK` (base64, 32 bytes) wins, else a key file, which is
- * generated on first use. Returns undefined when neither is configured — blobs then stay
+ * generated on first use. Returns undefined when neither is configured. Blobs then stay
  * plaintext, which is the default and is logged as such rather than being silently assumed.
  */
 export function loadKek(opts: { env?: string; file?: string }): { key: Uint8Array; source: string } | undefined {

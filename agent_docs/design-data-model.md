@@ -6,9 +6,9 @@ Spec and rationale for Radia's core data model. Origin: outline §2.
 the client-vs-runtime metadata split, and `parent_ids` lineage live in
 `src/core/record.ts` (`buildRecord`), `src/storage/adapter.ts` (types), `src/storage/row.ts`
 (mapping), and the two adapters. Kinds/indexing: `src/core/kinds.ts`. `delegation_context`
-(authority lineage) and `taint` (data lineage) are both built (M1) — see "Provenance vs.
+(authority lineage) and `taint` (data lineage) are both built (M1); see "Provenance vs.
 authority" below. **Artifacts / blob storage (§2.4) are built (M1), with optional encryption at
-rest** — see the section below for what landed and what did not.
+rest**. See the section below for what landed and what did not.
 
 ## Contents
 - Invariants
@@ -23,7 +23,7 @@ rest** — see the section below for what landed and what did not.
 ## Invariants
 
 Subsystem-local rules. Cross-cutting rules (immutability, the client/runtime split,
-provenance ≠ authority) are stated once in [CLAUDE.md](../CLAUDE.md) — read those too.
+provenance ≠ authority) are stated once in [CLAUDE.md](../CLAUDE.md). Read those too.
 
 - One `record_runtime` row per record. The envelope is the only mutable state.
 - Denormalized routing fields (`kind`, `deadline_at`, hot paths) are copied into
@@ -86,7 +86,7 @@ A hard API split. Server-controlled always: `created_by`, `delegation_context`,
 lease fields. Clients submit only *claims* (`confidence`, `requested_priority`); the
 runtime decides what they are worth. This is what stops an agent from, e.g., declaring
 its own priority or authorship. **`created_by` is the server-RESOLVED caller** (the handler's
-resolved principal — a run token → `run:*`, no header → `human:local`), threaded into
+resolved principal: a run token → `run:*`, no header → `human:local`), threaded into
 `put`/`ack`; it also scopes idempotency (per principal) and the event `run_id`. In-process
 callers default to the space's own identity.
 
@@ -94,10 +94,10 @@ callers default to the space's own identity.
 
 Two separate structures, deliberately not merged:
 
-- **`parent_ids`** — data/causality lineage only. All parents must exist at commit;
+- **`parent_ids`**: data/causality lineage only. All parents must exist at commit;
   self-parenting is rejected. Because parents pre-exist and records are immutable, the
   lineage DAG is **acyclic by construction**.
-- **`delegation_context`** — the authorization chain for this operation,
+- **`delegation_context`**: the authorization chain for this operation,
   server-derived from the claimed task/lease, never freely client-supplied. A result
   may have many data parents but exactly one authorization context. **M1 status (built):**
   set on records emitted via `ack` under a **managed run's** lease (`src/core/space.ts`
@@ -105,8 +105,8 @@ Two separate structures, deliberately not merged:
   the delegation path (from the record's authoritative `lease_owner` → its agent) and `origin`
   is the leased record it was delegated from. Derived from the lease, **never** from
   `parent_ids`. Operator/root-owned work carries none (full authority). Emitting a result is
-  authorized as a `put` for the acting agent — an ack-emitted record never bypasses
-  put-authorization; the stricter *chain-intersection* policy composes with taint
+  authorized as a `put` for the acting agent, so an ack-emitted record never bypasses
+  put-authorization. The stricter *chain-intersection* policy composes with taint
   (M3). See [design-auth.md](design-auth.md).
 
 A result may have many data parents but exactly one authorization context:
@@ -124,9 +124,9 @@ Deriving data from a privileged record grants nothing. Intersecting authority ac
 arbitrary data parents is neither meaningful nor attempted. See
 [design-auth.md](design-auth.md) for how `delegation_context` drives permission.
 
-**`taint` is the mirror image — it follows the DATA lineage that authority ignores.** M1
+**`taint` is the mirror image. It follows the DATA lineage that authority ignores.** M1
 status (built): a record is tainted if a client raised it (`taint:true`, source attestation)
-or **any `parent_ids` parent is tainted** (`Space.computeTaint`, on put and ack — so a tainted
+or **any `parent_ids` parent is tainted** (`Space.computeTaint`, on put and ack, so a tainted
 task yields a tainted result). A client can only ever *raise* taint; clearing requires a
 privileged **declassify** (`Space.declassify` → a clean successor with the tainted original as
 its data parent). A sensitive consumer skips tainted work with `take {requireUntainted}`. So
@@ -141,12 +141,12 @@ writers only).
 
 ## Resource limits
 
-**M1 status: mostly unbuilt.** The intent stands — an indexed query can still be expensive, so
-limits are not optional, and they belong at commit/registration — but only two are enforced:
+**M1 status: mostly unbuilt.** The intent stands: an indexed query can still be expensive, so
+limits are not optional, and they belong at commit/registration. Only two are enforced so far:
 
-- **pattern `$and`/`$or` nesting depth ≤ 3** — `MAX_DEPTH` in `src/core/matching.ts`, raised as
+- **pattern `$and`/`$or` nesting depth ≤ 3**: `MAX_DEPTH` in `src/core/matching.ts`, raised as
   `too_deep` at compile.
-- **artifact bytes**, default 32 MiB — `SpaceContext.maxArtifactBytes` (`src/core/space.ts`),
+- **artifact bytes**, default 32 MiB: `SpaceContext.maxArtifactBytes` (`src/core/space.ts`),
   returned as `413 artifact_too_large` by `src/server/handlers/artifacts.ts`.
 
 Still to build, tracked as the unchecked M1 item "resource limits enforced" in
@@ -174,24 +174,24 @@ flowchart LR
     W[worker] -->|POST /v0/artifacts<br/>bytes| RT[runtime]
     RT -->|sha256 of PLAINTEXT| BS[(blob store<br/>content-addressed)]
     RT -->|commits| AR["artifact record<br/>{digest, mediaType, size}"]
-    AR -->|"routes, taints, has lineage,<br/>is grant-gated — like any record"| SP[(space)]
+    AR -->|"routes, taints, has lineage,<br/>is grant-gated, like any record"| SP[(space)]
     C[consumer] -->|"GET /v0/artifacts/{record id}"| RT
     BR["browser &lt;img&gt;<br/>cannot send a header"] -->|"?capability=… (minutes, one artifact)"| RT
     RT -.->|"AES-GCM under a per-blob DEK,<br/>DEK wrapped by the space KEK"| BS
 ```
 
 **An artifact is a record.** The reserved `artifact` kind's body is `{digest, mediaType, size,
-filename?}` — the metadata, never the bytes — so grants, taint, lineage, the event log, retention
+filename?}`, the metadata and never the bytes, so grants, taint, lineage, the event log, retention
 and pattern-scoped scoping all apply with no new machinery, and only the payload sits outside.
 Indexed on `digest` (every record referencing the same bytes) and `mediaType` (a worker claims
-`{mediaType: "image/png"}` — content routing, not a routing table). `digest` and `size` are
+`{mediaType: "image/png"}`: content routing, not a routing table). `digest` and `size` are
 server-computed; a client cannot assert them.
 
 An application may merge its OWN fields into that body (`putArtifact`'s `appFields`, `X-Radia-Meta`
-on the wire — scalars, ASCII, since a header is a ByteString). Without them an artifact is the one
+on the wire; scalars, ASCII, since a header is a ByteString). Without them an artifact is the one
 kind an application cannot scope: a grant pattern matches the body, and a wholly runtime-built
 body offers nothing to bind, so any principal holding an artifact id can read the bytes. Lineage
-does not help — `parent_ids` is not body, and matching is body-only by design. The runtime's fields
+does not help: `parent_ids` is not body, and matching is body-only by design. The runtime's fields
 are applied last and supplying one is refused, so app metadata can never forge a digest, size or
 media type. A kind whose indexing an app extends this way is redeclared with a `kind_def` record
 like any other (only `kind_def` itself is protected), and a redeclaration REPLACES, so the reserved
@@ -204,13 +204,13 @@ dedup never merges two artifacts into one reference.
 **Download capabilities** (`POST /v0/artifacts/{id}/capability`) exist for one concrete reason: a
 browser cannot attach an `Authorization` header to `<img src>`. A capability is scoped to a single
 artifact, expires in minutes, lives in memory, and is minted only for a caller already authorized
-to read that artifact — a delegation of a read, not a credential. It is checked before token
-resolution (there is deliberately no token) and opens nothing else: `/v0/records` and `/v0/ops/*`
-still 401 with a capability attached under `--auth required`.
+to read that artifact, making it a delegation of a read rather than a credential. It is checked
+before token resolution (there is deliberately no token) and opens nothing else: `/v0/records` and
+`/v0/ops/*` still 401 with a capability attached under `--auth required`.
 
 **Only raster images, audio and video are served `inline`; everything else downloads.** Artifact
-bytes are attacker-supplied and served from the space's OWN origin — the origin whose console page
-carries an operator token — so `text/html` (or `image/svg+xml`, which is why the allowlist names
+bytes are attacker-supplied and served from the space's OWN origin (the origin whose console page
+carries an operator token), so `text/html` (or `image/svg+xml`, which is why the allowlist names
 raster formats rather than `image/`) rendered inline would be a same-origin XSS reachable by anyone
 holding an `artifact: put` grant. Responses also carry `X-Content-Type-Options: nosniff` and
 `Content-Security-Policy: default-src 'none'; sandbox`.
@@ -225,14 +225,14 @@ access checks independent of possession of the record JSON.
 (base64, 32 bytes) or `--blob-kek <file>`. No key configured → blobs stay plaintext, and the
 startup line says which you got. This is confidentiality layer 2 of
 [design-observability.md](design-observability.md): it covers backups, snapshots and a copied data
-directory — what disk encryption does not — and it is what makes deletion-by-key-destruction real.
+directory (what disk encryption does not), and it is what makes deletion-by-key-destruction real.
 It does **not** defend against a compromised runtime or anyone holding the KEK, since the runtime
 decrypts for every principal with a read grant.
 
 Four properties, each with a reason:
 
 - **The DEK is per BLOB, not per record.** The store is content-addressed by the plaintext digest,
-  so identical bytes are one blob that several artifact records share — and share a key. Dedup
+  so identical bytes are one blob that several artifact records share, along with its key. Dedup
   survives encryption; shredding a blob shreds it for every record referencing it, which is correct
   because there is one payload.
 - **The plaintext digest is the AAD**, so ciphertext moved to another address fails to open: the
@@ -244,7 +244,7 @@ Four properties, each with a reason:
   gone while the record, its digest and the event chain remain verifiable.
 
 Enabling encryption on an existing store does not orphan what is already there: a blob with no
-sidecar is read as plaintext, while new writes are sealed. Two consequences worth knowing — an
+sidecar is read as plaintext, while new writes are sealed. Two consequences worth knowing: an
 encrypted read cannot stream (AES-GCM verifies its tag over the whole ciphertext, so the payload is
 decrypted in memory, bounded by `maxArtifactBytes`), and a space started **without** the KEK cannot
 even address its sealed blobs, so reads are `404` while the records remain intact.

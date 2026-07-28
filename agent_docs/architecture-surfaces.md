@@ -1,6 +1,6 @@
 # Architecture: surfaces (CLI, MCP adapter, credentials, platform seam, distribution)
 
-> Status: BUILT (M0 Phase 7). This is an `architecture-*` doc, not a `design-*` one — it
+> Status: BUILT (M0 Phase 7). This is an `architecture-*` doc, not a `design-*` one. It
 > describes what exists and points into `src/`. The code is authoritative; fix this doc when
 > they disagree.
 
@@ -15,14 +15,14 @@ flowchart TB
     M[a model calling tools] --> MCP[MCP adapter]
     A[agent code] --> SDK["SDK (TS · Python)"]
     B[a browser] --> UI[web console]
-    CLI --> API["/v0 — the frozen wire contract"]
+    CLI --> API["/v0: the frozen wire contract"]
     MCP --> API
     SDK --> API
     UI --> API
     API --> SPACE[(space)]
 ```
 
-Every surface is a client of the same public API — none reaches past it. If the CLI can do it, so
+Every surface is a client of the same public API, and none reaches past it. If the CLI can do it, so
 can anything else.
 
 ## The layering rule that shapes all of it
@@ -40,10 +40,10 @@ main.ts              dispatch, and the only place that terminates the process
 ```
 
 Neither surface reaches past the SDK into `core/` or `storage/`. That is deliberate and
-load-bearing: **if the CLI can do it, an external client can too.** A verb that needed a
+essential: **if the CLI can do it, an external client can too.** A verb that needed a
 privileged shortcut would be evidence of a missing API, not a reason to add a backdoor.
 
-## The platform seam — `src/platform.ts`
+## The platform seam: `src/platform.ts`
 
 Every non-portable host operation lives in one file: process (`args`, `exit`, `env`, `osName`),
 files (`readTextFile`, `writeTextFile`, `mkdirp`, `removeFile`, `restrictToOwner`,
@@ -81,7 +81,7 @@ request path, and sync keeps async colouring out of the call sites); `readTextFi
 - Nothing outside `src/main.ts` calls `exit`. Deeper code returns a status or throws
   `UsageError`, so a caller always gets the chance to clean up and every function stays testable.
 
-## Credentials — `src/credentials.ts`
+## Credentials: `src/credentials.ts`
 
 `radia dev` mints an operator token at startup and writes it to a per-user file: `RADIA_CREDENTIALS`
 if set, else `$XDG_STATE_HOME/radia/credentials.json`, `%APPDATA%\radia\…`, or `~/.radia/…`. Mode
@@ -96,11 +96,11 @@ The point is that **local development uses the same API shape as production**. T
 `curl` and the browser console, but nothing radia ships depends on it.
 
 Operator tokens are never persisted as records (see `CredentialStore` in `src/core/auth.ts`), so
-they die with the process. The file is therefore rewritten at every start and removed on shutdown
-— which is why `src/main.ts` installs `onShutdown`. Without it, `SIGTERM` killed the process
+they die with the process. The file is therefore rewritten at every start and removed on shutdown,
+which is why `src/main.ts` installs `onShutdown`. Without it, `SIGTERM` killed the process
 before the `finally` ran, and the next command 401'd against a dead token with no explanation.
 
-## The CLI — `src/cli.ts`
+## The CLI: `src/cli.ts`
 
 Verbs: `health stats doctor kinds get lineage children events watch put query read-one take ack
 nack release`, plus `--json` on every one and `--url` to point elsewhere.
@@ -109,15 +109,15 @@ Discovery-first, per the CLAUDE.md corollary: `kinds` is a query for `kind_def` 
 and `children` walk the graph, and no verb carries a table of known kinds.
 
 The claim lifecycle is composable rather than stateful: `take --json` prints the record together
-with its lease, and `ack`/`nack`/`release` accept that object back — as an argument or as `-` to
-read stdin. So a shell pipeline drives a full claim without the CLI holding session state.
+with its lease, and `ack`/`nack`/`release` accept that object back, either as an argument or as
+`-` to read stdin. So a shell pipeline drives a full claim without the CLI holding session state.
 
 `runCli` returns an exit code and never terminates the process itself. One trap it works around:
 `GET /v0/health` is public, so a *rejected* token still returns 200 with `principal=anonymous`.
 Without the explicit warning in the `health` output that reads as "no credential" when it actually
 means "bad credential".
 
-## The MCP adapter — `src/mcp/`
+## The MCP adapter: `src/mcp/`
 
 `radia mcp` serves the space to an MCP-capable harness over stdio: newline-delimited JSON-RPC 2.0,
 15 tools. `server.ts` is the transport and dispatch; `tools.ts` is the tool definitions.
@@ -125,7 +125,7 @@ means "bad credential".
 Two properties carry the design:
 
 **Credentials stay outside the model context.** The adapter attaches the token itself. None
-appears in a tool schema, a tool result, or an error — `errorText` deliberately reduces a
+appears in a tool schema, a tool result, or an error. `errorText` deliberately reduces a
 `RadiaClientError` to the server's RFC 9457 detail. A model driving this cannot read, log, or be
 injected into exfiltrating the credential it acts under.
 
@@ -136,7 +136,7 @@ you must choose between leases long enough to survive a thinking model (so a gen
 worker blocks a record for an hour) and a model that loses its claim constantly. Settling by
 `claimId` stops the heartbeat; a double-settle returns `isError` rather than killing the session.
 
-Tool descriptions in `tools.ts` are the documentation — a model learns *how* to use a tool from
+Tool descriptions in `tools.ts` are the documentation. A model learns *how* to use a tool from
 its description, never from a system prompt that teaches the substrate. Kinds are discovered via
 `space_kinds`, so a kind declared after startup is immediately usable.
 
@@ -152,7 +152,7 @@ page rather than one per record.
 
 Known gap: the MCP adapter exposes `space_doctor` (diagnosis) but no remediation verbs
 (`reclaim`/`dead-letter`/`requeue`/`declassify`). Those sit behind `/v0/ops/*` and are grant-gated,
-so exposing them to a model is a deliberate decision rather than an oversight — but it does mean a
+so exposing them to a model is a deliberate decision rather than an oversight. It does mean a
 model can report a stuck lease and do nothing about it.
 
 ### Invariants (subsystem-local)
@@ -161,16 +161,16 @@ model can report a stuck lease and do nothing about it.
   corrupt stream. Writes are synchronous so frames cannot interleave.
 - A raw `Lease` never crosses into a tool result. The model gets a `claimId`.
 
-## Distribution — `scripts/build-release.sh`
+## Distribution: `scripts/build-release.sh`
 
 `deno task release` compiles five targets and stages the esbuild/uv shape: `dist/npm/radia` (a
 launcher plus `optionalDependencies` on per-platform packages) and `dist/pypi` (wheel source whose
-launcher `execv`s the bundled binary — `exec` matters, so `radia mcp`'s stdio stays a direct pipe).
+launcher `execv`s the bundled binary; `exec` matters, so `radia mcp`'s stdio stays a direct pipe).
 
 `--include` must list every runtime asset (`src/ui/index.html` and `src/ui/vendor/blitzoom.bundle.js`),
 or the binary boots and then 404s. `deno task compile` carries the same flags for the single-binary
 build.
 
-**Unverified:** `npx radia dev` and `pipx run radia dev` have never been executed end to end —
-that needs a registry publish. Only the host target has been compiled; the four cross-compiled
+**Unverified:** `npx radia dev` and `pipx run radia dev` have never been executed end to end.
+That needs a registry publish. Only the host target has been compiled; the four cross-compiled
 targets and the staged package metadata are best-effort until someone publishes once.

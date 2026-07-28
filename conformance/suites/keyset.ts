@@ -1,7 +1,7 @@
 // Keyset pagination: a cursor over record id, in either direction.
 //
 // The point of a keyset over an offset is that it stays correct while the space is being WRITTEN
-// to — an offset counts rows, so anything inserted before the cursor shifts every later page. The
+// to. An offset counts rows, so anything inserted before the cursor shifts every later page. The
 // suite therefore checks the interesting case explicitly: paging while records arrive.
 //
 // The other reason it exists is that without `dir: "desc"` there is no way to ask for the newest
@@ -24,8 +24,8 @@ function newSpace(adapter: Parameters<Suite["run"]>[0]): Space {
   return space;
 }
 
-/** Put `count` notes; returns their ids in ASCENDING id order (which is not always put order —
- *  ULIDs minted inside one millisecond differ only in their random half). */
+/** Put `count` notes; returns their ids in ASCENDING id order (which is not always put order,
+ *  since ULIDs minted inside one millisecond differ only in their random half). */
 async function seed(space: Space, count: number, tag = "t"): Promise<string[]> {
   const ids: string[] = [];
   for (let i = 0; i < count; i++) ids.push((await space.put({ kind: "note", body: { n: i, tag } })).id);
@@ -51,7 +51,7 @@ export const keysetSuites: Suite[] = [
     },
   },
   {
-    name: "dir:desc walks newest-first — the thing a plain limited query cannot express",
+    name: "dir:desc walks newest-first, the thing a plain limited query cannot express",
     run: async (adapter) => {
       const space = newSpace(adapter);
       const ids = await seed(space, 12);

@@ -4,7 +4,7 @@
 //
 // The distinction this suite exists for: `smoke-selfgrant.ts` proves the SERVER's scoped-ops
 // contract, and it does so by paging the event log itself. The chat does not reach the server
-// directly — it reaches it through the tools in `tools/space.ts`, and those were the broken half.
+// directly; it reaches it through the tools in `tools/space.ts`, and those were the broken half.
 // A live session asked "what happened in my space", got `{events: [], withheld: 500}` from a log of
 // 11,588, retried, got the identical answer with the identical cursor, and reported that its
 // pending grant must not have been approved. Every layer under the tool was behaving correctly.
@@ -72,7 +72,7 @@ await admin.put({
     operations: ["query", "read_one"],
     scope: { createdBy: "self" },
     // Patterned to the same conversation as the base grant. Without this the grant UNIONS with the
-    // patterned one and reopens every conversation — a widening performed by adding a "narrower"
+    // patterned one and reopens every conversation: a widening performed by adding a "narrower"
     // grant, which is why the approval flow now inherits the pattern it is narrowing.
     pattern: { conversationId: mine },
   },
@@ -91,7 +91,7 @@ check("…and says it reached the end of the log", ev.complete === true);
 check("…and still says the answer is scoped, so empty never reads as idle", Boolean(ev.scope));
 check("…and reports what it could not show", (ev.withheld ?? 0) > 0, `withheld ${ev.withheld}`);
 // The number alone reads as "ask for a grant and this goes away". It does not: the log is filtered
-// by WHO ACTED, so no grant on any record kind widens it — four sessions in a row spent their turns
+// by WHO ACTED, so no grant on any record kind widens it. Four sessions in a row spent their turns
 // requesting kind grants (and inventing kinds to request) chasing an answer no grant can give.
 check(
   "…and says why, so the count does not read as a missing grant",
@@ -100,16 +100,16 @@ check(
 );
 
 // The events it did return must be the session's OWN records, not a leak from the wall it paged
-// through — paging further must not widen what a scoped caller sees, only reach more of it.
+// through. Paging further must not widen what a scoped caller sees, only reach more of it.
 const leaked = ev.events.filter((e) => e.recordId !== undefined && !myRecords.has(e.recordId));
 check("paging further does not leak another author's events", leaked.length === 0, `${leaked.length} foreign of ${ev.events.length}`);
 
 // ---- one session, one conversation ----
 // The leak this closes: every chat session runs as the SAME `agent:chat-user`, so a kind-scoped
 // `message: query` grant let any session read every message in the space. A ten-minute session
-// reconstructed two days of other people's conversations from it — correctly, because nothing
-// enforced the "its own results" the grant comment claimed. The grants are now pattern-scoped to
-// the conversation the session is attached to.
+// reconstructed two days of other people's conversations from it. It did so correctly, because
+// nothing enforced the "its own results" the grant comment claimed. The grants are now
+// pattern-scoped to the conversation the session is attached to.
 const visible = await tools.space_query({ kind: "message", limit: 25 }) as { count: number; more: boolean };
 check(
   "a session reads only ITS conversation's messages",
@@ -121,7 +121,7 @@ check("…and counts only those", counted.count === 3, `${counted.count}`);
 
 // The reason four sessions in a row reported their own slice as the space: a narrowed read looked
 // exactly like an unrestricted one. The ops plane has always described its scope; the coordination
-// plane — the one the assistant actually reads records through — never did, so "3 messages" was
+// plane (the one the assistant actually reads records through) never did, so "3 messages" was
 // indistinguishable from "this space has 3 messages".
 const scoped = visible as unknown as { scope?: { narrowedBy?: Record<string, unknown>[]; note?: string } };
 check("a narrowed query SAYS it was narrowed", Boolean(scoped.scope), JSON.stringify(scoped.scope ?? {}).slice(0, 70));
@@ -129,7 +129,7 @@ check(
   "…and names what narrowed it, so the limit is explainable rather than mysterious",
   JSON.stringify(scoped.scope?.narrowedBy ?? []).includes(mine),
 );
-check("a narrowed COUNT says so too — it is the number most likely to be quoted", Boolean(counted.scope));
+check("a narrowed COUNT says so too, since it is the number most likely to be quoted", Boolean(counted.scope));
 
 // …and an unrestricted read stays exactly as it was: no scope, nothing for a caller to explain away.
 const openRead = await admin.queryPage({ kind: "message" }, 5);
@@ -150,7 +150,7 @@ try {
 check("…and cannot write into another conversation either", !wroteElsewhere);
 
 // The kinds keyed by callId rather than by conversation: `llm_chunk`, `llm_result`, `tool_result`.
-// They carry `conversationId` solely so a grant can bind them — a session that learned a callId
+// They carry `conversationId` solely so a grant can bind them. A session that learned a callId
 // from elsewhere could otherwise read another conversation's streamed tokens, model output, or
 // tool results, none of which the conversation scoping above touches.
 const theirCall = "call-elsewhere";
@@ -214,7 +214,7 @@ check("…and lists the kinds the session can actually read", (perms.kinds ?? []
 check("…and the view is complete, not a prefix", perms.complete !== false);
 
 // The question the transcript could not answer: was my grant approved? A kind never granted must
-// be absent, and one that was granted must be present — that is the whole point of asking the
+// be absent, and one that was granted must be present. That is the whole point of asking the
 // enforcement instead of inferring from another call's scope line.
 check("a kind that was never granted is absent", !(perms.kinds ?? []).some((k) => k.kind === "kind_def"));
 await admin.put({ kind: "grant", body: { principal: "agent:chat-user", kind: "kind_def", operations: ["query", "read_one"], scope: { createdBy: "self" } } });
@@ -225,7 +225,7 @@ check("…and says the read is narrowed to its own records", kindDef?.readsScope
 
 // ---- "reads only" must mean reads only ----
 // A live session asked for `["query","read_one","take"]` on `llm_call`; the prompt offered "only its
-// OWN records — reads only" and then granted `take` verbatim. The label was false, and on a work
+// OWN records, reads only" and then granted `take` verbatim. The label was false, and on a work
 // kind that grant lets a chat session CLAIM calls the inference fleet is waiting for.
 const claimy = await askAndAnswer(
   { kind: "llm_call", operations: ["query", "read_one", "take"], why: "to survey activity", scope: "own" },
@@ -246,7 +246,8 @@ check("…so the session still cannot claim the fleet's work", !canTake);
 
 // An answer that is neither option must not silently become one. `y` read as plain "yes" and meant
 // the NARROW grant, so a person answering "yes" to "shall I look wider?" got the opposite of what
-// they said — twice, in consecutive sessions, each costing the assistant its next turns.
+// they said. That happened twice, in consecutive sessions, each costing the assistant its next
+// turns.
 const ambiguous = await askAndAnswer(
   { kind: "progress", operations: ["query"], why: "to read progress records", scope: "all" },
   ["yes", "all"],
@@ -263,7 +264,7 @@ check(
 );
 
 // ---- a guessed kind is corrected IN THE TURN, not discovered a round later ----
-// A session that cannot list kinds guesses, and the guess is usually a tool name — `space_event`
+// A session that cannot list kinds guesses, and the guess is usually a tool name: `space_event`
 // for the `space_events` tool, twice in consecutive sessions. Approving it produced a grant that
 // authorized nothing and the assistant only found out by using it. The decision now carries the
 // real names back to the asker.
@@ -285,7 +286,7 @@ const listed2 = guessedOut.kindsOnThisSpace ?? [];
 check("…each kind once", new Set(listed2).size === listed2.length, listed2.filter((k, i) => listed2.indexOf(k) !== i).join(",") || "no duplicates");
 
 // ---- the phantom kind from the transcript ----
-// The assistant asked for `space_event` — the name of a TOOL, not a record kind — and had it
+// The assistant asked for `space_event` (the name of a TOOL, not a record kind) and had it
 // approved. Nothing failed: the grant exists, it appears in scope lines, and it authorizes
 // absolutely nothing. The permissions view is where that has to be visible, because it is the one
 // answer an agent is supposed to trust about its own authority.
@@ -301,7 +302,7 @@ const real = (await tools.space_permissions({}) as { kinds?: { kind: string; kin
 check("…and a grant on a real kind is not flagged", real !== undefined && real.kindNotDeclared === undefined);
 
 // ---- the trap that grant walks into ----
-// `kind_def` records are written by whoever declares kinds — never by the chat session. So a
+// `kind_def` records are written by whoever declares kinds, never by the chat session. So a
 // SELF-SCOPED read grant on it authorizes a view of nothing, and `space_kinds` answers `[]` while
 // the space has plenty. The tool is behaving correctly; the GRANT is the wrong shape, which is why
 // the approval prompt now measures this and recommends against self-scope for such a kind.
@@ -316,10 +317,10 @@ check("…while the space really does have kinds", asOperator.length > 0, `${asO
 
 
 // ---------------------------------------------------------------------------
-// The approval loop, from the asking side to the answer — the case a live session walked into
-// three times in a row: a grant is requested, a human approves it, the assistant reports "the grant
-// landed", and every read still returns nothing. Nothing errors. The grant is real. It authorizes
-// reads of records this session never wrote.
+// The approval loop, from the asking side to the answer. This is the case a live session walked
+// into three times in a row: a grant is requested, a human approves it, the assistant reports "the
+// grant landed", and every read still returns nothing. Nothing errors. The grant is real. It
+// authorizes reads of records this session never wrote.
 // ---------------------------------------------------------------------------
 
 /** Capture what the approval prompt PRINTS, so the guidance itself can be asserted on. It is the
@@ -339,7 +340,7 @@ function capture(): () => string {
 
 /** Ask and answer CONCURRENTLY, as the REPL does: `request_grant` blocks on the decision, and the
  *  human is prompted while it is in flight. Sequentially the ask would wait out its whole deadline
- *  before anyone was asked — which is the two-turn dance this replaced. */
+ *  before anyone was asked, which is the two-turn dance this replaced. */
 async function askAndAnswer(
   request: Record<string, unknown>,
   answer: string | string[],
@@ -361,7 +362,7 @@ async function askAndAnswer(
   return { result, prompt: stop ? stop() : "" };
 }
 
-// A kind only somebody else has written to — the shape that makes a self-scoped read empty.
+// A kind only somebody else has written to: the shape that makes a self-scoped read empty.
 for (let i = 0; i < 3; i++) {
   await admin.put({ kind: "procedure", body: { name: `theirs_${i}`, artifactId: "x", description: "not mine" } });
 }
@@ -382,7 +383,7 @@ check(
   "the prompt warns that 'own records only' would expose nothing",
   narrowPrompt.includes("written by others") && narrowPrompt.includes("NOTHING"),
 );
-check("…and stops recommending the narrow option", !narrowPrompt.includes("OWN records of that kind — reads only (recommended)"));
+check("…and stops recommending the narrow option", !narrowPrompt.includes("OWN records of that kind, reads only (recommended)"));
 check("…and recommends the wider one instead", narrowPrompt.includes("ALL records of that kind in this space (recommended here)"));
 check(
   "…and if the human narrows anyway, says plainly that the grant authorizes nothing",
@@ -411,7 +412,7 @@ const listed = await tools.space_kinds({}) as { kinds: unknown[] };
 check("and approving that way actually answers the question", listed.kinds.length > 0, `${listed.kinds.length} kinds`);
 
 // The same ask at the narrower scope is a DIFFERENT request, not a duplicate of the one already
-// handled — otherwise re-asking un-scoped after a scoped grant disappointed would be silently
+// handled. Otherwise re-asking un-scoped after a scoped grant disappointed would be silently
 // dropped as "already reviewed".
 const requests = await session.query({ kind: "grant_request", match: { conversationId: mine } }, 50);
 const scopes = new Set(requests.map((r) => (r.body as { kind: string; scope?: string }).kind + ":" + ((r.body as { scope?: string }).scope ?? "own")));

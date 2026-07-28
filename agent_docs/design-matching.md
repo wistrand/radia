@@ -13,7 +13,7 @@ meta-kind itself (`META_KIND_DEF`), defined in code so a query for `kind_def` re
 compile.
 
 **Predicate pushdown is built** (`src/storage/pushdown.ts`), and it does not compete with the
-oracle — it is a **sound pre-filter**: SQL that is *implied by* the oracle's verdict, never
+oracle. It is a **sound pre-filter**: SQL that is *implied by* the oracle's verdict, never
 equivalent to it by assumption. The database narrows, `matchesRecord` still decides. Anything not
 expressible exactly (object/array equality, `$any`/`$each`, a non-ASCII range bound, a path that
 is not an identifier) renders as `TRUE` and falls through to the oracle. A filter that is not
@@ -23,14 +23,14 @@ its cost is then flat as the space grows rather than linear (`deno task bench --
 Postgres pays for the body index on the write side (`put` roughly 1ms → 2.5ms), which is the trade
 a coordination substrate should want: records are matched far more often than written.
 
-A `kind`'s `indexedPaths` are a **validation contract**, not a per-path physical index —
+A `kind`'s `indexedPaths` are a **validation contract**, not a per-path physical index.
 Postgres answers pushed equality from one GIN index over the whole body, so declaring a path
 needs no DDL and no migration. What `indexedPaths` buys is the guarantee that a pattern only
 matches on paths the kind promised, which is what keeps a query analyzable.
 
 **The keyset query is built** (`after`/`dir` on `query`): a cursor over record id rather than an
 offset, so a page stays correct while the space is written to, and `dir: "desc"` makes "the newest
-N" expressible — see Pattern properties below for why a plain limit cannot. Indexed SQL must
+N" expressible (see Pattern properties below for why a plain limit cannot). Indexed SQL must
 agree with the oracle; `conformance/suites/pushdown.ts` and `conformance/suites/keyset.ts` are
 where that is enforced.
 
@@ -68,7 +68,7 @@ Explicit, deterministic, conformance-tested:
 - **Whitelist (early):** `$eq` (implicit), `$gt` / `$gte` / `$lt` / `$lte`, `$in`,
   `$exists`, `$any` / `$each`, `$and` / `$or` (depth ≤ 3).
 - **Deferred:** `$ne` / `$nin` / `$not` (poor selectivity; slow lane if ever);
-  `$prefix` and full-text (indexable, later — semantic matching is not a substitute for
+  `$prefix` and full-text (indexable, later; semantic matching is not a substitute for
   deterministic prefix/token/filename matching).
 - **Never:** `$regex`, `$where`, `$expr`.
 
@@ -81,10 +81,10 @@ become generated columns / expression indexes on `record_runtime` (see
 [design-storage.md](design-storage.md)).
 
 A kind also declares `claimable` (default `true`): whether its records are *work* (claimed by a
-worker with `take`) or *reference* data (facts, config, history — written once, read by `query`,
+worker with `take`) or *reference* data (facts, config, history: written once, read by `query`,
 never taken). It's a diagnostic hint, not a matching rule: `claimable:false` opts the kind out of
-the starvation check (`Space.diagnostics` — a reference record sitting `available` forever is
-normal, not stale). The reserved control kinds (`kind_def`/`grant`/`signal`/`agent_*`) default to
+the starvation check (`Space.diagnostics`), since a reference record sitting `available` forever is
+normal, not stale. The reserved control kinds (`kind_def`/`grant`/`signal`/`agent_*`) default to
 `claimable:false`.
 
 A declaration is itself a **record** of the reserved `kind_def` kind (body = the contract
@@ -93,7 +93,7 @@ above), expressed through the substrate rather than a bespoke table/endpoint (se
 record; discover kinds by `query {kind: kind_def}`. Records are immutable, so re-declaring a
 kind emits a **successor** `kind_def` record (latest per kind name wins on reload) rather than
 mutating the prior one. The server validates a `kind_def` body on `put` (M0 status: `Space.put`
-special-cases the reserved kind), and rejects redeclaring `kind_def` itself — the meta-kind is
+special-cases the reserved kind), and rejects redeclaring `kind_def` itself. The meta-kind is
 the one declaration defined in code (`META_KIND_DEF`), which breaks the bootstrap cycle so its
 own records can compile. Because they are ordinary records, kind declarations appear in the
 event log and are watchable.
@@ -106,7 +106,7 @@ scoped principal is then `grant ∧ request`, **computed server-side**: `combine
 patterns, and the combined match compiles + evaluates through the same oracle. Applies to
 `query`/`read_one`/`take` (an unrestricted grant, or a privileged principal, imposes no
 constraint). Because the constraint nests as `$and[request, $or[patterns]]`, a grant pattern
-must stay simple (a flat equality map) — a `$or`/`$and` *inside* one can exceed the depth-3
+must stay simple (a flat equality map). A `$or`/`$and` *inside* one can exceed the depth-3
 limit and be rejected at compile. See [design-auth.md](design-auth.md).
 
 ## Two matching directions
@@ -132,9 +132,9 @@ and starving patterns are first-class diagnostics (see
 `order_by`, then record ID.
 
 Two consequences of that tie-break that callers get wrong, so state them plainly. **No `order_by`
-does not mean "unordered"** — it means ascending record id, which is stable and repeatable, and
+does not mean "unordered"**. It means ascending record id, which is stable and repeatable, and
 which a pushed `LIMIT` reproduces exactly (see [design-storage.md](design-storage.md), Matching).
-So a limited query returns the OLDEST matches unless you say otherwise — `order_by` cannot help,
+So a limited query returns the OLDEST matches unless you say otherwise, and `order_by` cannot help,
 because it ranges over the record BODY and creation time is runtime metadata, not a body field.
 Asking for the newest is what `dir: "desc"` on the keyset cursor is for; the event log remains the
 answer when you want events rather than records.

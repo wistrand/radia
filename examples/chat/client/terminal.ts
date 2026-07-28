@@ -2,7 +2,7 @@
 //
 // Two rules hold the rendering together. First, a status line is only ever drawn on a TTY: piped
 // output must stay byte-identical to a run with no status at all, or the example stops being
-// scriptable. Second, the line being redrawn is `<prefix><dim status>` — the prefix is reprinted
+// scriptable. Second, the line being redrawn is `<prefix><dim status>`, and the prefix is reprinted
 // on every redraw so the cursor never ends up somewhere the next write does not expect.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
@@ -25,8 +25,8 @@ export const endStatus = (prefix: string) => tty && write(`\r\x1b[2K${prefix}`);
 export const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 
 /**
- * A tool result that references an artifact is a payload the terminal cannot draw, so print a link
- * — and, with RADIA_CHAT_IMAGE_DIR set, save the bytes too.
+ * A tool result that references an artifact is a payload the terminal cannot draw, so print a link.
+ * With RADIA_CHAT_IMAGE_DIR set, save the bytes too.
  *
  * The link is the STABLE artifact URL, deliberately not a capability URL. A capability is
  * short-lived and in-memory: right for the console, which mints one per `<img>` render and uses it

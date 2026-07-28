@@ -38,7 +38,7 @@ export const retireSuites: Suite[] = [
       await space.persistKind({ kind: "widget", indexedPaths: [{ path: "n", type: "integer" }] });
       assert((await reloaded(adapter)).listKinds().some((k) => k.kind === "widget"));
 
-      // Retirement is an ordinary successor record — no delete, no endpoint.
+      // Retirement is an ordinary successor record: no delete, no endpoint.
       await space.put({ kind: KIND_DEF, body: { kind: "widget", indexedPaths: [], retired: true } });
       assert(
         !(await reloaded(adapter)).listKinds().some((k) => k.kind === "widget"),
@@ -48,7 +48,7 @@ export const retireSuites: Suite[] = [
       await space.put({ kind: KIND_DEF, body: { kind: "widget", indexedPaths: [{ path: "n", type: "integer" }] } });
       assert(
         (await reloaded(adapter)).listKinds().some((k) => k.kind === "widget"),
-        "a newer non-retired declaration revives it — there is no un-retire path to call",
+        "a newer non-retired declaration revives it; there is no un-retire path to call",
       );
     },
   },
@@ -87,7 +87,7 @@ export const retireSuites: Suite[] = [
     run: async (adapter) => {
       const space = new Space(adapter);
       space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
-      // Two grants on the SAME kind — the case that makes grants additive rather than latest-wins.
+      // Two grants on the SAME kind: the case that makes grants additive rather than latest-wins.
       const readGrant = { principal: "agent:w", kind: "task", operations: ["query"] };
       const takeGrant = { principal: "agent:w", kind: "task", operations: ["take"] };
       await space.put({ kind: "grant", body: readGrant });
@@ -99,7 +99,7 @@ export const retireSuites: Suite[] = [
       assertEquals(
         await space.authorize("agent:w", "take", "task"),
         null,
-        "the other one survives — a projection keyed on (principal, kind) would have taken it too",
+        "the other one survives; a projection keyed on (principal, kind) would have taken it too",
       );
     },
   },
@@ -116,7 +116,7 @@ export const retireSuites: Suite[] = [
 
       await space.put({ kind: "grant", body: { ...a, retired: true } });
       const left = await space.authorize("agent:w", "query", "task");
-      assertEquals(left, [{ tag: "b" }], "only the surviving scope — pattern is part of a grant's identity");
+      assertEquals(left, [{ tag: "b" }], "only the surviving scope: pattern is part of a grant's identity");
     },
   },
   {
@@ -144,8 +144,8 @@ export const retireSuites: Suite[] = [
         { principal: "agent:w", kind: "task", operations: ["put"] },
       ];
       // Every restart re-defines its agents. Unchecked, that appended a fresh record per grant per
-      // boot, and a long-lived principal outran the bounded page each authorization read takes —
-      // which fails SILENTLY, in both directions: a live grant denied, or worse, a revocation
+      // boot, and a long-lived principal outran the bounded page each authorization read takes.
+      // That fails SILENTLY, in both directions: a live grant denied, or worse, a revocation
       // invisible so the revoked grant kept working.
       for (let boot = 0; boot < 10; boot++) await space.createAgentDefinition("agent:w", grants);
 
@@ -204,7 +204,7 @@ export const retireSuites: Suite[] = [
       assertEquals(await space.authorize("agent:w", "query", "message"), [{ owner: "agent:w" }]);
 
       // Switching what a grant binds to is not adding a grant. Patterns union, so without
-      // superseding the principal would hold BOTH bindings and see the union of them — a change of
+      // superseding the principal would hold BOTH bindings and see the union of them: a change of
       // scope that widens instead of changing. Found by testing the unpatterned case's fix.
       await space.createAgentDefinition("agent:w", [
         { principal: "agent:w", kind: "message", operations: ["query"], pattern: { conversationId: "c1" } },
@@ -229,7 +229,7 @@ export const retireSuites: Suite[] = [
       assertEquals(await space.authorize("agent:w", "query", "message"), null, "unrestricted to begin with");
 
       // The new build declares the SAME grant with a pattern. Scope and pattern are part of a
-      // grant's identity, so without superseding this is a second grant beside the first — and
+      // grant's identity, so without superseding this is a second grant beside the first, and
       // grants union, so the tightening would change nothing at all. That is not hypothetical: it
       // is how a session on a pre-existing space kept reading every conversation after its grants
       // were scoped to one.
@@ -292,7 +292,7 @@ export const retireSuites: Suite[] = [
       // The grant write is content-keyed, and the supersede retires whatever is live. Together
       // those turn a swap BACK into a lockout unless the revival carries a distinct idempotency
       // key: the re-declaration replays the retired record and writes nothing, while the supersede
-      // still retires the live one — leaving the principal with no grant at all.
+      // still retires the live one, leaving the principal with no grant at all.
       await space.createAgentDefinition("agent:w", [identity]);
       assertEquals(await space.authorize("agent:w", "query", "message"), [{ owner: "agent:w" }]);
       await space.createAgentDefinition("agent:w", [conversation]);
@@ -340,7 +340,7 @@ export const retireSuites: Suite[] = [
 
       // Keying a retirement on the grant identity alone lets an identity be retired only ONCE.
       // A wide grant that was retired, re-granted, and then narrowed again would survive the
-      // second supersede and stay live — widening, silently.
+      // second supersede and stay live. That widens the grant, silently.
       await space.createAgentDefinition("agent:w", [wide]);
       await space.createAgentDefinition("agent:w", [narrow]);
       await space.createAgentDefinition("agent:w", [wide]);

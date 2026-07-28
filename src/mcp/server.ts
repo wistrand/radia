@@ -5,7 +5,7 @@
 //
 // 1. **Credentials stay outside the model context.** The adapter resolves a token from the
 //    environment or the file `radia dev` provisioned (src/credentials.ts) and attaches it to
-//    every request itself. No token appears in a tool schema, a tool result, or an error — a
+//    every request itself. No token appears in a tool schema, a tool result, or an error, so a
 //    model driving this cannot read, log, or leak the credential it is acting under.
 //
 // 2. **Leases heartbeat internally.** `space_take` hands the model an opaque `claimId`, never
@@ -18,7 +18,7 @@
 // kind declared after startup is immediately usable. There is no table of known kinds here.
 //
 // Transport: newline-delimited JSON-RPC 2.0 on stdin/stdout. stdout carries protocol frames
-// ONLY — every log line goes to stderr, or the harness sees a corrupt stream.
+// ONLY. Every log line goes to stderr, or the harness sees a corrupt stream.
 
 import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
 import { defaultBase, resolveToken } from "../credentials.ts";
@@ -47,7 +47,7 @@ export async function runMcp(argv: string[]): Promise<void> {
 
   log(`radia mcp: space=${base} auth=${token ? "bearer token" : "none (open local space)"}`);
   if (!token) {
-    log("radia mcp: no credential found — start `radia dev` (auto-provisions one) or set RADIA_TOKEN.");
+    log("radia mcp: no credential found. Start `radia dev` (auto-provisions one) or set RADIA_TOKEN.");
   }
 
   for await (const msg of frames(stdin())) {
@@ -91,7 +91,7 @@ async function handle(
         instructions:
           `A Radia coordination space at ${base}. Agents exchange immutable JSON records and claim ` +
           `work by pattern matching, not by addressing. Start with space_kinds to discover what ` +
-          `record kinds exist and how each is indexed — nothing about this space is implied by the ` +
+          `record kinds exist and how each is indexed. Nothing about this space is implied by the ` +
           `tool list. Claim work with space_take and settle it with space_ack; the lease is held ` +
           `and renewed for you.`,
       });
@@ -114,7 +114,7 @@ async function handle(
         const text = await call(name, args, client, claims);
         return reply(id, { content: [{ type: "text", text }] });
       } catch (e) {
-        // Tool-level failures are results with isError, not JSON-RPC errors — the model should
+        // Tool-level failures are results with isError, not JSON-RPC errors, so the model should
         // see them and adapt (a rejected pattern says why), not have the call disappear.
         return reply(id, { content: [{ type: "text", text: errorText(e) }], isError: true });
       }
@@ -230,11 +230,11 @@ async function call(
   }
 }
 
-/** Resolve a claimId to its lease and stop its heartbeat — settling ends the claim either way. */
+/** Resolve a claimId to its lease and stop its heartbeat. Settling ends the claim either way. */
 function takeClaim(claims: Map<string, Claim>, a: Record<string, unknown>): Claim {
   const id = str(a, "claimId");
   const c = claims.get(id);
-  if (!c) throw new Error(`unknown claimId '${id}' — it was already settled, or this adapter never held it`);
+  if (!c) throw new Error(`unknown claimId '${id}': it was already settled, or this adapter never held it`);
   clearInterval(c.timer);
   claims.delete(id);
   return c;
@@ -277,7 +277,7 @@ function pretty(v: unknown): string {
 // ---- stdio transport ----
 
 /** Newline-delimited JSON frames from stdin. Malformed lines are reported and skipped rather
- *  than killing the session — a harness that sends one bad frame should not lose the space. */
+ *  than killing the session. A harness that sends one bad frame should not lose the space. */
 async function* frames(stream: ReadableStream<Uint8Array>): AsyncGenerator<Req> {
   const dec = new TextDecoder();
   let buf = "";

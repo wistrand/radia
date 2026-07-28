@@ -1,4 +1,4 @@
-// Registry projections — turning immutable records into a current view.
+// Registry projections: turning immutable records into a current view.
 //
 // Several things in Radia are REGISTRIES: a mutable-looking table (declared kinds, advertised
 // capabilities, live models, assigned grants, saved procedures) that is really a projection over
@@ -6,25 +6,25 @@
 // projection decides which one counts.
 //
 // Never hand-roll that projection at a call site: it is easy to get subtly wrong in ways nothing
-// catches — compare ids the wrong way and you keep the older record;
+// catches. Compare ids the wrong way and you keep the older record;
 // depend on the order rows arrive in and a retirement can be resurrected by an older record
 // processed after it, quietly bringing back a thing someone withdrew.
 //
 // TWO SHAPES, and using the wrong one is a correctness bug rather than a style choice:
 //
-//   latest-wins  (`activeByKey`)  — one entry per key; a re-declaration REPLACES.
+//   latest-wins  (`activeByKey`)  : one entry per key; a re-declaration REPLACES.
 //                                   kind_def (by kind), capability (by tool), model (by tier),
 //                                   procedure (by name).
-//   additive     (`activeSet`)    — many entries coexist; each is independently withdrawable.
+//   additive     (`activeSet`)    : many entries coexist; each is independently withdrawable.
 //                                   grant: a principal may hold several grants on one kind, so
 //                                   "latest per (principal, kind)" would silently discard the
 //                                   others. The logical key is the grant's whole content.
 //
 // RETIREMENT is a property of the projection, not of the runtime. `{retired: true}` on a successor
 // body means "this key is no longer active"; the runtime never interprets it (bodies stay opaque
-// data — see the patterns-are-data invariant), it is honoured here, in the projection, once.
+// data; see the patterns-are-data invariant), it is honoured here, in the projection, once.
 // Nothing is deleted: the history stays queryable, the event log stays complete, and re-declaring
-// a retired key revives it because that record is newer still — so there is no un-retire path to
+// a retired key revives it because that record is newer still. There is no un-retire path to
 // implement or to get wrong.
 
 import type { RadiaRecord } from "../storage/adapter.ts";
@@ -38,7 +38,7 @@ export function isRetired(body: unknown): boolean {
 }
 
 /**
- * The newest record per key, retired or not. Use when you need to see a withdrawal — deciding
+ * The newest record per key, retired or not. Use when you need to see a withdrawal: deciding
  * whether to report "already retired", or auditing what a key used to be.
  *
  * Order-independent by construction: it compares ids (ULIDs, so the highest is newest) instead of
@@ -61,18 +61,18 @@ export function newestByKey<T = unknown>(
 /**
  * LATEST-WINS: the current record per key, with retired keys dropped.
  *
- * Retirement is applied AFTER the newest-per-key pass, never as a filter over the input — filtering
+ * Retirement is applied AFTER the newest-per-key pass, never as a filter over the input. Filtering
  * first would let an older, non-retired record become "newest" and resurrect the entry.
  *
  * KNOWN LIMIT, and the obvious fix was tried and reverted. "Newer" here means a higher ULID, and
- * ULID monotonicity is per PROCESS — so two runtime instances on one Postgres, writing to the same
+ * ULID monotonicity is per PROCESS: two runtime instances on one Postgres, writing to the same
  * key in the same millisecond, sort arbitrarily relative to each other. Resolving that tie toward
  * retirement (fail-closed, so a revocation can never lose a race) looks right and is not: within a
  * single process the ids ARE strictly ordered, and a retire-then-revive pair lands in one
- * millisecond routinely — the rule discarded real ordering information and broke revival, which is
+ * millisecond routinely. The rule discarded real ordering information and broke revival, which is
  * a far more common operation than a cross-instance write race. A correct fix needs a comparator
  * the DATABASE assigns, and specifically a COMMIT-order one: a bigserial has the same defect as
- * `events.seq` (assigned at insert, committed out of order — see design-storage.md "Watch delivery
+ * `events.seq` (assigned at insert, committed out of order; see design-storage.md "Watch delivery
  * under concurrency"), so it would have to be the xid8 machinery the event cursor already uses.
  * Not worth that until a multi-instance deployment is real; until then, do not race a retirement
  * and its revival from two instances.
@@ -89,7 +89,7 @@ export function activeByKey<T = unknown>(
 /**
  * ADDITIVE: every entry that is still in force, where entries coexist rather than replace.
  *
- * Same rule applied per logical key — the difference is only that the key identifies one ENTRY
+ * Same rule applied per logical key. The difference is only that the key identifies one ENTRY
  * (a grant's whole content) rather than a slot (a kind name). Retiring one leaves the rest alone,
  * which is exactly what revoking a single grant must do.
  */
@@ -104,7 +104,7 @@ export function activeSet<T = unknown>(
  * The logical identity of a grant: everything that decides what it permits.
  *
  * A principal may hold several grants on one kind (different operations, different pattern
- * scopes), so this — not `(principal, kind)` — is what a retraction targets. Operations are sorted
+ * scopes), so this (not `(principal, kind)`) is what a retraction targets. Operations are sorted
  * so that the same grant written with the operations in a different order is the same entry.
  */
 export function grantKey(body: unknown): string | undefined {
@@ -117,7 +117,7 @@ export function grantKey(body: unknown): string | undefined {
   };
   if (typeof g?.principal !== "string" || typeof g?.kind !== "string") return undefined;
   // FAIL CLOSED on a grant whose scoping field this build does not understand. `pattern` was once
-  // called `template`, and this key encodes the pattern's VALUE rather than its field name — so a
+  // called `template`, and this key encodes the pattern's VALUE rather than its field name. A
   // record written by the older build is indistinguishable here from an unpatterned grant, while
   // `Space.authorize` reads `.pattern`, finds nothing, and treats it as UNRESTRICTED. A narrow
   // grant silently widening to the whole kind is the worst failure this projection can produce, so
@@ -131,7 +131,7 @@ export function grantKey(body: unknown): string | undefined {
   //
   // The leading version tag namespaces these keys away from the pre-rename ones. Without it the
   // value-based encoding produces the SAME key for a grant whose body changed shape, so writing it
-  // against a space that predates the rename failed with `idempotency_conflict` — a stored row
+  // against a space that predates the rename failed with `idempotency_conflict`: a stored row
   // matched the key while disagreeing about the body. Bump the tag whenever the grant body's shape
   // changes; never reuse a tag across shapes.
   return JSON.stringify(["g2", g.principal, g.kind, ops, g.pattern ?? null]);
@@ -145,7 +145,7 @@ export interface RegistryView {
    *  reviving a retired entry requires a key that differs from the record being revived, so it
    *  has to be able to see that the newest record is a retirement, and which record that is. */
   newest: Map<string, RadiaRecord>;
-  /** False when the scan hit its cap before exhausting the kind — the view may be missing entries,
+  /** False when the scan hit its cap before exhausting the kind. The view may be missing entries,
    *  and a caller that treats it as authoritative would be guessing. */
   complete: boolean;
   scanned: number;
@@ -160,9 +160,9 @@ const REGISTRY_MAX_PAGES = 40;
  * Read a registry COMPLETELY, newest-first, and project it.
  *
  * This exists because registry writes are unbounded while a hand-written read is bounded, with
- * nothing connecting the two — the most repeated bug in this codebase. A capped read returns the
- * OLDEST matches by default, so the newest record — a retirement, a revocation, a re-declaration,
- * the tool published a minute ago — is exactly what falls off the end. The failure is silent in
+ * nothing connecting the two. That is the most repeated bug in this codebase. A capped read returns
+ * the OLDEST matches by default, so the newest record (a retirement, a revocation, a re-declaration,
+ * the tool published a minute ago) is exactly what falls off the end. The failure is silent in
  * both directions: an entry that should be gone stays live, and an entry that should be live is
  * missing.
  *
@@ -172,7 +172,7 @@ const REGISTRY_MAX_PAGES = 40;
  * must treat an incomplete view as a reason to refuse widening, never as a full picture.
  *
  * `read(limit, after)` must return records NEWEST-FIRST, `after` being the last id of the previous
- * page — i.e. a keyset page with `dir: "desc"`.
+ * page (i.e. a keyset page with `dir: "desc"`).
  */
 export async function readRegistry<T = unknown>(
   read: (limit: number, after?: string) => Promise<RadiaRecord[]>,

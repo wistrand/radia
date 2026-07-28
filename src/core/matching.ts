@@ -1,4 +1,4 @@
-// Pattern matching — compilation, validation, and the semantic ORACLE.
+// Pattern matching: compilation, validation, and the semantic ORACLE.
 //
 // The evaluator here DEFINES what a pattern matches. Adapters may later push predicates
 // into indexed SQL, but that SQL must agree with this function; the conformance suite uses
@@ -37,10 +37,10 @@ export interface Pattern {
 
 /**
  * `grant ∧ request`: narrow a requested match by a set of grant patterns (their union). Returns
- * a match object to compile — the request must match AND at least one grant pattern. Used for
+ * a match object to compile. The request must match AND at least one grant pattern. Used for
  * pattern-scoped grants (server-side, per design-auth). `grantPatterns` must be non-empty; an
  * empty request means "all", so the result is just the constraint. Grant patterns should be
- * simple (flat) — a nested `$or`/`$and` inside one can exceed the compiler's depth-3 limit.
+ * simple (flat), because a nested `$or`/`$and` inside one can exceed the compiler's depth-3 limit.
  */
 export function combineMatch(
   requestMatch: Record<string, unknown> | undefined,
@@ -339,7 +339,7 @@ export function orderRecords(
  *
  * `dir` reverses the NATURAL (id) order only. With an explicit `order_by` the caller has already
  * said how to sort and each key carries its own direction, so a page direction there would be a
- * second, conflicting answer to the same question — `Space.query` rejects the combination, and
+ * second, conflicting answer to the same question. `Space.query` rejects the combination, and
  * this ignores it if one reaches here anyway.
  */
 export function pageRecords(

@@ -1,4 +1,4 @@
-// `deno task bench` — throughput, latency percentiles, and scaling curves for a Radia space.
+// `deno task bench`: throughput, latency percentiles, and scaling curves for a Radia space.
 //
 //   deno task bench                     every suite, both embedded adapters, quick profile
 //   deno task bench -- --suite lineage  one suite
@@ -8,8 +8,8 @@
 //
 // What these numbers are: single-process, in-memory storage by default, measuring the SUBSTRATE
 // (core + adapter) with no HTTP, no serialization, no network. They are a floor for latency and a
-// ceiling for throughput — useful for spotting hotspots and regressions, not for capacity planning
-// a deployment. A disk-backed or networked space will be slower, and the ordering between adapters
+// ceiling for throughput. They are useful for spotting hotspots and regressions, not for capacity
+// planning a deployment. A disk-backed or networked space will be slower, and the ordering between adapters
 // can change under real fsync.
 //
 // Nothing here asserts. A benchmark that moved is a fact to explain, not a failing build.
@@ -52,8 +52,8 @@ if (pgUrl) {
 }
 const running = onlyAdapter ? factories.filter((f) => f.name === onlyAdapter) : factories;
 
-console.log(`radia bench — scale ${scale}, adapters: ${running.map((f) => f.name).join(", ")}${pgUrl ? "" : "  (set RADIA_PG_URL for a live Postgres column)"}`);
-console.log("in-memory storage, single process, no HTTP — a floor for latency, not capacity planning\n");
+console.log(`radia bench (scale ${scale}), adapters: ${running.map((f) => f.name).join(", ")}${pgUrl ? "" : "  (set RADIA_PG_URL for a live Postgres column)"}`);
+console.log("in-memory storage, single process, no HTTP. A floor for latency, not capacity planning\n");
 
 const started = performance.now();
 for (const bench of benches) {
@@ -62,7 +62,7 @@ for (const bench of benches) {
     // The blob suites do not touch storage; run them once rather than once per adapter.
     if (bench.name === "blobs" && f.name !== running[0].name) continue;
     await withSpace(f.create(), async (space) => {
-      for (const m of await bench.run({ space, scale })) rows.push({ adapter: bench.name === "blobs" ? "—" : f.name, m });
+      for (const m of await bench.run({ space, scale })) rows.push({ adapter: bench.name === "blobs" ? "-" : f.name, m });
     });
   }
   console.log(`## ${bench.name}`);

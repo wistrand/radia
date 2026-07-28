@@ -2,8 +2,8 @@
 //
 // Both are answered from derived structures rather than from a scan, so the thing to pin is that
 // the derivation stays in step with the records it describes. `record_edges` is written in the
-// same transaction as the record, and `getRecords` batches a lineage level into one round trip —
-// neither may change what a caller sees, only what it costs.
+// same transaction as the record, and `getRecords` batches a lineage level into one round trip.
+// Neither may change what a caller sees, only what it costs.
 
 import { assert, assertEquals } from "@std/assert";
 import type { Suite } from "../harness.ts";
@@ -54,7 +54,7 @@ export const graphSuites: Suite[] = [
       const claimed = await space.take({ pattern: { kind: "task", match: { tag: "work" } } }, { leaseSeconds: 60 });
       assert(claimed);
       // Results enter the space through a different insert path than `put`. A reverse index that
-      // only the put path maintained would silently lose exactly the edges that matter most —
+      // only the put path maintained would silently lose exactly the edges that matter most:
       // a task to its result.
       await space.ack(claimed!.lease, { kind: "task", body: { tag: "result" } });
 

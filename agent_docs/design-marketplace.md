@@ -1,7 +1,7 @@
 # Capability marketplace (design)
 
 Spec and rationale for request/bid/award coordination and durable timers. Origin:
-outline §7. Not yet implemented (M2 — see [plan-milestones.md](plan-milestones.md)).
+outline §7. Not yet implemented (M2; see [plan-milestones.md](plan-milestones.md)).
 
 ## Contents
 - Invariants
@@ -19,16 +19,16 @@ outline §7. Not yet implemented (M2 — see [plan-milestones.md](plan-milestone
 ## What it is (honest framing)
 
 There is an agent registry, and the assigned task is directed to the winner. The
-advantage over conventional routing is not that routing disappears but that there is **no
-preconfigured routing table** — interest is expressed by bidding, not wired ahead of
-time.
+advantage over conventional routing is that there is **no preconfigured routing table**,
+though routing itself does not disappear. Interest is expressed by bidding, not wired
+ahead of time.
 
 **M0 instance (built, without request/bid/award):** the CLI chatbot example already
 demonstrates the "no preconfigured routing table" property for *capabilities*. Tool-workers
 publish their tools as `capability` records; the agent *discovers* its tool set by querying
 them and dispatches by content (`tool_call{tool}` → whichever worker registered
 `{tool_call, match:{tool}}`). Adding a worker adds a capability record and the agent gains
-the tool with no code change — the registry + content-routed dispatch, minus the
+the tool with no code change. That is the registry plus content-routed dispatch, minus the
 competitive selection that request/bid/award (below) adds. See `examples/chat/`.
 
 ## Protocol

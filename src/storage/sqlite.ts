@@ -6,7 +6,7 @@
 // core/ surfaces here. Single writer, so takes serialize in-process.
 //
 // Uses `node:sqlite` (built into the Deno runtime) rather than an FFI package: zero
-// external dependency, no native library download, and no --allow-ffi — the best fit for
+// external dependency, no native library download, and no --allow-ffi. That is the best fit for
 // the minimal-deps / platform-independence invariant. (The `jsr:@db/sqlite` FFI package
 // segfaulted under this Deno build; see agent_docs/gotchas.md.)
 
@@ -69,13 +69,13 @@ const SQL_CMP: Record<string, string> = { gt: ">", gte: ">=", lt: "<", lte: "<="
  * NULL for BOTH an absent key and a JSON `null`, and the oracle draws a hard line between them.
  * `json_type` reports 'null' for the latter and SQL NULL for the former.
  *
- * Text comparisons ride SQLite's default BINARY collation, which is byte order — what
+ * Text comparisons ride SQLite's default BINARY collation, which is byte order: what
  * `pushdown`'s ASCII-bound rule assumes.
  */
 class SqliteJson implements JsonDialect {
   readonly params: SqlParam[] = [];
 
-  /** `table` qualifies the body column — required wherever more than one `records` alias is in
+  /** `table` qualifies the body column. Required wherever more than one `records` alias is in
    *  scope, as in the claim window's inner select. */
   constructor(private readonly table = "") {}
 
@@ -105,7 +105,7 @@ class SqliteJson implements JsonDialect {
   }
 
   eqScalar(path: string[], value: string | number | boolean | null): string {
-    // json_type alone settles null and booleans — SQLite extracts both JSON `true` and the number
+    // json_type alone settles null and booleans. SQLite extracts both JSON `true` and the number
     // 1 as integer 1, so the type check is what keeps them apart.
     if (value === null) return `(${this.type(path)} = 'null')`;
     if (typeof value === "boolean") return `(${this.type(path)} = '${value}')`;
@@ -125,7 +125,7 @@ class SqliteJson implements JsonDialect {
 }
 
 // SQLite has no boolean type; taint is stored as integer 0/1.
-// NOTE: this is a template literal — a backtick anywhere inside, including in a `-- comment`,
+// NOTE: this is a template literal. A backtick anywhere inside, including in a `-- comment`,
 // ends the string and produces a wall of TS syntax errors pointing at the SQL.
 const DDL = `
 create table if not exists records (
@@ -163,7 +163,7 @@ create index if not exists idx_runtime_claim
   where state = 'available';
 -- The claim window's ordering, column for column. Two things make this index and not the one
 -- above the one a claim uses, and both are easy to get wrong: the columns must be in the ORDER
--- BY's order (priority leads, not available_at), and state must NOT appear before them — an
+-- BY's order (priority leads, not available_at), and state must NOT appear before them. An
 -- index on (kind, state, ...) can satisfy state in ('available','leased') but only sorts WITHIN
 -- each state, so the database still sorts the whole set and the index buys nothing. Measured:
 -- adding the state-first version changed a claim by 1.4ms; this one took it from 19.5ms to 0.8ms
@@ -172,7 +172,7 @@ create index if not exists idx_runtime_claim
 create index if not exists idx_runtime_claim_order
   on record_runtime (kind, effective_priority desc, available_at asc, record_id asc);
 -- The lineage DAG's edges, one row per (parent, child). records.parent_ids stays the source of
--- truth — this table is a derived REVERSE index, because parent_ids answers "who are my parents"
+-- truth. This table is a derived REVERSE index, because parent_ids answers "who are my parents"
 -- for free and "who are my children" only by scanning every record. Written in the same
 -- transaction as the record, so it cannot lag; rebuilt from parent_ids by the backfill below.
 create table if not exists record_edges (
@@ -373,7 +373,7 @@ export class SqliteAdapter implements StorageAdapter {
         if (hard !== undefined && now >= hard) return { status: "lease_lost" };
         const wanted = addSeconds(now, leaseSeconds);
         const until = hard !== undefined ? minIso(wanted, hard) : wanted;
-        // The guarded update IS the fence — always check that it matched, so this adapter cannot
+        // The guarded update IS the fence. Always check that it matched, so this adapter cannot
         // drift from the pooled one where the read and the update genuinely race.
         const renewed = this.run(
           "update record_runtime set leased_until=? where record_id=? and lease_id=? and lease_epoch=?",
@@ -396,7 +396,7 @@ export class SqliteAdapter implements StorageAdapter {
         if (!leaseValid(row, ref)) return { status: "lease_lost" };
         // Fence BEFORE writing anything. Never insert the result first: a fenced-out worker would
         // commit its result into the space and report `ok`. This adapter serializes in-process, so
-        // the race is not reachable here — but the rule has to hold in both adapters or the
+        // the race is not reachable here, but the rule has to hold in both adapters or the
         // pooled one drifts, and embedded mode is never a weaker cousin of Postgres.
         const consumed = this.run(
           "update record_runtime set state='consumed', lease_id=null where record_id=? and lease_id=? and lease_epoch=?",
@@ -405,7 +405,7 @@ export class SqliteAdapter implements StorageAdapter {
         if (consumed === 0) return { status: "lease_lost" };
         if (result) {
           this.insertRecord(result);
-          // The result is a new record entering the space, so it gets its own `put` event —
+          // The result is a new record entering the space, so it gets its own `put` event, the
           // same shape as a direct put. Without it the record would exist with no `available`
           // event of its own kind, and `matchesEvent` would never wake a watcher on that kind
           // (the ack event below is `consumed` and carries the PARENT's kind). Emitted before
@@ -513,7 +513,7 @@ export class SqliteAdapter implements StorageAdapter {
   getRecords(ids: string[]): Promise<RadiaRecord[]> {
     if (ids.length === 0) return Promise.resolve([]);
     // Cached by id count. The SQL text varies with the number of placeholders, so preparing it
-    // fresh each call re-parses an identical statement on every hop of a graph walk — which costs
+    // fresh each call re-parses an identical statement on every hop of a graph walk, which costs
     // more than the batching saves. A walk issues the same handful of widths over and over, so
     // this cache stays small.
     let stmt = this.#byIds.get(ids.length);
@@ -554,7 +554,7 @@ export class SqliteAdapter implements StorageAdapter {
       where += ` and rt.kind in (${qmarks(scope.kinds.length)})`;
       params.push(...scope.kinds);
     }
-    // The scope is applied BEFORE the cap, like `excludeKinds` — a limit taken first and filtered
+    // The scope is applied BEFORE the cap, like `excludeKinds`. A limit taken first and filtered
     // after would return a short page and read as "that is all of them".
     const join = scope?.createdBy ? " join records r on r.id = rt.record_id" : "";
     if (scope?.createdBy) {
@@ -634,19 +634,19 @@ export class SqliteAdapter implements StorageAdapter {
   }
 
   /**
-   * Rows of the kind that survive the SQL pre-filter — a superset of what the oracle accepts.
+   * Rows of the kind that survive the SQL pre-filter: a superset of what the oracle accepts.
    *
    * `want` is how many records the caller will ultimately keep. It becomes a SQL `LIMIT` only when
    * the filter is EXACT and the caller has no `orderBy`, because only then does the database agree
    * with the oracle about both which rows match and which come first: with no `orderBy` the
    * oracle's order is `x.id < y.id`, its deterministic tie-break, which `order by id asc` matches
-   * exactly. Any other case fetches everything and lets the oracle sort — see `Pushed.exact`.
+   * exactly. Any other case fetches everything and lets the oracle sort; see `Pushed.exact`.
    */
   private candidateRows(match: CompiledMatch, want?: number, page?: Page, scope?: StatsScope): RawRow[] {
     const d = new SqliteJson();
     const filter = pushdown(match.where, d);
     const where = isTrivial(filter) ? "" : ` and ${filter.sql}`;
-    // The cursor is an id comparison, so it is always EXACT — it constrains nothing the oracle
+    // The cursor is an id comparison, so it is always EXACT: it constrains nothing the oracle
     // would have to re-check, and it applies whether or not the body filter could be pushed.
     const dir = page?.dir === "desc" ? "desc" : "asc";
     const cursor = page?.after ? ` and id ${dir === "desc" ? "<" : ">"} ?` : "";
@@ -685,7 +685,7 @@ export class SqliteAdapter implements StorageAdapter {
 
   stats(scope?: StatsScope): Promise<KindStateCount[]> {
     // Scoped counts JOIN records, because `created_by` lives there. Unscoped stays a pure
-    // record_runtime aggregate — the common path pays nothing for the scoped one.
+    // record_runtime aggregate, so the common path pays nothing for the scoped one.
     const params: SqlParam[] = [];
     const conds: string[] = [];
     if (scope?.createdBy) {
@@ -724,7 +724,7 @@ export class SqliteAdapter implements StorageAdapter {
     }
   }
 
-  /** Returns the number of rows the statement changed — needed to tell a won compare-and-set
+  /** Returns the number of rows the statement changed, needed to tell a won compare-and-set
    *  from a lost one, which is what makes single-winner independent of row locking. */
   private run(sql: string, params: SqlParam[]): number {
     return Number(this.db.prepare(sql).run(...params).changes ?? 0);
@@ -777,12 +777,13 @@ export class SqliteAdapter implements StorageAdapter {
    *
    * A pattern with a pushable predicate joins `records` inside that inner select so the window is
    * drawn from ROWS THAT CAN MATCH. Without it the window is the head of the queue regardless of
-   * the pattern, so a selective take pages through the entire kind 64 rows at a time — correct,
-   * but O(kind size) round trips to find one record. The filter is a sound over-approximation, so
+   * the pattern, so a selective take pages through the entire kind 64 rows at a time. That is
+   * correct, but O(kind size) round trips to find one record. The filter is a sound
+   * over-approximation, so
    * `rankClaimable` still decides.
    *
    * SQLite answers this from `idx_runtime_claim_order`: an ordered seek that stops once the window
-   * is full. Postgres does NOT, and cannot be talked into it by rewriting the SQL — it estimates a
+   * is full. Postgres does NOT, and cannot be talked into it by rewriting the SQL: it estimates a
    * jsonb predicate at ~26 rows when 5,715 match, so it collects every match through the body index
    * and sorts. The fix is a better ESTIMATE, not a better query: see gotchas.md, "a claim on
    * Postgres is planned on a guess".
@@ -825,7 +826,7 @@ export class SqliteAdapter implements StorageAdapter {
          (record_id, kind, state, attempt, available_at, claim_until, deadline_at, effective_priority)
        values (?, ?, 'available', 0, ?, ?, ?, ?)`,
     ).run(...toSqlValues(runtimeInsertValues(input)));
-    // The reverse edge, in the SAME transaction as the record — a derived index that can never
+    // The reverse edge, in the SAME transaction as the record: a derived index that can never
     // lag the thing it indexes.
     if (input.record.runtimeMeta.parentIds.length > 0) {
       const edge = this.db.prepare("insert or ignore into record_edges (parent_id, child_id) values (?, ?)");

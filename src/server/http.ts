@@ -1,9 +1,10 @@
 // HTTP surface. No framework (minimal-deps invariant); the server binding lives behind
 // `src/platform.ts`. Two planes under /v0:
 //   - coordination (frozen v0-stable): records (put/read_one/query), takes, leases, watches,
-//     health — what agents use to do work. Kinds are declared THROUGH this plane: a kind is a
-//     kind_def record (POST /v0/records), discovered by query — no dedicated kinds endpoint.
-//   - observability + control (experimental, grant-gated with real auth): /v0/ops/* —
+//     health. This is what agents use to do work. Kinds are declared THROUGH this plane: a kind
+//     is a kind_def record (POST /v0/records), discovered by query. There is no dedicated kinds
+//     endpoint.
+//   - observability + control (experimental, grant-gated with real auth): /v0/ops/* covers
 //     stats, events, diagnostics, record + envelope introspection (records[/{id}[/envelope|
 //     lineage|graph]]), and remediation (reclaim/dead-letter/requeue). Reading/operating the
 //     space. The prefix split carries both the stability boundary and the (future) auth boundary.
@@ -27,7 +28,7 @@ export interface ServerOptions {
   port: number;
   space: Space;
   signal?: AbortSignal;
-  /** Bind address. Defaults to loopback (`127.0.0.1`) — the API's no-header operator default is
+  /** Bind address. Defaults to loopback (`127.0.0.1`). The API's no-header operator default is
    *  only safe locally; pass `0.0.0.0` to deliberately expose it (and prefer `authRequired`). */
   host?: string;
   /** When true, a request with no `Authorization` is rejected (`401`) instead of resolving to the
@@ -39,8 +40,8 @@ export interface ServerOptions {
  *  pulls is the vendored bundle below, lazily, when the Space tab is first opened.
  *
  *  Never inject a credential into this page. `GET /` is public so the console can bootstrap in
- *  required mode, which means anything baked in is readable by anyone who can reach the port —
- *  and an operator token harvested that way authorizes every verb. The console asks for one and
+ *  required mode, which means anything baked in is readable by anyone who can reach the port.
+ *  An operator token harvested that way authorizes every verb. The console asks for one and
  *  keeps it in `sessionStorage` instead. */
 function loadUi(): string {
   return readTextFile(moduleRelative(import.meta.url, "../ui/index.html")) ??
@@ -48,14 +49,14 @@ function loadUi(): string {
 }
 
 /** Vendored browser assets served under `/ui/` (see src/ui/vendor/README.md). Prebuilt and
- *  checked in — no build step. Loaded once at startup; empty string if the file is missing
+ *  checked in (no build step). Loaded once at startup; empty string if the file is missing
  *  (the Space tab then reports the asset as unavailable and the rest of the console works). */
 function loadVendor(name: string): string {
   return readTextFile(moduleRelative(import.meta.url, `../ui/vendor/${name}`)) ?? "";
 }
 
 /** The ops paths a SELF-SCOPED (non-operator) principal may reach: reads only. Everything else on
- *  the plane — remediate, reclaim/dead-letter/requeue, declassify — is the interrupt half and stays
+ *  the plane (remediate, reclaim/dead-letter/requeue, declassify) is the interrupt half and stays
  *  operator-only. */
 const READ_ONLY_OPS =
   /^\/v0\/ops\/(stats|events|diagnostics|records(\/[^/]+(\/(envelope|lineage|children|graph))?)?)$/;
@@ -64,7 +65,7 @@ export function startServer(opts: ServerOptions): { finished: Promise<void> } {
   const hostname = opts.host ?? "127.0.0.1"; // loopback by default; --host 0.0.0.0 to expose
   const handler = makeHandler(opts.space, loadUi(), opts.authRequired ?? false);
   const { finished } = serve({ port: opts.port, hostname, signal: opts.signal }, handler);
-  console.log(`radia dev listening on http://${hostname}:${opts.port} (web console at /) — auth ${opts.authRequired ? "required" : "open (no-header → operator)"}`);
+  console.log(`radia dev listening on http://${hostname}:${opts.port} (web console at /). Auth ${opts.authRequired ? "required" : "open (no-header → operator)"}`);
   return { finished };
 }
 
@@ -74,17 +75,17 @@ type Auth = { principal: string } | { error: string; detail: string };
  * Resolve the calling principal from a request. `Authorization: Bearer <token>` is the ONLY auth
  * channel, and exactly two kinds of token authorize coordination: a valid, unexpired RUN token
  * (minted via the bootstrap chain) yields its `run:*` principal, and the local OPERATOR token
- * yields the space's own principal. Any invalid/expired/stopped token is a hard error — never a
- * silent fall-through to operator.
+ * yields the space's own principal. Any invalid/expired/stopped token is a hard error. It is never
+ * a silent fall-through to operator.
  *
  * Definition tokens authorize one thing only, minting a run, which `POST /v0/agent-runs` reads
  * before this check. Never accept one here: a definition token is long-lived, so accepting it
  * would hand out unexpiring coordination authority.
  *
  * With NO Authorization header the caller is the operator `human:local` (open mode), so
- * unauthenticated local dev/UI/examples stay fully open — UNLESS `authRequired`, in which case a
- * missing header is an error. To act as a scoped principal, mint a real run token — there is no
- * impersonation shortcut.
+ * unauthenticated local dev/UI/examples stay fully open. That holds UNLESS `authRequired`, in
+ * which case a missing header is an error. To act as a scoped principal, mint a real run token.
+ * There is no impersonation shortcut.
  */
 async function resolveAuth(req: Request, space: Space, authRequired: boolean): Promise<Auth> {
   const authz = req.headers.get("Authorization");
@@ -104,9 +105,9 @@ let blitzoomJs: string | null = null;
 /**
  * The whole HTTP surface as one `(Request) => Response` function.
  *
- * Exported because it is the testable seam: the boundary rules that live here — a bad bearer is a
+ * Exported because it is the testable seam: the boundary rules that live here (a bad bearer is a
  * 401 and never a fall-through to the operator, a wrong-typed field is a 400 and never a 500, an
- * artifact's disposition — are exactly the ones a Space-level test cannot reach, and binding a real
+ * artifact's disposition) are exactly the ones a Space-level test cannot reach, and binding a real
  * port to check them buys nothing but flakes. See `conformance/http.test.ts`.
  */
 export function makeHandler(space: Space, ui: string, authRequired: boolean) {
@@ -118,7 +119,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     // Minting a run reads its DEFINITION token directly (a def token isn't a coordination
     // principal), so it runs before principal resolution rejects non-run bearer tokens.
     if (route === "POST /v0/agent-runs") return await handleCreateRun(space, req);
-    // Stop a run: `/v0/agent-runs/{id}/stop` (own token or operator — checked in the handler).
+    // Stop a run: `/v0/agent-runs/{id}/stop` (own token or operator, checked in the handler).
     if (req.method === "POST" && url.pathname.startsWith("/v0/agent-runs/") && url.pathname.endsWith("/stop")) {
       const auth = await resolveAuth(req, space, authRequired);
       const principal = "principal" in auth ? auth.principal : "";
@@ -137,7 +138,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
         return problem(
           403,
           "forbidden",
-          `download capability is invalid, for another artifact, or expired — capabilities last ` +
+          `download capability is invalid, for another artifact, or expired. Capabilities last ` +
             `${space.downloadCapabilitySeconds}s and do not survive a restart. The artifact id is stable; ` +
             `re-open it from the console, or GET /v0/artifacts/{id} with a token.`,
         );
@@ -147,9 +148,9 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
 
     const auth = await resolveAuth(req, space, authRequired);
     // The console (GET /) and health stay public so the console can bootstrap even in required
-    // mode; everything else 401s. These carry no credential — keep it that way (see `loadUi`).
+    // mode; everything else 401s. These carry no credential. Keep it that way (see `loadUi`).
     const isPublic = route === "GET /" || route === "GET /v0/health" || route === "GET /ui/blitzoom.bundle.js";
-    // "Public" means NO credential is needed — not that a presented one is ignored. Only
+    // "Public" means NO credential is needed. It does not mean a presented one is ignored. Only
     // `auth_required` (nothing was presented) is exempt; a token that failed to resolve is a 401
     // even here. Never exempt both: health is the one endpoint a client calls to ask "am I
     // authenticated?", and answering `200 {principal: "anonymous"}` to an expired or stopped
@@ -160,7 +161,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     const principal = "principal" in auth ? auth.principal : "anonymous";
 
     // Asking what YOU may do is not an operator question, and it must be checked BEFORE the plane's
-    // gate rather than inside it — a principal with no grants at all is exactly the one that needs
+    // gate rather than inside it. A principal with no grants at all is exactly the one that needs
     // the answer, and `opsScope` refuses that principal outright. An agent that cannot read its own
     // permissions cannot tell an approved grant from a pending one. Reading ANOTHER principal's
     // authorization stays operator-only.
@@ -168,7 +169,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
       [principal, space.grantSubject(principal)].includes(url.searchParams.get("principal") ?? "");
 
     // The observe-and-operate plane is grant-gated. Operator (human/supervisor) sees everything;
-    // anyone else sees the plane only through a SELF SCOPE — the kinds they hold a
+    // anyone else sees the plane only through a SELF SCOPE: the kinds they hold a
     // `scope.createdBy:"self"` grant on, restricted to their own records. `opsScope` throws
     // `forbidden` when nothing is scoped to them.
     //

@@ -28,7 +28,7 @@ export async function handleCreateWatch(space: Space, req: Request, principal: s
     const { constraint, createdBy } = await space.authorizeWatch(principal, pattern.kind);
     if (constraint) pattern.match = combineMatch(pattern.match, constraint);
     // The watch is bound to its creator and carries that principal's author scope: the stream is
-    // reached by id alone, and ids are monotonic ULIDs — guessable from any adjacent record.
+    // reached by id alone, and ids are monotonic ULIDs (guessable from any adjacent record).
     const { watchId } = await space.createWatch(pattern, principal, createdBy);
     return new Response(JSON.stringify({ watchId }), { status: 201, headers: { "content-type": "application/json" } });
   } catch (e) {
@@ -39,21 +39,21 @@ export async function handleCreateWatch(space: Space, req: Request, principal: s
 
 export function handleWatchEvents(space: Space, watchId: string, principal: string, req: Request): Response {
   // Only the creator may attach. A watch carries a scope compiled from ITS creator's grants, so
-  // handing the stream to whoever knows the id hands them that scope. 404, not 403 — a non-owner
+  // handing the stream to whoever knows the id hands them that scope. 404, not 403: a non-owner
   // is not entitled to learn the id exists.
   const watch = space.getWatch(watchId, principal);
   if (!watch) return problem(404, "not_found", `no watch ${watchId}`);
 
   const url = new URL(req.url);
   const raw = req.headers.get("Last-Event-ID") ?? url.searchParams.get("cursor");
-  // The cursor is an opaque, adapter-issued token (a seq or an xid watermark) — the transport
+  // The cursor is an opaque, adapter-issued token (a seq or an xid watermark). The transport
   // only echoes it, never interprets it. Resume from it verbatim, else the watch's start cursor.
   // Cursor-expiry (410 cursor_expired) validation returns with event-log GC (M2).
   let cursor = raw != null && raw.length > 0 ? raw : watch.cursor0;
 
   const enc = new TextEncoder();
   // Detect client disconnect via the stream's cancel() callback (Deno invokes it when the
-  // client goes away), NOT req.signal — under Deno.serve's legacy semantics req.signal also
+  // client goes away), NOT req.signal: under Deno.serve's legacy semantics req.signal also
   // aborts on a fully-delivered response, which would falsely tear down a live stream.
   let closed = false;
   let wake: () => void = () => {};
@@ -80,7 +80,7 @@ export function handleWatchEvents(space: Space, watchId: string, principal: stri
           }
         }
         if (closed) break;
-        // Wake on a mutation or the 15s keepalive — but resolve immediately on disconnect.
+        // Wake on a mutation or the 15s keepalive. A disconnect resolves immediately.
         await Promise.race([space.waitForEvents(15_000), new Promise<void>((r) => (wake = r))]);
         if (closed) break;
         send(": keepalive\n\n");

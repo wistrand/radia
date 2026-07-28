@@ -24,8 +24,8 @@ const tier = arg("--tier"); // omit → serve ALL tiers (single-worker back-comp
 const model = arg("--model") ?? Deno.env.get("RADIA_CHAT_MODEL") ?? "openai/gpt-4o-mini";
 const rank = Number(arg("--rank") ?? "0"); // capability rank (cheap→capable); escalation goes up
 // How many of the newest thread messages to send. 0 = the whole thread (pre-windowing behavior).
-// The omitted ones stay retrievable — the assistant knows its own conversation id and can query
-// them — so this bounds per-turn cost without making history unreachable.
+// The omitted ones stay retrievable (the assistant knows its own conversation id and can query
+// them), so this bounds per-turn cost without making history unreachable.
 const WINDOW = Number(arg("--window") ?? Deno.env.get("RADIA_CHAT_WINDOW") ?? "40");
 const WINDOW_CAP = 400; // ceiling on the current-turn expansion below, so one runaway turn is bounded
 const client = new RadiaClient(url, token ? { token } : {});
@@ -75,13 +75,13 @@ await agentLoop(client, {
       indexOffset?: number; // chunk watermark handed over on escalation (see below)
     };
     // The router re-dispatches under a new id but sets `replyTo` to the ORIGINAL call the chat
-    // awaits — key the streamed chunks + result to that, so the chat never sees the indirection.
+    // awaits. Key the streamed chunks + result to that, so the chat never sees the indirection.
     const resultKey = body.replyTo ?? callId;
     // Chunk indices are a single monotonic stream per AWAITED call, not per attempt: an escalating
     // worker hands its watermark to the next one, so the chat can ask for `index > lastSeen` and
     // never re-scan or replay. Attempt boundaries are marked in-band (the `reset` chunk below).
     let index = body.indexOffset ?? 0;
-    // Which model is actually about to run — the piece the chat can't know, since the tier was
+    // Which model is actually about to run: the piece the chat can't know, since the tier was
     // chosen by the router. Keyed to resultKey so it lands on the call the chat awaits.
     const reportModel = body.model ?? model;
     await progress(c, {
@@ -93,7 +93,7 @@ await agentLoop(client, {
     }, [callId]);
     try {
       // A raw-prompt call (e.g. the router's tier classifier) supplies `messages` directly. A
-      // conversation turn reconstructs them from the space — the thread lives in `message`
+      // conversation turn reconstructs them from the space, where the thread lives in `message`
       // records, not in the call body. History is stored once; we read it (not re-embed it).
       let messages: ChatMessage[];
       let hidden = 0;
@@ -108,7 +108,7 @@ await agentLoop(client, {
       } else {
         // Windowed reconstruction: read the NEWEST `WINDOW` messages as a descending keyset scan
         // over the sortable `index`, instead of pulling the thread and slicing. Per-turn cost is
-        // bounded by the window, not by conversation length — which is what makes "history is
+        // bounded by the window, not by conversation length, which is what makes "history is
         // stored once, read incrementally" true of the CONTEXT and not only of storage.
         //
         // Dropping old turns is normally lossy and one-way. Here it isn't: the omitted messages are
@@ -117,8 +117,8 @@ await agentLoop(client, {
         // The window must never evict the CURRENT turn. One tool-heavy turn is a dozen messages on
         // its own (an assistant tool_calls message plus a reply per call), so a fixed count can cut
         // away the very question being answered and leave the model summarizing tool output it can
-        // no longer attribute. Expand until the most recent `user` message is inside the window —
-        // that message begins the current turn, so including it includes everything after it.
+        // no longer attribute. Expand until the most recent `user` message is inside the window.
+        // That message begins the current turn, so including it includes everything after it.
         const tail = await selectWindow(
           async (limit) =>
             (await c.query({
@@ -128,7 +128,7 @@ await agentLoop(client, {
             }, limit)).map((r) => r.body as ThreadRow),
           { window: WINDOW, cap: WINDOW_CAP },
         );
-        // The standing instructions are the NEWEST system message, not index 0 — that is what lets a
+        // The standing instructions are the NEWEST system message, not index 0. That is what lets a
         // RESUMED conversation run under a current disposition instead of whatever was written when
         // it started. One indexed query, because `role` is a declared indexed path.
         const newestSystem = (await c.query({
@@ -165,7 +165,7 @@ await agentLoop(client, {
       // the cascade terminates at the top tier.
       if (higher && message.tool_calls?.some((tc) => tc.function.name === "escalate")) {
         // A model may emit text BEFORE calling escalate, and those chunks are already on the user's
-        // screen — this attempt's work is being discarded, so say so IN the stream: an empty-delta
+        // screen. This attempt's work is being discarded, so say so IN the stream: an empty-delta
         // `reset` chunk marks the boundary, and `indexOffset` carries the watermark so the next
         // worker continues one monotonic sequence instead of replaying indices from zero.
         if (body.stream !== false) {
@@ -192,7 +192,7 @@ await agentLoop(client, {
         };
       }
       // `context` makes the window observable: what was sent, what was left behind. Measurable
-      // without instrumentation — it is a record, so `space_query {kind: llm_result}` answers
+      // without instrumentation, since it is a record: `space_query {kind: llm_result}` answers
       // "did windowing change how often the assistant reaches for its own history?".
       return {
         kind: "llm_result",

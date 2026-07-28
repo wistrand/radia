@@ -1,10 +1,10 @@
 // Stress / load generator (`deno task stress`). Fills a space with a WAVE of coordinated
-// activity — jobs fanned out into tasks, several worker agents claiming by content, results and
+// activity: jobs fanned out into tasks, several worker agents claiming by content, results and
 // facts piling up, plus deliberate chaos (poison records that retry into `dead_letter`, abandoned
-// leases left `leased`) — so the console's **Space** tab has enough structure to develop.
+// leases left `leased`). That gives the console's **Space** tab enough structure to develop.
 //
-//   deno task dev                                  # terminal 1 — open http://localhost:7788
-//   deno task stress                               # terminal 2 — one wave
+//   deno task dev                                  # terminal 1: open http://localhost:7788
+//   deno task stress                               # terminal 2: one wave
 //   deno task stress -- --waves 3 --tasks 600 --rate 150 --workers 6
 //
 // Every run is a NEW wave: a fresh wave tag, freshly minted agents (so each run adds its own
@@ -12,8 +12,9 @@
 // growing instead of redrawing the same picture.
 //
 // What actually makes that view interesting: position there is a pure function of a record's
-// PROPERTIES — kind, envelope state, owning run (`spaceNodeFor` in src/ui/index.html), never its
-// links — so this generator varies all three on purpose rather than just pushing volume.
+// PROPERTIES, never its links: kind, envelope state, owning run (`spaceNodeFor` in
+// src/ui/index.html). So this generator varies all three on purpose rather than just pushing
+// volume.
 //
 // Flags: --waves N --tasks N --facts N --workers N --rate N --chaos PCT --once
 
@@ -80,7 +81,7 @@ if (await healthy()) {
 console.log(`Open ${url} and switch to the Space tab (colour by kind / state / run).\n`);
 
 // Kinds are records: redeclaring the same contract is content-keyed, so re-running is a no-op
-// rather than a conflict. `wave` is indexed on every kind — that is how a run selects its own.
+// rather than a conflict. `wave` is indexed on every kind; that is how a run selects its own.
 await admin.registerKind({ kind: "stress_job", indexedPaths: [{ path: "wave", type: "keyword" }, { path: "topic", type: "keyword" }] });
 await admin.registerKind({ kind: "stress_task", indexedPaths: [{ path: "wave", type: "keyword" }, { path: "op", type: "keyword" }] });
 await admin.registerKind({ kind: "stress_result", indexedPaths: [{ path: "wave", type: "keyword" }, { path: "op", type: "keyword" }], claimable: false });
@@ -119,7 +120,7 @@ async function runWave(n: number): Promise<Stats> {
   console.log(`wave ${n}/${WAVES} · tag ${wave} · topic ${topic} · ops ${ops.join(",")} · ${tasks} tasks, ${facts} facts`);
 
   // Producers and workers are separate agents with least-privilege grants, so the event log
-  // attributes every record to a distinct run — that is the `run` axis of the layout.
+  // attributes every record to a distinct run. That is the `run` axis of the layout.
   const producer = await mintAgent(`agent:stress-producer-${wave}`, [
     { kind: "stress_job", operations: ["put"] },
     { kind: "stress_fact", operations: ["put"] },
@@ -140,7 +141,7 @@ async function runWave(n: number): Promise<Stats> {
     const agent = `agent:stress-${op}-${wave}`;
     const client = await mintAgent(agent, [{ kind: "stress_result", operations: ["put"] }]);
     // Pattern-scoped grant (grant ∧ request): this worker may only take ITS op's tasks, so the
-    // content routing is enforced by authorization, not just by the take pattern it happens to send.
+    // content routing is enforced by authorization rather than by the take pattern it happens to send.
     await admin.grant(agent, "stress_task", ["take"], { op, wave });
     workers.push({ op, client });
   }
@@ -154,7 +155,7 @@ async function runWave(n: number): Promise<Stats> {
     else nextSlot = Date.now();
   }
 
-  // Producer: jobs (claimable work) + facts (never claimed — they stay `available` forever).
+  // Producer: jobs (claimable work) + facts (never claimed: they stay `available` forever).
   async function produce(): Promise<void> {
     const perJob = 8;
     let queued = 0;
@@ -163,7 +164,7 @@ async function runWave(n: number): Promise<Stats> {
       if (queued < tasks) {
         const size = Math.min(perJob, tasks - queued);
         const items = Array.from({ length: size }, () => phrase(3));
-        // The chaos share is decided here, in the DATA — workers just react to what they claim.
+        // The chaos share is decided here, in the DATA. Workers just react to what they claim.
         const poison = items.map(() => Math.random() < CHAOS / 2);
         await producer.put({ kind: "stress_job", body: { wave, topic, op: pick(ops), items, poison } });
         stats.put++;
@@ -204,7 +205,7 @@ async function runWave(n: number): Promise<Stats> {
     }
   }
 
-  // Worker: claims only its own op. A poison task is nacked — attempt N+1, back to `available`,
+  // Worker: claims only its own op. A poison task is nacked: attempt N+1, back to `available`,
   // reclaimed, and after MAX_ATTEMPTS the runtime dead-letters it. That retry churn is the most
   // visible thing in the map: records flicker leased → available before settling into a cluster.
   async function work(op: string, client: RadiaClient): Promise<void> {
@@ -223,7 +224,7 @@ async function runWave(n: number): Promise<Stats> {
         attempts.set(claimed.record.id, n);
         await client.nack(claimed.lease, { backoffSeconds: 0 });
         stats.nacked++;
-        // The settle result is just ok/lease_lost, so count locally — the runtime dead-letters
+        // The settle result is just ok/lease_lost, so count locally. The runtime dead-letters
         // when the attempt goes PAST maxAttempts, i.e. on the (maxAttempts+1)-th nack.
         if (n > MAX_ATTEMPTS) stats.dead++;
         continue;
@@ -238,7 +239,7 @@ async function runWave(n: number): Promise<Stats> {
   }
 
   // Chaos: claim a few tasks under a long lease and walk away. They stay `leased` after the wave
-  // ends — a stuck-lease cluster, and something for `space_doctor` / the remediation tools to find.
+  // ends: a stuck-lease cluster, and something for `space_doctor` / the remediation tools to find.
   async function abandon(): Promise<void> {
     const target = Math.ceil(tasks * CHAOS / 3);
     let idle = 0;
@@ -254,14 +255,15 @@ async function runWave(n: number): Promise<Stats> {
     }
   }
 
-  // Auditor: reads results (facts are never consumed) and emits a rolling summary — fan-in, and
-  // a slow trickle of a third kind while everything else is churning.
+  // Auditor: reads results (facts are never consumed) and emits a rolling summary. That is the
+  // fan-in, and a slow trickle of a third kind while everything else is churning.
   async function audit(): Promise<void> {
     let last = 0;
     while (!ac.signal.aborted) {
       const results = await auditor.query({ kind: "stress_result", match: { wave } }, 1000);
-      // One summary per decade of results, not one jump to the current count — a steady trickle of
-      // a third kind while the tasks churn (and content-keyed, so a re-poll never duplicates).
+      // One summary per decade of results, not one jump to the current count. That keeps a steady
+      // trickle of a third kind while the tasks churn (and content-keyed, so a re-poll never
+      // duplicates).
       while (last + 10 <= results.length) {
         last += 10;
         await auditor.put({ kind: "stress_summary", body: { wave, topic, results: last }, parentIds: [] }, `summary:${wave}:${last}`);
@@ -276,7 +278,7 @@ async function runWave(n: number): Promise<Stats> {
   const ticker = setInterval(() => (tty ? write(`\r\x1b[2K${line()}`) : void 0), 250);
 
   const fail = (e: unknown) => console.error(`\n[wave ${wave}] ${e}`);
-  // The auditor runs until the wave is done — it has no work queue of its own to drain, so it is
+  // The auditor runs until the wave is done. It has no work queue of its own to drain, so it is
   // awaited after the abort rather than inside the barrier.
   const auditing = audit().catch(fail);
   await Promise.all(
@@ -307,10 +309,10 @@ console.log(
   `\nthis run: ${totals.put} produced · ${totals.acked} acked · ${totals.nacked} nacks → ${totals.dead} dead-lettered · ${totals.stuck} stuck leases`,
 );
 console.log(`Space tab: colour by kind for the wave's shape, by state to see dead/stuck, by run for the agents.`);
-console.log(`Run it again for another wave — new agents, new op mix, nothing overwritten.`);
+console.log(`Run it again for another wave: new agents, new op mix, nothing overwritten.`);
 
 if (server && !ONCE) {
-  console.log(`\nSpace still running at ${url} — Ctrl-C to stop it.`);
+  console.log(`\nSpace still running at ${url}. Ctrl-C to stop it.`);
   Deno.addSignalListener("SIGINT", async () => {
     server!.kill();
     await server!.status.catch(() => {});

@@ -1,5 +1,5 @@
-// RadiaClient — the TS SDK stub (seeded here; Phase 7 polishes it and adds Python parity).
-// Thin fetch wrappers over the public /v0 API — exactly what an external agent uses. No
+// RadiaClient: the TS SDK stub (seeded here; Phase 7 polishes it and adds Python parity).
+// Thin fetch wrappers over the public /v0 API. This is exactly what an external agent uses. No
 // privileged access. For M0 it imports the wire types from the repo; Phase 7 will extract
 // a standalone type surface so the SDK can ship independently.
 
@@ -56,7 +56,7 @@ export interface ClientAuth {
 
 /** What a grant narrowed a read to. Absent when nothing was narrowed. */
 export interface ReadScope {
-  /** Grant patterns ANDed into the request — records outside them were not returned. */
+  /** Grant patterns ANDed into the request. Records outside them were not returned. */
   narrowedBy?: Record<string, unknown>[];
   /** True when the read was restricted to the caller's own records. */
   ownRecordsOnly?: true;
@@ -65,7 +65,7 @@ export interface ReadScope {
 
 export class RadiaClient {
   private readonly auth: ClientAuth;
-  /** @param auth a run token — `{token}` or a bare token string. Omit for the default operator
+  /** @param auth a run token, either `{token}` or a bare token string. Omit for the default operator
    *  (`human:local`). To act as a scoped principal, mint a run token via the bootstrap chain. */
   constructor(readonly base: string = defaultBase(), auth: ClientAuth | string = {}) {
     this.auth = typeof auth === "string" ? { token: auth } : auth;
@@ -97,7 +97,7 @@ export class RadiaClient {
   }
 
   /** Declare a kind: put a kind_def record (idempotent per declaration). Kinds are records,
-   *  not a side endpoint — discover them with `listKinds()` (a query for kind_def records). */
+   *  not a side endpoint. Discover them with `listKinds()` (a query for kind_def records). */
   async registerKind(def: KindDef): Promise<{ kind: string }> {
     await this.put({ kind: KIND_DEF, body: def }, kindDefKey(def));
     return { kind: def.kind };
@@ -107,7 +107,7 @@ export class RadiaClient {
     return this.req("POST", "/v0/records", req, idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {});
   }
 
-  /** Assign a kind-scoped grant (a `grant` record — writable only by a human/supervisor
+  /** Assign a kind-scoped grant (a `grant` record, writable only by a human/supervisor
    *  principal). `operations` are coordination verbs: put | take | query | read_one. An optional
    *  `pattern` narrows read/take to `grant ∧ request` (pattern-scoped grant). */
   async grant(
@@ -118,8 +118,8 @@ export class RadiaClient {
   ): Promise<{ id: string }> {
     const body = pattern ? { principal, kind, operations, pattern } : { principal, kind, operations };
     // CONTENT-KEYED, so re-assigning an unchanged grant writes nothing rather than appending a
-    // duplicate on every run. But a grant that was RETIRED — by a revocation, or by a definition
-    // superseding it with a different pattern — cannot be revived under that same key: the write
+    // duplicate on every run. But a grant that was RETIRED (by a revocation, or by a definition
+    // superseding it with a different pattern) cannot be revived under that same key: the write
     // replays the retirement, so nothing is written while this reports success and the principal
     // still holds nothing. Key the revival on the record it supersedes, the shape
     // `Space.createAgentDefinition` uses.
@@ -174,11 +174,11 @@ export class RadiaClient {
   }
 
   /**
-   * One page, plus the cursor for the next one — `nextAfter` is undefined on the last page.
+   * One page, plus the cursor for the next one. `nextAfter` is undefined on the last page.
    *
    * Use this over `query` when walking a whole kind: a keyset cursor stays correct while records
    * are being written, where an offset would skip or repeat rows as the space grows underneath it.
-   * `dir: "desc"` walks newest-first, which a plain `query` cannot express — its deterministic
+   * `dir: "desc"` walks newest-first, which a plain `query` cannot express: its deterministic
    * order is ascending id, so a limit there always returns the OLDEST matches.
    */
   /** Present when a grant narrowed the read: what it was narrowed BY. An answer that does not say
@@ -216,7 +216,7 @@ export class RadiaClient {
    * One page of the event log plus the cursor to continue from.
    *
    * Prefer this over `getEvents` when paging: for a SCOPED caller the server withholds events it
-   * may not see, so a page can be empty (or short) while the log continues — and `nextAfter` is
+   * may not see, so a page can be empty (or short) while the log continues. `nextAfter` is then
    * the only way to advance past what was withheld. `undefined` means the end.
    */
   async getEventsPage(
@@ -234,7 +234,7 @@ export class RadiaClient {
 
   /** Stats plus, for a SCOPED caller, what the answer was narrowed to. Prefer this when the result
    *  will be shown to someone (or something) that could read an empty list as an empty space. */
-  /** What a principal can actually do — the fold over its grants, computed and shown. Operator
+  /** What a principal can actually do: the fold over its grants, computed and shown. Operator
    *  only. Use it before and after changing grants: the difference is whether the change did what
    *  was promised. */
   permissions(principal: string): Promise<unknown> {
@@ -251,16 +251,16 @@ export class RadiaClient {
     return r.stats;
   }
 
-  /** All declared kinds — the latest kind_def record per kind name (a redeclaration is a
+  /** All declared kinds: the latest kind_def record per kind name (a redeclaration is a
    *  successor record). Discovery through the substrate: a plain query, no kinds endpoint. */
   /**
    * Every record matching `pattern`, newest-first, paged to EXHAUSTION.
    *
-   * Registry-shaped reads — capabilities, models, kinds, procedures, grants — must never be a
+   * Registry-shaped reads (capabilities, models, kinds, procedures, grants) must never be a
    * single bounded page. The server clamps `limit` (500), so asking for more returns a silent
    * prefix, and because a registry is read newest-first the records that fall off are exactly the
    * ones that matter: a retirement, a redeclaration, the tool published a minute ago. Both failure
-   * directions are silent — an entry that should be gone stays live, one that should be live goes
+   * directions are silent: an entry that should be gone stays live, one that should be live goes
    * missing.
    *
    * Throws rather than returning a plausible prefix when even the page budget is exhausted: a
@@ -276,7 +276,7 @@ export class RadiaClient {
       after = rows[rows.length - 1].id;
     }
     throw new Error(
-      `queryAll: more than ${maxPages * 500} records match ${JSON.stringify(pattern)} — refusing to ` +
+      `queryAll: more than ${maxPages * 500} records match ${JSON.stringify(pattern)}. Refusing to ` +
         `return a partial registry view`,
     );
   }
@@ -319,9 +319,10 @@ export class RadiaClient {
     return await this.req("POST", `/v0/ops/records/${encodeURIComponent(recordId)}/${action}`);
   }
 
-  /** Remediate every record matching an envelope selector — the same selector `queryEnvelopes`
-   *  takes, so diagnosing and fixing use one vocabulary. Returns how many matched and were
-   *  applied, and `more` when the page was full (loop until it is false to drain a backlog). */
+  /** Remediate every record matching an envelope selector. It takes the same selector
+   *  `queryEnvelopes` does, so diagnosing and fixing use one vocabulary. Returns how many
+   *  matched and were applied, and `more` when the page was full (loop until it is false to
+   *  drain a backlog). */
   remediate(
     action: "reclaim" | "dead-letter" | "requeue",
     selector: { state: string; expired?: boolean; stale?: number; limit?: number },
@@ -339,7 +340,7 @@ export class RadiaClient {
     return r.lineage;
   }
 
-  /** Records that reference this one via parent_ids — its children (the reverse of lineage).
+  /** Records that reference this one via parent_ids: its children (the reverse of lineage).
    *  BOUNDED: fan-out is unbounded in principle, so this is a page. Use `getChildrenPage` to walk. */
   async getChildren(recordId: string, limit = 100): Promise<RadiaRecord[]> {
     return (await this.getChildrenPage(recordId, limit)).children;
@@ -370,7 +371,7 @@ export class RadiaClient {
       taint?: boolean;
       idempotencyKey?: string;
       /** Application fields merged into the artifact's record body, so an app can route and SCOPE
-       *  artifacts it owns — a grant pattern matches the body, and the rest of the body is
+       *  artifacts it owns. A grant pattern matches the body, and the rest of the body is
        *  runtime-computed. Values must be scalars; the whole object travels in a header, so it must
        *  be ASCII. */
       meta?: Record<string, string | number | boolean | null>;
@@ -415,7 +416,7 @@ export class RadiaClient {
     return new Uint8Array(await res.arrayBuffer());
   }
 
-  /** A short-lived, single-artifact download capability — for contexts that cannot send an
+  /** A short-lived, single-artifact download capability. Use it for contexts that cannot send an
    *  Authorization header (an `<img src>`). The returned `url` is relative to the space. */
   artifactCapability(recordId: string): Promise<{ capability: string; expiresAt: string; url: string }> {
     return this.req("POST", `/v0/artifacts/${encodeURIComponent(recordId)}/capability`);

@@ -1,6 +1,6 @@
 // Diagnostics + control-plane remediation (reclaim / dead-letter / requeue). Remediation
 // bypasses lease fencing (fixing another worker's stuck record), so it is not a lease
-// settlement — reclaim only touches an EXPIRED lease, never a valid one. Runs on every adapter.
+// settlement: reclaim only touches an EXPIRED lease, never a valid one. Runs on every adapter.
 
 import { assert, assertEquals } from "@std/assert";
 import type { Suite } from "../harness.ts";
@@ -95,7 +95,7 @@ export const adminSuites: Suite[] = [
 // Selector-driven remediation
 //
 // Fixing a backlog one id at a time is a call per record, preceded by diagnostics calls just to
-// learn the ids — and the report only samples ten. `remediate` takes the SAME envelope selector
+// learn the ids, and the report only samples ten. `remediate` takes the SAME envelope selector
 // the ops query takes, so "what is wrong" and "fix it" share one vocabulary.
 // ---------------------------------------------------------------------------
 
@@ -163,7 +163,7 @@ export const remediateSuites: Suite[] = [
       const fact = await space.put({ kind: "fact", body: {} });
 
       // `{state:"available"}` is the broadest selector there is. A `claimable:false` kind sits
-      // available forever by design, so sweeping it into dead_letter would break the space — the
+      // available forever by design, so sweeping it into dead_letter would break the space. The
       // kind registry and the grants are themselves records of such kinds.
       const out = await space.remediate("dead-letter", { state: "available" });
       assertEquals(out.applied, 1, "only the claimable record should be remediated");

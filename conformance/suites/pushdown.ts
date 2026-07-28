@@ -2,14 +2,14 @@
 // the database can pre-filter; `core/matching.ts` remains the oracle. The contract is asymmetric,
 // and this suite exists to pin the dangerous direction:
 //
-//   over-returning is FINE   — the oracle rejects the extra rows, nobody notices
-//   under-returning is a BUG — the record is simply gone, and `take` reports an empty space
+//   over-returning is FINE:   the oracle rejects the extra rows, nobody notices
+//   under-returning is a BUG: the record is simply gone, and `take` reports an empty space
 //
 // So every case below asserts a record IS found. Each targets a place where SQL's instincts
 // disagree with the oracle: a missing key vs a JSON null, SQL's type coercion, jsonb's key-order
 // normalization, collation order, and the paths/predicates pushdown deliberately declines.
 //
-// These run on every adapter, which is the point — the SQL differs per dialect, the verdicts must
+// These run on every adapter, which is the point: the SQL differs per dialect, the verdicts must
 // not. Note that the whole matching suite is also a pushdown test now, since every query goes
 // through the pre-filter; this file covers what a generic matching test would not think to try.
 
@@ -24,14 +24,14 @@ function newSpace(adapter: Parameters<Suite["run"]>[0]): Space {
     indexedPaths: [
       { path: "s", type: "keyword" },
       { path: "n", type: "integer" },
-      // The declared type is a routing contract, not a value constraint — these paths hold mixed
+      // The declared type is a routing contract, not a value constraint. These paths hold mixed
       // types on purpose, which is exactly what the pre-filter's type guards have to survive.
       { path: "flag", type: "keyword" },
       { path: "obj", type: "keyword" },
       { path: "arr", type: "array" },
       { path: "nested.deep", type: "keyword" },
       // Not renderable as a JSON path literal, so pushdown must decline it and let the oracle
-      // handle it — a path is a declared string, not necessarily an identifier.
+      // handle it: a path is a declared string, not necessarily an identifier.
       { path: "od-d", type: "keyword" },
     ],
     sortablePaths: ["n"],
@@ -45,7 +45,7 @@ async function finds(space: Space, match: Record<string, unknown>, ids: string[]
   assertEquals(
     got.map((r) => r.id).sort(),
     [...ids].sort(),
-    `${why} — pattern ${JSON.stringify(match)}`,
+    `${why}; pattern ${JSON.stringify(match)}`,
   );
 }
 
@@ -91,7 +91,7 @@ export const pushdownSuites: Suite[] = [
       await space.put({ kind: "doc", body: { obj: { z: 9 } } });
 
       // The oracle compares JSON.stringify, so {a,b} and {b,a} are different values. Postgres
-      // jsonb would call them equal — pushing an object literal into jsonb `=` would therefore
+      // jsonb would call them equal, so pushing an object literal into jsonb `=` would
       // report a match the oracle denies. Pushdown declines objects entirely; both verdicts here
       // come from the oracle.
       await finds(space, { obj: { a: 1, b: 2 } }, [id], "same key order matches");
@@ -130,7 +130,7 @@ export const pushdownSuites: Suite[] = [
       const { id: not } = await space.put({ kind: "doc", body: { arr: ["q"] } });
 
       // One branch renders to SQL, the other does not. Rendering only the first would exclude the
-      // second branch's rows — an $or is only pushable when EVERY branch is.
+      // second branch's rows. An $or is only pushable when EVERY branch is.
       await finds(space, { $or: [{ s: "hit" }, { arr: { $any: "q" } }] }, [pushable, not], "both branches match");
     },
   },
@@ -159,7 +159,7 @@ export const pushdownSuites: Suite[] = [
       await space.put({ kind: "doc", body: { "od-d": "other" } });
       const { id: deep } = await space.put({ kind: "doc", body: { nested: { deep: "v" } } });
 
-      // Segments outside [A-Za-z0-9_] are declined by `pushablePath` — inlining them into a path
+      // Segments outside [A-Za-z0-9_] are declined by `pushablePath`. Inlining them into a path
       // literal is what would need escaping, and escaping is what gets injection wrong.
       await finds(space, { "od-d": "v" }, [id], "an unpushable path falls back to the oracle");
       await finds(space, { "nested.deep": "v" }, [deep], "a dotted path is pushed correctly");
@@ -175,7 +175,7 @@ export const pushdownSuites: Suite[] = [
       for (let i = 0; i < 10; i++) hits.push((await space.put({ kind: "doc", body: { arr: ["hit"] } })).id);
 
       // `$any` is not pushable, so the pre-filter is `TRUE`. Pushing the caller's limit into SQL
-      // would return the ten lowest ids — all misses — and the oracle would reject every one,
+      // would return the ten lowest ids (all misses), and the oracle would reject every one,
       // answering "no matches" for a space holding ten. The limit only moves into SQL when the
       // filter is exact.
       // Sort rather than trusting insertion order: ULIDs minted inside one millisecond differ
@@ -200,7 +200,7 @@ export const pushdownSuites: Suite[] = [
         if (hit) hits.push(id);
       }
       // With no order_by the oracle's order is its id tie-break, which is what the pushed
-      // `order by id` reproduces — so a limited query is the first N matches by id. Sorted, not
+      // `order by id` reproduces, so a limited query is the first N matches by id. Sorted, not
       // insertion order: ULIDs minted inside one millisecond differ only in their random half.
       const byId = [...hits].sort();
       assertEquals((await space.query({ kind: "doc", match: { s: "hit" } }, 3)).map((r) => r.id), byId.slice(0, 3));

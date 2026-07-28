@@ -2,7 +2,7 @@
 //
 // Separate from `conformance/` on purpose. Conformance answers "is this correct on every
 // adapter"; this answers "how fast, and where does it stop scaling". A benchmark that fails is
-// not a broken build — it is a number that moved, which is why nothing here asserts.
+// not a broken build. It is a number that moved, which is why nothing here asserts.
 //
 // Two rules the suites follow:
 //   - MEASURE THE SUBSTRATE, NOT THE HARNESS. Setup (seeding records, minting tokens) happens
@@ -12,7 +12,7 @@
 //
 // `Deno.bench` is deliberately not used: it is built for ns-scale microbenchmarks of a single
 // function, and what matters here is throughput under contention and how cost grows with the
-// size of a space — curves and percentiles across adapters, not one ops/sec figure.
+// size of a space: curves and percentiles across adapters, not one ops/sec figure.
 
 import type { StorageAdapter } from "../src/storage/adapter.ts";
 import { Space } from "../src/core/space.ts";
@@ -58,7 +58,7 @@ export async function timed(fn: () => Promise<unknown>): Promise<number> {
 /**
  * Run `fn` n times, collecting per-op durations. Warms up first, uncounted.
  *
- * Pass `warmup: 0` for a STATEFUL benchmark — one where each iteration consumes a resource
+ * Pass `warmup: 0` for a STATEFUL benchmark, one where each iteration consumes a resource
  * prepared in advance (a lease to settle, a record to claim). The default warmup would eat the
  * first few of them and the counted loop would run off the end.
  */

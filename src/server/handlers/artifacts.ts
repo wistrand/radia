@@ -1,12 +1,12 @@
-// Artifact endpoints — the one place bytes cross the wire instead of JSON.
+// Artifact endpoints: the one place bytes cross the wire instead of JSON.
 //
 //   POST /v0/artifacts                     raw body -> blob + `artifact` record (201 {id,digest,size})
 //   GET  /v0/artifacts/{id}                the bytes (Bearer, or ?capability=)
 //   POST /v0/artifacts/{id}/capability     mint a short-lived download capability for one artifact
 //
 // Authorization is the ordinary record authorization: `put`/`read_one` grants on the reserved
-// `artifact` kind. The capability exists for exactly one reason — a browser cannot attach an
-// Authorization header to `<img src>` — so it is scoped to a single artifact, expires in minutes,
+// `artifact` kind. The capability exists for exactly one reason (a browser cannot attach an
+// Authorization header to `<img src>`), so it is scoped to a single artifact, expires in minutes,
 // and is minted only for a caller who could already read that artifact. That is the "short-lived
 // download capability" of design-data-model §2.4; the record id in the URL stays stable forever.
 
@@ -58,9 +58,9 @@ export async function handlePutArtifact(space: Space, req: Request, principal: s
     // Header validation FIRST: a bad media type or filename is knowable before a single byte is
     // read, and buffering 32MB only to reject the headers is a free denial-of-service.
     validateArtifactDef({ digest: "", size: 0, mediaType, filename });
-    // A pattern-scoped artifact grant matches on the record body, which is metadata — so the
-    // scope can say "this principal may only write image/png artifacts", checked before any bytes
-    // are stored.
+    // A pattern-scoped artifact grant matches on the record body, which is metadata. The scope
+    // can therefore say "this principal may only write image/png artifacts", checked before any
+    // bytes are stored.
     const constraint = await space.authorize(principal, "put", ARTIFACT);
     if (constraint && !space.bodyMatchesGrant(ARTIFACT, { mediaType }, constraint)) {
       return problem(403, "forbidden", `artifact mediaType '${mediaType}' is outside the pattern scope of your put grant`);
@@ -72,7 +72,7 @@ export async function handlePutArtifact(space: Space, req: Request, principal: s
     if (bytes.byteLength === 0) return problem(400, "invalid_body", "artifact body is empty");
     const parentIds = (req.headers.get("x-radia-parent-ids") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
     // Application fields for the record body, as JSON in a header. A header is a ByteString, so
-    // non-ASCII is rejected rather than silently mangled — the same rule that made idempotency keys
+    // non-ASCII is rejected rather than silently mangled, the same rule that made idempotency keys
     // hashes rather than content (see gotchas.md). Bytes belong in the body; this is metadata.
     const metaHeader = req.headers.get("x-radia-meta");
     let appFields: Record<string, unknown> | undefined;
@@ -132,13 +132,13 @@ export async function handleGetArtifact(
     const headers: Record<string, string> = {
       "content-type": def.mediaType,
       "content-length": String(def.size),
-      // Content-addressed bytes never change, so the id is a perfect validator — but the record
-      // may be private, so the cache must not be shared.
+      // Content-addressed bytes never change, so the id is a perfect validator. The record may
+      // still be private, though, so the cache must not be shared.
       "cache-control": "private, max-age=31536000, immutable",
       "etag": `"${def.digest}"`,
       // Only media a browser can safely PAINT renders inline; everything else downloads. An
-      // artifact is attacker-supplied bytes served from the SPACE'S OWN ORIGIN — the origin whose
-      // console page carries an operator token — so anything scriptable rendered here (text/html,
+      // artifact is attacker-supplied bytes served from the SPACE'S OWN ORIGIN (the origin whose
+      // console page carries an operator token), so anything scriptable rendered here (text/html,
       // and image/svg+xml, which is why the allowlist names raster formats instead of `image/`)
       // would be a same-origin XSS reachable by anyone holding an `artifact: put` grant.
       "content-disposition": `${renderable(def.mediaType) ? "inline" : "attachment"}${def.filename ? `; filename="${def.filename}"` : ""}`,
@@ -160,7 +160,7 @@ export async function handleMintCapability(space: Space, recordId: string, princ
     const rec = await space.getRecord(recordId);
     if (!rec || rec.kind !== ARTIFACT) return problem(404, "not_found", `no artifact ${recordId}`);
     // A capability is a bearer URL that outlives this check, so the scope has to be applied BEFORE
-    // one is minted — otherwise a self-scoped principal converts a foreign artifact into a link
+    // one is minted. Otherwise a self-scoped principal converts a foreign artifact into a link
     // that needs no token at all.
     if (!space.authorAllows(createdBy, rec)) return problem(404, "not_found", `no artifact ${recordId}`);
     if (constraint && !space.bodyMatchesGrant(ARTIFACT, rec.body, constraint)) {

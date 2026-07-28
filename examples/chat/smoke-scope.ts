@@ -5,13 +5,13 @@
 // `RADIA_CHAT_SCOPE` picks what the session's grants bind to, and the two answers are genuinely
 // different deployments rather than a preference:
 //
-//   identity     — `{owner: agent:chat-user}`: everything this identity produced, across ALL its
-//                  conversations, INCLUDING the results and artifacts workers made for it.
-//   conversation — `{conversationId}`: this thread only, whoever produced the record.
+//   identity     `{owner: agent:chat-user}`: everything this identity produced, across ALL its
+//                conversations, INCLUDING the results and artifacts workers made for it.
+//   conversation `{conversationId}`: this thread only, whoever produced the record.
 //
 // The case that forced the choice: conversation scoping is airtight and also hides your own earlier
 // threads, which is not what "my records" means to the person who wrote them. Scoping by AUTHOR
-// instead does not work — the results, chunks and artifacts are written by WORKERS under their own
+// instead does not work. The results, chunks and artifacts are written by WORKERS under their own
 // principals, so `createdBy: self` would hide the session's own tool output and the chat would hang
 // waiting for results it could no longer read. Hence a field the session stamps and workers copy.
 
@@ -49,7 +49,7 @@ const older = (await admin.put({ kind: "conversation", body: { title: "yesterday
 const current = (await admin.put({ kind: "conversation", body: { title: "today" } })).id;
 const theirs = (await admin.put({ kind: "conversation", body: { title: "someone else" } })).id;
 
-// The identity's own history, as the session would have written it — including an OLDER thread,
+// The identity's own history, as the session would have written it. That includes an OLDER thread,
 // which is the thing conversation scoping takes away.
 const myArtifacts: Record<string, string> = {};
 for (const [conv, n] of [[older, 3], [current, 2]] as [string, number][]) {
@@ -72,7 +72,7 @@ const theirArtifact = (await admin.putArtifact(new TextEncoder().encode("their b
   meta: { conversationId: theirs, owner: "agent:someone-else" },
 })).id;
 
-/** Artifacts are fetched by id (the session holds `read_one`, not `query`) — the way the chat reads
+/** Artifacts are fetched by id (the session holds `read_one`, not `query`), the way the chat reads
  *  a generated image back. */
 async function canRead(client: RadiaClient, id: string): Promise<boolean> {
   try {
@@ -84,7 +84,7 @@ async function canRead(client: RadiaClient, id: string): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-console.log("\n  identity scope — everything this identity produced");
+console.log("\n  identity scope: everything this identity produced");
 // ---------------------------------------------------------------------------
 const idToken = (await bootstrap(admin, "user", { owner: CHAT_USER })).sessionToken!;
 const byIdentity = new RadiaClient(url, { token: idToken });
@@ -115,7 +115,7 @@ check("reads its own artifact from an older conversation", await canRead(byIdent
 check("…and from this one", await canRead(byIdentity, myArtifacts[current]));
 check("…but not another identity's", !(await canRead(byIdentity, theirArtifact)));
 
-// The binding is enforced on WRITES too, so `owner` cannot be claimed — it is not an honour system.
+// The binding is enforced on WRITES too, so `owner` cannot be claimed. It is not an honour system.
 let forged = true;
 try {
   await byIdentity.put({ kind: "message", body: { conversationId: current, owner: "agent:someone-else", index: 99, role: "user", content: "forged" } });
@@ -133,7 +133,7 @@ try {
 check("…nor omit it to escape the scope", !unowned);
 
 // ---------------------------------------------------------------------------
-console.log("\n  conversation scope — this thread only, whoever produced it");
+console.log("\n  conversation scope: this thread only, whoever produced it");
 // ---------------------------------------------------------------------------
 const convToken = (await bootstrap(admin, "user", { conversationId: current })).sessionToken!;
 const byConversation = new RadiaClient(url, { token: convToken });
@@ -141,7 +141,7 @@ const byConversation = new RadiaClient(url, { token: convToken });
 const convMessages = await byConversation.queryPage({ kind: "message" }, 50);
 check("sees only this conversation", convMessages.records.length === 2, `${convMessages.records.length} of 7`);
 check(
-  "…so its own older thread is NOT visible — the cost of the strict posture",
+  "…so its own older thread is NOT visible, which is the cost of the strict posture",
   !convMessages.records.some((r) => (r.body as { conversationId: string }).conversationId === older),
 );
 check(

@@ -1,4 +1,4 @@
-// The blob port — artifact BYTES, kept out of records and out of the record store.
+// The blob port: artifact BYTES, kept out of records and out of the record store.
 //
 // Records stay small, JSON, matchable and immutable; a payload too large for a body (an image,
 // an audio clip, a PDF) lives here and is referenced by an `artifact` record (see
@@ -8,12 +8,12 @@
 //
 // Blobs are CONTENT-ADDRESSED by sha256 of the plaintext: identical bytes are one object, an
 // object verifies itself, and a re-upload is free. Identity as seen by clients is still the
-// artifact RECORD id — never the digest, never a signed URL (design-data-model §2.4: stable
+// artifact RECORD id, never the digest and never a signed URL (design-data-model §2.4: stable
 // internal ids, because a URL would expire inside an immutable record).
 //
 // ENCRYPTION is optional and lives here, not above: pass a `BlobCipher` (src/storage/crypto.ts)
 // and payloads are sealed under a per-blob DEK wrapped by the space KEK. Both invariants hold
-// either way — the digest is over PLAINTEXT (integrity and the event chain survive
+// either way: the digest is over PLAINTEXT (integrity and the event chain survive
 // crypto-shredding), and the wrapped DEK lives in destroyable state beside the blob, never in the
 // immutable artifact record. A store with no cipher stores plaintext, which is the default.
 
@@ -39,12 +39,12 @@ export interface BlobStore {
   delete(digest: string): Promise<void>;
 }
 
-/** In-memory blobs — the default for an ephemeral space (`radia dev` with no `--db`), where a
+/** In-memory blobs: the default for an ephemeral space (`radia dev` with no `--db`), where a
  *  filesystem home would outlive the data that references it. */
 export class MemoryBlobStore implements BlobStore {
   readonly name: string;
   /** Stored form: ciphertext when a cipher is set, plaintext otherwise. `size` is always the
-   *  PLAINTEXT length — the port's contract, and 16 bytes less than sealed bytes. */
+   *  PLAINTEXT length, which is the port's contract and 16 bytes less than sealed bytes. */
   private readonly blobs = new Map<string, { stored: Uint8Array; size: number; key?: SealedKey }>();
 
   constructor(private readonly cipher?: BlobCipher) {
@@ -105,14 +105,14 @@ export class FileBlobStore implements BlobStore {
   }
 
   /** Where a NEW blob is written: HMAC(KEK, digest) when encrypting, so a stolen directory listing
-   *  cannot answer "do you hold this exact file?" — a content-addressed encrypted store whose
+   *  cannot answer "do you hold this exact file?". A content-addressed encrypted store whose
    *  filenames are plaintext hashes still leaks that. */
   private async writePath(digest: string): Promise<string> {
     return this.path(this.cipher ? await this.cipher.storageName(digest) : digest);
   }
 
-  /** Where an EXISTING blob actually is. Encrypted name first, then the plaintext-digest name —
-   *  turning encryption on must not orphan blobs written before it, so a store can hold both and
+  /** Where an EXISTING blob actually is. Encrypted name first, then the plaintext-digest name.
+   *  Turning encryption on must not orphan blobs written before it, so a store can hold both and
    *  reads keep working while new writes are sealed. */
   private async findPath(digest: string): Promise<{ path: string; key?: SealedKey; sealed: boolean } | null> {
     if (this.cipher) {
@@ -128,7 +128,7 @@ export class FileBlobStore implements BlobStore {
     const path = await this.writePath(digest);
     const dir = path.slice(0, path.lastIndexOf("/"));
     // Same bytes, same address: an existing object is already correct, so skip the write. Under
-    // encryption this is also what keeps DEDUP working — a second put reuses the stored ciphertext
+    // encryption this is also what keeps DEDUP working: a second put reuses the stored ciphertext
     // and its DEK rather than sealing the same payload under a second key.
     //
     // "Already stored" means BOTH parts exist. Checking only the payload would make a half-written
@@ -141,7 +141,7 @@ export class FileBlobStore implements BlobStore {
         // KEY FIRST, then the payload. The reverse order has a crash window that corrupts
         // silently: ciphertext with no sidecar reads as a plaintext blob, so the raw ciphertext
         // would be served as if it were the artifact. This way an interrupted write leaves a key
-        // with no payload — an honest miss, and self-healing on the next put.
+        // with no payload, which is an honest miss and self-healing on the next put.
         // The wrapped DEK sits beside the payload, NOT in the artifact record: shredding a blob
         // means deleting this file, and records are immutable.
         writeTextFile(`${path}.key`, JSON.stringify(key));
@@ -157,7 +157,7 @@ export class FileBlobStore implements BlobStore {
     if (!isDigest(digest)) return null; // never let a caller-supplied name reach the filesystem
     const found = await this.findPath(digest);
     if (!found) return null;
-    // A blob at the ENCRYPTED name with no sidecar is damage, not legacy — serving it would hand
+    // A blob at the ENCRYPTED name with no sidecar is damage, not legacy: serving it would hand
     // back raw ciphertext as if it were the payload. Only a blob at the plaintext-digest name may
     // be read as plaintext (written before encryption was enabled, or by a store with no cipher).
     if (!found.key && found.sealed) return null;
@@ -185,8 +185,8 @@ export class FileBlobStore implements BlobStore {
   async delete(digest: string): Promise<void> {
     if (!isDigest(digest)) return;
     // Remove both possible homes: "gone" must not depend on which regime wrote it. The key goes
-    // first — a sealed payload whose DEK is destroyed is already unrecoverable, so an interrupted
-    // delete leaves shredded bytes rather than readable ones.
+    // first, because a sealed payload whose DEK is destroyed is already unrecoverable, so an
+    // interrupted delete leaves shredded bytes rather than readable ones.
     for (const name of [this.cipher ? await this.cipher.storageName(digest) : null, digest]) {
       if (!name) continue;
       const path = this.path(name);
@@ -206,7 +206,7 @@ export class FileBlobStore implements BlobStore {
   }
 }
 
-/** A digest is 64 lowercase hex chars — the only shape allowed to become a path component. */
+/** A digest is 64 lowercase hex chars, the only shape allowed to become a path component. */
 export function isDigest(s: string): boolean {
   return /^[0-9a-f]{64}$/.test(s);
 }

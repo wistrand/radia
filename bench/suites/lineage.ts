@@ -1,6 +1,6 @@
-// A hotspot that was measured, then fixed — and is kept measured so it stays fixed.
+// A hotspot that was measured, then fixed, and is kept measured so it stays fixed.
 //
-// `childrenOf` — the reverse edge behind `space_children`, the graph view, and any DAG walk —
+// `childrenOf` (the reverse edge behind `space_children`, the graph view, and any DAG walk)
 // used to be a `LIKE` scan over the `parent_ids` JSON text: cost grew with the size of the SPACE
 // rather than with the number of children found. It is now an indexed lookup through
 // `record_edges`, and the shape these benches watch for is a FLAT line across the sizes. A rising
@@ -18,7 +18,7 @@ export const lineageBenches: Bench[] = [
       ctx.space.registerKind({ kind: "job", indexedPaths: [], claimable: false });
       ctx.space.registerKind({ kind: "step", indexedPaths: [], claimable: false });
       const out: Measurement[] = [];
-      // One parent with a fixed, small number of children — then bury it in a growing space.
+      // One parent with a fixed, small number of children, then bury it in a growing space.
       const { id: root } = await ctx.space.put({ kind: "job", body: { root: true } });
       for (let i = 0; i < 5; i++) await ctx.space.put({ kind: "step", body: { i }, parentIds: [root] });
 
@@ -36,7 +36,7 @@ export const lineageBenches: Bench[] = [
   },
   {
     name: "lineage-depth",
-    note: "getLineage walks parent_ids upward one LEVEL at a time (a batched fetch per depth) — cost is depth, not space size.",
+    note: "getLineage walks parent_ids upward one LEVEL at a time (a batched fetch per depth). Cost is depth, not space size.",
     run: async (ctx) => {
       ctx.space.registerKind({ kind: "step", indexedPaths: [], claimable: false });
       const out: Measurement[] = [];

@@ -4,17 +4,17 @@ Spec and rationale for the delivery guarantee, leases, idempotency, the API surf
 the wire protocol, and the client agent loop. Origin: outline §4–5.
 
 **M0/M1 status (implemented):** the guarantee, fenced leases, idempotency-before-lease,
-and all ten operations are built — HTTP handlers in `src/server/handlers/`, the service in
+and all ten operations are built: HTTP handlers in `src/server/handlers/`, the service in
 `src/core/space.ts`, lease/settlement in the adapters, claim ranking in `src/core/take.ts`.
 Watches are implemented (see Wire protocol below), as is the artifact payload plane (below), and
-`query` takes a keyset cursor (`after`/`dir` — see [design-matching.md](design-matching.md)).
+`query` takes a keyset cursor (`after`/`dir`; see [design-matching.md](design-matching.md)).
 **Not implemented:** long-poll blocking on `take` (M1).
 
 ## Contents
 - Invariants
 - The guarantee
 - Leases with fencing
-- Idempotency (ordering is load-bearing)
+- Idempotency (ordering is critical)
 - API surface (ten operations)
 - Wire protocol
 - Agent loop (client contract)
@@ -41,7 +41,7 @@ here is authoritative.
 Atomic consume-and-emit protects **space state, not external side effects**: an agent
 can send an email and crash before `ack`. Side-effecting agents require idempotency at
 the effect boundary, an outbox, or a transactional tool gateway (a candidate second
-product surface — see [gotchas.md](gotchas.md)).
+product surface; see [gotchas.md](gotchas.md)).
 
 ## Leases with fencing
 
@@ -64,16 +64,16 @@ stateDiagram-v2
   distinct **`lease_lost`** status (not an error).
 - Expiry → `available`, `attempt += 1`, backoff via `available_at`.
 - **Attempt semantics per path:** `nack` +1 (agent backoff); expiry +1 (policy backoff);
-  `release` +0 (cooperative cancel — an explicit operation, not a client-chosen nack
+  `release` +0 (cooperative cancel: an explicit operation, not a client-chosen nack
   flavor; server policy may override the +0).
 - Max cumulative lease duration per (record, run): a wedged-but-alive process cannot
   renew forever.
 - **Late results:** `ack` either succeeds transactionally or fails without emitting its
   result. A fenced worker preserving late output uses an explicit diagnostic
-  operation/record type — never a side-channel commit inside a failed ack.
+  operation/record type, never a side-channel commit inside a failed ack.
 - After `max_attempts` → `dead_letter`.
 
-## Idempotency (ordering is load-bearing)
+## Idempotency (ordering is critical)
 
 For every state-changing operation:
 
@@ -84,8 +84,8 @@ lookup (principal, operation, idempotency_key)
   absent                      -> validate lease/eligibility, execute, store response
 ```
 
-Rationale: `ack` commits, the HTTP response is lost, the agent retries — the task is now
-consumed and the lease invalid; validating the lease first would falsely return
+Rationale: `ack` commits, the HTTP response is lost, the agent retries. The task is now
+consumed and the lease invalid, and validating the lease first would falsely return
 `lease_lost` for a succeeded operation. Stored responses include generated result IDs;
 concurrent same-key requests serialize. All state-changing operations accept idempotency
 keys; stale `nack` retries may be terminal.
@@ -102,14 +102,14 @@ nack(lease, reason, backoff_s) -> ok | lease_lost
 release(lease, reason) -> ok | lease_lost       # cooperative cancel, attempt +0
 renew(lease) -> lease' | lease_lost
 watch(pattern) -> watch_id / event stream
-control-plane ops (kinds, patterns, definitions, runs — see design-auth.md)
-ops plane      (stats, events, envelope query, diagnostics, remediation — see design-observability.md)
+control-plane ops (kinds, patterns, definitions, runs; see design-auth.md)
+ops plane      (stats, events, envelope query, diagnostics, remediation; see design-observability.md)
 ```
 
 **Artifacts are a payload plane beside these verbs, not an eleventh one.** `POST /v0/artifacts`,
 `GET /v0/artifacts/{id}` and `POST /v0/artifacts/{id}/capability` move BYTES; the coordination
 still happens through `put`/`take`/`query` on the `artifact` *record* they produce. This is why
-there is no `put_artifact` verb in the list above — an artifact is a record with its payload
+there is no `put_artifact` verb in the list above. An artifact is a record with its payload
 stored out of line, so nothing about matching, leasing or authorization is special-cased for it.
 See [design-data-model.md](design-data-model.md) §2.4.
 
@@ -119,7 +119,7 @@ See [design-data-model.md](design-data-model.md) §2.4.
   within `claim_until`.
 - **Pagination is keyset, not snapshot.** Stable with respect to the selected *immutable*
   sort keys (`created_at`, record ID); runtime eligibility is evaluated per page fetch.
-  `effective_priority` is mutable under aging, so it is not a cursor key — aging
+  `effective_priority` is mutable under aging, so it is not a cursor key. Aging
   influences scheduler admission, not cursor order. "Snapshot cursor" is reserved for a
   real snapshot implementation, deferred.
 - **Long-poll cancellation:** client disconnect releases nothing; only leases hold
@@ -135,12 +135,12 @@ experimental **observability + control** surface lives under `/v0/ops/*` (`stats
 `diagnostics`, envelope query `records?state=…`, record introspection
 `records/{id}[/envelope|/lineage|/graph]`, and remediation
 `records/{id}/{reclaim|dead-letter|requeue|declassify}`). The prefix split carries both the
-stability boundary and the auth boundary — `/v0/ops/*` is **grant-gated (enforced)** to operator
+stability boundary and the auth boundary. `/v0/ops/*` is **grant-gated (enforced)** to operator
 principals; requests authenticate with `Authorization: Bearer <run-token>` (no header → the
 operator default). See [design-auth.md](design-auth.md). **Kinds are not a verb:** a kind declaration is a `kind_def`
-record on the coordination plane (`put` it, `query {kind:kind_def}` to discover) — no
+record on the coordination plane (`put` it, `query {kind:kind_def}` to discover), with no
 `/v0/kinds` endpoint. Principle: express features through the substrate (records, queries,
-content-routing) rather than as scattered endpoints — see [CLAUDE.md](../CLAUDE.md)
+content-routing) rather than as scattered endpoints; see [CLAUDE.md](../CLAUDE.md)
 "Design principle".
 
 - Watch: `POST /watches` → `GET /watches/{id}/events` (SSE, event cursor, resumption).
@@ -152,8 +152,8 @@ content-routing) rather than as scattered endpoints — see [CLAUDE.md](../CLAUD
   `?cursor=`. The 410 floor is 0 until event-log GC lands (M2), so it is dormant. SDK:
   `client.watch()` (async generator); `agentLoop` consumes it (event-driven, poll fallback). Watch
   creation is **grant-gated** (`Space.authorizeWatch`, `403 forbidden` without a grant on the kind);
-  `agentLoop` treats a `403` as a permanent config error — it logs it loudly and relies on the poll
-  fallback — while a transient watch drop is retried. (For the `agentLoop` pattern this never fires:
+  `agentLoop` treats a `403` as a permanent config error, logging it loudly and relying on the poll
+  fallback, while a transient watch drop is retried. (For the `agentLoop` pattern this never fires:
   the loop watches the kinds it `take`s, and the required `take` grant already authorizes the watch.)
 - Watches are **ephemeral run resources** (die with the run). Durable subscriptions are
   deferred.

@@ -1,15 +1,15 @@
 // How the chat waits for a worker, and what it shows while waiting.
 //
-// Three things are braided together here because they are one concern — "await a record that
-// another process will produce, without going blind":
+// Three things are braided together here because they are one concern: "await a record that
+// another process will produce, without going blind".
 //
 //   1. WAKEUPS. A background watch per streaming kind turns "a matching record became available"
 //      into a signal, so a turn advances when the runtime says so rather than on a fixed timer.
 //      The fallback tick means a dropped or forbidden watch degrades to polling, never to a stall.
 //   2. PROGRESS. Workers publish what they are doing as `progress` records; the status line is
 //      those records, rendered.
-//   3. STALL DIAGNOSIS. No progress record at all means nobody CLAIMED the work — a configuration
-//      failure, not slowness — so the chat names it instead of burning its timeout in silence.
+//   3. STALL DIAGNOSIS. No progress record at all means nobody CLAIMED the work, a configuration
+//      failure rather than slowness, so the chat names it instead of burning its timeout in silence.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import { endStatus, showStatus } from "./terminal.ts";
@@ -72,7 +72,7 @@ export class Waiter {
    *   the user has already scrolled past.
    * @param onProgress called once per NEWLY seen progress record, in emission order. This is how a
    *   caller reacts to a stage the moment a worker reports it, instead of learning it afterwards
-   *   from the result — which is the difference between a label that precedes the text it
+   *   from the result. That is the difference between a label that precedes the text it
    *   describes and one that trails it.
    */
   constructor(

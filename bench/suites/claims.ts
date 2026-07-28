@@ -1,4 +1,4 @@
-// The coordination loop — take/ack — and what happens when workers contend for the same work.
+// The coordination loop (take/ack), and what happens when workers contend for the same work.
 //
 // Contention is the interesting measurement: a claim is a single-winner gate (`FOR UPDATE …
 // SKIP LOCKED` on Postgres/PGlite), so throughput under N concurrent claimers is the number that
@@ -29,7 +29,7 @@ export const claimBenches: Bench[] = [
   },
   {
     name: "ack-with-result",
-    note: "Ack that emits a result record — the fan-in write path, two records in one transaction.",
+    note: "Ack that emits a result record. This is the fan-in write path, two records in one transaction.",
     run: async (ctx) => {
       ctx.space.registerKind({ kind: "task", indexedPaths: [] });
       ctx.space.registerKind({ kind: "result", indexedPaths: [], claimable: false });
@@ -61,7 +61,7 @@ export const claimBenches: Bench[] = [
         //
         // A null take is NOT proof the queue is drained. `take` locks its whole candidate set
         // (`for update ... skip locked` with no limit), so under contention a claimer can be
-        // handed nothing while thousands of records remain — every candidate is locked by
+        // handed nothing while thousands of records remain, because every candidate is locked by
         // somebody else's open transaction. Counting a null as "drained" ends the run early and
         // reports a throughput figure for work that never happened, so nulls are counted
         // separately and the loop keeps going until the claims actually add up.

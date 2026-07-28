@@ -58,8 +58,9 @@ export async function handleTake(space: Space, req: Request, principal: string):
 
   const recordId = typeof j.recordId === "string" ? j.recordId : undefined;
   // `typeof [] === "object"`, so a bare object check lets `pattern: []` and `pattern: {}` through
-  // to the matcher with no kind — a 500 for what is plainly a bad request. Present-but-invalid is
-  // rejected rather than silently ignored: dropping it would claim a different record than asked.
+  // to the matcher with no kind. That is a 500 for what is plainly a bad request.
+  // Present-but-invalid is rejected rather than silently ignored: dropping it would claim a
+  // different record than asked.
   let pattern: Pattern | undefined;
   if (j.pattern !== undefined && j.pattern !== null) {
     const t = j.pattern as Record<string, unknown>;
@@ -87,7 +88,7 @@ export async function handleTake(space: Space, req: Request, principal: string):
         pattern = { kind, match: combineMatch(pattern?.match, access.constraint), orderBy: pattern?.orderBy };
       }
       // A claim returns the record BODY, so a self scope has to narrow `take` exactly as it
-      // narrows `query` — otherwise draining the queue reads every record of the kind. It cannot
+      // narrows `query`. Otherwise draining the queue reads every record of the kind. It cannot
       // ride in the pattern: `created_by` is envelope metadata, which patterns never see.
       createdBy = access.createdBy;
     }
@@ -105,7 +106,7 @@ export async function handleAck(space: Space, req: Request, principal: string): 
   if (!j) return problem(400, "invalid_body", "expected a JSON object");
   const lease = parseLease(j);
   if (!lease) return problem(400, "invalid_lease", "missing or malformed lease");
-  // The ack result is a PutRequest, so it needs the same type checking as a direct put — without
+  // The ack result is a PutRequest, so it needs the same type checking as a direct put. Without
   // it a malformed result record fails inside the adapter as a 500 instead of a 400.
   const result = pickResult(j.result);
   if (typeof result === "string") return problem(400, "invalid_body", result);

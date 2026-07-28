@@ -1,7 +1,7 @@
 // Tool-worker. Claims `tool_call` records for the tools it serves and acks a `tool_result`.
 // Launched by chat.ts with tightly scoped permissions: --allow-read=<sandbox dirs> and
 // --allow-net=127.0.0.1:<port> ONLY, and NO --allow-env. So the process that can read
-// files cannot reach the network beyond the local space and cannot read secrets — reading
+// files cannot reach the network beyond the local space and cannot read secrets: reading
 // a file can't lead to exfiltrating it. Config comes via args, not env (it has no env access).
 
 import { agentLoop } from "../../../sdk/ts/loop.ts";
@@ -16,7 +16,7 @@ import { publishCapability } from "../space/capability.ts";
 
 
 const url = arg("--url") ?? "http://127.0.0.1:7788";
-const token = arg("--token"); // agent:chat-tools run token — the worker's own identity
+const token = arg("--token"); // agent:chat-tools run token (the worker's own identity)
 const sessionToken = arg("--session-token"); // the session principal for space_* tools (absent = operator)
 const roots = argAll("--dir");
 const client = new RadiaClient(url, token ? { token } : {}); // claims tool_calls, publishes capabilities
@@ -31,7 +31,7 @@ const tools = { ...makeTools(roots), ...makeInspectTools(spaceClient), ...makeRe
 
 // Publish this worker's capabilities as `capability` records so agents can DISCOVER the
 // available tools from the space (no hard-coded tool list). In a real system this
-// registration would be grant-gated — an untrusted worker publishing a tool is a threat.
+// registration would be grant-gated: an untrusted worker publishing a tool is a threat.
 const schemas = [...TOOL_SCHEMAS, ...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS, ...SAVE_SCHEMAS];
 for (const name of Object.keys(tools)) {
   const def = schemas.find((s) => s.function.name === name);

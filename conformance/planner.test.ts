@@ -1,14 +1,14 @@
 // Planner statistics for declared body paths (Postgres only).
 //
 // `StorageAdapter.prepareKind` is an OPTIONAL physical hint, so there is nothing to assert about
-// it in the shared conformance run — SQLite implements none of it and must not be expected to.
+// it in the shared conformance run. SQLite implements none of it and must not be expected to.
 // What is worth pinning is on the Postgres side and structural rather than timed: the statistics
 // object is created for a declared path, declaring the same kind again does not accumulate
 // objects, and a path that cannot be inlined into DDL is skipped rather than escaped.
 //
-// Deliberately NOT asserted here: the speedup. It is real and reproducible — a claim over 20k
+// Deliberately NOT asserted here: the speedup. It is real and reproducible. A claim over 20k
 // records goes 9.75ms → 3.37ms p50, and the plan changes from sorting 9,168 buffers to an ordered
-// walk of `idx_runtime_claim_order` over 1,364 — but a timing assertion in CI is a flake
+// walk of `idx_runtime_claim_order` over 1,364. But a timing assertion in CI is a flake
 // generator, and the plan text is a Postgres version detail. See gotchas.md, "a claim on Postgres
 // is planned on a guess", for the measurements and the method to re-run them.
 
@@ -55,7 +55,7 @@ Deno.test("planner: a path that cannot be inlined into DDL is skipped, not escap
   try {
     // The path is INLINED into the statistics expression (as it is into pushdown's JSON path), so
     // the alphabet restriction is what makes inlining injection-proof. A path outside it simply
-    // gets no statistics — it also cannot be pushed down, so there is nothing to estimate.
+    // gets no statistics; it also cannot be pushed down, so there is nothing to estimate.
     await adapter.prepareKind("odd", ["with space", "quote'; drop table records; --", "", "a..b", "a-b"]);
     assertEquals(await statNames(adapter), [], "no object created for an unpushable path");
 

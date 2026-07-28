@@ -1,9 +1,9 @@
 # Self-modeling (research)
 
-Whether — and how narrowly — a Radia space can hold an agent's model of *its own process*
+Whether (and how narrowly) a Radia space can hold an agent's model of *its own process*
 in the same medium as its model of the world. Research, not a milestone: nothing here is
 scheduled, and the first deliverable is a measurement over records that already exist, not
-code. Gated the same way [design-marketplace.md](design-marketplace.md) is gated —
+code. Gated the same way [design-marketplace.md](design-marketplace.md) is gated:
 speculative ahead of a first user, so do not build on spec.
 
 ## Contents
@@ -20,8 +20,8 @@ speculative ahead of a first user, so do not build on spec.
 ## The claim, stated narrowly
 
 > A substrate where an agent's **report about its own process** and the runtime's
-> **authoritative measurement of that same process** live in one medium — same
-> immutability, same provenance, same authorization — so the **discrepancy between them is
+> **authoritative measurement of that same process** live in one medium (same
+> immutability, same provenance, same authorization), so the **discrepancy between them is
 > a query**.
 
 That is the whole defensible thesis. It is narrower than "self-aware agents" and it is
@@ -34,7 +34,7 @@ decides what they are worth*
 ([design-data-model.md](design-data-model.md)). An agent asserting "I am reliable at this"
 arrives through the same door as any other unverified claim. What makes it worth anything is
 the runtime-authoritative counterpart the agent cannot forge: attempt counts, lease losses,
-escalations, stall signals — envelope facts. Calibration is the gap between them.
+escalations, stall signals, all envelope facts. Calibration is the gap between them.
 
 ```mermaid
 flowchart LR
@@ -48,7 +48,7 @@ them. That is the claim to defend, and the only one.
 
 ## The primary illustration: capability claimed vs. flow measured
 
-The sharpest instance of the pair is not a single decision — it is **competence**, and half
+The sharpest instance of the pair is not a single decision. It is **competence**, and half
 of it is already built.
 
 - **`capability` records are unmeasured competence claims.** A worker advertises "I serve
@@ -61,7 +61,7 @@ Both are ordinary records in one medium, joinable along lineage, and the claim w
 before anyone knew it would be scored. That is a better demonstration than any single
 decision, because it is about what an agent *is* rather than what it chose once. When the
 marketplace lands ([design-marketplace.md](design-marketplace.md)), a bid is the same
-competence claim with something staked on it — and flows are what make bids scoreable.
+competence claim with something staked on it, and flows are what make bids scoreable.
 
 Escalation (below) stays in the plan as the **cheap first measurement**, not the
 illustration: it needs no new machinery and its data already exists.
@@ -73,11 +73,11 @@ Four properties exist today and were not built for this:
 - **One type universe.** The system's own machinery is expressed in its own medium: kinds
   are `kind_def` records, permissions are `grant` records, capabilities are `capability`
   records, runs are `agent_run` records (CLAUDE.md, "express features through the substrate").
-  A `self_state` kind needs no new machinery — it routes, taints, has lineage, is
+  A `self_state` kind needs no new machinery: it routes, taints, has lineage, is
   grant-gated, is watchable.
 - **Immutability makes revision legible.** A revised belief is a successor record, so "what
   did it hold at t1 versus t2" is a lineage query rather than a lost overwrite. See the
-  caveat under *Build order* — the link between successor and predecessor is convention,
+  caveat under *Build order*: the link between successor and predecessor is convention,
   not enforcement.
 - **Two lineages, deliberately not merged.** `parent_ids` is causal/data lineage;
   `delegation_context` is authority, server-derived from the claimed lease and never from
@@ -93,7 +93,7 @@ Four properties exist today and were not built for this:
 
 **Taint is narrower than it looks.** It is one bit, and it does not carry the source. The
 source is in `parent_ids`. So a space can say *this is untrusted* and *this came from
-that*, but the join — untrusted **because of which** parent — is not materialized anywhere.
+that*, but the join (untrusted **because of which** parent) is not materialized anywhere.
 For any honest self-report that join is the thing you want, and it is a query nobody has
 written rather than a capability that exists.
 
@@ -103,7 +103,7 @@ Each of these was checked against the source; none is a guess.
 
 | Capability | Blocker | Where |
 |---|---|---|
-| An agent reading its own state | `/v0/ops/*` is **binary operator privilege** — no scoped form | `src/server/http.ts` ops gate |
+| An agent reading its own state | `/v0/ops/*` is **binary operator privilege**, with no scoped form | `src/server/http.ts` ops gate |
 | An agent raising an alarm about itself | `signal` is **write-protected** (`human:*` or the supervisor only) | `WRITE_PROTECTED_KINDS` in `src/core/kinds.ts` |
 | Scoping ops access by "my own records" | Grant patterns compile against **declared body paths** (`requireIndexed`); `created_by` is runtime metadata the matcher never sees | `src/core/matching.ts` |
 | Attention as scarcity (a contended focus lease) | Watches wake only on records becoming **available**, so a *claim* broadcasts nothing; and `effective_priority` is hardcoded `0` until the scheduler (M3) | `handlers/watches.ts`, `Space.putRaw` |
@@ -114,9 +114,10 @@ Two of these deserve emphasis because they are easy to underestimate.
 
 **Self-scoped introspection is not "pattern-scoped grants, extended."** Pattern-scoped
 grants narrow a *body* match. Envelope state, attempt counts and `created_by` are precisely
-what the routing language is forbidden to see — the property praised two sections above. A
-self-scope therefore needs a **second selector vocabulary over the envelope**, which is new
-design work that touches a deliberate boundary. That is worth doing; it is not a small reuse.
+what the routing language is forbidden to see. That is the property praised two sections
+above. A self-scope therefore needs a **second selector vocabulary over the envelope**, which
+is new design work that touches a deliberate boundary. That is worth doing; it is not a
+small reuse.
 
 **Every reflexive capability is currently reserved to the outside.** Reading your own
 process state needs operator privilege; raising an alarm about your own state needs
@@ -126,7 +127,7 @@ interrupt itself. That is one shape, applied twice.
 ## The baseline experiment (already run, by accident)
 
 `escalate` is already a self-report: the model declaring *I am out of depth*
-(`examples/chat/workers/inference.ts`). The outcome is already recorded — which tier
+(`examples/chat/workers/inference.ts`). The outcome is already recorded: which tier
 answered, whether escalation happened (`escalatedFrom`), whether the turn produced an answer.
 Both halves of the pair exist in the record stream, joinable by `replyTo`/`parent_ids`.
 
@@ -136,8 +137,8 @@ while the cheap tier answered an aggregation question from invented numbers. The
 was restored on that evidence ([gotchas.md](gotchas.md), rejected approaches).
 
 Read that as the finding it is: **the self-report was uncalibrated, and the substrate
-measured it.** No new kind, no new endpoint, no new worker — a query over records that were
-already there.
+measured it.** It took no new kind, no new endpoint and no new worker, only a query over
+records that were already there.
 
 So the first deliverable is that query, run deliberately rather than incidentally: escalation
 rate against turns that demonstrably needed a stronger model, over a real session. That is
@@ -163,8 +164,8 @@ progress delta*. Invert the predicate:
 - repetition **without** progress → rumination → interrupt
 - repetition **with** progress → skill → abstract and keep
 
-One primitive — a signature over ancestry — read two ways. The M3 livelock work and success
-mining are one implementation, and the doc should not treat them as separate items.
+That is one primitive (a signature over ancestry) read two ways. The M3 livelock work and
+success mining are one implementation, and the doc should not treat them as separate items.
 
 **A flow is a signature, not a subgraph.** Abstract a completed subgraph to the sequence of
 `(kind, agent)` along its ancestry, dropping ids and payloads:
@@ -177,7 +178,7 @@ message(user) → llm_call{fast} → tool_call{search_files}
 
 Group by signature; report occurrences, outcome distribution, median duration, and exemplar
 ids. Emit a `flow` record whose `parent_ids` point at the exemplars, so successor semantics
-give "what I do well, revised over time" **with the evidence attached** — and so the
+give "what I do well, revised over time" **with the evidence attached**, and so the
 measurement itself has provenance instead of living in a notebook the system cannot read.
 
 **Why this matters beyond a nicer report:**
@@ -201,7 +202,7 @@ measurement itself has provenance instead of living in a notebook the system can
   bucketed counts and payloads dropped, and treat granularity as a parameter to measure, not
   a constant to guess.
 - **Survivorship.** Only completed DAGs have shapes. Much of the signal is in the comparison
-  with partial ones — which shapes tend *not* to terminate — so partial subgraphs are
+  with partial ones (which shapes tend *not* to terminate), so partial subgraphs are
   first-class input, not noise to filter.
 - **Circularity, again.** Success means: terminates in a record of the expected kind, no
   `dead_letter` in the subgraph, no round cap reached. Never a model's verdict that a flow
@@ -211,7 +212,7 @@ measurement itself has provenance instead of living in a notebook the system can
 acceptance test rather than a demo: does the miner independently recover
 `job → task×N → result×N → summary`, with n and success rate, *without being told to look for
 it*? The stress generator ([../examples/stress/](../examples/stress/)) then supplies volume
-with deliberate chaos mixed in — a corpus where which shapes were poisoned is known in
+with deliberate chaos mixed in: a corpus where which shapes were poisoned is known in
 advance.
 
 ## First queries: what the self-model is made of
@@ -220,7 +221,7 @@ Ranked by how mechanical the ground truth is, because that is what makes a numbe
 trusting. The rule throughout: **never let a model's judgment be the ground truth for a
 model's self-report.** Envelope facts, tool errors, round counts and wall-clock only.
 
-Structurally, every query below straddles the two planes — the self-report is in record
+Structurally, every query below straddles the two planes: the self-report is in record
 **bodies**, the measurement is in the **envelope** and the **event log**. That is the same
 boundary that makes self-scoped ops (build order step 4) the enabling change.
 
@@ -228,30 +229,30 @@ boundary that makes self-scoped ops (build order step 4) the enabling change.
 
 | # | Self-report | Ground truth | Miscalibration looks like |
 |---|---|---|---|
-| 1 | `leaseSeconds` on every `take` — an explicit prediction of how long this work takes | take→ack elapsed from the event log; a lease loss *is* the prediction failing | overrun rate ≫ 0 (churn, duplicate execution); ratio ≈ 0.01 (over-conservative, blocks others via `claim_until`) |
+| 1 | `leaseSeconds` on every `take`, an explicit prediction of how long this work takes | take→ack elapsed from the event log; a lease loss *is* the prediction failing | overrun rate ≫ 0 (churn, duplicate execution); ratio ≈ 0.01 (over-conservative, blocks others via `claim_until`) |
 | 2 | A `nack` asserts "retry will help" | did a later attempt ack, or did it exhaust `maxAttempts` into `dead_letter`? | P(eventual ack \| ≥1 nack) near zero for a kind: that worker cannot tell transient from permanent |
 | 3 | Implicit: "retrying helps" | distribution of `attempt` at successful ack | successes cluster at attempt 0 with a tail that never converts → `maxAttempts` is wrong |
 
 Query 1 is the cleanest self-report/outcome pair in the system and nobody would call it
 self-modeling: a prediction, made once per claim, with an automatic verdict. Queries 2 and 3
-have a corpus on demand — the stress example manufactures poisoned work by design, so the
+have a corpus on demand: the stress example manufactures poisoned work by design, so the
 sample size is thousands rather than tens.
 
 ### Turn-level, mechanical ground truth, needs a join
 
 | # | Self-report | Ground truth | Miscalibration looks like |
 |---|---|---|---|
-| 4 | `escalate` — "I am out of depth" (an `llm_call` carrying `escalatedFrom`) | turns that hit the round cap, ended `finishReason:"error"`, or contained `tool_result.ok:false`, split by whether they escalated | non-escalating turns hit the cap far more often → under-escalation, quantified |
+| 4 | `escalate`, meaning "I am out of depth" (an `llm_call` carrying `escalatedFrom`) | turns that hit the round cap, ended `finishReason:"error"`, or contained `tool_result.ok:false`, split by whether they escalated | non-escalating turns hit the cap far more often → under-escalation, quantified |
 | 5 | The tier the router chose (predicted difficulty) | rounds the turn actually needed, and whether it escalated | plot rank against rounds: monotone is calibrated, inversions are the interesting cases |
-| 6 | A tool call — "this tool, these arguments, answers it" | `tool_result.ok`, plus the same tool re-called in the same turn with different arguments | low first-call success for one tool usually means a bad **description**, which is where usage lives by design — the measurement points at its own fix |
+| 6 | A tool call asserting "this tool, these arguments, answers it" | `tool_result.ok`, plus the same tool re-called in the same turn with different arguments | low first-call success for one tool usually means a bad **description**, which is where usage lives by design, so the measurement points at its own fix |
 
 ### Flow-level, once step 2 exists
 
 | # | Self-report | Ground truth | Miscalibration looks like |
 |---|---|---|---|
-| 7 | A `capability` record — competence, advertised in advance | the measured success rate of flows that agent participates in | a tool advertised confidently that appears mostly in flows that do not terminate |
-| 8 | A `flow` record's own success rate — the system's belief about what it does well | the same signature measured over a later window | **drift**: a shape that used to terminate and no longer does, which is the earliest honest signal that something broke |
-| 9 | Implicit: "this shape is how the work gets done" | complete versus partial subgraphs sharing a prefix | shapes that reliably start and rarely finish — the failure signal recovered from success mining, without being failure-first |
+| 7 | A `capability` record: competence, advertised in advance | the measured success rate of flows that agent participates in | a tool advertised confidently that appears mostly in flows that do not terminate |
+| 8 | A `flow` record's own success rate, the system's belief about what it does well | the same signature measured over a later window | **drift**: a shape that used to terminate and no longer does, which is the earliest honest signal that something broke |
+| 9 | Implicit: "this shape is how the work gets done" | complete versus partial subgraphs sharing a prefix | shapes that reliably start and rarely finish: the failure signal recovered from success mining, without being failure-first |
 
 Query 8 is the one that makes the self-model *live*: it is the flow record checking itself,
 and a revision is a successor with the prior as parent, so the developmental trace comes out
@@ -260,7 +261,7 @@ of the ordinary write path.
 ### Designed-in, waiting on data
 
 `requested_priority` versus server-assigned `effective_priority` is already named in
-[design-data-model.md](design-data-model.md) as a claim the runtime re-decides — the purest
+[design-data-model.md](design-data-model.md) as a claim the runtime re-decides: the purest
 pair in the design, empty until the scheduler (M3) computes the second half. A marketplace
 `bid` is the same claim with something staked on it.
 
@@ -271,7 +272,7 @@ pair in the design, empty until the scheduler (M3) computes the second half. A m
   scan); `llm_result` gains `tier` (which tier answered is currently unmatchable).
 - **Record the turn outcome.** The round cap is printed to the terminal and never written, so
   query 4's ground truth does not exist yet. A keyword `status` (`answered` / `round_cap` /
-  `error`) makes it a query — there is no boolean index type, so do not contort one.
+  `error`) makes it a query. There is no boolean index type, so do not contort one.
 - **Dual-dispatch for the counterfactual.** This is the one place worth spending real effort:
   the router *chooses* the tier, so tiers never see comparable work and their success rates
   measure the router's sorting, not the models. Put a sampled turn as two `llm_call`s at
@@ -288,7 +289,7 @@ somewhere the system cannot read them.
 ## Build order, and what each step is waiting for
 
 1. **The calibration query** (above). Costs nothing, needs nothing, produces the baseline.
-2. **Flow mining — success recognition, which subsumes livelock detection.** One signature
+2. **Flow mining: success recognition, which subsumes livelock detection.** One signature
    computation over ancestry, read both ways (section above). Emits `flow` records with
    exemplars as parents. Prerequisite: a reverse edge index, because `childrenOf` is a `LIKE`
    scan. Acceptance test: recover the pipeline example's shape unprompted.
@@ -302,15 +303,16 @@ somewhere the system cannot read them.
    say so. Deliberately after flow mining, and deliberately conditional: much of what a
    `self_state` snapshot would carry is `space_doctor` with a pronoun attached, and the parts
    that are not are usually better expressed as a flow that stopped terminating.
-4. **Self-scoped ops grants** — the enabling change, and the one to specify *after* step 2,
-   because the worker's failures tell you which envelope fields a self-scope actually needs.
+4. **Self-scoped ops grants.** This is the enabling change, and the one to specify *after*
+   step 2, because the worker's failures tell you which envelope fields a self-scope actually
+   needs.
    Designing the selector vocabulary first is guessing.
-5. **The interrupt half of step 2** — quarantine on no-progress. Needs step 4, or a non-privileged
+5. **The interrupt half of step 2**: quarantine on no-progress. Needs step 4, or a non-privileged
    alarm kind, or it stays a third-person report.
 6. **Attention as a scarce lease.** The research-interesting one, and the most blocked:
    needs `effective_priority` to have a coalition signal (M3), and ignition must be an
    **emitted record** rather than a lease transition, since claiming a record broadcasts
-   nothing. Emitting is the better design anyway — the broadcast then has a body, provenance
+   nothing. Emitting is the better design anyway: the broadcast then has a body, provenance
    and a history.
 7. **Forgetting.** Blocked on retention GC. Note the ordering: step 2 produces the
    abstraction that makes forgetting defensible, so this is downstream of flow mining rather

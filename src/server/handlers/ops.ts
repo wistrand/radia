@@ -2,8 +2,8 @@
 // envelope introspection, lineage/children/graph, derived diagnostics, and control-plane
 // remediation (reclaim / dead-letter / requeue / declassify).
 //
-// All of it goes through the public `Space` surface — no privileged backdoor. The dev console
-// is a consumer of this plane, not its owner.
+// All of it goes through the public `Space` surface. There is no privileged backdoor. The dev
+// console is a consumer of this plane, not its owner.
 
 import type { Space } from "../../core/space.ts";
 import type { RecordState, StatsScope } from "../../storage/adapter.ts";
@@ -24,10 +24,10 @@ function describeScope(scope?: StatsScope | null) {
     self: true,
     kinds: scope.kinds ?? [],
     // Kinds this caller can READ in full even though these counts cover only its own records. Not
-    // a caveat about completeness in general — a specific, checkable statement that `query` on
+    // a caveat about completeness in general. It is a specific, checkable statement that `query` on
     // these kinds returns more than the number above, so the number is never mistaken for a total.
     ...(more.length > 0 ? { alsoReadableInFull: more } : {}),
-    note: "scoped to your own records, on the kinds you are granted — an empty result means nothing " +
+    note: "scoped to your own records, on the kinds you are granted. An empty result means nothing " +
       "visible to you, NOT that the space is empty" +
       (more.length > 0
         ? `. Your grants let you READ every record of ${more.join(", ")}, so a query there returns more than these counts`
@@ -51,7 +51,7 @@ export async function handleStats(space: Space, scope?: StatsScope | null): Prom
  * Per-record ops reads are scoped by a VISIBILITY check rather than a filter: fetch, then decide.
  *
  * A scoped principal must not be able to distinguish "someone else's record" from "no such record",
- * so both answer 404 — a 403 here would confirm the id exists, which is exactly the probe a
+ * so both answer 404. A 403 here would confirm the id exists, which is exactly the probe a
  * per-record endpoint invites.
  */
 async function visible(space: Space, recordId: string, scope?: StatsScope | null): Promise<boolean> {
@@ -72,10 +72,10 @@ export async function handleEnvelopeQuery(space: Space, url: URL, scope?: StatsS
   const state = url.searchParams.get("state");
   const valid = new Set(["available", "leased", "consumed", "dead_letter"]);
   if (!valid.has(state ?? "")) {
-    // `expired` is the one people reach for and it is NOT a state — a lapsed lease leaves the
+    // `expired` is the one people reach for and it is NOT a state. A lapsed lease leaves the
     // record `leased`. Never accept it and answer zero rows: that reads as "no expired leases"
     // rather than "wrong question", so it is named explicitly here.
-    const hint = state === "expired" ? " — expiry is a predicate over leased records: state=leased&expired=1" : "";
+    const hint = state === "expired" ? " (expiry is a predicate over leased records: state=leased&expired=1)" : "";
     return problem(400, "invalid_state", `state must be one of ${[...valid].join(", ")}${hint}`);
   }
   const expired = url.searchParams.get("expired") === "1" || url.searchParams.get("expired") === "true";
@@ -106,7 +106,7 @@ export async function handleEnvelope(space: Space, recordId: string, scope?: Sta
 /**
  * The event log. A scoped caller sees only events IT CAUSED, on the kinds it is scoped to.
  *
- * The filter is on `runId` — the principal that performed the operation — which under-returns on
+ * The filter is on `runId` (the principal that performed the operation), which under-returns on
  * purpose: an event another agent caused on your record is not shown. Under-returning is the safe
  * direction, and the alternative (resolving every event's record to check its author) is a lookup
  * per event on the hottest read in the plane. Note that a filtered page can be short without being
@@ -126,12 +126,12 @@ export async function handleEvents(space: Space, url: URL, scope?: StatsScope | 
 
   // A scoped caller sees only events IT CAUSED, on the kinds it is scoped to. The `runId` filter
   // under-returns on purpose: an event another agent caused on your record is not shown, and the
-  // alternative — resolving every event's record to check its author — is a lookup per event on
+  // alternative (resolving every event's record to check its author) is a lookup per event on
   // the busiest read in the plane.
   //
   // FILTERING BREAKS CURSOR PAGING, which is the part that is easy to miss. An empty page is how
   // every caller detects the end of the log, so a page whose events were all withheld reads as
-  // "nothing further" — and a scoped caller could never reach its own events past a run of foreign
+  // "nothing further". A scoped caller could then never reach its own events past a run of foreign
   // ones. Two things fix that: scan forward across raw pages rather than filtering one, and report
   // `nextAfter` from the last RAW event examined, so the caller can advance past what it cannot see.
   const mine = [];
@@ -156,13 +156,13 @@ export async function handleEvents(space: Space, url: URL, scope?: StatsScope | 
     ...(mine.length < scanned
       ? {
         withheld: scanned - mine.length,
-        // WHY, because the number alone reads as "ask for a grant and this goes away" — and it
+        // WHY, because the number alone reads as "ask for a grant and this goes away". It
         // does not. The filter is on which principal PERFORMED the operation, so no grant on any
         // record kind widens it. Sessions burned turn after turn requesting kind grants (and
         // inventing kinds to request) chasing an answer this endpoint cannot give them; saying so
         // once, here, is cheaper than every caller learning it by exhaustion.
         withheldNote: "events are filtered by which principal performed the operation, not by " +
-          "record kind — no grant on a kind widens this. Seeing another principal's activity " +
+          "record kind. No grant on a kind widens this. Seeing another principal's activity " +
           "needs an operator session.",
       }
       : {}),
@@ -179,7 +179,7 @@ export async function handleLineage(space: Space, recordId: string, scope?: Stat
   return Response.json({ lineage, scope: describeScope(scope) });
 }
 
-/** Records that reference this one via parent_ids (its children — the reverse of lineage). */
+/** Records that reference this one via parent_ids (its children, the reverse of lineage). */
 export async function handleChildren(
   space: Space,
   recordId: string,
@@ -192,7 +192,7 @@ export async function handleChildren(
   const after = url?.searchParams.get("after") ?? undefined;
   const children = await space.getChildren(recordId, limit, after ? { after } : undefined);
   // The children are filtered too: reaching a visible record does not make everything hanging off
-  // it visible — another agent's result on your task is still theirs.
+  // it visible. Another agent's result on your task is still theirs.
   const shown = scope ? children.filter((c) => visibleRec(c, scope)) : children;
   return Response.json({
     children: shown,
@@ -242,7 +242,7 @@ export async function handleRemediate(space: Space, req: Request): Promise<Respo
   let j: Record<string, unknown>;
   try {
     const parsed = await req.json();
-    // `null` and `[]` are valid JSON but not objects — without this the field reads below throw.
+    // `null` and `[]` are valid JSON but not objects. Without this the field reads below throw.
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return problem(400, "invalid_body", "expected a JSON object");
     }

@@ -4,7 +4,7 @@
 //   deno task chat-test context      # one suite, by name
 //
 // Why this exists. The chat app is the end-to-end exercise of the runtime, and in practice it is
-// where bugs surface first — most of them not in the runtime but in this app's own handling of
+// where bugs surface first. Most of them are not in the runtime but in this app's own handling of
 // accumulated state: a resumed thread with a system message mid-conversation, a capability page
 // that no longer reaches the newest tool, a grant narrowed in a way that removed a write
 // permission. None of those needed a model to reproduce, and none were caught by reading the code.
@@ -14,18 +14,18 @@
 // space on its own port and cleans up.
 //
 // Adding one: write `smoke-<name>.ts` that prints `OK  ` / `FAIL` lines and exits 0, then add it
-// below. Keep them independent — a suite that needs another to have run first is a suite that will
+// below. Keep them independent: a suite that needs another to have run first is a suite that will
 // fail confusingly.
 
 const SUITES = [
   { name: "context", file: "smoke-context.ts", about: "provider payload assembly: system placement, windowing, orphaned tool replies" },
-  { name: "longthread", file: "smoke-longthread.ts", about: "a long, awkward conversation — invariants checked at every position in it" },
+  { name: "longthread", file: "smoke-longthread.ts", about: "a long, awkward conversation: invariants checked at every position in it" },
   { name: "procedures", file: "smoke-procedures.ts", about: "saved procedures: save, call by name, read back, retire, shadowing, provenance" },
   { name: "resume", file: "smoke-resume.ts", about: "resuming a conversation across a real process restart" },
   { name: "selfgrant", file: "smoke-selfgrant.ts", about: "escalation: forbidden → request → approve → self-scoped reads, on both planes" },
   { name: "inspect", file: "smoke-inspect.ts", about: "the space_* tools on a busy space: paging past foreign events, and answering what the session may do" },
   { name: "scope", file: "smoke-scope.ts", about: "what a scoped session may read: identity (all its own conversations) vs conversation (this thread only)" },
-  { name: "fleet", file: "smoke-fleet.ts", about: "model advertisements: publish, restart, withdraw, revive — what the router discovers" },
+  { name: "fleet", file: "smoke-fleet.ts", about: "model advertisements the router discovers: publish, restart, withdraw, revive" },
 ];
 
 const wanted = Deno.args.filter((a) => !a.startsWith("-"));

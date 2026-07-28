@@ -5,7 +5,7 @@
 // lets a value close the attribute and inject a new one. That bug was real and shipped.
 //
 // The console is deliberately one file with no build step, so there is no module to import. Rather
-// than split it — which would trade a real architectural property for testability — the function is
+// than split it (which would trade a real architectural property for testability), the function is
 // lifted out of the page source and evaluated here. The extraction fails loudly if the function is
 // renamed or reshaped, which is the property that matters: this test cannot quietly stop testing
 // anything.
@@ -15,7 +15,7 @@ import { assert, assertEquals } from "@std/assert";
 /** Pull one top-level `function name(...) { … }` out of source text by brace balance. */
 function extractFunction(source: string, name: string): string {
   const start = source.indexOf(`function ${name}(`);
-  assert(start >= 0, `console no longer defines function ${name}() — update this test with it`);
+  assert(start >= 0, `console no longer defines function ${name}(); update this test with it`);
   let depth = 0;
   for (let i = source.indexOf("{", start); i < source.length; i++) {
     if (source[i] === "{") depth++;
@@ -51,7 +51,7 @@ Deno.test("console: a hostile value cannot break out of an attribute", () => {
 });
 
 Deno.test("console: esc coerces non-strings rather than throwing", () => {
-  // It is called on whatever a record body holds, which is any JSON value — and a console that
+  // It is called on whatever a record body holds, which is any JSON value, and a console that
   // throws while rendering shows a blank panel, not an error.
   assertEquals(esc(42), "42");
   assertEquals(esc(null), "null");
@@ -79,12 +79,12 @@ Deno.test("console: every record-derived value in the page goes through esc", ()
 
 Deno.test("console: the served page carries no credential", () => {
   // `GET /` is public so the console can bootstrap in `--auth required` mode, which means anything
-  // baked into this page is readable by anyone who can reach the port — and a harvested operator
+  // baked into this page is readable by anyone who can reach the port, and a harvested operator
   // token authorizes every verb. Never inject a credential here; the console asks for one at
   // runtime and keeps it in sessionStorage.
   assert(
     !/__RADIA_[A-Z_]*TOKEN__/.test(html),
-    "the page carries a token placeholder — something on the server may substitute a credential into it",
+    "the page carries a token placeholder, so something on the server may substitute a credential into it",
   );
   const tokenShaped = [...html.matchAll(/\b[0-9a-f]{48}\b/g)].map((m) => m[0]);
   assertEquals(tokenShaped, [], "a credential-shaped literal is baked into the served page");

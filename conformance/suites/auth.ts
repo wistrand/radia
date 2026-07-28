@@ -1,7 +1,7 @@
 // Authorization (M1 slice): kind-scoped grants as records, enforced by Space.authorize.
 // A privileged principal (human:* or the supervisor) has operator access; any other principal
 // needs a matching grant record (kind + op); reserved control kinds (grant/signal) are
-// write-protected. Grants are records, so this runs on every adapter — authorize reads them
+// write-protected. Grants are records, so this runs on every adapter: authorize reads them
 // through the normal query path. Enforcement WIRING lives at the HTTP boundary; this exercises
 // the policy directly.
 
@@ -38,7 +38,7 @@ export const authSuites: Suite[] = [
 
       // A DIFFERENT Space over the same adapter: another instance, or this one after a restart.
       // Stopping used to consult an in-memory index first and silently report `applied: false`,
-      // leaving the token working — the operator was told the stop did nothing, and it did nothing.
+      // leaving the token working. The operator was told the stop did nothing, and it did nothing.
       const other = newSpace(adapter);
       const stop = await other.stopRun(run);
       assert(stop.applied, "the stop applies without having minted the run");
@@ -76,8 +76,8 @@ export const authSuites: Suite[] = [
 
       // Runs accumulate: one per mint, and a live run re-mints on a timer. This history used to be
       // replayed into a cache from a BOUNDED page, so a stopped token kept resolving across a
-      // restart — fail-open on revocation. Resolution now reads the records per request, and this
-      // pins that the answer does not depend on how much history sits in front of it.
+      // restart, which is fail-open on revocation. Resolution now reads the records per request,
+      // and this pins that the answer does not depend on how much history sits in front of it.
       for (let i = 0; i < 600; i++) {
         await space.put({
           kind: "agent_run",
@@ -180,7 +180,7 @@ export const authSuites: Suite[] = [
       const resolved = await space.resolveToken(runToken);
       assert(resolved.ok && resolved.kind === "run" && resolved.principal === run);
 
-      // the run authorizes as its agent — grants flow down the chain
+      // the run authorizes as its agent: grants flow down the chain
       await space.authorize(run, "take", "task");
       // but only for what the agent was granted
       assertEquals(await denied(() => space.authorize(run, "put", "task")), "forbidden");
@@ -193,8 +193,8 @@ export const authSuites: Suite[] = [
       await space.put({ kind: "task", body: { tag: "t" } });
       const claimed = await space.take({ pattern: { kind: "task" } }, {}, "run:a"); // owned by run:a
       assert(claimed);
-      // a DIFFERENT run presenting the same VALID lease is fenced out on EVERY settle verb — not
-      // just ack (impersonation) but nack/release/renew (DoS on someone else's task).
+      // a DIFFERENT run presenting the same VALID lease is fenced out on EVERY settle verb: ack
+      // (impersonation) and also nack/release/renew (DoS on someone else's task).
       assertEquals((await space.ack(claimed!.lease, undefined, undefined, "run:b")).status, "lease_lost");
       assertEquals((await space.nack(claimed!.lease, {}, undefined, "run:b")).status, "lease_lost");
       assertEquals((await space.release(claimed!.lease, undefined, "run:b")).status, "lease_lost");
@@ -355,7 +355,7 @@ export const authSuites: Suite[] = [
       const s = await space.take({ pattern: { kind: "subtask" } }, {}, runB);
       const resAck = await space.ack(s!.lease, { kind: "result", body: { n: 1 } });
       assert(resAck.status === "ok" && resAck.resultId);
-      // the chain accumulates the whole delegation path — b's grant alone suffices for b's own put
+      // the chain accumulates the whole delegation path; b's grant alone suffices for b's own put
       assertEquals((await space.getRecord(resAck.resultId!))!.runtimeMeta.delegationContext!.chain, ["agent:a", "agent:b"]);
     },
   },
@@ -374,7 +374,7 @@ export const authSuites: Suite[] = [
 
       // emitting the result is blocked: agent:a lacks a put grant for `result`
       assertEquals(await denied(() => space.ack(claimed!.lease, { kind: "result", body: {} })), "forbidden");
-      // and nothing was consumed — the record is still leased
+      // and nothing was consumed: the record is still leased
       assertEquals((await space.getEnvelope(claimed!.record.id))!.state, "leased");
     },
   },
@@ -385,7 +385,7 @@ export const authSuites: Suite[] = [
       space.registerKind({ kind: "task", indexedPaths: [{ path: "op", type: "keyword" }] });
       // no grant → forbidden (the last unguarded coordination verb is now guarded)
       assertEquals(await denied(() => space.authorizeWatch("agent:w", "task")), "forbidden");
-      // a take-only grant (like the agentLoop) is enough — watch is participation, not tied to query
+      // a take-only grant (like the agentLoop) is enough: watch is participation, not tied to query
       await space.put({ kind: "grant", body: { principal: "agent:w", kind: "task", operations: ["take"], pattern: { op: "up" } } });
       assertEquals((await space.authorizeWatch("agent:w", "task")).constraint, [{ op: "up" }]); // scopes the watch
       // privileged → unrestricted
@@ -403,7 +403,7 @@ export const authSuites: Suite[] = [
       const { runToken } = await space.mintRun(definitionToken);
 
       // A fresh Space has an empty in-memory index, but the durable records are the authority:
-      // Resolution reads the records directly — there is no index to prime and none to go stale.
+      // Resolution reads the records directly. There is no index to prime and none to go stale.
       const viaFallback = await (new Space(adapter)).resolveToken(runToken);
       assert(viaFallback.ok && viaFallback.kind === "run", "fallback should resolve a minted run token");
       const runPrincipal = viaFallback.ok && viaFallback.kind === "run" ? viaFallback.principal : "";
@@ -430,7 +430,7 @@ export const authSuites: Suite[] = [
       const space = new Space(adapter);
       space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
 
-      // A pattern is otherwise checked only when it COMPILES AT USE — so a path the kind does not
+      // A pattern is otherwise checked only when it COMPILES AT USE, so a path the kind does not
       // declare produced a grant that looked assigned in every listing and then denied at the first
       // read. Authorization that appears granted and does nothing is the failure to avoid.
       assertEquals(
@@ -457,7 +457,7 @@ export const authSuites: Suite[] = [
     run: async (adapter) => {
       const space = new Space(adapter);
       // Bootstrapping an agent before its fleet has declared its kinds is normal, so an UNKNOWN
-      // kind must not be an error — the check catches what it can and leaves the rest to use.
+      // kind must not be an error. The check catches what it can and leaves the rest to use.
       await space.put({
         kind: "grant",
         body: { principal: "agent:w", kind: "later", operations: ["query"], pattern: { whatever: 1 } },
@@ -474,10 +474,10 @@ export const authSuites: Suite[] = [
       ]);
 
       // `agent_run` grows by one record per mint plus one per stop, and a live run re-mints before
-      // expiry — so a long-lived agent passes any fixed limit. The read that builds a self scope
+      // expiry, so a long-lived agent passes any fixed limit. The read that builds a self scope
       // used to take ONE bounded page, and a newest-first page drops the agent's OLDEST runs.
       // That is not merely lost history: this list is what `take`, lineage, graph, artifact bytes
-      // and watch wakeups narrow to, so the agent's own older records become unreachable — and a
+      // and watch wakeups narrow to, so the agent's own older records become unreachable, and a
       // claim just skips them, which is indistinguishable from an empty queue.
       const OLDEST = "run:00000000000000000000000001";
       await space.put({
@@ -495,7 +495,7 @@ export const authSuites: Suite[] = [
       assert(scope !== undefined, "a self-scoped grant must produce an author scope");
       assert(
         scope!.includes(OLDEST),
-        `the agent's OLDEST run fell off the scope (${scope!.length} principals) — the read is not paging to exhaustion`,
+        `the agent's OLDEST run fell off the scope (${scope!.length} principals); the read is not paging to exhaustion`,
       );
       assertEquals(scope!.includes("agent:w"), true, "the agent itself is always in its own scope");
     },

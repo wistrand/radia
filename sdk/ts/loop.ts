@@ -1,4 +1,4 @@
-// agentLoop — the take-based worker harness (design §5), event-driven via watches (M1).
+// agentLoop: the take-based worker harness (design §5), event-driven via watches (M1).
 // Background watchers turn matching-kind wakeups into a signal; the claim loop drains all
 // its patterns on each wakeup, then waits for the next one (with a poll fallback so a
 // missed wakeup or a dropped watch can't stall it). Each claim runs the handler under a
@@ -37,18 +37,18 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
     while (!o.signal?.aborted) {
       try {
         for await (const _ of client.watch({ kind }, o.signal)) doWake();
-        return; // generator ended (signal aborted) — clean stop
+        return; // generator ended (signal aborted): clean stop
       } catch (e) {
-        // A 403 on watch is PERMANENT — this run has no grant to watch this kind, and retrying
+        // A 403 on watch is PERMANENT: this run has no grant to watch this kind, and retrying
         // can't change that. Log it loudly ONCE and stop watching; the poll fallback keeps the loop
-        // correct, just without wakeups. "Silently slow" becomes "loudly wrong" — fix the grant.
+        // correct, just without wakeups. "Silently slow" becomes "loudly wrong", so fix the grant.
         if (e instanceof RadiaClientError && e.status === 403) {
-          log(`[${o.name}] watch on '${kind}' FORBIDDEN (${e.code}) — no grant to watch it; using the poll fallback. Grant this run a '${kind}' grant to get wakeups.`);
+          log(`[${o.name}] watch on '${kind}' FORBIDDEN (${e.code}): no grant to watch it; using the poll fallback. Grant this run a '${kind}' grant to get wakeups.`);
           return;
         }
         // Transient (network / server hiccup at watch creation): retry after a short backoff rather
         // than killing the watcher for the loop's lifetime.
-        log(`[${o.name}] watch on '${kind}' dropped: ${e} — retrying`);
+        log(`[${o.name}] watch on '${kind}' dropped: ${e}. Retrying`);
         await sleep(1000);
       }
     }
@@ -85,7 +85,7 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
       const key = `ack:${claimed.record.id}:${claimed.lease.epoch}`;
       const res = await client.ack(claimed.lease, result ?? undefined, key);
       if (res.status === "lease_lost") {
-        log(`[${o.name}] fenced on ${short(claimed.record.id)} — duplicate work possible (at-least-once)`);
+        log(`[${o.name}] fenced on ${short(claimed.record.id)}: duplicate work possible (at-least-once)`);
       } else {
         log(`[${o.name}] ${claimed.record.kind} ${short(claimed.record.id)} -> ok`);
       }

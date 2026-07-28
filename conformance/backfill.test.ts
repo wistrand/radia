@@ -2,19 +2,19 @@
 // that table existed.
 //
 // This lives outside the adapter-parameterized conformance run because it has to simulate an OLD
-// database, and there is no port operation for "forget the derived index" — nor should there be.
+// database, and there is no port operation for "forget the derived index", nor should there be.
 // So each dialect is driven through its own raw SQL seam, which is exactly as much adapter
 // knowledge as the test needs and none of it leaks into `StorageAdapter`.
 //
 // It was previously verified by hand and never in CI, on the argument that a harness database is
 // always created fresh by the current schema. True, and beside the point: emptying the table and
 // reopening reproduces the starting condition the backfill exists for. Worth guarding because the
-// failure is SILENT — a lost edge makes `childrenOf` answer "no children", which reads as an empty
+// failure is SILENT. A lost edge makes `childrenOf` answer "no children", which reads as an empty
 // result rather than an error, and following relationships DOWN quietly stops working for every
 // record written before the upgrade.
 //
 // Note these are PERSISTENT databases, not `:memory:`/ephemeral ones. The restart is the whole
-// point, and an in-memory database does not survive one — the first draft of this test "passed a
+// point, and an in-memory database does not survive one. The first draft of this test "passed a
 // restart" by opening an empty database and finding, unsurprisingly, no duplicate edges in it.
 
 import { assert, assertEquals } from "@std/assert";
@@ -28,7 +28,7 @@ interface Dialect {
   /** A fresh location on disk that survives close/open. */
   location: () => string;
   open: (at: string) => StorageAdapter;
-  /** Delete every derived edge, leaving `parent_ids` (the source of truth) untouched — i.e. what a
+  /** Delete every derived edge, leaving `parent_ids` (the source of truth) untouched: i.e. what a
    *  database written by a build without the edge table looks like. */
   wipe: (adapter: StorageAdapter) => Promise<void>;
 }
@@ -71,7 +71,7 @@ for (const d of dialects) {
         kids.push((await space.put({ kind: "task", body: { tag: `k${i}` }, parentIds: [root] })).id);
       }
       // A record with two parents, so the rebuild is checked to produce one edge PER PARENT rather
-      // than one per record — the shape a naive rebuild gets wrong.
+      // than one per record. That is the shape a naive rebuild gets wrong.
       merged = (await space.put({ kind: "task", body: { tag: "merged" }, parentIds: [kids[0], kids[1]] })).id;
       kids = [...kids].sort();
 
@@ -81,7 +81,7 @@ for (const d of dialects) {
       assertEquals(
         await space.getChildren(root, 50),
         [],
-        "the wipe really did remove the index — otherwise the rebuild below proves nothing",
+        "the wipe really did remove the index; otherwise the rebuild below proves nothing",
       );
     } finally {
       await adapter.close();
@@ -125,8 +125,8 @@ for (const d of dialects) {
       const space = newSpace(adapter);
       assertEquals((await space.getChildren(root, 50)).map((r) => r.id), [kid], "one child, not one per boot");
 
-      // And a record written AFTER the re-inits still gets its edge from the normal write path —
-      // the backfill must not be the only thing maintaining the table.
+      // And a record written AFTER the re-inits still gets its edge from the normal write path.
+      // The backfill must not be the only thing maintaining the table.
       const { id: later } = await space.put({ kind: "task", body: { tag: "later" }, parentIds: [root] });
       const children = (await space.getChildren(root, 50)).map((r) => r.id);
       assertEquals(children.length, 2);

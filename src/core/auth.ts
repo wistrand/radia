@@ -2,14 +2,14 @@
 // (do coordination).
 //
 // Resolution is authoritative per request: the space is asked, every time. Never rebuild an
-// in-memory INDEX from `agent_definition`/`agent_run` records at startup — the cache-over-records
-// shape the kind registry uses. It fails OPEN, invisibly, twice over: the rebuild reads a bounded
+// in-memory INDEX from `agent_definition`/`agent_run` records at startup (the cache-over-records
+// shape the kind registry uses). It fails OPEN, invisibly, twice over: the rebuild reads a bounded
 // page of an unbounded log, so on a busy space a STOPPED run's token still resolves after a
 // restart; and a `stopRun` that consults the cache first silently does nothing for a run the cache
 // never saw.
 //
-// What is memoized here is one IMMUTABLE fact — which agent a run instantiates, which cannot change
-// once the run exists — plus operator tokens, which are process-lifetime by design and never
+// What is memoized here is one IMMUTABLE fact (which agent a run instantiates, which cannot change
+// once the run exists), plus operator tokens, which are process-lifetime by design and never
 // records.
 //
 // The distinction is the whole design: cache what cannot change, never cache what can be revoked.
@@ -34,7 +34,7 @@ export function hashToken(token: string): Promise<string> {
 
 export type ResolvedToken =
   // The local operator: authorizes coordination directly as the space's own principal. Distinct
-  // from `def` because a definition token authorizes only ONE thing — minting a run — while an
+  // from `def` because a definition token authorizes only ONE thing (minting a run) while an
   // operator token authorizes everything and can mint nothing.
   | { ok: true; kind: "operator"; principal: string }
   | { ok: true; kind: "def"; agent: string }
@@ -63,7 +63,7 @@ export class CredentialStore {
   }
 
   /** Remember which agent a run instantiates. Immutable for the life of the run, so caching it
-   *  cannot make a stale authorization decision — only save a query. */
+   *  cannot make a stale authorization decision. It only saves a query. */
   rememberRun(run: string, agent: string): void {
     this.#agentByRun.set(run, agent);
   }
