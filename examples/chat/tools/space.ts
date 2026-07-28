@@ -10,7 +10,6 @@
 import type { RadiaClient, RadiaRecord } from "../../../sdk/ts/client.ts";
 import type { Tool } from "./files.ts";
 import type { ToolDef } from "../provider/openrouter.ts";
-import { sessionOwner } from "../space/roles.ts";
 
 /** A record trimmed for the prompt: id, kind, createdAt, and a size-capped body. */
 function compact(rec: RadiaRecord): unknown {
@@ -50,11 +49,19 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
       const scope = a.scope === "all" ? "all" : "own";
       if (!kind || ops.length === 0) return { ok: false, error: "request_grant needs `kind` and `operations`" };
       if (!why.trim()) return { ok: false, error: "request_grant needs `why`; a human is going to read it" };
-      // The conversation comes from the CALL, not from a launch flag: the worker starts before any
-      // conversation exists, and the approver is the person in this one.
+      // BOTH identifiers come from the CALL, never from module state. This code runs in the
+      // TOOLS-WORKER process: `sessionOwner()` is a mutable global the REPL sets after resolving
+      // the login token, so in this process it is still the default and stamping it wrote
+      // `owner: agent:chat-user` while the session's grant pattern said `human:wistrand`. The write
+      // was refused, which killed the escalation path the prompt tells the model to use, and the
+      // model reported it as its own request being restricted.
+      //
+      // `ctx.owner` is the value the SESSION stamped on the tool_call, so the runtime already
+      // checked it against that session's write pattern. It is the only trustworthy source here.
+      // The worker starts before any conversation exists, which is why neither can be a launch flag.
       await client.put({
         kind: "grant_request",
-        body: { conversationId: ctx?.conversationId, owner: sessionOwner(), kind, operations: ops, why, scope },
+        body: { conversationId: ctx?.conversationId, owner: ctx?.owner, kind, operations: ops, why, scope },
       });
 
       // …and WAIT for the answer, rather than returning "I asked, retry later".

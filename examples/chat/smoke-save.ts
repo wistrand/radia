@@ -24,14 +24,16 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { publishCapability } from "./space/capability.ts";
-import { makeSaveTools, SAVE_SCHEMAS } from "./tools/save.ts";
-import { bootstrap } from "./space/roles.ts";
+import { makeSaveTools, makeShareTools, SAVE_SCHEMAS, SHARE_SCHEMAS } from "./tools/save.ts";
+import { bootstrap, mintSession } from "./space/roles.ts";
 import type { ToolDef } from "./provider/openrouter.ts";
 
 const PORT = 7809;
 const url = `http://127.0.0.1:${PORT}`;
 const space = new Deno.Command(Deno.execPath(), {
-  args: ["run", "-A", "src/main.ts", "dev", "--port", String(PORT), "--artifact-port", "0"],
+  // With the isolated artifact origin ON, as a real chat run has it: a capability URL points there
+  // so an HTML artifact RENDERS somewhere that shares nothing with the console.
+  args: ["run", "-A", "src/main.ts", "dev", "--port", String(PORT), "--artifact-port", String(PORT + 1)],
   stdout: "null",
   stderr: "inherit",
 }).spawn();
@@ -166,6 +168,62 @@ check("model-authored content is tainted", rec?.runtimeMeta.taint === true);
 // Lineage: conversation -> tool_call -> artifact, so a stored file traces back to the turn.
 const parents = rec?.runtimeMeta.parentIds ?? [];
 check("lineage reaches the tool_call that produced it", parents.includes(callRec.id), parents.join(","));
+
+// ── sharing: an id refers, a capability opens ────────────────────────────────────────────────────
+// The assistant could produce a file and then had no honest way to hand it over: the id-based URL
+// needs an Authorization header, which a browser cannot attach to a typed address or an <img src>,
+// and nothing let it mint the alternative. So it quoted a URL that 401s, or invented one.
+const shareCaps = new Map(
+  (await admin.queryAll({ kind: "capability" }))
+    .map((r) => r.body as { tool: string; def: ToolDef })
+    .map((b) => [b.tool, b.def.function.description ?? ""]),
+);
+for (const def of SHARE_SCHEMAS) await publishCapability(admin, def);
+const shareDesc = (await admin.queryAll({ kind: "capability", match: { tool: "share_artifact" } }))
+  .map((r) => (r.body as { def: ToolDef }).def.function.description ?? "")[0] ?? "";
+check("share_artifact is advertised", shareDesc.length > 0);
+check("…and says the id URL is a reference, not a link", /401|Authorization header/i.test(shareDesc));
+check("…and forbids constructing such a URL by hand", /never construct/i.test(shareDesc));
+check("save_content points at it", /share_artifact/.test(saveContent) || /share_artifact/.test(shareCaps.get("save_content") ?? ""));
+
+// It must run as the SESSION, not the worker. Authorization happens at MINT time, so a link can
+// only exist for an artifact the caller may already read.
+const aliceTok = await mintSession(admin, "agent:sharer", { owner: "human:alice" });
+const alice = new RadiaClient(url, { token: aliceTok });
+const mine = await admin.putArtifact(new TextEncoder().encode(page), {
+  mediaType: "text/html",
+  filename: "mine.html",
+  meta: { conversationId: conv, owner: "human:alice" },
+});
+const theirs = await admin.putArtifact(new TextEncoder().encode("not yours"), {
+  mediaType: "text/html",
+  filename: "theirs.html",
+  meta: { conversationId: conv, owner: "human:bob" },
+});
+const share = makeShareTools(alice);
+const link = await share.share_artifact({ artifact_id: mine.id }) as { url: string; expiresAt: string };
+check("a session can share its own artifact", typeof link.url === "string" && link.url.includes(mine.id), link.url);
+check("…as an ABSOLUTE url an agent can hand over", /^https?:\/\//.test(link.url), link.url);
+check("…on the isolated artifact origin, not the console's", link.url.includes(String(PORT + 1)) && !link.url.includes(`:${PORT}/`), link.url);
+check("…and the link carries its own authorization", /[?&]capability=[0-9a-f]{16,}/.test(link.url));
+check("…and expires", !!Date.parse(link.expiresAt));
+
+// The link really works with no header, which is the whole point of minting one.
+const opened = await fetch(link.url);
+check("the capability URL opens with no Authorization header", opened.ok, `HTTP ${opened.status}`);
+check("…and returns the bytes", (await opened.text()) === page);
+
+// The same URL without the capability is refused, so the id is not a secret and never was.
+const bare = await fetch(link.url.split("?")[0]);
+check("the id URL alone is refused", !bare.ok, `HTTP ${bare.status}`);
+
+let stolen = "minted";
+try {
+  await share.share_artifact({ artifact_id: theirs.id });
+} catch (e) {
+  stolen = (e as Error).message;
+}
+check("a session cannot mint a link for an artifact it may not read", stolen !== "minted", stolen);
 
 // ── the roundtrip is not forbidden, only unnecessary ─────────────────────────────────────────────
 // Nothing here blocks run_code + save_as, and it must not: computed bytes are its job. The point is

@@ -868,6 +868,40 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   became required. Every default now agrees on `127.0.0.1`. The aliasing was NOT fixed in
   `baseKey`: two names for one host is exactly the kind of helpful normalization that surprises
   someone later, and the error message names the trap instead.
+- **Mutable module state is per-PROCESS, and the chat's workers are separate processes.**
+  `sessionOwner()` (`examples/chat/space/roles.ts`) is set by the REPL after it resolves the login
+  token. The tools-worker imports the same module in its own process, where nothing sets it, so
+  `request_grant` stamped `owner: agent:chat-user` on a space whose session grant was
+  `{owner: human:alice}` and the write was refused. That killed the ONE escalation path the system
+  prompt tells the model to use, and the model reported it as its own request being restricted, so
+  the symptom pointed at authorization rather than at a stale global. Worker-side code takes
+  identity from `ToolContext.owner`, the value the session stamped on the tool_call and the runtime
+  already checked against that session's write pattern. Guarded structurally in `smoke-login.ts`
+  (no worker-side module may IMPORT `sessionOwner`), because the bug is invisible at the call site:
+  the function reads correctly and is wrong only because of which process is running it.
+- **A read grant without `query` is a session that cannot find its own work.** The chat gave itself
+  `artifact: read_one` and no `query`, so "which artifacts do I have?" was unanswerable: it could
+  fetch an id it already knew and could not discover one. The assistant diagnosed it correctly and
+  then asked a human to widen a grant so it could see its OWN files. When a kind is scoped by
+  pattern, `query` adds no exposure the pattern does not already bound, so withholding it buys
+  nothing and costs discovery. Check both verbs whenever a grant is meant to cover "my records".
+- **`{owner}` and `{conversationId}` scope are different code paths, and only one was tested.**
+  `smoke-selfgrant.ts` covers the escalation loop under `{conversationId}`, which is not the default;
+  both bugs above reproduce only under `{owner}`. A suite that exercises one posture of a documented
+  either/or is not covering the feature. `smoke-login.ts` now carries the identity-scope half.
+- **An agent that discovers its abilities from records cannot discover one nothing publishes.**
+  Both SDKs have had `artifactCapability` since artifacts shipped, and the chat had no tool for it,
+  so the assistant could store a file and not hand it over. Asked for a link it quoted the id-based
+  URL (a `401` in a browser) or invented a capability URL, because inventing was the only move left:
+  `run_code` has no network, and `request_grant` asks for a permission when what was missing is a
+  VERB. Before concluding a model "does not understand" something, check that a tool for it exists
+  and that a description says when to reach for it. See `share_artifact` in
+  `examples/chat/tools/save.ts`.
+- **A capability URL must come back ABSOLUTE to anything that is not the console.**
+  `POST /v0/artifacts/{id}/capability` returns a RELATIVE url when no isolated artifact origin is
+  running (`--artifact-port 0`). The console resolves that against its own origin; an agent hands it
+  to a user verbatim and it opens nothing, with no way for the model to know what to prepend. The
+  chat's tool resolves it against the client's base before returning.
 - **Two tools that reach the same outcome are chosen by their DESCRIPTIONS, so an unconditional
   claim beats a conditional one.** `save_content` (authored text) and `run_code` + `save_as`
   (computed bytes) both produce an artifact, so nothing fails when the wrong one is picked. The

@@ -201,7 +201,8 @@ full compromise of it yields a process that can print bytes to its parent. Path 
 Tools: `read_file`, `list_files`, `search_files`, `stat` (sandboxed to `RADIA_CHAT_DIRS`,
 default `examples/chat/sandbox`; `list_files`/`read_file`/`stat` return `size` + `modified`
 so size/date questions get ground truth, not guesses), `time`, `calc`, `save_content` (store
-text as an artifact), `run_code` (sandboxed execution), `save_procedure`/`read_procedure`
+text as an artifact), `share_artifact` (an openable link for one), `run_code` (sandboxed
+execution), `save_procedure`/`read_procedure`
 (name a program and keep it; see below), and `generate_image`.
 
 **Inspection tools** (`tools/space.ts`) make the chatbot a conversational inspector of its own
@@ -335,6 +336,20 @@ does not) and did not list HTML among what it takes. Both now name the boundary 
 publishes, which is the path the guidance actually travels; a description fixed in source but never
 republished would pass an import-based check while the fleet still advertised the old text. What it
 cannot check is which tool a model picks, and it says so.
+
+**An artifact id refers; a capability URL opens.** `save_content` and `run_code --save_as` hand back
+an `artifactId`, and the URL built from it (`/v0/artifacts/{id}`) needs an `Authorization` header,
+which a browser cannot attach to a typed address or an `<img src>`. So the assistant could produce a
+file and had no honest way to hand it over: it quoted a URL that 401s, or invented a capability URL
+it could not mint. `share_artifact` closes that, returning `{url, expiresAt}` for a short-lived,
+single-artifact link that carries its own authorization and points at the isolated artifact origin,
+where an HTML artifact renders rather than downloads.
+
+It runs as the SESSION, not the worker, unlike `save_content`. A capability is authorized at MINT
+time against the caller's `artifact: read_one` grant, so a scoped user cannot turn an artifact it
+may not read into a link that needs no token; running it as the worker would do exactly that. That
+is also why it needs no grant of its own: one permission, checked once, instead of two that must
+agree.
 
 **Code output can become an artifact.** `run_code` takes
 `save_as` (plus optional `media_type` and `encoding: "base64"` for binary): stdout is stored as an

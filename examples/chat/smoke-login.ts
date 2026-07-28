@@ -133,6 +133,72 @@ check("the system prompt names the session's real principal", sys.includes(alice
 check("…and not the shared constant it used to hardcode", !sys.includes(CHAT_USER), CHAT_USER);
 check("…and says the session is scoped, not an operator", /SCOPED/.test(sys) && !/OPERATOR/.test(sys));
 
+// ── identity scope: the escalation path and the session's own files ──────────────────────────────
+// Both of these were broken under `{owner}` scope and worked under `{conversationId}`, which is the
+// only shape the selfgrant suite covers. The default is `{owner}`.
+const idOwner = alice.owner;
+const idConv = (await admin.put({ kind: "conversation", body: { title: "identity" } })).id;
+await assignUserGrants(admin, idOwner, { owner: idOwner });
+
+// 1. `request_grant` must be WRITABLE. It stamps `owner` from the tool_call it is serving, because
+// the tools-worker is a different PROCESS: the module-level `sessionOwner()` the REPL sets is still
+// the default there, so stamping it wrote `agent:chat-user` against a `{owner: human:alice}`
+// pattern and the write was refused. That killed the one escalation path the prompt tells the model
+// to use, and the model reported it as its own request being restricted.
+let asked = "wrote it";
+try {
+  await alice.client.put({
+    kind: "grant_request",
+    body: { conversationId: idConv, owner: idOwner, kind: "kind_def", operations: ["query"], why: "list kinds", scope: "own" },
+  });
+} catch (e) {
+  asked = (e as Error).message;
+}
+check("a session under identity scope can write a grant_request", asked === "wrote it", asked);
+
+// Stamping the WRONG owner is still refused; the fix is taking the value from the call, not
+// loosening the pattern.
+let forged2 = "wrote it";
+try {
+  await alice.client.put({
+    kind: "grant_request",
+    body: { conversationId: idConv, owner: CHAT_USER, kind: "kind_def", operations: ["query"], why: "x", scope: "own" },
+  });
+} catch (e) {
+  forged2 = (e as Error).message;
+}
+check("…but not one stamped with a different owner", forged2 !== "wrote it", forged2);
+
+// 2. "Which artifacts do I have?" The session could fetch an id it already knew and could not
+// DISCOVER one, so it asked a human to widen a grant to see its own files.
+const art = await admin.putArtifact(new TextEncoder().encode("<h1>mine</h1>"), {
+  mediaType: "text/html",
+  filename: "mine.html",
+  meta: { conversationId: idConv, owner: idOwner },
+});
+await admin.putArtifact(new TextEncoder().encode("<h1>theirs</h1>"), {
+  mediaType: "text/html",
+  filename: "theirs.html",
+  meta: { conversationId: idConv, owner: "human:bob" },
+});
+const listed = await alice.client.query({ kind: "artifact" }, 50);
+check("a session can LIST its own artifacts", listed.some((r) => r.id === art.id), `${listed.length} visible`);
+check("…and only its own", listed.every((r) => (r.body as { owner?: string }).owner === idOwner), listed.map((r) => (r.body as { owner?: string }).owner).join(","));
+
+// 3. The structural guard. The bug above is not visible at any one call site: `sessionOwner()` reads
+// correctly and returns the wrong value only because of which PROCESS the code is in. So assert the
+// separation instead of the symptom. Anything the tools-worker loads must take identity from the
+// call it is serving.
+const workerSide = ["tools/space.ts", "tools/save.ts", "tools/files.ts", "workers/tools.ts", "workers/exec.ts"];
+for (const f of workerSide) {
+  const src = await Deno.readTextFile(new URL(`./${f}`, import.meta.url));
+  // The IMPORT, not the word: the fix is documented in a comment that names it, and prose is not a
+  // dependency. Reading it requires importing it.
+  const imports = [...src.matchAll(/^import\s*\{([^}]*)\}\s*from\s*["'][^"']*roles\.ts["']/gm)]
+    .flatMap((m) => m[1].split(",").map((x) => x.trim()));
+  check(`${f} does not import the REPL's session state`, !imports.includes("sessionOwner"), imports.join(" "));
+}
+
 // ── no token: the chat refuses to start ──────────────────────────────────────────────────────────
 // There is no default identity any more. The chat used to fall back to the shared `agent:chat-user`
 // or, with no credential at all, to the space's open-mode operator, which made the identity of a

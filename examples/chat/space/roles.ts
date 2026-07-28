@@ -26,6 +26,12 @@ export const CHAT_USER = "agent:chat-user";
  * separate them. A login token replaces it with the person behind that token, and everything the
  * session writes is stamped with the result.
  */
+//
+// PROCESS-LOCAL. This is mutable module state that only the REPL sets, so it is correct in the chat
+// process and silently WRONG in every worker: a worker importing it stamps the default while the
+// session's grant pattern names a person, and the write is refused. Anything running worker-side
+// takes the owner from the tool_call it is serving (`ToolContext.owner`), which the session stamped
+// and the runtime already checked. Guarded by `smoke-login.ts`.
 let SESSION_OWNER = CHAT_USER;
 export function sessionOwner(): string {
   return SESSION_OWNER;
@@ -165,8 +171,17 @@ export function userGrants(scope?: Record<string, unknown>): Grant[] {
     { kind: "grant_request", operations: ["put", "query"], ...scoped },
     { kind: "progress", operations: ["query"], ...scoped }, // read-only: the session reports no progress of its own
     // Scoped like the rest: `Space.putArtifact` takes application fields, the chat's writers stamp
-    // them, and the kind is redeclared to index them.
-    { kind: "artifact", operations: ["read_one"], ...scoped },
+    // them, and the kind is redeclared to index them. This one grant covers `share_artifact` too: a
+    // download capability is authorized at MINT time against exactly this read, so the session can
+    // only produce a link for an artifact it could already fetch. No separate "may share" grant,
+    // and deliberately not: two permissions that must agree eventually disagree.
+    //
+    // `query` as well as `read_one`, because "which artifacts do I have?" is a question the session
+    // could not answer at all: it could fetch an id it already knew and could not discover one. The
+    // assistant correctly diagnosed the gap and then had to ask a human to widen a grant to see its
+    // OWN files. The pattern is what makes this safe: the same scope that limits `read_one` limits
+    // the listing, so it enumerates this identity's artifacts and nobody else's.
+    { kind: "artifact", operations: ["read_one", "query"], ...scoped },
   ];
 }
 

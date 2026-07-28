@@ -10,7 +10,7 @@ import { progress } from "../space/progress.ts";
 import { makeTools, TOOL_SCHEMAS } from "../tools/files.ts";
 import { INSPECT_SCHEMAS, makeInspectTools } from "../tools/space.ts";
 import { makeRemediateTools, REMEDIATE_SCHEMAS } from "../tools/space.ts";
-import { makeSaveTools, SAVE_SCHEMAS } from "../tools/save.ts";
+import { makeSaveTools, makeShareTools, SAVE_SCHEMAS, SHARE_SCHEMAS } from "../tools/save.ts";
 import { arg, argAll } from "../util.ts";
 import { publishCapability } from "../space/capability.ts";
 
@@ -33,12 +33,23 @@ const spaceClient = new RadiaClient(url, { token: sessionToken });
 // `save_content` writes artifacts as the WORKER (its own token, `artifact: put`), not as the
 // session: storing a file is the worker's own action, unlike the space_* tools, which act as the
 // session principal so a scoped user cannot launder /ops access through a privileged worker.
-const tools = { ...makeTools(roots), ...makeInspectTools(spaceClient), ...makeRemediateTools(spaceClient), ...makeSaveTools(client) };
+// `share_artifact` is on the session side of that line for the same reason: it READS an artifact
+// to decide whether a link may exist for it.
+const tools = {
+  ...makeTools(roots),
+  ...makeInspectTools(spaceClient),
+  ...makeRemediateTools(spaceClient),
+  ...makeSaveTools(client),
+  // SESSION client, like the space_* tools and unlike save_content: a download capability is
+  // authorized at mint time against the caller's read grant, so minting it as the worker would let
+  // a scoped user turn an artifact it cannot read into a link that needs no token.
+  ...makeShareTools(spaceClient),
+};
 
 // Publish this worker's capabilities as `capability` records so agents can DISCOVER the
 // available tools from the space (no hard-coded tool list). In a real system this
 // registration would be grant-gated: an untrusted worker publishing a tool is a threat.
-const schemas = [...TOOL_SCHEMAS, ...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS, ...SAVE_SCHEMAS];
+const schemas = [...TOOL_SCHEMAS, ...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS, ...SAVE_SCHEMAS, ...SHARE_SCHEMAS];
 for (const name of Object.keys(tools)) {
   const def = schemas.find((s) => s.function.name === name);
   if (def) await publishCapability(client, def);
