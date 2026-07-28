@@ -56,6 +56,37 @@ export async function handleCreateRun(space: Space, req: Request): Promise<Respo
 
 /** POST /v0/agent-runs/{id}/stop: operator, or the run's own definition token (Bearer).
  *  Body `{quarantine: true}` upgrades graceful stop to emergency revocation (invalidate leases). */
+/**
+ * POST /v0/agent-runs/{id}/renew: extend a live run, presenting its own token (or as operator).
+ *
+ * Its OWN token, not a definition token. A definition token can mint a fresh run whenever it likes,
+ * so letting it renew adds nothing; a run token is the credential actually in a running process's
+ * hand, and extending it is the thing that had no answer.
+ */
+export async function handleRenewRun(space: Space, req: Request, principal: string, runId: string): Promise<Response> {
+  let allowed = space.isPrivileged(principal);
+  if (!allowed) {
+    const token = bearer(req);
+    if (token) {
+      const r = await space.resolveToken(token);
+      allowed = r.ok && r.kind === "run" && r.principal === runId;
+    }
+  }
+  if (!allowed) return problem(403, "forbidden", "renewing a run requires an operator or the run's own token");
+  try {
+    return Response.json(await space.renewRun(runId));
+  } catch (e) {
+    const code = e instanceof RadiaError ? e.code : "error";
+    if (code === "not_found") return problem(404, "not_found", `no run ${runId}`);
+    // A stopped or aged-out run is a CLOSED door, not a transient failure: 409 says "this will not
+    // start working", so a renewing client gives up and re-authenticates instead of retrying.
+    if (code === "run_stopped" || code === "run_lifetime_exceeded") {
+      return problem(409, code, e instanceof Error ? e.message : String(e));
+    }
+    throw e;
+  }
+}
+
 export async function handleStopRun(space: Space, req: Request, principal: string, runId: string): Promise<Response> {
   let allowed = space.isPrivileged(principal);
   if (!allowed) {

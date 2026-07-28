@@ -720,3 +720,47 @@ Deno.test("http: a scoped caller can page PAST a run of events it cannot see", a
     await close();
   }
 });
+
+Deno.test("http: a run renews itself with its own token, and an expired one cannot", async () => {
+  const { space, handler, close } = await newHandler({ authRequired: true });
+  try {
+    const { definitionToken } = await space.createAgentDefinition("agent:w");
+    const { run, runToken } = await space.mintRun(definitionToken);
+
+    // Its OWN token. A definition token is deliberately not accepted: it can mint a fresh run
+    // whenever it likes, so letting it renew adds nothing and widens what a long-lived credential
+    // reaches.
+    const ok = await handler(post(`/v0/agent-runs/${run}/renew`, {}, { authorization: `Bearer ${runToken}` }));
+    assertEquals(ok.status, 200);
+    const body = await ok.json();
+    assertEquals(body.run, run);
+    assert(Date.parse(body.expiresAt) > Date.now(), "renewal must move expiry into the future");
+    assert(Date.parse(body.maxLifetimeAt) >= Date.parse(body.expiresAt), "the ceiling bounds the window");
+
+    // Another run's token cannot renew this one: renewal is not a verb you hold, it is one you hold
+    // FOR something.
+    const other = await space.mintRun((await space.createAgentDefinition("agent:x")).definitionToken);
+    const foreign = await handler(post(`/v0/agent-runs/${run}/renew`, {}, { authorization: `Bearer ${other.runToken}` }));
+    assertEquals(foreign.status, 403, "one run must not extend another's session");
+    await foreign.body?.cancel();
+
+    // An EXPIRED token cannot renew itself: `resolveAuth` rejects it first. That is the property
+    // that stops renewal from being a long-lived token in disguise, and it is why a client renews
+    // at half-life rather than waiting for a failure.
+    const dying = new Space((space as unknown as { storage: never }).storage, { runTokenSeconds: -1 });
+    const d = await dying.createAgentDefinition("agent:z");
+    const { run: deadRun, runToken: deadToken } = await dying.mintRun(d.definitionToken);
+    const dead = await handler(post(`/v0/agent-runs/${deadRun}/renew`, {}, { authorization: `Bearer ${deadToken}` }));
+    assertEquals(dead.status, 401, "an expired token must re-authenticate, not renew");
+    await dead.body?.cancel();
+
+    // A stopped run is a CLOSED door, so 409 rather than a retryable error: a renewing client gives
+    // up and re-authenticates instead of spinning.
+    await space.stopRun(run);
+    const stopped = await handler(post(`/v0/agent-runs/${run}/renew`, {}, { authorization: `Bearer ${runToken}` }));
+    assertEquals(stopped.status, 401, "a stopped run's token no longer authenticates at all");
+    await stopped.body?.cancel();
+  } finally {
+    await close();
+  }
+});

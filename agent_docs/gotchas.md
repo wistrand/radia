@@ -838,6 +838,20 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   who was using it. Authority is a property of the CREDENTIAL: the session is whoever the supplied
   token belongs to, and whether that reaches the ops plane follows from the grants that principal
   holds.
+- **Short run tokens need a RENEWAL path, or every long-running process dies mid-task.** 15 minutes
+  is right for a leaked credential and wrong for a session someone is sitting in front of: the chat
+  crashed with an uncaught `token_expired` from whichever write happened to be next, and the whole
+  worker fleet had the same fuse with a quieter symptom (a worker whose token lapsed stopped
+  claiming and said nothing, so the chat waited on a result nobody was coming to produce). Renewal
+  is a successor `agent_run` with the SAME tokenHash, the shape `stopRun` already used, so
+  resolution finds it in the one indexed lookup it already does. The three bounds are the design:
+  a stopped run cannot be revived (revocation wins), renewal never passes
+  `mintedAt + runMaxLifetimeSeconds`, and an expired token cannot renew itself. That last one is why
+  clients renew at HALF-LIFE (`RadiaClient.keepAlive`): waiting for a 401 means the session is
+  already gone.
+- **Credential keep-alive belongs in `agentLoop`, not in each agent.** Every process running that
+  loop is long-lived by definition, and the five chat workers each needed it. One place, and an
+  external agent author gets it without knowing it exists.
 - **A public endpoint still rejects a BAD credential, so `401` never means "the space is down".**
   `/v0/health` and `GET /` skip the auth requirement, but `resolveAuth` rejects a presented token
   that does not resolve, on every path. So an expired run token `401`s on the one endpoint a client

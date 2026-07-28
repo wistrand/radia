@@ -39,7 +39,13 @@ process-lifetime by design and never records. Never rebuild a credential index a
 bounded read of an unbounded log lets a stopped run's token keep working after a restart on a busy
 space, which fails open and silently. A token minted on one instance authenticates on another immediately,
 with no replay. Expiry uses
-the DB clock (`SpaceContext.runTokenSeconds`, default 900s). `Authorization: Bearer <token>`
+the DB clock (`SpaceContext.runTokenSeconds`, default 900s), and a live run RENEWS
+(`Space.renewRun`) rather than dying: a successor `agent_run` with the same token hash and a later
+expiry, so the token in the holder's hand keeps working. Three bounds keep that from being a
+long-lived token in disguise: a stopped run cannot be revived, renewal never passes
+`mintedAt + runMaxLifetimeSeconds` (default 12h), and an EXPIRED token is rejected before the renew
+handler sees it, so getting past the ceiling needs authentication. Clients renew at half-life
+(`RadiaClient.keepAlive`, used by `agentLoop`), never on failure. `Authorization: Bearer <token>`
 is the **only** auth channel, and exactly two token kinds authorize it (`ResolvedToken.kind`): a
 **run** token, and the **operator** token. A **definition** token authorizes one thing only,
 minting a run, and is rejected everywhere else, because it is long-lived and accepting it would
@@ -196,6 +202,7 @@ flowchart TB
   record. **Built.**
 - `POST /v0/agent-runs/{id}/stop`: stops a run (operator or the run's own token); the token
   stops resolving. **Built.**
+- `POST /v0/agent-runs/{id}/renew`: extends a LIVE run, presenting its own token. **Built.**
 
 ```mermaid
 sequenceDiagram

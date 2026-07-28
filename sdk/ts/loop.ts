@@ -26,6 +26,22 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
   const log = o.log ?? (() => {});
   const kinds = [...new Set(o.patterns.map((t) => t.kind))];
 
+  // Keep this run's credential alive for as long as the loop runs. Run tokens are short (15 min) so
+  // a leaked one stops working; without renewal every long-running agent simply stopped claiming
+  // when its token lapsed, and said nothing, so the failure looked like an idle worker rather than
+  // a dead credential. It belongs here rather than in each agent: any process running this loop is
+  // by definition long-lived.
+  let credentialLost = false;
+  const credential = new AbortController();
+  if (o.signal) o.signal.addEventListener("abort", () => credential.abort(), { once: true });
+  client.keepAlive(credential.signal, (reason) => {
+    // Past its maximum lifetime, or stopped. Neither is retryable, so stop claiming rather than
+    // spin against a door that will not open.
+    log(`[${o.name}] credential ended: ${reason}`);
+    credentialLost = true;
+    credential.abort();
+  });
+
   // Declare what this run listens for, so the prospective topology is queryable. Best effort: a
   // worker with no grant to write `interest` records still works, it is just invisible to the
   // routing view. Never fail the loop over it.
@@ -75,7 +91,10 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
     }
   });
 
-  while (!o.signal?.aborted) {
+  // The loop ends on the caller's signal OR on a credential that cannot be renewed. The second is
+  // not an error to retry: a stopped or aged-out run will never resolve again, so continuing would
+  // be an infinite series of 401s that looks, from outside, exactly like a busy worker.
+  while (!o.signal?.aborted && !credentialLost) {
     let claimed = null;
     try {
       for (const pattern of o.patterns) {

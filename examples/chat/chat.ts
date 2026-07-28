@@ -160,6 +160,13 @@ procs.push(...launchFleet(tokens, loginToken));
 const tools = new ToolSet(session);
 tools.watch(shutdown.signal); // background: keep the tool set live from capability records
 watchWakeups(session, shutdown.signal); // background: let the runtime push instead of polling
+// background: keep the session's credential alive. Run tokens last 15 minutes, so without this a
+// conversation simply died mid-sentence, and the crash came out of whichever write happened to be
+// next. Renewal is at half-life; an expired token cannot renew itself.
+let sessionLost: string | null = null;
+session.keepAlive(shutdown.signal, (reason) => {
+  sessionLost = reason;
+});
 
 Deno.addSignalListener("SIGINT", () => {
   cleanup();
@@ -211,7 +218,23 @@ while (true) {
   const line = await nextLine();
   if (line === null) break; // EOF / Ctrl-D
   if (!line.trim()) continue;
-  await thread.append({ role: "user", content: line });
+  // A session that cannot be renewed (stopped, or past its maximum lifetime) is over. Say so and
+  // stop rather than letting the next write throw: an uncaught `token_expired` killed the REPL and
+  // took the conversation's context with it, and the stack trace named the SDK rather than the
+  // credential.
+  if (sessionLost) {
+    write(`\nsession ended: ${sessionLost}\n`);
+    write(`Mint a new one with \`radia login ${owner}\` and restart with --conversation ${conversation.id}.\n`);
+    break;
+  }
+  try {
+    await thread.append({ role: "user", content: line });
+  } catch (e) {
+    // Anything else that fails on the FIRST write of a turn is reported and skipped, never fatal.
+    // Losing a REPL to one bad request costs the whole conversation.
+    write(`\ncould not record that message: ${(e as Error).message}\n`);
+    continue;
+  }
   try {
     // The hook is what collapses the escalation loop into ONE turn: while a `request_grant` is in
     // flight the person is asked here, the decision is written back as a record, and the tool call

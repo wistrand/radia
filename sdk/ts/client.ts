@@ -225,6 +225,51 @@ export class RadiaClient {
     return this.req("POST", "/v0/agent-runs", {}, { "Authorization": `Bearer ${definitionToken}` });
   }
 
+  /**
+   * Extend this client's run before it lapses. Returns the new expiry.
+   *
+   * Renew at HALF-LIFE, never on failure: an expired token is rejected before the renew handler
+   * sees it, so a client that waits for a 401 has already lost the session. `keepAlive` below does
+   * the scheduling; call this directly only if you own the timer.
+   */
+  renewRun(run: string): Promise<{ run: string; agent: string; expiresAt: string; maxLifetimeAt: string }> {
+    return this.req("POST", `/v0/agent-runs/${encodeURIComponent(run)}/renew`);
+  }
+
+  /**
+   * Keep this client's credential alive until `signal` aborts, renewing at half-life.
+   *
+   * Run tokens are short (15 min) so a leaked one stops working, which is right, and left every
+   * long-running process dying mid-sentence, which is not. A run may renew until its absolute
+   * lifetime; after that, and after a stop, the door is CLOSED (409) and `onLost` fires so the
+   * caller can re-authenticate rather than retry forever.
+   *
+   * Failures that are not 409 are transient (a restarting space, a blip) and are retried, because
+   * giving up on a network error would end a session that is still perfectly valid.
+   */
+  keepAlive(signal: AbortSignal, onLost?: (reason: string) => void): void {
+    const tick = async () => {
+      if (signal.aborted) return;
+      let delayMs = 60_000;
+      try {
+        const who = await this.health();
+        if (!who.principal.startsWith("run:")) return; // an operator token does not expire
+        const { expiresAt } = await this.renewRun(who.principal);
+        // Half of what is left, floored so a short window still gets a retry before it lapses.
+        delayMs = Math.max(15_000, (Date.parse(expiresAt) - Date.now()) / 2);
+      } catch (e) {
+        if (e instanceof RadiaClientError && e.status === 409) {
+          onLost?.(e.message);
+          return;
+        }
+        delayMs = 30_000;
+      }
+      const t = setTimeout(tick, delayMs);
+      signal.addEventListener("abort", () => clearTimeout(t), { once: true });
+    };
+    void tick();
+  }
+
   /** Stop a run (operator, or the run's own definition/run token if this client carries it). */
   stopRun(run: string): Promise<{ run: string; status: string; applied: boolean }> {
     return this.req("POST", `/v0/agent-runs/${encodeURIComponent(run)}/stop`);

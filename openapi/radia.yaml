@@ -555,6 +555,41 @@ paths:
                   expiresAt: { type: string }
         "401": { $ref: "#/components/responses/Problem" }
 
+  /agent-runs/{runId}/renew:
+    post:
+      operationId: renewRun
+      summary: Extend a live run's expiry, presenting its own token
+      description: |
+        Run tokens are short so a LEAKED one stops working, which left every long-running process
+        dying mid-task. Renewal writes a successor `agent_run` carrying the same token hash and a
+        later `expiresAt`, so the token already in the holder's hand keeps resolving.
+
+        Three bounds, and all three matter. A STOPPED run cannot be revived, so revocation still
+        wins. Renewal never extends past `mintedAt + runMaxLifetimeSeconds`, so a leaked token dies
+        on a fixed schedule and getting past it needs authentication. And an EXPIRED token is
+        rejected before this handler sees it (401), which is why a client renews at half-life rather
+        than on failure. Stopped or aged-out is 409: a closed door, not a retryable error.
+      x-stability: experimental
+      x-phase: "M1"
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: extended
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run, agent, expiresAt, maxLifetimeAt]
+                properties:
+                  run: { type: string }
+                  agent: { type: string }
+                  expiresAt: { type: string, format: date-time }
+                  maxLifetimeAt: { type: string, format: date-time, description: "the ceiling renewal may never pass" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
   /agent-runs/{runId}/stop:
     post:
       operationId: stopAgentRun

@@ -15,7 +15,7 @@
 import type { Space } from "../core/space.ts";
 import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
-import { handleCreateDefinition, handleCreateRun, handleStopRun } from "./handlers/agents.ts";
+import { handleCreateDefinition, handleCreateRun, handleRenewRun, handleStopRun } from "./handlers/agents.ts";
 import { handleGetArtifact, handleMintCapability, handlePutArtifact } from "./handlers/artifacts.ts";
 import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
@@ -193,6 +193,18 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     // Minting a run reads its DEFINITION token directly (a def token isn't a coordination
     // principal), so it runs before principal resolution rejects non-run bearer tokens.
     if (route === "POST /v0/agent-runs") return await handleCreateRun(space, req);
+    // Renew a run: `/v0/agent-runs/{id}/renew` (own token or operator, checked in the handler).
+    //
+    // An EXPIRED token cannot renew itself: `resolveAuth` rejects it before this, so the answer is
+    // 401 and the holder has to authenticate again. That is the property that keeps renewal from
+    // being a long-lived token in disguise, and it is why a client renews at HALF-LIFE rather than
+    // on failure.
+    if (req.method === "POST" && url.pathname.startsWith("/v0/agent-runs/") && url.pathname.endsWith("/renew")) {
+      const renewAuth = await resolveAuth(req, space, authRequired);
+      if ("error" in renewAuth) return problem(401, renewAuth.error, renewAuth.detail);
+      const runId = decodeURIComponent(url.pathname.slice("/v0/agent-runs/".length, -"/renew".length));
+      return await handleRenewRun(space, req, renewAuth.principal, runId);
+    }
     // Stop a run: `/v0/agent-runs/{id}/stop` (own token or operator, checked in the handler).
     if (req.method === "POST" && url.pathname.startsWith("/v0/agent-runs/") && url.pathname.endsWith("/stop")) {
       const auth = await resolveAuth(req, space, authRequired);

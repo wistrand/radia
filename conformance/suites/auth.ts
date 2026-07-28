@@ -238,6 +238,53 @@ export const authSuites: Suite[] = [
     },
   },
   {
+    name: "renewal extends a live run, and the SAME token keeps working",
+    run: async (adapter) => {
+      // Short tokens are right for a leaked credential and wrong for a session someone is sitting
+      // in front of: the chat died mid-conversation and took the fleet with it. Renewal writes a
+      // successor `agent_run` with the SAME tokenHash, so the token already in a process's hand
+      // keeps resolving through the one indexed lookup resolution already does.
+      const space = new Space(adapter, { runTokenSeconds: 1 });
+      const { definitionToken } = await space.createAgentDefinition("agent:w");
+      const { run, runToken, expiresAt } = await space.mintRun(definitionToken);
+
+      const renewed = await space.renewRun(run);
+      assertEquals(renewed.run, run);
+      assert(renewed.expiresAt >= expiresAt, `renewal must not move expiry backwards: ${renewed.expiresAt} < ${expiresAt}`);
+      const r = await space.resolveToken(runToken);
+      assert(r.ok && r.kind === "run" && r.principal === run, "the original token still resolves");
+    },
+  },
+  {
+    name: "renewal cannot revive a stopped run, and cannot outlive the ceiling",
+    run: async (adapter) => {
+      // The two bounds that keep renewal from being a long-lived token with extra steps.
+      const space = newSpace(adapter);
+      const { definitionToken } = await space.createAgentDefinition("agent:w");
+      const { run } = await space.mintRun(definitionToken);
+      assert((await space.stopRun(run)).applied);
+      assertEquals(await denied(() => space.renewRun(run)), "run_stopped", "a revocation must win over renewal");
+
+      // Past the absolute lifetime, renewal is refused however live the run is, so a LEAKED token
+      // still dies on a fixed schedule: getting past it needs authentication, which a leak cannot do.
+      const capped = new Space(adapter, { runMaxLifetimeSeconds: -1 });
+      const d2 = await capped.createAgentDefinition("agent:w2");
+      const { run: run2 } = await capped.mintRun(d2.definitionToken);
+      assertEquals(await denied(() => capped.renewRun(run2)), "run_lifetime_exceeded");
+    },
+  },
+  {
+    name: "renewal never pushes expiry past the run's ceiling",
+    run: async (adapter) => {
+      // The last renewal before the ceiling lands exactly on it rather than stepping over.
+      const space = new Space(adapter, { runTokenSeconds: 3600, runMaxLifetimeSeconds: 60 });
+      const { definitionToken } = await space.createAgentDefinition("agent:w");
+      const { run } = await space.mintRun(definitionToken);
+      const { expiresAt, maxLifetimeAt } = await space.renewRun(run);
+      assertEquals(expiresAt, maxLifetimeAt, "a window longer than what remains is clamped to the ceiling");
+    },
+  },
+  {
     name: "a stopped run's token stops resolving (no new operations)",
     run: async (adapter) => {
       const space = newSpace(adapter);

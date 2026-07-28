@@ -55,6 +55,8 @@ for (const name of Object.keys(tools)) {
   if (def) await publishCapability(client, def);
 }
 
+// Credential renewal is `agentLoop`'s job, not each worker's: every process running that loop is
+// long-lived by definition, and copying the keep-alive into five workers is five places to forget.
 await agentLoop(client, {
   name: "tools",
   patterns: Object.keys(tools).map((tool) => ({ kind: "tool_call", match: { tool } })),

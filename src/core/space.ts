@@ -77,6 +77,8 @@ export interface SpaceContext {
   operators: string[];
   /** How long a minted run token stays valid (short-lived; the run refreshes by re-minting). */
   runTokenSeconds: number;
+  /** How long a run may keep renewing before it must be re-minted. */
+  runMaxLifetimeSeconds: number;
   /** Age past which an unclaimed *claimable* record counts as stale in diagnostics (starvation). */
   diagnosticsStaleSeconds: number;
   /** Hard ceiling on one artifact's bytes (design-data-model §2 resource limits). */
@@ -96,7 +98,11 @@ const DEFAULT_CONTEXT: SpaceContext = {
   maxCumulativeSeconds: 300,
   supervisor: "agent:supervisor",
   operators: ["human:local"], // the no-header dev identity; add people deliberately
-  runTokenSeconds: 900, // 15 min; a live run re-mints before expiry
+  runTokenSeconds: 900, // 15 min; a live run RENEWS before expiry (`renewRun`)
+  // The ceiling on renewal. Short-lived run tokens exist so a LEAKED one stops working, and a token
+  // that renews forever is a long-lived one with extra steps. So renewal extends the window and
+  // never the run: past this, the holder has to authenticate again, which a leaked token cannot do.
+  runMaxLifetimeSeconds: 12 * 3600,
   diagnosticsStaleSeconds: 60,
   maxArtifactBytes: 32 * 1024 * 1024,
   downloadCapabilitySeconds: 300,
@@ -786,10 +792,55 @@ export class Space {
     const run = `run:${newUlid()}`;
     const expiresAt = addSeconds(now, this.ctx.runTokenSeconds);
     const { token, hash } = await mintCredential();
-    await this.putRaw({ kind: AGENT_RUN, body: { run, agent, tokenHash: hash, status: "active", expiresAt } });
+    // `mintedAt` is what bounds renewal: it is copied onto every successor, so the absolute deadline
+    // is a property of the RUN and cannot be pushed forward by renewing.
+    await this.putRaw({ kind: AGENT_RUN, body: { run, agent, tokenHash: hash, status: "active", expiresAt, mintedAt: now } });
     this.creds.rememberRun(run, agent);
     this.notifier.notify();
     return { run, agent, runToken: token, expiresAt };
+  }
+
+  /**
+   * Extend a live run's expiry, presenting its own token.
+   *
+   * Run tokens are deliberately short (15 min), which is right for a leaked one and wrong for a
+   * session someone is sitting in front of: the chat simply died mid-conversation, and the worker
+   * fleet died with it. Renewal is the same successor-record shape as `stopRun`: a new `agent_run`
+   * carrying the SAME tokenHash and a later `expiresAt`, so resolution (newest record per hash)
+   * picks it up through the one indexed lookup it already does, and the token in the holder's hand
+   * keeps working.
+   *
+   * Three things bound it, and all three matter:
+   *   - a STOPPED run cannot be revived, so revocation still wins;
+   *   - renewal never extends past `mintedAt + runMaxLifetimeSeconds`, so a leaked token still dies
+   *     on a fixed schedule and the holder has to authenticate again to get past it;
+   *   - it renews the run it is CALLED WITH, so a token cannot extend somebody else's session.
+   */
+  async renewRun(run: string): Promise<{ run: string; agent: string; expiresAt: string; maxLifetimeAt: string }> {
+    const now = await this.storage.now();
+    const rows = await this.query({ kind: AGENT_RUN, match: { run } }, 5, { dir: "desc" });
+    const bodies = rows.map((r) => r.body as { agent?: string; tokenHash?: string; status?: string; mintedAt?: string });
+    if (bodies.length === 0) throw new RadiaError("not_found", `no run ${run}`);
+    if (bodies[0]?.status === "stopped") throw new RadiaError("run_stopped", `run ${run} was stopped`);
+    const agent = bodies.find((b) => b.agent)?.agent;
+    const tokenHash = bodies.find((b) => b.tokenHash)?.tokenHash;
+    if (!agent || !tokenHash) throw new RadiaError("not_found", `no run ${run}`);
+    // A run minted before `mintedAt` existed has no recorded start. Treat NOW as the start rather
+    // than as unbounded: an unknown age must not read as a fresh one.
+    const mintedAt = bodies.find((b) => b.mintedAt)?.mintedAt ?? now;
+    const maxLifetimeAt = addSeconds(mintedAt, this.ctx.runMaxLifetimeSeconds);
+    if (maxLifetimeAt <= now) {
+      throw new RadiaError(
+        "run_lifetime_exceeded",
+        `run ${run} reached its maximum lifetime at ${maxLifetimeAt}; mint a new run`,
+      );
+    }
+    // Never past the ceiling: the last renewal before it lands exactly on it.
+    const window = addSeconds(now, this.ctx.runTokenSeconds);
+    const expiresAt = window > maxLifetimeAt ? maxLifetimeAt : window;
+    await this.putRaw({ kind: AGENT_RUN, body: { run, agent, tokenHash, status: "active", expiresAt, mintedAt } });
+    this.notifier.notify();
+    return { run, agent, expiresAt, maxLifetimeAt };
   }
 
   /**
