@@ -102,9 +102,18 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
     "--token", execToken,
     "--timeout-ms", EXEC_TIMEOUT_MS,
     ...execRoots.flatMap((r) => ["--dir", r]),
-    // Never readable, whatever the roots say: the blob KEK decrypts every artifact in this space,
-    // and the credential is an operator token for it. `--deny-read` beats `--allow-read` in Deno.
-    ...(execRoots.length ? ["--deny-dir", `${Deno.cwd()}/.radia-kek.json`, "--deny-dir", `${Deno.env.get("HOME")}/.radia`] : []),
+    // Never readable, whatever the roots say. One entry covers the lot now that a space writes to a
+    // single directory: the KEK decrypts every artifact, and the database beside it holds the whole
+    // conversation. The per-user credential file is a separate `.radia` under HOME.
+    // `--deny-read` beats `--allow-read` in Deno.
+    ...(execRoots.length
+      ? [
+        "--deny-dir",
+        `${Deno.cwd()}/${Deno.env.get("RADIA_DIR") ?? ".radia"}`,
+        "--deny-dir",
+        `${Deno.env.get("HOME")}/.radia`,
+      ]
+      : []),
   ]));
 
   return procs;

@@ -72,7 +72,13 @@ requires a token in EVERY mode, not only `--auth required`: it shows a sign-in s
 present and `api()` refuses to send an unauthenticated request, so the no-header shortcut stays
 reachable from `curl` and unreachable from the browser. `radia dev` prints one at startup for that.
 The token it holds is any session token, an operator's or a person's, and the console resolves WHO
-it is through `GET /v0/ops/permissions` rather than assuming a token means operator. That assumption was the bug: a console signed in as a scoped principal still labelled
+it is through `GET /v0/ops/permissions` rather than assuming a token means operator.
+
+A run token expires on its own clock, so the console treats a `401` as the ordinary end of a session
+and returns to sign-in. Worth knowing why that needed handling: `/v0/health` is public, but a
+PRESENTED token must still resolve, so an expired one `401`s on the very endpoint a client uses to
+prove the space is up. Read naively that says "offline", which names the wrong thing and offers no
+way to re-authenticate. That assumption was the bug: a console signed in as a scoped principal still labelled
 itself "operator token", which is the promise-vs-enforcement gap every grant defect here has had.
 
 **Per-run lease ownership + revocation (built):** a lease is owned by the claiming principal
@@ -270,8 +276,8 @@ flowchart TD
     Req[request] --> B{"Authorization: Bearer?"}
     B -->|"valid, active run token"| Prin["principal = run:id"]
     B -->|"invalid / expired / stopped"| E401[["401"]]
-    B -->|"absent, auth required"| E401
-    B -->|"absent, open mode"| Oper["principal = human:local (operator)"]
+    B -->|"absent (the default)"| E401
+    B -->|"absent, explicit --auth open"| Oper["principal = human:local (operator)"]
     Prin --> Ops
     Oper --> Ops
     Ops{"path under /v0/ops/* ?"} -->|"yes, not privileged"| E403a[["403"]]

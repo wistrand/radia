@@ -7,8 +7,10 @@ distribution strategy. Origin: outline §10.
 The two **embedded** ones, `src/storage/pglite.ts` (WASM Postgres) and `src/storage/sqlite.ts`
 (built-in `node:sqlite`), carry the record/envelope tables, the partial claim index, and the SQL
 mapping below, and both pass the full conformance suite in CI. The `dev` mode is `deno task dev`
-(in-memory by default; `--db <path>` persists, using a file for SQLite and a data directory for
-PGlite; records, envelopes, events, idempotency, and kind declarations all survive restart. Kind
+(in-memory by default; bare `--db` persists under the one runtime directory `./.radia`
+(`src/paths.ts`, `RADIA_DIR` moves it) and `--db <path>` names a place, using a file for SQLite and
+a data directory for PGlite; blobs and the space KEK land there too, so one directory is the whole
+on-disk footprint; records, envelopes, events, idempotency, and kind declarations all survive restart. Kind
 declarations are `kind_def` records (no separate table), reloaded into the in-memory registry at
 startup via `Space.loadKinds`). **M1 status (built):** the standalone **Postgres** adapter
 (`src/storage/postgres.ts`, deno-postgres pool) shares one Postgres-dialect body with PGlite

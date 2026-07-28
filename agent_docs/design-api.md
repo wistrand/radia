@@ -175,8 +175,8 @@ experimental **observability + control** surface lives under `/v0/ops/*` (`stats
 `records/{id}[/envelope|/lineage|/graph]`, and remediation
 `records/{id}/{reclaim|dead-letter|requeue|declassify}`). The prefix split carries both the
 stability boundary and the auth boundary. `/v0/ops/*` is **grant-gated (enforced)** to operator
-principals; requests authenticate with `Authorization: Bearer <run-token>` (no header → the
-operator default). See [design-auth.md](design-auth.md). **Kinds are not a verb:** a kind declaration is a `kind_def`
+principals; requests authenticate with `Authorization: Bearer <run-token>` (no header → `401`, unless the space
+was started with the explicit `--auth open`). See [design-auth.md](design-auth.md). **Kinds are not a verb:** a kind declaration is a `kind_def`
 record on the coordination plane (`put` it, `query {kind:kind_def}` to discover), with no
 `/v0/kinds` endpoint. Principle: express features through the substrate (records, queries,
 content-routing) rather than as scattered endpoints; see [CLAUDE.md](../CLAUDE.md)

@@ -7,19 +7,32 @@ directory and README; start with whichever question you have.
 |---------|---------------|--------------|
 | [`pipeline/`](pipeline/) | Content-routed coordination with no routing table: a job fans out into tasks, workers claim only what matches their pattern, an aggregator fans the results back in. Leases, at-least-once, the event log, a 4-level lineage tree. | no |
 | [`stress/`](stress/) | What a busy space looks like. Waves of activity (poison records retrying into `dead_letter`, abandoned leases, per-op worker agents) to watch develop in the console's **Space** tab. | no |
-| [`chat/`](chat/) | The full end-to-end exercise: an LLM agent whose thinking, tool calls, images, saved files and sandboxed code execution are *all* records, served by six least-privilege worker processes with real auth roles. | yes |
+| [`chat/`](chat/) | The full end-to-end exercise: an LLM agent whose thinking, tool calls, images, saved files and sandboxed code execution are *all* records, served by six least-privilege worker processes, with the person at the keyboard as a real logged-in principal. | yes |
 
 ```bash
-deno task dev      # a space + web console at http://localhost:7788
+deno task dev      # a space + web console at http://127.0.0.1:7788
 
 deno task demo     # pipeline: planner + workers + aggregator against that space
 deno task stress   # stress:   fill the space with waves of activity
-deno task chat     # chat:     the LLM agent (needs OPENROUTER_API_KEY)
+
+radia login human:you                     # chat: the LLM agent needs a session of its own
+RADIA_CHAT_TOKEN=<token> deno task chat   #       plus OPENROUTER_API_KEY
 ```
 
+Auth is required by default, so every example authenticates. `radia dev` provisions the operator
+credential they bootstrap with, so `demo` and `stress` need no extra step; the chat additionally
+runs as YOU, which is a credential only you can mint.
+
 Every example talks to the space over the public `/v0` API through the SDK in
-[`../sdk/ts`](../sdk/ts). None of them imports from `src/`. That is deliberate: they model what an
+[`../sdk/ts`](../sdk/ts), never through a runtime internal. That is deliberate: they model what an
 external agent author writes, so anything they can do, your code can do too.
+
+Two narrow exceptions, both outside that path and worth naming so nobody widens them:
+[`operator.ts`](operator.ts) reads the local credential file (`src/credentials.ts`) to get the
+operator token it bootstraps with, rather than reimplementing a path convention that would drift;
+and `chat/smoke-fleet.ts`, a test, imports the registry projection it is asserting about. Neither is
+a coordination verb. An example reaching into `src/` for anything a client could do over `/v0` is a
+bug in the example.
 
 ## What each one is for
 

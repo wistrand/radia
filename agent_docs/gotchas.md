@@ -838,6 +838,29 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   it. It is gone: the session is whatever credential the person supplies, and whether that reaches
   the ops plane follows from the grants that principal holds. Never reintroduce an out-of-band
   switch for authority; make it a property of the credential.
+- **A public endpoint still rejects a BAD credential, so `401` never means "the space is down".**
+  `/v0/health` and `GET /` skip the auth requirement, but `resolveAuth` rejects a presented token
+  that does not resolve, on every path. So an expired run token `401`s on the one endpoint a client
+  uses to prove the space is up, and the console read that as `offline`: it named the wrong thing
+  and, because the sign-in screen only appeared when NO token was set, left the tab dead until
+  someone cleared `sessionStorage` by hand. Any client polling health has to separate `401`
+  (credential) from unreachable (space), and run tokens expire in ~15 minutes, so this is the
+  ordinary end of a session rather than an edge case.
+- **`fetch` REJECTS when nothing is listening, so a stopped space is an exception, not a status.**
+  The console's `api()` returns `{ok, status}` and every caller reads it, so an uncaught rejection
+  froze the page on its last good render. It now maps a network failure to `status: 0`, distinct
+  from any HTTP status.
+- **Runtime paths belong in `src/paths.ts`, never at a call site.** A space writes a database,
+  artifact blobs and (optionally) the space KEK, and each was named where it was needed:
+  `.radia-blobs/`, `.radia-kek.json`, `.radia-chat-space.db` and `.radia-chat-space.db-blobs/`, four
+  top-level entries nobody chose as a set. They now default under one `./.radia` (`RADIA_DIR` moves
+  it), which makes `rm -rf .radia` a complete reset and lets the chat's sandbox deny ONE directory
+  instead of a list that drifts as paths are added. Two properties to preserve when adding one: the
+  KEK stays a SIBLING of the blob directory rather than inside it (copying blobs must not carry the
+  key), and blobs stay `<db>-blobs` when `--db` names a place outside the runtime dir (a space's
+  bytes and its records belong together). Also note SQLite will not create a missing parent
+  directory, so a new path needs `ensureParent`; the error otherwise names the file and reads like
+  corruption.
 - **The provisioned credential is keyed by HOST, so `localhost` and `127.0.0.1` are two spaces.**
   `baseKey` (`src/credentials.ts`) keys on `protocol//host`, and `radia dev` binds `127.0.0.1`, so
   anything defaulting to `http://localhost:7788` finds no credential for a space it can otherwise

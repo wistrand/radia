@@ -76,7 +76,7 @@ are encouraging and workload-specific, not proof of general superiority. See
 Requires [Deno](https://deno.com). No build step.
 
 ```bash
-deno task dev          # embedded space + web console at http://localhost:7788
+deno task dev          # embedded space + web console at http://127.0.0.1:7788
 deno task demo         # a coordination demo (planner + workers + aggregator) against it
 deno task chat         # a CLI LLM chatbot (needs OPENROUTER_API_KEY): thinking, tools, images
                        # and sandboxed code execution are all records; watch the Feed tab
@@ -88,20 +88,25 @@ deno task bench        # throughput, latency percentiles, scaling curves; see be
 Storage is in-memory by default. To persist across restarts, pass `--db`:
 
 ```bash
-deno task dev --storage sqlite --db ./.radia/radia.db   # SQLite file (WAL)
-deno task dev --storage pglite --db ./.radia/radia-pg   # PGlite data directory
+deno task dev --db                                  # persist under ./.radia
+deno task dev --storage sqlite --db ./elsewhere.db  # or name the place yourself
 ```
+
+**Everything a space writes goes in one directory, `./.radia`.** The database, the artifact blobs
+and the space KEK, so that directory is the whole on-disk footprint and deleting it is a clean
+reset. `RADIA_DIR` moves it. (Not to be confused with `~/.radia/credentials.json`, which belongs to
+you rather than to a project and is shared by every space you run.)
 
 Records, envelopes, events, idempotency, and kind declarations all persist and reload on
 restart. (Leases held by processes that crashed expire on their own clocks, as designed.)
 
-Artifact *bytes* live beside them, in a directory rather than the database. That directory is
-derived from `--db`, or set explicitly with `--blobs <dir>` (which is what a Postgres deployment
-needs, since its `--db` is a connection URL). Without one, blobs are in-memory and do not
-survive a restart.
-Encryption at rest is opt-in: `--blob-kek <file>` (generated on first use) or `RADIA_BLOB_KEK`
-(base64, 32 bytes). The startup line reports which you got: `blobs=file+aes-gcm (…)` versus
-`blobs=memory (in-memory)`.
+Artifact *bytes* live beside them, in a directory rather than the database: `<db>-blobs` by
+default, or `--blobs <dir>` explicitly (which is what a Postgres deployment needs, since its `--db`
+is a connection URL). Without one, blobs are in-memory and do not survive a restart.
+Encryption at rest is opt-in: `--blob-kek` (generated at `.radia/kek.json` on first use), a path of
+your own, or `RADIA_BLOB_KEK` (base64, 32 bytes). The key is kept beside the blob directory rather
+than inside it, so copying the blobs alone does not carry it along. The startup line reports which
+you got: `blobs=file+aes-gcm (…)` versus `blobs=memory (in-memory)`.
 
 For a real Postgres (the multi-instance backend), the compose file under `docker/postgres/`
 brings up a local server:

@@ -6,7 +6,7 @@ Nothing here talks to a model except the workers that hold the key.
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-...
-deno task dev      # optional: open http://localhost:7788 and watch the Feed tab
+deno task dev      # optional: open http://127.0.0.1:7788 and watch the Feed tab
 deno task chat
 deno task chat -- --conversation last    # …or pick up where you left off
 ```
@@ -14,7 +14,8 @@ deno task chat -- --conversation last    # …or pick up where you left off
 **Conversations survive a restart, because they were never in the process.** The thread is
 `message` records on the space, so resuming is just recovering the one piece of client-held state
 (`nextIndex`). That is one query, since `index` is a declared sortable path. Two things it depends on: a
-chat-spawned space runs with `--db` (`RADIA_CHAT_DB`, default `.radia-chat-space.db`), because a
+chat-spawned space runs with `--db` (`RADIA_CHAT_DB`, default `.radia/chat.db`, beside everything
+else a space writes), because a
 space without one is in-memory and takes the conversation, its saved procedures and its artifacts
 down with it; and `--conversation <id>|last` reattaches instead of opening a new thread. Resuming
 restores more than the transcript: saved procedures are conversation-scoped, so the tools come
@@ -519,8 +520,10 @@ self-hosted gateway), `RADIA_CHAT_WINDOW` (newest messages sent per turn; 0 = wh
 `RADIA_CHAT_IMAGE_MODEL`, `RADIA_CHAT_IMAGE_SAFETY` (provider moderation passthrough,
 `CATEGORY:THRESHOLD,…`), `RADIA_CHAT_IMAGE_DIR` (save generated images locally), `RADIA_CHAT_EXEC_TIMEOUT_MS` (code
 execution budget, default 5000), `RADIA_CHAT_EXEC_DIRS` (read-only roots for executed code;
-unset = no filesystem, and separate from `RADIA_CHAT_DIRS` on purpose).
-(No tier setting: the router dispatches, escalation promotes.)
+unset = no filesystem, and separate from `RADIA_CHAT_DIRS` on purpose), `RADIA_CHAT_DB` and
+`RADIA_CHAT_SCOPE` (below), `RADIA_DIR` (the runtime directory everything else defaults into).
+(No tier setting: the router dispatches, escalation promotes. No role setting either: the session is
+whoever `RADIA_CHAT_TOKEN` belongs to.)
 
 Honest edges (documented, not hidden): a crashed inference retries and can double-spend
 (at-least-once; the gateway is the real fix); file contents become records and flow to the

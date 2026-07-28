@@ -57,10 +57,12 @@ export function operatorToken(): string | undefined {
 export const scopeMode: "identity" | "conversation" =
   (arg("--scope") ?? Deno.env.get("RADIA_CHAT_SCOPE")) === "conversation" ? "conversation" : "identity";
 
-/** Where a chat-spawned space keeps its data. A space with no `--db` is IN-MEMORY, so without this
- *  every restart lost the conversation, the saved procedures and the artifacts. The thread lives
- *  on the space, which only helps if the space outlives the process. Blobs land beside it. */
-export const spaceDb = Deno.env.get("RADIA_CHAT_DB") ?? ".radia-chat-space.db";
+/** Where a chat-spawned space keeps its data: under the one runtime directory (`RADIA_DIR`, default
+ *  `.radia`), beside everything else a space writes. A space with no `--db` is IN-MEMORY, so
+ *  without this every restart lost the conversation, the saved procedures and the artifacts. The
+ *  thread lives on the space, which only helps if the space outlives the process. Blobs land
+ *  beside it, at `<db>-blobs`. */
+export const spaceDb = Deno.env.get("RADIA_CHAT_DB") ?? `${Deno.env.get("RADIA_DIR") ?? ".radia"}/chat.db`;
 
 /** Reattach to an existing conversation instead of starting one: a conversation id, or `last` for
  *  the most recent. Empty = start fresh. */

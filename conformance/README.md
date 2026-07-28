@@ -59,12 +59,20 @@ is the only run that actually *contends* for claims, which is why a claim-path c
 | `backfill.test.ts` | the schema's one migration: rebuilding `record_edges` for a database written before that table existed |
 | `planner.test.ts`  | Postgres planner statistics for declared body paths (`prepareKind`) |
 | `registry.test.ts` | latest-wins projections over hand-made ids |
-| `console.test.ts`  | the dev console's HTML escaping, lifted out of the page source |
+| `console.test.ts`  | the dev console, lifted out of the page source: HTML escaping, no credential in the page or in an event handler, and the sign-in gate |
+| `defaults.test.ts` | the posture an unconfigured space lands in: `--auth`, the runtime directory, optional-value flags |
 
-The four files outside `suites/` are NOT adapter-parameterized, and that is the rule for where a
-test belongs: the shared run is for PORT contracts, so anything that has one implementation (the
-HTTP surface, the console) or knows a specific dialect (the backfill, the planner) is a standalone
-`*.test.ts`. They still run under `deno task conformance`, which globs the directory.
+The files outside `suites/` are NOT adapter-parameterized, and that is the rule for where a test
+belongs: the shared run is for PORT contracts, so anything that has one implementation (the HTTP
+surface, the console, the defaults) or knows a specific dialect (the backfill, the planner) is a
+standalone `*.test.ts`. They still run under `deno task conformance`, which globs the directory.
+
+Two of these test SOURCE TEXT rather than behavior, which is unusual enough to justify. The console
+is one file with no build step, so there is no module to import; `console.test.ts` lifts functions
+out of the page and evaluates them, and the extraction fails loudly if one is renamed, so the test
+cannot quietly stop testing anything. `defaults.test.ts` asserts on literals because a default is a
+literal: the failure mode is someone changing `"required"` back to `"open"`, and only reading that
+token catches it.
 
 ## Writing a suite
 

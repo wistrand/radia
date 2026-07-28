@@ -5,7 +5,7 @@ facts piling up, plus deliberate chaos (poison records that retry into `dead_let
 leases left `leased`). Run it repeatedly. Every run is a new wave with fresh agents.
 
 ```bash
-deno task dev      # terminal 1: open http://localhost:7788, Space tab
+deno task dev      # terminal 1: open http://127.0.0.1:7788, Space tab
 deno task stress   # terminal 2: one wave
 deno task stress -- --waves 3 --tasks 600 --rate 150 --workers 6
 ```

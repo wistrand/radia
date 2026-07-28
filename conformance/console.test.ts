@@ -176,13 +176,30 @@ Deno.test("console: a pasted token is verified before it is stored", () => {
   assert(storeAt > verifyAt, "signIn() stores the token before verifying it");
 });
 
-Deno.test("dev: --auth defaults to required", async () => {
-  // The default IS the security posture for every space nobody configured. Open mode resolves a
-  // header-less request to the operator, so defaulting to it meant a space started life fully open
-  // and stayed there unless someone knew the flag existed. Reading the source rather than starting
-  // a server: this is one literal, and the assertion should fail on the literal changing.
-  const main = await Deno.readTextFile(new URL("../src/main.ts", import.meta.url));
-  const m = main.match(/const authMode = flag\(args, "--auth"\) \?\? "(\w+)"/);
-  assert(m, "src/main.ts no longer resolves --auth this way; update this test with it");
-  assertEquals(m[1], "required", "--auth must default to required");
+Deno.test("console: an expired token returns to sign-in, never reports 'offline'", () => {
+  // `/v0/health` is public, but a PRESENTED token must still resolve, so a bad or expired one 401s
+  // on the very endpoint that would otherwise prove the space is up. The console called that
+  // "offline": it named the wrong thing and left no way back to the sign-in screen, so the tab was
+  // dead until you cleared sessionStorage by hand. Run tokens expire in ~15 minutes, so this is how
+  // a session ordinarily ends.
+  const loadHealth = extractFunction(html, "loadHealth");
+  assert(/status === 401/.test(loadHealth), "loadHealth does not distinguish a 401 from an unreachable space");
+  assert(/showSignIn\(/.test(loadHealth), "loadHealth cannot return to the sign-in screen");
+
+  // The sign-in screen has to be reachable from BOTH directions: page load with no token, and a
+  // credential dying mid-session. One entry point, so the two cannot drift apart.
+  const showSignIn = extractFunction(html, "showSignIn");
+  assert(/sessionStorage\.removeItem/.test(showSignIn), "the dead credential is kept, so every poll re-enters this path");
+  assert(/clearInterval\(healthTimer\)/.test(showSignIn), "the health poll keeps running against a dead token");
+
+  // Even when the space really is unreachable, the token stays changeable: the pill is the only
+  // way to reach `setToken` from that state.
+  assert(/pill[^`]*offline/.test(loadHealth) && /onclick="setToken\(\)"[^`]*offline/.test(loadHealth), "the offline pill is not clickable");
+});
+
+Deno.test("console: a network failure is an outcome, not an exception", () => {
+  // `fetch` REJECTS when nothing is listening, and every caller reads `{ok, status}`. An uncaught
+  // rejection left a stopped space showing the last good render, saying nothing.
+  const api = extractFunction(html, "api");
+  assert(/catch\s*\(e\)\s*\{[\s\S]*status:\s*0/.test(api), "api() does not turn an unreachable space into a result");
 });

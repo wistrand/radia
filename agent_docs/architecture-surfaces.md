@@ -87,13 +87,16 @@ request path, and sync keeps async colouring out of the call sites); `readTextFi
 if set, else `$XDG_STATE_HOME/radia/credentials.json`, `%APPDATA%\radia\…`, or `~/.radia/…`. Mode
 `0600` where the platform has POSIX modes. Keyed by base URL, so several spaces coexist.
 
-Resolution order for any client: `RADIA_TOKEN` → the stored credential for that base URL → none
-(falling back to the open-mode no-header operator default).
+Resolution order for any client: `RADIA_TOKEN` → the stored credential for that base URL → none,
+which is a `401` unless the space was started with `--auth open`.
+
+Keyed by base URL means keyed by HOST: a space on `127.0.0.1` has no credential under `localhost`,
+even though both reach it. Every default in this repo says `127.0.0.1` for that reason.
 
 The point is that **local development uses the same API shape as production**. There is no
-"no tokens locally" mode to grow out of: the CLI, the MCP adapter, and the Python SDK all present
-`Authorization: Bearer` exactly as a deployed client does. The no-header default still exists for
-`curl` and the browser console, but nothing radia ships depends on it.
+"no tokens locally" mode to grow out of: the CLI, the MCP adapter, the Python SDK, the console and
+the bundled examples all present `Authorization: Bearer` exactly as a deployed client does. Nothing
+radia ships uses the no-header shortcut, which is now behind an explicit `--auth open`.
 
 Operator tokens are never persisted as records (see `CredentialStore` in `src/core/auth.ts`), so
 they die with the process. The file is therefore rewritten at every start and removed on shutdown,

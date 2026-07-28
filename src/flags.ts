@@ -16,6 +16,21 @@ export function flag(argv: string[], name: string): string | undefined {
   return i >= 0 && i + 1 < argv.length ? argv[i + 1] : undefined;
 }
 
+/**
+ * A flag whose value is OPTIONAL: `--db /tmp/x` → `"/tmp/x"`, bare `--db` → `""`, absent →
+ * `undefined`. The empty string means "present, you pick", which is how a caller offers a default
+ * without also making the flag meaningless when someone does want to choose.
+ *
+ * The next token counts as the value only if it does not start with `-`, so `--db --port 7788`
+ * reads as a bare `--db` rather than silently naming the database `--port`.
+ */
+export function optionalFlag(argv: string[], name: string): string | undefined {
+  const i = argv.indexOf(name);
+  if (i < 0) return undefined;
+  const next = argv[i + 1];
+  return next === undefined || next.startsWith("-") ? "" : next;
+}
+
 /** Every value of a repeatable flag: `--parent a --parent b` → `["a", "b"]`. */
 export function flags(argv: string[], name: string): string[] {
   const out: string[] = [];

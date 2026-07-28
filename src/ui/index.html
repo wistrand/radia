@@ -355,11 +355,20 @@ async function api(method, path, body, headers = {}) {
   const h = { ...headers };
   if (body !== undefined) h["content-type"] = "application/json";
   if (AUTH_TOKEN) h["Authorization"] = "Bearer " + AUTH_TOKEN;
-  const res = await fetch(path, {
-    method,
-    headers: h,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  // A network failure is an outcome, not an exception. `fetch` REJECTS when the space is not
+  // listening, and every caller here reads `{ok, status}`, so an uncaught rejection meant a stopped
+  // space left the page frozen on its last good render rather than saying anything. Status 0 is the
+  // "never reached the server" case, distinct from any HTTP status.
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      headers: h,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    return { ok: false, status: 0, data: { title: "unreachable", detail: String(e.message || e) } };
+  }
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
@@ -408,11 +417,24 @@ function metaFlags(rec) {
 // ---- health / overview ----
 async function loadHealth() {
   const r = await api("GET", "/v0/health");
-  if (!r.ok) { $("health").innerHTML = `<span class="pill">offline</span>`; return; }
+  if (!r.ok) {
+    // A 401 here is the CREDENTIAL, not the space. `/v0/health` is public, but a presented token
+    // still has to resolve, so a bad or expired one 401s on the one endpoint that would otherwise
+    // prove the space is up. Reporting that as "offline" was a dead end: it named the wrong thing
+    // and left no way back to the sign-in screen. Run tokens expire in ~15 minutes, so this is the
+    // ordinary end of a session, not an edge case.
+    if (r.status === 401) {
+      showSignIn(AUTH_TOKEN ? "That token is expired or no longer valid. Paste a new one." : "");
+      return;
+    }
+    $("health").innerHTML = `<span class="pill" style="cursor:pointer" onclick="setToken()" title="cannot reach the space. Click to change the token anyway">offline</span>`;
+    return;
+  }
   const d = r.data;
   // Ask the space who this is. A run token reports `run:…` at /v0/health; the SUBJECT (the person
   // or agent whose grants it carries) is what the rest of the console should name.
   const who = await api("GET", "/v0/ops/permissions?principal=" + encodeURIComponent(d.principal || ""));
+  if (!who.ok && who.status === 401) { showSignIn("That token is expired or no longer valid. Paste a new one."); return; }
   IDENTITY = who.ok
     ? { principal: d.principal, subject: who.data.subject, privileged: !!who.data.privileged, kinds: who.data.kinds || [] }
     : { principal: d.principal, subject: d.principal, privileged: false, kinds: [], unknown: true };
@@ -430,8 +452,8 @@ async function loadHealth() {
       : IDENTITY.privileged
       ? `<span class="tag tag-grant">operator</span>`
       : `<span class="tag tag-taint">scoped</span> <span class="muted">${IDENTITY.kinds.length} kind${IDENTITY.kinds.length === 1 ? "" : "s"} granted; the ops plane (stats, events, remediation) will 403</span>`)
-    + ` <button class="btn ghost" onclick="setToken()">${AUTH_TOKEN ? "change token" : "set token"}</button>`
-    + (AUTH_TOKEN ? ` <button class="btn ghost" onclick="useToken(null)" title="drop the token and fall back to the no-header default (which is the operator in open mode, and nothing in --auth required)">sign out</button>` : "")
+    + ` <button class="btn ghost" onclick="setToken()">change token</button>`
+    + ` <button class="btn ghost" onclick="useToken(null)" title="forget this token and return to the sign-in screen">sign out</button>`
     + `</div>`
     + (IDENTITY.principal && IDENTITY.subject !== IDENTITY.principal
       ? `<div class="muted">credential: <span class="mono">${esc(IDENTITY.principal)}</span> (a run; its grants are held by ${label})</div>`
@@ -1085,25 +1107,42 @@ async function signIn() {
   useToken(t);
 }
 
-async function start() {
-  if (AUTH_TOKEN) {
-    $("signin").style.display = "none";
-    loadHealth();
-    loadStats();
-    loadKinds();
-    setInterval(loadHealth, 5000);
-    return;
-  }
+/**
+ * Show the sign-in screen, whether we arrived with no token or lost the one we had.
+ *
+ * Reachable from BOTH directions on purpose. A console that can only ask for a credential at page
+ * load is unusable the moment one expires, and the failure looks like the space went away.
+ */
+async function showSignIn(reason) {
+  if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
+  // Drop the dead credential: keeping it would re-enter this path on every poll, and it is of no
+  // use to anyone now. The one in the box is the replacement, not this.
+  if (AUTH_TOKEN) { AUTH_TOKEN = null; sessionStorage.removeItem("radia.token"); }
   $("signin").style.display = "";
   $("nav").style.display = "none";
   document.querySelector("main").style.display = "none";
-  // Say which of the two failures this is, using the one public endpoint.
+  // Which of the two failures is this? Ask without a credential, since a credential is what is in
+  // question: unauthenticated `/v0/health` answers whenever the space is up.
   const r = await fetch("/v0/health").catch(() => null);
-  $("health").innerHTML = r && r.ok
-    ? `<span class="pill">not signed in</span>`
-    : `<span class="pill">offline</span>`;
-  if (!r || !r.ok) note("signin-note", "err", `no space is answering at ${location.origin}. Start one with \`radia dev\`.`);
+  const up = !!(r && r.ok);
+  $("health").innerHTML = `<span class="pill">${up ? "not signed in" : "offline"}</span>`;
+  if (!up) note("signin-note", "err", `no space is answering at ${location.origin}. Start one with \`radia dev\`.`);
+  else if (reason) note("signin-note", "info", reason);
   $("signin-token").focus();
+}
+
+let healthTimer = null;
+function start() {
+  if (!AUTH_TOKEN) return showSignIn("");
+  $("signin").style.display = "none";
+  $("nav").style.display = "";
+  document.querySelector("main").style.display = "";
+  loadHealth();
+  loadStats();
+  loadKinds();
+  // The poll is also the expiry detector: a run token dies on its own clock, so nothing else would
+  // notice until the next thing you clicked failed.
+  healthTimer = setInterval(loadHealth, 5000);
 }
 start();
 // Deep link: /?tab=space opens a tab directly (handy for sharing a view, and for screenshots).

@@ -6,19 +6,16 @@
 # Release staging from scripts/build-release.sh (binaries + npm/pip shims)
 /dist/
 
-# Artifact blobs for a local dev space (bytes, not source)
-/.radia-blobs/
+# Everything a local space writes: embedded databases, artifact blobs, and the space KEK.
+# One directory by design (src/paths.ts), so this is the whole runtime footprint and deleting it
+# resets local state. NEVER commit it: the KEK decrypts every blob beside it, and the database
+# holds whatever the examples put in a space.
+/.radia/
 
-# Space KEK for local artifact encryption. NEVER commit this: it decrypts every blob in
-# .radia-blobs, and it is kept OUTSIDE that directory so copying the blobs alone does not take
-# the key with them.
-/.radia-kek.json
-
-# Local dev spaces (file-backed embedded storage)
+# Databases anywhere else (--db can point outside the runtime dir)
 *.db
 *.db-wal
 *.db-shm
-/.radia/
 
 # Deno
 .deno/
@@ -27,6 +24,3 @@
 __pycache__/
 *.py[cod]
 
-# Persisted space for the chat example (`deno task chat`), so a restart can resume
-/.radia-chat-space.db*
-/.radia-chat-space.db-blobs/

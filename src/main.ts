@@ -14,14 +14,16 @@ import { startServer } from "./server/http.ts";
 import { clearCredential, saveCredential } from "./credentials.ts";
 import { runCli } from "./cli.ts";
 import { runMcp } from "./mcp/server.ts";
-import { flag } from "./flags.ts";
+import { flag, optionalFlag } from "./flags.ts";
+import { defaultBlobDir, defaultDbPath, defaultKekPath, ensureParent, radiaDir } from "./paths.ts";
 import { args as argv, env, exit, onShutdown, UsageError } from "./platform.ts";
 
 const USAGE = `radia <command>
 
-  dev [--port <n>] [--host <addr>] [--storage pglite|sqlite|postgres] [--db <path|url>]
-      [--blobs <dir>] [--blob-kek <file>] [--auth required|open] [--artifact-port <n>]
-      Run an embedded space + web console.
+  dev [--port <n>] [--host <addr>] [--storage pglite|sqlite|postgres] [--db [path|url]]
+      [--blobs <dir>] [--blob-kek [file]] [--auth required|open] [--artifact-port <n>]
+      Run an embedded space + web console. Everything it writes goes under ./.radia
+      (RADIA_DIR moves it); bare --db and --blob-kek take their defaults from there.
   mcp [--url <base>]
       Serve the space to an MCP-capable harness over stdio.
   <cli command>
@@ -34,7 +36,12 @@ async function dev(args: string[]): Promise<void> {
   const backend = flag(args, "--storage") ?? "pglite";
   // --db persists to disk: a file for sqlite, a data directory for pglite. Omit = in-memory.
   // For --storage postgres, --db is the connection URL (or set RADIA_PG_URL).
-  const dbPath = flag(args, "--db");
+  //
+  // `--db` with no value means "persist, you pick where", which is `.radia/` (see src/paths.ts).
+  // That is the shape most people want and the one that used to require knowing a path convention
+  // nothing documented, so everyone invented their own and the project root filled up.
+  const dbFlag = optionalFlag(args, "--db");
+  const dbPath = dbFlag === "" ? defaultDbPath(backend) : dbFlag;
   // Artifact bytes get their own ORIGIN (see startServer): a second port is a different origin to
   // a browser, so generated content cannot reach the console. `--artifact-port 0` disables it and
   // artifacts stay downloads from the main origin.
@@ -54,6 +61,10 @@ async function dev(args: string[]): Promise<void> {
   }
   const authRequired = authMode === "required";
 
+  // Make the parent exist before anything tries to write into it. Neither SQLite nor the KEK writer
+  // creates one, and the resulting error names the file rather than the missing directory.
+  if (backend !== "postgres" && dbPath) ensureParent(dbPath);
+
   let storage: StorageAdapter;
   if (backend === "pglite") storage = new PgliteAdapter(dbPath);
   else if (backend === "sqlite") storage = new SqliteAdapter(dbPath); // undefined -> :memory:
@@ -68,20 +79,28 @@ async function dev(args: string[]): Promise<void> {
   }
 
   await storage.init();
-  const where = backend === "postgres" ? "shared server" : (dbPath ? `persisted at ${dbPath}` : "in-memory");
+  const where = backend === "postgres" ? "shared server" : (dbPath ? `persisted at ${dbPath}` : "in-memory (--db to persist)");
   console.log(`radia dev: storage=${storage.name} (${where})`);
   // Artifact BYTES live beside the data they belong to: a directory next to --db (or --blobs), and
   // in memory otherwise, since an ephemeral space must not leave blobs behind on disk. `--blobs` is what
   // a postgres deployment uses, since its --db is a connection URL with no local home.
-  const blobDir = flag(args, "--blobs") ?? (backend !== "postgres" && dbPath ? `${dbPath}-blobs` : undefined);
+  const blobDir = flag(args, "--blobs") ??
+    (backend === "postgres" ? undefined : (dbPath ? defaultBlobDir(dbPath) : undefined));
   // Encryption at rest is OPT-IN and only as strong as where the key lives: `RADIA_BLOB_KEK`
   // (base64, 32 bytes) is the real deployment path; `--blob-kek <file>` generates one on first use
   // for local work. A key file inside the blob directory protects nothing against someone who
   // copies the directory, so say so rather than implying otherwise.
-  const kek = loadKek({ env: env("RADIA_BLOB_KEK"), file: flag(args, "--blob-kek") });
+  // `--blob-kek` with no path generates one at the default location, so turning encryption on does
+  // not also require choosing where the key lives (and putting it somewhere it should not be).
+  const kekFlag = optionalFlag(args, "--blob-kek");
+  const kekPath = kekFlag === "" ? defaultKekPath() : kekFlag;
+  if (kekPath) ensureParent(kekPath);
+  const kek = loadKek({ env: env("RADIA_BLOB_KEK"), file: kekPath });
   const cipher = kek ? await BlobCipher.fromKey(kek.key) : undefined;
   const blobs = blobDir ? new FileBlobStore(blobDir, cipher) : new MemoryBlobStore(cipher);
   console.log(`radia dev: blobs=${blobs.name}${blobDir ? ` (${blobDir})` : " (in-memory)"}${kek ? ` (encrypted, KEK from ${kek.source})` : ""}`);
+  // One line naming the whole on-disk footprint, so "where did this write?" never needs archaeology.
+  if (dbPath || blobDir || kek) console.log(`radia dev: runtime dir=${radiaDir()}`);
   const space = new Space(storage, {}, blobs);
   await space.loadKinds(); // restore persisted kind declarations
   const operatorToken = await space.mintOperatorToken(); // for the CLI, the MCP adapter and curl

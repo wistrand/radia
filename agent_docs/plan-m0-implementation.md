@@ -100,7 +100,8 @@ Two storage rules the phases produced (`src/storage/`):
 - **Authorization stack (M1):** grants are `grant` records enforced by
   `Space.authorize` at the HTTP boundary; the bootstrap chain (`agent-definitions` → `agent-runs` →
   stop/quarantine) mints run tokens (`src/core/auth.ts`, only the hash stored); `Authorization:
-  Bearer` is the sole channel (no header → operator default; the dev console holds a server-minted
+  Bearer` is the sole channel (no header → operator default, since made an explicit `--auth open`
+  opt-in with `required` the default; the dev console holds a server-minted
   operator token). Per-run lease ownership, pattern-scoped grants, `delegation_context`, and
   `taint` + declassify all built; the chat example runs with real `admin`/`user` roles and the
   console surfaces the auth records (Auth tab) + taint/delegation badges. Detail in
@@ -280,7 +281,7 @@ real infra and is deferred past M0; see [plan-validation.md](plan-validation.md)
 
 ### Phase 7: surfaces and the demo (DONE)
 
-- [x] Auto-provisioned local credentials, with the **same API shape as production, never "no tokens"**. `radia dev` mints an operator token and writes it to `$XDG_STATE_HOME/radia/credentials.json` (`%APPDATA%`/`~/.radia` elsewhere), mode 0600, keyed by base URL; removed on clean shutdown, since operator tokens die with the process. The CLI, MCP adapter, and Python SDK all resolve it the same way (`RADIA_TOKEN` overrides). Implemented in `src/credentials.ts` rather than `src/core/auth.ts`: `core/` is storage- and IO-agnostic, and this touches the filesystem. The no-header operator default still exists for `curl` and the browser console, but nothing radia ships depends on it.
+- [x] Auto-provisioned local credentials, with the **same API shape as production, never "no tokens"**. `radia dev` mints an operator token and writes it to `$XDG_STATE_HOME/radia/credentials.json` (`%APPDATA%`/`~/.radia` elsewhere), mode 0600, keyed by base URL; removed on clean shutdown, since operator tokens die with the process. The CLI, MCP adapter, and Python SDK all resolve it the same way (`RADIA_TOKEN` overrides). Implemented in `src/credentials.ts` rather than `src/core/auth.ts`: `core/` is storage- and IO-agnostic, and this touches the filesystem. The no-header operator default has since become an explicit `--auth open` opt-in, kept for `curl`; nothing radia ships depends on it, the console included.
 - [x] Bundled MCP adapter (`src/mcp/`): newline-delimited JSON-RPC 2.0 over stdio, 15 tools. **Credentials outside the model context**: the token is attached by the adapter and appears in no schema, result, or error. **Heartbeats internally**: `space_take` returns an opaque `claimId`; the fenced lease stays in the adapter and is renewed at lease/3, so a model that thinks for minutes keeps its claim and cannot forge, replay, or leak a lease. Kinds are discovered through `space_kinds`, never hardcoded; tool descriptions carry the usage guidance rather than a system prompt teaching the substrate.
 - [x] Friendly dev UI (`src/ui/index.html`) served at `GET /`: space overview, records browser, kinds, put form, query playground, worker panel, live feed, lineage, graph, auth, and the Space map. Public-API-only; single file plus one vendored, same-origin asset (`src/ui/vendor/`). See "Dev UI" above. Remaining polish: SSE push for the feed, which polls.
 - [x] Minimal CLI (`src/cli.ts`) over the public API only: `health stats doctor kinds get lineage children events watch put query read-one take ack nack release`, `--json` on every verb. `take --json` emits the claim; pipe it back to `ack -`/`nack -`/`release -`. Discovery-first: `kinds` is a query for `kind_def` records, and no verb carries a table of known kinds.

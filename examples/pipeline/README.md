@@ -23,11 +23,11 @@ flowchart LR
 ## Watch it in the web console
 
 ```bash
-deno task dev            # terminal 1: the space + web console at http://localhost:7788
+deno task dev            # terminal 1: the space + web console at http://127.0.0.1:7788
 deno task demo           # terminal 2: runs the agents against that space
 ```
 
-Open http://localhost:7788, go to the **Feed** tab, then run `deno task demo`. It detects
+Open http://127.0.0.1:7788, go to the **Feed** tab, then run `deno task demo`. It detects
 the running space, runs a planner + two workers + an aggregator against it, and you watch
 the events stream in live; open the `summary` record to see its lineage. (If no space is
 running, `demo` starts one and leaves it up so you can open it; Ctrl-C to stop.)
@@ -55,7 +55,9 @@ tears down.
 
 ## Running the pieces separately (the two-terminal experience)
 
-Point agents at a running space with `RADIA_URL` (default `http://localhost:7788`):
+Point agents at a running space with `RADIA_URL` (default `http://127.0.0.1:7788`, matching the
+host `radia dev` binds; the provisioned credential is keyed by host, so `localhost` is a different
+space to anything looking one up):
 
 ```bash
 deno task dev                                             # terminal 1: the space + web console
