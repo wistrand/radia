@@ -220,6 +220,10 @@ export interface PutInput {
     "kind" | "availableAt" | "claimUntil" | "deadlineAt" | "effectivePriority"
   >;
   idempotency?: IdempotencyKey;
+  /** Overrides for the `put` event this commit appends. A privileged DECLASSIFY is still a put of
+   *  a successor record, but recording it as an ordinary put leaves the one operation whose whole
+   *  purpose is accountability indistinguishable from every other write. */
+  event?: { operation?: string; detail?: Record<string, unknown> };
 }
 
 export interface PutResult {

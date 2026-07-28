@@ -445,9 +445,30 @@ export class Space {
    * indexed path on `agent_run`, so this is one indexed query per authorization rather than a scan.
    */
   private async runPrincipalsOf(subject: string, principal: string): Promise<string[]> {
-    const runs = await this.query({ kind: AGENT_RUN, match: { agent: subject } }, 1000, { dir: "desc" });
-    const ids = runs.map((r) => (r.body as { run?: string }).run).filter((r): r is string => typeof r === "string");
-    return [...new Set([...ids, subject, principal])];
+    // PAGED TO EXHAUSTION, never a bounded `query(kind, N)`. `agent_run` grows by one record per
+    // mint plus one per stop, and a live run re-mints before expiry — so a long-lived agent passes
+    // any fixed limit, and the records that fall off a newest-first page are its OLDEST runs. This
+    // list is what `take`, lineage, graph, artifact bytes and watch wakeups narrow to, so a
+    // truncated one does not merely hide old history: the agent's own older records become
+    // unclaimable, and `rankClaimable` skips them silently — indistinguishable from an empty queue.
+    //
+    // One entry per run (a stop is a successor carrying the same `run`), so the projection key is
+    // the run id.
+    const view = await this.registry<{ run?: unknown }>(
+      AGENT_RUN,
+      (b) => (typeof b?.run === "string" ? b.run : undefined),
+      { agent: subject },
+    );
+    if (!view.complete) {
+      // Refusing loudly beats narrowing silently: an incomplete list denies the agent its own
+      // records, which reads as work vanishing rather than as an authorization fault.
+      throw new RadiaError(
+        "registry_incomplete",
+        `could not read all runs of '${subject}' (${view.scanned} scanned) — refusing to compute a ` +
+          `self scope from a partial list, which would silently hide the agent's own records`,
+      );
+    }
+    return [...new Set([...view.entries.keys(), subject, principal])];
   }
 
   /**
@@ -856,7 +877,7 @@ export class Space {
   private async putRaw(
     req: PutRequest,
     idempotencyKey?: string,
-    opts: { taint?: boolean; principal?: string } = {},
+    opts: { taint?: boolean; principal?: string; event?: { operation?: string; detail?: Record<string, unknown> } } = {},
   ): Promise<{ id: string }> {
     const now = await this.storage.now(); // INVARIANT: timestamps come from the DB clock
     // Taint is server-computed data lineage: forced by opts (declassify), else client-raise OR
@@ -877,6 +898,7 @@ export class Space {
       record,
       bodyJson,
       idempotency,
+      ...(opts.event ? { event: opts.event } : {}),
       envelope: {
         kind: record.kind,
         availableAt: now,
@@ -1539,10 +1561,23 @@ export class Space {
    * tainted original as its data parent (audit trail). Downstream work should consume the successor.
    * Grant-gated to operators via the `/ops/*` boundary. Returns the successor id, or null if absent.
    */
-  async declassify(recordId: string): Promise<{ id: string } | null> {
+  async declassify(recordId: string, principal?: string): Promise<{ id: string } | null> {
     const rec = await this.storage.getRecord(recordId);
     if (!rec) return null;
-    return await this.putRaw({ kind: rec.kind, body: rec.body, parentIds: [recordId] }, undefined, { taint: false });
+    // ATTRIBUTED. Declassify is the one operation whose whole purpose is accountability — it is
+    // the human decision that lets untrusted data reach a side-effecting worker — so it must name
+    // who made it. Writing it with no principal made `created_by` (and the event's `runId`) the
+    // space's own identity, leaving the clearance anonymous: the successor said what was cleared
+    // and never who cleared it. A tamper-evident event log over that record would have protected
+    // the wrong fact.
+    //
+    // Recorded as its own operation rather than an ordinary `put`, so a clearance is greppable in
+    // the event log instead of hiding among every other write.
+    return await this.putRaw({ kind: rec.kind, body: rec.body, parentIds: [recordId] }, undefined, {
+      taint: false,
+      principal,
+      event: { operation: "declassify", detail: { declassifiedFrom: recordId } },
+    });
   }
 
   private compile(pattern: Pattern): CompiledMatch {

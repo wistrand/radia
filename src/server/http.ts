@@ -218,7 +218,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
         if (req.method === "POST" && (tail === "reclaim" || tail === "dead-letter" || tail === "requeue")) {
           return await handleAdmin(space, id, tail);
         }
-        if (req.method === "POST" && tail === "declassify") return await handleDeclassify(space, id);
+        if (req.method === "POST" && tail === "declassify") return await handleDeclassify(space, id, principal);
       }
     }
 

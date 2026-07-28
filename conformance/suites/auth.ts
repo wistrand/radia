@@ -465,4 +465,39 @@ export const authSuites: Suite[] = [
       assertEquals((await space.authorize("agent:w", "query", "later"))?.length, 1);
     },
   },
+  {
+    name: "a self scope covers EVERY run of the agent, past the first page of them",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      await space.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "task", operations: ["query"], scope: { createdBy: "self" } },
+      ]);
+
+      // `agent_run` grows by one record per mint plus one per stop, and a live run re-mints before
+      // expiry — so a long-lived agent passes any fixed limit. The read that builds a self scope
+      // used to take ONE bounded page, and a newest-first page drops the agent's OLDEST runs.
+      // That is not merely lost history: this list is what `take`, lineage, graph, artifact bytes
+      // and watch wakeups narrow to, so the agent's own older records become unreachable — and a
+      // claim just skips them, which is indistinguishable from an empty queue.
+      const OLDEST = "run:00000000000000000000000001";
+      await space.put({
+        kind: "agent_run",
+        body: { run: OLDEST, agent: "agent:w", tokenHash: "x".repeat(64), status: "active", expiresAt: "2099-01-01T00:00:00.000Z" },
+      });
+      for (let i = 0; i < 1200; i++) {
+        await space.put({
+          kind: "agent_run",
+          body: { run: `run:filler-${i}`, agent: "agent:w", tokenHash: "y".repeat(64), status: "active", expiresAt: "2099-01-01T00:00:00.000Z" },
+        });
+      }
+
+      const scope = await space.authorScope("agent:w", "query", "task");
+      assert(scope !== undefined, "a self-scoped grant must produce an author scope");
+      assert(
+        scope!.includes(OLDEST),
+        `the agent's OLDEST run fell off the scope (${scope!.length} principals) — the read is not paging to exhaustion`,
+      );
+      assertEquals(scope!.includes("agent:w"), true, "the agent itself is always in its own scope");
+    },
+  },
 ];

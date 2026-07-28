@@ -253,10 +253,37 @@ export class RadiaClient {
 
   /** All declared kinds — the latest kind_def record per kind name (a redeclaration is a
    *  successor record). Discovery through the substrate: a plain query, no kinds endpoint. */
+  /**
+   * Every record matching `pattern`, newest-first, paged to EXHAUSTION.
+   *
+   * Registry-shaped reads — capabilities, models, kinds, procedures, grants — must never be a
+   * single bounded page. The server clamps `limit` (500), so asking for more returns a silent
+   * prefix, and because a registry is read newest-first the records that fall off are exactly the
+   * ones that matter: a retirement, a redeclaration, the tool published a minute ago. Both failure
+   * directions are silent — an entry that should be gone stays live, one that should be live goes
+   * missing.
+   *
+   * Throws rather than returning a plausible prefix when even the page budget is exhausted: a
+   * caller projecting a registry cannot tell a truncated answer from a complete one.
+   */
+  async queryAll(pattern: Pattern, maxPages = 40): Promise<RadiaRecord[]> {
+    const out: RadiaRecord[] = [];
+    let after: string | undefined;
+    for (let page = 0; page < maxPages; page++) {
+      const rows = await this.query(pattern, 500, { dir: "desc", after });
+      out.push(...rows);
+      if (rows.length < 500) return out;
+      after = rows[rows.length - 1].id;
+    }
+    throw new Error(
+      `queryAll: more than ${maxPages * 500} records match ${JSON.stringify(pattern)} — refusing to ` +
+        `return a partial registry view`,
+    );
+  }
+
   async listKinds(): Promise<KindDef[]> {
-    // Newest-first: a capped page returns the OLDEST, so a space with more kind_def records than
-    // this would rebuild its view from declarations that have since been superseded.
-    const records = await this.query({ kind: KIND_DEF }, 1000, { dir: "desc" });
+    // Paged to exhaustion: a superseded declaration would otherwise win (see `queryAll`).
+    const records = await this.queryAll({ kind: KIND_DEF });
     const latest = activeByKey<KindDef>(records, (def) => (typeof def?.kind === "string" ? def.kind : undefined));
     return [...latest.values()].map((r) => r.body as KindDef);
   }

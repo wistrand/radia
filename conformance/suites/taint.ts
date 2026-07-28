@@ -89,4 +89,32 @@ export const taintSuites: Suite[] = [
       assertEquals(await space.declassify("01000000000000000000000000"), null);
     },
   },
+  {
+    name: "taint: a declassify names WHO cleared it, and is its own operation in the log",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const dirty = (await space.put({ kind: "task", body: { tag: "secret" } , taint: true })).id;
+
+      // Declassify is the human decision that lets untrusted data reach a side-effecting worker.
+      // Written with no principal it was ANONYMOUS: `created_by` (and so the event's `runId`) was
+      // the space's own identity, so the trail said what was cleared and never who cleared it —
+      // and a tamper-evident log over that record would protect the wrong fact.
+      const approver = "human:auditor";
+      const out = await space.declassify(dirty, approver);
+      assert(out);
+      const clean = (await space.getRecord(out!.id))!;
+      assertEquals(clean.runtimeMeta.createdBy, approver, "the successor is authored by the approver");
+      assertEquals(clean.runtimeMeta.taint, false);
+
+      // …and it is greppable rather than hidden among ordinary puts.
+      const events = await space.getEvents("0", 500);
+      const dec = events.filter((e) => e.operation === "declassify");
+      assertEquals(dec.length, 1, `expected one declassify event, got ${dec.length}`);
+      assertEquals(dec[0].runId, approver, "the event names the approver");
+      assertEquals(dec[0].recordId, out!.id);
+      assertEquals((dec[0].detail as { declassifiedFrom?: string })?.declassifiedFrom, dirty);
+      // An ordinary put is still an ordinary put.
+      assert(events.some((e) => e.operation === "put" && e.recordId === dirty), "the original put is unchanged");
+    },
+  },
 ];

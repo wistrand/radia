@@ -274,10 +274,11 @@ export class SqliteAdapter implements StorageAdapter {
         this.insertRecord(input);
         this.appendEvent({
           runId: input.record.runtimeMeta.createdBy,
-          operation: "put",
+          operation: input.event?.operation ?? "put",
           recordId: input.record.id,
           kind: input.record.kind,
           state: "available",
+          ...(input.event?.detail ? { detail: input.event.detail } : {}),
         }, input.envelope.availableAt);
         return { id: input.record.id, deduped: false };
       })

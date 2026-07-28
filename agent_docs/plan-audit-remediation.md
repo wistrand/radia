@@ -1,7 +1,7 @@
 # Plan: audit remediation
 
-> Status: A–D are done and their guards pass (`deno task conformance`: 348 passed, 0 failed);
-> E–J are open. Every item was substantiated against real code paths; items marked **reproduced**
+> Status: A–D, F and J are done and their guards pass (`deno task conformance`: 353 passed, 0 failed);
+> E, G, H and I are open. Every item was substantiated against real code paths; items marked **reproduced**
 > were verified empirically. Line numbers drift — trust the symbol, not the number.
 
 ## Goal
@@ -22,11 +22,11 @@ correctness/security; P2 is durability and drift.
 | C   | Lease fencing not enforced at settle    | P1       | **DONE** — was: fenced writes commit  |
 | D   | Grant supersede vs. idempotency         | P1       | **DONE** — was: permanent silent lockout |
 | E   | Pushdown soundness                      | P1       | Records invisible to `take` on SQLite |
-| F   | Bounded reads treated as populations    | P2       | Silent shrinkage as a space ages      |
+| F   | Bounded reads treated as populations    | P2       | **DONE** — was: silent shrinkage      |
 | G   | Blob write durability                   | P2       | Permanent unhealable corruption       |
 | H   | `lease_lost` unobservable in clients    | P2       | Side effects continue after fencing   |
 | I   | SDK parity + chat example               | P2       | Drift; example-specific data loss     |
-| J   | Declassify is unattributed              | P1       | The approval step names no approver   |
+| J   | Declassify is unattributed              | P1       | **DONE** — was: no approver recorded  |
 
 **Downstream dependencies, now satisfied.** Both gates on
 [plan-inspection.md](plan-inspection.md) are cleared: B gave the inspection backlog a scoped-read
@@ -215,7 +215,7 @@ Guard: a differential conformance test — same pattern and fixture set against 
 the bare oracle, asserting identical result sets, over a fixture corpus that includes array
 paths, digit segments, leading zeros, and prototype-shaped names.
 
-## Package F — bounded reads treated as populations (P2)
+## Package F — bounded reads treated as populations (P2) — DONE
 
 CLAUDE.md calls this the most repeated bug in the codebase; the audit found five more.
 
@@ -232,7 +232,18 @@ reports `complete: false` rather than a plausible prefix. Where a true registry 
 (`runPrincipalsOf` is relevance-bounded by design), bound it by *relevance* — only credentials
 that can still be presented — and say so at the call site.
 
-Guard: a test that seeds past the page limit and asserts the older entries are still observed.
+**DONE.** `runPrincipalsOf` pages to exhaustion through `readRegistry` and throws
+`registry_incomplete` rather than narrowing silently — the failure that mattered, since package B
+made that list the allowlist for `take`, lineage, graph, artifact bytes and watch wakeups, so a
+truncated one makes the agent's own older records unclaimable and `rankClaimable` skips them
+indistinguishably from an empty queue. The client-side sites route through a new
+`RadiaClient.queryAll` / `query_all` (both SDKs), which keyset-pages newest-first and THROWS rather
+than returning a plausible prefix: `listKinds`/`list_kinds` (Python also now reads newest-first and
+drops retired kinds), the chat's grant and `agent_run` reads, and the exec worker's
+capability/procedure reads.
+
+Guard: `conformance/suites/auth.ts` seeds 1201 `agent_run` records for one agent and asserts its
+OLDEST run is still in the self scope — past the old 1000-row cap, on both adapters.
 
 ## Package G — blob write durability (P2)
 
@@ -290,7 +301,7 @@ sandbox denies `~/.radia` but the credential resolves via `RADIA_CREDENTIALS` an
 `$XDG_STATE_HOME/radia` first (`client/fleet.ts`), so on a typical Linux box model-written code
 can read the operator token.
 
-## Package J — declassify is unattributed (P1)
+## Package J — declassify is unattributed (P1) — DONE
 
 `declassify` (`src/core/space.ts`) calls `putRaw` with **no principal**, so the successor's
 `created_by` — and therefore the emitted event's `runId` — is the space's own `ctx.principal`, not
@@ -306,8 +317,14 @@ Fix: thread the invoking principal through `declassify` into `putRaw`, and give 
 distinct `declassify` operation so the clearance is greppable rather than hidden among ordinary
 puts.
 
-Guard: a conformance case asserting the declassify event names the invoking principal, and that the
-successor's `created_by` is that principal rather than the space.
+**DONE.** `Space.declassify(recordId, principal)` threads the approver, so the successor's
+`created_by` — and the event's `runId` — name the human who cleared it. The commit also records a
+distinct `declassify` operation carrying `{declassifiedFrom}`, via a new optional `event` override
+on `PutInput` honoured by both adapters, so a clearance is greppable instead of hiding among
+ordinary puts.
+
+Guard: `conformance/suites/taint.ts` asserts the successor is authored by the approver, that exactly
+one `declassify` event exists naming them, and that ordinary puts are unchanged.
 
 Related, same area, lower severity:
 

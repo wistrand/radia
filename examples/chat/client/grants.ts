@@ -59,7 +59,9 @@ async function selfExposure(
   subject: string,
 ): Promise<{ mine: number; total: number } | undefined> {
   try {
-    const runs = await admin.query({ kind: "agent_run", match: { agent: subject } }, 200, { dir: "desc" });
+    // Paged: this decides which principals count as "mine", so a truncated list undercounts the
+    // session's own records and reports the exposure as wider than it is.
+    const runs = await admin.queryAll({ kind: "agent_run", match: { agent: subject } });
     const principals = new Set([subject, ...runs.map((r) => (r.body as { run?: string }).run).filter(Boolean) as string[]]);
     const sample = await admin.query({ kind }, 100, { dir: "desc" });
     return { mine: sample.filter((r) => principals.has(r.runtimeMeta.createdBy)).length, total: sample.length };
@@ -225,7 +227,9 @@ export async function reviewGrantRequests(
         // "no 'put' grant for kind 'message'". So a grant carrying other operations is replaced by
         // one that keeps them, rather than dropped.
         const live = activeSet(
-          await admin.query({ kind: "grant", match: { principal: subject, kind: b.kind } }, 100, { dir: "desc" }),
+          // Paged: a grant missed here is a wider grant left standing beside the narrow one,
+          // and grants union — so the narrowing would be theatre.
+          await admin.queryAll({ kind: "grant", match: { principal: subject, kind: b.kind } }),
           grantKey,
         ).map((r) => r.body as { operations?: string[]; scope?: unknown; pattern?: Record<string, unknown>; retired?: boolean })
           .filter((g) => !g.retired && !g.scope && (g.operations ?? []).some((op) => granting.includes(op)));

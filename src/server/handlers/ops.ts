@@ -229,8 +229,8 @@ export async function handleDiagnostics(space: Space, scope?: StatsScope | null)
 }
 
 /** Privileged declassify (operator-gated via the /ops boundary): emit a clean successor. */
-export async function handleDeclassify(space: Space, recordId: string): Promise<Response> {
-  const out = await space.declassify(recordId);
+export async function handleDeclassify(space: Space, recordId: string, principal: string): Promise<Response> {
+  const out = await space.declassify(recordId, principal);
   if (!out) return problem(404, "not_found", `no record ${recordId}`);
   return Response.json({ declassifiedFrom: recordId, id: out.id });
 }

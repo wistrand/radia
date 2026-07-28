@@ -185,7 +185,7 @@ const RESERVED = new Set(["run_code", "save_procedure", "read_procedure", "retir
  */
 async function capabilityNames(c: RadiaClient): Promise<Set<string>> {
   try {
-    const caps = await c.query({ kind: "capability" }, 500);
+    const caps = await c.queryAll({ kind: "capability" });
     return new Set([...activeByKey<{ tool?: string }>(caps, (b) => b?.tool).keys()]);
   } catch {
     return RESERVED; // no grant to read capabilities: fall back to what this worker knows it serves
@@ -211,7 +211,7 @@ const served = new Set<string>();
 async function adoptProcedures(): Promise<void> {
   try {
     const builtin = await capabilityNames(client);
-    for (const rec of await client.query({ kind: "procedure" }, 500)) {
+    for (const rec of await client.queryAll({ kind: "procedure" })) {
       const name = String((rec.body as { name?: string }).name ?? "");
       // Never claim a name a worker serves — that is the race described on `capabilityNames`. A
       // procedure saved before that worker published simply stops being claimed here.

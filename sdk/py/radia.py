@@ -153,10 +153,43 @@ class RadiaClient:
         self.put({"kind": KIND_DEF, "body": definition}, idempotency_key=key)
         return {"kind": definition["kind"]}
 
+    def query_all(self, pattern: Dict[str, Any], max_pages: int = 40) -> List[Dict[str, Any]]:
+        """Every record matching ``pattern``, newest-first, paged to EXHAUSTION.
+
+        Registry-shaped reads -- capabilities, models, kinds, procedures, grants -- must never be a
+        single bounded page. The server clamps ``limit`` to 500, so asking for more returns a silent
+        prefix, and because a registry is read newest-first the records that fall off are exactly
+        the ones that matter: a retirement, a redeclaration, the tool published a minute ago.
+
+        Raises rather than returning a plausible prefix when the page budget is exhausted: a caller
+        projecting a registry cannot tell a truncated answer from a complete one.
+        """
+        out: List[Dict[str, Any]] = []
+        after: Optional[str] = None
+        for _ in range(max_pages):
+            rows = self.query(pattern, limit=500, after=after, dir="desc")
+            out.extend(rows)
+            if len(rows) < 500:
+                return out
+            after = rows[-1]["id"]
+        raise RadiaError(
+            0,
+            "registry_incomplete",
+            "more than {} records match {!r} - refusing to return a partial registry view".format(
+                max_pages * 500, pattern
+            ),
+        )
+
     def list_kinds(self) -> List[Dict[str, Any]]:
-        """Every declared kind — latest ``kind_def`` per name (a redeclaration is a successor)."""
+        """Every declared kind — latest ``kind_def`` per name (a redeclaration is a successor).
+
+        Paged to exhaustion and newest-first: the server clamps ``limit`` to 500, so one bounded
+        ascending read returns the OLDEST declarations and silently drops everything past the cap —
+        rebuilding the view from declarations that have since been superseded. Retired kinds are
+        dropped, matching the projection the runtime uses.
+        """
         latest: Dict[str, Any] = {}
-        for rec in self.query({"kind": KIND_DEF}, limit=1000):
+        for rec in self.query_all({"kind": KIND_DEF}):
             body = rec.get("body") or {}
             name = body.get("kind")
             if not name:
@@ -164,7 +197,9 @@ class RadiaClient:
             prev = latest.get(name)
             if prev is None or prev[0] < rec["id"]:
                 latest[name] = (rec["id"], body)
-        return [v[1] for v in latest.values()]
+        # Retirement is applied AFTER newest-per-key, never as a filter over the input: filtering
+        # first lets an older, non-retired record become "newest" and resurrect a withdrawn kind.
+        return [v[1] for v in latest.values() if v[1].get("retired") is not True]
 
     # -- artifacts (design-data-model 2.4) --
 
