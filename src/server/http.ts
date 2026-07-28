@@ -33,21 +33,18 @@ export interface ServerOptions {
   /** When true, a request with no `Authorization` is rejected (`401`) instead of resolving to the
    *  operator. `GET /` (console) and `GET /v0/health` stay public so the console can bootstrap. */
   authRequired?: boolean;
-  /** Operator token injected into the served console so it authenticates via `Authorization:
-   *  Bearer` like any client (instead of relying on the no-header operator default). */
-  operatorToken?: string;
 }
 
 /** The dev UI, loaded once at startup. Single file (see src/ui/index.html); the only asset it
- *  pulls is the vendored bundle below, lazily, when the Space tab is first opened. */
-function loadUi(operatorToken?: string): string {
-  const html = readTextFile(moduleRelative(import.meta.url, "../ui/index.html"));
-  if (html === undefined) {
-    return "<!doctype html><title>radia</title><p>dev UI not found (src/ui/index.html).</p>";
-  }
-  // Bake the operator token into the page. If absent, the placeholder stays and the console's
-  // guard falls back to the no-header operator default (e.g. UI opened as a static file).
-  return operatorToken ? html.replaceAll("__RADIA_OPERATOR_TOKEN__", operatorToken) : html;
+ *  pulls is the vendored bundle below, lazily, when the Space tab is first opened.
+ *
+ *  Never inject a credential into this page. `GET /` is public so the console can bootstrap in
+ *  required mode, which means anything baked in is readable by anyone who can reach the port —
+ *  and an operator token harvested that way authorizes every verb. The console asks for one and
+ *  keeps it in `sessionStorage` instead. */
+function loadUi(): string {
+  return readTextFile(moduleRelative(import.meta.url, "../ui/index.html")) ??
+    "<!doctype html><title>radia</title><p>dev UI not found (src/ui/index.html).</p>";
 }
 
 /** Vendored browser assets served under `/ui/` (see src/ui/vendor/README.md). Prebuilt and
@@ -65,7 +62,7 @@ const READ_ONLY_OPS =
 
 export function startServer(opts: ServerOptions): { finished: Promise<void> } {
   const hostname = opts.host ?? "127.0.0.1"; // loopback by default; --host 0.0.0.0 to expose
-  const handler = makeHandler(opts.space, loadUi(opts.operatorToken), opts.authRequired ?? false);
+  const handler = makeHandler(opts.space, loadUi(), opts.authRequired ?? false);
   const { finished } = serve({ port: opts.port, hostname, signal: opts.signal }, handler);
   console.log(`radia dev listening on http://${hostname}:${opts.port} (web console at /) — auth ${opts.authRequired ? "required" : "open (no-header → operator)"}`);
   return { finished };
@@ -74,20 +71,26 @@ export function startServer(opts: ServerOptions): { finished: Promise<void> } {
 type Auth = { principal: string } | { error: string; detail: string };
 
 /**
- * Resolve the calling principal from a request. `Authorization: Bearer <run-token>` (minted via
- * the bootstrap chain) is the ONLY auth channel: a valid, unexpired RUN token yields its `run:*`
- * principal; any invalid/expired/stopped token is a hard error (never a silent fall-through to
- * operator). Definition tokens do not authorize coordination — only `POST /v0/agent-runs` reads
- * those, before this check. With NO Authorization header the caller is the operator `human:local`
- * (open mode), so unauthenticated local dev/UI/examples stay fully open — UNLESS `authRequired`, in
- * which case a missing header is an error. To act as a scoped principal, mint a real run token —
- * there is no impersonation shortcut.
+ * Resolve the calling principal from a request. `Authorization: Bearer <token>` is the ONLY auth
+ * channel, and exactly two kinds of token authorize coordination: a valid, unexpired RUN token
+ * (minted via the bootstrap chain) yields its `run:*` principal, and the local OPERATOR token
+ * yields the space's own principal. Any invalid/expired/stopped token is a hard error — never a
+ * silent fall-through to operator.
+ *
+ * Definition tokens authorize one thing only, minting a run, which `POST /v0/agent-runs` reads
+ * before this check. Never accept one here: a definition token is long-lived, so accepting it
+ * would hand out unexpiring coordination authority.
+ *
+ * With NO Authorization header the caller is the operator `human:local` (open mode), so
+ * unauthenticated local dev/UI/examples stay fully open — UNLESS `authRequired`, in which case a
+ * missing header is an error. To act as a scoped principal, mint a real run token — there is no
+ * impersonation shortcut.
  */
 async function resolveAuth(req: Request, space: Space, authRequired: boolean): Promise<Auth> {
   const authz = req.headers.get("Authorization");
   if (authz?.startsWith("Bearer ")) {
     const r = await space.resolveToken(authz.slice("Bearer ".length).trim());
-    if (r.ok && r.kind === "run") return { principal: r.principal };
+    if (r.ok && (r.kind === "run" || r.kind === "operator")) return { principal: r.principal };
     if (r.ok && r.kind === "def") return { error: "invalid_token", detail: "a definition token does not authorize coordination; mint a run first" };
     return { error: r.reason, detail: `bearer token ${r.reason}` };
   }
@@ -144,7 +147,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
 
     const auth = await resolveAuth(req, space, authRequired);
     // The console (GET /) and health stay public so the console can bootstrap even in required
-    // mode (it authenticates thereafter with its baked operator token); everything else 401s.
+    // mode; everything else 401s. These carry no credential — keep it that way (see `loadUi`).
     const isPublic = route === "GET /" || route === "GET /v0/health" || route === "GET /ui/blitzoom.bundle.js";
     // "Public" means NO credential is needed — not that a presented one is ignored. Only
     // `auth_required` (nothing was presented) is exempt; a token that failed to resolve is a 401
@@ -198,7 +201,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     // --- coordination plane, path-param: watch SSE stream ---
     if (req.method === "GET" && url.pathname.startsWith("/v0/watches/") && url.pathname.endsWith("/events")) {
       const id = url.pathname.slice("/v0/watches/".length, -"/events".length);
-      return handleWatchEvents(space, decodeURIComponent(id), req);
+      return handleWatchEvents(space, decodeURIComponent(id), principal, req);
     }
 
     // --- observability + control plane: /v0/ops/records/{id}[/{envelope|lineage|graph}|/{reclaim|dead-letter|requeue}] ---

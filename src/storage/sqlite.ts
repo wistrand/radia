@@ -292,7 +292,7 @@ export class SqliteAdapter implements StorageAdapter {
       for (let offset = 0;; offset += CANDIDATE_WINDOW) {
         const candidates = this.fetchCandidates(selector, CANDIDATE_WINDOW, offset);
         if (candidates.length === 0) return null;
-        const ranked = rankClaimable(candidates, template, now, spec.requireUntainted);
+        const ranked = rankClaimable(candidates, template, now, spec.requireUntainted, spec.createdBy);
         const claimed = this.claimFirst(ranked, spec, now);
         if (claimed) return claimed;
         // Nothing in this window was claimable (all filtered out, or every CAS lost). A record-id
@@ -372,10 +372,13 @@ export class SqliteAdapter implements StorageAdapter {
         if (hard !== undefined && now >= hard) return { status: "lease_lost" };
         const wanted = addSeconds(now, leaseSeconds);
         const until = hard !== undefined ? minIso(wanted, hard) : wanted;
-        this.run(
+        // The guarded update IS the fence — always check that it matched, so this adapter cannot
+        // drift from the pooled one where the read and the update genuinely race.
+        const renewed = this.run(
           "update record_runtime set leased_until=? where record_id=? and lease_id=? and lease_epoch=?",
           [until, ref.recordId, ref.leaseId, ref.epoch],
         );
+        if (renewed === 0) return { status: "lease_lost" };
         return {
           status: "ok",
           lease: { leaseId: ref.leaseId, epoch: ref.epoch, ownerRun: String(row!.lease_owner), recordId: ref.recordId, expiresAt: until },
@@ -390,13 +393,22 @@ export class SqliteAdapter implements StorageAdapter {
       this.withIdem(idem, (): AckResult => {
         const row = this.fetchEnvelopeRow(ref.recordId);
         if (!leaseValid(row, ref)) return { status: "lease_lost" };
+        // Fence BEFORE writing anything. Never insert the result first: a fenced-out worker would
+        // commit its result into the space and report `ok`. This adapter serializes in-process, so
+        // the race is not reachable here — but the rule has to hold in both adapters or the
+        // pooled one drifts, and embedded mode is never a weaker cousin of Postgres.
+        const consumed = this.run(
+          "update record_runtime set state='consumed', lease_id=null where record_id=? and lease_id=? and lease_epoch=?",
+          [ref.recordId, ref.leaseId, ref.epoch],
+        );
+        if (consumed === 0) return { status: "lease_lost" };
         if (result) {
           this.insertRecord(result);
           // The result is a new record entering the space, so it gets its own `put` event —
           // same shape as a direct put. Without it the record would exist with no `available`
           // event of its own kind, and `matchesEvent` would never wake a watcher on that kind
           // (the ack event below is `consumed` and carries the PARENT's kind). Emitted before
-          // the ack, mirroring the insert-then-consume order of this transaction.
+          // the ack event.
           this.appendEvent({
             runId: result.record.runtimeMeta.createdBy,
             operation: "put",
@@ -406,10 +418,6 @@ export class SqliteAdapter implements StorageAdapter {
             detail: { ackOf: ref.recordId },
           }, result.envelope.availableAt);
         }
-        this.run(
-          "update record_runtime set state='consumed', lease_id=null where record_id=? and lease_id=? and lease_epoch=?",
-          [ref.recordId, ref.leaseId, ref.epoch],
-        );
         this.appendEvent({
           runId: String(row!.lease_owner),
           operation: "ack",
@@ -430,17 +438,17 @@ export class SqliteAdapter implements StorageAdapter {
       const row = this.fetchEnvelopeRow(ref.recordId);
       if (!leaseValid(row, ref)) return { status: "lease_lost" };
       const newAttempt = Number(row!.attempt) + 1;
-      if (newAttempt > maxAttempts) {
-        this.run(
+      // The guarded update is the fence; a zero row count means the lease moved on (see `ack`).
+      const settled = newAttempt > maxAttempts
+        ? this.run(
           "update record_runtime set state='dead_letter', attempt=?, lease_id=null where record_id=? and lease_id=? and lease_epoch=?",
           [newAttempt, ref.recordId, ref.leaseId, ref.epoch],
-        );
-      } else {
-        this.run(
+        )
+        : this.run(
           "update record_runtime set state='available', attempt=?, available_at=?, lease_id=null where record_id=? and lease_id=? and lease_epoch=?",
           [newAttempt, addSeconds(now, backoffSeconds), ref.recordId, ref.leaseId, ref.epoch],
         );
-      }
+      if (settled === 0) return { status: "lease_lost" };
       this.appendEvent({
         runId: String(row!.lease_owner),
         operation: "nack",
@@ -460,10 +468,12 @@ export class SqliteAdapter implements StorageAdapter {
       this.withIdem(idem, (): SettleResult => {
         const row = this.fetchEnvelopeRow(ref.recordId);
         if (!leaseValid(row, ref)) return { status: "lease_lost" };
-        this.run(
+        // The guarded update is the fence; a zero row count means the lease moved on (see `ack`).
+        const released = this.run(
           "update record_runtime set state='available', available_at=?, lease_id=null where record_id=? and lease_id=? and lease_epoch=?",
           [now, ref.recordId, ref.leaseId, ref.epoch],
         );
+        if (released === 0) return { status: "lease_lost" };
         this.appendEvent({
           runId: String(row!.lease_owner),
           operation: "release",

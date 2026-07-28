@@ -116,9 +116,12 @@ export async function handleGetArtifact(
 ): Promise<Response> {
   try {
     if (principal !== null) {
-      const constraint = await space.authorize(principal, "read_one", ARTIFACT);
+      const { constraint, createdBy } = await space.readAccess(principal, "read_one", ARTIFACT);
       const rec = await space.getRecord(recordId);
       if (!rec || rec.kind !== ARTIFACT) return problem(404, "not_found", `no artifact ${recordId}`);
+      // A self scope restricts artifact BYTES too. 404 rather than 403 for a foreign artifact: the
+      // caller is not entitled to learn that the id exists.
+      if (!space.authorAllows(createdBy, rec)) return problem(404, "not_found", `no artifact ${recordId}`);
       if (constraint && !space.bodyMatchesGrant(ARTIFACT, rec.body, constraint)) {
         return problem(403, "forbidden", "this artifact is outside the template scope of your read grant");
       }
@@ -153,9 +156,13 @@ export async function handleGetArtifact(
 
 export async function handleMintCapability(space: Space, recordId: string, principal: string): Promise<Response> {
   try {
-    const constraint = await space.authorize(principal, "read_one", ARTIFACT);
+    const { constraint, createdBy } = await space.readAccess(principal, "read_one", ARTIFACT);
     const rec = await space.getRecord(recordId);
     if (!rec || rec.kind !== ARTIFACT) return problem(404, "not_found", `no artifact ${recordId}`);
+    // A capability is a bearer URL that outlives this check, so the scope has to be applied BEFORE
+    // one is minted — otherwise a self-scoped principal converts a foreign artifact into a link
+    // that needs no token at all.
+    if (!space.authorAllows(createdBy, rec)) return problem(404, "not_found", `no artifact ${recordId}`);
     if (constraint && !space.bodyMatchesGrant(ARTIFACT, rec.body, constraint)) {
       return problem(403, "forbidden", "this artifact is outside the template scope of your read grant");
     }

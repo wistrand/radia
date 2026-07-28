@@ -507,7 +507,7 @@ export class PgSqlAdapter implements StorageAdapter {
       for (let offset = 0;; offset += CANDIDATE_WINDOW) {
         const candidates = await this.fetchCandidates(tx, selector, CANDIDATE_WINDOW, offset);
         if (candidates.length === 0) return null;
-        const ranked = rankClaimable(candidates, template, now, spec.requireUntainted);
+        const ranked = rankClaimable(candidates, template, now, spec.requireUntainted, spec.createdBy);
         const claimed = await this.claimFirst(tx, ranked, spec, now);
         if (claimed) return claimed;
         // Nothing in this window was claimable (all filtered out, or every CAS lost). A record-id
@@ -590,10 +590,14 @@ export class PgSqlAdapter implements StorageAdapter {
       if (hard !== undefined && now >= hard) return { status: "lease_lost" };
       const wanted = addSeconds(now, leaseSeconds);
       const until = hard !== undefined ? minIso(wanted, hard) : wanted;
-      await tx.query(
+      // The guarded update IS the fence — always check that it matched. The row read above is not
+      // locked, so on a pooled backend another claimer can take the reopened record or a
+      // quarantine can bump the epoch in between; then this matches nothing and the lease is gone.
+      const renewed = await tx.query(
         "update record_runtime set leased_until=$1 where record_id=$2 and lease_id=$3 and lease_epoch=$4",
         [until, ref.recordId, ref.leaseId, ref.epoch],
       );
+      if (renewed.affectedRows === 0) return { status: "lease_lost" };
       return {
         status: "ok",
         lease: { leaseId: ref.leaseId, epoch: ref.epoch, ownerRun: String(row!.lease_owner), recordId: ref.recordId, expiresAt: until },
@@ -606,13 +610,22 @@ export class PgSqlAdapter implements StorageAdapter {
       const now = await this.txNow(tx);
       const row = await this.fetchEnvelopeRow(tx, ref.recordId);
       if (!this.leaseValid(row, ref)) return { status: "lease_lost" };
+      // Fence BEFORE writing anything. The row read above is not locked, so another claimer can
+      // take the reopened record or a quarantine can bump the epoch in between — and then this
+      // update matches nothing. Never insert the result first: a fenced-out worker would commit
+      // its result into the space and report `ok`, which is exactly what the epoch bump exists to
+      // prevent.
+      const consumed = await tx.query(
+        "update record_runtime set state='consumed', lease_id=null where record_id=$1 and lease_id=$2 and lease_epoch=$3",
+        [ref.recordId, ref.leaseId, ref.epoch],
+      );
+      if (consumed.affectedRows === 0) return { status: "lease_lost" };
       if (result) {
         await this.insertRecord(tx, result);
         // The result is a new record entering the space, so it gets its own `put` event — same
         // shape as a direct put. Without it the record would exist with no `available` event of
         // its own kind, and `matchesEvent` would never wake a watcher on that kind (the ack
-        // event below is `consumed` and carries the PARENT's kind). Emitted before the ack,
-        // mirroring the insert-then-consume order of this transaction.
+        // event below is `consumed` and carries the PARENT's kind). Emitted before the ack event.
         await this.appendEvent(tx, {
           runId: result.record.runtimeMeta.createdBy,
           operation: "put",
@@ -622,10 +635,6 @@ export class PgSqlAdapter implements StorageAdapter {
           detail: { ackOf: ref.recordId },
         }, result.envelope.availableAt);
       }
-      await tx.query(
-        "update record_runtime set state='consumed', lease_id=null where record_id=$1 and lease_id=$2 and lease_epoch=$3",
-        [ref.recordId, ref.leaseId, ref.epoch],
-      );
       await this.appendEvent(tx, {
         runId: String(row!.lease_owner),
         operation: "ack",
@@ -644,17 +653,17 @@ export class PgSqlAdapter implements StorageAdapter {
       const row = await this.fetchEnvelopeRow(tx, ref.recordId);
       if (!this.leaseValid(row, ref)) return { status: "lease_lost" };
       const newAttempt = Number(row!.attempt) + 1;
-      if (newAttempt > maxAttempts) {
-        await tx.query(
+      // The guarded update is the fence; a zero row count means the lease moved on (see `ack`).
+      const settled = newAttempt > maxAttempts
+        ? await tx.query(
           "update record_runtime set state='dead_letter', attempt=$1, lease_id=null where record_id=$2 and lease_id=$3 and lease_epoch=$4",
           [newAttempt, ref.recordId, ref.leaseId, ref.epoch],
-        );
-      } else {
-        await tx.query(
+        )
+        : await tx.query(
           "update record_runtime set state='available', attempt=$1, available_at=$2, lease_id=null where record_id=$3 and lease_id=$4 and lease_epoch=$5",
           [newAttempt, addSeconds(now, backoffSeconds), ref.recordId, ref.leaseId, ref.epoch],
         );
-      }
+      if (settled.affectedRows === 0) return { status: "lease_lost" };
       await this.appendEvent(tx, {
         runId: String(row!.lease_owner),
         operation: "nack",
@@ -672,10 +681,12 @@ export class PgSqlAdapter implements StorageAdapter {
       const now = await this.txNow(tx);
       const row = await this.fetchEnvelopeRow(tx, ref.recordId);
       if (!this.leaseValid(row, ref)) return { status: "lease_lost" };
-      await tx.query(
+      // The guarded update is the fence; a zero row count means the lease moved on (see `ack`).
+      const released = await tx.query(
         "update record_runtime set state='available', available_at=$1, lease_id=null where record_id=$2 and lease_id=$3 and lease_epoch=$4",
         [now, ref.recordId, ref.leaseId, ref.epoch],
       );
+      if (released.affectedRows === 0) return { status: "lease_lost" };
       await this.appendEvent(tx, {
         runId: String(row!.lease_owner),
         operation: "release",

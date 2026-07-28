@@ -78,16 +78,21 @@ export async function handleTake(space: Space, req: Request, principal: string):
     // Authorize on the kind (from the template, or the record's own kind for a record-id take).
     let kind = template?.kind;
     if (!kind && recordId) kind = (await space.getRecord(recordId))?.kind;
+    let createdBy: string[] | undefined;
     if (kind) {
-      const constraint = await space.authorize(principal, "take", kind);
+      const access = await space.readAccess(principal, "take", kind);
       // A template-scoped grant narrows the claim: the record must also match the grant (grant ∧
       // request). For a record-id take that means synthesizing a template the record must satisfy.
-      if (constraint) {
-        template = { kind, match: combineMatch(template?.match, constraint), orderBy: template?.orderBy };
+      if (access.constraint) {
+        template = { kind, match: combineMatch(template?.match, access.constraint), orderBy: template?.orderBy };
       }
+      // A claim returns the record BODY, so a self scope has to narrow `take` exactly as it
+      // narrows `query` — otherwise draining the queue reads every record of the kind. It cannot
+      // ride in the template: `created_by` is envelope metadata, which templates never see.
+      createdBy = access.createdBy;
     }
     const sel: TakeInput = recordId ? { recordId, template } : { template: template! };
-    const result = await space.take(sel, { leaseSeconds, requireUntainted }, principal);
+    const result = await space.take(sel, { leaseSeconds, requireUntainted, createdBy }, principal);
     return ok(result); // {record, lease} or null
   } catch (e) {
     if (e instanceof RadiaError) return problem(e.code === "forbidden" ? 403 : 400, e.code, e.message);

@@ -239,6 +239,10 @@ export interface LeaseSpec {
   maxAttempts: number; // beyond this, an expired reclaim dead-letters
   /** A sensitive consumer claim-filter: skip candidates whose record is tainted. */
   requireUntainted?: boolean;
+  /** Author restriction from a self-scoped grant: skip candidates authored by anyone else. A claim
+   *  hands back the record body, so this has to be enforced in the claim like `requireUntainted`,
+   *  not left to the caller. */
+  createdBy?: string[];
 }
 
 /** What a lease holder presents to renew/ack/nack/release. Fencing checks all three. */

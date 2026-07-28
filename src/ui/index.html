@@ -287,12 +287,19 @@
 <script>
 const $ = (id) => document.getElementById(id);
 
-// The dev server bakes an operator token into this page (Authorization: Bearer), so the console
-// authenticates like any client rather than relying on the no-header operator default. If the
-// page is opened as a static file the placeholder is left intact and we send no token (falling
-// back to that default). The token is server-lifetime and scoped to the local console.
-const OPERATOR_TOKEN = "__RADIA_OPERATOR_TOKEN__";
-const AUTH_TOKEN = OPERATOR_TOKEN.startsWith("__RADIA_") ? null : OPERATOR_TOKEN;
+// This page carries NO credential: it is served publicly so it can bootstrap in `--auth required`
+// mode, so anything baked in would be readable by anyone who can reach the port. In open mode no
+// token is needed (the no-header operator default applies). In required mode, paste the token
+// `radia dev` prints; it is held in sessionStorage for this tab only.
+let AUTH_TOKEN = sessionStorage.getItem("radia.token");
+function setToken() {
+  const t = prompt("Operator token (printed by `radia dev --auth required`). Empty clears it:", AUTH_TOKEN ?? "");
+  if (t === null) return;
+  AUTH_TOKEN = t.trim() || null;
+  if (AUTH_TOKEN) sessionStorage.setItem("radia.token", AUTH_TOKEN);
+  else sessionStorage.removeItem("radia.token");
+  location.reload();
+}
 
 async function api(method, path, body, headers = {}) {
   const h = { ...headers };
@@ -356,9 +363,9 @@ async function loadHealth() {
   $("health").innerHTML = `<span class="pill">storage: ${esc(d.storage)}</span>`
     + `<span class="pill">api ${esc(d.api)}</span>`
     + `<span class="pill">v${esc(d.version)}</span>`
-    + `<span class="pill" title="${AUTH_TOKEN ? "authenticated with an operator token (Authorization: Bearer)" : "no token — relying on the operator default"}">as ${esc(d.principal || "?")}${AUTH_TOKEN ? " · token" : ""}</span>`;
+    + `<span class="pill" style="cursor:pointer" onclick="setToken()" title="${AUTH_TOKEN ? "authenticated with an operator token (Authorization: Bearer) — click to change" : "no token — relying on the operator default. Click to paste one (needed with --auth required)"}">as ${esc(d.principal || "?")}${AUTH_TOKEN ? " · token" : ""}</span>`;
   $("overview-health").innerHTML =
-    `<div><b>Principal:</b> <span class="mono">${esc(d.principal || "?")}</span>${AUTH_TOKEN ? ` <span class="tag tag-grant">operator token</span>` : ` <span class="muted">(no token — operator default)</span>`}</div>`
+    `<div><b>Principal:</b> <span class="mono">${esc(d.principal || "?")}</span>${AUTH_TOKEN ? ` <span class="tag tag-grant">operator token</span>` : ` <span class="muted">(no token — operator default)</span>`} <button class="btn ghost" onclick="setToken()">${AUTH_TOKEN ? "change token" : "set token"}</button></div>`
     + `<div><b>Storage backend:</b> <span class="mono">${esc(d.storage)}</span></div>`
     + `<div><b>DB clock:</b> <span class="mono">${esc(d.now)}</span></div>`
     + `<div><b>Version:</b> <span class="mono">${esc(d.version)}</span> · <b>API:</b> ${esc(d.api)}</div>`;

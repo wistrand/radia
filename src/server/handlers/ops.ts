@@ -171,9 +171,12 @@ export async function handleEvents(space: Space, url: URL, scope?: StatsScope | 
 
 export async function handleLineage(space: Space, recordId: string, scope?: StatsScope | null): Promise<Response> {
   if (!await visible(space, recordId, scope)) return problem(404, "not_found", `no record ${recordId}`);
-  const lineage = await space.getLineage(recordId);
+  // Scoped like every other read. Reaching a visible record does not make its ancestors visible:
+  // `put` does not check that a parent is readable, so naming a foreign id as a parent of your own
+  // record would otherwise return that record's entire upstream, bodies included.
+  const lineage = await space.getLineage(recordId, undefined, scope?.createdBy);
   if (!lineage.length) return problem(404, "not_found", `no record ${recordId}`);
-  return Response.json({ lineage });
+  return Response.json({ lineage, scope: describeScope(scope) });
 }
 
 /** Records that reference this one via parent_ids (its children — the reverse of lineage). */
@@ -216,9 +219,9 @@ export async function handleGraph(space: Space, recordId: string, url: URL, scop
   if (!await visible(space, recordId, scope)) return problem(404, "not_found", `no record ${recordId}`);
   const excludeParam = url.searchParams.get("exclude");
   const excludeKinds = new Set((excludeParam ?? "").split(",").map((s) => s.trim()).filter(Boolean));
-  const graph = await space.getGraph(recordId, { excludeKinds });
+  const graph = await space.getGraph(recordId, { excludeKinds, createdBy: scope?.createdBy });
   if (!graph.nodes.length) return problem(404, "not_found", `no record ${recordId}`);
-  return Response.json(graph);
+  return Response.json({ ...graph, scope: describeScope(scope) });
 }
 
 export async function handleDiagnostics(space: Space, scope?: StatsScope | null): Promise<Response> {

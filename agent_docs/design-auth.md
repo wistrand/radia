@@ -35,12 +35,15 @@ bounded read of an unbounded log lets a stopped run's token keep working after a
 space — fail-open and silent. A token minted on one instance authenticates on another immediately,
 with no replay. Expiry uses
 the DB clock (`SpaceContext.runTokenSeconds`, default 900s). `Authorization: Bearer <token>`
-is the **only** auth channel. In **open mode** (the default) a request with no header is the
-operator `human:local`, so local dev/UI/examples stay open; to act as a scoped principal, mint a
-real run token (there is no impersonation shortcut). The bundled dev console **holds an operator
-token**: the server mints one at startup (`Space.mintOperatorToken` — resolves to `human:local`,
-server-lifetime, not a record) and bakes it into the served page, so the console authenticates via
-`Authorization: Bearer` like any client rather than relying on the no-header default.
+is the **only** auth channel, and exactly two token kinds authorize it (`ResolvedToken.kind`): a
+**run** token, and the **operator** token. A **definition** token authorizes one thing only —
+minting a run — and is rejected everywhere else, because it is long-lived and accepting it would
+hand out unexpiring coordination authority. In **open mode** (the default) a request with no header
+is the operator `human:local`, so local dev/UI/examples stay open; to act as a scoped principal,
+mint a real run token (there is no impersonation shortcut). `Space.mintOperatorToken` mints the
+operator credential at startup — it resolves to the space's own principal, is server-lifetime, and
+is not a record; `radia dev` writes it where the CLI and the MCP adapter read it. Never resolve it
+as a definition token: that would let a leaked operator credential mint a run and become durable.
 `GET /v0/health` echoes the resolved `principal`. SDK: `new RadiaClient(url, {token})` /
 `.withToken()`, `client.createAgentDefinition/createRun/stopRun/grant`. Conformance:
 `conformance/suites/auth.ts`.
@@ -49,12 +52,11 @@ server-lifetime, not a record) and bakes it into the served page, so the console
 the no-header operator shortcut is only safe locally; `--host 0.0.0.0` deliberately exposes it.
 `--auth required` (`src/main.ts` → `ServerOptions.authRequired`) drops the no-header shortcut: a
 request with no bearer token is rejected `401 auth_required` (`resolveAuth` in `src/server/http.ts`).
-`GET /` (the console) and `GET /v0/health` stay public so the console can still bootstrap — it then
-authenticates with its baked operator token, and required mode prints that token at startup for
-`curl` use. Caveat: `GET /` serves the console with the operator token embedded, so `--auth
-required` over an exposed `--host` still hands that token to anyone who fetches `/`; for a genuinely
-locked-down exposed deployment, front `/` with a proxy or run without the bundled console. The
-loopback default keeps the common (local) case safe without either.
+`GET /` (the console) and `GET /v0/health` stay public so the console can still bootstrap. **Never
+inject a credential into the served page**: it is public, so anything baked in is readable by
+anyone who can reach the port, and a harvested operator token authorizes every verb. The console
+prompts for a token and keeps it in `sessionStorage`; required mode prints one at startup for that
+and for `curl` use.
 
 **Per-run lease ownership + revocation (built):** a lease is owned by the claiming principal
 (`take` threads it into `lease_owner`; a run token → `run:*`). A **stopped** run's token stops

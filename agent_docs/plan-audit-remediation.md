@@ -1,7 +1,8 @@
 # Plan: audit remediation
 
-> Status: not started. Every item below was substantiated against real code paths; items marked
-> **reproduced** were verified empirically. Line numbers drift — trust the symbol, not the number.
+> Status: A–D are done and their guards pass (`deno task conformance`: 348 passed, 0 failed);
+> E–J are open. Every item was substantiated against real code paths; items marked **reproduced**
+> were verified empirically. Line numbers drift — trust the symbol, not the number.
 
 ## Goal
 
@@ -16,10 +17,10 @@ correctness/security; P2 is durability and drift.
 
 | Pkg | Theme                                   | Severity | Blast radius                          |
 |-----|-----------------------------------------|----------|---------------------------------------|
-| A   | Operator credential + console bootstrap | P0       | Total auth bypass; CLI/MCP unusable   |
-| B   | Per-handler scope enforcement           | P0       | Cross-principal record + body leak    |
-| C   | Lease fencing not enforced at settle    | P1       | Fenced writes commit; quarantine leaks|
-| D   | Grant supersede vs. idempotency         | P1       | Permanent, silent lockout             |
+| A   | Operator credential + console bootstrap | P0       | **DONE** — was: auth bypass; CLI/MCP unusable |
+| B   | Per-handler scope enforcement           | P0       | **DONE** — was: cross-principal leak  |
+| C   | Lease fencing not enforced at settle    | P1       | **DONE** — was: fenced writes commit  |
+| D   | Grant supersede vs. idempotency         | P1       | **DONE** — was: permanent silent lockout |
 | E   | Pushdown soundness                      | P1       | Records invisible to `take` on SQLite |
 | F   | Bounded reads treated as populations    | P2       | Silent shrinkage as a space ages      |
 | G   | Blob write durability                   | P2       | Permanent unhealable corruption       |
@@ -27,51 +28,34 @@ correctness/security; P2 is durability and drift.
 | I   | SDK parity + chat example               | P2       | Drift; example-specific data loss     |
 | J   | Declassify is unattributed              | P1       | The approval step names no approver   |
 
-**Downstream dependencies.** Two packages gate work outside this plan, both tracked in
-[plan-inspection.md](plan-inspection.md):
-
-- **Package B gates the whole inspection backlog.** Every proposed view is a read amplifier, and
-  lineage and graph already leak. Build the scoped-read helper before adding views.
-- **Package D gates any new registry.** An interest registry or a saved-lens registry churns far
-  harder than grants do, so the revival defect would fire on every worker restart.
+**Downstream dependencies, now satisfied.** Both gates on
+[plan-inspection.md](plan-inspection.md) are cleared: B gave the inspection backlog a scoped-read
+path to build on (every new view must route through `readAccess` and add a row to the guard
+table), and D made a churning registry — the interest registry, saved lenses — safe to write.
 
 ---
 
-## Package A — operator credential and console bootstrap (P0)
+## Package A — operator credential and console bootstrap (P0) — DONE
 
-Two defects that compose into a full bypass. Fix together; they are one story.
+Decision taken: **the operator token authorizes coordination.** Encoded once as a distinct
+`ResolvedToken` variant, `kind: "operator"` (`src/core/auth.ts`), resolving to the space's own
+principal.
 
-**A1. The console serves the operator token to unauthenticated callers.** `loadUi`
-(`src/server/http.ts`) substitutes the live operator token into the page
-(`__RADIA_OPERATOR_TOKEN__`, `src/ui/index.html`), and `isPublic` exempts `GET /` even under
-`--auth required`. `POST /v0/agent-runs` is routed *before* `resolveAuth`, so the harvested
-token mints a run for `local:dev` that `isPrivileged` accepts. **Reproduced** end to end
-through to `POST /v0/ops/remediate` returning 200.
+- `resolveCredential` (`src/core/space.ts`) returns `kind: "operator"`, and `resolveAuth`
+  (`src/server/http.ts`) accepts it alongside `run`. The CLI, the MCP adapter and `curl` work
+  again; a definition token is still rejected for coordination.
+- Because it is no longer a `def` token, `mintRun` refuses it, so an operator credential cannot be
+  converted into a durable run token. That closes the escalation half of A1 at the source.
+- `loadUi` no longer substitutes anything; `ServerOptions.operatorToken` is gone. The console
+  prompts for a token and keeps it in `sessionStorage` (`src/ui/index.html`). `GET /` stays public
+  — it is now safe, because it carries no credential.
 
-**A2. The provisioned operator token 401s on every coordination request.** `resolveCredential`
-(`src/core/space.ts`) returns `kind: "def"` for an operator hash and `resolveAuth`
-(`src/server/http.ts`) rejects `kind: "def"`. `radia dev` writes exactly this token to the
-credentials file, so the CLI, the MCP adapter and the console all authenticate worse than
-sending no header at all. Regression; no conformance test covers `mintOperatorToken` through
-the handler.
+Guards added: `conformance/http.test.ts` asserts the provisioned
+operator token reaches health, the ops plane and a `put` under `--auth required`, and that it
+cannot mint a run. `conformance/console.test.ts` asserts the served page contains no
+credential-shaped literal and no substitution placeholder.
 
-Fix:
-
-- Never bake a credential into a public response. Either serve the console only to an
-  authenticated caller, or have the page mint its own short-lived run token through a
-  bootstrap endpoint that requires a credential the browser already holds.
-- Decide the operator token's kind deliberately and encode it once: it either authorizes
-  coordination (resolve it to a run-equivalent principal) or it does not (then `radia dev` must
-  stop writing it as the client credential and provision a run token instead). The audit did
-  not establish which was intended — **resolve this before coding**, it changes A1's fix.
-- Re-check `isPublic`: `GET /` is public so the console can bootstrap in required mode. If the
-  console stops carrying a baked token, that exemption may be droppable entirely.
-
-Guard: a `conformance/http.test.ts` case per surface asserting that the credential
-`radia dev` provisions actually authenticates a request, and one asserting an unauthenticated
-`GET /` body contains no token-shaped string under `--auth required`.
-
-## Package B — scope enforcement is per-handler and inconsistent (P0)
+## Package B — scope enforcement is per-handler and inconsistent (P0) — DONE
 
 `scope.createdBy: "self"` is applied by each handler calling `space.authorScope` by hand.
 Handlers that forget it silently serve everything. Confirmed misses:
@@ -99,17 +83,38 @@ Also in this package, same theme:
   enforcement requires one grant carrying both. The comment claiming they cannot drift is
   wrong. Per this file's own doctrine, a believed view that drifts is worse than no view.
 
-Fix: make scope structural rather than remembered. Route every read-shaped handler through one
-helper that takes the principal and returns both the grant and its author scope, so omitting
-the scope is a type error rather than an oversight. Give `Space.take` an author-scope parameter
-(it currently has none). Store the owning principal on `Watch` and re-check the grant on
-attach; consider re-checking periodically so revocation terminates a live stream.
+**DONE.** Every read verb now answers both halves of the scope from one place:
 
-Guard: one conformance case per read verb asserting a self-scoped principal cannot observe a
-foreign record through it — `query`, `read_one`, `take`, lineage, children, graph, artifact
-get, artifact capability, watch. Table-drive it so a new verb without a row is visible.
+- `Space.readAccess(principal, op, kind)` returns `{constraint, createdBy}` together. `query`,
+  `read_one`, `take` and both artifact reads go through it, so the author scope cannot be fetched
+  separately and then forgotten.
+- `take` carries the author scope into the CLAIM (`LeaseSpec.createdBy` → `rankClaimable`), beside
+  `requireUntainted`. It cannot ride in the template: `created_by` is envelope metadata, which
+  templates never see.
+- `getLineage` and `getGraph` take an author scope and treat a foreign record as a WALL — traversal
+  stops there rather than skipping it, since continuing would still expose the shape above.
+- Artifact reads apply the scope before serving bytes, and before minting a download capability
+  (a bearer URL outlives the check). A foreign artifact is 404, not 403.
+- `authorizeWatch` returns `ReadAccess` and honours self-scope; `Watch` carries its `owner` and
+  author scope; `getWatch` requires the creating principal; `matchesEvent` filters wakeups by
+  author. A non-owner gets 404 — watch ids are monotonic ULIDs, so the id is not a secret.
+- `effectivePermissions` computes ops-reachability per GRANT (one grant carrying both `query` and
+  the self scope), the rule `opsScope` enforces, instead of ORing across grants.
 
-## Package C — lease fencing is not enforced at settle (P1)
+Verified against the reproductions: `take`, lineage, graph, `query` and a stolen watch attach all
+refuse a self-scoped principal foreign data.
+
+Guard added: a table-driven case in `conformance/http.test.ts` — one row per read verb
+(`query`, `read_one`, `take`, lineage, children, graph, get record) asserting a self-scoped
+principal sees no foreign record through it, plus the watch-attach check. **A verb with no row is
+a verb nobody checked** — add a row when adding a read verb.
+
+Not done: full type-level enforcement. `readAccess` makes the right thing convenient and
+one-call, but a new handler can still call `authorize` alone. Making that a compile error needs a
+read-context type threaded through every handler signature; the table-driven guard is the backstop
+until then.
+
+## Package C — lease fencing is not enforced at settle (P1) — DONE
 
 `ack`, `renew`, `nack` and `release` (`src/storage/pgbase.ts`, same shape in
 `src/storage/sqlite.ts`) select the envelope without `FOR UPDATE`, validate the lease in
@@ -120,15 +125,20 @@ are inserted *before* the guarded update, so the transaction commits and returns
 `{status: "ok"}`. A quarantined run can land one final result despite the epoch bump that
 exists to fence it out.
 
-Fix: check the affected-row count of the guarded update and return `lease_lost`, aborting the
-transaction so the result-record insert rolls back. The embedded adapters are immune only
-because they serialize in-process — fix both, the pattern is identical.
+**DONE.** All four settle operations in both adapters now check the affected-row count of the
+guarded update and return `lease_lost` when it matches nothing. `ack` was additionally reordered so
+the guarded update runs BEFORE the result insert and its event — that makes the fence a plain early
+return rather than a rollback, so a fenced-out worker cannot commit a result under any path.
 
-Guard: this is fault-matrix material. Add "stale ack after reassignment" and "ack after
-quarantine" to the adapter conformance suite, driven concurrently enough to hit the window on
-Postgres. See [plan-validation.md](plan-validation.md).
+Guard, honestly bounded: the new branch is **unreachable on the embedded adapters**, because they
+serialize in-process and the update's `WHERE` is a subset of what `leaseValid` already checked — so
+whenever the check passes, the update matches. A conformance test there would assert nothing. The
+observable contract ("a fenced ack emits nothing") stays covered by the existing
+`conformance/suites/leases.ts` fencing case, which now holds for a second reason. Exercising the
+race itself is **fault-matrix work against a live Postgres**: "stale ack after reassignment" and
+"ack after quarantine", driven concurrently. See [plan-validation.md](plan-validation.md).
 
-## Package D — grant supersede vs. idempotency (P1)
+## Package D — grant supersede vs. idempotency (P1) — DONE
 
 `supersedeGrantsFor` (`src/core/space.ts`) retires live grants whose template differs, but
 grants are put under a content-derived idempotency key and idempotency rows never expire. So
@@ -155,13 +165,23 @@ Two more defects in the same mechanism:
   re-granted wide grant then survives the next supersede silently — misauthorization in the
   widening direction, the class CLAUDE.md flags.
 
-Fix: idempotency keys for registry writes must not collide across the retire/revive cycle.
-`examples/chat/space/model.ts` already solves this by suffixing the key with the superseded
-record id; apply that shape to grants (and to `save_procedure`/`retire_procedure`, package I).
-Move `supersedeGrantsFor` out of the per-grant loop so one definition supersedes as a set.
+**DONE.** Three changes in `src/core/space.ts`, all verified against the original reproduction:
 
-Guard: `conformance/suites/retire.ts` currently covers only a one-way swap, which is why the
-suite passes. Add the **round trip** (A → B → A) and the two-templates-one-definition case.
+- The grant write suffixes its idempotency key with `:after:<recordId>` when the newest record for
+  that grant identity is a retirement — the shape `examples/chat/space/model.ts` already uses. This
+  needed `RegistryView.newest` (`src/core/registry.ts`), which exposes the newest record per key
+  *including* retirements; `entries` drops them, so a writer could not see what it had to revive.
+- `supersedeGrantsFor` takes the WHOLE declared set instead of one grant at a time, and skips any
+  grant whose key is in that set, so siblings no longer retire each other.
+- Retirements are keyed on the record being retired, not on the grant identity alone, so an
+  identity can be retired more than once.
+
+`createAgentDefinition` now reads the grant registry once per principal before writing, and
+**throws `registry_incomplete` rather than superseding on a partial view** — a truncated read would
+silently leave stale grants live.
+
+Guards added in `conformance/suites/retire.ts` (they run on both adapters): the round trip (A → B → A), two templates
+on one triple in one definition, and re-narrowing a grant that was retired and re-granted.
 
 ## Package E — pushdown soundness (P1)
 

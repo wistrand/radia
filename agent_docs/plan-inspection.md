@@ -4,8 +4,8 @@
 > they cannot answer and what would fix that. Claims about current behavior were verified against
 > `src/`; see [research-applications.md](research-applications.md) §8 for the ledger.
 >
-> Read [plan-audit-remediation.md](plan-audit-remediation.md) first: two of its packages gate work
-> here (§3), and one defect would corrupt a feature proposed below.
+> Read [plan-audit-remediation.md](plan-audit-remediation.md) first: the packages that gated this
+> work (B, D) are done, and §3 records what they leave you to follow.
 
 ## Goal
 
@@ -71,21 +71,18 @@ expansion or a per-level budget in the UI, not an index.
 
 ## 3. Prerequisites from the remediation plan
 
-**Every item in this backlog is a read amplifier.** That matters because read scoping is currently
-per-handler and already broken: `handleLineage` returns unfiltered ancestors — a self-scoped run read
-an operator-written record's full body by naming its id as a parent — and `handleGraph` leaks foreign
-nodes the same way (both verified). Adding a Flows miner, a `thread()` verb, a space digest, a
-dry-run matcher and an OTLP exporter on top of that multiplies the surface faster than it can be
-audited.
+**Every item in this backlog is a read amplifier.** A Flows miner, a `thread()` verb, a space
+digest, a dry-run matcher and an OTLP exporter each add a path that can serve records, and the
+per-handler scoping that preceded them leaked through lineage, graph, `take` and the artifact reads
+before anyone noticed. Route every new one through the shared read path.
 
-- **Gate: package B (centralized scoped-read helper).** Build it first, so omitting the scope is a
-  type error rather than an oversight. Otherwise this backlog ships leaks with better
-  visualizations.
-- **Gate for the interest registry: package D (registry revival bug).** An interest registry churns
-  constantly — workers stop and start — which is exactly the workload that triggers the
-  supersede-plus-idempotency defect: re-declaring a previously-retired content-keyed entry writes
-  nothing while the retirement stays newest, so the entry never returns. A grant registry hits this
-  occasionally; an interest registry would hit it on every restart.
+- **Package B is done**, so the path exists: every read verb goes through `Space.readAccess`, which
+  returns the template constraint and the author scope together. Any view added here must use it
+  and add a row to the table-driven guard in `conformance/http.test.ts` — a verb with no row is a
+  verb nobody checked. Omitting the scope is still only a convention, not a compile error.
+- **Package D is done**, so a churning registry is safe: a re-declaration after a retirement
+  carries an `:after:<recordId>` idempotency suffix and revives. Use that shape for the interest
+  registry and for saved lenses; the plain content key alone still cannot revive.
 - **Watch lifecycle.** A console that opens a watch per view leaks entries in the never-pruned
   watches map and accumulates `Notifier` waiters. Inspection UIs are precisely the workload that
   opens many short-lived watches.

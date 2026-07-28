@@ -387,12 +387,12 @@ export const authSuites: Suite[] = [
       assertEquals(await denied(() => space.authorizeWatch("agent:w", "task")), "forbidden");
       // a take-only grant (like the agentLoop) is enough — watch is participation, not tied to query
       await space.put({ kind: "grant", body: { principal: "agent:w", kind: "task", operations: ["take"], template: { op: "up" } } });
-      assertEquals(await space.authorizeWatch("agent:w", "task"), [{ op: "up" }]); // scopes the watch
+      assertEquals((await space.authorizeWatch("agent:w", "task")).constraint, [{ op: "up" }]); // scopes the watch
       // privileged → unrestricted
-      assertEquals(await space.authorizeWatch("human:local", "task"), null);
+      assertEquals((await space.authorizeWatch("human:local", "task")).constraint, null);
       // a second, unrestricted grant widens back to the whole kind (null wins)
       await space.put({ kind: "grant", body: { principal: "agent:w", kind: "task", operations: ["read_one"] } });
-      assertEquals(await space.authorizeWatch("agent:w", "task"), null);
+      assertEquals((await space.authorizeWatch("agent:w", "task")).constraint, null);
     },
   },
   {

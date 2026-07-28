@@ -1,9 +1,8 @@
-// The console's HTML escaping.
+// The console's HTML escaping, and the rule that the page carries no credential.
 //
-// `esc` guards an XSS into the origin whose page carries an operator token: record-derived values
-// (a kind name, a grant's `template` rendered as JSON inside `title="…"`) reach HTML ATTRIBUTES,
-// so escaping `& < >` alone lets a value close the attribute and inject a new one. That bug was
-// real and shipped.
+// `esc` guards an XSS into the space's own origin: record-derived values (a kind name, a grant's
+// `template` rendered as JSON inside `title="…"`) reach HTML ATTRIBUTES, so escaping `& < >` alone
+// lets a value close the attribute and inject a new one. That bug was real and shipped.
 //
 // The console is deliberately one file with no build step, so there is no module to import. Rather
 // than split it — which would trade a real architectural property for testability — the function is
@@ -76,4 +75,17 @@ Deno.test("console: every record-derived value in the page goes through esc", ()
     if (!expr.includes("esc(") && !literalTernary.test(expr)) offenders.push(m[0]);
   }
   assertEquals(offenders, [], "these attribute interpolations do not escape their value");
+});
+
+Deno.test("console: the served page carries no credential", () => {
+  // `GET /` is public so the console can bootstrap in `--auth required` mode, which means anything
+  // baked into this page is readable by anyone who can reach the port — and a harvested operator
+  // token authorizes every verb. Never inject a credential here; the console asks for one at
+  // runtime and keeps it in sessionStorage.
+  assert(
+    !/__RADIA_[A-Z_]*TOKEN__/.test(html),
+    "the page carries a token placeholder — something on the server may substitute a credential into it",
+  );
+  const tokenShaped = [...html.matchAll(/\b[0-9a-f]{48}\b/g)].map((m) => m[0]);
+  assertEquals(tokenShaped, [], "a credential-shaped literal is baked into the served page");
 });

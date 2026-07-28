@@ -51,7 +51,7 @@ import { CredentialStore, hashToken, mintCredential, type ResolvedToken } from "
 import { type BlobStore, isDigest, MemoryBlobStore } from "../storage/blobs.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
-import { activeSet, grantKey, readRegistry, type RegistryView } from "./registry.ts";
+import { activeSet, grantKey, isRetired, readRegistry, type RegistryView } from "./registry.ts";
 import { Notifier } from "./notifier.ts";
 
 export interface SpaceContext {
@@ -99,11 +99,28 @@ export interface TakeOptions {
   leaseSeconds?: number;
   /** Sensitive consumer: skip tainted candidates (taint barrier). */
   requireUntainted?: boolean;
+  /** Author restriction from a self-scoped grant: skip candidates authored by anyone else.
+   *  Enforced in the claim, not by the caller — a claim returns the record BODY, so a take that
+   *  ignores the scope reads everything a scoped `query` correctly refuses. */
+  createdBy?: string[];
 }
 
 export interface Watch {
   match: CompiledMatch;
   cursor0: string; // opaque high-water cursor at creation; the stream starts here unless resumed
+  /** The principal that created it. A watch is scoped by ITS creator's grants, so attaching must
+   *  be restricted to that creator — otherwise the scope belongs to somebody else. */
+  owner: string;
+  /** Author restriction from a self-scoped grant, applied to wakeups as well as to reads. */
+  createdBy?: string[];
+}
+
+/** What a read verb is allowed to see: template constraint plus author restriction. */
+export interface ReadAccess {
+  /** Templates the request must additionally satisfy (`null` = unrestricted). */
+  constraint: Record<string, unknown>[] | null;
+  /** Principals whose records are readable, or `undefined` for no author restriction. */
+  createdBy?: string[];
 }
 
 export interface GraphNode {
@@ -397,6 +414,27 @@ export class Space {
   }
 
   /**
+   * Everything a READ of `kind` is allowed to see: the template constraint AND the author
+   * restriction, in one answer.
+   *
+   * Both halves are needed on every read verb, and asking for them separately is how they drift —
+   * `take`, lineage, graph and the artifact reads each authorized on the template and silently
+   * skipped the author scope, so a self-scoped grant returned other principals' records through
+   * them while `query` correctly returned none. Never call `authorize` alone on a read path; call
+   * this, and apply both fields.
+   */
+  async readAccess(principal: string, op: GrantOp, kind: string): Promise<ReadAccess> {
+    const constraint = await this.authorize(principal, op, kind);
+    const createdBy = await this.authorScope(principal, op, kind);
+    return { constraint, createdBy };
+  }
+
+  /** Does `record` fall inside an author restriction? `undefined` restriction means unrestricted. */
+  authorAllows(createdBy: string[] | undefined, record: { runtimeMeta: { createdBy: string } }): boolean {
+    return !createdBy || createdBy.includes(record.runtimeMeta.createdBy);
+  }
+
+  /**
    * Every principal whose records count as "mine": the agent itself, the presented principal, and
    * the agent's RUNS — all of them, including runs that have since stopped or expired.
    *
@@ -429,23 +467,27 @@ export class Space {
       return { principal, subject, privileged: true, kinds: [], ops: { reachable: true, kinds: [] }, complete: true };
     }
     const view = await this.registry(GRANT, grantKey, { principal: subject });
-    const byKind = new Map<string, { kind: string; operations: GrantOp[]; scoped: boolean; unscoped: boolean; templates: Record<string, unknown>[] }>();
+    const byKind = new Map<string, { kind: string; operations: GrantOp[]; scoped: boolean; unscoped: boolean; opsEligible: boolean; templates: Record<string, unknown>[] }>();
     for (const rec of view.entries.values()) {
       const g = rec.body as GrantDef & { scope?: { createdBy?: string } };
       if (typeof g.kind !== "string" || !Array.isArray(g.operations)) continue;
       const row = byKind.get(g.kind) ??
-        { kind: g.kind, operations: [], scoped: false, unscoped: false, templates: [] };
+        { kind: g.kind, operations: [], scoped: false, unscoped: false, opsEligible: false, templates: [] };
       for (const op of g.operations) if (!row.operations.includes(op)) row.operations.push(op);
       if (g.scope?.createdBy === "self") row.scoped = true;
       else row.unscoped = true;
+      // Ops reachability is a property of a SINGLE grant carrying both the read op and the self
+      // scope — never of the union across grants. `opsScope` asks it that way, so asking it any
+      // other way here reports a plane the caller is then refused.
+      if (g.scope?.createdBy === "self" && g.operations.includes("query")) row.opsEligible = true;
       if (g.template && Object.keys(g.template).length > 0) row.templates.push(g.template);
       byKind.set(g.kind, row);
     }
-    // The ops plane is reachable for the kinds carrying a self-scoped READ grant — the same rule
-    // `opsScope` enforces, stated once here so the two cannot drift.
-    const opsKinds = [...byKind.values()]
-      .filter((r) => r.scoped && r.operations.includes("query"))
-      .map((r) => r.kind);
+    // The ops plane is reachable for kinds holding ONE grant that is both a `query` grant and
+    // self-scoped — the rule `opsScope` enforces. ORing `scoped` against the union of operations
+    // instead reports `{put, self-scoped}` beside `{query, unscoped}` as reachable, and `opsScope`
+    // then throws `forbidden` for it.
+    const opsKinds = [...byKind.values()].filter((r) => r.opsEligible).map((r) => r.kind);
     const kinds = [];
     for (const r of [...byKind.values()].sort((a, b) => (a.kind < b.kind ? -1 : 1))) {
       kinds.push({
@@ -484,22 +526,30 @@ export class Space {
    * inside its grant scope — the same content-scoping `query`/`take` get. Throws `forbidden` if the
    * principal has no grant for the kind (closing the last unguarded coordination verb).
    */
-  async authorizeWatch(principal: string, kind: string): Promise<Record<string, unknown>[] | null> {
-    if (this.isPrivileged(principal)) return null;
+  async authorizeWatch(principal: string, kind: string): Promise<ReadAccess> {
+    if (this.isPrivileged(principal)) return { constraint: null };
     const subject = this.grantSubject(principal);
     // Retracted grants are subtracted here too. A watch observes records, so a revocation that
     // stopped `query` but left `watch` standing would revoke nothing that matters.
-    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject, kind })).entries.values()];
+    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject, kind })).entries.values()]
+      .map((g) => g.body as GrantDef & { scope?: { createdBy?: string } });
     if (grants.length === 0) {
       throw new RadiaError("forbidden", `principal '${principal}' has no grant to watch kind '${kind}'`);
     }
+    // A self scope narrows a watch for the same reason it narrows `query`: otherwise approving
+    // "its own records" streams every author's record ids, kinds and activity timing on the kind.
+    // Applied only when EVERY grant on the kind is self-scoped, matching `authorScope` — grants
+    // union, so one unscoped grant already permits observing other authors.
+    const createdBy = grants.every((g) => g.scope?.createdBy === "self")
+      ? await this.runPrincipalsOf(subject, principal)
+      : undefined;
     const templates: Record<string, unknown>[] = [];
     for (const g of grants) {
-      const t = (g.body as GrantDef).template;
-      if (!t || Object.keys(t).length === 0) return null; // an unrestricted grant widens to the whole kind
+      const t = g.template;
+      if (!t || Object.keys(t).length === 0) return { constraint: null, createdBy }; // unrestricted widens to the kind
       templates.push(t);
     }
-    return templates;
+    return { constraint: templates, createdBy };
   }
 
   /** Write-side template scoping: does `body` (of `kind`) satisfy at least one grant `template`?
@@ -558,15 +608,41 @@ export class Space {
     for (const g of grants) {
       validateGrantDef(g);
       this.checkGrantTemplate(g);
+    }
+    // One registry read per principal named here, taken BEFORE any write and reused for both the
+    // revival check and the supersede. Never read it per grant inside the loop: superseding as
+    // each grant lands makes grant N retire grant N-1 of the same (principal, kind, operations),
+    // so a definition silently cannot declare two scopes at once.
+    const views = new Map<string, RegistryView>();
+    for (const p of new Set(grants.map((g) => g.principal))) {
+      const view = await this.registry(GRANT, grantKey, { principal: p });
+      if (!view.complete) {
+        throw new RadiaError(
+          "registry_incomplete",
+          `could not read all grants for '${p}' — refusing to supersede on a partial view`,
+        );
+      }
+      views.set(p, view);
+    }
+    for (const g of grants) {
+      const key = grantKey(g) ?? "";
       // CONTENT-KEYED, so re-defining an agent with the same grants writes nothing new. Without
       // this, every bootstrap appended a fresh record per grant and a long-lived principal
       // accumulated hundreds — which then outran the bounded page every authorization read takes,
       // silently. Unlike a worker republishing a capability, this key does dedup across restarts:
       // agent definitions are an OPERATOR action, and an idempotency key is scoped to the acting
       // principal, which here is stable.
-      await this.putRaw({ kind: GRANT, body: g }, `grant:${await sha256Hex(grantKey(g) ?? "")}`);
-      await this.supersedeGrantsFor(g);
+      //
+      // REVIVING a retired grant therefore needs a key that differs from the record being revived,
+      // or the write is an idempotent replay of it and the retirement stays newest. That is a
+      // LOCKOUT, not a lost update: the supersede below still retires whatever is live, so the
+      // principal ends with no grant at all and `createAgentDefinition` reports success.
+      const prior = views.get(g.principal)?.newest.get(key);
+      const revives = prior !== undefined && isRetired(prior.body);
+      const idem = `grant:${await sha256Hex(key)}${revives ? `:after:${prior.id}` : ""}`;
+      await this.putRaw({ kind: GRANT, body: g }, idem);
     }
+    await this.supersedeGrantsFor(grants, views);
     this.notifier.notify();
     return { agent, definitionToken: token };
   }
@@ -590,19 +666,34 @@ export class Space {
    * Note `scope` is absent from `grantKey` on purpose, so a self-scoped grant already replaces its
    * unscoped twin in place. Never include it in the filter below: the declared grant shares a key
    * with the live one, so it would retire the grant it just wrote.
+   *
+   * Takes the WHOLE declared set, never one grant at a time, so grants declared together do not
+   * retire each other — a definition may legitimately declare two templates on one triple, and
+   * `authorize` unions them.
    */
-  private async supersedeGrantsFor(g: GrantDef): Promise<void> {
-    const declared = grantKey(g);
-    const live = [...(await this.registry(GRANT, grantKey, { principal: g.principal })).entries.values()]
-      .map((rec) => rec.body as GrantDef)
-      .filter((body) =>
-        body.kind === g.kind &&
-        JSON.stringify([...(body.operations ?? [])].sort()) === JSON.stringify([...g.operations].sort()) &&
-        grantKey(body) !== declared
+  private async supersedeGrantsFor(declared: GrantDef[], views: Map<string, RegistryView>): Promise<void> {
+    const sameOps = (a: unknown[] = [], b: unknown[] = []) =>
+      JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+    const declaredKeys = new Set(declared.map((g) => grantKey(g)));
+    // Collected by record id, so a triple declared twice retires each stale record once.
+    const stale = new Map<string, RadiaRecord>();
+    for (const g of declared) {
+      for (const rec of views.get(g.principal)?.entries.values() ?? []) {
+        const body = rec.body as GrantDef;
+        if (body.kind !== g.kind || !sameOps(body.operations, g.operations)) continue;
+        if (declaredKeys.has(grantKey(body))) continue;
+        stale.set(rec.id, rec);
+      }
+    }
+    for (const rec of stale.values()) {
+      const body = rec.body as GrantDef;
+      // Keyed on the RECORD being retired, not on the grant identity alone: one key per identity
+      // means a grant can be retired only ONCE, ever, so a later re-grant of the same content
+      // would survive the next supersede and stay live — silent misauthorization, widening.
+      await this.putRaw(
+        { kind: GRANT, body: { ...body, retired: true } },
+        `grant-retire:${await sha256Hex(grantKey(body) ?? "")}:after:${rec.id}`,
       );
-    for (const stale of live) {
-      const key = grantKey(stale);
-      await this.putRaw({ kind: GRANT, body: { ...stale, retired: true } }, `grant-retire:${await sha256Hex(key ?? "")}`);
     }
   }
 
@@ -682,9 +773,12 @@ export class Space {
    */
   private async resolveCredential(token: string, now: string): Promise<ResolvedToken> {
     const hash = await hashToken(token);
-    // Operator tokens are process-lifetime and never records (the console needs one before any
-    // agent exists), so they are the one thing answered from memory.
-    if (this.creds.isOperator(hash)) return { ok: true, kind: "def", agent: this.ctx.principal };
+    // Operator tokens are process-lifetime and never records (a credential is needed before any
+    // agent exists), so they are the one thing answered from memory. They resolve to the space's
+    // own principal: presenting the provisioned credential is exactly as authorized as presenting
+    // no header at all in open mode. Never resolve one as `def` — that would let it mint a run,
+    // turning a leaked operator token into a durable one.
+    if (this.creds.isOperator(hash)) return { ok: true, kind: "operator", principal: this.ctx.principal };
     if (!/^[0-9a-f]{48}$/.test(token)) return { ok: false, reason: "invalid_token" };
 
     const run = await this.newestByHash(AGENT_RUN, hash);
@@ -1002,6 +1096,7 @@ export class Space {
       maxCumulativeSeconds: this.ctx.maxCumulativeSeconds,
       maxAttempts: this.ctx.maxAttempts,
       requireUntainted: opts.requireUntainted,
+      createdBy: opts.createdBy,
     };
     const selector: TakeSelector = "recordId" in sel
       ? { recordId: sel.recordId, template: sel.template ? this.compile(sel.template) : undefined }
@@ -1146,7 +1241,7 @@ export class Space {
    */
   async getGraph(
     recordId: string,
-    opts: { maxNodes?: number; excludeKinds?: Set<string> } = {},
+    opts: { maxNodes?: number; excludeKinds?: Set<string>; createdBy?: string[] } = {},
   ): Promise<{ nodes: GraphNode[]; edges: { from: string; to: string }[] }> {
     const maxNodes = opts.maxNodes ?? 150;
     const exclude = opts.excludeKinds ?? new Set<string>();
@@ -1168,6 +1263,9 @@ export class Space {
       seen.add(id);
       const rec = await this.storage.getRecord(id);
       if (!rec || exclude.has(rec.kind)) continue;
+      // A foreign node is a wall, not a skip — traversing through it would still expose the shape
+      // of what hangs off it, and the node's own id and label are enough to feed a lineage probe.
+      if (!this.authorAllows(opts.createdBy, rec)) continue;
       nodes.set(id, rec);
       for (const pid of rec.runtimeMeta.parentIds) {
         addEdge(pid, id);
@@ -1204,7 +1302,11 @@ export class Space {
    * A record and its ancestry via parent_ids (BFS, `depth` 0 = the record itself). The
    * lineage DAG is acyclic by construction, but `seen` and a node cap guard anyway.
    */
-  async getLineage(recordId: string, maxNodes = 200): Promise<{ record: RadiaRecord; depth: number }[]> {
+  async getLineage(
+    recordId: string,
+    maxNodes = 200,
+    createdBy?: string[],
+  ): Promise<{ record: RadiaRecord; depth: number }[]> {
     const out: { record: RadiaRecord; depth: number }[] = [];
     const seen = new Set<string>();
     let frontier: string[] = [recordId];
@@ -1220,6 +1322,11 @@ export class Space {
       if (records.length > 1) records.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const next: string[] = [];
       for (const rec of records) {
+        // A self-scoped reader walks only its OWN lineage. Stop at a foreign ancestor rather than
+        // skipping past it: `put` never checks that a parent is readable, so a scoped principal can
+        // name any id as a parent of its own record — and an unfiltered walk then hands back that
+        // record's whole upstream, bodies included.
+        if (!this.authorAllows(createdBy, rec)) continue;
         out.push({ record: rec, depth });
         next.push(...rec.runtimeMeta.parentIds);
       }
@@ -1238,25 +1345,42 @@ export class Space {
   // ---- watches (M1) ----
 
   /** Create an ephemeral watch. The stream starts from the current high-water cursor. */
-  async createWatch(template: Template): Promise<{ watchId: string }> {
+  async createWatch(template: Template, owner: string, createdBy?: string[]): Promise<{ watchId: string }> {
     const match = this.compile(template); // validates the template
     const cursor0 = await this.storage.latestCursor();
     const watchId = newUlid();
-    this.watches.set(watchId, { match, cursor0 });
+    this.watches.set(watchId, { match, cursor0, owner, createdBy });
     return { watchId };
   }
 
-  getWatch(watchId: string): Watch | undefined {
-    return this.watches.get(watchId);
+  /**
+   * The watch, but only for the principal that created it.
+   *
+   * A watch carries a compiled scope derived from its creator's grants, so handing the stream to
+   * anyone who knows the id hands them that scope. Ids come from the same monotonic ULID generator
+   * as record ids, so they are guessable from an adjacent record — never treat the id as the
+   * secret. Returns undefined for a non-owner, which the caller reports as 404 rather than 403 so
+   * the id is not confirmed.
+   */
+  getWatch(watchId: string, principal: string): Watch | undefined {
+    const watch = this.watches.get(watchId);
+    if (!watch) return undefined;
+    if (watch.owner !== principal && !this.isPrivileged(principal)) return undefined;
+    return watch;
   }
 
   /** Does this event signal a record matching the watch that is now claimable/available? */
-  async matchesEvent(match: CompiledMatch, event: SpaceEvent): Promise<boolean> {
+  async matchesEvent(watch: Watch, event: SpaceEvent): Promise<boolean> {
     if (event.state !== "available") return false; // wakeups are for claimable/available records
-    if (!event.recordId || event.kind !== match.kind) return false;
-    if (!match.where) return true; // kind-only wakeup — no record fetch needed
+    if (!event.recordId || event.kind !== watch.match.kind) return false;
+    // A kind-only watch still needs the record when an author restriction applies: the event's
+    // `runId` is who performed the operation, not who authored the record, so a nack or release by
+    // another principal would otherwise wake a self-scoped watcher on a record it cannot read.
+    if (!watch.match.where && !watch.createdBy) return true;
     const rec = await this.storage.getRecord(event.recordId);
-    return rec ? matchesRecord(rec, match) : false;
+    if (!rec) return false;
+    if (!this.authorAllows(watch.createdBy, rec)) return false;
+    return watch.match.where ? matchesRecord(rec, watch.match) : true;
   }
 
   /** Resolve when a mutation occurs (a watch wakeup) or after timeoutMs (keepalive). */

@@ -134,18 +134,17 @@ export async function handleQuery(space: Space, req: Request, principal: string)
     ? { after: j.after as string | undefined, dir: j.dir as "asc" | "desc" | undefined }
     : undefined;
   try {
-    const constraint = await space.authorize(principal, "query", template.kind);
+    // Both halves of the read scope in one call — a self-scoped grant narrows the coordination
+    // plane too, and asking for the template alone is how that gets forgotten.
+    const { constraint, createdBy } = await space.readAccess(principal, "query", template.kind);
     if (constraint) template.match = combineMatch(template.match, constraint); // grant ∧ request
-    // A self-scoped grant narrows the coordination plane too. Without this, approving "only its own
-    // records" scoped the ops plane while `query` still returned every record of the kind.
-    const authors = await space.authorScope(principal, "query", template.kind);
-    const records = await space.query(template, limit, page, authors ? { createdBy: authors } : undefined);
+    const records = await space.query(template, limit, page, createdBy ? { createdBy } : undefined);
     // The cursor for the NEXT page is the last id of this one — echoed so a caller never has to
     // know that the cursor happens to be a record id.
     return Response.json({
       records,
       nextAfter: records.length === limit ? records[records.length - 1]?.id : undefined,
-      ...describeReadScope(constraint, authors),
+      ...describeReadScope(constraint, createdBy),
     });
   } catch (e) {
     if (e instanceof RadiaError) return problem(statusFor(e.code, 400), e.code, e.message);
@@ -166,10 +165,9 @@ export async function handleReadOne(space: Space, req: Request, principal: strin
     orderBy: j.orderBy as Template["orderBy"],
   };
   try {
-    const constraint = await space.authorize(principal, "read_one", template.kind);
+    const { constraint, createdBy } = await space.readAccess(principal, "read_one", template.kind);
     if (constraint) template.match = combineMatch(template.match, constraint); // grant ∧ request
-    const authors = await space.authorScope(principal, "read_one", template.kind);
-    const record = await space.readOne(template, authors ? { createdBy: authors } : undefined);
+    const record = await space.readOne(template, createdBy ? { createdBy } : undefined);
     return Response.json(record); // null serializes to `null`
   } catch (e) {
     // Template validation failures (undeclared_path, unknown_kind, ...) are client errors.

@@ -126,7 +126,7 @@ export const retireSuites: Suite[] = [
       space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
       const grant = { principal: "agent:w", kind: "task", operations: ["take"] };
       await space.put({ kind: "grant", body: grant });
-      assertEquals(await space.authorizeWatch("agent:w", "task"), null);
+      assertEquals((await space.authorizeWatch("agent:w", "task")).constraint, null);
 
       // A revocation that stopped query but left watch standing would revoke nothing that matters:
       // a watch observes the records it was meant to lose sight of.
@@ -265,6 +265,90 @@ export const retireSuites: Suite[] = [
         await space.authorize("agent:w", "read_one", "message"),
         null,
         "and so are different operations on the same kind",
+      );
+    },
+  },
+  {
+    name: "a scope switched away and BACK is live again, not a permanent lockout",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({
+        kind: "message",
+        indexedPaths: [{ path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
+      });
+      const identity: GrantDef = {
+        principal: "agent:w",
+        kind: "message",
+        operations: ["query"],
+        template: { owner: "agent:w" },
+      };
+      const conversation: GrantDef = {
+        principal: "agent:w",
+        kind: "message",
+        operations: ["query"],
+        template: { conversationId: "c1" },
+      };
+
+      // The grant write is content-keyed, and the supersede retires whatever is live. Together
+      // those turn a swap BACK into a lockout unless the revival carries a distinct idempotency
+      // key: the re-declaration replays the retired record and writes nothing, while the supersede
+      // still retires the live one — leaving the principal with no grant at all.
+      await space.createAgentDefinition("agent:w", [identity]);
+      assertEquals(await space.authorize("agent:w", "query", "message"), [{ owner: "agent:w" }]);
+      await space.createAgentDefinition("agent:w", [conversation]);
+      assertEquals(await space.authorize("agent:w", "query", "message"), [{ conversationId: "c1" }]);
+      await space.createAgentDefinition("agent:w", [identity]);
+      assertEquals(
+        await space.authorize("agent:w", "query", "message"),
+        [{ owner: "agent:w" }],
+        "switching back to a scope used before must revive it",
+      );
+    },
+  },
+  {
+    name: "a definition may declare two templates on one triple, and they union",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({ kind: "message", indexedPaths: [{ path: "conversationId", type: "keyword" }] });
+
+      // Superseding per grant as each one lands makes the second retire the first. `authorize`
+      // unions templates on purpose, so a definition has to be able to declare more than one.
+      await space.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "message", operations: ["query"], template: { conversationId: "a" } },
+        { principal: "agent:w", kind: "message", operations: ["query"], template: { conversationId: "b" } },
+      ]);
+      const templates = await space.authorize("agent:w", "query", "message");
+      assertEquals(templates?.length, 2, "both declared scopes survive");
+      assert(
+        templates?.some((t) => t.conversationId === "a") && templates?.some((t) => t.conversationId === "b"),
+        `expected both scopes, got ${JSON.stringify(templates)}`,
+      );
+    },
+  },
+  {
+    name: "a grant re-granted after a retirement can be retired again",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({ kind: "message", indexedPaths: [{ path: "owner", type: "keyword" }] });
+      const wide: GrantDef = { principal: "agent:w", kind: "message", operations: ["query"] };
+      const narrow: GrantDef = {
+        principal: "agent:w",
+        kind: "message",
+        operations: ["query"],
+        template: { owner: "agent:w" },
+      };
+
+      // Keying a retirement on the grant identity alone lets an identity be retired only ONCE.
+      // A wide grant that was retired, re-granted, and then narrowed again would survive the
+      // second supersede and stay live — widening, silently.
+      await space.createAgentDefinition("agent:w", [wide]);
+      await space.createAgentDefinition("agent:w", [narrow]);
+      await space.createAgentDefinition("agent:w", [wide]);
+      await space.createAgentDefinition("agent:w", [narrow]);
+      assertEquals(
+        await space.authorize("agent:w", "query", "message"),
+        [{ owner: "agent:w" }],
+        "the re-granted wide grant must not outlive the second narrowing",
       );
     },
   },

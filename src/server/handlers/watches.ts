@@ -25,9 +25,11 @@ export async function handleCreateWatch(space: Space, req: Request, principal: s
   try {
     // Authorize like a read: the principal must hold a grant on the kind, and a template-scoped
     // grant confines the watch to records it could observe (grant ∧ request), same as query/take.
-    const constraint = await space.authorizeWatch(principal, template.kind);
+    const { constraint, createdBy } = await space.authorizeWatch(principal, template.kind);
     if (constraint) template.match = combineMatch(template.match, constraint);
-    const { watchId } = await space.createWatch(template);
+    // The watch is bound to its creator and carries that principal's author scope: the stream is
+    // reached by id alone, and ids are monotonic ULIDs — guessable from any adjacent record.
+    const { watchId } = await space.createWatch(template, principal, createdBy);
     return new Response(JSON.stringify({ watchId }), { status: 201, headers: { "content-type": "application/json" } });
   } catch (e) {
     if (e instanceof RadiaError) return problem(statusFor(e.code, 400), e.code, e.message);
@@ -35,8 +37,11 @@ export async function handleCreateWatch(space: Space, req: Request, principal: s
   }
 }
 
-export function handleWatchEvents(space: Space, watchId: string, req: Request): Response {
-  const watch = space.getWatch(watchId);
+export function handleWatchEvents(space: Space, watchId: string, principal: string, req: Request): Response {
+  // Only the creator may attach. A watch carries a scope compiled from ITS creator's grants, so
+  // handing the stream to whoever knows the id hands them that scope. 404, not 403 — a non-owner
+  // is not entitled to learn the id exists.
+  const watch = space.getWatch(watchId, principal);
   if (!watch) return problem(404, "not_found", `no watch ${watchId}`);
 
   const url = new URL(req.url);
@@ -70,7 +75,7 @@ export function handleWatchEvents(space: Space, watchId: string, req: Request): 
         for (const e of events) {
           if (closed) break;
           cursor = e.cursor; // gap-safe resume key (xid on pooled pg; seq on embedded)
-          if (await space.matchesEvent(watch.match, e)) {
+          if (await space.matchesEvent(watch, e)) {
             send(`id: ${e.cursor}\ndata: ${JSON.stringify({ seq: e.seq, recordId: e.recordId, kind: e.kind })}\n\n`);
           }
         }

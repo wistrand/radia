@@ -26,11 +26,15 @@ export function rankClaimable(
   match: CompiledMatch | undefined,
   now: string,
   requireUntainted = false,
+  createdBy?: string[],
 ): RankedCandidate[] {
   const ranked: RankedCandidate[] = [];
   for (const c of candidates) {
     if (match && !matchesRecord(c.record, match)) continue;
     if (requireUntainted && c.record.runtimeMeta.taint) continue; // sensitive consumer skips tainted work
+    // A self-scoped grant restricts a claim to the principal's own records. `created_by` is
+    // envelope metadata, not body, so no template can express this — it has to be a claim filter.
+    if (createdBy && !createdBy.includes(c.record.runtimeMeta.createdBy)) continue;
     const e = c.env;
     if (e.state === "available" && e.availableAt <= now) {
       ranked.push({ ...c, how: "available" });

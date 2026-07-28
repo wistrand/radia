@@ -33,6 +33,10 @@ export function hashToken(token: string): Promise<string> {
 }
 
 export type ResolvedToken =
+  // The local operator: authorizes coordination directly as the space's own principal. Distinct
+  // from `def` because a definition token authorizes only ONE thing — minting a run — while an
+  // operator token authorizes everything and can mint nothing.
+  | { ok: true; kind: "operator"; principal: string }
   | { ok: true; kind: "def"; agent: string }
   | { ok: true; kind: "run"; principal: string; agent: string }
   | { ok: false; reason: "invalid_token" | "token_expired" | "run_stopped" };

@@ -709,22 +709,22 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   close switch.** `radia dev` binds `127.0.0.1` by default (not all interfaces) — `--host 0.0.0.0`
   is an explicit opt-in to expose it. `--auth required` (`ServerOptions.authRequired`) drops the
   no-header shortcut entirely: no bearer → `401 auth_required`. `GET /` and `GET /v0/health` stay
-  public so the console still bootstraps (it uses its baked operator token thereafter). Residual
-  footgun: `GET /` serves that operator token embedded in the HTML, so `--auth required` over an
-  exposed `--host` still leaks it to anyone who fetches `/` — for a locked-down exposed deployment,
-  proxy-gate `/` or drop the bundled console. The loopback default is what keeps the local case safe
-  without needing either.
-- **The dev console holds an operator token; it's a server-lifetime in-memory bootstrap credential,
-  not a record.** `Space.mintOperatorToken` (startup) registers a hash in `CredentialStore` that
-  resolves to the privileged `human:local`, never expires, and is NOT persisted (like the in-code
-  meta-kinds). It is the one credential that legitimately lives in memory — it cannot be revoked
-  because it cannot outlive the process. The server bakes the plaintext into the
-  served `index.html` (replacing `__RADIA_OPERATOR_TOKEN__`); the console's guard falls back to the
-  no-header default if the placeholder is left intact (page opened as a static file). This is
-  additive — the no-header operator default still exists for curl/examples/tests; the console just
-  demonstrates the real Bearer path. Baking a token into served HTML is safe only because the dev
-  API is already open on the local network; a production console would authenticate an operator
-  session and the no-header default would be closed.
+  public so the console still bootstraps; neither carries a credential, and neither may (see the
+  operator-token bullet below). The loopback default is what keeps the local case safe.
+- **The operator token is a server-lifetime in-memory credential, not a record — and never travels
+  in the served page.** `Space.mintOperatorToken` (startup) registers a hash in `CredentialStore`
+  that resolves to the privileged `human:local`, never expires, and is NOT persisted (like the
+  in-code meta-kinds). It is the one credential that legitimately lives in memory — it cannot be
+  revoked because it cannot outlive the process. **Never bake it into `index.html`.** `GET /` is
+  public so the console can bootstrap under `--auth required`, so an embedded token is readable by
+  anyone who can reach the port, and it authorizes every verb. The console prompts for a token and
+  keeps it in `sessionStorage`; `conformance/console.test.ts` fails if a credential-shaped literal
+  or a substitution placeholder reappears in the page.
+- **The operator token resolves as `kind: "operator"`, never `"def"`.** It authorizes coordination
+  directly, as the space's own principal — the CLI, the MCP adapter and `curl` all present it, so
+  resolving it to anything that 401s breaks every local tool. Resolving it as a DEFINITION token
+  breaks the other way: definition tokens mint runs, so a leaked operator credential would convert
+  into a long-lived run token. It authorizes everything and mints nothing.
 - **A presented `Authorization: Bearer` token must resolve; a bad one is 401, never a silent
   fall-through to the operator.** Only the *absence* of any credential defaults to `human:local`;
   `resolveAuth` in `src/server/http.ts` encodes it (Bearer → run principal, else operator).

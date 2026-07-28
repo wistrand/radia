@@ -122,6 +122,10 @@ export function grantKey(body: unknown): string | undefined {
 export interface RegistryView {
   /** Current entry per key, retired ones dropped. */
   entries: Map<string, RadiaRecord>;
+  /** Newest record per key INCLUDING retirements. A writer that re-declares a key needs this:
+   *  reviving a retired entry requires a key that differs from the record being revived, so it
+   *  has to be able to see that the newest record is a retirement, and which record that is. */
+  newest: Map<string, RadiaRecord>;
   /** False when the scan hit its cap before exhausting the kind — the view may be missing entries,
    *  and a caller that treats it as authoritative would be guessing. */
   complete: boolean;
@@ -167,5 +171,8 @@ export async function readRegistry<T = unknown>(
     }
     after = rows[rows.length - 1].id;
   }
-  return { entries: activeByKey(all, keyOf), complete, scanned: all.length };
+  const newest = newestByKey(all, keyOf);
+  const entries = new Map(newest);
+  for (const [key, rec] of entries) if (isRetired(rec.body)) entries.delete(key);
+  return { entries, newest, complete, scanned: all.length };
 }

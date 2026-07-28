@@ -71,7 +71,7 @@ async function dev(args: string[]): Promise<void> {
   console.log(`radia dev: blobs=${blobs.name}${blobDir ? ` (${blobDir})` : " (in-memory)"}${kek ? ` — encrypted, KEK from ${kek.source}` : ""}`);
   const space = new Space(storage, {}, blobs);
   await space.loadKinds(); // restore persisted kind declarations
-  const operatorToken = await space.mintOperatorToken(); // the bundled console authenticates with this
+  const operatorToken = await space.mintOperatorToken(); // for the CLI, the MCP adapter and curl
   // Auto-provision: write the token where the CLI and MCP adapter look, so local tools present a
   // real Bearer token like any production client instead of relying on the no-header shortcut.
   const base = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
@@ -79,9 +79,10 @@ async function dev(args: string[]): Promise<void> {
   if (saved.ok) console.log(`radia dev: operator credential provisioned at ${saved.path} (radia <cmd> and radia mcp use it)`);
   else console.log(`radia dev: could not write ${saved.path} (${saved.error}) — set RADIA_TOKEN to use the CLI`);
   if (authRequired) {
-    // In required mode the no-header shortcut is gone, so hand the operator a credential for curl.
-    // (The bundled console still bootstraps: GET / stays public and carries this token baked in.)
+    // In required mode the no-header shortcut is gone, so hand the operator a credential for curl
+    // and for the console, which asks for one (GET / bootstraps but carries no token itself).
     console.log(`radia dev: --auth required — operator credential: Authorization: Bearer ${operatorToken}`);
+    console.log(`radia dev: paste that token into the console's principal pill to authenticate it`);
   }
   // Shut down on a signal instead of being killed mid-flight, so the cleanup below actually runs.
   // Without this, Ctrl-C or SIGTERM leaves a dead token on disk and the next CLI call 401s with
@@ -90,7 +91,7 @@ async function dev(args: string[]): Promise<void> {
   const unlisten = onShutdown(() => stopping.abort());
 
   try {
-    const { finished } = startServer({ port, space, host, authRequired, operatorToken, signal: stopping.signal });
+    const { finished } = startServer({ port, space, host, authRequired, signal: stopping.signal });
     await finished;
   } finally {
     unlisten();

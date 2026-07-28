@@ -148,6 +148,31 @@ Deno.test("http: a definition token does not authorize coordination", async () =
   }
 });
 
+Deno.test("http: the provisioned operator token authorizes coordination, and cannot mint a run", async () => {
+  const { space, handler, close } = await newHandler({ authRequired: true });
+  try {
+    // This is the credential `radia dev` writes for the CLI and the MCP adapter. Presenting it has
+    // to WORK: a provisioned credential that 401s is worse than no credential at all, because in
+    // required mode the no-header shortcut is gone and there is nothing else to fall back to.
+    const auth = { authorization: `Bearer ${await space.mintOperatorToken()}` };
+    assertEquals((await handler(get("/v0/health", auth))).status, 200);
+    const stats = await handler(get("/v0/ops/stats", auth));
+    assertEquals(stats.status, 200, "the operator reaches the ops plane");
+    await drain(stats);
+    const put = await handler(post("/v0/records", { kind: "task", body: { tag: "a" } }, auth));
+    assertEquals(put.status, 201, "the operator may coordinate, not just observe");
+    await drain(put);
+
+    // It is not a definition token. It already authorizes everything directly, so minting from it
+    // would only convert a leaked operator credential into a durable one.
+    const minted = await handler(post("/v0/agent-runs", {}, auth));
+    assertEquals(minted.status, 401, "an operator token must not mint a run");
+    await drain(minted);
+  } finally {
+    await close();
+  }
+});
+
 Deno.test("http: a stopped run's token stops authenticating, on any instance", async () => {
   const { space, handler, close } = await newHandler();
   try {
@@ -220,6 +245,67 @@ Deno.test("http: a principal may read its OWN permissions, and only its own", as
 // ---------------------------------------------------------------------------
 // Wire shapes: a cast is a promise to the type checker, not a check.
 // ---------------------------------------------------------------------------
+
+Deno.test("http: a self-scoped grant narrows EVERY read verb, not just query", async () => {
+  // One row per verb that returns record data. Scope was applied per handler, so the verbs that
+  // forgot it — take, lineage, graph, the artifact reads — served other principals' records while
+  // `query` correctly served none. Add a row when a read verb is added; a verb with no row here is
+  // a verb nobody checked.
+  const { space, handler, close } = await newHandler();
+  try {
+    space.registerKind({ kind: "secret", indexedPaths: [] });
+    const secret = await space.put({ kind: "secret", body: { payload: "TOP-SECRET" } });
+    await space.put({ kind: "task", body: { tag: "operator-owned" } });
+
+    const { definitionToken } = await space.createAgentDefinition("agent:w", [
+      {
+        principal: "agent:w",
+        kind: "task",
+        operations: ["put", "query", "read_one", "take"],
+        scope: { createdBy: "self" },
+      },
+      { principal: "agent:w", kind: "secret", operations: ["put"], scope: { createdBy: "self" } },
+    ]);
+    const { runToken } = await space.mintRun(definitionToken);
+    const auth = { authorization: `Bearer ${runToken}` };
+
+    // Its own record, naming the operator's secret as a data parent. `put` never checks that a
+    // parent is readable, so this is the lever a scoped principal has on foreign lineage.
+    const own = await (await handler(
+      post("/v0/records", { kind: "secret", body: { mine: true }, parentIds: [secret.id] }, auth),
+    )).json();
+
+    const verbs: { verb: string; run: () => Promise<Response> }[] = [
+      { verb: "query", run: () => handler(post("/v0/records/query", { kind: "task" }, auth)) },
+      { verb: "read_one", run: () => handler(post("/v0/records/read-one", { kind: "task" }, auth)) },
+      { verb: "take", run: () => handler(post("/v0/takes", { template: { kind: "task" } }, auth)) },
+      { verb: "lineage", run: () => handler(get(`/v0/ops/records/${own.id}/lineage`, auth)) },
+      { verb: "children", run: () => handler(get(`/v0/ops/records/${secret.id}/children`, auth)) },
+      { verb: "graph", run: () => handler(get(`/v0/ops/records/${own.id}/graph`, auth)) },
+      { verb: "get record", run: () => handler(get(`/v0/ops/records/${secret.id}`, auth)) },
+    ];
+    for (const { verb, run } of verbs) {
+      const res = await run();
+      const text = await res.text();
+      assert(
+        !text.includes("TOP-SECRET") && !text.includes("operator-owned"),
+        `${verb} leaked a foreign record to a self-scoped principal: ${text.slice(0, 200)}`,
+      );
+    }
+
+    // A watch is reached by id alone, and ids are monotonic ULIDs — so the id is not the secret.
+    const { definitionToken: other } = await space.createAgentDefinition("agent:b", [
+      { principal: "agent:b", kind: "task", operations: ["query"] },
+    ]);
+    const { runToken: otherToken } = await space.mintRun(other);
+    const { watchId } = await (await handler(post("/v0/watches", { kind: "task" }, auth))).json();
+    const stolen = await handler(get(`/v0/watches/${watchId}/events`, { authorization: `Bearer ${otherToken}` }));
+    assertEquals(stolen.status, 404, "a watch must not be attachable by a principal that did not create it");
+    await drain(stolen);
+  } finally {
+    await close();
+  }
+});
 
 Deno.test("http: a wrong-typed field is a 400 at the boundary, never a 500 from inside", async () => {
   const { handler, close } = await newHandler();
