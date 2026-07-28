@@ -345,6 +345,13 @@ it could not mint. `share_artifact` closes that, returning `{url, expiresAt}` fo
 single-artifact link that carries its own authorization and points at the isolated artifact origin,
 where an HTML artifact renders rather than downloads.
 
+The URL is `<origin>/v0/a/<capability>`, about 46 characters. It was 122: the capability already
+names exactly one record, so repeating the 26-character id and spelling out `?capability=` was
+noise in a link a person is shown, pastes and sometimes reads aloud. The token is 16 random bytes
+as base64url rather than 32 as hex, which is not a compromise: it opens one object for a few
+minutes and is not an identity, so 128 bits is far past what the exposure justifies. The long form
+still works.
+
 It runs as the SESSION, not the worker, unlike `save_content`. A capability is authorized at MINT
 time against the caller's `artifact: read_one` grant, so a scoped user cannot turn an artifact it
 may not read into a link that needs no token; running it as the worker would do exactly that. That

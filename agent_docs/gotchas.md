@@ -897,6 +897,14 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   VERB. Before concluding a model "does not understand" something, check that a tool for it exists
   and that a description says when to reach for it. See `share_artifact` in
   `examples/chat/tools/save.ts`.
+- **The capability URL is the one URL a PERSON handles, so its length is a real property.** It was
+  122 characters: origin, `/v0/artifacts/`, a 26-character ULID, `?capability=`, and 64 hex. The
+  capability already names one record, so the id and the query string were redundant; `GET
+  /v0/a/{capability}` is 46. The token is now 16 bytes as base64url (22 chars) rather than 32 as
+  hex, which is not a weakening: it opens one object for a few minutes, is not an identity, and the
+  short form carries no id to substitute. Two boundaries kept: it stays under `/v0` (a root path
+  saves three characters and buys an unversioned public surface), and the long form still works,
+  since that is the one OpenAPI marks `stable`.
 - **A capability URL must come back ABSOLUTE to anything that is not the console.**
   `POST /v0/artifacts/{id}/capability` returns a RELATIVE url when no isolated artifact origin is
   running (`--artifact-port 0`). The console resolves that against its own origin; an agent hands it

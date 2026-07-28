@@ -202,10 +202,13 @@ const theirs = await admin.putArtifact(new TextEncoder().encode("not yours"), {
 });
 const share = makeShareTools(alice);
 const link = await share.share_artifact({ artifact_id: mine.id }) as { url: string; expiresAt: string };
-check("a session can share its own artifact", typeof link.url === "string" && link.url.includes(mine.id), link.url);
+check("a session can share its own artifact", typeof link.url === "string" && link.url.includes("/v0/a/"), link.url);
+// SHORT: the capability names one record, so the id and a `?capability=` spelling were ~70
+// characters of nothing in a link a person is shown, pastes and sometimes reads aloud.
+check("…as a short URL, with no redundant record id", !link.url.includes(mine.id) && link.url.length < 60, `${link.url.length} chars`);
 check("…as an ABSOLUTE url an agent can hand over", /^https?:\/\//.test(link.url), link.url);
 check("…on the isolated artifact origin, not the console's", link.url.includes(String(PORT + 1)) && !link.url.includes(`:${PORT}/`), link.url);
-check("…and the link carries its own authorization", /[?&]capability=[0-9a-f]{16,}/.test(link.url));
+check("…and the link carries its own authorization", /\/v0\/a\/[A-Za-z0-9_-]{22}$/.test(link.url), link.url);
 check("…and expires", !!Date.parse(link.expiresAt));
 
 // The link really works with no header, which is the whole point of minting one.
@@ -213,9 +216,13 @@ const opened = await fetch(link.url);
 check("the capability URL opens with no Authorization header", opened.ok, `HTTP ${opened.status}`);
 check("…and returns the bytes", (await opened.text()) === page);
 
-// The same URL without the capability is refused, so the id is not a secret and never was.
-const bare = await fetch(link.url.split("?")[0]);
-check("the id URL alone is refused", !bare.ok, `HTTP ${bare.status}`);
+// The capability IS the authorization, so altering it opens nothing. There is no id left in the
+// URL to substitute, which is the other half of why the short form is not a weaker one.
+const truncated = await fetch(link.url.slice(0, -4));
+check("a truncated capability is refused", !truncated.ok, `HTTP ${truncated.status}`);
+const idUrl = `${new URL(link.url).origin}/v0/artifacts/${mine.id}`;
+const bare = await fetch(idUrl);
+check("and the id URL with no capability is refused", !bare.ok, `HTTP ${bare.status}`);
 
 let stolen = "minted";
 try {

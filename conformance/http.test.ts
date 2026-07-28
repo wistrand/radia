@@ -127,6 +127,31 @@ Deno.test("artifact origin: renders scriptable content the main origin refuses, 
     const noCap = await bytes(get(`/v0/artifacts/${id}`, { authorization: "Bearer anything" }));
     assertEquals(noCap.status, 403, "capability or nothing");
     await drain(noCap);
+
+    // THE SHORT FORM, which is the URL anybody is actually handed. The capability already names one
+    // record, so the id in the path and the `?capability=` spelling were ~70 characters of nothing
+    // in a link a person is shown, pastes, and sometimes reads aloud.
+    const short = await bytes(get(`/v0/a/${cap}`));
+    assertEquals(short.status, 200, "the short capability form opens the same artifact");
+    assertEquals(short.headers.get("content-disposition")?.split(";")[0], "inline");
+    await drain(short);
+
+    // It is the same authorization, not a weaker one: unknown capabilities are refused, and the
+    // form carries no id to substitute, so there is nothing to tamper with except the token itself.
+    for (const bad of ["nope", "", "AAAAAAAAAAAAAAAAAAAAAA"]) {
+      const res = await bytes(get(`/v0/a/${bad}`));
+      assert(res.status === 403 || res.status === 404, `/v0/a/${bad} must not open anything (got ${res.status})`);
+      await drain(res);
+    }
+
+    // The token itself is short enough to be worth pinning: 16 bytes as base64url.
+    assertEquals(cap.length, 22, "capability should be 22 base64url characters");
+    assert(/^[A-Za-z0-9_-]{22}$/.test(cap), `capability must be URL-safe with no padding: ${cap}`);
+
+    // A capability opens ONE artifact. The short form must not become a way to reach another.
+    const other = await space.putArtifact(new TextEncoder().encode("other"), { mediaType: "text/plain" });
+    assertEquals(space.resolveDownloadCapability(cap), id, "resolves to the artifact it was minted for");
+    assert(space.resolveDownloadCapability(cap) !== other.id, "and to no other");
   } finally {
     await close();
   }

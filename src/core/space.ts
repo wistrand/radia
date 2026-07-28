@@ -1054,11 +1054,33 @@ export class Space {
    *  (an `<img src>` in the console), which is why the design specifies capabilities rather than
    *  putting a bearer token in a URL. */
   mintDownloadCapability(recordId: string): { capability: string; expiresAt: string } {
-    const capability = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
+    // 16 random bytes as base64url: 22 characters instead of the 64 hex ones this used to emit.
+    // These travel in a URL a person is shown, pastes and sometimes reads aloud, and length is the
+    // property that decides whether that is bearable. 128 bits is not a compromise here: the token
+    // opens ONE artifact for a few minutes and is not an identity, so the exposure a guess would
+    // buy is bounded in both directions. Guessing 2^128 inside that window is not a thing.
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    const capability = btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
     const expiresAt = Date.now() + this.ctx.downloadCapabilitySeconds * 1000;
     this.downloadCaps.set(capability, { recordId, expiresAt });
     this.sweepCapabilities();
     return { capability, expiresAt: new Date(expiresAt).toISOString() };
+  }
+
+  /**
+   * Which artifact does this capability open, if any? The capability already NAMES one record, so a
+   * URL carrying it needs nothing else: that is what lets the short form (`/a/<capability>`) drop
+   * both the 26-character id and the query string.
+   */
+  resolveDownloadCapability(capability: string): string | null {
+    const cap = this.downloadCaps.get(capability);
+    if (!cap) return null;
+    if (cap.expiresAt <= Date.now()) {
+      this.downloadCaps.delete(capability);
+      return null;
+    }
+    return cap.recordId;
   }
 
   /** Does this capability open this artifact, right now? Scoped to one record on purpose: a

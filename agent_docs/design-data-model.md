@@ -176,7 +176,7 @@ flowchart LR
     RT -->|commits| AR["artifact record<br/>{digest, mediaType, size}"]
     AR -->|"routes, taints, has lineage,<br/>is grant-gated, like any record"| SP[(space)]
     C[consumer] -->|"GET /v0/artifacts/{record id}"| RT
-    BR["browser &lt;img&gt;<br/>cannot send a header"] -->|"?capability=… (minutes, one artifact)"| RT
+    BR["browser &lt;img&gt;<br/>cannot send a header"] -->|"/v0/a/{capability} (minutes, one artifact)"| RT
     RT -.->|"AES-GCM under a per-blob DEK,<br/>DEK wrapped by the space KEK"| BS
 ```
 
@@ -207,6 +207,17 @@ artifact, expires in minutes, lives in memory, and is minted only for a caller a
 to read that artifact, making it a delegation of a read rather than a credential. It is checked
 before token resolution (there is deliberately no token) and opens nothing else: `/v0/records` and
 `/v0/ops/*` still 401 with a capability attached under `--auth required`.
+
+**The URL is addressed by the capability alone: `GET /v0/a/{capability}`.** A capability names
+exactly one record, so the id in the path was redundant, and the long form
+(`/v0/artifacts/{id}?capability=…`) spent about 70 characters on nothing. That matters because this
+is the one URL in the system a PERSON handles: it is shown in a chat reply, pasted, and occasionally
+read aloud. The token is 16 random bytes as base64url (22 characters) rather than 32 as hex. The
+shorter token is not a security compromise: it opens one object for a few minutes and is not an
+identity, so 128 bits is well past what that exposure justifies, and there is no id left in the URL
+to tamper with. `/v0/a/…` stays under the versioned prefix; a root-level `/a/…` would save three
+characters and buy an unversioned public surface with no evolution story. The long form still works
+and remains the documented `stable` one.
 
 **Only raster images, audio and video are served `inline`; everything else downloads.** Artifact
 bytes are attacker-supplied and served from the space's OWN origin (the origin whose console page

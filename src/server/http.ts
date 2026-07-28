@@ -99,6 +99,16 @@ export function startServer(opts: ServerOptions): { finished: Promise<void> } {
 export function makeArtifactHandler(space: Space) {
   return async function handler(req: Request): Promise<Response> {
     const url = new URL(req.url);
+    // SHORT FORM, and the one anybody is actually given: `/a/<capability>`. The capability already
+    // names exactly one record, so repeating the id and spelling out `?capability=` added ~70
+    // characters to a URL a person is shown, pastes, and occasionally reads aloud. The long form
+    // below still works; this is the one that gets handed over.
+    if (req.method === "GET" && url.pathname.startsWith(SHORT_ARTIFACT_PREFIX)) {
+      const cap = decodeURIComponent(url.pathname.slice(SHORT_ARTIFACT_PREFIX.length));
+      const id = space.resolveDownloadCapability(cap);
+      if (!id) return capabilityRefused(space);
+      return await handleGetArtifact(space, id, null, true);
+    }
     const capability = url.searchParams.get("capability");
     if (req.method !== "GET" || !url.pathname.startsWith("/v0/artifacts/")) {
       return problem(404, "not_found", "this origin serves artifact bytes by capability URL only");
@@ -114,6 +124,23 @@ export function makeArtifactHandler(space: Space) {
     }
     return await handleGetArtifact(space, id, null, true);
   };
+}
+
+/** The short capability route, on both origins. Terse because it is the visible half of the URL
+ *  length problem, but still under `/v0`: a root-level path would save three characters and buy an
+ *  unversioned public surface with no evolution story. */
+export const SHORT_ARTIFACT_PREFIX = "/v0/a/";
+
+/** One wording for a capability that is missing, wrong or lapsed, so the two origins cannot drift
+ *  into explaining the same failure differently. */
+function capabilityRefused(space: Space): Response {
+  return problem(
+    403,
+    "forbidden",
+    `this capability is missing, wrong or expired. Capabilities last ` +
+      `${space.downloadCapabilitySeconds}s and do not survive a restart; mint a fresh one. The ` +
+      `artifact id is stable, so nothing was lost.`,
+  );
 }
 
 type Auth = { principal: string } | { error: string; detail: string };
@@ -178,6 +205,14 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     // A browser cannot put an Authorization header on `<img src>`, so a short-lived, single-artifact
     // capability stands in for the read grant its holder already had. Checked before token
     // resolution because there is deliberately no token to resolve.
+    // The short capability form, here too: with `--artifact-port 0` there is no isolated origin, so
+    // this is where the link points.
+    if (req.method === "GET" && url.pathname.startsWith(SHORT_ARTIFACT_PREFIX)) {
+      const cap = decodeURIComponent(url.pathname.slice(SHORT_ARTIFACT_PREFIX.length));
+      const id = space.resolveDownloadCapability(cap);
+      if (!id) return capabilityRefused(space);
+      return await handleGetArtifact(space, id, null);
+    }
     const capability = url.searchParams.get("capability");
     if (req.method === "GET" && capability && url.pathname.startsWith("/v0/artifacts/")) {
       const id = decodeURIComponent(url.pathname.slice("/v0/artifacts/".length));

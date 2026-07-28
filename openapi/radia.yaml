@@ -359,6 +359,29 @@ paths:
               schema: { type: string, format: binary }
         "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+  /a/{capability}:
+    get:
+      operationId: getArtifactByCapability
+      summary: An artifact's bytes, by capability alone (the short form)
+      description: |
+        The same bytes as `GET /artifacts/{id}?capability=…`, addressed by the capability only. A
+        capability names exactly one record, so the id in the path was redundant; this form exists
+        because the URL is handed to a person, who pastes it and sometimes reads it aloud, and the
+        long form spent ~70 characters on nothing. No Authorization header: the capability IS the
+        authorization, and none is accepted here. When an isolated artifact origin is configured
+        this is the origin the minted URL points at, so scriptable media renders somewhere that
+        shares nothing with the console.
+      x-stability: experimental
+      x-phase: "M1"
+      parameters:
+        - { name: capability, in: path, required: true, schema: { type: string }, description: "The capability returned by POST /artifacts/{id}/capability." }
+      responses:
+        "200":
+          description: the bytes
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "403": { $ref: "#/components/responses/Problem" }
   /artifacts/{id}/capability:
     post:
       operationId: artifactCapability
@@ -367,6 +390,8 @@ paths:
         For contexts that cannot attach an Authorization header, such as an `<img src>` in a browser. The
         capability is scoped to a single artifact, expires in minutes, and is minted only for a
         caller already authorized to read it. It is a delegation of that read, not a credential.
+        Returns 16 random bytes as base64url (22 characters): the token opens one object for a few
+        minutes and is not an identity, so its length is chosen for the URL a person has to handle.
       x-stability: stable
       x-phase: "M1"
       parameters:
@@ -382,7 +407,7 @@ paths:
                 properties:
                   capability: { type: string }
                   expiresAt: { type: string, format: date-time }
-                  url: { type: string, description: "space-relative download URL carrying the capability" }
+                  url: { type: string, description: "ready-to-open download URL: the short `/v0/a/{capability}` form, absolute against the isolated artifact origin when one is configured, otherwise space-relative" }
         "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
   /ops/remediate:

@@ -2,6 +2,9 @@
 //
 //   POST /v0/artifacts                     raw body -> blob + `artifact` record (201 {id,digest,size})
 //   GET  /v0/artifacts/{id}                the bytes (Bearer, or ?capability=)
+//   GET  /v0/a/{capability}                the same bytes by capability alone: the SHORT form, and
+//                                          the one handed to a person. The capability names exactly
+//                                          one record, so the id in the path was redundant.
 //   POST /v0/artifacts/{id}/capability     mint a short-lived download capability for one artifact
 //
 // Authorization is the ordinary record authorization: `put`/`read_one` grants on the reserved
@@ -195,10 +198,11 @@ export async function handleMintCapability(space: Space, recordId: string, princ
       JSON.stringify({
         capability,
         expiresAt,
-        // Against the isolated origin when one is running, so opening the URL renders the bytes
-        // somewhere that shares nothing with the console. Falls back to a main-origin relative URL,
-        // where scriptable types still download.
-        url: `${space.artifactOrigin}/v0/artifacts/${encodeURIComponent(recordId)}?capability=${capability}`,
+        // The SHORT form: the capability already names one record, so the id and the query string
+        // were ~70 characters of nothing. Against the isolated origin when one is running, so
+        // opening the URL renders the bytes somewhere that shares nothing with the console; falls
+        // back to a main-origin relative URL, where scriptable types still download.
+        url: `${space.artifactOrigin}/v0/a/${capability}`,
       }),
       { status: 201, headers: { "content-type": "application/json" } },
     );
