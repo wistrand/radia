@@ -373,6 +373,88 @@ Deno.test("http: an unbarred grant beside a barred one lifts the barrier (grants
   }
 });
 
+Deno.test("http: explain names the traps a correct-looking query walked into", async () => {
+  // Every note here answers a case where the request SUCCEEDED, so an error cannot carry the
+  // warning and a doc arrives too late. The notes must never change the result.
+  const { space, handler, close } = await newHandler();
+  try {
+    space.registerKind({ kind: "note", indexedPaths: [{ path: "topic", type: "keyword" }], claimable: false });
+    for (let i = 0; i < 3; i++) await space.put({ kind: "note", body: { topic: "t" } });
+
+    const full = await (await handler(post("/v0/records/query", { kind: "note", limit: 2, explain: true }))).json();
+    assertEquals(full.records.length, 2);
+    const joined = (full.explain as string[]).join(" | ");
+    assert(joined.includes("PAGE"), `a full page must be called a page: ${joined}`);
+    assert(joined.includes("OLDEST"), `the default order must be named: ${joined}`);
+    assert(joined.includes("claimable:false"), `reference kinds must be named: ${joined}`);
+
+    // An undeclared kind can only ever return nothing, and says which kinds exist.
+    const missing = await (await handler(post("/v0/records/query", { kind: "nope", explain: true }))).json();
+    assert((missing.explain as string[]).join(" ").includes("no kind 'nope' is declared"));
+    assert((missing.explain as string[]).join(" ").includes("note"), "it lists what IS declared");
+
+    // Without the flag the response is byte-identical to before.
+    const plain = await (await handler(post("/v0/records/query", { kind: "note", limit: 2 }))).json();
+    assertEquals(plain.explain, undefined, "explain is opt-in and never changes the result");
+    assertEquals(plain.records.length, 2);
+  } finally {
+    await close();
+  }
+});
+
+Deno.test("http: the digest orients an investigator, and scopes the part that is cross-principal", async () => {
+  const { space, handler, close } = await newHandler();
+  try {
+    space.registerKind({ kind: "note", indexedPaths: [{ path: "topic", type: "keyword" }], claimable: false });
+    await space.put({ kind: "note", body: { topic: "t" } });
+
+    const d = await (await handler(get("/v0/ops/digest"))).json();
+    assertEquals(d.api, "v0");
+    assertEquals(d.complete, true, "a digest that truncated would be worse than none");
+    assert(d.kinds.some((k: { kind: string; claimable: boolean }) => k.kind === "note" && k.claimable === false));
+    assert(d.kinds.some((k: { kind: string; reserved: boolean }) => k.kind === "grant" && k.reserved), "reserved kinds are named");
+    assert(d.counts.some((c: { kind: string }) => c.kind === "note"), "counts come from the space, not a guess");
+
+    // The interest list is the routing table, so a scoped caller sees only its own.
+    const { definitionToken } = await space.createAgentDefinition("agent:w", [
+      { principal: "agent:w", kind: "note", operations: ["query"], scope: { createdBy: "self" } },
+      { principal: "agent:w", kind: "interest", operations: ["put", "query"] },
+    ]);
+    const { run, runToken } = await space.mintRun(definitionToken);
+    await space.put({ kind: "interest", body: { kind: "note" } }, undefined, run);
+    await space.put({ kind: "interest", body: { kind: "note", match: { topic: "other" } } });
+
+    const operator = await (await handler(get("/v0/ops/digest"))).json();
+    assertEquals(operator.interests.length, 2, "the operator sees the whole routing table");
+    const scoped = await (await handler(get("/v0/ops/digest", { authorization: `Bearer ${runToken}` }))).json();
+    assertEquals(scoped.interests.length, 1, "a scoped caller sees only its own interest");
+    assertEquals(scoped.interests[0].run, run);
+  } finally {
+    await close();
+  }
+});
+
+Deno.test("http: thread returns the whole story in causal order, from the root down", async () => {
+  const { space, handler, close } = await newHandler();
+  try {
+    // job -> task -> result, asked from the MIDDLE of the chain: the verb has to walk up to the
+    // root and back down, which is the composition callers get wrong by walking one direction.
+    const job = (await space.put({ kind: "task", body: { tag: "job" } })).id;
+    const task = (await space.put({ kind: "task", body: { tag: "task" }, parentIds: [job] })).id;
+    const result = (await space.put({ kind: "task", body: { tag: "result" }, parentIds: [task] })).id;
+
+    const t = await (await handler(get(`/v0/ops/records/${task}/thread`))).json();
+    assertEquals(t.root, job, "the story starts at the lineage root, not at the record asked for");
+    assertEquals(t.records.map((r: { id: string }) => r.id), [job, task, result], "causal order");
+    assertEquals(t.truncated, false);
+    assertEquals(t.note, undefined);
+
+    assertEquals((await handler(get("/v0/ops/records/01000000000000000000000000/thread"))).status, 404);
+  } finally {
+    await close();
+  }
+});
+
 Deno.test("http: a wrong-typed field is a 400 at the boundary, never a 500 from inside", async () => {
   const { handler, close } = await newHandler();
   try {

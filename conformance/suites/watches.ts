@@ -110,4 +110,81 @@ export const watchSuites: Suite[] = [
       assert((await eventsOf(space)).length > before);
     },
   },
+  {
+    name: "interest: a dry run reports who would receive a record, before it is written",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const { definitionToken } = await space.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "interest", operations: ["put", "query"] },
+      ]);
+      const { run, runToken: _t } = await space.mintRun(definitionToken);
+
+      // The run declares what it listens for. Authorship is server-assigned, so the body never
+      // claims which run it belongs to.
+      await space.put({ kind: "interest", body: { kind: "task", match: { tag: "x" } } }, undefined, run);
+
+      const hit = await space.matchingInterests("task", { tag: "x" });
+      assertEquals(hit.interests.length, 1, "the interest matches a record it would claim");
+      assertEquals(hit.interests[0].run, run);
+      assertEquals(hit.interests[0].agent, "agent:w", "the agent is resolved, not taken from the body");
+
+      // The candidate need not exist: that is the point of asking before the write.
+      const miss = await space.matchingInterests("task", { tag: "y" });
+      assertEquals(miss.interests.length, 0, "a record outside the pattern reaches nobody");
+      assertEquals((await space.matchingInterests("other", { tag: "x" })).interests.length, 0, "wrong kind");
+    },
+  },
+  {
+    name: "interest: liveness comes from the RUN, so a stopped worker stops appearing",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const { definitionToken } = await space.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "interest", operations: ["put", "query"] },
+      ]);
+      const { run } = await space.mintRun(definitionToken);
+      await space.put({ kind: "interest", body: { kind: "task" } }, undefined, run);
+      assertEquals((await space.matchingInterests("task", {})).interests.length, 1);
+
+      // A crashed worker never retires its interest, so the record outlives the process. Presence
+      // must never be read as "someone is listening"; the run is the fact.
+      await space.stopRun(run);
+      assertEquals(
+        (await space.matchingInterests("task", {})).interests.length,
+        0,
+        "a stopped run's interest is dead even though the record is still there",
+      );
+    },
+  },
+  {
+    name: "interest: retiring withdraws exactly one pattern and leaves the others",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const { definitionToken } = await space.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "interest", operations: ["put", "query"] },
+      ]);
+      const { run } = await space.mintRun(definitionToken);
+      await space.put({ kind: "interest", body: { kind: "task", match: { tag: "x" } } }, undefined, run);
+      await space.put({ kind: "interest", body: { kind: "task", match: { tag: "y" } } }, undefined, run);
+      assertEquals((await space.matchingInterests("task", { tag: "x" })).interests.length, 1);
+      assertEquals((await space.matchingInterests("task", { tag: "y" })).interests.length, 1);
+
+      // One entry per (author, kind, pattern), so a retirement targets one of them.
+      await space.put({ kind: "interest", body: { kind: "task", match: { tag: "x" }, retired: true } }, undefined, run);
+      assertEquals((await space.matchingInterests("task", { tag: "x" })).interests.length, 0, "withdrawn");
+      assertEquals((await space.matchingInterests("task", { tag: "y" })).interests.length, 1, "the sibling stands");
+    },
+  },
+  {
+    name: "interest: an unpatterned interest takes everything of its kind",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const { definitionToken } = await space.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "interest", operations: ["put", "query"] },
+      ]);
+      const { run } = await space.mintRun(definitionToken);
+      await space.put({ kind: "interest", body: { kind: "task" } }, undefined, run);
+      assertEquals((await space.matchingInterests("task", { anything: 1 })).interests.length, 1);
+      assertEquals((await space.matchingInterests("task", {})).interests.length, 1);
+    },
+  },
 ];

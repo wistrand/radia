@@ -26,6 +26,27 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
   const log = o.log ?? (() => {});
   const kinds = [...new Set(o.patterns.map((t) => t.kind))];
 
+  // Declare what this run listens for, so the prospective topology is queryable. Best effort: a
+  // worker with no grant to write `interest` records still works, it is just invisible to the
+  // routing view. Never fail the loop over it.
+  for (const pattern of o.patterns) {
+    try {
+      await client.publishInterest(pattern);
+    } catch (e) {
+      log(`[${o.name}] could not publish interest in '${pattern.kind}': ${e}`);
+      break; // one failure means no grant; stop trying for the rest
+    }
+  }
+  // Retire on a clean stop. A crash cannot run this, which is why a reader treats an interest as
+  // live only while its RUN is: the record is a hint, the run is the fact.
+  const retireInterests = async () => {
+    for (const pattern of o.patterns) {
+      try {
+        await client.publishInterest(pattern, { retired: true });
+      } catch { /* shutting down: nothing useful to do */ }
+    }
+  };
+
   // Background watchers: each matching-kind wakeup resolves a pending idle wait.
   let wake: (() => void) | null = null;
   const doWake = () => {
@@ -97,6 +118,7 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
     }
   }
 
+  await retireInterests();
   await Promise.allSettled(watchers);
 }
 

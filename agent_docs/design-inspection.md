@@ -4,8 +4,11 @@ Why inspection is a distinct problem in a content-routed substrate, who needs it
 each mechanism has to take. Sequence and status live in
 [plan-inspection.md](plan-inspection.md); this file holds the reasoning that outlives the backlog.
 
-> **M1 status: none of this is built.** The console's Feed, Graph and Space views exist and work;
-> everything below is what they cannot answer. Claims about current behavior were verified against
+> **M1 status: built so far** are the interest registry and dry-run matcher (`INTEREST` in
+> `src/core/kinds.ts`, `Space.matchingInterests`, `POST /v0/ops/dry-run`, published automatically by
+> `agentLoop`), and the three inspector affordances: `explain` on query, `GET /v0/ops/digest`, and
+> `GET /v0/ops/records/{id}/thread`. Everything else below is unbuilt. The console's Feed, Graph and Space views exist
+> and work; the rest is what they cannot answer. Claims about current behavior were verified against
 > `src/` (see "Verified ground" at the end), which is how one prerequisite in an earlier draft was
 > found to be imaginary.
 
@@ -63,9 +66,20 @@ pruned. The chat's `capability` records solve this at application level, for one
 So the console can show every past hop and cannot draw the prospective topology. That single absence
 is why the newcomer's question has no answer.
 
-**Claim interest should be a record.** A reserved `interest` kind (or fields on `agent_run`) carrying
-the patterns a run is actively claiming, content-keyed like `capability` and `kind_def`, withdrawn by
-a `retired: true` successor. `agentLoop` publishes it, so no agent author does anything.
+**Claim interest is a record.** The reserved `interest` kind carries `{kind, match?}`: what a run is
+listening for, content-keyed so republishing writes nothing, withdrawn by a `retired: true`
+successor. `agentLoop` publishes and retires it, so no agent author does anything.
+
+Three properties are what make it safe rather than merely convenient:
+
+- **Descriptive, never authorization.** Publishing an interest grants nothing; the grant records
+  still decide what may be claimed. That is why the kind is not write-protected: a run publishes its
+  own. The author is the server-assigned `created_by`, so the body never claims whose it is.
+- **Liveness comes from the RUN.** A clean shutdown retires an interest, but a crash cannot, so
+  `matchingInterests` drops any interest whose run has stopped. Never read the presence of the
+  record as proof that anyone is listening.
+- **One entry per (author, kind, pattern).** A worker listening for two patterns can withdraw one
+  and keep the other.
 
 That one change unlocks a cascade, which is the reason it ranks above features that look bigger:
 
@@ -88,9 +102,14 @@ many registered patterns against one candidate body. The reusable pieces are `co
 `matchesRecord`, not `matchesEvent`, which is watch-specific and only fires on
 `state === "available"`.
 
-It is a linear pass over the interest registry, O(registered interests). That is fine while
-interests are per-worker. Say so plainly wherever it is exposed, so nobody assumes it holds if
-interests ever become per-record. It is not the deferred inverted-index work.
+It is a linear pass over the interests targeting that kind, O(interests on the kind). That is fine
+while interests are per-worker. Never assume it holds if interests ever become per-record; it is not
+the deferred inverted-index work.
+
+`POST /v0/ops/dry-run` is operator-gated and deliberately absent from the self-scoped read
+allowlist: it reports what every principal is listening for, which is the routing table rather than
+a self-scoped fact. A principal reading its OWN interests uses an ordinary self-scoped query on the
+kind.
 
 ### The graph's ceiling is fan-out, not scan cost
 
@@ -158,16 +177,19 @@ Freeform queries walk into every documented trap: oldest-first default limits, l
 projections, and bounded reads treated as populations. Prose does not help, because the model reads
 the response, not the doc. The fix is to put the answer where the mistake happens.
 
-- **`explain` on a query.** Patterns are data, so the server can say "path not declared on this kind",
-  "no `orderBy`, so this is the oldest N", "results hit the limit, so this is a page and not a
-  population". This extends a convention that already shipped: query responses carry `scope` with
-  `narrowedBy`, and the events endpoint carries `withheldNote`.
-- **A space digest.** One grant-gated read returning what an investigator needs to orient: active
-  kinds with indexed paths, capabilities, models, the interest registry, a grant summary, stats. It
-  becomes the system prompt for any inspection agent, generated from records so it cannot drift.
-- **High-level verbs for the compositions models get wrong**, such as `thread(recordId)` for the
-  causally ordered story around a lineage root, and registry reads exposed as reads with the
-  projection applied server-side.
+- **`explain` on a query.** Opt-in, and it never changes the result. Every note answers a case where
+  the request SUCCEEDED, which is why an error cannot carry the warning: a full page mistaken for a
+  population, a default order that returns the OLDEST rows, a `claimable:false` kind whose records
+  sit available by design, an undeclared kind, a match on an unindexed path. It extends a convention
+  that already shipped, since query responses carry `scope` with `narrowedBy`.
+- **A space digest.** One read returning kinds with their indexed paths and `claimable` flag, record
+  counts, the interest registry, and the caller's own permissions. Generated from records so it
+  cannot drift. Every registry read behind it pages to exhaustion and reports `complete: false`,
+  because the artifact an inspector trusts most is the worst place to return a prefix. A scoped
+  caller sees only its own interests: the full list is the routing table.
+- **High-level verbs for the compositions models get wrong.** `thread(recordId)` walks UP to the
+  lineage root and back down, which is the part callers get wrong by walking one direction, and it
+  reports `truncated` rather than letting a partial story read as a whole one.
 - **Saved lenses as records.** A useful investigation query, saved with its description, discovered
   like a capability, retired by successor. The space accumulates its own inspection vocabulary and
   every investigator inherits every prior investigator's good questions.

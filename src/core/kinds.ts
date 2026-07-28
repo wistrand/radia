@@ -35,6 +35,23 @@ export const AGENT_RUN = "agent_run";
  *  is grant-gated like anything else; only the payload lives outside. */
 export const ARTIFACT = "artifact";
 
+/**
+ * Reserved kind: what a run is currently listening for (body `{kind, match?}`).
+ *
+ * Standing interest is otherwise invisible to the substrate. A worker declares it by polling `take`
+ * with a pattern the space never retains, so the space can show every past hop and cannot say who
+ * would receive the next record. That is the whole reason "where is the workflow?" has no answer.
+ *
+ * DESCRIPTIVE, never authorization. Publishing an interest in a kind grants nothing; the grant
+ * records still decide. So this is deliberately NOT write-protected: a run publishes its own, and
+ * the author is the server-assigned `created_by` rather than anything the body claims.
+ *
+ * LIVENESS COMES FROM THE RUN, not from this record. A clean shutdown retires the interest, but a
+ * crashed worker never gets to, so a reader must treat an interest whose run has stopped or expired
+ * as dead. Never use the presence of an interest record as proof that anyone is listening.
+ */
+export const INTEREST = "interest";
+
 /** Reserved kinds only a human/supervisor principal may write directly (assigned, never
  *  self-declared). Runs/definitions are also written internally by the bootstrap endpoints. */
 export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN]);
@@ -220,7 +237,7 @@ export function validateArtifactFields(fields: unknown): void {
 
 /** Kinds defined in CODE, not as `kind_def` records. That is why they never appear in
  *  `listKinds()`, which reads those records. Anything asking "does this kind exist" must consider these too. */
-export const RESERVED_KINDS = [KIND_DEF, GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, ARTIFACT];
+export const RESERVED_KINDS = [KIND_DEF, GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, ARTIFACT, INTEREST];
 
 export const META_RESERVED: KindDef[] = [
   META_KIND_DEF,
@@ -238,6 +255,10 @@ export const META_RESERVED: KindDef[] = [
     indexedPaths: [{ path: "run", type: "keyword" }, { path: "agent", type: "keyword" }, { path: "tokenHash", type: "keyword" }],
     claimable: false,
   },
+  // Indexed on `kind`: the dry-run matcher asks "which interests target the kind of this record",
+  // so that is the only lookup on the path. The pattern itself stays an opaque body field, since
+  // nothing queries by it; it is compiled and evaluated, never matched against.
+  { kind: INTEREST, indexedPaths: [{ path: "kind", type: "keyword" }], claimable: false },
   // Indexed on digest (find every record referencing the same bytes) and mediaType (route by what
   // it is: an image worker claims `{mediaType: "image/png"}` without a routing table).
   {

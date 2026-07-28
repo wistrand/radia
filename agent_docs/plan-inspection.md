@@ -1,6 +1,6 @@
 # Plan: inspecting emergent flows
 
-> Status: backlog, nothing scheduled. Nothing here is built.
+> Status: backlog. Items 1, 3 and part of 4 are built (see design-inspection.md); the rest is not.
 
 Sequence, status and dependencies. The reasoning lives in
 [design-inspection.md](design-inspection.md): why inspection is a distinct problem in a
@@ -30,12 +30,12 @@ resequencing: shipping the top three serves agents and newcomers and does nothin
 
 | # | Item                                                    | For       | Why here                                                                 |
 |---|---------------------------------------------------------|-----------|--------------------------------------------------------------------------|
-| 1 | `explain` on query, evidence-linked narrative           | Agent     | Nearly free; extends a convention that already shipped                    |
+| 1 | `explain` on query, evidence-linked narrative           | Agent     | **`explain` DONE.** Evidence-linked narrative is a console concern, still open |
 | 2 | Flows tab                                               | Newcomer  | Deepest payoff, and its blocker turned out to be imaginary                 |
-| 3 | Interest-as-records, dry-run matcher                    | All three | Biggest unlock: routing diagram, precise diagnostics, "who gets this"      |
-| 4 | Thread grouping, `thread()`, shape-aware collapsing     | Agent     | Cheap: lineage traversal is already indexed                               |
+| 3 | Interest-as-records, dry-run matcher                    | All three | **DONE.** Unblocks the routing diagram and precise starvation diagnostics, neither of which is built |
+| 4 | Thread grouping, `thread()`, shape-aware collapsing     | Agent     | **`thread()` DONE.** Feed grouping and collapsing are console work, still open |
 | 5 | Waterfall, OTLP export                                  | Newcomer  | Adoption work: meets engineers inside tools they already trust             |
-| 6 | Space digest                                            | Agent     | High value, but must page to exhaustion; settle registry discipline first  |
+| 6 | Space digest                                            | Agent     | **DONE.** Pages to exhaustion and reports `complete: false`                |
 | 7 | "Who can see this record"                               | Operator  | The read-side twin of the dry-run matcher; same machinery                  |
 | 8 | Replay with an explicit horizon                         | Operator  | A dividend already earned; the window closes when retention GC lands       |
 | 9 | Taint provenance, then the taint overlay                | Operator  | Substrate change, shared with the containment application                  |

@@ -30,6 +30,8 @@ import { compilePattern, matchesRecord, type Pattern } from "./matching.ts";
 import {
   AGENT_DEFINITION,
   AGENT_RUN,
+  INTEREST,
+  RESERVED_KINDS,
   ARTIFACT,
   type ArtifactDef,
   GRANT,
@@ -1128,6 +1130,165 @@ export class Space {
     };
   }
 
+  /**
+   * Why a query returned what it did, for a caller that cannot see the traps.
+   *
+   * Every note here answers a documented trap that a correct-looking query walks into silently:
+   * a full page read as a population, a default order that returns the OLDEST rows, a reference
+   * kind whose records sit available forever by design, a kind nobody has declared. These are all
+   * cases where the request SUCCEEDED, so an error cannot carry the warning and prose in a doc
+   * arrives too late. Attach it to the answer instead.
+   *
+   * Never make this change the result. It annotates, so a caller that ignores it is exactly as
+   * correct as before.
+   */
+  explainQuery(
+    pattern: Pattern,
+    returned: number,
+    limit: number,
+    page?: { after?: string; dir?: "asc" | "desc" },
+  ): string[] {
+    const notes: string[] = [];
+    const def = this.kinds.get(pattern.kind);
+    if (!def) {
+      notes.push(
+        `no kind '${pattern.kind}' is declared, so this can only ever return nothing. Declared: ` +
+          `${this.kinds.list().map((k) => k.kind).sort().join(", ") || "(none)"}.`,
+      );
+    }
+    if (returned >= limit) {
+      notes.push(
+        `results filled the limit (${limit}), so this is a PAGE and not a population. Page on with ` +
+          `'after' set to the last id; never treat a full page as the total.`,
+      );
+    }
+    if (!pattern.orderBy && !page?.dir) {
+      notes.push(
+        "no orderBy and no dir, so records come back OLDEST first (ascending by id). A registry " +
+          "read wants dir='desc', or the newest declaration falls off the end.",
+      );
+    }
+    if (def && def.claimable === false) {
+      notes.push(
+        `kind '${pattern.kind}' is claimable:false (reference data), so records sitting 'available' ` +
+          "forever is normal rather than stuck work.",
+      );
+    }
+    if (def && pattern.match) {
+      const declared = new Set(def.indexedPaths.map((p) => p.path));
+      const unindexed = Object.keys(pattern.match).filter((k) => !k.startsWith("$") && !declared.has(k));
+      if (unindexed.length > 0) {
+        notes.push(
+          `match names ${unindexed.join(", ")}, which ${unindexed.length === 1 ? "is" : "are"} not a ` +
+            `declared indexed path of '${pattern.kind}' (declared: ${[...declared].sort().join(", ") || "(none)"}).`,
+        );
+      }
+    }
+    return notes;
+  }
+
+  /**
+   * What a space contains, in one read: the orientation an investigator needs before asking
+   * anything else.
+   *
+   * Generated from records, never hand-written, so it cannot drift from the space it describes.
+   * This is the artifact an inspection agent trusts most, which makes it the worst possible place
+   * to return a plausible prefix: every registry read here pages to exhaustion and the result says
+   * `complete: false` rather than quietly truncating.
+   */
+  async digest(principal: string, scope?: { createdBy?: string[] } | null): Promise<{
+    api: string;
+    kinds: { kind: string; indexedPaths: string[]; sortablePaths?: string[]; claimable: boolean; reserved: boolean }[];
+    counts: { kind: string; state: string; count: number }[];
+    interests: { kind: string; run: string; agent?: string; match?: Record<string, unknown> }[];
+    permissions: EffectivePermissions;
+    complete: boolean;
+  }> {
+    const reserved = new Set(RESERVED_KINDS);
+    const kinds = this.kinds.list()
+      .map((d) => ({
+        kind: d.kind,
+        indexedPaths: d.indexedPaths.map((p) => p.path),
+        ...(d.sortablePaths ? { sortablePaths: d.sortablePaths } : {}),
+        claimable: d.claimable !== false,
+        reserved: reserved.has(d.kind),
+      }))
+      .sort((a, b) => (a.kind < b.kind ? -1 : 1));
+
+    // The prospective half of the topology. Reported per kind so "who is listening for X" is
+    // answerable without a second call; liveness is still the run's, as everywhere else.
+    const interests: { kind: string; run: string; agent?: string; match?: Record<string, unknown> }[] = [];
+    let complete = true;
+    for (const k of kinds) {
+      const found = await this.matchingInterests(k.kind); // listing mode: no candidate body
+      if (!found.complete) complete = false;
+      for (const i of found.interests) {
+        // Interests are the one cross-principal part of the digest: the full set IS the routing
+        // table, which `POST /v0/ops/dry-run` keeps operator-only. A scoped caller sees its own,
+        // matching the rule that any principal may read its own authorization and no one else's.
+        if (scope?.createdBy && !scope.createdBy.includes(i.run)) continue;
+        interests.push({ kind: k.kind, ...i });
+      }
+    }
+    return {
+      api: "v0",
+      kinds,
+      counts: await this.stats(),
+      interests,
+      permissions: await this.effectivePermissions(principal),
+      complete,
+    };
+  }
+
+  /**
+   * The whole causal story around one record, in the order it happened.
+   *
+   * Reconstructing this by hand means walking `parent_ids` up to a root, then children down, then
+   * sorting, and getting the paging right at every step. Models get it wrong in a specific way:
+   * they walk one direction, treat a bounded page as the whole fan-out, and report a partial story
+   * with the same confidence as a complete one. It is a composition of reads the ops plane already
+   * has, which is exactly what that plane is for.
+   *
+   * Ordered by id, which is creation order (ULIDs are monotonic), so the sequence IS the causality
+   * for anything written in one process.
+   */
+  async thread(
+    recordId: string,
+    opts: { maxNodes?: number; createdBy?: string[] } = {},
+  ): Promise<{ root: string; records: RadiaRecord[]; truncated: boolean }> {
+    const max = opts.maxNodes ?? 200;
+    const lineage = await this.getLineage(recordId, max, opts.createdBy);
+    if (lineage.length === 0) return { root: recordId, records: [], truncated: false };
+    // The deepest ancestor reachable is the root of the story. Ties break on id so the answer is
+    // deterministic when a record has several roots at the same depth.
+    const deepest = Math.max(...lineage.map((l) => l.depth));
+    const root = lineage.filter((l) => l.depth === deepest).map((l) => l.record.id).sort()[0];
+
+    const seen = new Map<string, RadiaRecord>();
+    for (const l of lineage) seen.set(l.record.id, l.record);
+    let truncated = false;
+    // Traversal is tracked SEPARATELY from the result set. The ancestors are already in `seen`
+    // from the lineage walk, so skipping anything seen would stop the walk at the record asked
+    // about and silently drop everything below it.
+    const walked = new Set<string>();
+    const queue = [root];
+    while (queue.length > 0 && seen.size < max) {
+      const id = queue.shift()!;
+      if (walked.has(id)) continue;
+      walked.add(id);
+      const children = await this.getChildren(id, GRAPH_FANOUT);
+      if (children.length >= GRAPH_FANOUT) truncated = true;
+      for (const c of children) {
+        if (!this.authorAllows(opts.createdBy, c)) continue;
+        if (!seen.has(c.id)) seen.set(c.id, c);
+        if (!walked.has(c.id)) queue.push(c.id);
+      }
+    }
+    if (queue.length > 0) truncated = true;
+    const records = [...seen.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    return { root, records, truncated };
+  }
+
   /** Registered kind declarations (dev UI). */
   listKinds(): KindDef[] {
     return this.kinds.list();
@@ -1415,6 +1576,64 @@ export class Space {
     if (!watch) return undefined;
     if (watch.owner !== principal && !this.isPrivileged(principal)) return undefined;
     return watch;
+  }
+
+  /**
+   * Which registered interests would receive a record of `kind` with this `body`?
+   *
+   * This runs the matching direction BACKWARDS. Normal operation evaluates one pattern against many
+   * records; this evaluates many registered patterns against one candidate body, so it is a linear
+   * pass over the interests targeting that kind, O(interests on the kind). That is fine while
+   * interests are per-worker. It is not the deferred inverted-index work, and it will not hold if
+   * interests ever become per-record.
+   *
+   * `body` need not be a record that exists. Answering before the write is the point: it turns
+   * "who would receive this?" into a question you can ask of a draft.
+   *
+   * An interest whose run is no longer live is dropped. A clean shutdown retires its interests, but
+   * a crashed worker cannot, so presence of the record is never taken as proof anyone is listening.
+   */
+  async matchingInterests(
+    kind: string,
+    body?: unknown,
+  ): Promise<{ interests: { run: string; agent?: string; match?: Record<string, unknown> }[]; complete: boolean }> {
+    const view = await this.registry<{ kind?: unknown; match?: unknown }>(
+      INTEREST,
+      // One entry per (author, target kind, pattern): a run re-publishing the same interest is the
+      // same entry, and a retirement withdraws exactly it.
+      (b, rec) => (typeof b?.kind === "string" ? `${rec.runtimeMeta.createdBy}|${b.kind}|${JSON.stringify(b.match ?? null)}` : undefined),
+      { kind },
+    );
+    const out: { run: string; agent?: string; match?: Record<string, unknown> }[] = [];
+    const candidate = { kind, body } as RadiaRecord;
+    for (const rec of view.entries.values()) {
+      const b = rec.body as { kind?: string; match?: Record<string, unknown> };
+      if (b.kind !== kind) continue;
+      const run = rec.runtimeMeta.createdBy;
+      if (!(await this.runIsLive(run))) continue;
+      // `body === undefined` LISTS rather than matches: the digest wants every live interest on the
+      // kind, not the ones a particular candidate would reach. Evaluating a pattern against an
+      // absent body would answer a question nobody asked.
+      if (body !== undefined && b.match && Object.keys(b.match).length > 0) {
+        try {
+          if (!matchesRecord(candidate, this.compile({ kind, match: b.match }))) continue;
+        } catch {
+          continue; // an interest whose pattern no longer compiles matches nothing
+        }
+      }
+      out.push({ run, agent: await this.agentForRun(run), ...(b.match ? { match: b.match } : {}) });
+    }
+    return { interests: out, complete: view.complete };
+  }
+
+  /** Is this run still able to claim work? Interests outlive the process that published them when
+   *  it crashes, so liveness is asked of the `agent_run` record rather than of the interest. */
+  private async runIsLive(run: string): Promise<boolean> {
+    if (!run.startsWith("run:")) return true; // operator/in-process authorship has no run record
+    const rec = await this.runRecord(run);
+    if (!rec) return false;
+    if (rec.status === "stopped") return false;
+    return true;
   }
 
   /** Does this event signal a record matching the watch that is now claimable/available? */

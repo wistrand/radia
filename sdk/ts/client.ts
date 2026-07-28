@@ -143,6 +143,67 @@ export class RadiaClient {
     return this.put({ kind: "grant", body }, key);
   }
 
+  /**
+   * Declare what this run is listening for, as a record.
+   *
+   * Standing interest is otherwise invisible: a worker polls `take` with a pattern the space never
+   * retains, so nothing can answer "who would receive this record?". Publishing it makes the
+   * prospective topology queryable. It is DESCRIPTIVE and grants nothing; the grant records still
+   * decide what may be claimed.
+   *
+   * Content-keyed, so republishing an unchanged interest writes nothing. Retiring and re-declaring
+   * works because the key anchors on the retirement it supersedes, the same shape `grant()` uses.
+   */
+  async publishInterest(pattern: Pattern, opts: { retired?: boolean } = {}): Promise<{ id: string }> {
+    const body: Record<string, unknown> = { kind: pattern.kind };
+    if (pattern.match && Object.keys(pattern.match).length > 0) body.match = pattern.match;
+    if (opts.retired) body.retired = true;
+    const identity = `${pattern.kind}|${JSON.stringify(pattern.match ?? null)}`;
+    let key = `interest:${opts.retired ? "retire:" : ""}${identity}`;
+    try {
+      const rows = await this.queryAll({ kind: "interest", match: { kind: pattern.kind } });
+      const mine = rows.filter((r) => {
+        const b = r.body as { kind?: string; match?: unknown };
+        return b.kind === pattern.kind && JSON.stringify(b.match ?? null) === JSON.stringify(pattern.match ?? null);
+      });
+      const supersedes = mine.find((r) => isRetired(r.body) !== !!opts.retired);
+      if (supersedes) key += `:after:${supersedes.id}`;
+    } catch {
+      // No grant to read the registry: fall back to the plain key rather than failing the loop.
+    }
+    return this.put({ kind: "interest", body }, key);
+  }
+
+  /** One read that orients an investigator: kinds and their indexed paths, record counts, who is
+   *  listening, and what this caller may do. Generated from records, so it cannot drift. */
+  digest(): Promise<{
+    api: string;
+    kinds: { kind: string; indexedPaths: string[]; sortablePaths?: string[]; claimable: boolean; reserved: boolean }[];
+    counts: { kind: string; state: string; count: number }[];
+    interests: { kind: string; run: string; agent?: string; match?: Record<string, unknown> }[];
+    permissions: unknown;
+    complete: boolean;
+  }> {
+    return this.req("GET", "/v0/ops/digest");
+  }
+
+  /** The causally ordered story around a record: its lineage root, then everything descended from
+   *  it. A composition of lineage and children, so no caller re-implements the walk or its paging. */
+  thread(recordId: string): Promise<{ root: string; records: RadiaRecord[]; truncated: boolean; note?: string }> {
+    return this.req("GET", `/v0/ops/records/${encodeURIComponent(recordId)}/thread`);
+  }
+
+  /** Which registered interests would receive a record of this shape? Operator-gated: it reports
+   *  what every principal is listening for, not a self-scoped fact. */
+  dryRun(kind: string, body?: unknown): Promise<{
+    kind: string;
+    interests: { run: string; agent?: string; match?: Record<string, unknown> }[];
+    complete?: false;
+    note?: string;
+  }> {
+    return this.req("POST", "/v0/ops/dry-run", { kind, body });
+  }
+
   // ---- bootstrap chain (see design-auth.md) ----
 
   /** Operator: create an agent definition, optionally assigning its grants. Returns the
@@ -171,6 +232,18 @@ export class RadiaClient {
   async query(pattern: Pattern, limit = 100, page?: Page): Promise<RadiaRecord[]> {
     const r = await this.req("POST", "/v0/records/query", { ...pattern, limit, ...page });
     return r.records;
+  }
+
+  /** A query that also reports the traps it walked into: a full page mistaken for a population, a
+   *  default order that returns the OLDEST rows, an undeclared kind, an unindexed match path. The
+   *  notes never change the result. */
+  async queryExplained(
+    pattern: Pattern,
+    limit = 100,
+    page?: Page,
+  ): Promise<{ records: RadiaRecord[]; explain: string[]; nextAfter?: string }> {
+    const r = await this.req("POST", "/v0/records/query", { ...pattern, limit, ...page, explain: true });
+    return { records: r.records, explain: r.explain ?? [], nextAfter: r.nextAfter };
   }
 
   /**

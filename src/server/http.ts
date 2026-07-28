@@ -17,7 +17,7 @@ import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
 import { handleCreateDefinition, handleCreateRun, handleStopRun } from "./handlers/agents.ts";
 import { handleGetArtifact, handleMintCapability, handlePutArtifact } from "./handlers/artifacts.ts";
-import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleGetRecord, handleGraph, handleLineage, handlePermissions, handleStats } from "./handlers/ops.ts";
+import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem, statusFor } from "./problem.ts";
 import { RadiaError } from "../core/errors.ts";
@@ -59,7 +59,7 @@ function loadVendor(name: string): string {
  *  the plane (remediate, reclaim/dead-letter/requeue, declassify) is the interrupt half and stays
  *  operator-only. */
 const READ_ONLY_OPS =
-  /^\/v0\/ops\/(stats|events|diagnostics|records(\/[^/]+(\/(envelope|lineage|children|graph))?)?)$/;
+  /^\/v0\/ops\/(stats|events|diagnostics|digest|records(\/[^/]+(\/(envelope|lineage|children|graph|thread))?)?)$/;
 
 export function startServer(opts: ServerOptions): { finished: Promise<void> } {
   const hostname = opts.host ?? "127.0.0.1"; // loopback by default; --host 0.0.0.0 to expose
@@ -205,6 +205,16 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
       return handleWatchEvents(space, decodeURIComponent(id), principal, req);
     }
 
+    // Dry run: which interests would receive a record of this shape? A read, gated with the rest of
+    // the observe plane, and deliberately ABSENT from READ_ONLY_OPS: it reports what OTHER
+    // principals are listening for, which is the whole routing table and not a self-scoped fact. A
+    // principal reading its OWN interests does it with an ordinary self-scoped query on the kind.
+    if (route === "POST /v0/ops/dry-run") return await handleDryRun(space, req);
+    // The orientation read. Self-scoped callers get it too: it reports the caller's OWN
+    // permissions, and the kind list is not a secret (a scoped principal already learns kinds by
+    // being refused). Interests are the one cross-principal part, so they follow the same scope.
+    if (route === "GET /v0/ops/digest") return await handleDigest(space, principal, opsScope);
+
     // --- observability + control plane: /v0/ops/records/{id}[/{envelope|lineage|graph}|/{reclaim|dead-letter|requeue}] ---
     if (url.pathname.startsWith("/v0/ops/records/")) {
       const parts = url.pathname.slice("/v0/ops/records/".length).split("/");
@@ -216,6 +226,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
         if (req.method === "GET" && tail === "lineage") return await handleLineage(space, id, opsScope);
         if (req.method === "GET" && tail === "children") return await handleChildren(space, id, opsScope, url);
         if (req.method === "GET" && tail === "graph") return await handleGraph(space, id, url, opsScope);
+        if (req.method === "GET" && tail === "thread") return await handleThread(space, id, opsScope);
         if (req.method === "POST" && (tail === "reclaim" || tail === "dead-letter" || tail === "requeue")) {
           return await handleAdmin(space, id, tail);
         }

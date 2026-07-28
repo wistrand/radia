@@ -228,6 +228,63 @@ export async function handleDiagnostics(space: Space, scope?: StatsScope | null)
   return Response.json({ ...await space.diagnostics(scope ?? undefined), scope: describeScope(scope) });
 }
 
+/**
+ * Dry run: which registered interests would receive this record?
+ *
+ * A read of the interest registry, so it sits on the observe plane rather than beside `put`. It
+ * answers before the write, which is the point: the question is about a draft.
+ */
+export async function handleDryRun(space: Space, req: Request): Promise<Response> {
+  let j: Record<string, unknown> | null = null;
+  try {
+    const parsed = await req.json();
+    j = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return problem(400, "invalid_body", "expected a JSON object");
+  }
+  if (!j || typeof j.kind !== "string" || j.kind.length === 0) {
+    return problem(400, "invalid_body", "expected {kind: string, body?: unknown}");
+  }
+  const { interests, complete } = await space.matchingInterests(j.kind, j.body);
+  return Response.json({
+    kind: j.kind,
+    interests,
+    // An interest registry is unbounded in principle, so say when the answer is a prefix rather
+    // than letting "no interests" mean two different things.
+    ...(complete ? {} : { complete: false }),
+    ...(interests.length === 0
+      ? {
+        note: "no live interest matches this record. Either nothing is listening for it, or the " +
+          "workers that would are not running: an interest is only live while its run is.",
+      }
+      : {}),
+  });
+}
+
+/** One read that orients an investigator: what kinds exist, what is in them, who is listening,
+ *  and what the caller may do. Generated from records so it cannot drift. */
+export async function handleDigest(space: Space, principal: string, scope?: StatsScope | null): Promise<Response> {
+  return Response.json({ ...await space.digest(principal, scope), scope: describeScope(scope) });
+}
+
+/** The causally ordered story around a record: its lineage root, then everything descended from it. */
+export async function handleThread(
+  space: Space,
+  recordId: string,
+  scope?: StatsScope | null,
+): Promise<Response> {
+  if (!await visible(space, recordId, scope)) return problem(404, "not_found", `no record ${recordId}`);
+  const out = await space.thread(recordId, { createdBy: scope?.createdBy });
+  if (out.records.length === 0) return problem(404, "not_found", `no record ${recordId}`);
+  return Response.json({
+    ...out,
+    scope: describeScope(scope),
+    // A truncated story read as a whole one is the failure this verb exists to prevent, so say it
+    // rather than leaving the caller to infer it from a suspiciously round count.
+    ...(out.truncated ? { note: "the story was truncated at the node cap; it is a prefix, not the whole thread" } : {}),
+  });
+}
+
 /** Privileged declassify (operator-gated via the /ops boundary): emit a clean successor. */
 export async function handleDeclassify(space: Space, recordId: string, principal: string): Promise<Response> {
   const out = await space.declassify(recordId, principal);

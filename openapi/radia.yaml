@@ -603,6 +603,82 @@ paths:
                         envelope: { $ref: "#/components/schemas/Envelope" }
         "400": { $ref: "#/components/responses/Problem" }
 
+  /ops/digest:
+    get:
+      operationId: digest
+      summary: "One read that orients an investigator: kinds, counts, who is listening, what you may do"
+      description: >
+        Generated from records, so it cannot drift from the space it describes. Every registry read
+        behind it pages to exhaustion and reports `complete: false` rather than returning a
+        plausible prefix, because this is the artifact an inspection agent trusts most. A
+        self-scoped caller sees its own interests only; the full interest list is the routing table
+        and stays operator-only, like `POST /ops/dry-run`.
+      x-stability: experimental
+      responses:
+        "200":
+          description: space digest
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  api: { type: string }
+                  kinds:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        kind: { type: string }
+                        indexedPaths: { type: array, items: { type: string } }
+                        sortablePaths: { type: array, items: { type: string } }
+                        claimable: { type: boolean, description: "false means reference data; sitting available forever is normal" }
+                        reserved: { type: boolean }
+                  counts: { type: array, items: { type: object } }
+                  interests: { type: array, items: { type: object } }
+                  permissions: { type: object, description: "what the CALLING principal may do" }
+                  complete: { type: boolean, description: "false when a registry read was truncated" }
+
+  /ops/dry-run:
+    post:
+      operationId: dryRun
+      summary: Which registered interests would receive a record of this shape (asked before it is written)
+      description: >
+        Runs the matching direction backwards: many registered patterns against one candidate body,
+        rather than one pattern against many records. The body need not describe a record that
+        exists, which is the point. Operator-gated: it reports what every principal listens for,
+        which is the routing table rather than a self-scoped fact. An interest is reported only
+        while its RUN is live, because a crashed worker never retires its own.
+      x-stability: experimental
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind: { type: string, description: "the record kind the candidate would be written as" }
+                body: { description: "the candidate body; omitted matches interests with no pattern" }
+      responses:
+        "200":
+          description: matching interests
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  kind: { type: string }
+                  interests:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        run: { type: string, description: "the run that published it (server-assigned author)" }
+                        agent: { type: string, description: "the agent behind that run" }
+                        match: { type: object, additionalProperties: true, description: "the interest's match, absent when it takes the whole kind" }
+                  complete: { type: boolean, description: "absent unless the registry read was truncated" }
+                  note: { type: string, description: "present when nothing matched, distinguishing 'nobody listens' from 'nobody is running'" }
+        "400": { $ref: "#/components/responses/Problem" }
   /ops/diagnostics:
     get:
       operationId: diagnostics
@@ -828,6 +904,31 @@ paths:
                 properties:
                   children: { type: array, items: { $ref: "#/components/schemas/Record" } }
                   nextAfter: { type: string, description: Cursor for the next page; absent on the last. }
+
+  /ops/records/{recordId}/thread:
+    get:
+      operationId: thread
+      summary: "The causally ordered story around a record: its lineage root, then everything descended from it"
+      description: >
+        A composition of lineage and children so no caller re-implements the walk or its paging.
+        Ordered by id, which is creation order. Reports `truncated` when the node cap was hit,
+        because a partial story read as a whole one is the failure this verb exists to prevent.
+      x-stability: experimental
+      parameters:
+        - { name: recordId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: the thread
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  root: { type: string }
+                  records: { type: array, items: { $ref: "#/components/schemas/Record" } }
+                  truncated: { type: boolean }
+                  note: { type: string }
+        "404": { $ref: "#/components/responses/Problem" }
 
   /ops/records/{recordId}/graph:
     get:

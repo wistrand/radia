@@ -142,10 +142,14 @@ export async function handleQuery(space: Space, req: Request, principal: string)
     const records = await space.query(pattern, limit, page, createdBy ? { createdBy } : undefined);
     // The cursor for the NEXT page is the last id of this one, echoed so a caller never has to
     // know that the cursor happens to be a record id.
+    // `explain: true` annotates the answer with the traps this query walked into. Opt-in so the
+    // hot path pays nothing, and never affects the result.
+    const explain = j.explain === true ? space.explainQuery(pattern, records.length, limit, page) : [];
     return Response.json({
       records,
       nextAfter: records.length === limit ? records[records.length - 1]?.id : undefined,
       ...describeReadScope(constraint, createdBy),
+      ...(explain.length > 0 ? { explain } : {}),
     });
   } catch (e) {
     if (e instanceof RadiaError) return problem(statusFor(e.code, 400), e.code, e.message);
