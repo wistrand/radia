@@ -70,7 +70,9 @@ const RUN_CODE: ToolDef = {
       `you authored (a page, an SVG, a config, a document) goes to save_content in ONE call, ` +
       `whether or not the user said the word "save". For binary formats, print base64 and set ` +
       `encoding:"base64". Output larger than ${INLINE_MAX} characters is stored as an artifact ` +
-      `automatically and you get a preview plus its id. The sandbox has NO network, NO filesystem, ` +
+      `automatically and you get a preview plus its id. Pass 'expect' to state what the run should ` +
+      `do before it runs; the verdict comes back with the result and is recorded independently. ` +
+      `The sandbox has NO network, NO filesystem, ` +
       `NO environment variables and cannot start processes, so do not attempt ` +
       `fetch/Deno.env; they fail. ` +
       (readRoots.length
@@ -86,6 +88,23 @@ const RUN_CODE: ToolDef = {
       type: "object",
       properties: {
         code: { type: "string", description: "The JavaScript program. Use console.log to return anything." },
+        expect: {
+          type: "object",
+          description:
+            "What this run should do, stated BEFORE it runs. Every clause given must hold. The " +
+            "result comes back with {check:{verdict,reasons}} and the verdict is recorded as a " +
+            "record you cannot write yourself, so it is evidence rather than your own say-so. " +
+            "Use it whenever you are iterating toward something specific and you can name the " +
+            "success condition: it turns 'looks right' into a checked fact, and on a failure the " +
+            "reasons tell you which clause missed. Omit it when there is nothing to check (a " +
+            "one-off calculation you will read yourself); an omitted expectation records no " +
+            "verdict, which is honest, rather than a passing one.",
+          properties: {
+            exit_zero: { type: "boolean", description: "True if the program must exit 0; false if it must fail." },
+            stdout_equals: { type: "string", description: "Exact expected stdout (trailing newlines ignored)." },
+            stdout_contains: { type: "string", description: "A substring stdout must contain." },
+          },
+        },
         save_as: { type: "string", description: "Filename to store COMPUTED stdout under as an artifact, e.g. 'koala.svg'. The media type is taken from the extension unless media_type says otherwise. For content you already wrote, use save_content rather than printing it back." },
         media_type: { type: "string", description: "Override the stored artifact's media type, e.g. 'text/csv'." },
         encoding: { type: "string", enum: ["utf8", "base64"], description: "How stdout encodes the artifact's bytes. Use 'base64' for binary formats (PNG, zip)." },
@@ -174,6 +193,55 @@ await publishCapability(client, RETIRE_PROCEDURE);
 /** This worker's own tools. A fallback for the check below, for the moment before capabilities
  *  have been read (or if this run has no grant to read them). */
 const RESERVED = new Set(["run_code", "save_procedure", "read_procedure", "retire_procedure"]);
+
+/** What the caller said the run would do. Data only: no regex, no expression to evaluate, so a
+ *  reader (or an auditor) can see exactly what was claimed. */
+interface Expectation {
+  exit_zero?: boolean;
+  stdout_equals?: string;
+  stdout_contains?: string;
+}
+
+/**
+ * Did the run do what was claimed of it?
+ *
+ * Every stated clause must hold; an empty expectation is not a pass, it is no claim, and the caller
+ * gets no `check` record at all. That distinction is the whole point: a space full of runs with no
+ * verdict should look like what it is (unverified) rather than like success.
+ *
+ * The comparison is deliberately dumb. An expectation that could run code would be one more thing
+ * the model authors and the auditor has to read; this one is three literal comparisons, so "what
+ * was claimed" is legible without executing anything.
+ */
+function judge(
+  e: Expectation,
+  r: { stdout: string; exitCode: number | null; timedOut: boolean },
+): { verdict: "pass" | "fail"; reasons: string[] } {
+  const reasons: string[] = [];
+  // A killed process has a null exit code. Treating that as "not zero" is right and treating it as
+  // a pass would be the worst possible failure of this feature: a timeout must never read as met.
+  if (e.exit_zero === true && r.exitCode !== 0) reasons.push(`expected exit 0, got ${r.timedOut ? "a timeout" : r.exitCode}`);
+  if (e.exit_zero === false && r.exitCode === 0) reasons.push(`expected a non-zero exit, got 0`);
+  // Trailing newlines are an artifact of console.log, not of the answer, so they are not a failure.
+  if (e.stdout_equals !== undefined && r.stdout.trimEnd() !== e.stdout_equals.trimEnd()) {
+    reasons.push(`stdout did not equal the expected text`);
+  }
+  if (e.stdout_contains !== undefined && !r.stdout.includes(e.stdout_contains)) {
+    reasons.push(`stdout did not contain ${JSON.stringify(e.stdout_contains)}`);
+  }
+  return { verdict: reasons.length === 0 ? "pass" : "fail", reasons };
+}
+
+/** The clauses actually stated, so the record says what was claimed rather than what was possible. */
+function stated(a: unknown): Expectation | undefined {
+  if (!a || typeof a !== "object" || Array.isArray(a)) return undefined;
+  const e = a as Record<string, unknown>;
+  const out: Expectation = {};
+  if (typeof e.exit_zero === "boolean") out.exit_zero = e.exit_zero;
+  if (typeof e.stdout_equals === "string") out.stdout_equals = e.stdout_equals;
+  if (typeof e.stdout_contains === "string") out.stdout_contains = e.stdout_contains;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 /**
  * Tool names a procedure must not take: every tool ANY worker advertises, discovered rather than
@@ -334,6 +402,42 @@ await agentLoop(client, {
       }
     }
 
+    // Judge the run against what was claimed BEFORE it ran, and write the verdict as its own
+    // record. The session has no grant to put a `check`, so a pass is something the runtime
+    // observed rather than something the model said about its own output. No expectation means no
+    // check: an unverified run must not look like a passing one.
+    const expectation = stated((b.args as { expect?: unknown } | undefined)?.expect);
+    let checked: { verdict: string; reasons: string[] } | undefined;
+    if (expectation) {
+      const j = judge(expectation, r);
+      checked = j;
+      try {
+        await c.put({
+          kind: "check",
+          body: {
+            callId,
+            conversationId: b.conversationId,
+            owner: b.owner,
+            tool: b.tool ?? "run_code",
+            verdict: j.verdict,
+            expected: expectation,
+            reasons: j.reasons,
+            // The observed side, capped: enough to see WHY it failed without copying a payload
+            // into a record that has to stay queryable JSON.
+            exitCode: r.exitCode,
+            stdout: r.stdout.slice(0, 500),
+          },
+          // The call is the parent, so a check hangs off the attempt it judges and rides the same
+          // attempt chain the retry lineage builds.
+          parentIds: [callId],
+        });
+      } catch (e) {
+        // A worker that cannot record a verdict must not silently return a passing-looking result:
+        // say so in the output the model reads.
+        checked = { verdict: j.verdict, reasons: [...j.reasons, `(verdict not recorded: ${e})`] };
+      }
+    }
+
     return {
       kind: "tool_result",
       body: {
@@ -352,6 +456,9 @@ await agentLoop(client, {
           timedOut: r.timedOut,
           truncated: r.truncated,
           ms: r.ms,
+          // Returned as well as recorded, so the model sees the verdict in the same round rather
+          // than spending another one asking whether its own run passed.
+          ...(checked ? { check: checked } : {}),
           ...(stored ?? {}),
         },
       },

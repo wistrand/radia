@@ -10,6 +10,18 @@ implementation and storage backend can change behind it. Each milestone runs the
 conformance + fault-injection suite against every storage adapter (see
 [design-storage.md](design-storage.md) invariants).
 
+## Later: a workspace for code generation
+
+The chat's sandbox is a single-file JS evaluator: program on stdin, `--no-remote`, no writes, no
+npm. Real code generation iterates on a PROJECT (several files, dependencies, a test runner, a diff
+between attempts), and that is a sandbox capability gap rather than a substrate one.
+
+The shape that fits: an attempt's workspace is a set of artifacts, the worker materialises them into
+a temp directory, runs, and stores changed files back as artifacts. Records stay the medium and the
+filesystem is ephemeral scratch, so every version of every file stays content-addressed and
+attributable. The two pieces it builds on are done: attempts link (`attempt`/`retryOf` on
+`tool_call`) and a run can be judged against a stated expectation (`check` records). Not scheduled.
+
 ## Current state
 
 M0 (Phases 0–7) plus M1 watches, the M1 **authorization stack** (grants, run-token bootstrap

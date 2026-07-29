@@ -121,6 +121,10 @@ const EXEC_GRANTS: Grant[] = [
   { kind: "capability", operations: ["put", "query"] },
   { kind: "progress", operations: ["put"] },
   { kind: "procedure", operations: ["put", "query"] },
+  // The verdict on a run, written from what actually happened. Only this worker may put one: the
+  // session has `query` and nothing more, so "the code did what was claimed" is never a record the
+  // model authored about itself.
+  { kind: "check", operations: ["put"] },
 ];
 
 // plain user (the REPL): may drive its own conversations and read its own results, nothing more.
@@ -170,6 +174,10 @@ export function userGrants(scope?: Record<string, unknown>): Grant[] {
     // point of the split: least privilege by default, with a visible, auditable way to ask.
     { kind: "grant_request", operations: ["put", "query"], ...scoped },
     { kind: "progress", operations: ["query"], ...scoped }, // read-only: the session reports no progress of its own
+    // READ-ONLY, and that is the whole value of the kind. A `check` says whether a run did what was
+    // claimed of it; if the session could write one, it would be the model grading its own work,
+    // which is the thing prose already does. Only the exec-worker puts these, from a real run.
+    { kind: "check", operations: ["query"], ...scoped },
     // Scoped like the rest: `Space.putArtifact` takes application fields, the chat's writers stamp
     // them, and the kind is redeclared to index them. This one grant covers `share_artifact` too: a
     // download capability is authorized at MINT time against exactly this read, so the session can

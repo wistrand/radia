@@ -43,7 +43,7 @@ outside world).
 ## Testing it without a model
 
 ```bash
-deno task chat-test              # all ten suites, ~25s
+deno task chat-test              # all eleven suites, ~30s
 deno task chat-test longthread   # one by name
 ```
 
@@ -357,6 +357,33 @@ time against the caller's `artifact: read_one` grant, so a scoped user cannot tu
 may not read into a link that needs no token; running it as the worker would do exactly that. That
 is also why it needs no grant of its own: one permission, checked once, instead of two that must
 agree.
+
+**Code generation is a loop, and the loop is records.** Write, run, read the error, fix, rerun. Two
+parts of that had no representation in the space and now do.
+
+*Attempts link.* A second call to the same tool in a turn carries `attempt` and `retryOf`, and takes
+the previous attempt as a lineage parent. Before, every `tool_call` parented to the conversation, so
+eight tries were eight siblings: lineage from the last said nothing about the seven before it, and
+"how did this end up working" could only be reconstructed from the transcript. Taint rides
+`parent_ids`, which is the right answer here rather than an accident: a fix written from tainted
+output is tainted.
+
+*A pass is evidence, not an opinion.* `run_code` takes an optional `expect`
+(`exit_zero` / `stdout_equals` / `stdout_contains`), stated BEFORE the run. The exec-worker judges
+the result and writes a `check` record; the verdict also comes back in the tool result, so the model
+does not spend a round asking whether its own run passed. The session has `check: query` and **no**
+`put`, which is the whole value of the kind: otherwise a verdict is the model grading its own work,
+which is what prose already does. `space_query {kind: check, match: {verdict: "fail"}}` is the
+question an auditor asks and the model never volunteers.
+
+Two rules the design turns on. **No expectation means no verdict**, never a passing one, so an
+unverified run looks unverified rather than successful. And a **timeout fails `exit_zero`**: a
+killed process has a null exit code, and reading that as zero would turn the worst outcome into a
+pass. Covered by `deno run -A examples/chat/smoke-iterate.ts`.
+
+Deliberately NOT done: a parse check before the sandbox spawn (a syntax error costs ~24ms, and the
+expensive part of a bad attempt is the model round, not the process), and no-progress detection over
+the attempt chain. The chain now exists, so the second is buildable when it earns its place.
 
 **Code output can become an artifact.** `run_code` takes
 `save_as` (plus optional `media_type` and `encoding: "base64"` for binary): stdout is stored as an

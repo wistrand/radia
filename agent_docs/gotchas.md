@@ -903,6 +903,20 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   `smoke-selfgrant.ts` covers the escalation loop under `{conversationId}`, which is not the default;
   both bugs above reproduce only under `{owner}`. A suite that exercises one posture of a documented
   either/or is not covering the feature. `smoke-login.ts` now carries the identity-scope half.
+- **A verdict the subject can write is not a verdict.** `check` records say whether a run did what
+  was claimed of it, and the exec-worker is the only principal with `check: put`; the chat session
+  holds `query` alone. If the session could write one, "the code works" would be the model grading
+  its own output, which is exactly what the prose it already produces does. The same shape applies
+  to any evidence kind: the party being judged must not hold the pen. Two boundaries that look like
+  details and are not: an ABSENT expectation records no verdict rather than a passing one (an
+  unverified run must not read as successful), and a TIMEOUT fails `exit_zero` (a killed process has
+  a null exit code, and treating that as zero turns the worst outcome into a pass).
+- **The cost of an LLM iteration loop is the model, not the substrate.** Measured locally: a full
+  put+take+ack round trip is ~30ms, a sandbox spawn ~27ms, and a model round is 1-10 SECONDS. So
+  routing an edit-run-test loop through records costs about 1% of an iteration, and optimizing the
+  medium is optimizing the wrong end. It also means the argument against coordinating a tight loop
+  through a substrate (true for a compiler) does not transfer to one gated by inference. What DOES
+  pay is reducing model rounds and making each one more informative.
 - **An agent that discovers its abilities from records cannot discover one nothing publishes.**
   Both SDKs have had `artifactCapability` since artifacts shipped, and the chat had no tool for it,
   so the assistant could store a file and not hand it over. Asked for a link it quoted the id-based

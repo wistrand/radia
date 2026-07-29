@@ -37,6 +37,14 @@ export async function runTurn(
   tools: ToolSet,
   onToolWait?: ToolWaitHook,
 ): Promise<void> {
+  // The last result each tool produced in THIS turn, so a second call to the same tool is recorded
+  // as what it is: another attempt at the same thing. Code generation is an iterative loop (write,
+  // run, read the error, fix, rerun) and every attempt used to parent to the conversation, which
+  // made eight tries eight siblings with no ordering and no causality. Lineage from the final
+  // attempt now walks back through the ones it replaced, so "how did this end up working" is a
+  // query rather than a reconstruction from the transcript.
+  const priorAttempt = new Map<string, { id: string; n: number }>();
+
   for (let round = 0; round < MAX_ROUNDS; round++) {
     write("\nassistant> ");
     // The chat picks no model. It references the thread by (conversationId, upToIndex) and lets
@@ -63,7 +71,7 @@ export async function runTurn(
     if (message.tool_calls?.length) {
       write("\n");
       for (const call of message.tool_calls) {
-        await runToolCall(client, thread, call, onToolWait);
+        await runToolCall(client, thread, call, onToolWait, priorAttempt);
       }
       continue; // the model reads the tool results from the thread on the next call
     }
@@ -82,6 +90,7 @@ async function runToolCall(
   thread: Thread,
   call: { id: string; function: { name: string; arguments: string } },
   onToolWait?: ToolWaitHook,
+  priorAttempt?: Map<string, { id: string; n: number }>,
 ): Promise<void> {
   let args: Record<string, unknown> = {};
   try {
@@ -92,12 +101,28 @@ async function runToolCall(
   write(prefix);
   // `conversationId` travels in the BODY, not just parentIds, so a worker can key its progress
   // records to this turn: provenance is causality, not a lookup path.
+  // The previous attempt at this tool is a DATA parent: the model wrote this call after reading
+  // that result, so the new code is derived from the old failure. Taint rides parent_ids, which is
+  // the right answer here rather than an accident: a fix written from tainted output is tainted.
+  const previous = priorAttempt?.get(call.function.name);
+  const attempt = (previous?.n ?? 0) + 1;
   const { id: toolCallId } = await client.put({
     kind: "tool_call",
-    body: { tool: call.function.name, args, conversationId: thread.id, owner: sessionOwner() },
-    parentIds: [thread.id],
+    body: {
+      tool: call.function.name,
+      args,
+      conversationId: thread.id,
+      owner: sessionOwner(),
+      // In the BODY as well as in the graph: `attempt` makes "how many tries did this take" a
+      // count rather than a traversal, and `retryOf` names the one this replaces, so a chain is
+      // readable from either direction.
+      attempt,
+      ...(previous ? { retryOf: previous.id } : {}),
+    },
+    parentIds: previous ? [thread.id, previous.id] : [thread.id],
   });
   const result = await awaitToolResult(client, toolCallId, prefix, call.function.name, onToolWait);
+  priorAttempt?.set(call.function.name, { id: toolCallId, n: attempt });
   write(`-> ${trunc(JSON.stringify(result.output), 80)}\n`);
   await showArtifact(client, result.output);
   await thread.append(

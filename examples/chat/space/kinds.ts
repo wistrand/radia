@@ -75,7 +75,40 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   });
   await client.registerKind({
     kind: "tool_call",
-    indexedPaths: [{ path: "tool", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
+    // `attempt` and `retryOf` record the iteration loop: code generation is write, run, read the
+    // error, fix, rerun, and every attempt used to parent to the conversation, so eight tries were
+    // eight siblings with no ordering. Sortable on `attempt` so a chain reads in the order it
+    // happened rather than in id order, which is the same thing until a retry crosses a second.
+    indexedPaths: [
+      { path: "tool", type: "keyword" },
+      { path: "conversationId", type: "keyword" },
+      { path: "owner", type: "keyword" },
+      { path: "attempt", type: "integer" },
+      { path: "retryOf", type: "keyword" },
+    ],
+    sortablePaths: ["attempt"],
+  });
+  // A `check` = whether a run did what was CLAIMED of it, decided by the worker that ran it.
+  //
+  // The point is who writes it. "The code works" was previously the model's assertion in prose,
+  // sitting next to output only the model had read. A check is written by the exec-worker from a
+  // real run, against an expectation stated BEFORE it ran, and the session has no grant to put one.
+  // So a pass is evidence rather than a claim, which is the half of the audit story that was
+  // missing: the space could show that code ran, never that it did what it was supposed to.
+  //
+  // Indexed on `verdict` so "what was claimed and did not hold" is one query, which is the
+  // question an auditor asks and the model never volunteers.
+  await client.registerKind({
+    kind: "check",
+    indexedPaths: [
+      { path: "callId", type: "keyword" },
+      { path: "conversationId", type: "keyword" },
+      { path: "owner", type: "keyword" },
+      // "pass"/"fail" rather than a boolean: `boolean` is not an index type, and a match reading
+      // `{verdict: "fail"}` says what it is looking for.
+      { path: "verdict", type: "keyword" },
+    ],
+    claimable: false,
   });
   await client.registerKind({
     kind: "tool_result",
