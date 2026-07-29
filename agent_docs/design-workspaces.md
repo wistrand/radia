@@ -19,6 +19,7 @@ judged against a stated expectation (`check` records). Both shipped; see
 - Git: what to borrow, what to emit, what to refuse
 - The three hard parts
 - What this buys that git does not
+- Settled by the arguments above
 - Open questions
 
 ## Why a workspace at all
@@ -37,15 +38,17 @@ program to live.
 
 - **sha256 stays authoritative.** Every attestation rests on it.
 - The tree structure follows git's (mode, name, sorted entries) so it is mechanically convertible.
-- A tree entry MAY carry the git SHA-1 as a **secondary, non-authoritative index**: cheap to
-  compute, useful for `git clone`, never the thing a verdict or a signature rests on.
+- The git SHA-1 is **recomputed at export, never stored**. It was going to be a "secondary,
+  non-authoritative index" on each tree entry; that is a field which can silently disagree with the
+  authoritative content, and a convenient field eventually gets trusted. The export path already
+  writes the objects, so it can hash them in the same pass.
 - Export to a real git repository is **one-way**. There is no import.
 
 ## Shape: manifest plus per-file artifacts
 
-A `workspace` record is a manifest: `{name, conversationId, owner, treeDigest, files: [{path,
-mode, digest, artifactId, gitSha1?}]}`, projected latest-wins like `procedure`. Each file's bytes
-are an ordinary artifact.
+A `workspace` record is a manifest: `{name, conversationId, owner, treeDigest, basedOn, ignore,
+files: [{path, mode, digest, artifactId}]}`, projected latest-wins like `procedure`. Each file's
+bytes are an ordinary artifact.
 
 This works because blobs already dedupe by digest (`blobs.has(digest)` before write), so a
 one-character change stores one file rather than a tree. Note the asymmetry: each `putArtifact`
@@ -56,6 +59,22 @@ writes or the record count grows per attempt. That is the registry stopping rule
 `treeDigest` is sha256 over the sorted `path → digest` list. It exists so a `check` can be attached
 to a TREE rather than to a call id, which is what turns a verdict into an attestation of a specific
 reproducible input.
+
+**Who computes `treeDigest` decides whether any of that is worth anything.** An artifact's `digest`
+is server-computed and is a RESERVED field a client cannot set (`ARTIFACT_RESERVED_FIELDS`,
+`src/core/kinds.ts`), so the bytes and their address cannot disagree. A manifest is an ordinary
+record, so its `treeDigest` and its `path → digest` list are whatever the writer says. A lying
+writer could bind a verdict to a tree that does not match the files, and the attestation would
+inherit that lie through a middle link nobody checked.
+
+Two places could close it, and the cheap one is right. The RUNTIME could verify at put time, and
+kind-aware body validation is an established pattern here (`validateKindDef`, `validateGrantDef`,
+`validateArtifactFields`) — but verifying a tree means fetching every referenced artifact on every
+manifest write, which is new, unbounded and on the hot path. Instead **the worker that writes the
+`check` recomputes `treeDigest` from the artifacts it materialised**, and refuses to render a
+verdict if it disagrees. That needs no new mechanism, costs a hash over bytes already in hand, and
+puts the recomputation exactly where the claim is made. It belongs in v1, not later: a `treeDigest`
+nobody recomputes is decoration.
 
 **Rejected alternatives, and why.** One record per file avoids large bodies but makes reading the
 workspace a registry read that must page to exhaustion, putting the loop's correctness on the
@@ -102,16 +121,40 @@ with tooling they already have. Nothing downstream may depend on it being curren
 Export only, because import means accepting trees whose history git can rewrite, which reopens the
 mutability problem from the outside.
 
+**The export is a bisect target, not a pull request.** One commit per attempt is auto-commit-on-save
+granularity, so the log reads like a fixup-spam branch and the urge to squash it will be strong.
+Resist: the faithful history IS the audit product, and noisy linear history is exactly what
+`git bisect` wants. Anyone wanting a readable summary should get it from a synthesis over the
+records, not from rewriting the export.
+
 ## The three hard parts
 
 **Write-back is a capability increase.** The sandbox has no write permission today. A workspace
 means `--allow-write=<tmpdir>`, one fresh directory per attempt, deleted after. Contained but real:
-model-written code can create files. Three things need answering before it ships: a size and count
-quota (a program that fills the disk is a trivial denial of service), symlink escape out of the temp
-directory, and which files come back. The honest answer to the last is a tree diff, hash before and
-hash after, store the difference. "Everything in the directory" captures junk;
-"what the program says it changed" trusts the program. This is the same operation `git status`
-performs, which is a further argument for borrowing the model.
+model-written code can create files. Needed before it ships: a size and count quota (a program that
+fills the disk is a trivial denial of service), symlink escape out of the temp directory, and a rule
+for which files come back.
+
+For that last one the honest answer is a tree diff, hash before and hash after, store the
+difference. "Everything in the directory" captures build output and caches; "what the program says
+it changed" trusts the program. It is the same operation `git status` performs — and the same
+comparison supplies the missing third option the first draft of this section did not have:
+**an ignore list**, `.gitignore` by another name, as an `ignore` field on the manifest. Thirty years
+of tooling say a working tree needs one, and vendored dependencies make it mandatory rather than
+convenient.
+
+**MATERIALISATION is the more dangerous direction, and it is the one that looks safe.** Execution
+runs untrusted code inside a jail. Materialisation runs the TRUSTED worker over model-influenced
+paths, outside any jail, writing files. A manifest entry naming `../../etc/…`, an absolute path, a
+path colliding with `.git` in an exported repo, or a name whose case folds onto one on a
+case-insensitive filesystem is a write the sandbox never sees.
+
+This is `git checkout`, and git has already paid for every one of these: path traversal via `..` in
+tree entries, the `.Git`/NTFS case-folding family (CVE-2014-9390), symlink-then-write-through-it
+during checkout, and a long tail of tree-entry names nothing expected. **Borrow git's validation
+list wholesale rather than rediscovering it one incident at a time.** Path normalisation and
+rejection rules on manifest entries belong here, beside the quota, and so does deciding what `mode`
+admits (regular and executable, presumably; not setuid, not device nodes).
 
 **Dependencies are the fork in the road**, not an implementation detail:
 
@@ -123,13 +166,37 @@ performs, which is a further argument for borrowing the model.
   sandbox defensible. Do not.
 
 The vendored option is the only one consistent with the thesis in
-[research-applications.md](research-applications.md) §5.
+[research-applications.md](research-applications.md) §5, and it is understated above: dependency
+trees are near-identical across workspaces, and blobs dedupe by digest, so the storage cost amortises
+to almost nothing after the first workspace. That is the opposite of vendoring in git, where every
+version bump writes a full new copy into history forever.
 
-**Concurrency has no answer.** Two agents on one workspace both read the same manifest and write
-successors; last writer wins silently. Latest-wins is right for a registry and wrong for a working
-tree, and there is no compare-and-swap primitive (idempotency keys are not one). The serial case is
-covered, because one agent iterating within a turn is exactly the attempt chain. Multi-agent editing
-is a different problem and should be stated as unsupported rather than discovered.
+**Choosing it pulls the materialisation cache into v1.** A vendored `node_modules` is thousands of
+files, which is squarely the "dominant at 10,000" regime in the cost note below. So the
+content-addressed hardlink cache stops being a later optimisation and becomes a prerequisite of the
+fork this design takes. One property it must have, learned from git's alternates machinery: the
+cache is **read-only**, enforced by permission bits. A cached object mutated in place poisons every
+workspace hardlinked to it.
+
+**Concurrency: detection, not merge, and the loss is not what it sounds like.** Two agents on one
+workspace both read the same manifest and write successors, and latest-wins picks one. There is no
+compare-and-swap primitive (idempotency keys are not one).
+
+Two corrections to the obvious reading, both of which make this better than "unsupported":
+
+- **Nothing is lost.** The overwritten manifest is still a record. In git terms this is a
+  force-pushed branch on a repository whose reflog is permanent and never expires: the other tip is
+  reachable, addressable and auditable forever. What is missing is not durability, it is *merge*.
+- **Detection is nearly free, and git's answer is not CAS either** — it is fork detection plus
+  explicit reconciliation. Require a successor manifest to name its predecessor (`basedOn`, and a
+  parent edge), and two successors of one predecessor are a visible fork in the DAG instead of a
+  silent last-writer-wins. No new primitive, one field, and it converts "somebody's work is
+  mysteriously not there" into "these two diverged, here is where".
+
+So: **fork detection in v1, merge unsupported.** Saying multi-agent editing is unsupported does not
+stop two agents from doing it, and silent divergence is the one outcome worse than either supporting
+it or refusing it. The serial case needs none of this, because one agent iterating within a turn is
+exactly the attempt chain.
 
 **Cost note.** Materialisation is N file writes per attempt: fine at 50 files, dominant at 10,000. A
 content-addressed cache directory keyed by digest, hardlinked in, is the standard fix and is easier
@@ -137,26 +204,48 @@ to design for than to retrofit.
 
 ## What this buys that git does not
 
-Every file version content-addressed and attributable to a RUN; the dependency set inside the
-record; grants scoping which workspace an agent may touch; taint tracking whether a file descends
-from untrusted input; verdicts bound to a tree digest; and per-file erasure.
+**Lead with per-file erasure.** Anyone who has run `git filter-repo` or BFG to purge a leaked
+credential knows the blast radius: every downstream SHA changes, every fork force-pushes, every
+clone is invalidated, signed tags die. Erasing one file from one attempt while the tree digest still
+verifies and the history still reads is the single worst operational chore in git, gone.
 
-That last one deserves stating. Because each file is an artifact, `shredArtifact` erases one file
-from one attempt while the manifest still records that a file with that path and digest existed, the
-tree digest still verifies, and the history still reads (see
-[design-data-model.md](design-data-model.md), "Erasure"). Git has no equivalent: erasing a blob from
-history means rewriting every commit that followed. The single-archive shape loses this completely,
-which is the strongest reason to reject it.
+It works because each file is an artifact, so `shredArtifact` destroys one payload while the manifest
+still records that a file with that path and digest existed (see
+[design-data-model.md](design-data-model.md), "Erasure"). The single-archive shape loses this
+completely, which is the strongest reason to reject it.
+
+Then: every file version content-addressed and attributable to a RUN; the dependency set inside the
+record, which a lockfile only claims (postinstall scripts, registry drift and yanked versions all
+mean a lockfile does not prove what bytes ran); grants scoping which workspace an agent may touch,
+which is what branch protection keeps approximating badly, since a git hook dies to `--no-verify`
+and a pre-receive hook is one repository's shell script; and taint tracking whether a file descends
+from untrusted input.
 
 What this does NOT buy: incremental build caching, LSP feedback, merge, blame. Git does the storage
 model better and has thirty years of tooling. The honest framing is that this is not a better git.
 It is a working tree whose every state is a record the runtime can authorize, attest and erase.
 
+## Settled by the arguments above
+
+Two of these were listed as open and are not; leaving them open contradicts the sections that
+motivate them.
+
+- **A `check` attaches to a `treeDigest`.** `treeDigest` exists FOR that, so it is load-bearing and
+  in v1, along with the worker-side recomputation that makes it mean anything.
+- **Failed attempts keep their trees.** The stated purpose is capturing the debugging session, and
+  per-file dedup means a failed attempt costs only its changed files. Discarding them deletes
+  exactly the history this design exists to preserve; retention and per-file erasure are the
+  pressure valve, not truncation.
+
 ## Open questions
 
-1. **Vendored dependencies, or dependency-free?** The fork above. Everything else follows.
-2. **Does a `check` attach to a `treeDigest`?** If yes it is load-bearing and belongs in v1.
-3. **Conversation-scoped or owner-scoped?** Decides the grant pattern; identity scope is the chat's
-   default.
-4. **Do failed attempts keep their trees?** Keeping them makes "what did it try" complete and grows
-   storage per attempt. Discarding them loses exactly the history this design exists to capture.
+1. **Vendored dependencies, or dependency-free?** Open in COST, not in direction: vendored is the
+   only thesis-consistent option, so what is actually open is the cache design it forces (see "The
+   three hard parts").
+2. **Conversation-scoped or owner-scoped?** The genuinely open one. It decides the grant pattern,
+   and identity scope is the chat's default. Whichever is chosen, the suite must exercise BOTH
+   postures from day one: `{owner}` and `{conversationId}` hide different failures, and testing one
+   of a documented either/or is how two bugs shipped in the chat (see [gotchas.md](gotchas.md)).
+3. **Does the runner enforce the ignore list, or the worker?** A program that writes into an
+   ignored path has done nothing wrong; a worker that stores it has. Worker-side is the answer, but
+   it interacts with the quota (ignored output still fills a disk).
