@@ -8,6 +8,9 @@ judged against a stated expectation (`check` records). Both shipped; see
 > **Status: design, unscheduled.** Recorded in
 > [plan-milestones.md](plan-milestones.md) as a later goal. The decisions below are made, so the
 > open work is implementation and the four questions at the end.
+>
+> A workspace and a second LANGUAGE are the same project: a multi-file tree needs an entrypoint
+> declaration, and that is per-language. Read [design-execution.md](design-execution.md) with this.
 
 ## Contents
 - Why a workspace at all
