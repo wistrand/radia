@@ -4,16 +4,15 @@ Why the language question is really an isolation question, how a space gains a l
 stops being true when it does. Nothing here is built beyond the JS runner that exists today
 (`examples/chat/workers/exec.ts`, `examples/chat/tools/exec-sandbox.ts`).
 
-> **Status: design.** The dispatch half is DECIDED, because it follows from architecture that is
-> already built and needs no new mechanism. The isolation half is PROPOSED and carries the open
-> questions at the end. Read [design-workspaces.md](design-workspaces.md) alongside this: a
+> **Status: design.** The SHAPE is decided: a sandbox is a record, matched by pattern like anything
+> else. The isolation backends and the open questions at the end are not. Read [design-workspaces.md](design-workspaces.md) alongside this: a
 > multi-file working tree and a second language interact, and the interaction is not small.
 
 ## Contents
 - The actual constraint
-- Dispatch: decided, and already free
+- A sandbox is a RECORD, not a worker
 - Isolation: the option space
-- Proposed: a parameterised runner
+- Proposed: one runner worker, many sandboxes
 - What stops being uniform
 - Where this collides with workspaces
 - Open questions
@@ -29,20 +28,84 @@ different isolation story, and the language itself is the easy part.
 So "support Python" is not a request for a Python parser. It is a request for a second security
 mechanism, with a different blast radius, that a model cannot tell apart from the first.
 
-## Dispatch: decided, and already free
+## A sandbox is a RECORD, not a worker
 
-A runner is a worker; a tool is a `capability` record; work is claimed by content. The exec worker
-claims `tool_call{tool:"run_code"}`. A Python runner claims `tool_call{tool:"run_code",
-language:"python"}` and publishes its own capability. Adding a language is adding a process.
+The first draft of this document proposed one runner worker per language, each publishing a
+`capability` with a `language` field. That is wrong, and the way it is wrong is instructive, so it
+is recorded here rather than deleted.
 
-Two things fall out with no design at all, and both are worth stating so nobody re-invents them:
+**It conflates the language with the isolation.** `language: "python"` says nothing about what the
+environment guarantees. Two Python runners with different jails collide on one capability name, and
+an operator granting `tool_call{language:"python"}` has granted *any* Python runner, including the
+weak one. The grant reads like a policy and is really a proxy for one.
 
-- **Per-language grants.** A grant pattern is matched against the record body, so
-  `tool_call{language:"python"}` is grantable and revocable independently of `{language:"js"}`. An
-  operator allows one language and denies another without touching code, and the enforcement is the
-  runtime's rather than the worker's.
-- **Which languages a space can run is a QUERY**, over `capability` records (and `interest` records
-  for what is listening right now). Not a deployment note somebody has to keep current.
+**And it makes the guarantee prose.** The draft identified that the guarantee varies per runner and
+then proposed to fix it by writing the isolation into the capability's DESCRIPTION: text the model
+reads and the runtime cannot act on. That is a documentation fix for a substrate problem, and this
+codebase has a name for the shape (a static table of runners, reachable only out of band; see
+"express features through the substrate" in [CLAUDE.md](../CLAUDE.md)).
+
+**A sandbox is an execution environment, which is a thing, so it is a record.**
+
+```
+kind: sandbox
+body: { name, language, isolation, network, filesystem, writable, memoryMb, timeoutMsMax, version }
+```
+
+A registry like `model` and `capability`: latest-wins by name, withdrawn by a `retired: true`
+successor, discovered by query. What changes by making it data rather than a worker's identity:
+
+- **A grant scopes on the PROPERTY that matters, not on a proxy for it.** `tool_call{sandbox:
+  "py-bwrap"}` pins a session to one environment; and because grant patterns match the body with
+  dotted paths, a policy can bind what it actually cares about rather than a language name. This is
+  the pattern-layer-as-authorization-primitive claim in
+  [research-applications.md](research-applications.md) applied to execution.
+- **The guarantee is matchable instead of readable.** "Which environments have no network" is a
+  query. "Did this run somewhere with a filesystem" is a query. Neither is a sentence somebody has
+  to keep true.
+- **A `check` references a sandbox RECORD**, not a runner string, so an attestation carries the
+  whole declared environment by reference. Open question 3 of the first draft dissolves.
+- **Discovery is uniform.** The chat already learns its tools from `capability` records and its
+  models from `model` records. Environments were the one thing it would have had to be told.
+
+### Routing: the precedent already exists
+
+`workers/router.ts` claims UNTIERED `llm_call`s (`{tier: {$exists: false}}`), classifies the turn,
+and re-dispatches a tiered one that an inference-worker serves. Model selection is delegated to the
+substrate rather than decided in the client.
+
+Execution takes the same shape. A call arrives unassigned:
+
+```
+tool_call{ tool: "run_code", requires: {language: "python", network: false} }
+```
+
+A sandbox-router claims `{sandbox: {$exists: false}}`, reads the `sandbox` registry, picks one that
+satisfies the requirements, and re-dispatches `tool_call{sandbox: "py-bwrap"}`. The runner claims by
+plain equality on `sandbox`, which is all pattern matching needs to be.
+
+That indirection is not ceremony. Patterns are equality and comparison, not subsumption: "an
+environment that satisfies at least these requirements" is not expressible as a match, and pushing
+it into the matcher would mean putting a solver in the routing language, which
+[design-matching.md](design-matching.md) forbids for good reasons. A worker doing the selection is
+where that logic belongs, and the chat already proves the shape works.
+
+An agent may also skip the router and name a sandbox directly, having discovered one by query. Both
+paths are ordinary content routing.
+
+### Who writes the sandbox record
+
+The open question this creates, and it matters more than the backend choice.
+
+If a WORKER declares its own sandbox, the record is a manifest claim, and
+[CLAUDE.md](../CLAUDE.md) is explicit that manifest claims are descriptive, never authorization: a
+worker asserting `network: false` has asserted it. If an OPERATOR declares sandboxes and a worker is
+granted the ones it may serve, the record inherits the grant model's property (assigned, never
+self-declared) and an operator's policy binds to something they wrote.
+
+The second is stronger and is the one to prefer. The operator knows what they installed; the worker
+knows only what it believes. A middle path exists (worker declares, operator approves with a
+successor) and is worth considering only if operator declaration proves too heavy in practice.
 
 The tool contract is already language-neutral: source in, `{ok, stdout, stderr, exitCode, timedOut,
 ms}` out, plus the optional `expect` that produces a `check`. Nothing in it mentions JavaScript.
@@ -79,45 +142,44 @@ option in the table whose security model is *better* rather than merely equivale
 toolchain: a wasm build per language, and "run this Python script" means shipping a CPython wasm of
 roughly ten megabytes. Right direction, later.
 
-## Proposed: a parameterised runner
+## Proposed: one runner worker, many sandboxes
 
-One worker, configured with runners, rather than one worker written per language:
+A single runner worker that serves whatever `sandbox` records it is granted, rather than one worker
+written per language. Backends: `deno` (built in, no dependency), `bwrap` (Linux, the fast path),
+`container` (portable fallback). Keep Deno the default so a checkout still runs JS with nothing
+installed.
 
-```
---runner js:deno                    # built in, no dependency, the default
---runner python:bwrap:python3
---runner ruby:container:ruby:3.3
-```
-
-Each configured runner publishes its own `capability` record, so adding a language is operator
-configuration in the same shape as `RADIA_CHAT_EXEC_DIRS` today, not a code change. Backends:
-`deno` (built in), `bwrap` (Linux, the fast path), `container` (portable fallback). Keep Deno as the
-zero-dependency default so a checkout still runs JS with nothing installed.
+Adding a language is then declaring a sandbox and installing its interpreter, not writing or
+deploying code. Which is the test this design has to pass: if adding Python needs a new worker, the
+environments are still hiding in worker identity.
 
 ## What stops being uniform
 
-This is the part that needs deciding rather than implementing, because it is where a multi-language
-sandbox quietly becomes weaker than the one it replaces.
+Adding environments is where a multi-language sandbox quietly becomes weaker than the one it
+replaces, and it is worth being precise about which part the record shape fixes and which it does
+not.
 
-**The guarantee varies per runner, and nothing currently says so.** "No network" under Deno is the
+**The guarantee degrades from a property to a configuration.** "No network" under Deno is the
 ABSENCE of `--allow-net`: structural, and hard to get wrong. Under a container it is
-`--network=none`, a flag somebody can omit. The strongest claim the sandbox makes degrades from a
-property to a configuration, and that degradation must be visible rather than assumed.
+`--network=none`, a flag somebody can omit. Nothing about representing sandboxes as records changes
+that. What changes is whether the degradation is VISIBLE.
 
-Three consequences, all cheap if done up front and awkward afterwards:
+- **Fixed by the record.** The environment's claims are body fields, so they are matchable,
+  grantable, queryable and referenceable from a `check`. An operator asking "which of my sandboxes
+  have a filesystem" gets an answer from the space rather than from a deployment script, and a
+  policy binds to the property rather than to a language name that stands in for it.
+- **NOT fixed by the record, and this is the residue.** A sandbox record is a DESCRIPTION of a jail;
+  the jail is what the launcher actually passes. A record saying `network: false` beside a launcher
+  missing `--network=none` is a lie the runtime cannot detect, and it is a worse lie than the prose
+  version precisely because it looks authoritative. Two mitigations, and they compose: operator
+  declaration (above) means the claim is made by whoever configured the launcher, and a runner can
+  VERIFY its backend at startup (attempt a connection inside the jail, refuse to advertise if it
+  succeeds) so the record is tested rather than asserted. The second is the one that turns a claim
+  into evidence, and it is cheap: one probe per backend per boot.
 
-- **A capability description states the isolation it got.** Descriptions are the documentation in
-  this app: that is how `run_code` already tells a model there is no network. A runner that cannot
-  honestly claim no-network must say so in its own description, or the model will carry the JS
-  guarantees over to it. This is the same failure as the `run_code`/`save_content` overlap in
-  [gotchas.md](gotchas.md): a model believes the description it reads, and an unstated limit is an
-  assumed absence of one.
-- **A `check` records WHICH RUNNER produced the verdict.** "This passed" is unqualified without
-  "under what". `check` records exist now (see the chat README) and carry the expectation and the
-  outcome; adding the runner identity is small, and without it an attestation from a weakly isolated
-  runner is indistinguishable from one produced under zero permissions.
-- **An operator can see what is installed and what it guarantees**, by querying `capability`, rather
-  than by reading a deployment script.
+The general rule this is an instance of: **a claim a model reads is only as good as the enforcement
+behind it.** The `run_code`/`save_content` overlap in [gotchas.md](gotchas.md) was the same failure
+in the tool layer, where the fix was wording because nothing could enforce it. Here something can.
 
 ## Where this collides with workspaces
 
@@ -134,18 +196,21 @@ requirement. The upside stands: a vendored dependency set is part of the audited
 
 ## Open questions
 
-1. **bubblewrap first, or container first?** bwrap is faster than what exists today and Linux-only;
+1. **Who writes a `sandbox` record: the operator, or the worker?** The one that matters most. See
+   "Who writes the sandbox record"; operator-declared is preferred, because a manifest claim is
+   descriptive by definition and an execution guarantee should not be.
+2. **bubblewrap first, or container first?** bwrap is faster than what exists today and Linux-only;
    container is portable and ~25x slower. The principle in [CLAUDE.md](../CLAUDE.md) is maximal
    platform independence, which argues container; the measurements argue bwrap. Both, with the
-   backend chosen per runner, is the obvious compromise and doubles the surface to test.
-2. **Does a runner declare its guarantees, or assert them?** A description that SAYS no-network is a
-   promise. A worker that verifies its own jail before advertising is an enforcement. The second is
-   better and needs a way to test a backend at startup.
-3. **Does `check` gain the runner, or does an attestation carry the whole environment?** The
-   narrow version is one field. The broad version is a record of the runner, its version, its
-   isolation flags and the dependency set, which is what the audit application in
-   [research-applications.md](research-applications.md) §5 actually wants.
-4. **Is `language` a field on `tool_call{tool:"run_code"}`, or a separate tool name per language?**
-   One tool with a field keeps the model's list short and makes per-language grants a pattern.
-   Separate names make each capability description self-contained, which matters more once the
-   guarantees differ. Leaning toward the field, with the caveat in "what stops being uniform".
+   backend named in the sandbox record, is the obvious compromise and doubles the surface to test.
+3. **Does a runner VERIFY its jail before advertising?** A probe per backend per boot turns
+   `network: false` from a claim into a tested one. Cheap, and the thing that keeps a structured
+   claim from being a more convincing version of an unenforced sentence.
+4. **Does the sandbox-router exist from the start, or does an agent name a sandbox directly?**
+   Direct naming is less machinery and makes the agent choose an environment it may not understand.
+   The router is the `llm_call` tier precedent and the same argument applies: selection is a
+   decision to delegate, not one to encode in a client.
+5. **How much environment does a `check` carry?** A reference to the sandbox record is the narrow
+   version. The broad version pins the interpreter version and the dependency set too, which is what
+   the audit application in [research-applications.md](research-applications.md) §5 actually wants,
+   and which only becomes answerable once workspaces vendor their dependencies.

@@ -911,6 +911,16 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   details and are not: an ABSENT expectation records no verdict rather than a passing one (an
   unverified run must not read as successful), and a TIMEOUT fails `exit_zero` (a killed process has
   a null exit code, and treating that as zero turns the worst outcome into a pass).
+- **When a capability varies, make the VARIATION a record, not a worker's identity.** A first draft
+  of multi-language execution gave each language its own runner worker publishing
+  `capability{language}`. That conflates two axes: `language: "python"` says nothing about what the
+  jail guarantees, so two Python runners with different isolation collide on one name and an
+  operator granting `tool_call{language:"python"}` has granted the weak one too. The grant reads
+  like a policy and is a proxy for one. The fix is that an execution environment is a THING, so it
+  is a record (`sandbox`), its guarantees are body fields, and a grant binds the field that matters.
+  Symptom to catch: a design that answers "how will anyone know what this guarantees?" with "we will
+  write it in the description". Descriptions are for a model's benefit; the runtime cannot match on
+  prose. See [design-execution.md](design-execution.md).
 - **The cost of an LLM iteration loop is the model, not the substrate.** Measured locally: a full
   put+take+ack round trip is ~30ms, a sandbox spawn ~27ms, and a model round is 1-10 SECONDS. So
   routing an edit-run-test loop through records costs about 1% of an iteration, and optimizing the

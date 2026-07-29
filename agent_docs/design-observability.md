@@ -21,7 +21,7 @@ stale-available records), and **remediation** (`adminTransition`,
 [design-auth.md](design-auth.md)) is the other operator action on this plane. All `/v0/ops/*` is
 grant-gated to operator principals (enforced). **Not
 implemented:** the hash-chained/anchored tamper-evident log (§9.1, M1–M2), envelope
-encryption / crypto-shredding (§9.2, M2), repeated-shape livelock detection (M3),
+repeated-shape livelock detection (M3),
 re-execution tooling (M3), and the full orphan/starving-pattern analysis (M1; the current
 diagnostics use age/state heuristics, not pattern-match analysis).
 
@@ -43,7 +43,10 @@ diagnostics use age/state heuristics, not pattern-match analysis).
   [design-data-model.md](design-data-model.md)); livelock is a *repeating signature along
   a chain*, not a cycle.
 - `body_sha256` hashes **plaintext**, and the event chain hashes content hashes, not
-  content, so crypto-shredding a body leaves the chain verifiable.
+  content, so crypto-shredding a payload leaves the chain verifiable. **Built for artifacts**
+  (`Space.shredArtifact`, `POST /v0/ops/records/{id}/shred`), and only for artifacts: record bodies
+  are plaintext JSON because the routing language matches on them, so they have no erasure path. See
+  [design-data-model.md](design-data-model.md), "Erasure".
 
 ## Event log
 

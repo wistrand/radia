@@ -359,6 +359,11 @@ paths:
               schema: { type: string, format: binary }
         "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+        "410":
+          description: the content was deliberately erased; the record and its lineage remain
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Problem" }
   /a/{capability}:
     get:
       operationId: getArtifactByCapability
@@ -815,6 +820,58 @@ paths:
                 properties: { declassifiedFrom: { type: string }, id: { type: string } }
         "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+
+  /ops/records/{recordId}/shred:
+    post:
+      operationId: shredArtifact
+      summary: Destroy an artifact's bytes, keeping the record (operator only)
+      description: |
+        The one carve-out from immutability. Records are never deleted, and erasure is a real
+        requirement (a subject exercising a right, a secret written by accident, a retention
+        deadline), so what is destroyed is the PAYLOAD: the artifact record, its id, its digest, its
+        lineage and every event survive. The content address stays valid because the digest is over
+        plaintext, so the space still says "an artifact with this digest was here, and was erased".
+
+        Under a space KEK this is crypto-shredding (the per-blob key is destroyed before the
+        ciphertext, so an interrupted erase leaves unreadable bytes); without one it is a plain
+        delete. The response says which, because only the first excludes recovery from a copy of the
+        storage.
+
+        Erasure is by CONTENT. The store is content-addressed, so identical payloads are one blob
+        that several artifact records reference and erasing it erases it for all of them: a shared
+        payload is refused with 409 unless `acknowledgeShared` is set. A subsequent read of the
+        bytes is 410, never 404, so "erased" and "never existed" stay distinguishable.
+      x-stability: experimental
+      x-phase: "M1"
+      parameters:
+        - { name: recordId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, description: "Recorded on the shred marker, so the WHY is auditable." }
+                acknowledgeShared: { type: boolean, description: "Required when more than one artifact record references this content." }
+      responses:
+        "200":
+          description: erased
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [artifact, digest, references, encrypted, alreadyGone, note]
+                properties:
+                  artifact: { type: string }
+                  digest: { type: string }
+                  references: { type: integer, description: "artifact records that referenced this content; all of them lose it" }
+                  encrypted: { type: boolean, description: "true = crypto-shred (key destroyed); false = plain delete" }
+                  alreadyGone: { type: boolean, description: "the bytes were already absent; the erasure is now recorded" }
+                  note: { type: string }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
 
   /ops/stats:
     get:

@@ -55,7 +55,7 @@ is the only run that actually *contends* for claims, which is why a claim-path c
 | `run.test.ts` | entry point: enumerates implementations, registers every suite against each |
 | `harness.ts`  | the `Suite` / `BlobSuite` / `BlobCryptoSuite` types and setup/teardown |
 | `suites/`     | one file per behavior area (records, matching, **pushdown soundness**, **graph: children + lineage**, leases + claim fairness, idempotency, events, watches, faults, auth, taint, admin + selector-driven remediation, blobs + encryption) |
-| `http.test.ts` | the HTTP boundary, driving `makeHandler` directly: authentication, the artifact inline/download allowlist, and a table of wrong-typed fields per endpoint |
+| `http.test.ts` | the HTTP boundary, driving `makeHandler` directly: authentication and run renewal, the artifact inline/download allowlist and capability URLs, erasure (410 vs 404, shared payloads, forged shred markers), and a table of wrong-typed fields per endpoint |
 | `backfill.test.ts` | the schema's one migration: rebuilding `record_edges` for a database written before that table existed |
 | `planner.test.ts`  | Postgres planner statistics for declared body paths (`prepareKind`) |
 | `registry.test.ts` | latest-wins projections over hand-made ids |

@@ -381,7 +381,9 @@ get rediscovered as new.
 | Hash-chained log unbuilt; events table has no hash column                          | both adapters; `design-observability.md`        |
 | No sweeper exists; expiry evaluated lazily                                         | the only `setInterval` in the RUNTIME is the MCP heartbeat (the console page has its own, in the browser) |
 | `GrantDef` has no TTL/expiry field                                                 | `src/core/kinds.ts`                             |
-| Retention GC absent: `retention_until` stored, never consulted                      | no delete path in `src/storage/`                |
+| Retention GC absent: `retention_until` stored, never consulted                      | nothing sweeps on a schedule. Note the evidence CHANGED: there is now an on-demand erasure path (`Space.shredArtifact`), so "no delete path" is no longer why |
+| **An artifact's payload can be erased on demand**, keeping the record, its digest and its lineage | `Space.shredArtifact`, `POST /v0/ops/records/{id}/shred`, `shred` records; a shredded read is 410 |
+| Record BODIES have no erasure path, because the routing language matches on them     | bodies are plaintext JSON; see design-data-model.md, "Erasure" |
 | No reactive recomputation or invalidation primitive                                | no dependency edges beyond `parent_ids`         |
 | Budgets entirely unbuilt                                                           | zero hits for `budget` in `src/**/*.ts`         |
 | **A grant can bar tainted work, so a worker cannot opt out**: `scope: {taint: "none"}` | `VALID_SCOPE_VALUES` in `src/core/kinds.ts`; `Space.taintBarrier` folds it into `readAccess`, and the code says "this one the principal cannot decline" |
