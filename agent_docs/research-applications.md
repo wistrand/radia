@@ -153,9 +153,12 @@ Ingestion workers write tainted records; taint propagates along data parents; si
 workers take with `requireUntainted`; a human declassifies through the ops plane. The barrier is at
 claim time in the runtime, not in executor discipline, and no incumbent offers that.
 
-Limits, all verified: enforcement is HTTP-boundary-only; `requireUntainted` is opt-in per call
-rather than bindable to an identity; and taint launders by omitting the parent edge on a direct put
-(§5). Pilot-grade, not a security product.
+Limits, verified 2026-07-29: `requireUntainted` is now bindable by a grant (`scope: {taint: "none"}`),
+so an executor cannot opt out, but only when EVERY applicable grant carries it, since grants union.
+Enforcement moved into `src/core/` for reads and ack-emitted writes; `Space.put` still authorizes
+only at the HTTP boundary, so an embedded host calling it directly writes past every grant. And
+taint still launders by omitting the parent edge on a direct put (§5). Pilot-grade, not a security
+product.
 
 ### 4.2 Guaranteed audit of LLM-generated code
 
@@ -344,6 +347,16 @@ State these to avoid misdirected effort.
 
 What was checked, with evidence pointers.
 
+**Re-verified against `src/` on 2026-07-29.** Evidence points at FILE + SYMBOL, never a line
+number: every line citation this ledger carried had rotted, several pointing into unrelated code,
+which makes an entry look checked while proving nothing. This ledger exists so an unverified claim cannot
+misdirect work, and it had gone stale in exactly that way: two entries under "newly found gaps" were
+fixed months earlier, and a reviewer reading this file recommended both as the highest-leverage work
+available. The lesson is the ledger's own thesis turned on itself: a claim is only as current as its
+last check, and "verified" is a date, not a property. Re-check before citing an entry, and move a
+fixed gap into "verified true" with its evidence rather than deleting it, so the same claim does not
+get rediscovered as new.
+
 ### Verified true
 
 | Claim                                                                          | Evidence                                        |
@@ -355,22 +368,27 @@ What was checked, with evidence pointers.
 | `requireUntainted` enforced inside the claim transaction                          | `rankClaimable`, `src/core/take.ts`             |
 | Pattern-scoped grants enforced on writes, including ack-emitted results           | `bodyMatchesGrant`, `src/core/space.ts`         |
 | Grant pattern ANDed into client match server-side                                | `combineMatch`, `src/core/matching.ts`          |
-| `delegation_context` server-derived, not a `PutRequest` field                      | `deriveDelegation`, `src/core/record.ts`        |
+| `delegation_context` server-derived, not a `PutRequest` field                      | `Space.deriveDelegation`, `src/core/space.ts`   |
 | `$regex`/`$where`/`$expr` forbidden at compile                                     | `FORBIDDEN`, `src/core/matching.ts`             |
 | Taint is a bare boolean, not in the body, therefore not pattern-matchable          | `RuntimeMeta`, both adapter schemas, `matchesRecord` |
-| `pattern` is wire-visible on the take selector and in grant bodies                | `openapi/radia.yaml:184`, `:1049`               |
+| `pattern` is wire-visible on the take selector and in grant bodies                | `openapi/radia.yaml`: the `TakeRequest` selector and the `GrantDef` schema |
 | **`record_edges` reverse index exists**: indexed, keyset-paged, same-transaction, backfilled | both adapters; `conformance/backfill.test.ts` |
-| Graph BFS calls `childrenOf` per node under a `GRAPH_FANOUT = 200` budget           | `src/core/space.ts:1181`, `:1238`               |
-| `matchesEvent` fires only on `state === "available"` and is watch-specific          | `src/core/space.ts:1257`                        |
-| Event log carries no bodies (`seq, cursor, id, ts` + operation/record/kind/state)   | `SpaceEvent`, `src/storage/adapter.ts:164`      |
+| Graph BFS calls `childrenOf` per node under a `GRAPH_FANOUT = 200` budget           | `GRAPH_FANOUT` + `getGraph`, `src/core/space.ts` |
+| `matchesEvent` fires only on `state === "available"` and is watch-specific          | `matchesEvent`, `src/core/space.ts`             |
+| Event log carries no bodies (`seq, cursor, id, ts` + operation/record/kind/state)   | `SpaceEvent`, `src/storage/adapter.ts`          |
 | Procedure source is a content-addressed artifact; result carries `{name, recordId, artifactId}` and the procedure record as lineage parent | `examples/chat/workers/exec.ts` |
 | Sandbox child holds no credentials                                                 | `examples/chat/tools/exec-sandbox.ts`           |
 | Hash-chained log unbuilt; events table has no hash column                          | both adapters; `design-observability.md`        |
-| No sweeper exists; expiry evaluated lazily                                         | only `setInterval` in `src/` is the MCP heartbeat |
+| No sweeper exists; expiry evaluated lazily                                         | the only `setInterval` in the RUNTIME is the MCP heartbeat (the console page has its own, in the browser) |
 | `GrantDef` has no TTL/expiry field                                                 | `src/core/kinds.ts`                             |
 | Retention GC absent: `retention_until` stored, never consulted                      | no delete path in `src/storage/`                |
 | No reactive recomputation or invalidation primitive                                | no dependency edges beyond `parent_ids`         |
-| Budgets entirely unbuilt                                                           | zero hits for `budget` in `src/`                |
+| Budgets entirely unbuilt                                                           | zero hits for `budget` in `src/**/*.ts`         |
+| **A grant can bar tainted work, so a worker cannot opt out**: `scope: {taint: "none"}` | `VALID_SCOPE_VALUES` in `src/core/kinds.ts`; `Space.taintBarrier` folds it into `readAccess`, and the code says "this one the principal cannot decline" |
+| **`declassify` records the principal that performed it**                           | `Space.declassify(recordId, principal?)`, `src/core/space.ts`  |
+| **Reads and ack-emitted writes authorize inside `Space`**, not only at the boundary  | `Space.readAccess` → `authorize`; `Space.ack` → `authorize(owner, "put", kind)` |
+| A run RENEWS rather than dying: successor `agent_run`, same token hash, later expiry | `Space.renewRun`; bounded by `runMaxLifetimeSeconds` and by a stop |
+| A person is an ordinary principal; privilege is a NAMED set, not the `human:` prefix | `Space.isPrivileged` reads `ctx.operators`; `radia login` mints a human's run |
 
 ### Plausible but false
 
@@ -382,23 +400,42 @@ These circulate, and some appeared in other `agent_docs/` files. Check here befo
 | "Auth enforcement is single-instance"                      | **Wrong.** Credentials and grants are read from records per request with no cache; a token minted on one instance authenticates on another. The real cross-instance gap is the kind registry |
 | "Every program that ever ran is a query"                   | **Wrong.** Procedure invocations carry no code; executed text is synthesized; the scoped session lacks `query` on `tool_call` |
 | "The exec worker acks every result with `taint:true`"      | **Partly wrong.** Artifacts and execution results yes; `saveProcedure`/`retireProcedure` success returns omit taint |
-| "Only the exec worker can write `procedure` records"       | **Configuration, not invariant.** `role` defaults to `admin`, whose session sends no bearer and resolves to the `human:local` operator |
+| "Only the exec worker can write `procedure` records"       | **Configuration, not invariant**, though the hole it named is closed. The chat once defaulted to a role that ran the session as the operator; there are no roles now and a session token is required, so the session holds only `procedure: query`. It stays configuration because the grant list is the app's, not the runtime's |
 | "Three processes at three privilege levels"                | The repo's own diagram shows two; the third is the REPL/launcher         |
 | "Resource limits are hard and enforced"                    | Only `$and`/`$or` depth ≤ 3 and the 32 MiB artifact cap                  |
 | "`Pattern` is not wire-visible"                           | It is: the take selector request field, plus the grant body field       |
 
-### Newly found gaps
+### Gaps
 
-- `declassify` records no principal; the event's operation is `put`, not `declassify`.
-- Taint launders by omitting the parent edge on a direct put.
-- `requireUntainted` is per-call, not bindable to a grant or identity.
-- `authorize`/`combineMatch`/`bodyMatchesGrant` live in handlers, so in-process `Space` callers
-  bypass all of it.
+Open unless marked. A CLOSED entry stays here with what closed it, so the same gap is not
+rediscovered as new; the corresponding positive claim is in "verified true" above.
+
+- **CLOSED.** ~~`declassify` records no principal.~~ It takes one (`Space.declassify(recordId,
+  principal?)`). Still open: the event's operation is `put`, not `declassify`, so the audit trail
+  says a record appeared rather than that a clearance happened.
+- **CLOSED.** ~~`requireUntainted` is per-call, not bindable to a grant or identity.~~ A grant may
+  carry `scope: {taint: "none"}`, which `taintBarrier` applies whatever the caller asked for. The
+  per-call flag remains, as a courtesy a worker pays; the grant-side barrier is what an operator
+  imposes. Note the union rule: it binds only when EVERY applicable grant carries it.
+- **PARTIALLY CLOSED.** ~~`authorize`/`combineMatch`/`bodyMatchesGrant` live in handlers, so
+  in-process `Space` callers bypass all of it.~~ They live in `src/core/` now, and reads
+  (`readAccess`) plus ack-emitted writes (`Space.ack`) authorize inside the core. Still open, and
+  it is the one that matters for §5: **`Space.put` does not authorize** (`src/core/space.ts`, "that
+  only a privileged principal may put one is enforced at the API boundary"), so a host embedding
+  `Space` and calling `put` directly writes past every grant. Until that closes, "the medium is the
+  enforcement point" is true of the HTTP surface and a design intent for an embedded one.
+- Taint launders by omitting the parent edge on a direct put. `computeTaint` reads only
+  `parentIds` and the client's raise, so a caller that derives content without declaring the parent
+  writes it clean.
 - `body_sha256` never re-verified on read; unencrypted blob `get` does not re-hash.
 - `declassify` mints a new record id with the same `body_sha256`, so a clearance keyed on record id
   and one keyed on digest diverge across it.
-- The artifact put grant is checked against `{mediaType}` before `x-radia-meta` appFields are parsed,
-  so an appField-scoped grant denies every artifact write (fail-closed).
+- The artifact put grant is checked against `{mediaType}` before `x-radia-meta` appFields are
+  parsed (`handlers/artifacts.ts`: `authorize` + `bodyMatchesGrant` on `{mediaType}` alone, ~20
+  lines before `appFields`), so an appField-scoped put grant denies every artifact write
+  (fail-closed). Not hit by the chat, whose artifact writers hold an unscoped `artifact: put`.
+- Schema versioning and migration of kinds are unbuilt (`plan-milestones.md`: `[~]`). Every
+  application here depends on it eventually; a capability mesh at org scale reaches it first.
 
 ---
 

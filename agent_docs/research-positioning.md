@@ -59,8 +59,11 @@ already runs."** Name the incumbent, and state precisely where the models don't 
   Radia's `taint` / `requireUntainted` and lease-derived `delegation_context` answer "may *this
   payload* reach *this step*", a question Temporal's architecture has no place to ask. This is
   Radia's design center, stated with the same care as the evidence above: real in design,
-  early in maturity (enforcement today is HTTP-boundary-only and single-instance; see
-  [design-auth.md](design-auth.md) and [gotchas.md](gotchas.md)).
+  early in maturity. Credentials and grants resolve from records per request, so authorization is
+  NOT single-instance; the live limit is that `Space.put` authorizes only at the HTTP boundary, so
+  an embedded host calling it directly writes past every grant. See
+  [design-auth.md](design-auth.md), [gotchas.md](gotchas.md), and the claim ledger in
+  [research-applications.md](research-applications.md) §8, which carries the current status.
 - **Data plane vs. execution log.** Temporal caps payload/history size and tells you to keep
   large data out and pass references. The history is an execution log, not a knowledge store.
   Radia's records *are* the shared knowledge; "what does the system currently know about X" is
