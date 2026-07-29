@@ -16,7 +16,7 @@ import type { Space } from "../core/space.ts";
 import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
 import { handleCreateDefinition, handleCreateRun, handleRenewRun, handleStopRun } from "./handlers/agents.ts";
-import { handleGetArtifact, handleMintCapability, handlePutArtifact } from "./handlers/artifacts.ts";
+import { handleGetArtifact, handleMintCapability, handlePutArtifact, handleShredArtifact } from "./handlers/artifacts.ts";
 import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem, statusFor } from "./problem.ts";
@@ -325,6 +325,10 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
           return await handleAdmin(space, id, tail);
         }
         if (req.method === "POST" && tail === "declassify") return await handleDeclassify(space, id, principal);
+        // Erasure. On the ops plane because it is irreversible and operator-only, and beside
+        // declassify because both are carve-outs from an invariant: one clears a classification,
+        // the other destroys a payload. Neither is something a participant may do to itself.
+        if (req.method === "POST" && tail === "shred") return await handleShredArtifact(space, req, id, principal);
       }
     }
 

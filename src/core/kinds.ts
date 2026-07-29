@@ -34,6 +34,10 @@ export const AGENT_RUN = "agent_run";
  *  is the artifact as far as coordination is concerned: it routes, carries taint and lineage, and
  *  is grant-gated like anything else; only the payload lives outside. */
 export const ARTIFACT = "artifact";
+/** A destroyed payload: `{digest, reason, at}`. Written when a blob is crypto-shredded, so a reader
+ *  can tell "erased" from "never existed". Write-protected: a forged shred marker would make live
+ *  bytes look destroyed, which is the one lie this record exists to prevent. */
+export const SHRED = "shred";
 
 /**
  * Reserved kind: what a run is currently listening for (body `{kind, match?}`).
@@ -54,7 +58,7 @@ export const INTEREST = "interest";
 
 /** Reserved kinds only a human/supervisor principal may write directly (assigned, never
  *  self-declared). Runs/definitions are also written internally by the bootstrap endpoints. */
-export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN]);
+export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, SHRED]);
 
 /** The coordination operations a grant can authorize. */
 export type GrantOp = "put" | "take" | "query" | "read_one";
@@ -237,7 +241,7 @@ export function validateArtifactFields(fields: unknown): void {
 
 /** Kinds defined in CODE, not as `kind_def` records. That is why they never appear in
  *  `listKinds()`, which reads those records. Anything asking "does this kind exist" must consider these too. */
-export const RESERVED_KINDS = [KIND_DEF, GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, ARTIFACT, INTEREST];
+export const RESERVED_KINDS = [KIND_DEF, GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, ARTIFACT, INTEREST, SHRED];
 
 export const META_RESERVED: KindDef[] = [
   META_KIND_DEF,
@@ -259,6 +263,7 @@ export const META_RESERVED: KindDef[] = [
   // so that is the only lookup on the path. The pattern itself stays an opaque body field, since
   // nothing queries by it; it is compiled and evaluated, never matched against.
   { kind: INTEREST, indexedPaths: [{ path: "kind", type: "keyword" }], claimable: false },
+  { kind: SHRED, indexedPaths: [{ path: "digest", type: "keyword" }], claimable: false },
   // Indexed on digest (find every record referencing the same bytes) and mediaType (route by what
   // it is: an image worker claims `{mediaType: "image/png"}` without a routing table).
   {

@@ -18,9 +18,11 @@ between attempts), and that is a sandbox capability gap rather than a substrate 
 
 The shape that fits: an attempt's workspace is a set of artifacts, the worker materialises them into
 a temp directory, runs, and stores changed files back as artifacts. Records stay the medium and the
-filesystem is ephemeral scratch, so every version of every file stays content-addressed and
-attributable. The two pieces it builds on are done: attempts link (`attempt`/`retryOf` on
-`tool_call`) and a run can be judged against a stated expectation (`check` records). Not scheduled.
+filesystem is ephemeral scratch, so every version of every file stays content-addressed,
+attributable and individually ERASABLE. The two pieces it builds on are done: attempts link
+(`attempt`/`retryOf` on `tool_call`) and a run can be judged against a stated expectation (`check`
+records). The design, including the git decision, is in
+[design-workspaces.md](design-workspaces.md). Not scheduled.
 
 ## Current state
 

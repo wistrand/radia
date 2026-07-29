@@ -143,7 +143,23 @@ export async function handleGetArtifact(
       }
     }
     const found = await space.readArtifact(recordId);
-    if (!found) return problem(404, "not_found", `no artifact ${recordId}`);
+    if (!found) {
+      // "Erased" and "never existed" must not be the same answer. A record whose bytes were
+      // deliberately destroyed is 410 Gone with the reason, so an auditor reading this response
+      // learns that something WAS here; 404 stays the answer for an id that never named anything.
+      const rec = await space.getRecord(recordId);
+      const digest = (rec?.body as { digest?: string } | undefined)?.digest;
+      const shred = digest ? await space.shredOf(digest) : null;
+      if (shred) {
+        return problem(
+          410,
+          "erased",
+          `this artifact's content was destroyed (${shred.method})${shred.reason ? `: ${shred.reason}` : ""}. ` +
+            `The record and its lineage remain; the bytes do not.`,
+        );
+      }
+      return problem(404, "not_found", `no artifact ${recordId}`);
+    }
     const def = found.def as ArtifactDef;
     const headers: Record<string, string> = {
       "content-type": def.mediaType,
@@ -177,6 +193,44 @@ export async function handleGetArtifact(
     return new Response(found.stream, { status: 200, headers });
   } catch (e) {
     if (e instanceof RadiaError) return problem(statusFor(e.code, 403), e.code, e.message);
+    throw e;
+  }
+}
+
+/** A body is optional here, and a malformed one must not be the reason an erasure fails. */
+async function shredOptions(req: Request): Promise<Record<string, unknown>> {
+  try {
+    const j = await req.json();
+    return j && typeof j === "object" ? j as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+/** POST /v0/ops/artifacts/{id}/shred: destroy the bytes, keep the record. Operator-only via /ops. */
+export async function handleShredArtifact(space: Space, req: Request, recordId: string, principal: string): Promise<Response> {
+  const j = await shredOptions(req);
+  try {
+    const r = await space.shredArtifact(recordId, {
+      principal,
+      reason: typeof j.reason === "string" ? j.reason : undefined,
+      acknowledgeShared: j.acknowledgeShared === true,
+    });
+    return Response.json({
+      artifact: recordId,
+      ...r,
+      // Say which guarantee was actually obtained. Without a KEK this is a delete, and a caller who
+      // needed unrecoverability against a copy of the storage has to know it did not get it.
+      note: r.encrypted
+        ? "crypto-shredded: the per-blob key is destroyed, so the ciphertext is unrecoverable"
+        : "deleted: this space has no KEK, so recovery from a storage copy is not excluded",
+    });
+  } catch (e) {
+    if (e instanceof RadiaError) {
+      if (e.code === "not_found") return problem(404, e.code, e.message);
+      if (e.code === "shared_payload") return problem(409, e.code, e.message);
+      return problem(422, e.code, e.message);
+    }
     throw e;
   }
 }

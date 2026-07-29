@@ -764,3 +764,100 @@ Deno.test("http: a run renews itself with its own token, and an expired one cann
     await close();
   }
 });
+
+Deno.test("http: erasure destroys the payload and keeps the record", async () => {
+  // Immutability is the substrate's core property; erasure is a real requirement (a subject
+  // exercising a right, a secret written by accident). This is the carve-out, and its shape is the
+  // point: what dies is the PAYLOAD. The record, its id, its lineage and the event log survive, and
+  // the content address stays valid because the digest is over plaintext. A plain delete would take
+  // the evidence that anything was ever there.
+  const { space, handler, close } = await newHandler();
+  try {
+    const { id } = await space.putArtifact(new TextEncoder().encode("secret"), { mediaType: "text/plain" });
+    const before = await handler(get(`/v0/artifacts/${id}`));
+    assertEquals(before.status, 200);
+    await drain(before);
+
+    const res = await handler(post(`/v0/ops/records/${id}/shred`, { reason: "erasure request" }));
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    assertEquals(body.references, 1);
+
+    // 410, not 404: "erased" and "never existed" must not be the same answer, or an auditor cannot
+    // tell a destroyed record from a typo'd id.
+    const after = await handler(get(`/v0/artifacts/${id}`));
+    assertEquals(after.status, 410, "a shredded artifact is Gone, not Not Found");
+    const problem = await after.json();
+    assert(String(problem.detail).includes("erasure request"), "the reason survives, so the WHY is auditable");
+
+    const missing = await handler(get(`/v0/artifacts/01AAAAAAAAAAAAAAAAAAAAAAAA`));
+    assertEquals(missing.status, 404, "an id that never named anything stays 404");
+    await drain(missing);
+
+    // What must survive: the record, its body (so the digest is still there), and the shred marker.
+    const rec = await space.getRecord(id);
+    assert(rec, "the record itself must not be deleted");
+    assertEquals((rec?.body as { digest: string }).digest, body.digest);
+    const marker = await space.shredOf(body.digest);
+    assert(marker, "the erasure is itself a record");
+    assertEquals(marker?.reason, "erasure request");
+  } finally {
+    await close();
+  }
+});
+
+Deno.test("http: erasing SHARED content refuses until the caller says it means it", async () => {
+  // The store is content-addressed, so identical payloads are ONE blob that several artifact
+  // records reference. Erasing by content erases it for all of them: right semantics, sharp edge
+  // (two people who uploaded the same file). Fail closed and make the caller assert it.
+  const { space, handler, close } = await newHandler();
+  try {
+    const bytes = new TextEncoder().encode("the same bytes");
+    const a = await space.putArtifact(bytes, { mediaType: "text/plain", appFields: { owner: "human:alice" } });
+    const b = await space.putArtifact(bytes, { mediaType: "text/plain", appFields: { owner: "human:bob" } });
+    assertEquals(a.digest, b.digest, "identical bytes dedupe to one blob");
+
+    const refused = await handler(post(`/v0/ops/records/${a.id}/shred`, {}));
+    assertEquals(refused.status, 409, "a shared payload must not be erased by accident");
+    const p = await refused.json();
+    assertEquals(p.title, "shared_payload");
+    // …and nothing was destroyed by the refusal.
+    const still = await handler(get(`/v0/artifacts/${b.id}`));
+    assertEquals(still.status, 200, "a refused erasure must not have erased anything");
+    await drain(still);
+
+    const done = await handler(post(`/v0/ops/records/${a.id}/shred`, { acknowledgeShared: true }));
+    assertEquals(done.status, 200);
+    assertEquals((await done.json()).references, 2);
+    // BOTH lose it, which is what "by content" means and why the guard exists.
+    const gone = await handler(get(`/v0/artifacts/${b.id}`));
+    assertEquals(gone.status, 410, "erasure is by content: the other record's bytes are gone too");
+    await drain(gone);
+  } finally {
+    await close();
+  }
+});
+
+Deno.test("http: a shred marker cannot be forged by a participant", async () => {
+  // A forged marker would make live bytes look destroyed, which is the one lie this record exists
+  // to prevent. `shred` is write-protected like grant and signal.
+  const { space, close } = await newHandler();
+  try {
+    const { definitionToken } = await space.createAgentDefinition("agent:w", [
+      { principal: "agent:w", kind: "shred", operations: ["put"] },
+    ]);
+    const { runToken } = await space.mintRun(definitionToken);
+    const r = await space.resolveToken(runToken);
+    assert(r.ok && r.kind === "run");
+    let refused = "wrote it";
+    try {
+      await space.authorize(r.ok && r.kind === "run" ? r.principal : "", "put", "shred");
+    } catch (e) {
+      refused = (e as Error).message;
+    }
+    assert(refused !== "wrote it", "a grant must not be enough to write a shred marker");
+    assert(/operator/.test(refused), refused);
+  } finally {
+    await close();
+  }
+});

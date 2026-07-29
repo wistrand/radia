@@ -93,6 +93,7 @@ key), [examples/stress/](examples/stress/) (load, for the Space tab), [examples/
 - [agent_docs/design-auth.md](agent_docs/design-auth.md): principals, grants, delegation, taint, revocation, budgets (§8).
 - [agent_docs/design-observability.md](agent_docs/design-observability.md): event log, audit, re-execution, livelock detection, integrity and confidentiality architecture (§9).
 - [agent_docs/design-storage.md](agent_docs/design-storage.md): Postgres mapping, deployment modes, distribution strategy (§10).
+- [agent_docs/design-workspaces.md](agent_docs/design-workspaces.md): multi-file working trees for code generation, and the relationship to git. Decided (store Radia-native, shape git-compatible, export git-real, sha256 authoritative, export only); unbuilt. Read before proposing git as a storage format.
 
 Research and planning:
 
@@ -237,6 +238,15 @@ live at the top of the relevant `agent_docs/` file, not here.
 - **Artifact bytes never travel inside a record.** A payload too large for a body lives in the
   blob store; the record carries `{digest, mediaType, size}` and routes. A base64 payload in a
   record body defeats matching, windowing, the Feed, and every size assumption downstream.
+- **Erasable data lives in an artifact, never in a record body.** Immutability is the substrate's
+  core property, and permanent deletion is a real requirement (a subject exercising a right, a
+  secret written by accident, a retention deadline). The two are reconciled at exactly one boundary:
+  a payload is out of line, so it can be destroyed (`Space.shredArtifact`, `POST
+  /v0/ops/records/{id}/shred`), while the record, its id, its lineage and the event log survive and
+  the content address stays valid. A record BODY has no erasure path, because bodies must stay
+  plaintext JSON for matching. So the existing "artifact bytes never travel inside a record" rule is
+  also the erasure boundary: extend it from "too large for a body" to "erasable, whatever its size".
+  Erasure is by CONTENT (identical payloads are one blob), irreversible, and operator-only.
 - **A blob's digest is over plaintext, and its key is destroyable.** Encryption is optional, but
   when it is on the content address still hashes the plaintext (so integrity and the event chain
   survive crypto-shredding), and the wrapped DEK lives beside the blob, never in the immutable

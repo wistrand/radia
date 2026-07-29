@@ -270,6 +270,16 @@ export class RadiaClient {
     void tick();
   }
 
+  /**
+   * Destroy an artifact's bytes, keeping the record, its lineage and the event log. Operator only.
+   *
+   * Irreversible, and by CONTENT: identical payloads are one blob, so every artifact record
+   * referencing it loses the bytes. That case refuses unless `acknowledgeShared` is set.
+   */
+  shredArtifact(recordId: string, opts: { reason?: string; acknowledgeShared?: boolean } = {}): Promise<unknown> {
+    return this.req("POST", `/v0/ops/records/${encodeURIComponent(recordId)}/shred`, opts);
+  }
+
   /** Stop a run (operator, or the run's own definition/run token if this client carries it). */
   stopRun(run: string): Promise<{ run: string; status: string; applied: boolean }> {
     return this.req("POST", `/v0/agent-runs/${encodeURIComponent(run)}/stop`);

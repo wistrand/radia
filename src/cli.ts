@@ -25,6 +25,7 @@ Inspect
   doctor                              diagnostics: dead-letters, stuck leases, stale work
   permissions <principal>             what that principal can actually do (the fold over its grants)
   login <principal> [--grant k:ops]…  mint a session token for a person (repeatable --grant)
+  shred <artifact-id> [--reason <t>] [--shared]  destroy an artifact's bytes, keep the record
   kinds                               declared kinds (a query for kind_def records)
   get <record-id>                     one record
   lineage <record-id>                 ancestry via parent_ids
@@ -151,6 +152,24 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           "  Paste that into the console's principal pill, or send it as Authorization: Bearer.",
           "  It is shown once and expires; mint another with the same command.",
         ].join("\n"));
+    }
+
+    case "shred": {
+      // Erasure is irreversible and by CONTENT, so the verb says both out loud before doing it.
+      const id = argv[0];
+      if (!id) return usage("shred <artifact-record-id> [--reason <text>] [--shared]");
+      const r = await client.shredArtifact(id, {
+        reason: flag(argv, "--reason"),
+        acknowledgeShared: has(argv, "--shared"),
+      }) as { digest: string; references: number; encrypted: boolean; alreadyGone: boolean; note: string };
+      return out(ctx, r, () =>
+        [
+          `erased the content of ${id}`,
+          `  digest:     ${r.digest}${r.references > 1 ? `  (shared by ${r.references} records, all of which lose it)` : ""}`,
+          `  method:     ${r.note}`,
+          r.alreadyGone ? `  note:       the bytes were already absent; the erasure is now recorded` : "",
+          `  the record, its lineage and the event log survive: only the payload is gone.`,
+        ].filter(Boolean).join("\n"));
     }
 
     case "permissions": {

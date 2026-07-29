@@ -33,6 +33,7 @@ import {
   INTEREST,
   RESERVED_KINDS,
   ARTIFACT,
+  SHRED,
   type ArtifactDef,
   GRANT,
   type GrantDef,
@@ -1098,6 +1099,85 @@ export class Space {
     if (!def || !isDigest(def.digest)) return null;
     const stream = await this.blobs.get(def.digest);
     return stream ? { record, def, stream } : null;
+  }
+
+  /**
+   * Destroy an artifact's bytes, irreversibly, and record that it happened.
+   *
+   * Immutability is the substrate's core property and erasure is a real requirement (a subject
+   * exercising a right, a secret written by accident, a retention deadline), so this is a carve-out
+   * with a stated shape rather than a hole. What is destroyed is the PAYLOAD; the record, its id,
+   * its lineage and the event chain all survive, and the content address stays valid because the
+   * digest is over plaintext. So the space still says "an artifact with this digest was here, and
+   * was erased", which is what an auditor needs and what a plain delete would take away.
+   *
+   * Under encryption this is crypto-shredding: `BlobStore.delete` destroys the per-blob key before
+   * the ciphertext, so an interrupted erase leaves unreadable bytes rather than readable ones.
+   * Without a KEK it is a plain delete, and the caller should be told which they got.
+   *
+   * The marker is written AFTER the bytes are gone, deliberately. A crash between the two leaves
+   * data erased and reported as merely missing, which is a cosmetic failure; the other order leaves
+   * data alive and reported as erased, which is a lie about a security property.
+   *
+   * SHARED BYTES. The store is content-addressed, so identical payloads are ONE blob that several
+   * artifact records reference. Erasing by content erases it for all of them. That is the right
+   * semantics (there is one payload) and a sharp edge (two people who uploaded the same file), so
+   * a shared blob refuses unless the caller says it means it.
+   */
+  async shredArtifact(
+    recordId: string,
+    opts: { principal?: string; reason?: string; acknowledgeShared?: boolean } = {},
+  ): Promise<{ digest: string; references: number; encrypted: boolean; alreadyGone: boolean }> {
+    const record = await this.storage.getRecord(recordId);
+    if (!record || record.kind !== ARTIFACT) throw new RadiaError("not_found", `no artifact ${recordId}`);
+    const def = record.body as ArtifactDef;
+    if (!def || !isDigest(def.digest)) throw new RadiaError("not_found", `artifact ${recordId} has no digest`);
+
+    // Every artifact record pointing at these bytes. Read to exhaustion: a bounded count that
+    // undercounts would let a shared blob past the guard below, which is the failure that turns a
+    // targeted erasure into somebody else's data loss.
+    const refs = await readRegistry(
+      (limit, after) => this.query({ kind: ARTIFACT, match: { digest: def.digest } }, limit, { dir: "desc", after }),
+      (_b, r) => r.id,
+    );
+    const references = refs.entries.size;
+    if (!refs.complete) {
+      throw new RadiaError("registry_incomplete", `could not count every reference to ${def.digest}; refusing to erase`);
+    }
+    if (references > 1 && !opts.acknowledgeShared) {
+      throw new RadiaError(
+        "shared_payload",
+        `${references} artifact records reference this content, and erasing is by CONTENT: all of ` +
+          `them lose it. Pass acknowledgeShared to proceed.`,
+      );
+    }
+
+    const alreadyGone = (await this.blobs.stat(def.digest)) === null;
+    await this.blobs.delete(def.digest);
+    const at = await this.storage.now();
+    await this.putRaw({
+      kind: SHRED,
+      body: {
+        digest: def.digest,
+        artifactId: recordId,
+        references,
+        reason: opts.reason ?? "",
+        at,
+        // Whether the bytes were destroyed or the KEY was: only the second is unrecoverable against
+        // someone holding a copy of the storage, and a caller deciding whether an erasure is
+        // sufficient needs to know which one it got.
+        method: this.blobs.name.includes("aes") ? "crypto-shred" : "delete",
+      },
+      parentIds: [recordId],
+    }, undefined, { principal: opts.principal });
+    return { digest: def.digest, references, encrypted: this.blobs.name.includes("aes"), alreadyGone };
+  }
+
+  /** Was this content erased on purpose? Distinguishes a 410 from a 404, which is the difference
+   *  between "destroyed" and "never here" and the only thing a reader can still learn. */
+  async shredOf(digest: string): Promise<Record<string, unknown> | null> {
+    const rows = await this.query({ kind: SHRED, match: { digest } }, 1, { dir: "desc" });
+    return rows.length > 0 ? rows[0].body as Record<string, unknown> : null;
   }
 
   /** Mint a short-lived capability to download ONE artifact. The caller must already be authorized

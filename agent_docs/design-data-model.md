@@ -219,6 +219,50 @@ to tamper with. `/v0/a/â€¦` stays under the versioned prefix; a root-level `/a/â
 characters and buy an unversioned public surface with no evolution story. The long form still works
 and remains the documented `stable` one.
 
+### Erasure: the one carve-out from immutability
+
+Records are immutable after commit and nothing is deleted. That is load-bearing, and it collides
+with requirements that are not optional: a subject exercising a right to erasure, a credential
+committed by mistake, a retention deadline. The collision is resolved at ONE boundary, and the
+boundary is the one that already existed.
+
+**A payload is out of line, so it can be destroyed. A body is not, so it cannot.**
+`Space.shredArtifact` (operator-only, `POST /v0/ops/records/{id}/shred`) deletes the blob and writes
+a `shred` record. What survives: the artifact record, its id, its `digest`, its lineage, and every
+event. What is gone: the bytes. Because the digest is over PLAINTEXT, the content address stays
+valid after the payload is destroyed, so the chain still verifies and the space can still say "an
+artifact with this digest was here, and was erased". A plain row delete would take that away, which
+is why erasure is a successor record and not a deletion.
+
+Four properties that are decisions, not details:
+
+- **Under a KEK this is crypto-shredding**, and `BlobStore.delete` destroys the key BEFORE the
+  ciphertext, so an interrupted erase leaves unreadable bytes rather than readable ones. Without a
+  KEK it is a plain delete; the response says which was obtained, because only the first excludes
+  recovery from a copy of the storage.
+- **The marker is written AFTER the bytes are gone.** A crash between the two leaves data erased and
+  reported as merely missing (cosmetic); the other order leaves data alive and reported as erased,
+  which is a lie about a security property.
+- **Erasure is by CONTENT.** The store is content-addressed, so identical payloads are one blob that
+  several artifact records reference, and erasing it erases it for all of them. Correct (there is
+  one payload) and sharp (two people who uploaded the same file), so a shared blob refuses unless
+  the caller passes `acknowledgeShared`.
+- **A shredded read is `410`, never `404`.** "Erased" and "never existed" must not be the same
+  answer, or an auditor cannot tell a destroyed record from a mistyped id.
+
+**What this does NOT cover, and the gap is real.** Record bodies are plaintext JSON, because the
+routing language matches on them, so there is no erasure path for a body. In `examples/chat` the
+message text a person typed lives in a `message` body, which means the chat can erase the files it
+produced and not the conversation that produced them. Closing that needs body redaction, a separate
+carve-out with its own hard problem: keeping `body_sha256` after redacting a low-entropy body (a
+name, an email, a phone number) leaves it brute-forceable, so the digest that makes artifact erasure
+safe is the thing that makes body erasure unsafe. Not built, and not to be bolted onto this one.
+
+**Finding every derived copy is the part most systems cannot do.** Erasure's hard half is not the
+original, it is the copies: which results quoted it, which artifacts came from it. `parent_ids`
+lineage and `children` answer exactly that, and `taint` marks which descendants carry untrusted
+provenance. That closure is a query here.
+
 **Only raster images, audio and video are served `inline`; everything else downloads.** Artifact
 bytes are attacker-supplied and served from the space's OWN origin (the origin whose console page
 carries an operator token), so `text/html` (or `image/svg+xml`, which is why the allowlist names
