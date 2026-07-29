@@ -911,6 +911,20 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   details and are not: an ABSENT expectation records no verdict rather than a passing one (an
   unverified run must not read as successful), and a TIMEOUT fails `exit_zero` (a killed process has
   a null exit code, and treating that as zero turns the worst outcome into a pass).
+- **Prefer a guarantee that holds by ABSENCE over one that holds by presence.** Deno's sandbox is
+  safe because nothing was granted: forget every flag and you get the safe answer. A bubblewrap or
+  container jail is safe because `--unshare-net` / `--network=none` was passed: forget one and you
+  get the unsafe answer, silently. That is not "property versus configuration", it is fail-closed
+  versus fail-open, and it is the thing to check first when a second isolation backend is proposed.
+  The mitigation is a boot-time PROBE (try to connect, try to write, try to read a path that should
+  not be there) and refusing to advertise a jail that fails it, because a structured claim nobody
+  tested is more convincing and no more true than a sentence in a description.
+- **Measure the isolation you are comparing, not the latency.** Making `python3` reachable under
+  bubblewrap means binding the host's `/usr`, and the resulting jail sees 4223 binaries and 289
+  site-packages entries where the Deno jail beside it sees NOTHING; a purpose-built container image
+  sees ~142. bwrap benchmarked faster than the runner already in use (13 ms vs 35 ms) and is three
+  orders of magnitude weaker on the dimension that matters, which is not visible in a timing table.
+  It is also inherent rather than a misconfiguration: an interpreter has to come from somewhere.
 - **When a capability varies, make the VARIATION a record, not a worker's identity.** A first draft
   of multi-language execution gave each language its own runner worker publishing
   `capability{language}`. That conflates two axes: `language: "python"` says nothing about what the
