@@ -25,13 +25,17 @@ export function rankClaimable(
   candidates: Candidate[],
   match: CompiledMatch | undefined,
   now: string,
-  requireUntainted = false,
+  allowTaint: string[] | undefined = undefined,
   createdBy?: string[],
 ): RankedCandidate[] {
   const ranked: RankedCandidate[] = [];
   for (const c of candidates) {
     if (match && !matchesRecord(c.record, match)) continue;
-    if (requireUntainted && c.record.runtimeMeta.taint) continue; // sensitive consumer skips tainted work
+    // The barrier: a candidate is skipped unless every label it carries is on the allowlist. An
+    // ALLOWLIST, so a label introduced after this grant was written bars the claim instead of
+    // being silently admitted, and the reserved `unknown` (a record written before labels existed)
+    // is barred by every allowlist there can be.
+    if (allowTaint && c.record.runtimeMeta.taint.some((l) => !allowTaint.includes(l))) continue;
     // A self-scoped grant restricts a claim to the principal's own records. `created_by` is
     // envelope metadata, not body, so no pattern can express this. It has to be a claim filter.
     if (createdBy && !createdBy.includes(c.record.runtimeMeta.createdBy)) continue;

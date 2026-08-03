@@ -86,7 +86,8 @@ await agentLoop(client, {
         mediaType,
         filename: "generated.png",
         parentIds: [callId], // lineage: conversation -> tool_call -> artifact
-        taint: true,
+        // Fetched from an image API: the bytes crossed a network.
+        taint: ["net"],
         // Lineage records where it CAME from; this is what a grant can bind. Patterns match the
         // body, and parent_ids is not body, so without this field an artifact is readable by any
         // session that learns its id, whatever the conversation scoping says.

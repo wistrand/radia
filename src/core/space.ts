@@ -33,6 +33,8 @@ import {
   INTEREST,
   RESERVED_KINDS,
   ARTIFACT,
+  normalizeTaint,
+  parseTaintAllowlist,
   SHRED,
   type ArtifactDef,
   GRANT,
@@ -60,6 +62,10 @@ import { Notifier } from "./notifier.ts";
 export interface SpaceContext {
   principal: string;
   schemaVersion: number;
+  /** Largest serialized record body, in bytes. Deliberately far below `maxArtifactBytes`: a body
+   *  approaching artifact size is a payload in the wrong place, and unlike an artifact it can
+   *  never be erased. */
+  maxRecordBytes: number;
   runId: string;
   defaultLeaseSeconds: number;
   defaultBackoffSeconds: number;
@@ -106,6 +112,10 @@ const DEFAULT_CONTEXT: SpaceContext = {
   runMaxLifetimeSeconds: 12 * 3600,
   diagnosticsStaleSeconds: 60,
   maxArtifactBytes: 32 * 1024 * 1024,
+  // 1 MiB. Generous for anything that is genuinely routing content (the chat's largest bodies are
+  // kilobytes, since stdout over 4 KiB already becomes an artifact) and far below the artifact cap,
+  // so the gap between them is the signal that a payload belongs out of line.
+  maxRecordBytes: 1024 * 1024,
   downloadCapabilitySeconds: 300,
 };
 
@@ -116,8 +126,9 @@ export type TakeInput =
 
 export interface TakeOptions {
   leaseSeconds?: number;
-  /** Sensitive consumer: skip tainted candidates (taint barrier). */
-  requireUntainted?: boolean;
+  /** Sensitive consumer: the labels a candidate may carry. Undefined = no barrier of the caller's
+   *  own; the grant-side barrier applies regardless. */
+  allowTaint?: string[];
   /** Author restriction from a self-scoped grant: skip candidates authored by anyone else.
    *  Enforced in the claim, not by the caller. A claim returns the record BODY, so a take that
    *  ignores the scope reads everything a scoped `query` correctly refuses. */
@@ -140,9 +151,9 @@ export interface ReadAccess {
   constraint: Record<string, unknown>[] | null;
   /** Principals whose records are readable, or `undefined` for no author restriction. */
   createdBy?: string[];
-  /** True when the grants themselves bar tainted records from this claim. Distinct from the
-   *  caller's own `requireUntainted`: this one the principal cannot decline. */
-  requireUntainted?: boolean;
+  /** The allowlist the GRANTS impose, if they all impose one. Distinct from the caller's own
+   *  `allowTaint`: this one the principal cannot decline. */
+  allowTaint?: string[];
 }
 
 export interface GraphNode {
@@ -150,7 +161,7 @@ export interface GraphNode {
   kind: string;
   label: string;
   createdAt: string;
-  taint: boolean; // untrusted data lineage (see design-data-model)
+  taint: string[]; // classification labels (see design-taint.md)
   delegated: number; // delegation-chain length (0 = root/operator work)
 }
 
@@ -455,22 +466,29 @@ export class Space {
   /**
    * Does this principal's own grants bar it from claiming TAINTED records of `kind`?
    *
-   * `requireUntainted` on a take is a courtesy the worker pays: a worker that omits it receives
+   * A caller's own `allowTaint` is a courtesy the worker pays: a worker that omits it receives
    * tainted work normally, so containment depended on every claimant opting in. That is a
-   * convention, not a control. A grant carrying `scope: {taint: "none"}` moves the barrier to the
+   * convention, not a control. A grant carrying `scope: {taint: …}` moves the barrier to the
    * side that assigns authority, where an operator can impose it.
    *
    * Applied only when EVERY applicable grant carries it, the same rule `authorScope` uses and for
    * the same reason: grants UNION, so one grant without the barrier already permits tainted work,
    * and enforcing it anyway would deny something that was granted.
    */
-  async taintBarrier(principal: string, op: GrantOp, kind: string): Promise<boolean> {
-    if (this.isPrivileged(principal)) return false;
+  async taintBarrier(principal: string, op: GrantOp, kind: string): Promise<string[] | undefined> {
+    if (this.isPrivileged(principal)) return undefined; // no grants to read, so no barrier to impose
     const subject = this.grantSubject(principal);
     const grants = [...(await this.registry(GRANT, grantKey, { principal: subject, kind })).entries.values()]
       .map((g) => g.body as GrantDef & { scope?: Record<string, string> })
       .filter((g) => Array.isArray(g.operations) && g.operations.includes(op));
-    return grants.length > 0 && grants.every((g) => g.scope?.taint === "none");
+    // Every applicable grant must state a barrier, or one that does not already permits the claim
+    // (grants UNION). When they all do, the effective allowlist is their UNION for the same reason:
+    // "these grants together permit" is a widening, and reading it as an intersection would make
+    // adding a grant narrow a principal's reach, which is not what a grant is.
+    if (grants.length === 0 || !grants.every((g) => typeof g.scope?.taint === "string")) return undefined;
+    const allowed = new Set<string>();
+    for (const g of grants) for (const l of parseTaintAllowlist(g.scope!.taint!)) allowed.add(l);
+    return [...allowed].sort();
   }
 
   /**
@@ -486,8 +504,8 @@ export class Space {
   async readAccess(principal: string, op: GrantOp, kind: string): Promise<ReadAccess> {
     const constraint = await this.authorize(principal, op, kind);
     const createdBy = await this.authorScope(principal, op, kind);
-    const requireUntainted = await this.taintBarrier(principal, op, kind);
-    return { constraint, createdBy, requireUntainted };
+    const allowTaint = await this.taintBarrier(principal, op, kind);
+    return { constraint, createdBy, allowTaint };
   }
 
   /** Does `record` fall inside an author restriction? `undefined` restriction means unrestricted. */
@@ -667,13 +685,32 @@ export class Space {
   /** Server-computed taint for a new record: `true` if the client raised it (source attestation)
    *  or ANY data parent is tainted. Taint propagates along data lineage only; clearing needs a
    *  privileged declassify (`Space.declassify`). Never lowered by a client. */
-  private async computeTaint(parentIds: string[], clientRaise?: boolean): Promise<boolean> {
-    if (clientRaise === true) return true;
+  /**
+   * The labels a new record carries: the UNION of every data parent's, plus whatever the client
+   * raised, plus `foreign` when a parent was written by somebody else.
+   *
+   * Union rather than OR, which is the whole point of labels: a barrier tests WHICH classification
+   * a record carries, and an OR collapses every source into one bit that saturates after the first
+   * tool call. The laundering caveat is unchanged and unchangeable here: a caller that omits a
+   * parent edge omits its labels, because this reads the edges it was given.
+   *
+   * `foreign` costs nothing extra: the parents are already being fetched to read their labels.
+   */
+  private async computeTaint(
+    parentIds: string[],
+    clientRaise: string[] | undefined,
+    writer: string,
+  ): Promise<string[]> {
+    const labels = new Set<string>(normalizeTaint(clientRaise));
     for (const pid of parentIds) {
       const p = await this.storage.getRecord(pid);
-      if (p?.runtimeMeta.taint) return true;
+      if (!p) continue;
+      for (const l of p.runtimeMeta.taint) labels.add(l);
+      // Derived from another principal's record. Compared on the grant SUBJECT, so a run and the
+      // agent it instantiates are the same author and a worker does not taint its own lineage.
+      if (this.grantSubject(p.runtimeMeta.createdBy) !== this.grantSubject(writer)) labels.add("foreign");
     }
-    return false;
+    return [...labels].sort();
   }
 
   /**
@@ -986,15 +1023,19 @@ export class Space {
   private async putRaw(
     req: PutRequest,
     idempotencyKey?: string,
-    opts: { taint?: boolean; principal?: string; event?: { operation?: string; detail?: Record<string, unknown> } } = {},
+    opts: { taint?: string[]; principal?: string; event?: { operation?: string; detail?: Record<string, unknown> } } = {},
   ): Promise<{ id: string }> {
     const now = await this.storage.now(); // INVARIANT: timestamps come from the DB clock
     // Taint is server-computed data lineage: forced by opts (declassify), else client-raise OR
     // any data parent tainted. A client can only RAISE taint; clearing needs a privileged declassify.
-    const taint = opts.taint !== undefined ? opts.taint : await this.computeTaint(req.parentIds ?? [], req.taint);
+    const writer = opts.principal ?? this.ctx.principal;
+    const taint = opts.taint !== undefined
+      ? normalizeTaint(opts.taint)
+      : await this.computeTaint(req.parentIds ?? [], req.taint, writer);
     const { record, bodyJson } = await buildRecord(req, {
       principal: opts.principal ?? this.ctx.principal, // created_by = the resolved caller
       schemaVersion: this.ctx.schemaVersion,
+      maxRecordBytes: this.ctx.maxRecordBytes,
       now,
       taint,
     });
@@ -1050,7 +1091,7 @@ export class Space {
       filename?: string;
       parentIds?: string[];
       retentionUntil?: string;
-      taint?: boolean;
+      taint?: string[];
       /**
        * APPLICATION fields merged into the artifact's record body.
        *
@@ -1510,7 +1551,7 @@ export class Space {
       leaseSeconds: opts.leaseSeconds ?? this.ctx.defaultLeaseSeconds,
       maxCumulativeSeconds: this.ctx.maxCumulativeSeconds,
       maxAttempts: this.ctx.maxAttempts,
-      requireUntainted: opts.requireUntainted,
+      allowTaint: opts.allowTaint,
       createdBy: opts.createdBy,
     };
     const selector: TakeSelector = "recordId" in sel
@@ -1556,10 +1597,15 @@ export class Space {
       const delegationContext = owner ? await this.deriveDelegation(owner, lease.recordId) : undefined;
       // Taint propagates along data lineage: the leased record is a parent, so a tainted task
       // yields a tainted result (client may also raise it; never lower it).
-      const taint = await this.computeTaint(parentIds, result.taint);
+      // The writer is whoever `created_by` will name, NOT the lease owner. They are the same actor
+      // under two names (a claim is owned by `run:…`, a record is authored by the resolved caller),
+      // and comparing the wrong one made a worker's own ack read as `foreign` against the task it
+      // had just claimed. That is precisely the saturation labels exist to avoid.
+      const taint = await this.computeTaint(parentIds, result.taint, principal ?? this.ctx.principal);
       const { record, bodyJson } = await buildRecord({ ...result, parentIds }, {
         principal: principal ?? this.ctx.principal, // created_by = the acking caller
         schemaVersion: this.ctx.schemaVersion,
+        maxRecordBytes: this.ctx.maxRecordBytes,
         now,
         delegationContext,
         taint,
@@ -2012,9 +2058,20 @@ export class Space {
    * tainted original as its data parent (audit trail). Downstream work should consume the successor.
    * Grant-gated to operators via the `/ops/*` boundary. Returns the successor id, or null if absent.
    */
-  async declassify(recordId: string, principal?: string): Promise<{ id: string } | null> {
+  async declassify(
+    recordId: string,
+    principal?: string,
+    opts: { labels?: string[] } = {},
+  ): Promise<{ id: string; cleared: string[]; remaining: string[] } | null> {
     const rec = await this.storage.getRecord(recordId);
     if (!rec) return null;
+    // PER LABEL. Clearing everything was the only option while taint was one bit, and it made a
+    // clearance say "this is fine now" without saying what it was fine FOR. Naming the labels lets
+    // an operator clear the one they reviewed and leave the rest standing, which is the difference
+    // between a decision and a blanket.
+    const present = rec.runtimeMeta.taint;
+    const cleared = opts.labels ? normalizeTaint(opts.labels).filter((l) => present.includes(l)) : present;
+    const remaining = present.filter((l) => !cleared.includes(l));
     // ATTRIBUTED. Declassify is the one operation whose whole purpose is accountability (it is
     // the human decision that lets untrusted data reach a side-effecting worker), so it must name
     // who made it. Writing it with no principal made `created_by` (and the event's `runId`) the
@@ -2024,11 +2081,14 @@ export class Space {
     //
     // Recorded as its own operation rather than an ordinary `put`, so a clearance is greppable in
     // the event log instead of hiding among every other write.
-    return await this.putRaw({ kind: rec.kind, body: rec.body, parentIds: [recordId] }, undefined, {
-      taint: false,
+    const out = await this.putRaw({ kind: rec.kind, body: rec.body, parentIds: [recordId] }, undefined, {
+      taint: remaining,
       principal,
-      event: { operation: "declassify", detail: { declassifiedFrom: recordId } },
+      // WHICH labels were cleared, in the event itself: "cleared of what" is the question an
+      // auditor asks, and a clearance that only says "declassified" cannot answer it.
+      event: { operation: "declassify", detail: { declassifiedFrom: recordId, cleared, remaining } },
     });
+    return { ...out, cleared, remaining };
   }
 
   private compile(pattern: Pattern): CompiledMatch {

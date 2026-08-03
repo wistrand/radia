@@ -6,6 +6,17 @@
 // server-side metadata assignment in core/record.ts is authoritative.
 
 import type { Space } from "../../core/space.ts";
+import { clientTaint } from "../../core/kinds.ts";
+
+/** `taint` in a JSON body is an ARRAY of labels. A bare string is refused rather than parsed as a
+ *  comma list (that leniency exists for headers, which can only carry strings): a wrong-typed field
+ *  is a caller believing it restricted a record, and silently reading it as "no raise" is the
+ *  fail-open behaviour the label vocabulary exists to end. */
+function bodyTaint(raw: unknown): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) throw new RadiaError("invalid_taint", "taint must be an array of labels");
+  return clientTaint(raw);
+}
 import type { PutRequest } from "../../core/record.ts";
 import { combineMatch, type Pattern } from "../../core/matching.ts";
 import { RadiaError } from "../../core/errors.ts";
@@ -51,7 +62,9 @@ function pickPut(j: Record<string, unknown>): PutRequest | string {
     parentIds: j.parentIds as string[] | undefined,
     deadlineAt: j.deadlineAt as string | undefined,
     retentionUntil: j.retentionUntil as string | undefined,
-    taint: j.taint === true ? true : undefined, // client may RAISE taint only; never clear it
+    // A client may RAISE labels on its own output and never clear one: raising is monotone, so it
+    // needs no trust, while removal is declassify and privileged.
+    taint: bodyTaint(j.taint),
   };
 }
 

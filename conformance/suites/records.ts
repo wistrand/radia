@@ -7,7 +7,18 @@ import type { Suite } from "../harness.ts";
 import { Space } from "../../src/core/space.ts";
 import { sha256Hex } from "../../src/core/ids.ts";
 import { handlePut } from "../../src/server/handlers/records.ts";
-import type { RadiaError } from "../../src/core/errors.ts";
+import { RadiaError } from "../../src/core/errors.ts";
+
+/** The error CODE a call raised, or undefined if it succeeded. Codes are the stable contract; the
+ *  message is prose and changes. */
+async function denied(fn: () => Promise<unknown>): Promise<string | undefined> {
+  try {
+    await fn();
+    return undefined;
+  } catch (e) {
+    return e instanceof RadiaError ? e.code : `unexpected: ${e}`;
+  }
+}
 
 /** Register the kinds these suites match on (predicates require declared indexed paths). */
 function newSpace(adapter: Parameters<Suite["run"]>[0], operators?: string[]): Space {
@@ -76,7 +87,7 @@ export const recordSuites: Suite[] = [
       // authoritative, server-assigned
       assertEquals(rec!.runtimeMeta.createdBy, "local:dev");
       assertEquals(rec!.runtimeMeta.schemaVersion, 1);
-      assertEquals(rec!.runtimeMeta.taint, false);
+      assertEquals(rec!.runtimeMeta.taint, []);
       assert(rec!.runtimeMeta.createdAt.length > 0, "createdAt not assigned");
       // client claims preserved as-is, not turned into authority
       assertEquals(rec!.clientMeta?.requested_priority, 99);
@@ -93,7 +104,6 @@ export const recordSuites: Suite[] = [
           body: { tag: "boundary" },
           createdBy: "attacker",
           schemaVersion: 999,
-          taint: false,
           runtimeMeta: { createdBy: "attacker" },
         }),
       });
@@ -106,6 +116,21 @@ export const recordSuites: Suite[] = [
       // claim, and never the space's default when a caller is known.
       assertEquals(rec!.runtimeMeta.createdBy, "human:local"); // not "attacker", not "local:dev"
       assertEquals(rec!.runtimeMeta.schemaVersion, 1); // not 999
+
+      // Taint is authoritative in the direction that matters: a client may RAISE a label and can
+      // never lower one, so an empty raise does not clear what a data parent contributed. (A
+      // wrong-TYPED taint is a 4xx, covered in http.test.ts; here the point is that even a
+      // well-formed one cannot subtract.)
+      // Same author on both, so this isolates the washing property: a different author would
+      // legitimately add `foreign` and the assertion would be testing two things at once.
+      const dirty = await space.put({ kind: "task", body: { tag: "src" }, taint: ["file"] }, undefined, "human:local");
+      const clearAttempt = new Request("http://x/v0/records", {
+        method: "POST",
+        body: JSON.stringify({ kind: "task", body: { tag: "washed" }, parentIds: [dirty.id], taint: [] }),
+      });
+      assertEquals((await handlePut(space, clearAttempt, "human:local")).status, 201);
+      const washed = await space.readOne({ kind: "task", match: { tag: "washed" } });
+      assertEquals(washed!.runtimeMeta.taint, ["file"], "an empty raise cannot wash a parent's label");
     },
   },
   {
@@ -265,6 +290,39 @@ export const recordSuites: Suite[] = [
       const no = (await space.getRecord(theirs.id))!.body;
       assert(space.bodyMatchesGrant("artifact", ok, constraint!), "its own artifact is inside the scope");
       assert(!space.bodyMatchesGrant("artifact", no, constraint!), "another conversation's is not");
+    },
+  },
+  {
+    name: "a body over the size limit is refused, because a body can never be erased",
+    run: async (adapter) => {
+      // The familiar reason for a size limit is that bodies stay queryable JSON: matched against,
+      // returned in pages, re-sent to whatever reads them. The load-bearing reason is erasure. A
+      // payload out of line can be destroyed (`shredArtifact`); a body cannot, and no verb reaches
+      // one. With no limit, base64ing a secret into a body is how unerasable data enters a space.
+      const space = new Space(adapter, { maxRecordBytes: 1024 });
+      space.registerKind({ kind: "t", indexedPaths: [] });
+
+      // Just under: accepted, so the limit is a limit and not a tax on ordinary records.
+      const small = await space.put({ kind: "t", body: { s: "x".repeat(500) } });
+      assert(small.id, "an ordinary body is unaffected");
+
+      const err = await denied(() => space.put({ kind: "t", body: { s: "x".repeat(2000) } }));
+      assertEquals(err, "record_too_large");
+
+      // BYTES, not characters. A body of astral-plane characters is twice its length in the
+      // encoded form, which is what storage holds and what travels on the wire; measuring
+      // `.length` would let a caller past the limit by choosing a different alphabet.
+      const astral = await denied(() => space.put({ kind: "t", body: { s: "\u{1F600}".repeat(300) } }));
+      assertEquals(astral, "record_too_large", "600 UTF-16 units but 1200 bytes: the limit is on bytes");
+
+      // The check sits in `buildRecord`, where the serialized body first exists, so every writer
+      // passes through it rather than each entry point remembering to look. The artifact path
+      // additionally has its own TIGHTER guard that fires first: metadata fields are capped at 256
+      // characters each, so an artifact record cannot reach the body limit by that route at all.
+      // Worth pinning, because "the size limit did not fire" here is correct rather than a gap.
+      const wide = { mediaType: "text/plain", appFields: { note: "y".repeat(2000) } };
+      const viaArtifact = await denied(() => space.putArtifact(new TextEncoder().encode("hi"), wide));
+      assertEquals(viaArtifact, "invalid_artifact", "artifact metadata is capped earlier and tighter");
     },
   },
 ];

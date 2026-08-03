@@ -60,7 +60,8 @@ are encouraging and workload-specific, not proof of general superiority. See
   language with its own strict semantics), not by explicit addressing.
 - **Durable and leased:** work is claimed under a fenced, renewable lease with
   at-least-once execution; crashed agents don't lose work.
-- **Policy-aware:** agent-scoped grants, provenance lineage, taint tracking, and an
+- **Policy-aware:** agent-scoped grants, provenance lineage, classification labels a grant can
+  bar (`file`/`net`/`foreign`), and an
   optional cost-aware scheduler decide what runs and what it may touch.
 - **Payload-aware:** anything too large for a JSON body (an image, an audio clip) is an
   **artifact**: a small record that routes, plus content-addressed bytes in a blob store,

@@ -24,9 +24,10 @@ export interface PutRequest {
   parentIds?: string[];
   deadlineAt?: string;
   retentionUntil?: string;
-  /** Source attestation: a client may RAISE taint (`true`) to mark its output as untrusted data.
-   *  `false`/absent is ignored. The server never lets a client clear taint (only declassify does). */
-  taint?: boolean;
+  /** Source attestation: classification labels the client RAISES on its own output, from the closed
+   *  vocabulary (`TAINT_LABELS`). Raising is monotone, so it needs no trust: a client can only ever
+   *  restrict what the record may reach, never widen it. Removal is declassify, and privileged. */
+  taint?: string[];
 }
 
 export interface BuildContext {
@@ -35,8 +36,10 @@ export interface BuildContext {
   now: string; // DB clock, ISO 8601
   /** Server-derived authority chain. Set only for work emitted under a lease (ack). */
   delegationContext?: DelegationContext;
-  /** Server-computed taint (client-raise OR any data-parent tainted). Defaults untainted. */
-  taint?: boolean;
+  /** Server-computed labels: the UNION of every data parent's, plus whatever the client raised. */
+  taint?: string[];
+  /** Largest serialized body accepted, in bytes. See the check in `buildRecord`. */
+  maxRecordBytes: number;
 }
 
 export interface BuiltRecord {
@@ -68,6 +71,26 @@ export async function buildRecord(
       "record bodies may not contain U+0000 (NUL): valid JSON, but it has no representation in the storage layer's JSON type",
     );
   }
+  // SIZE. A body must stay queryable JSON: it is matched against, returned in pages, and re-sent in
+  // whatever context reads it. That is the familiar reason, and it is not the load-bearing one.
+  //
+  // The erasure boundary is that a PAYLOAD is out of line so it can be destroyed, while a BODY is
+  // not, so it cannot (see design-data-model.md). With no limit here, base64ing a secret into a
+  // body is the way unerasable data enters a space: `shredArtifact` reaches blobs, and no verb
+  // reaches a body. So this limit is not a cost control, it is what keeps the erasure promise
+  // true, and it belongs where the serialized form first exists rather than at one entry point.
+  //
+  // Measured in BYTES of the serialized JSON, not characters: what storage holds and what travels
+  // on the wire is the encoded form, and a body of astral-plane characters is twice its length.
+  const bodyBytes = new TextEncoder().encode(bodyJson).length;
+  if (bodyBytes > ctx.maxRecordBytes) {
+    throw new RadiaError(
+      "record_too_large",
+      `record body is ${bodyBytes} bytes, over the ${ctx.maxRecordBytes} limit. A body this size is ` +
+        `a payload in the wrong place: store the bytes as an ARTIFACT and let the record carry ` +
+        `{digest, mediaType, size}. A body cannot be erased, and an artifact can.`,
+    );
+  }
   const bodySha256 = await sha256Hex(bodyJson);
 
   const parentIds = req.parentIds ?? [];
@@ -87,7 +110,7 @@ export async function buildRecord(
       createdBy: ctx.principal,
       delegationContext: ctx.delegationContext, // server-derived from the lease (ack); undefined for a direct put
       parentIds,
-      taint: ctx.taint ?? false, // server-computed: client-raise OR any data-parent tainted; cleared only by declassify
+      taint: ctx.taint ?? [], // server-computed: union of parents + client raise; cleared only by declassify
       schemaVersion: ctx.schemaVersion,
       createdAt: ctx.now,
     },

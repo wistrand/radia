@@ -3,6 +3,7 @@
 // transactions) stays in each adapter; the value ordering and reconstruction live here.
 
 import type { Envelope, PutInput, RadiaRecord, SpaceEvent } from "./adapter.ts";
+import { TAINT_UNKNOWN } from "../core/kinds.ts";
 
 export type RawRow = Record<string, unknown>;
 
@@ -26,12 +27,13 @@ export function rowToEvent(row: RawRow): SpaceEvent {
 /** Column order for `records` inserts. Must match recordInsertValues(). */
 export const RECORD_COLUMNS =
   "id, kind, body_json, body_sha256, client_meta, created_by, delegation_context, " +
-  "parent_ids, taint, schema_version, created_at, deadline_at, retention_until";
+  "parent_ids, taint, taint_labels, schema_version, created_at, deadline_at, retention_until";
 
-export const RECORD_COLUMN_COUNT = 13;
+export const RECORD_COLUMN_COUNT = 14;
 
-/** Values for a `records` insert, in RECORD_COLUMNS order. `taint` is a boolean; the
- *  SQLite adapter maps booleans to 0/1 (SQLite has no boolean type). */
+/** Values for a `records` insert, in RECORD_COLUMNS order. `taint` is the DERIVED boolean (labels
+ *  non-empty) so existing predicates and indexes keep working; the labels themselves travel in
+ *  `taint_labels` as JSON. The SQLite adapter maps booleans to 0/1 (SQLite has no boolean type). */
 export function recordInsertValues(input: PutInput): unknown[] {
   const r = input.record;
   return [
@@ -43,7 +45,8 @@ export function recordInsertValues(input: PutInput): unknown[] {
     r.runtimeMeta.createdBy,
     r.runtimeMeta.delegationContext ? JSON.stringify(r.runtimeMeta.delegationContext) : null,
     JSON.stringify(r.runtimeMeta.parentIds),
-    r.runtimeMeta.taint,
+    r.runtimeMeta.taint.length > 0,
+    JSON.stringify(r.runtimeMeta.taint),
     r.runtimeMeta.schemaVersion,
     r.runtimeMeta.createdAt,
     r.deadlineAt ?? null,
@@ -83,7 +86,12 @@ export function rowToRecord(row: RawRow): RadiaRecord {
         ? JSON.parse(String(row.delegation_context))
         : undefined,
       parentIds: JSON.parse(String(row.parent_ids ?? "[]")),
-      taint: Boolean(row.taint),
+      // A row written before labels existed has no `taint_labels`. It cannot be reconstructed, so a
+      // tainted one takes `unknown`: a label no allowlist may contain, making it claimable by
+      // nothing that states a barrier. Fail closed rather than invent a classification.
+      taint: row.taint_labels != null
+        ? JSON.parse(String(row.taint_labels)) as string[]
+        : (row.taint ? [TAINT_UNKNOWN] : []),
       schemaVersion: Number(row.schema_version),
       createdAt: String(row.created_at),
     },

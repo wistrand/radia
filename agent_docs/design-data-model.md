@@ -43,7 +43,7 @@ record                       # immutable after commit
   kind           discriminator; never rewritten
   body           JSON (large payloads via artifacts, below)
   client_meta    confidence?, requested_priority?, app fields (client-submitted claims)
-  runtime_meta   created_by, delegation_context, parent_ids[], taint,
+  runtime_meta   created_by, delegation_context, parent_ids[], taint[],
                  schema_version, created_at        (server-assigned, authoritative)
   deadline_at?   application-level deadline (business semantics / scheduler signal)
   retention_until?  content GC eligibility
@@ -151,7 +151,7 @@ status (built): a record is tainted if a client raised it (`taint:true`, source 
 or **any `parent_ids` parent is tainted** (`Space.computeTaint`, on put and ack, so a tainted
 task yields a tainted result). A client can only ever *raise* taint; clearing requires a
 privileged **declassify** (`Space.declassify` → a clean successor with the tainted original as
-its data parent). A sensitive consumer skips tainted work with `take {requireUntainted}`. So
+its data parent). A sensitive consumer states the labels it will accept with `take {allowTaint}`. So
 the two lineages are complementary: authority flows down the **lease** (delegation), untrust
 flows down **data parents** (taint), and neither leaks into the other.
 
@@ -173,12 +173,20 @@ owning `message`/`llm_call`/`tool_call`/`check` and so on.
 ## Resource limits
 
 **M1 status: mostly unbuilt.** The intent stands: an indexed query can still be expensive, so
-limits are not optional, and they belong at commit/registration. Only two are enforced so far:
+limits are not optional, and they belong at commit/registration. Three are enforced so far:
 
 - **pattern `$and`/`$or` nesting depth ≤ 3**: `MAX_DEPTH` in `src/core/matching.ts`, raised as
   `too_deep` at compile.
 - **artifact bytes**, default 32 MiB: `SpaceContext.maxArtifactBytes` (`src/core/space.ts`),
   returned as `413 artifact_too_large` by `src/server/handlers/artifacts.ts`.
+- **record body bytes**, default 1 MiB: `SpaceContext.maxRecordBytes`, checked in `buildRecord`
+  where the serialized body first exists (so every write path passes through it, not just the
+  client one), returned as `413 record_too_large`. Measured on the SERIALIZED bytes, not on
+  character count, or a body of astral-plane characters would pass at twice its encoded size. The
+  artifact path has its own tighter, earlier guard: metadata fields cap at 256 characters each.
+
+The gap between the record limit and the artifact limit is deliberate and is the signal: a body
+approaching artifact size is a payload in the wrong place.
 
 Still to build, tracked as the unchecked M1 item "resource limits enforced" in
 [plan-milestones.md](plan-milestones.md): max record and pattern size · body field depth ·
@@ -192,15 +200,16 @@ string in a body is accepted, while the same bytes as an artifact are capped at 
 rejected past it. A base64 payload in a body defeats matching, windowing and every size assumption
 downstream.
 
-**And it is an ERASURE hole, which is the consequence nobody drew.** The erasure boundary below is
-exactly this invariant: a payload is out of line, so it can be destroyed; a body is not, so it
-cannot. An unenforced size limit therefore does not merely degrade matching, it is the mechanism by
-which unerasable data enters a space. Someone base64s a secret into a body, and no operator verb
-reaches it: `shredArtifact` destroys blobs, and there is no body path. The two sections have to be
-read together, and the missing limit is the load-bearing one.
+**It was also an ERASURE hole, which is the consequence nobody drew and the reason it was closed
+first.** The erasure boundary below is exactly this invariant: a payload is out of line, so it can
+be destroyed; a body is not, so it cannot. An unenforced size limit therefore did not merely degrade
+matching, it was the mechanism by which unerasable data entered a space: base64 a secret into a body
+and no operator verb reaches it, since `shredArtifact` destroys blobs and there is no body path.
+That is why the record limit shipped ahead of the rest of the unbuilt list, which only bounds cost.
 
-This raises the priority of the record-size limit above the rest of the unbuilt list. The others
-bound cost; this one bounds what the space can promise.
+The convention is still not fully an enforcement. A 900 KiB base64 payload is under the limit and
+remains unerasable; the limit bounds the damage rather than closing the path. Closing it needs body
+redaction (below), which is a separate carve-out with its own hard problem.
 
 ## Artifact references
 

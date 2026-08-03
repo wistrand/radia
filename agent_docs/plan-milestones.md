@@ -119,7 +119,7 @@ crypto-shredding deletes a body while the event chain still verifies.
 - [ ] scheduler-enforced atomic admission (see [design-scheduler.md](design-scheduler.md))
 - [ ] semantic matching
 - [~] delegation contexts end-to-end. **Built (M1):** `delegation_context` is server-derived from the lease on ack-emitted work (authority chain accumulates per hop; never data parents); ack authorizes the acting agent's `put`. Remaining for M3: the stricter chain-intersection policy composed with taint.
-- [~] taint + declassification. **Built (M1):** taint propagates along data parents (put + ack), clients may raise but never clear it, `take {requireUntainted}` is a claim-time barrier, and a privileged `declassify` emits a clean successor. Remaining for M3: per-principal trust classification and taint-composed access checks.
+- [~] taint + declassification. **Built (M1):** taint is a closed set of BARRIER labels (`file`/`net`/`foreign`, `TAINT_LABELS`) that UNION along data parents (put + ack); clients may raise but never clear one; `take {allowTaint}` and a grant's `scope.taint` are claim-time ALLOWLISTS; a privileged `declassify` clears named labels and emits a successor carrying the remainder. It began as one boolean, which saturated after the first tool call and therefore barred nothing; see [design-taint.md](design-taint.md). Remaining for M3: per-principal trust classification and taint-composed access checks.
 - [ ] repeated-shape livelock detection
 - [ ] re-execution tooling
 - [ ] learned scoring after static scoring is measurable

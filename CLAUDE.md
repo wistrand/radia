@@ -90,10 +90,12 @@ key), [examples/stress/](examples/stress/) (load, for the Space tab), [examples/
 - [agent_docs/design-api.md](agent_docs/design-api.md): delivery guarantee, leases + fencing, idempotency ordering, the ten operations, wire protocol, agent loop (§4–5).
 - [agent_docs/design-scheduler.md](agent_docs/design-scheduler.md): optional cost-aware admission control, atomic admission-to-claim, server-computed priority (§6).
 - [agent_docs/design-marketplace.md](agent_docs/design-marketplace.md): request/bid/award capability marketplace and durable timers (§7).
+- [agent_docs/design-taint.md](agent_docs/design-taint.md): why the taint BOOLEAN saturates (measured: after one tool call every record in a conversation carries it, and nothing in the chat uses the barrier), and the small closed label set that replaced it (three labels, all barriers: a label exists only where a lineage walk is too slow, since provenance is already in the log). Read before adding a label or relying on `scope: {taint: …}`.
 - [agent_docs/design-auth.md](agent_docs/design-auth.md): principals, grants, delegation, taint, revocation, budgets (§8).
 - [agent_docs/design-observability.md](agent_docs/design-observability.md): event log, audit, re-execution, livelock detection, integrity and confidentiality architecture (§9).
 - [agent_docs/design-storage.md](agent_docs/design-storage.md): Postgres mapping, deployment modes, distribution strategy (§10).
 - [agent_docs/design-execution.md](agent_docs/design-execution.md): running model-written code in more than one language. The language question is an isolation question: Deno's permission flags ARE the sandbox today, and nothing about that generalises. A sandbox is a **record**, matched by pattern, so a grant binds the property that matters rather than a language name standing in for it; selection follows the `llm_call` tier-router precedent. Carries the measured finding that bwrap-over-host-`/usr` is faster than the Deno jail and three orders of magnitude weaker on filesystem. Read before adding a runner.
+- [agent_docs/plan-workspaces.md](agent_docs/plan-workspaces.md): the build sequence for workspaces + execution, ordered by MODEL RISK rather than feature value. Phases 0-5 need no new isolation mechanism; each phase answers a question. Start here before touching either design doc.
 - [agent_docs/design-workspaces.md](agent_docs/design-workspaces.md): multi-file working trees for code generation, and the relationship to git. Decided (store Radia-native, shape git-compatible, export git-real, sha256 authoritative, export only); unbuilt. Read before proposing git as a storage format.
 
 Research and planning:
@@ -235,8 +237,12 @@ live at the top of the relevant `agent_docs/` file, not here.
   writable only by an OPERATOR (a principal the space NAMES in `SpaceContext.operators`) or the
   supervisor agent. `human:` is a namespace, not a privilege: a logged-in person is an ordinary
   principal.
-- **Taint clears only via privileged declassify.** Ordinary agents cannot write
-  `taint: false`.
+- **Taint is a closed set of BARRIER labels, raised freely and cleared only by privileged
+  declassify.** `TAINT_LABELS` (`file`/`net`/`foreign`) names a classification some policy bars,
+  never where content came from: provenance is already in the log, and a label exists only where a
+  lineage walk is too slow, which means the claim path. Raising is monotone, so a client may add a
+  label without trust and can never subtract one. A grant's `scope.taint` is an ALLOWLIST, so a
+  label added later is barred by every existing grant instead of silently permitted.
 - **Artifact bytes never travel inside a record.** A payload too large for a body lives in the
   blob store; the record carries `{digest, mediaType, size}` and routes. A base64 payload in a
   record body defeats matching, windowing, the Feed, and every size assumption downstream.

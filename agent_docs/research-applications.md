@@ -78,10 +78,11 @@ every "the runtime enforces X" as "the HTTP boundary enforces X", since an in-pr
 state, so nothing in the routing language can filter on it; the envelope-side vocabulary that can
 is `scope` on a grant. Both facts are stated where they are enforced
 ([design-matching.md](design-matching.md) "What patterns cannot express",
-[design-auth.md](design-auth.md) "Taint"). What is left open is provenance rather than enforcement:
-one bit lets a barrier refuse untrusted work but not say what made it untrusted, and recording
-which parent raised the taint is the same missing join the graph overlay in
-[design-inspection.md](design-inspection.md) needs.
+[design-auth.md](design-auth.md) "Taint"). A barrier can now say WHAT it refuses, since taint is a
+closed label set rather than one bit ([design-taint.md](design-taint.md)). What is left open is
+which ANCESTOR contributed a label, and that is deliberate rather than missing: provenance is a
+lineage walk, and the labels make it a pruned one. It is the same join the graph overlay in
+[design-inspection.md](design-inspection.md) wants.
 
 **The price is the pushdown contract**, and the applications here are what makes it expensive:
 an unsound pre-filter hides records from `take`, and a false-empty space presents as idleness
@@ -132,7 +133,7 @@ producer knows the fleet topology. `examples/pipeline/` is the miniature.
 
 - **Dispatch is a queryable artifact.** Queues bury routing in code; agent frameworks bury it in
   the model. Here it is stored, authorizable data.
-- **Record-scoped policy.** `taint` + `requireUntainted` answers "may this payload reach this
+- **Record-scoped policy.** Taint LABELS + `allowTaint` answer "may this payload reach this
   step", the question Temporal has no place to ask. `delegation_context` (authority) is separate
   from `parent_ids` (provenance), server-derived, and not a `PutRequest` field at all (verified).
 - **One medium for work, knowledge, and configuration.** "What does the system currently
@@ -150,11 +151,12 @@ Build-state marked from verification, not from docs.
 ### 4.1 Prompt-injection containment for agent fleets
 
 Ingestion workers write tainted records; taint propagates along data parents; side-effecting
-workers take with `requireUntainted`; a human declassifies through the ops plane. The barrier is at
+workers take with an `allowTaint` list; a human declassifies the label they reviewed, through the
+ops plane. The barrier is at
 claim time in the runtime, not in executor discipline, and no incumbent offers that.
 
-Limits, verified 2026-07-29: `requireUntainted` is now bindable by a grant (`scope: {taint: "none"}`),
-so an executor cannot opt out, but only when EVERY applicable grant carries it, since grants union.
+Limits, verified 2026-08-03: the barrier is bindable by a grant (`scope.taint`, an ALLOWLIST), so
+an executor cannot opt out, but only when EVERY applicable grant carries one, since grants union.
 Enforcement moved into `src/core/` for reads and ack-emitted writes; `Space.put` still authorizes
 only at the HTTP boundary, so an embedded host calling it directly writes past every grant. And
 taint still launders by omitting the parent edge on a direct put (§5). Pilot-grade, not a security
@@ -211,7 +213,8 @@ them.
 The requirement (*know when generated code may run, and on what*) decomposes onto two mechanisms,
 which is what makes it a good fit.
 
-**"When it may run" is the taint axis.** Taint is one bit, so it expresses exactly one thing.
+**"When it may run" is the taint axis.** Taint is a closed set of barrier labels, so it expresses
+which CLASSIFICATION a payload carries rather than a single yes/no.
 
 ```
 code_candidate (tainted; source as content-addressed artifact)
@@ -219,7 +222,7 @@ code_candidate (tainted; source as content-addressed artifact)
   → each acks an attestation record (parent: the candidate), tainted as descendants
   → a human or supervisor reviews the attestations
   → privileged DECLASSIFY emits the clean successor
-  → only now can a requireUntainted executor claim it
+  → only now can an executor with a matching allowTaint list claim it
 ```
 
 The sandbox tier sits *before* clearance: a permissionless sandbox is the cheap first attestation,
@@ -228,8 +231,9 @@ barrier, so tainted work *would* be claimed and run; it is the isolation, not a 
 carries the risk there. No comment or test asserts this as intent, so treat it as a property of the
 current code rather than a documented decision.
 
-**"On what" is the grants axis**, because one bit cannot distinguish "cleared for CI" from "cleared
-for prod". Pattern-scoped grants do, on both sides (§2, and
+**"On what" is the grants axis.** Labels distinguish what a payload TOUCHED (`file` vs `net`); they
+do not distinguish "cleared for CI" from "cleared for prod", which is a property of the consumer
+rather than the data. Pattern-scoped grants do that, on both sides (§2, and
 [design-auth.md](design-auth.md) "Grants" for the enforcement points).
 
 **The bytes are bound to the approval by content addressing.** Artifact digests are over plaintext,
@@ -365,12 +369,15 @@ get rediscovered as new.
 | `ack` force-prepends the leased record to `parentIds`                             | settle path, `src/core/space.ts`                |
 | Clients may raise taint, never lower it                                           | `pickPut`, `handlers/records.ts`; `conformance/suites/taint.ts` |
 | `declassify` is the only path clearing taint, and is ops-plane privileged          | `opts.taint` sole override; `READ_ONLY_OPS` excludes it |
-| `requireUntainted` enforced inside the claim transaction                          | `rankClaimable`, `src/core/take.ts`             |
+| The taint barrier is enforced inside the claim transaction                        | `rankClaimable`, `src/core/take.ts`             |
+| **Taint is a closed set of BARRIER labels, not one bit**: `file`/`net`/`foreign`, unioned along data parents | `TAINT_LABELS` + `normalizeTaint`, `src/core/kinds.ts`; `Space.computeTaint` |
+| A grant's `scope.taint` is an ALLOWLIST, so a label added later is barred rather than permitted | `parseTaintAllowlist`; `Space.taintBarrier` |
+| `declassify` clears NAMED labels and the successor carries the remainder           | `Space.declassify`, and the `cleared`/`remaining` it records on the event |
 | Pattern-scoped grants enforced on writes, including ack-emitted results           | `bodyMatchesGrant`, `src/core/space.ts`         |
 | Grant pattern ANDed into client match server-side                                | `combineMatch`, `src/core/matching.ts`          |
 | `delegation_context` server-derived, not a `PutRequest` field                      | `Space.deriveDelegation`, `src/core/space.ts`   |
 | `$regex`/`$where`/`$expr` forbidden at compile                                     | `FORBIDDEN`, `src/core/matching.ts`             |
-| Taint is a bare boolean, not in the body, therefore not pattern-matchable          | `RuntimeMeta`, both adapter schemas, `matchesRecord` |
+| Taint is outside the body, therefore not pattern-matchable                        | `RuntimeMeta`, both adapter schemas, `matchesRecord` |
 | `pattern` is wire-visible on the take selector and in grant bodies                | `openapi/radia.yaml`: the `TakeRequest` selector and the `GrantDef` schema |
 | **`record_edges` reverse index exists**: indexed, keyset-paged, same-transaction, backfilled | both adapters; `conformance/backfill.test.ts` |
 | Graph BFS calls `childrenOf` per node under a `GRAPH_FANOUT = 200` budget           | `GRAPH_FANOUT` + `getGraph`, `src/core/space.ts` |
@@ -415,10 +422,12 @@ rediscovered as new; the corresponding positive claim is in "verified true" abov
 - **CLOSED.** ~~`declassify` records no principal.~~ It takes one (`Space.declassify(recordId,
   principal?)`). Still open: the event's operation is `put`, not `declassify`, so the audit trail
   says a record appeared rather than that a clearance happened.
-- **CLOSED.** ~~`requireUntainted` is per-call, not bindable to a grant or identity.~~ A grant may
-  carry `scope: {taint: "none"}`, which `taintBarrier` applies whatever the caller asked for. The
-  per-call flag remains, as a courtesy a worker pays; the grant-side barrier is what an operator
-  imposes. Note the union rule: it binds only when EVERY applicable grant carries it.
+- **CLOSED.** ~~`requireUntainted` is per-call, not bindable to a grant or identity.~~ A grant
+  carries `scope.taint`, an ALLOWLIST of labels, which `taintBarrier` applies whatever the caller
+  asked for. The per-call `allowTaint` remains as a courtesy a worker pays, and the two INTERSECT.
+  Note the union rule: the grant-side barrier binds only when EVERY applicable grant carries one.
+  Superseded in shape by the label set: the boolean it was written against saturated after the first
+  tool call, so "bindable" was true and useless. See [design-taint.md](design-taint.md).
 - **PARTIALLY CLOSED.** ~~`authorize`/`combineMatch`/`bodyMatchesGrant` live in handlers, so
   in-process `Space` callers bypass all of it.~~ They live in `src/core/` now, and reads
   (`readAccess`) plus ack-emitted writes (`Space.ack`) authorize inside the core. Still open, and

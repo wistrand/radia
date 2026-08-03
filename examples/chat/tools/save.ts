@@ -32,9 +32,10 @@ export function makeSaveTools(client: RadiaClient): Record<string, Tool> {
         // Body metadata, not lineage: a grant pattern matches the body, so this is what pins the
         // artifact to the conversation that produced it.
         meta: { conversationId: ctx?.conversationId ?? "", owner: ctx?.owner ?? "" },
-        // Model-authored content, possibly derived from something it read: untrusted, like any
-        // other output on this path. Clearing it needs a privileged declassify.
-        taint: true,
+        // No label. "The model wrote this" is a graph fact the log answers; a label is only for
+        // what a BARRIER tests, and nothing bars content for having been authored. Anything the
+        // model READ to write it is already labelled on the parents this inherits from.
+        taint: [],
       });
       return { artifactId: id, mediaType, size, filename };
     },

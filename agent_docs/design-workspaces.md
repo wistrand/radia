@@ -76,6 +76,14 @@ verdict if it disagrees. That needs no new mechanism, costs a hash over bytes al
 puts the recomputation exactly where the claim is made. It belongs in v1, not later: a `treeDigest`
 nobody recomputes is decoration.
 
+**A vendored dependency set belongs BESIDE the manifest, not inside it.** Measured, a body holds
+20 000 entries at 3.2 MiB and 39 ms, so inlining a `node_modules` tree works mechanically. It should
+still not be done, for the reason performance does not show: that body is written per attempt,
+grows without bound, and is a BODY, so nothing can erase it. Making the dependency set its own
+content-addressed artifact, referenced by digest, keeps the manifest small and bounded, dedupes it
+across every workspace that shares it, and makes it erasable like any other payload. The source
+tree, which is human-scale and the thing a person reads, stays inline.
+
 **Rejected alternatives, and why.** One record per file avoids large bodies but makes reading the
 workspace a registry read that must page to exhaustion, putting the loop's correctness on the
 single most repeated bug in this codebase. A single archive artifact per snapshot is simple and

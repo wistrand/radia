@@ -1,0 +1,140 @@
+# Plan: workspaces and execution environments
+
+Sequence and status. The reasoning lives in [design-workspaces.md](design-workspaces.md) (what a
+working tree is, and the git relationship) and [design-execution.md](design-execution.md) (why the
+language question is an isolation question). Read those first; this file assumes them.
+
+> **Status: Phase 0 DONE.** Nothing else started.
+
+## What this is for
+
+Building a workspace is the first thing that will stress Radia's own model rather than exercise it.
+The phases below are ordered to hit that stress EARLY and cheaply, so the ordering is by
+model-risk, not by feature value. Each phase answers a question; a phase that ships code and answers
+nothing is mis-scoped.
+
+### The stresses, ranked
+
+1. **Unbounded, unerasable bodies.** A manifest is the first realistic large-body consumer. Since
+   the erasure boundary is "payloads are out of line so they can be destroyed, bodies are not so
+   they cannot" (see [design-data-model.md](design-data-model.md)), a missing size limit was the
+   mechanism by which unerasable data entered a space. **Bounded in Phase 0, not closed:** a body
+   under the limit is still unerasable, so the pressure moves to keeping payloads out of bodies by
+   design rather than by cap.
+2. **Taint through the filesystem.** Materialise a tainted file, code reads it, and the output
+   inherits nothing unless the workspace files are DATA PARENTS of the call. That is the documented
+   "taint launders by omitting the parent edge" made systematic rather than incidental. It is also
+   worse than it looks: the taint BOOLEAN already saturates without workspaces (see
+   [design-taint.md](design-taint.md)), so propagating it through a filesystem propagates something
+   that no longer discriminates. **Decide the label set before Phase 2**, or that phase builds the
+   propagation twice.
+3. **High-churn registry.** [CLAUDE.md](../CLAUDE.md)'s stopping rule says state that is high-churn
+   AND security-critical is a poor fit for record-projection. A workspace is both. This is the first
+   thing to TEST that rule rather than obey it.
+4. **Attestation with a client-asserted link** (`treeDigest`); the fix is known and lands in Phase 3.
+5. **No compare-and-swap**, mitigated by fork detection in Phase 4.
+6. **Erasure fans out by content.** Rare today; common once dependency trees are shared.
+
+### Measured up front, because two results changed the plan
+
+| files  | body      | put   |
+|--------|-----------|-------|
+| 50     | 8 KiB     | 3 ms  |
+| 500    | 80 KiB    | 2 ms  |
+| 5 000  | 805 KiB   | 14 ms |
+| 20 000 | 3 231 KiB | 39 ms |
+
+Manifest-as-record works mechanically at `node_modules` scale, so an earlier guess that bodies get
+uncomfortable past ~100 files was wrong. Reading ONE workspace is a `limit 1, dir:desc` query,
+exact and cheap, the same shape `lookupProcedure` already uses; the registry stress bites on "list
+all workspaces", not "read this one".
+
+Which sharpens the real constraint: 3.2 MiB per attempt, per workspace, forever, in a body nothing
+can erase. Performance was never the problem.
+
+## Phases
+
+Each is scoped to answer its question. Do not merge them.
+
+| # | Phase | Question it answers | Stress |
+|---|-------------------------------|-----------------------------------------------------|--------|
+| 0 | Record size limit **(done)** | Can a body still become an unerasable payload? | 1 |
+| 1 | Manifest, no execution | Does a churning tree-as-records hold up? | 1, 3 |
+| 2 | Materialise, read-only | Is checkout safe, and does taint survive a filesystem? | 2 |
+| 3 | Write-back + `treeDigest` + `check` | Is an attestation worth anything? | 4 |
+| 4 | Fork detection (`basedOn`) | Is concurrent divergence visible? | 5 |
+| 5 | `sandbox` record, ONE backend | Does the record shape describe a real jail? | — |
+| 6 | A second backend | What breaks when the guarantee stops being uniform? | — |
+
+**Phases 0-5 need no new isolation mechanism.** Every model stress worth finding is reachable with
+the Deno sandbox that already exists. Multi-language execution adds a large security surface and NO
+additional model stress, which is why it is last however much more interesting it sounds.
+
+### Phase 0: record size limit
+
+`SpaceContext.maxRecordBytes`, enforced where the body is serialised so every write path is covered,
+returned as `413`. Small, and everything else compounds on it: building Phase 1 first means shipping
+unerasable data by construction. It is also the highest-priority unbuilt resource limit on its own
+merits (see [design-data-model.md](design-data-model.md), "Resource limits").
+
+The limit is deliberately well below the artifact cap. A body that approaches artifact size is a
+payload in the wrong place, and the error should say so rather than merely refuse.
+
+**Done.** 1 MiB default, checked in `buildRecord` where the serialized body first exists so every
+write path passes through one chokepoint, `413 record_too_large` at the HTTP boundary, measured on
+serialized BYTES rather than character count. Conformance in `suites/records.ts`, both adapters.
+
+Two things learned that the next phases should carry. The artifact path rejects wide metadata
+EARLIER and tighter (256 characters per field), so "the size limit did not fire there" is correct
+rather than a gap. And the limit bounds the damage without closing the path: a 900 KiB base64 body
+is still under it and still unerasable, so this is a mitigation, not the invariant becoming an
+enforcement.
+
+### Phase 1: the manifest, no execution at all
+
+`workspace` kind, per-file artifacts, `treeDigest`, `basedOn`. No sandbox involvement.
+
+Deliverable is a `smoke-workspace.ts` that ASSERTS answers, not a feature: 5 000 files across 40
+successors, with "read this workspace" exact and bounded, "list all workspaces" complete or honestly
+incomplete, and the storage cost of a session stated as a number.
+
+### Phase 2: materialise, read-only
+
+Into a temp directory, run with the existing Deno runner and `--allow-read`. No write-back.
+
+Two things get decided here and neither is optional. Path safety borrows git's checkout list
+wholesale (`..` traversal, `.Git` case folding, symlink-then-write) because materialisation is the
+TRUSTED worker writing model-influenced paths outside any jail. And taint: if a materialised file is
+tainted, the run's output must inherit it, which means workspace files are data parents of the call
+or the laundering path stays open.
+
+### Phase 3: write-back, `treeDigest`, `check`
+
+Hash before and hash after, store the difference, honour the `ignore` list. The worker that writes
+the `check` recomputes `treeDigest` from the artifacts it materialised and refuses a verdict on
+disagreement, which is what makes the attestation mean anything.
+
+### Phase 4: fork detection
+
+A successor manifest names its predecessor. Two successors of one predecessor are a visible fork in
+the DAG rather than a silent last-writer-wins. Merge stays unsupported; the overwritten manifest is
+still a record, so this is divergence, not loss.
+
+### Phase 5: `sandbox` as a record, Deno only
+
+The record describes a jail that already exists, and the boot probe verifies it. Proves the shape
+with nothing new to get wrong.
+
+### Phase 6: a second backend
+
+Where fail-open becomes real. Read [design-execution.md](design-execution.md) again before starting.
+
+## Open, and better decided with Phase 1 evidence
+
+- **Does the dependency set live in the manifest or beside it?** The measurement says a body can
+  hold 20 000 entries, and the erasure argument says it should not: a vendored dependency set as its
+  own content-addressed ARTIFACT keeps the body small and bounded, dedupes across every workspace
+  sharing it, and can be erased. Leaning strongly that way; Phase 1 should size both.
+- **Conversation-scoped or owner-scoped?** Same question as the chat's session grants, and it should
+  get the same answer. Whichever is chosen, exercise BOTH postures from day one: testing one half of
+  a documented either/or is how two bugs shipped in the chat (see [gotchas.md](gotchas.md)).

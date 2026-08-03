@@ -78,7 +78,7 @@ export interface SqlBackend extends Sql {
  *  ignores unknown columns, so a wildcard would fail silently, as bytes on the wire rather than as
  *  an error. */
 const RECORD_COLS = "id, kind, body_json, body_sha256, client_meta, created_by, delegation_context, " +
-  "parent_ids, taint, schema_version, created_at, deadline_at, retention_until";
+  "parent_ids, taint, taint_labels, schema_version, created_at, deadline_at, retention_until";
 
 const RECORD_COLS_R = RECORD_COLS.split(", ").map((c) => `r.${c}`).join(", ");
 
@@ -125,6 +125,8 @@ create table if not exists records (
   delegation_context text,
   parent_ids text not null default '[]',
   taint boolean not null default false,
+  -- See the SQLite schema: nullable distinguishes "no labels" from "written before labels existed".
+  taint_labels text,
   schema_version integer not null,
   created_at text not null,
   deadline_at text,
@@ -330,6 +332,10 @@ export class PgSqlAdapter implements StorageAdapter {
   async init(): Promise<void> {
     await this.sql.init();
     await this.sql.exec(DDL);
+    // What `create table if not exists` cannot apply to a database that already exists. Postgres
+    // has `if not exists` on the ALTER, so no guard query is needed. Nullable on purpose: null
+    // means "written before labels", which `row.ts` reads as the reserved `unknown` label.
+    await this.sql.exec("alter table records add column if not exists taint_labels text");
   }
 
   /**
@@ -509,7 +515,7 @@ export class PgSqlAdapter implements StorageAdapter {
       for (let offset = 0;; offset += CANDIDATE_WINDOW) {
         const candidates = await this.fetchCandidates(tx, selector, CANDIDATE_WINDOW, offset);
         if (candidates.length === 0) return null;
-        const ranked = rankClaimable(candidates, pattern, now, spec.requireUntainted, spec.createdBy);
+        const ranked = rankClaimable(candidates, pattern, now, spec.allowTaint, spec.createdBy);
         const claimed = await this.claimFirst(tx, ranked, spec, now);
         if (claimed) return claimed;
         // Nothing in this window was claimable (all filtered out, or every CAS lost). A record-id

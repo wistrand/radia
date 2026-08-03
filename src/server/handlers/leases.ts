@@ -8,6 +8,20 @@ import type { PutRequest } from "../../core/record.ts";
 import { combineMatch, type Pattern } from "../../core/matching.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { pickResult } from "./records.ts";
+import { clientTaint } from "../../core/kinds.ts";
+
+/**
+ * Both taint barriers at once: the caller's own and the one its grants impose.
+ *
+ * INTERSECTION, not union. A caller may narrow what it is willing to receive and may never widen
+ * past what its grants permit, so `undefined` (no barrier) on either side falls through to the
+ * other and two lists meet in the middle.
+ */
+function intersectAllow(caller: string[] | undefined, grant: string[] | undefined): string[] | undefined {
+  if (!caller) return grant;
+  if (!grant) return caller;
+  return caller.filter((l) => grant.includes(l));
+}
 import { problem } from "../problem.ts";
 
 async function body(req: Request): Promise<Record<string, unknown> | null> {
@@ -74,13 +88,15 @@ export async function handleTake(space: Space, req: Request, principal: string):
   }
 
   const leaseSeconds = typeof j.leaseSeconds === "number" && j.leaseSeconds > 0 ? j.leaseSeconds : undefined;
-  const requireUntainted = j.requireUntainted === true;
+  // The caller's own barrier: the labels it is willing to receive. `requireUntainted: true` used to
+  // mean "none"; the same intent is now an empty allowlist, stated as a list.
+  const callerAllow = j.requireUntainted === true ? [] : clientTaint(j.allowTaint);
   try {
     // Authorize on the kind (from the pattern, or the record's own kind for a record-id take).
     let kind = pattern?.kind;
     if (!kind && recordId) kind = (await space.getRecord(recordId))?.kind;
     let createdBy: string[] | undefined;
-    let grantRequiresUntainted = false;
+    let grantAllow: string[] | undefined;
     if (kind) {
       const access = await space.readAccess(principal, "take", kind);
       // A pattern-scoped grant narrows the claim: the record must also match the grant (grant ∧
@@ -95,12 +111,14 @@ export async function handleTake(space: Space, req: Request, principal: string):
       // The grant's barrier is ORed with the caller's own flag: a worker may always be MORE
       // careful than its grants require, never less. Without this, `scope: {taint: "none"}` would
       // be advice rather than enforcement.
-      grantRequiresUntainted = access.requireUntainted === true;
+      grantAllow = access.allowTaint;
     }
     const sel: TakeInput = recordId ? { recordId, pattern } : { pattern: pattern! };
     const result = await space.take(
       sel,
-      { leaseSeconds, requireUntainted: requireUntainted || grantRequiresUntainted, createdBy },
+      // Both barriers apply, and the effective allowlist is their INTERSECTION: the caller may
+      // narrow what it accepts, and may never widen past what its grants permit.
+      { leaseSeconds, allowTaint: intersectAllow(callerAllow, grantAllow), createdBy },
       principal,
     );
     return ok(result); // {record, lease} or null

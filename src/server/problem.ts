@@ -21,10 +21,14 @@ export function problem(
   });
 }
 
-/** Map a RadiaError code to an HTTP status: forbidden→403, idempotency_conflict→409, else the
- *  fallback. Shared by the record handlers and the top-level catch-all. */
+/** Map a RadiaError code to an HTTP status: forbidden→403, idempotency_conflict→409,
+ *  record_too_large→413, else the fallback. Shared by the record handlers and the top-level
+ *  catch-all. */
 export function statusFor(code: string, fallback: number): number {
   if (code === "forbidden") return 403;
   if (code === "idempotency_conflict") return 409;
+  // 413, matching `artifact_too_large`: the two limits are the same rule seen from both sides, and
+  // a caller that hits the body one is being told to use the artifact path.
+  if (code === "record_too_large") return 413;
   return fallback;
 }

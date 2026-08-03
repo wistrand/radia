@@ -14,7 +14,7 @@
 // download capability" of design-data-model §2.4; the record id in the URL stays stable forever.
 
 import type { Space } from "../../core/space.ts";
-import { ARTIFACT, type ArtifactDef, validateArtifactDef } from "../../core/kinds.ts";
+import { ARTIFACT, type ArtifactDef, clientTaint, validateArtifactDef } from "../../core/kinds.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { problem, statusFor } from "../problem.ts";
 
@@ -109,7 +109,7 @@ export async function handlePutArtifact(space: Space, req: Request, principal: s
         filename,
         appFields,
         parentIds: parentIds.length ? parentIds : undefined,
-        taint: req.headers.get("x-radia-taint") === "true" ? true : undefined,
+        taint: clientTaint(req.headers.get("x-radia-taint")),
       },
       req.headers.get("Idempotency-Key") ?? undefined,
       principal,

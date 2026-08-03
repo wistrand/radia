@@ -37,7 +37,7 @@ Coordinate
   put <kind> <json-body> [--idempotency-key <k>] [--parent <id>]...
   query <kind> [--match <json>] [--order <json>] [--limit <n>]
   read-one <kind> [--match <json>] [--order <json>]
-  take <kind> [--match <json>] [--lease <seconds>] [--untainted]
+  take <kind> [--match <json>] [--lease <seconds>] [--untainted | --allow-taint <l,l>]
   ack <lease-json> [--result-kind <k> --result <json>] [--idempotency-key <k>]
   nack <lease-json> [--backoff <seconds>]
   release <lease-json>
@@ -347,7 +347,8 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       if (!kind) return usage("take <kind> [--lease <seconds>]");
       const claimed = await client.take({ pattern: pattern(kind, argv) }, {
         leaseSeconds: flag(argv, "--lease") ? Number(flag(argv, "--lease")) : undefined,
-        requireUntainted: has(argv, "--untainted") || undefined,
+        // `--untainted` is the empty allowlist; `--allow-taint file,net` states one.
+        allowTaint: has(argv, "--untainted") ? [] : (flag(argv, "--allow-taint")?.split(",").map((t) => t.trim()).filter(Boolean)),
       });
       if (!claimed) {
         // Nothing claimable is a normal outcome, not a failure, so exit 0 and let scripts loop.

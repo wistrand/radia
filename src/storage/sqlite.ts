@@ -138,6 +138,10 @@ create table if not exists records (
   delegation_context text,
   parent_ids text not null default '[]',
   taint integer not null default 0,
+  -- The labels behind the boolean above. NULLABLE on purpose: null means "written by a build that
+  -- had no labels", which row.ts reads as the reserved unknown label, while an empty JSON array
+  -- means "written with none".
+  taint_labels text,
   schema_version integer not null,
   created_at text not null,
   deadline_at text,
@@ -250,7 +254,27 @@ export class SqliteAdapter implements StorageAdapter {
     this.#db.exec("PRAGMA journal_mode = WAL;");
     this.#db.exec("PRAGMA foreign_keys = ON;");
     this.#db.exec(DDL);
+    this.#migrate();
     return Promise.resolve();
+  }
+
+  /**
+   * Schema changes a `create table if not exists` cannot apply to an existing database.
+   *
+   * SQLite has no `add column if not exists`, so each one is guarded by reading the table's actual
+   * columns first. Guarded rather than try/catch: swallowing an ALTER error would also swallow a
+   * genuine failure, and this must be loud if the schema is not what it claims.
+   *
+   * Adding a column NULLABLE is what makes the migration free. A row written before labels existed
+   * gets null, which `row.ts` reads as the reserved `unknown` label; back-filling a value here
+   * would invent a classification the space cannot know.
+   */
+  #migrate(): void {
+    const cols = new Set(
+      (this.#db!.prepare("select name from pragma_table_info('records')").all() as { name: string }[])
+        .map((c) => c.name),
+    );
+    if (!cols.has("taint_labels")) this.#db!.exec("alter table records add column taint_labels text");
   }
 
   close(): Promise<void> {
@@ -293,7 +317,7 @@ export class SqliteAdapter implements StorageAdapter {
       for (let offset = 0;; offset += CANDIDATE_WINDOW) {
         const candidates = this.fetchCandidates(selector, CANDIDATE_WINDOW, offset);
         if (candidates.length === 0) return null;
-        const ranked = rankClaimable(candidates, pattern, now, spec.requireUntainted, spec.createdBy);
+        const ranked = rankClaimable(candidates, pattern, now, spec.allowTaint, spec.createdBy);
         const claimed = this.claimFirst(ranked, spec, now);
         if (claimed) return claimed;
         // Nothing in this window was claimable (all filtered out, or every CAS lost). A record-id

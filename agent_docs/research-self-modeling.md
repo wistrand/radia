@@ -91,7 +91,8 @@ Four properties exist today and were not built for this:
   through two interfaces with two authorization stories. This was designed for routing
   hygiene, not for cognition, but the shape is right.
 
-**Taint is narrower than it looks.** It is one bit, and it does not carry the source. The
+**Taint is narrower than it looks.** It is a closed set of BARRIER labels (`file`/`net`/`foreign`),
+not a general provenance record, and it deliberately does not say which ancestor contributed one. The
 source is in `parent_ids`. So a space can say *this is untrusted* and *this came from
 that*, but the join (untrusted **because of which** parent) is not materialized anywhere.
 For any honest self-report that join is the thing you want, and it is a query nobody has

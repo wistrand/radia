@@ -96,7 +96,7 @@ flowchart TB
     SB -->|"stdout / stderr"| X
     T -->|"tool_result · artifact (save_content)"| SP
     G -->|"artifact + tool_result (a reference)"| SP
-    X -->|"tool_result (tainted) · artifact (save_as)"| SP
+    X -->|"tool_result (labelled) · artifact (save_as)"| SP
     G -.-> BL[(blob store)]
     T -.-> BL
     X -.-> BL
@@ -365,8 +365,8 @@ parts of that had no representation in the space and now do.
 the previous attempt as a lineage parent. Before, every `tool_call` parented to the conversation, so
 eight tries were eight siblings: lineage from the last said nothing about the seven before it, and
 "how did this end up working" could only be reconstructed from the transcript. Taint rides
-`parent_ids`, which is the right answer here rather than an accident: a fix written from tainted
-output is tainted.
+`parent_ids`, which is the right answer here rather than an accident: a fix written from classified
+output carries the same labels.
 
 *A pass is evidence, not an opinion.* `run_code` takes an optional `expect`
 (`exit_zero` / `stdout_equals` / `stdout_contains`), stated BEFORE the run. The exec-worker judges
@@ -401,9 +401,12 @@ scriptable media out of the console's origin.)
 
 Three properties fall out of the substrate rather than being bolted on:
 
-- **The result is tainted, always.** Output of model-written code over possibly-injected input is
-  untrusted by construction; taint propagates through `ack`, and a sensitive consumer can refuse it
-  with `requireUntainted`. Clearing it needs a privileged declassify.
+- **The result is classified by what the sandbox could REACH**, not by the fact that code ran.
+  With read roots the output may carry file contents, so it carries `file`; with none there is
+  nothing a barrier would test and it carries no label. "A model wrote this" is a graph fact the log
+  already answers, so it is deliberately not a label (see
+  [design-taint.md](../../agent_docs/design-taint.md)). Labels union through `ack`, a consumer
+  states what it accepts with `allowTaint`, and clearing one needs a privileged declassify.
 - **Every program is auditable by query.** The source lives in the `tool_call` body, so
   `space_query {kind: tool_call, match: {tool: "run_code"}}` is the complete execution log, with
   each result as its child.
@@ -577,7 +580,7 @@ whoever `RADIA_CHAT_TOKEN` belongs to.)
 Honest edges (documented, not hidden): a crashed inference retries and can double-spend
 (at-least-once; the gateway is the real fix); file contents become records and flow to the
 model, and taint exists (a tool-worker could `put {taint:true}` on file reads so the untrust
-propagates, and a sensitive consumer could `take {requireUntainted}`), though this example
+propagates, and a sensitive consumer could `take {allowTaint: []}`), though this example
 does not wire it. The thread model makes Radia storage linear, but re-sending history to
 the provider each call is inherent to stateless chat APIs (prompt caching mitigates it,
 provider-side), and a large single message (e.g. a 64 KB file read) is one big record: this

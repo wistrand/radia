@@ -188,7 +188,7 @@ async function call(
       const leaseSeconds = num(a, "leaseSeconds") ?? 60;
       const claimed = await client.take({ pattern: pat(a) }, {
         leaseSeconds,
-        requireUntainted: a.requireUntainted === true || undefined,
+        allowTaint: a.requireUntainted === true ? [] : (Array.isArray(a.allowTaint) ? a.allowTaint.map(String) : undefined),
       });
       if (!claimed) return "nothing available for that pattern";
       // The model gets a handle; the fenced lease never leaves this process.

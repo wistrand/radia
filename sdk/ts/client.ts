@@ -326,8 +326,8 @@ export class RadiaClient {
     return { records: r.records, nextAfter: r.nextAfter, scope: r.scope, explain: r.explain };
   }
 
-  take(sel: TakeSelector, opts: { leaseSeconds?: number; requireUntainted?: boolean } = {}): Promise<TakeResult | null> {
-    return this.req("POST", "/v0/takes", { ...sel, leaseSeconds: opts.leaseSeconds, requireUntainted: opts.requireUntainted });
+  take(sel: TakeSelector, opts: { leaseSeconds?: number; allowTaint?: string[] } = {}): Promise<TakeResult | null> {
+    return this.req("POST", "/v0/takes", { ...sel, leaseSeconds: opts.leaseSeconds, allowTaint: opts.allowTaint });
   }
 
   ack(lease: Lease, result?: PutRequest, idempotencyKey?: string): Promise<AckResult> {
@@ -502,7 +502,7 @@ export class RadiaClient {
       mediaType?: string;
       filename?: string;
       parentIds?: string[];
-      taint?: boolean;
+      taint?: string[];
       idempotencyKey?: string;
       /** Application fields merged into the artifact's record body, so an app can route and SCOPE
        *  artifacts it owns. A grant pattern matches the body, and the rest of the body is
@@ -522,7 +522,10 @@ export class RadiaClient {
       headers["x-radia-meta"] = json;
     }
     if (opts.parentIds?.length) headers["x-radia-parent-ids"] = opts.parentIds.join(",");
-    if (opts.taint) headers["x-radia-taint"] = "true";
+    // A comma list of labels, because a header can only carry a string. An EMPTY array is not the
+    // same as absent (it is an explicit "no labels"), but on this path both mean the same thing:
+    // raise nothing. Sending "true" here was the boolean's shape and is now an unknown label.
+    if (opts.taint && opts.taint.length > 0) headers["x-radia-taint"] = opts.taint.join(",");
     if (opts.idempotencyKey) headers["Idempotency-Key"] = opts.idempotencyKey;
     if (this.auth.token) headers["Authorization"] = `Bearer ${this.auth.token}`;
     // The cast works around a Deno lib typing quirk: `Uint8Array<ArrayBufferLike>` is a valid

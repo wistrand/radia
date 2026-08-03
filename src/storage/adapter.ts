@@ -46,7 +46,10 @@ export interface RuntimeMeta {
   createdBy: string; // principal id
   delegationContext?: DelegationContext; // authorization chain, server-derived from the lease
   parentIds: Ulid[]; // data/causality lineage only
-  taint: boolean;
+  /** Classification labels this record carries, sorted and deduplicated; empty means unclassified.
+   *  A BARRIER vocabulary, not provenance: see `TAINT_LABELS` in `src/core/kinds.ts`. Lives outside
+   *  the body, so the routing language cannot match on it. */
+  taint: string[];
   schemaVersion: number;
   createdAt: string; // DB clock, ISO 8601
 }
@@ -241,8 +244,9 @@ export interface LeaseSpec {
   leaseSeconds: number;
   maxCumulativeSeconds: number; // hard cap: a wedged process cannot renew past this
   maxAttempts: number; // beyond this, an expired reclaim dead-letters
-  /** A sensitive consumer claim-filter: skip candidates whose record is tainted. */
-  requireUntainted?: boolean;
+  /** A sensitive consumer's claim filter: the labels a candidate may carry. Undefined = no barrier.
+   *  An ALLOWLIST, so a label introduced later is barred rather than silently admitted. */
+  allowTaint?: string[];
   /** Author restriction from a self-scoped grant: skip candidates authored by anyone else. A claim
    *  hands back the record body, so this has to be enforced in the claim like `requireUntainted`,
    *  not left to the caller. */

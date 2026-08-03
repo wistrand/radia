@@ -145,13 +145,18 @@ append-only architectures usually never cash in, and this one can. Build it with
 because retention GC does not exist yet and replay depth is currently unbounded by accident; when
 retention lands the window closes silently.
 
-### The taint overlay needs a substrate change; the delegation overlay does not
+### The taint overlay is now mostly rendering, like the delegation one
 
 `delegation_context` is recorded and server-derived, so colouring the authority chain is rendering
-work. Taint is one bit, lives outside the body, and records nothing about which parent caused it.
-Rendered today it produces a field of red nodes with no explanation. It is useful only once taint
-provenance exists, which is the same missing primitive the containment application needs. Do it once
-for both.
+work. Taint is now a closed set of labels rather than one bit (see
+[design-taint.md](design-taint.md)), so an overlay can at least colour BY LABEL and say which
+classification a record carries. It still records nothing about WHICH parent contributed one, and
+that is deliberate: provenance is a lineage walk, cheap once and ruinous on the claim path.
+Under the boolean it produced a field of red nodes with no explanation, and the labels remove most
+of that: colouring by label distinguishes a file read from a network fetch, which is the question an
+operator was actually asking. What remains unbuilt is the JOIN to the lineage graph — "which
+ancestor introduced `net`" — and the labels make that a PRUNED walk rather than an unbounded one,
+so it is cheaper than it was.
 
 ### Flows is mining, and its acceptance test already exists
 

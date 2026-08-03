@@ -91,7 +91,7 @@ timestamps.
   envelope-query (`GET /v0/ops/records?state=…&expired=…&stale=…`), and `scope` on a grant
   (`{createdBy: "self"}`, `{taint: "none"}`), see [design-auth.md](design-auth.md).
 - Taint therefore affects routing in exactly one place, a skip in `rankClaimable`
-  (`src/core/take.ts`), reached when the caller passes `requireUntainted` or a grant-side barrier
+  (`src/core/take.ts`), reached when the caller passes `allowTaint` or a grant-side barrier
   forces it on.
 
 Keeping envelope fields out of the matching language is what keeps patterns analyzable, storable

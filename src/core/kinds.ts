@@ -60,6 +60,70 @@ export const INTEREST = "interest";
  *  self-declared). Runs/definitions are also written internally by the bootstrap endpoints. */
 export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, SHRED]);
 
+/**
+ * The closed taint vocabulary: a classification some policy BARS, never a note about origin.
+ *
+ * Provenance is already in the log (`parent_ids` + `created_by`), so a label that merely records
+ * where content came from is a denormalised copy of a graph fact. The test for adding one is not
+ * "is it true of the record" but "is it tested where walking the log is too expensive": the barrier
+ * runs inside `take`, per candidate, where a lineage walk costs ~125x the claim itself. Everything
+ * else is asked once, after the fact, and belongs in the log. See design-taint.md.
+ *
+ * Adding a label requires naming the policy that tests it AT CLAIM TIME. Three is not a placeholder.
+ */
+export const TAINT_LABELS = ["file", "net", "foreign"] as const;
+export type TaintLabel = (typeof TAINT_LABELS)[number];
+
+/** Carried by records written before labels existed: the space cannot know what they touched, so
+ *  they get a label no allowlist may contain and are claimable by nothing that states a barrier. */
+export const TAINT_UNKNOWN = "unknown";
+
+const VALID_TAINT = new Set<string>([...TAINT_LABELS, TAINT_UNKNOWN]);
+
+/** Normalize a client-supplied or stored label set: sorted, deduplicated, validated.
+ *  An unrecognized label is REFUSED rather than dropped; silently ignoring one would let a caller
+ *  believe it had restricted a record that is in fact unrestricted. */
+export function normalizeTaint(labels: readonly string[] | undefined): string[] {
+  if (!labels || labels.length === 0) return [];
+  const out = new Set<string>();
+  for (const l of labels) {
+    if (!VALID_TAINT.has(l)) {
+      throw new RadiaError("invalid_taint", `unknown taint label '${l}'; the vocabulary is ${[...TAINT_LABELS].join(", ")}`);
+    }
+    out.add(l);
+  }
+  return [...out].sort();
+}
+
+/**
+ * The labels a grant's `scope.taint` ALLOWS. `"none"` is the empty allowlist.
+ *
+ * An allowlist rather than a blocklist, and that is the load-bearing choice: a label introduced
+ * later is barred by every existing grant automatically, where a blocklist would silently permit
+ * it. It also composes correctly with the union rule, since two grants widen to the union of what
+ * they allow, which is what "these grants together permit" should mean.
+ */
+export function parseTaintAllowlist(value: string): string[] {
+  if (value === "none") return [];
+  return normalizeTaint(value.split(",").map((v) => v.trim()).filter(Boolean));
+}
+
+/** Labels a CLIENT raised, from a JSON array or a comma-separated header. Anything that is not a
+ *  recognized label is refused by `normalizeTaint`; `undefined` means the client raised nothing. */
+export function clientTaint(raw: unknown): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  // An EMPTY ARRAY is not absence. As a raise it means "no labels", and as an allowlist it means
+  // "accept nothing classified" — which is the strictest barrier there is. Collapsing it to
+  // `undefined` turned the strictest possible request into no barrier at all.
+  if (Array.isArray(raw)) return normalizeTaint(raw.map(String));
+  // A comma list, for headers, which can only carry strings. An empty one is absence.
+  if (typeof raw === "string") {
+    const parts = raw.split(",").map((v) => v.trim()).filter(Boolean);
+    return parts.length === 0 ? undefined : normalizeTaint(parts);
+  }
+  throw new RadiaError("invalid_taint", "taint must be an array of labels");
+}
+
 /** The coordination operations a grant can authorize. */
 export type GrantOp = "put" | "take" | "query" | "read_one";
 const VALID_OPS = new Set<GrantOp>(["put", "take", "query", "read_one"]);
@@ -72,6 +136,9 @@ const VALID_OPS = new Set<GrantOp>(["put", "take", "query", "read_one"]);
 const VALID_SCOPE_VALUES = new Map<string, Set<string>>([
   ["createdBy", new Set(["self"])],
   ["leaseOwner", new Set(["self"])],
+  // `taint` is the odd one out: its value is an ALLOWLIST, not a fixed token, so it is validated by
+  // `parseTaintAllowlist` in `validateGrantDef` rather than by membership here. "none" is listed so
+  // the common case reads the same as the other keys.
   ["taint", new Set(["none"])],
 ]);
 
@@ -82,9 +149,11 @@ export interface GrantDef {
   operations: GrantOp[]; // which coordination verbs on that kind
   /** Envelope-side scope, e.g. `{createdBy: "self"}` or `{taint: "none"}` (see design-auth.md).
    *  Distinct from `pattern`, which is a BODY match: the envelope fields a scope selects on are
-   *  precisely the ones the routing language is forbidden to see. `{taint: "none"}` is a claim
-   *  barrier an OPERATOR imposes, so containment stops depending on the worker passing
-   *  `requireUntainted` itself. */
+   *  precisely the ones the routing language is forbidden to see. `taint` is a claim barrier an
+   *  OPERATOR imposes, so containment stops depending on the worker asking for it: its value is an
+   *  ALLOWLIST of labels (`"none"`, or `"file"`, or `"file,net"`), and a record carrying anything
+   *  outside it cannot be claimed. Allowlist rather than blocklist so a label added later is barred
+   *  by every existing grant instead of silently permitted. */
   scope?: Record<string, string>;
   /** Optional pattern-scope: a match object AND-ed into the principal's read/take on this kind
    *  (the effective query is `grant ∧ request`). Omitted → the whole kind. Applies to
@@ -133,7 +202,16 @@ export function validateGrantDef(def: GrantDef): void {
           `unknown grant scope '${key}' (expected ${[...VALID_SCOPE_VALUES.keys()].join(", ")})`,
         );
       }
-      if (typeof value !== "string" || !allowed.has(value)) {
+      if (typeof value !== "string") {
+        throw new RadiaError("invalid_grant", `grant.scope.${key} must be a string`);
+      }
+      // `taint` carries an ALLOWLIST rather than a fixed token, so it validates its own value.
+      // A typo must be a registration error, never a grant that quietly allows nothing.
+      if (key === "taint") {
+        parseTaintAllowlist(value);
+        continue;
+      }
+      if (!allowed.has(value)) {
         throw new RadiaError(
           "invalid_grant",
           `grant.scope.${key} must be one of ${[...allowed].map((v) => `"${v}"`).join(", ")}`,

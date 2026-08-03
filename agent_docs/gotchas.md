@@ -911,6 +911,25 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   details and are not: an ABSENT expectation records no verdict rather than a passing one (an
   unverified run must not read as successful), and a TIMEOUT fails `exit_zero` (a killed process has
   a null exit code, and treating that as zero turns the worst outcome into a pass).
+- **An empty allowlist is not the absence of one, and collapsing them inverts a security control.**
+  `allowTaint: []` means "accept nothing classified", the STRICTEST barrier there is; `undefined`
+  means no barrier at all. A helper that returned `undefined` for an empty array turned the
+  strictest possible request into no barrier, and conformance caught it. The same shape recurs
+  wherever an empty collection is a real answer: an empty grant list, an empty label set, an empty
+  scope. Check for `=== undefined`, never for falsiness.
+- **Compare identities that are the same KIND of name.** `foreign` (derived from another
+  principal's record) first compared the LEASE OWNER (`run:…`) against a record's `created_by`
+  (the resolved caller), which are the same actor under two names, so a worker's own ack read as
+  foreign against the task it had just claimed. A label that fires on everything is the saturation
+  the label set exists to end. Compare against whatever will become `created_by`.
+- **Do not denormalise what the log already answers; denormalise what the HOT PATH cannot afford to
+  ask.** Provenance is in the graph: `parent_ids` plus a server-assigned `created_by` answers "did
+  this descend from executed code" with a lineage walk. Measured, that walk is 1.3 ms over a 60-turn
+  thread, which is free for an auditor asking once and ruinous inside `take`, which runs it per
+  candidate (~0.3 s against a 2.4 ms claim, 125x). So the test for a new envelope field is not "is
+  this true of the record" but "is this tested where walking the log is too expensive". A first draft
+  of the taint labels carried `model` and `exec` on that mistake; both are graph facts, neither is
+  ever tested at claim time, and both were cut. See [design-taint.md](design-taint.md).
 - **A column that exists is not a behaviour that happens.** `record_runtime` carries `claim_until`
   and `effective_priority`; both are written as `undefined`/`0` at every call site and neither is
   consulted, so "no new claims after this time" and "aged by sweeper" described nothing. Same shape
@@ -1066,8 +1085,8 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   one `declassify` event names them, and ordinary puts are unchanged. The general shape: if an
   operation exists to be audited, it needs its own verb in the log, because an entry that looks like
   every other write is not findable after the fact.
-- **`take {requireUntainted}` filters candidates in core, not SQL.** The barrier lives in
-  `rankClaimable` (skips `record.runtimeMeta.taint`), threaded via `LeaseSpec.requireUntainted`, so
+- **The taint barrier filters candidates in core, not SQL.** It lives in `rankClaimable` (skips a
+  candidate carrying any label outside the allowlist), threaded via `LeaseSpec.allowTaint`, so
   both adapters get it for free and it stays backend-neutral. It's a claim-time skip, not a query
   predicate (taint is runtime metadata, not body; the content-routing DSL can't see it, same as the
   envelope).

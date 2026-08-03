@@ -13,6 +13,12 @@ info:
     `x-stability`. SemVer 0.x means the surface may still move; the additive-only rule is
     what makes the stable subset dependable.
 
+    Limits enforced at commit: pattern `$and`/`$or` nesting depth <= 3 (`too_deep`), artifact bytes
+    (`413 artifact_too_large`, default 32 MiB), and record body bytes (`413 record_too_large`,
+    default 1 MiB, measured on the serialized JSON). The gap between the last two is the signal: a
+    body approaching artifact size is a payload in the wrong place, and unlike an artifact a body
+    can never be erased.
+
     Authorization (M1): kind-scoped grants are reserved `grant` records (assigned by an operator
     or the supervisor; discovered by query). Requests authenticate with `Authorization: Bearer
     <run-token>` minted through the bootstrap chain (agent-definitions → agent-runs → stop); a
@@ -187,7 +193,8 @@ paths:
                 pattern: { $ref: "#/components/schemas/Pattern" }
                 recordId: { type: string }
                 leaseSeconds: { type: number }
-                requireUntainted: { type: boolean, description: "sensitive consumer: skip tainted candidates (taint barrier)" }
+                allowTaint: { type: array, items: { type: string }, description: "the classification labels a candidate may carry and still be claimed (file, net, foreign). An ALLOWLIST, so a label added later bars the claim rather than being silently admitted. [] accepts only unclassified records and is the strictest barrier, NOT the absence of one; omit the field for no barrier. Intersected with whatever the caller's grants impose." }
+                requireUntainted: { type: boolean, description: "deprecated spelling of allowTaint: []" }
       responses:
         "200":
           description: "{record, lease} or null"
@@ -315,7 +322,7 @@ paths:
         - { name: Idempotency-Key, in: header, required: false, schema: { type: string } }
         - { name: X-Radia-Filename, in: header, required: false, schema: { type: string }, description: "Advisory download name; never used as a path." }
         - { name: X-Radia-Parent-Ids, in: header, required: false, schema: { type: string }, description: "Comma-separated data lineage parents." }
-        - { name: X-Radia-Taint, in: header, required: false, schema: { type: string, enum: ["true"] }, description: "Raise taint (a client may raise it, never clear it)." }
+        - { name: X-Radia-Taint, in: header, required: false, schema: { type: string }, description: "Comma-separated classification labels the client RAISES on its own output (file, net, foreign). Raising is monotone, so it needs no trust; an unrecognized label is refused rather than ignored. A client can never clear one." }
         - { name: X-Radia-Meta, in: header, required: false, schema: { type: string }, description: "ASCII JSON object of APPLICATION fields merged into the artifact's record body (scalars only; digest/mediaType/size/filename are runtime-computed and rejected here). This is what lets a pattern-scoped grant bind an artifact to something the app owns. The rest of the body is the runtime's." }
       requestBody:
         required: true
@@ -805,8 +812,10 @@ paths:
       summary: Privileged declassify that clears taint by emitting a clean successor (operator only)
       description: >
         Records are immutable, so declassify emits a NEW record with the same kind + body,
-        `taint:false`, and the tainted original as its data parent (audit trail). The only way to
-        clear taint. Grant-gated to operators via the /ops boundary.
+        the named labels removed (or all of them when none are named), and the original as its data
+        parent (audit trail). The only way to clear a label. The response and the event both record
+        which labels were `cleared` and which `remaining`, so a clearance says what it was FOR.
+        Grant-gated to operators via the /ops boundary.
       x-stability: experimental
       parameters:
         - { name: recordId, in: path, required: true, schema: { type: string } }
@@ -1133,7 +1142,7 @@ components:
         parentIds: { type: array, items: { type: string }, description: "data lineage; all must exist at commit" }
         deadlineAt: { type: string }
         retentionUntil: { type: string }
-        taint: { type: boolean, description: "source attestation: true RAISES taint (untrusted data); false/absent is ignored, since a client can never clear taint" }
+        taint: { type: array, items: { type: string }, description: "source attestation: classification labels the client RAISES on its own output (file, net, foreign). Monotone, so it needs no trust; an unrecognized label or a non-array is refused rather than ignored, because silently dropping one leaves a caller believing it restricted a record that is in fact unrestricted. Never subtracts: labels inherited from data parents survive an empty raise." }
 
     Record:
       description: Immutable content half of a record.
@@ -1163,7 +1172,7 @@ components:
             chain: { type: array, items: { type: string }, description: "ordered grant subjects (agents) along the delegation path" }
             origin: { type: string, description: "the leased record this was delegated from" }
         parentIds: { type: array, items: { type: string } }
-        taint: { type: boolean, description: "server-computed data-lineage taint; cleared only by a privileged declassify" }
+        taint: { type: array, items: { type: string }, description: "server-computed classification: the UNION of every data parent's labels plus the client's raise, plus `foreign` when a parent was written by another principal. Sorted and deduplicated. Cleared only by a privileged declassify, per label." }
         schemaVersion: { type: integer }
         createdAt: { type: string }
 

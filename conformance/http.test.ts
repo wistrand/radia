@@ -376,7 +376,7 @@ Deno.test("http: a grant can BAR a principal from claiming tainted work, and it 
   const { space, handler, close } = await newHandler();
   try {
     await space.put({ kind: "task", body: { tag: "clean" } });
-    await space.put({ kind: "task", body: { tag: "dirty" }, taint: true });
+    await space.put({ kind: "task", body: { tag: "dirty" }, taint: ["file"] });
 
     const barred = await space.createAgentDefinition("agent:barred", [
       { principal: "agent:barred", kind: "task", operations: ["take"], scope: { taint: "none" } },
@@ -412,7 +412,7 @@ Deno.test("http: an unbarred grant beside a barred one lifts the barrier (grants
   // barrier anyway would deny something that was granted. Same rule `authorScope` uses.
   const { space, handler, close } = await newHandler();
   try {
-    await space.put({ kind: "task", body: { tag: "dirty" }, taint: true });
+    await space.put({ kind: "task", body: { tag: "dirty" }, taint: ["file"] });
     const mixed = await space.createAgentDefinition("agent:mixed", [
       { principal: "agent:mixed", kind: "task", operations: ["take"], scope: { taint: "none" } },
       { principal: "agent:mixed", kind: "task", operations: ["take"], pattern: { tag: "dirty" } },
@@ -425,7 +425,7 @@ Deno.test("http: an unbarred grant beside a barred one lifts the barrier (grants
 
     // …and the worker can still impose it on itself, voluntarily.
     await space.nack(got.lease, { backoffSeconds: 0 });
-    const refused = await (await handler(post("/v0/takes", { pattern: { kind: "task" }, requireUntainted: true }, {
+    const refused = await (await handler(post("/v0/takes", { pattern: { kind: "task" }, allowTaint: [] }, {
       authorization: `Bearer ${runToken}`,
     }))).json();
     assertEquals(refused, null, "a worker may always be more careful than its grants require");
@@ -633,24 +633,28 @@ Deno.test("http: a wrong-typed BOUND falls back to its default rather than faili
   }
 });
 
-Deno.test("http: a non-boolean `taint` cannot raise taint", async () => {
+Deno.test("http: an unrecognized taint label is REFUSED, not ignored", async () => {
   const { handler, close } = await newHandler();
   try {
-    // `taint` is the one authoritative field a client may RAISE, and the mapping is `=== true`,
-    // so anything else is simply absent rather than a 400. That is the fail-SAFE direction, and
-    // this pins it: the risk to guard is a truthy-looking value being read as "raise", never a
-    // rejected request.
-    for (const taint of ["yes", 1, {}, "true"]) {
+    // The direction reversed when taint became labels, deliberately. With a boolean, anything but
+    // `true` was silently ignored and the record came back unclassified — which reads as fail-safe
+    // and is not: a caller that mistyped its raise believed it had restricted a record that was in
+    // fact unrestricted. With a vocabulary, an unknown label is a 4xx, so a mistyped restriction is
+    // a failed request rather than a silent absence of one.
+    for (const taint of [["yes"], ["FILE"], ["file ", "nope"], "file"]) {
       const res = await handler(post("/v0/records", { kind: "task", body: { tag: "t" }, taint }));
-      assertEquals(res.status, 201);
-      const { id } = await res.json();
-      const record = await (await handler(get(`/v0/ops/records/${id}`))).json();
-      assertEquals(record.runtimeMeta?.taint ?? false, false, `taint: ${JSON.stringify(taint)} must not raise`);
+      assert(res.status >= 400 && res.status < 500, `taint: ${JSON.stringify(taint)} must be refused, got ${res.status}`);
+      await res.body?.cancel();
     }
-    const raised = await handler(post("/v0/records", { kind: "task", body: { tag: "t" }, taint: true }));
+    // Absent stays absent: raising nothing is not an error.
+    const none = await handler(post("/v0/records", { kind: "task", body: { tag: "t" } }));
+    assertEquals(none.status, 201);
+    const noneRec = await (await handler(get(`/v0/ops/records/${(await none.json()).id}`))).json();
+    assertEquals(noneRec.runtimeMeta?.taint, []);
+    const raised = await handler(post("/v0/records", { kind: "task", body: { tag: "t" }, taint: ["file"] }));
     const { id } = await raised.json();
     const record = await (await handler(get(`/v0/ops/records/${id}`))).json();
-    assertEquals(record.runtimeMeta?.taint, true, "a real boolean still raises it");
+    assertEquals(record.runtimeMeta?.taint, ["file"], "a recognized label is carried through");
   } finally {
     await close();
   }

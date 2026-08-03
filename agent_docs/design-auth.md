@@ -133,7 +133,7 @@ stricter **chain-intersection** delegation policy (effective permission = inters
 whole chain's grants, rejected as a hard default because it breaks legitimate pipelines; it
 belongs with taint composition); per-principal **trust classification** (auto-tainting untrusted
 principals' puts, which nothing blocks, since the resolved caller *is* threaded into
-`put`/`created_by`; the taint model is propagation + client-raise + declassify); and **budget**
+`put`/`created_by`; the taint model is label propagation + client-raise + per-label declassify); and **budget**
 enforcement.
 The examples also run tool-workers as **OS-permission-scoped subprocesses** (`--allow-read`/net, no
 env), a real but out-of-band isolation layer, complementary to grants.
@@ -163,8 +163,9 @@ Cross-cutting versions are in [CLAUDE.md](../CLAUDE.md); detail here is authorit
 - `delegation_context` is server-derived from the claimed lease; data parents contribute
   no authority.
 - Taint clears only via privileged **declassify**. Ordinary agents cannot write
-  `taint: false`, and a declassify records the principal that performed it.
-- A grant may bar tainted work with `scope: {taint: "none"}`. `requireUntainted` on a take is the
+  a label, and a declassify records the principal that performed it and WHICH labels it cleared.
+- A grant states which labels a claim may carry with `scope.taint`, an ALLOWLIST (`"none"` is the
+  empty one). `allowTaint` on a take is the
   worker's own flag, so on its own it is a convention; the grant-side barrier is what an operator
   imposes. It applies only when every applicable grant carries it, because grants union.
 
@@ -259,7 +260,7 @@ server-side *after* the client's own pattern, so a wrong or malicious client pat
 narrow what it sees.
 
 A grant may also carry `scope`, the envelope-side selector for the fields a `pattern` is forbidden
-to see (`{createdBy: "self"}`, `{taint: "none"}`). It is a closed enum vocabulary that only
+to see (`{createdBy: "self"}`, `{taint: "file,net"}`). It is a closed vocabulary that only
 authorization reads. Never extend `pattern` to reach envelope state instead; see
 [design-matching.md](design-matching.md) "What patterns cannot express".
 
@@ -314,7 +315,7 @@ record grants nothing.
 ```mermaid
 flowchart TB
     LE["claimed lease<br/>(lease_owner → agent)"] -->|"AUTHORITY lineage"| R["record emitted by ack"]
-    PA["parent_ids<br/>(data parents)"] -->|"DATA lineage: taint = OR(parents)"| R
+    PA["parent_ids<br/>(data parents)"] -->|"DATA lineage: taint = UNION(parents)"| R
     R --> DC["delegation_context.chain<br/>(who authorized this)"]
     R --> TX["taint flag<br/>(is this untrusted data)"]
 ```
@@ -344,6 +345,13 @@ link should print the plain artifact URL and let the viewer authenticate normall
 
 ## Taint: server-computed
 
+> **Taint is a closed set of BARRIER labels, not a boolean.** `file` / `net` / `foreign`, unioned
+> along data parents, raised freely by a client and cleared per-label by a privileged declassify; a
+> grant's `scope.taint` is an ALLOWLIST. It began as one bit, which saturated after the first tool
+> call in a conversation and therefore barred nothing. The reasoning, the measurement and the rule
+> for adding a label are in [design-taint.md](design-taint.md). What follows describes the rest of
+> the mechanism, which is unchanged.
+
 **Built (M1):** taint is untrusted **data** lineage, server-computed at commit
 (`Space.computeTaint`, used by put and ack): a record is tainted if a client **raised** it
 (`taint:true`, the source attestation) or **any `parent_ids` data parent is tainted**. It
@@ -351,14 +359,15 @@ propagates through `ack` (the leased record is a data parent, so a tainted task 
 result). A client may only *raise* taint; `taint:false` from a client is ignored. Clearing
 requires a privileged **declassify** (`POST /v0/ops/records/{id}/declassify`, operator-gated),
 which emits a **clean successor** (same body, `taint:false`, tainted original as its data
-parent). A sensitive consumer avoids tainted work with `take {requireUntainted}` (a claim-time
+parent). A sensitive consumer states which labels it accepts with `take {allowTaint}` (a claim-time
 taint barrier, `core/take.ts`). See [design-data-model.md](design-data-model.md) "Provenance vs.
 authority". Deferred: per-principal trust classification (auto-tainting untrusted principals'
 puts) and the taint-composed chain-intersection policy (M3).
 
 The grant-side barrier (invariant above) is `Space.taintBarrier`: it reports whether every
 applicable grant carries `scope: {taint: "none"}`, and `handleTake` ORs the answer into the
-caller's own `requireUntainted`, so the principal cannot decline it.
+caller's own `allowTaint`, so the principal cannot decline it; the two INTERSECT, since a caller
+may narrow what it accepts and may never widen past what its grants permit.
 
 **Known limits of the model, both real today:**
 

@@ -38,7 +38,7 @@ resequencing: shipping the top three serves agents and newcomers and does nothin
 | 6 | Space digest                                            | Agent     | **DONE.** Pages to exhaustion and reports `complete: false`                |
 | 7 | "Who can see this record"                               | Operator  | The read-side twin of the dry-run matcher; same machinery                  |
 | 8 | Replay with an explicit horizon                         | Operator  | A dividend already earned; the window closes when retention GC lands       |
-| 9 | Taint provenance, then the taint overlay                | Operator  | Substrate change, shared with the containment application                  |
+| 9 | Taint overlay (colour by label), then provenance         | Operator  | The substrate change LANDED (labels, not one bit), so the overlay is rendering; provenance is a pruned lineage walk |
 
 Items 1 and 2 are independent of everything else and of each other. Item 3 is the one whose absence
 explains why the newcomer's question has no answer today, so treat a slip there as a slip in adoption

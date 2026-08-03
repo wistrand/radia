@@ -348,7 +348,7 @@ await agentLoop(client, {
         return {
           kind: "tool_result",
           body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: `'${b.tool}' is served by a worker, not by a saved procedure` },
-          taint: true,
+          taint: [],
         };
       }
       const proc = await lookupProcedure(c, b.tool, b.conversationId);
@@ -358,7 +358,7 @@ await agentLoop(client, {
         const why = proc?.retired
           ? `procedure '${b.tool}' has been retired; save it again to bring it back`
           : `no procedure '${b.tool}' saved in this conversation`;
-        return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: why }, taint: true };
+        return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: why }, taint: [] };
       }
       provenance = { name: proc.name, recordId: proc.id, artifactId: proc.artifactId };
       const source = new TextDecoder().decode(await c.getArtifact(proc.artifactId));
@@ -373,7 +373,7 @@ await agentLoop(client, {
     // result and any artifact as its children.
     await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "executing", by: ME, note: `${code.length} chars` }, [callId]);
     if (!code.trim()) {
-      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: "run_code needs a `code` argument" }, taint: true };
+      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: "run_code needs a `code` argument" }, taint: [] };
     }
     const r = await runCode(code, { timeoutMs, readRoots, denyRead });
 
@@ -390,7 +390,7 @@ await agentLoop(client, {
           mediaType,
           filename: args?.save_as,
           parentIds: [callId], // lineage: conversation -> tool_call -> artifact
-          taint: true, // bytes produced by model-written code
+          taint: readRoots.length > 0 ? ["file"] : [],
           meta: { conversationId: b.conversationId ?? "", owner: b.owner ?? "" }, // what a grant pattern can bind
         });
         stored = { artifactId: a.id, mediaType, size: a.size };
@@ -466,7 +466,10 @@ await agentLoop(client, {
       // lineage walk rather than a guess. That is the question a model answered wrong from memory,
       // and then invented a reason for. The claimed tool_call is added as a parent by `ack`.
       ...(provenance ? { parentIds: [provenance.recordId] } : {}),
-      taint: true, // executed-code output is untrusted by construction
+      taint: readRoots.length > 0 ? ["file"] : [],
+      // Classified by what the sandbox could REACH, not by the fact that code ran: "a program
+      // produced this" is a graph fact the log already answers. With read roots the output may
+      // carry file contents; with none there is nothing a barrier would test.
     };
   },
 });
@@ -485,7 +488,7 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
   const name = String(a.name ?? "");
   const description = String(a.description ?? "");
   const code = String(a.code ?? "");
-  const fail = (output: string) => ({ kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output }, taint: true });
+  const fail = (output: string) => ({ kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output }, taint: [] });
 
   if (!NAME_RE.test(name)) return fail("`name` must be lowercase letters, digits and underscores, starting with a letter");
   if ((await capabilityNames(c)).has(name)) return fail(`'${name}' is already a tool served by a worker; choose another name`);
@@ -498,7 +501,7 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
     mediaType: "text/javascript",
     filename: `${name}.js`,
     parentIds: [callId],
-    taint: true, // model-written source, like any other bytes it produced
+    taint: [],
     meta: { conversationId: b.conversationId ?? "", owner: b.owner ?? "" }, // what a grant pattern can bind
   });
   const key = await shortHash(`${description}\n${code}`);
@@ -558,14 +561,14 @@ async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
   const b = rec.body as { args?: { name?: string }; conversationId?: string; owner?: string };
   const name = String(b.args?.name ?? "");
   if (!name) {
-    return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: "read_procedure needs a `name`" }, taint: true };
+    return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: "read_procedure needs a `name`" }, taint: [] };
   }
   const rows = await c.query({ kind: "procedure", match: { name, conversationId: b.conversationId ?? "" } }, 50);
   if (rows.length === 0) {
     return {
       kind: "tool_result",
       body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: `no procedure '${name}' saved in this conversation` },
-      taint: true,
+      taint: [],
     };
   }
   const latest = newestByKey<{ name?: string }>(rows, (bb) => bb?.name).get(name)!;
@@ -579,7 +582,7 @@ async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
       ok: true,
       output: { name: body.name, description: body.description, code, versions: rows.length },
     },
-    taint: true, // it is model-written source coming back out
+    taint: [],
   };
 }
 
@@ -596,7 +599,7 @@ async function retireProcedure(rec: RadiaRecord, c: RadiaClient) {
   const callId = rec.id;
   const b = rec.body as { args?: { name?: string; reason?: string }; conversationId?: string; owner?: string };
   const name = String(b.args?.name ?? "");
-  const fail = (output: string) => ({ kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output }, taint: true });
+  const fail = (output: string) => ({ kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output }, taint: [] });
   if (!name) return fail("retire_procedure needs a `name`");
 
   const current = await lookupProcedure(c, name, b.conversationId);

@@ -161,9 +161,10 @@ check("the artifact record is pinned to the conversation", body.conversationId =
 check("…and stamped with the session owner, so a grant pattern can bind it", body.owner === "human:alice", String(body.owner));
 check("…and carries the filename for the download", body.filename === "clock.html", String(body.filename));
 
-// Model-authored bytes are untrusted like anything else on this path; clearing it needs a
-// privileged declassify. A save tool that quietly produced clean output would be a hole.
-check("model-authored content is tainted", rec?.runtimeMeta.taint === true);
+// NO label, and that is the point of the vocabulary. "The model wrote this" is a graph fact the log
+// already answers; a label exists only for what a BARRIER tests, and nothing bars content for
+// having been authored. What the model READ to write it is labelled on the parents this inherits.
+check("authored content carries no barrier label", (rec?.runtimeMeta.taint ?? []).length === 0, JSON.stringify(rec?.runtimeMeta.taint));
 
 // Lineage: conversation -> tool_call -> artifact, so a stored file traces back to the turn.
 const parents = rec?.runtimeMeta.parentIds ?? [];

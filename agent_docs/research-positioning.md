@@ -56,7 +56,8 @@ already runs."** Name the incumbent, and state precisely where the models don't 
 - **Record-scoped authority vs. namespace-scoped.** Temporal's security is mTLS + namespace
   isolation + a pluggable authorizer gating API calls; within a namespace a workflow may touch
   any activity on its queues, and payloads are opaque blobs with no per-record classification.
-  Radia's `taint` / `requireUntainted` and lease-derived `delegation_context` answer "may *this
+  Radia's taint LABELS (`file`/`net`/`foreign`, allowlisted per grant) and lease-derived
+  `delegation_context` answer "may *this
   payload* reach *this step*", a question Temporal's architecture has no place to ask. This is
   Radia's design center, stated with the same care as the evidence above: real in design,
   early in maturity. Credentials and grants resolve from records per request, so authorization is
