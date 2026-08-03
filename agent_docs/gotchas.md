@@ -911,6 +911,20 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   details and are not: an ABSENT expectation records no verdict rather than a passing one (an
   unverified run must not read as successful), and a TIMEOUT fails `exit_zero` (a killed process has
   a null exit code, and treating that as zero turns the worst outcome into a pass).
+- **A column that exists is not a behaviour that happens.** `record_runtime` carries `claim_until`
+  and `effective_priority`; both are written as `undefined`/`0` at every call site and neither is
+  consulted, so "no new claims after this time" and "aged by sweeper" described nothing. Same shape
+  as `retention_until`, and `schema_version` is a constant. The schema, the indexes and the ranking
+  code are all real, which is what makes this convincing: `Space.take` genuinely orders by
+  `effective_priority` and therefore always falls through to the next tiebreak. Before planning
+  against a documented field, grep for a WRITE of a non-default value and for a read that filters on
+  it; scaffolding for a later milestone looks identical to a live feature from the schema alone.
+- **An unenforced record-size limit is an ERASURE hole, not a performance note.** Nothing rejects a
+  large body (verified: 4 MiB accepted, while the same bytes as an artifact hit a 32 MiB cap), and
+  the erasure boundary is precisely "payloads are out of line, so they can be destroyed; bodies are
+  not, so they cannot". So the missing limit is the mechanism by which unerasable data enters a
+  space: base64 a secret into a body and no operator verb reaches it. That moves the record-size
+  limit above the rest of the unbuilt resource limits, which only bound cost.
 - **Prefer a guarantee that holds by ABSENCE over one that holds by presence.** Deno's sandbox is
   safe because nothing was granted: forget every flag and you get the safe answer. A bubblewrap or
   container jail is safe because `--unshare-net` / `--network=none` was passed: forget one and you

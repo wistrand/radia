@@ -55,10 +55,26 @@ record_runtime               # mutable envelope, one row per record
   state          available | leased | consumed | dead_letter | expired
   attempt        int
   available_at   delayed visibility / retry backoff
-  claim_until    no NEW claims after this time
-  effective_priority   server-computed (see design-scheduler.md); aged by sweeper
+  claim_until    no NEW claims after this time            # RESERVED: never set, never consulted
+  effective_priority   server-computed (design-scheduler) # RESERVED: always 0, nothing ages it
   lease_id, lease_epoch, lease_owner (run id), leased_until
 ```
+
+**Two of those columns are reserved, not live**, and the distinction matters because a reader
+planning against them will find no behaviour there. Verified against `src/`:
+
+- `claim_until` is written as `undefined` at every call site (`Space.putRaw`, the settle path) and
+  no query filters on it. "No new claims after this time" describes nothing that happens. It joins
+  `retention_until` as a field that is stored and never consulted (see the claim ledger in
+  [research-applications.md](research-applications.md) §8).
+- `effective_priority` is set to `0` with the comment "scheduler sets this for real in M3". It is
+  indexed and ordered by, so the ranking machinery is real and its input is constant; `Space.take`
+  ranks by it and therefore always falls through to the next tiebreak. "Aged by sweeper" is doubly
+  wrong: nothing ages it, and there is no sweeper (the only `setInterval` in the runtime is the MCP
+  heartbeat).
+
+Both are honest scaffolding for [design-scheduler.md](design-scheduler.md) (M3). Neither is a
+behaviour to rely on, and neither should be described in the present tense until it does something.
 
 The split is what makes immutable content coexist with churning claim state, and it is
 what lets the hot claim path be a single-table index (see
@@ -82,8 +98,10 @@ never discards valid completed work.
 ## Client vs. runtime-authoritative metadata
 
 A hard API split. Server-controlled always: `created_by`, `delegation_context`,
-`created_at`, `schema_version` (post-validation), `taint`, `effective_priority`, all
-lease fields. Clients submit only *claims* (`confidence`, `requested_priority`); the
+`created_at`, `schema_version`, `taint`, `effective_priority`, all
+lease fields. (`schema_version` is server-assigned and currently a CONSTANT, `SpaceContext.schemaVersion`
+= 1: the split it belongs to is real, the versioning it implies is not, and kind schema versioning
+remains unbuilt in [plan-milestones.md](plan-milestones.md).) Clients submit only *claims* (`confidence`, `requested_priority`); the
 runtime decides what they are worth. This is what stops an agent from, e.g., declaring
 its own priority or authorship. **`created_by` is the server-RESOLVED caller** (the handler's
 resolved principal: a run token → `run:*`, no header → `human:local`), threaded into
@@ -94,9 +112,13 @@ callers default to the space's own identity.
 
 Two separate structures, deliberately not merged:
 
-- **`parent_ids`**: data/causality lineage only. All parents must exist at commit;
-  self-parenting is rejected. Because parents pre-exist and records are immutable, the
-  lineage DAG is **acyclic by construction**.
+- **`parent_ids`**: data/causality lineage only. All parents must exist at commit (verified: a put
+  naming an unknown parent fails `parent … does not exist`), and self-parenting is rejected.
+  Because parents pre-exist and records are immutable, the lineage DAG is **acyclic by
+  construction** — which is also why the self-parent check is unreachable, since the id is assigned
+  after the caller has named its parents. It is kept as an executable statement of the invariant,
+  not as a guard against a reachable input; do not cite it as evidence that client-supplied ids
+  would be safe.
 - **`delegation_context`**: the authorization chain for this operation,
   server-derived from the claimed task/lease, never freely client-supplied. A result
   may have many data parents but exactly one authorization context. **M1 status (built):**
@@ -135,9 +157,18 @@ flows down **data parents** (taint), and neither leaks into the other.
 
 ## Kind conventions
 
-`task` · `fact` / `hypothesis` · `request` / `bid` / `award` (see
-[design-marketplace.md](design-marketplace.md)) · `result` · `signal` (privileged
-writers only).
+One of these is enforcement and the rest are vocabulary, which the list used to obscure.
+
+**Reserved by the runtime** (`RESERVED_KINDS`, `src/core/kinds.ts`): `kind_def`, `grant`, `signal`,
+`agent_definition`, `agent_run`, `artifact`, `interest`, `shred`. Of those, `grant`, `signal`,
+`agent_*` and `shred` are additionally WRITE-PROTECTED, meaning an operator or the supervisor only,
+whatever grants say.
+
+**Suggested names, which the runtime has never heard of:** `task` · `fact` / `hypothesis` ·
+`request` / `bid` / `award` (see [design-marketplace.md](design-marketplace.md)) · `result`. These
+are naming conventions from the origin outline. Declaring one is an ordinary `kind_def` and carries
+no special behaviour; an application is free to ignore them entirely, and `examples/chat` does,
+owning `message`/`llm_call`/`tool_call`/`check` and so on.
 
 ## Resource limits
 
@@ -156,8 +187,20 @@ watches per run · slow-lane time and row-scan budgets · SSE buffer/backpressur
 
 The gap with a live consumer is **record body size**: nothing rejects a large body, so the
 cross-cutting invariant that artifact bytes never travel inside a record (see
-[CLAUDE.md](../CLAUDE.md)) is today a convention the runtime does not enforce. A base64 payload in
-a body defeats matching, windowing and every size assumption downstream, and it will be accepted.
+[CLAUDE.md](../CLAUDE.md)) is today a convention the runtime does not enforce. Verified: a 4 MiB
+string in a body is accepted, while the same bytes as an artifact are capped at 32 MiB and would be
+rejected past it. A base64 payload in a body defeats matching, windowing and every size assumption
+downstream.
+
+**And it is an ERASURE hole, which is the consequence nobody drew.** The erasure boundary below is
+exactly this invariant: a payload is out of line, so it can be destroyed; a body is not, so it
+cannot. An unenforced size limit therefore does not merely degrade matching, it is the mechanism by
+which unerasable data enters a space. Someone base64s a secret into a body, and no operator verb
+reaches it: `shredArtifact` destroys blobs, and there is no body path. The two sections have to be
+read together, and the missing limit is the load-bearing one.
+
+This raises the priority of the record-size limit above the rest of the unbuilt list. The others
+bound cost; this one bounds what the space can promise.
 
 ## Artifact references
 
