@@ -23,17 +23,17 @@ import type {
 import type { KindDef } from "./kinds.ts";
 import { RadiaError } from "./errors.ts";
 
-export interface OrderKey {
-  path: string;
-  dir?: "asc" | "desc";
-}
-
-/** Wire pattern. `match` values are implicit-$eq scalars or operator objects. */
-export interface Pattern {
-  kind: string;
-  match?: Record<string, unknown>;
-  orderBy?: OrderKey[];
-}
+// The wire vocabulary is DEFINED in `sdk/ts/wire.ts` and re-exported here, so every import
+// path inside `src/` is unchanged while the SDK ships without reaching back into the runtime.
+// See that file's header for why the direction runs this way.
+import type {
+  OrderKey,
+  Pattern,
+} from "../../sdk/ts/wire.ts";
+export type {
+  OrderKey,
+  Pattern,
+};
 
 /**
  * `grant ∧ request`: narrow a requested match by a set of grant patterns (their union). Returns

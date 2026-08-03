@@ -6,8 +6,27 @@
 // the CLI surface has grown past what a coordination runtime should expose, not that this file
 // needs a framework.
 
-/** Switches that take no value, so positional scanning does not swallow the next token. */
-export const VALUELESS = new Set(["--json", "--untainted", "--help", "-h", "--all", "--drain", "--compact", "--partial"]);
+/**
+ * Switches that take no value, so positional scanning does not swallow the next token.
+ *
+ * EVERY valueless switch has to be here, and the failure is order-dependent and silent: with
+ * `--shared` missing, `radia shred <id> --shared` worked and `radia shred --shared <id>` reported a
+ * usage error, because the scanner assumed `--shared` consumed the id. Adding a switch to a verb
+ * without adding it here is the same defect this codebase keeps meeting — a check written against
+ * one member of a set that has since grown.
+ */
+export const VALUELESS = new Set([
+  "--json",
+  "--untainted",
+  "--help",
+  "-h",
+  "--all",
+  "--drain",
+  "--compact",
+  "--partial",
+  "--shared",
+  "--undone",
+]);
 
 /** The value of `--name`, or undefined. First occurrence wins, not last, which keeps
  *  a wrapper script's defaults overridable by appending, the usual shell expectation. */

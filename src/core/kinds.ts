@@ -15,29 +15,56 @@
 
 import { RadiaError } from "./errors.ts";
 
+// The wire vocabulary is DEFINED in `sdk/ts/wire.ts` and re-exported here, so every import
+// path inside `src/` is unchanged while the SDK ships without reaching back into the runtime.
+// See that file's header for why the direction runs this way.
+import type {
+  IndexedPath,
+  IndexedType,
+  KindDef,
+} from "../../sdk/ts/wire.ts";
+export type {
+  IndexedPath,
+  IndexedType,
+  KindDef,
+};
+
 /** The reserved kind whose records ARE kind declarations (body = a KindDef). */
-export const KIND_DEF = "kind_def";
+// KIND_DEF and kindDefKey live in the wire vocabulary: a CLIENT writes kind declarations, and
+// the idempotency key has to be computed identically on both sides or a redeclaring fleet appends a
+// duplicate record per startup.
+export { KIND_DEF, kindDefKey } from "../../sdk/ts/wire.ts";
+import {
+  AGENT_DEFINITION as WIRE_AGENT_DEFINITION,
+  AGENT_RUN as WIRE_AGENT_RUN,
+  ARTIFACT as WIRE_ARTIFACT,
+  GRANT as WIRE_GRANT,
+  INTEREST as WIRE_INTEREST,
+  KIND_DEF,
+  SHRED as WIRE_SHRED,
+  SIGNAL as WIRE_SIGNAL,
+} from "../../sdk/ts/wire.ts";
 
 /** Reserved kind whose records ARE authorization grants (body = a GrantDef). */
-export const GRANT = "grant";
+export const GRANT = WIRE_GRANT;
 
 /** Reserved control kind: operator/supervisor broadcasts (grant-management adjacent). */
-export const SIGNAL = "signal";
+export const SIGNAL = WIRE_SIGNAL;
 
 /** Reserved kind: an agent definition (body {agent, tokenHash}) that mints runs. */
-export const AGENT_DEFINITION = "agent_definition";
+export const AGENT_DEFINITION = WIRE_AGENT_DEFINITION;
 
 /** Reserved kind: an agent run instance (body {run, agent, tokenHash, status, expiresAt}). */
-export const AGENT_RUN = "agent_run";
+export const AGENT_RUN = WIRE_AGENT_RUN;
 
 /** Reserved kind: a reference to bytes held in the blob store (body = an ArtifactDef). The RECORD
  *  is the artifact as far as coordination is concerned: it routes, carries taint and lineage, and
  *  is grant-gated like anything else; only the payload lives outside. */
-export const ARTIFACT = "artifact";
+export const ARTIFACT = WIRE_ARTIFACT;
 /** A destroyed payload: `{digest, reason, at}`. Written when a blob is crypto-shredded, so a reader
  *  can tell "erased" from "never existed". Write-protected: a forged shred marker would make live
  *  bytes look destroyed, which is the one lie this record exists to prevent. */
-export const SHRED = "shred";
+export const SHRED = WIRE_SHRED;
 
 /**
  * Reserved kind: what a run is currently listening for (body `{kind, match?}`).
@@ -54,7 +81,7 @@ export const SHRED = "shred";
  * crashed worker never gets to, so a reader must treat an interest whose run has stopped or expired
  * as dead. Never use the presence of an interest record as proof that anyone is listening.
  */
-export const INTEREST = "interest";
+export const INTEREST = WIRE_INTEREST;
 
 /** Reserved kinds only a human/supervisor principal may write directly (assigned, never
  *  self-declared). Runs/definitions are also written internally by the bootstrap endpoints. */
@@ -221,31 +248,12 @@ export function validateGrantDef(def: GrantDef): void {
   }
 }
 
-export type IndexedType = "keyword" | "integer" | "timestamp" | "array";
-
 const VALID_TYPES = new Set<IndexedType>([
   "keyword",
   "integer",
   "timestamp",
   "array",
 ]);
-
-export interface IndexedPath {
-  path: string; // dotted path into the record body
-  type: IndexedType;
-}
-
-export interface KindDef {
-  kind: string;
-  indexedPaths: IndexedPath[];
-  /** Paths order_by may use. Must each be a declared indexed path. */
-  sortablePaths?: string[];
-  /** Whether records of this kind are *claimed as work* (`take`n by a worker) vs. *reference*
-   *  data (facts, config, history; written once, read by `query`, never taken). Default true.
-   *  `false` opts the kind out of the starvation check: a reference record sitting `available`
-   *  forever is normal, not stale work. See `Space.diagnostics`. */
-  claimable?: boolean;
-}
 
 /** A kind is claimable (work) unless it explicitly declares `claimable: false` (reference data). */
 export function isClaimable(def: KindDef | undefined): boolean {
@@ -319,7 +327,7 @@ export function validateArtifactFields(fields: unknown): void {
 
 /** Kinds defined in CODE, not as `kind_def` records. That is why they never appear in
  *  `listKinds()`, which reads those records. Anything asking "does this kind exist" must consider these too. */
-export const RESERVED_KINDS = [KIND_DEF, GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, ARTIFACT, INTEREST, SHRED];
+export { RESERVED_KINDS } from "../../sdk/ts/wire.ts";
 
 export const META_RESERVED: KindDef[] = [
   META_KIND_DEF,
@@ -351,14 +359,6 @@ export const META_RESERVED: KindDef[] = [
   },
 ];
 
-/** A deterministic idempotency key for a declaration, stable across process restarts and
- *  independent of field order: the same def dedups (no record growth), a changed def is a new
- *  successor record. Shared by the server and the SDK so both produce the same key. */
-export function kindDefKey(def: KindDef): string {
-  const ip = [...(def.indexedPaths ?? [])].map((p) => `${p.path}:${p.type}`).sort().join(",");
-  const sp = [...(def.sortablePaths ?? [])].sort().join(",");
-  return `kind_def:${def.kind}:${ip}:${sp}:${def.claimable === false ? "ref" : "work"}`;
-}
 
 function validPath(path: string): boolean {
   // Dotted segments only; no empty segment (rejects "", "a.", ".a", "a..b"). Literal dots

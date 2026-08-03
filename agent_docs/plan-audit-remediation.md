@@ -1,10 +1,16 @@
 # Plan: audit remediation
 
-> Status: E, G, H and I are open; everything else is closed and its guards pass (`deno task conformance`: 353 passed, 0 failed);
-> E, G, H and I are open. Each done package is a status line here; its durable lesson (the bug class,
-> why it happened, the rule that prevents it) moved to [gotchas.md](gotchas.md), which outlives this
-> plan. Every item was substantiated against real code paths; items marked **reproduced** were
-> verified empirically. Line numbers drift; trust the symbol, not the number.
+> Status: E, G, H, I and K–Q are open; everything else is closed and its guards pass
+> (`deno task conformance`: 415 passed, 0 failed). Each done package is a status line here; its
+> durable lesson (the bug class, why it happened, the rule that prevents it) moved to
+> [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
+> paths; items marked **reproduced** were verified empirically. Line numbers drift; trust the symbol,
+> not the number.
+>
+> **Two rounds.** A–J are the 2026-07-27 audit. K–Q come from a second review on 2026-08-03 and are
+> marked VERIFIED (checked against source while recording them) or REPORTED (recorded on the
+> reviewer's evidence, not re-derived). Do not treat a REPORTED item as confirmed without checking
+> it; that distinction is the reason this file is worth trusting.
 
 ## Goal
 
@@ -13,7 +19,8 @@ caught it. Several findings share one root cause; the packages below are grouped
 not by file, because fixing them per-site re-creates the same class next quarter.
 
 Ordering rule: **P0 before anything else ships to a non-loopback host.** P0 and P1 are
-correctness/security; P2 is durability and drift.
+correctness/security; P2 is durability and drift. Round two opened the first P0 (**K**, a credential
+with no revocation path), so that rule is now load-bearing rather than hypothetical.
 
 ## Priority summary
 
@@ -23,6 +30,13 @@ correctness/security; P2 is durability and drift.
 | G   | Blob write durability                   | P2       | Permanent unhealable corruption       |
 | H   | `lease_lost` unobservable in clients    | P2       | Side effects continue after fencing   |
 | I   | SDK parity + chat example               | P2       | Drift; example-specific data loss     |
+| K   | Unrevocable definition tokens           | P0       | A leaked credential that cannot be killed |
+| L   | Watch streams cache authorization       | P1       | Revocation does not reach an open stream |
+| M   | `kind_def` is not write-protected       | P1       | One ordinary grant bricks space-wide auth |
+| N   | `clientMeta` escapes the body guards    | P2       | Unbounded, unerasable data in a record |
+| O   | Multi-instance freshness and ordering   | P1       | Wakeup latency; auth-relevant id races |
+| P   | Contracts nothing checks                | P2       | Drift in exactly the claims held loudest |
+| Q   | Designed features unreachable           | P2       | A built feature no caller can invoke   |
 
 Packages A, B, C, D, F and J are closed. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
@@ -104,6 +118,155 @@ not gaps:
   one. These are core-surface bugs, in scope despite the freeze.
 - Chat example: the escalation ladder reads `model` records without the registry projection and can
   route to a gracefully stopped tier, hanging until the deadline.
+
+---
+
+# Round two (2026-08-03)
+
+Three of this round's findings were already open packages, independently re-found: blob write
+atomicity (**G**), `lease_lost` unobservable through heartbeats (**H**), and Python SDK loop parity
+— specifically that `agent_loop` has no run-token renewal, so a Python worker silently stops
+claiming at ~15 minutes (**I**). Being re-found by a fresh reader is evidence about their severity,
+not new work; close them where they are.
+
+## Package K: definition tokens cannot be revoked (P0)
+
+**VERIFIED.** `Space.resolveCredential` (`src/core/space.ts`) reads `agent_run` and checks BOTH
+`status === "stopped"` and `expiresAt`; it then falls through to `newestByHash(AGENT_DEFINITION, …)`
+and returns `{ok: true, kind: "def"}` on the mere existence of the record. No status, no expiry, no
+retirement path exists for `agent_definition` at all. A leaked definition token mints fresh run
+tokens forever, and `createAgentDefinition` accepts any subject — including an operator name —
+so the worst case is an irrevocable privileged minting credential.
+
+This contradicts the project's own argument for reading credentials from records per request
+("credentials resolve from records, so a revocation is immediate"): it is immediate for every
+credential except the one that never expires.
+
+Fix: give `agent_definition` the same shape `agent_run` has — a `status`/`retired` successor and a
+check beside the existing one. The asymmetry is two adjacent branches in one function.
+
+Guard: a conformance case that retires a definition and asserts the token stops minting, mirrored
+against the existing run-stop case so the two cannot drift apart again.
+
+## Package L: watch streams cache authorization for their lifetime (P1)
+
+**REPORTED.** `authorizeWatch` resolves once when the SSE stream opens; a stopped run or revoked
+grant reportedly keeps receiving wakeups until the client disconnects. If so it is the last holdout
+against the rule the credential design states outright — never remember what can be revoked — and
+the one place where a long-lived connection outlives the authority that opened it.
+
+Fix: re-check on a bounded interval inside the stream loop and close on failure.
+
+Guard: open a watch, revoke the grant, assert the stream ends rather than continuing to deliver.
+
+## Package M: `kind_def` is not write-protected (P1)
+
+**VERIFIED.** `WRITE_PROTECTED_KINDS` (`src/core/kinds.ts`) is
+`{GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, SHRED}` — `KIND_DEF` is absent. So any principal
+holding an ordinary `put: kind_def` grant can redeclare a reserved kind and drop the indexed paths
+that `authorize` and credential resolution compile against, producing `undeclared_path` on every
+authorization and persisting across restarts through `loadKinds`.
+
+This sharpens the "Deferred: low severity" entry below, which recorded that reserved kinds *other
+than* `kind_def` can be redeclared. The vector is what changed: not an operator mistake but an
+ordinary grant, which moves it out of the deferred batch.
+
+Fix: add `KIND_DEF` to the protected set, or refuse a redeclaration that removes a path
+`META_RESERVED` depends on. The second is narrower and keeps app-owned kinds freely redeclarable.
+Note also that `ack` results bypass `Space.put`'s `kind_def` body validation entirely.
+
+Guard: a case asserting a non-operator `put: kind_def` grant cannot redeclare a reserved kind, and
+one asserting an `ack` result of kind `kind_def` is validated like any other.
+
+## Package N: `clientMeta` escapes the body guards (P2)
+
+**VERIFIED.** `src/core/record.ts` applies the NUL check and the `maxRecordBytes` limit to
+`bodyJson`/`bodyBytes` only; `clientMeta` is client-supplied, assigned unguarded, persisted, and
+returned on every read. The file's own argument for the size limit — an unbounded body is
+unerasable data entering the space, because a body has no erasure path — applies to it verbatim.
+
+Fix: include `clientMeta` in both checks, counted against the same budget.
+
+Guard: extend the existing record-limit conformance case to assert a `clientMeta` over the limit is
+refused, and that a NUL in `clientMeta` is refused like one in a body.
+
+## Package O: multi-instance freshness and ordering (P1)
+
+Two gaps remain now that the kind registry refreshes itself
+(`Space.compileFresh`, closed 2026-08-03):
+
+- **Cross-instance watch wakeups do not happen.** `src/core/notifier.ts` is an in-process waiter
+  list and no `LISTEN`/`NOTIFY` code exists in `src/`. Self-healing (the event log is truth, poll
+  catches up), so nothing is lost — but every cross-instance hop degrades to poll latency, which is
+  felt per turn in an interactive agent session. This is the dimension that actually regresses with
+  N>1; throughput is not.
+- **ULID monotonicity is per-process.** Latest-wins registries decide "newer" by comparing ids, and
+  across instances they agree only to the millisecond. Grants live in those registries, so the
+  theoretical bad outcome is auth-relevant. Low probability and operator-driven, but it wants a
+  DB-assigned ordering rather than a documented "do not race a retirement across instances".
+
+Guard for the first: a two-instance test asserting a watch on A wakes for a record written through
+B within the notify path rather than the poll interval.
+
+## Package P: contracts nothing checks (P2)
+
+- **`openapi/radia.yaml` is not verified against the implementation.** The frozen wire contract has
+  exactly the enforcement status the layering rules had before `conformance/layering.test.ts`
+  existed, and this project's own thesis says that is temporary. A route-table-vs-spec-paths test is
+  roughly thirty lines.
+- **The live-Postgres conformance run is still not in CI.** The invariant in CLAUDE.md asserts the
+  full suite runs against every adapter "from day one", and the claim-fairness bug that motivated it
+  was invisible on both embedded adapters. An invariant that names a guard which is not running is
+  the loudest kind of drift.
+
+## Package Q: designed features unreachable (P2)
+
+Each of these is BUILT and cannot be invoked, which is a distinct failure from a bug: the code is
+correct and the path to it is missing, so tests of the unit pass while nothing exercises the design.
+
+- **Per-label declassify.** `Space.declassify` takes `{labels}`; the HTTP handler
+  (`src/server/handlers/ops.ts`) ignores the request body and always clears everything, and the SDK
+  method takes only a record id. The per-label design has no caller.
+- **`scope: {leaseOwner: "self"}`** validates in a grant and is enforced nowhere.
+- **Pattern-scoped artifact `put` grants on an app field** can never be satisfied, because the grant
+  check runs before `appFields` are parsed (already in the deferred batch below; listed here because
+  it is the same shape, not a separate bug class).
+
+Guard for all three: a reachability test per feature that drives it through the OUTERMOST surface
+(HTTP or CLI), not through `Space`. The unit tests for these pass today.
+
+## Also reported, not re-derived here
+
+Recorded so a later reader does not mistake absence for clearance. **REPORTED**, unverified:
+`readAccess` performs three or four paged registry reads per coordination verb where one threaded
+`RegistryView` would do; `authorize` silently discards `complete` (fail-closed, but silent at
+scale); the `available`-state claim CAS is not guarded on `available_at`, so a record inside its
+nack backoff can be reclaimed early; offset-based candidate-window paging can report a spurious
+empty under Postgres contention (a keyset window fixes cost and correctness together); `stopRun`
+quarantines before writing the stop record, leaving a window where the stopped run can still claim;
+`parseTaintAllowlist` admits the reserved `unknown` label that three comments claim no allowlist may
+contain; and `{"$or": []}` may compile and render `()`, a SQL syntax error reachable from the wire.
+
+Plus a doc/comment reconciliation batch: the take barrier described as OR where the code correctly
+intersects; `design-auth.md` still describing the one-bit taint model; the `ownerGuard` docstring
+asserting an invariant the deferred list already contradicts; the operator token resolving to
+`local:dev` where two docs say `human:local`; "six kinds defined in code" (it is eight).
+
+## Extends Package E: the array-index hole is in the SHARED path
+
+**VERIFIED**, and it is latent rather than active. `pushablePath` (`src/storage/pushdown.ts`) admits
+all-digit segments (`SEGMENT = /^[A-Za-z0-9_]+$/`), while the oracle's `getPath` resolves `items.0`
+into an array element through ordinary property access. So Postgres's `@>` containment term
+(`{items:{"0":v}}` against a JSON array) and SQLite's `$.items.0` both fail where the oracle
+matches: the pre-filter excludes a record the oracle would have returned, silently.
+
+Reachability requires a kind to declare `items.0` as an indexed path, which `validPath`
+(`src/core/kinds.ts`) permits — it requires only non-empty segments — and which no kind in this
+repo does today. So this is a contract violation waiting for an unusual-but-legal declaration, not
+work currently being missed. Rejecting all-digit segments in `pushablePath` is a one-line fix at the
+shared root and covers both dialects at once, which is why it belongs in E rather than beside it.
+
+---
 
 ## Deferred: low severity
 

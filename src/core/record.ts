@@ -10,25 +10,19 @@ import type { DelegationContext, RadiaRecord } from "../storage/adapter.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
 
+// The wire vocabulary is DEFINED in `sdk/ts/wire.ts` and re-exported here, so every import
+// path inside `src/` is unchanged while the SDK ships without reaching back into the runtime.
+// See that file's header for why the direction runs this way.
+import type {
+  PutRequest,
+} from "../../sdk/ts/wire.ts";
+export type {
+  PutRequest,
+};
+
 /** A genuine U+0000 escape in serialized JSON: an EVEN number of preceding backslashes. The literal
  *  six-character text that spells the escape has an odd run and must stay storable. */
 const NUL_ESCAPE = /(?<!\\)(?:\\\\)*\\u0000/;
-
-/** The only fields a client may submit. Claims, not authority. */
-export interface PutRequest {
-  kind: string;
-  body: unknown;
-  /** Client claims: confidence, requested_priority, app fields. Preserved, never trusted. */
-  clientMeta?: Record<string, unknown>;
-  /** Data/causality lineage the client asserts. All must exist at commit (checked in put). */
-  parentIds?: string[];
-  deadlineAt?: string;
-  retentionUntil?: string;
-  /** Source attestation: classification labels the client RAISES on its own output, from the closed
-   *  vocabulary (`TAINT_LABELS`). Raising is monotone, so it needs no trust: a client can only ever
-   *  restrict what the record may reach, never widen it. Removal is declassify, and privileged. */
-  taint?: string[];
-}
 
 export interface BuildContext {
   principal: string; // server-known caller (auto-provisioned locally in M0)

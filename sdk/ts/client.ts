@@ -1,27 +1,34 @@
-// RadiaClient: the TS SDK stub (seeded here; Phase 7 polishes it and adds Python parity).
-// Thin fetch wrappers over the public /v0 API. This is exactly what an external agent uses. No
-// privileged access. For M0 it imports the wire types from the repo; Phase 7 will extract
-// a standalone type surface so the SDK can ship independently.
+// RadiaClient: the TS SDK. Thin fetch wrappers over the public /v0 API. This is exactly what an
+// external agent uses. No privileged access.
+//
+// SELF-CONTAINED, which it was not. This file used to import the wire types AND runtime values from
+// `../../src/`, with a note saying a standalone type surface would be extracted later. It was not,
+// and the consequence was not stylistic: `scripts/build-release.sh` stages `sdk/` and `extensions/`
+// into the npm package and no `src/`, so the package's own entry point imported paths that are not
+// in it. `sdk/ts/wire.ts` now owns the contract vocabulary and `src/` re-exports from it, so the
+// dependency runs one way and the staged package resolves. `conformance/layering.test.ts` keeps it
+// that way.
 
 import type {
   AckResult,
+  KindDef,
   Lease,
+  Page,
+  Pattern,
+  PutRequest,
   RadiaRecord,
   RenewResult,
   SettleResult,
   SpaceEvent,
   TakeResult,
-} from "../../src/storage/adapter.ts";
-import type { Pattern } from "../../src/core/matching.ts";
-import type { Page } from "../../src/storage/adapter.ts";
-import { activeByKey, grantKey, isRetired, newestByKey } from "../../src/core/registry.ts";
-import type { PutRequest } from "../../src/core/record.ts";
-import { KIND_DEF, type KindDef, kindDefKey, RESERVED_KINDS } from "../../src/core/kinds.ts";
+} from "./wire.ts";
+import { KIND_DEF, kindDefKey, RESERVED_KINDS } from "./wire.ts";
+import { activeByKey, grantKey, isRetired, newestByKey } from "./registry.ts";
 export { RESERVED_KINDS };
 // Re-exported because every client that reads a registry (capabilities, models, kinds, an app's
 // own kinds) needs the SAME latest-wins-minus-retired rule the runtime uses. Six hand-rolled
 // copies of this loop existed before it was shared, and the failure mode is silent.
-export { activeByKey, activeSet, grantKey, isRetired, newestByKey, RETIRED } from "../../src/core/registry.ts";
+export { activeByKey, activeSet, grantKey, isRetired, newestByKey, RETIRED } from "./registry.ts";
 
 export type { AckResult, KindDef, Lease, Page, PutRequest, RadiaRecord, SpaceEvent, Pattern };
 

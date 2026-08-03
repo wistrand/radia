@@ -16,55 +16,39 @@
 // Domain types
 // ---------------------------------------------------------------------------
 
-export type Ulid = string;
-
-/**
- * The states a record's envelope can actually be IN. There is deliberately no `expired`: a lapsed
- * lease leaves the record `leased` and a later take reclaims it, so nothing ever writes such a row.
- * Never add one: `state=expired` then becomes a query that always answers zero, a confident
- * nothing beside hundreds of demonstrably lapsed leases. Expiry is a PREDICATE over `leased`
- * records (`?state=leased&expired=1`), not a state.
- */
-export type RecordState =
-  | "available"
-  | "leased"
-  | "consumed"
-  | "dead_letter";
-
-/**
- * The single authorization chain for delegated work, server-derived from the CLAIMED LEASE and
- * never from `parent_ids` (data parents contribute no authority). Present only on records emitted
- * via `ack` under a managed run's lease; a direct put or operator-owned work carries none.
- */
-export interface DelegationContext {
-  chain: Ulid[]; // ordered grant subjects (agents) whose authority this work flows under
-  origin: Ulid; // the leased record it was delegated from (the authorization parent)
-}
-
-/** Server-assigned, authoritative metadata. Never client-editable. */
-export interface RuntimeMeta {
-  createdBy: string; // principal id
-  delegationContext?: DelegationContext; // authorization chain, server-derived from the lease
-  parentIds: Ulid[]; // data/causality lineage only
-  /** Classification labels this record carries, sorted and deduplicated; empty means unclassified.
-   *  A BARRIER vocabulary, not provenance: see `TAINT_LABELS` in `src/core/kinds.ts`. Lives outside
-   *  the body, so the routing language cannot match on it. */
-  taint: string[];
-  schemaVersion: number;
-  createdAt: string; // DB clock, ISO 8601
-}
-
-/** Immutable content half of a record. Never rewritten after commit. */
-export interface RadiaRecord {
-  id: Ulid;
-  kind: string;
-  body: unknown;
-  bodySha256: string; // over plaintext
-  clientMeta?: Record<string, unknown>; // client-submitted claims only
-  runtimeMeta: RuntimeMeta;
-  deadlineAt?: string; // business deadline
-  retentionUntil?: string; // GC eligibility
-}
+// The wire vocabulary is DEFINED in `sdk/ts/wire.ts` and re-exported here, so every import
+// path inside `src/` is unchanged while the SDK ships without reaching back into the runtime.
+// See that file's header for why the direction runs this way.
+import type {
+  AckResult,
+  DelegationContext,
+  EventInput,
+  Lease,
+  Page,
+  RadiaRecord,
+  RecordState,
+  RenewResult,
+  RuntimeMeta,
+  SettleResult,
+  SpaceEvent,
+  TakeResult,
+  Ulid,
+} from "../../sdk/ts/wire.ts";
+export type {
+  AckResult,
+  DelegationContext,
+  EventInput,
+  Lease,
+  Page,
+  RadiaRecord,
+  RecordState,
+  RenewResult,
+  RuntimeMeta,
+  SettleResult,
+  SpaceEvent,
+  TakeResult,
+  Ulid,
+};
 
 /** Mutable claim-state envelope. One row per record. */
 export interface Envelope {
@@ -80,15 +64,6 @@ export interface Envelope {
   leaseEpoch?: number;
   leaseOwner?: string; // run id
   leasedUntil?: string;
-}
-
-/** A fenced lease handed to a claimant. */
-export interface Lease {
-  leaseId: Ulid;
-  epoch: number;
-  ownerRun: string;
-  recordId: Ulid;
-  expiresAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,48 +128,10 @@ export interface KindStateCount {
 
 // ---- event log ----
 
-/** What an op appends to the event log, in the same transaction as its mutation. */
-export interface EventInput {
-  runId: string; // run identity on every event (approximated by principal/lease owner in M0)
-  operation: string; // put | take | ack | nack | release | expire
-  recordId?: Ulid;
-  kind?: string;
-  state?: RecordState; // resulting state
-  detail?: Record<string, unknown>;
-}
-
-export interface SpaceEvent extends EventInput {
-  seq: number; // unique per-event identity (display / dedup)
-  // Gap-safe resume cursor, OPAQUE to callers (transport echoes it via SSE id / Last-Event-ID;
-  // only the adapter interprets it). On single-connection backends it is the seq; on pooled
-  // Postgres it is the inserting transaction id (xid), and `getEvents` only returns events below
-  // the snapshot watermark, so a watcher advancing by `cursor` never skips an event that
-  // committed out of seq order (see agent_docs/design-storage.md "Watch delivery under concurrency").
-  cursor: string;
-  id: Ulid;
-  ts: string; // DB clock
-}
-
 export interface CompiledMatch {
   kind: string; // record kind discriminator
   where?: MatchNode; // undefined = match all of kind
   orderBy?: OrderBy[];
-}
-
-/**
- * Keyset pagination over record id. `after` is EXCLUSIVE and is read in the direction of `dir`,
- * so it is "the last id of the previous page" either way: ids strictly greater for `asc`,
- * strictly smaller for `desc`.
- *
- * Note what a ULID cursor does and does not promise. Ids sort by creation time only to the
- * MILLISECOND; records written inside the same millisecond differ in their random half, so `desc`
- * is "newest first" at millisecond resolution, not a strict write order. What it does guarantee is
- * a total, stable order, which is all pagination needs, and is exactly what an offset cannot give
- * while the space is being written to.
- */
-export interface Page {
-  after?: Ulid;
-  dir?: "asc" | "desc"; // default "asc"
 }
 
 // ---------------------------------------------------------------------------
@@ -263,20 +200,6 @@ export interface LeaseRef {
 export type TakeSelector =
   | { pattern: CompiledMatch }
   | { recordId: Ulid; pattern?: CompiledMatch };
-
-export interface TakeResult {
-  record: RadiaRecord;
-  lease: Lease;
-}
-
-/** `lease_lost` is a distinct non-error outcome, not an exception. */
-export type SettleResult = { status: "ok" } | { status: "lease_lost" };
-export type AckResult =
-  | { status: "ok"; resultId?: Ulid }
-  | { status: "lease_lost" };
-export type RenewResult =
-  | { status: "ok"; lease: Lease }
-  | { status: "lease_lost" };
 
 // ---------------------------------------------------------------------------
 // The port

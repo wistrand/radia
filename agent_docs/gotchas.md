@@ -1068,6 +1068,20 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   Two fixes: `read_workspace` exists, and `list_workspaces` reports the PATHS rather than a count,
   because "what files are in X" had no data source either and was already being answered from memory
   one question earlier.
+- **A layering rule and a broken shipping artifact were the same defect, seen from two sides.**
+  `sdk/ts/client.ts` imported the wire types AND runtime values from `../../src/`, with its own
+  header saying a standalone type surface would be extracted in Phase 7. Phase 7 shipped and it was
+  not, so `build-release.sh` — which stages `sdk/` and `extensions/` into the npm package and no
+  `src/` — published a package whose entry point (`"." : "./sdk/client.ts"`) imported four paths
+  that are not in it. The fix is directional: `sdk/ts/wire.ts` OWNS the contract vocabulary and the
+  old definition sites re-export from it, so nothing inside `src/` had to move. A contract the
+  client cannot ship is not a contract.
+- **A structural guard certifies only what it looks at, and this one did not look at `sdk/`.**
+  `layering.test.ts` checked `src/` and `extensions/` and passed while the one file breaking the
+  extensions-tier claim sat in the directory it never scanned. Type imports count too: erased at run
+  time, so the package runs and then fails to type-check, which is a later and more confusing
+  failure than a missing value. When adding a tier rule, enumerate every directory the rule is
+  ABOUT, not the ones the violation was expected in.
 - **A registry rebuilt only at startup is single-instance by accident.** `loadKinds` ran once, and
   `put` of a `kind_def` registers the declaration in the WRITING process's registry only, so with
   N instances over one database a kind declared on A was unknown to B until B restarted, and a kind

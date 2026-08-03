@@ -72,6 +72,40 @@ Deno.test("[layering] an extension never imports the runtime", async () => {
   assertEquals(violations, [], "an extension imports the SDK, never src/");
 });
 
+Deno.test("[layering] the SDK imports nothing from src/, so the package it ships in resolves", async () => {
+  // NOT a purity rule, and it was not caught because this file did not look here. `build-release.sh`
+  // stages `sdk/` and `extensions/` into the npm package and no `src/`, so any `../../src/` import
+  // left in the SDK is a path that does not exist in the published artifact — the package's own
+  // entry point (`"." : "./sdk/client.ts"`) was importing four such paths for runtime VALUES.
+  //
+  // TYPE imports count too. A type import is erased at run time, so it fails later and more
+  // confusingly: the package runs and then fails to type-check, which is the same class of "works
+  // until someone checks" the rest of this file exists to close.
+  const root = new URL("../sdk/ts/", import.meta.url);
+  const violations: string[] = [];
+  for (const file of await tsFiles(root)) {
+    const text = code(await Deno.readTextFile(new URL(file, root)));
+    for (const [, spec] of text.matchAll(/from\s+"([^"]+)"/g)) {
+      if (/(^|\/)src\//.test(spec)) violations.push(`sdk/ts/${file} -> ${spec}`);
+    }
+  }
+  assertEquals(violations, [], "the SDK owns its wire vocabulary; src/ re-exports from it");
+});
+
+Deno.test("[layering] every valueless CLI switch is declared, or it eats the next argument", async () => {
+  // An order-dependent, silent parse bug: `positional()` assumes an undeclared `--flag` consumes the
+  // token after it, so `radia shred --shared <id>` lost the id while `radia shred <id> --shared`
+  // worked. Derived from the source rather than listed here, because a hand-kept list is the thing
+  // that fell out of date in the first place.
+  const cli = code(await Deno.readTextFile(new URL("../src/surfaces/cli.ts", import.meta.url)));
+  const flags = code(await Deno.readTextFile(new URL("../src/flags.ts", import.meta.url)));
+  const declared = new Set([...flags.matchAll(/"(--?[a-z-]+)"/g)].map((m) => m[1]));
+  // `has(argv, "--x")` is a switch by construction: it is read as a boolean and takes no value.
+  const switches = [...cli.matchAll(/\bhas\(argv,\s*"(--[a-z-]+)"\)/g)].map((m) => m[1]);
+  const undeclared = [...new Set(switches)].filter((f) => !declared.has(f)).sort();
+  assertEquals(undeclared, [], "add these to VALUELESS in src/flags.ts");
+});
+
 // ── 2. the platform seam ─────────────────────────────────────────────────────────────────────────
 
 Deno.test("[layering] nothing under src/ reaches for Deno.* outside the platform seam", async () => {

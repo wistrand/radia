@@ -3,9 +3,17 @@
 Client libraries for talking to a Radia space. Both wrap the public `/v0` API and nothing else:
 whatever an SDK can do, a plain HTTP client can too.
 
+`ts/wire.ts` is where the frozen contract's vocabulary is DEFINED — the shapes that cross `/v0`, and
+the few pure functions a client must compute identically to the server (`kindDefKey`, and the
+latest-wins-minus-retired projection in `ts/registry.ts`). The runtime imports it; it imports nothing.
+That direction is load-bearing rather than tidy: the npm package stages `sdk/` and `extensions/` and
+no `src/`, so an SDK that reached back into the runtime shipped an entry point importing paths that
+were not in the package. `conformance/layering.test.ts` holds the line, in both value and type
+imports.
+
 | | TypeScript | Python |
 |-|------------|--------|
-| Path        | [`ts/`](ts/): `client.ts`, `loop.ts` | [`py/radia.py`](py/radia.py) |
+| Path        | [`ts/`](ts/): `wire.ts`, `registry.ts`, `client.ts`, `loop.ts` | [`py/radia.py`](py/radia.py) |
 | Client      | `RadiaClient`      | `RadiaClient` |
 | Worker loop | `agentLoop`        | `agent_loop` |
 | Paging      | `query` / `queryPage` (keyset: `{after, dir}`) | `query` / `query_page` (keyset: `after=`, `dir=`) |
