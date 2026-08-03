@@ -65,10 +65,12 @@ const RUN_CODE: ToolDef = {
   function: {
     name: "run_code",
     description:
-      `Run JavaScript in a sandbox and get its output back. Use it for calculation, parsing, ` +
-      `data transformation, COMPUTING file content from data, and checking your own reasoning ` +
-      `(anything ` +
-      `where running beats guessing). Print results with console.log; stdout is what you get back. ` +
+      `Run JavaScript in a sandbox and get its output back. Two shapes, and picking the wrong one ` +
+      `is the common mistake. Bare 'code' is a THROWAWAY: use it when the answer is the output ` +
+      `(a calculation, parsing, checking your own reasoning) and the program itself is not worth ` +
+      `keeping, because nothing is stored. When the PROGRAM is the point, save_workspace first and ` +
+      `pass 'workspace': that is every program the user will keep, look at, or ask you to fix, ` +
+      `including a single file. Print results with console.log; stdout is what you get back. ` +
       `Pass 'workspace' to run against a saved multi-file tree instead of a bare snippet; it is ` +
       `materialised read-only for the run and discarded after. ` +
       `Pass save_as to STORE stdout as an artifact instead of only returning it. Use that ONLY for ` +

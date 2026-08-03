@@ -360,6 +360,20 @@ may not read into a link that needs no token; running it as the worker would do 
 is also why it needs no grant of its own: one permission, checked once, instead of two that must
 agree.
 
+**Three ways to produce something, one boundary each.** The split is stated in all three tool
+descriptions because that is the only place a model reads it, and a third tool arriving is what
+reopens a boundary two tools had settled:
+
+| You want | Tool |
+|-------------------------------------------|------------------------------------------|
+| a document for the user (page, SVG, report, config) | `save_content` |
+| CODE, one file or twenty | `save_workspace`, then `run_code {workspace}` |
+| a throwaway calculation whose answer is the output | `run_code {code}`, keep nothing |
+
+Code never goes to `save_content`, even a single file: the same bytes as a workspace, minus the
+ability to run it, version it or attach a verdict to it. The only thing that is not a workspace is a
+program not worth keeping.
+
 **A project is a workspace, not a string.** `save_workspace(name, files)` stores a multi-file tree
 (the convention lives in [`extensions/ts/workspace.ts`](../../extensions/ts/workspace.ts)), and
 `run_code` takes a `workspace` argument that materialises it into a fresh directory and runs the

@@ -1003,6 +1003,17 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   running (`--artifact-port 0`). The console resolves that against its own origin; an agent hands it
   to a user verbatim and it opens nothing, with no way for the model to know what to prepend. The
   chat's tool resolves it against the client's base before returning.
+- **Adding a THIRD overlapping tool reopens a boundary two tools had already settled.** Fixing
+  `run_code` vs `save_content` did not survive `save_workspace` arriving: `save_content` still
+  listed "code" among what it stores and still claimed to be "the DEFAULT way to give the user a
+  file", so for a program it competed with a tool strictly better at it (a workspace can be RUN,
+  keeps every version, and is what a verdict attaches to; an artifact is bytes). The rule now stated
+  in all three: a document goes to `save_content`, code of ANY size goes to `save_workspace`, a
+  throwaway calculation goes to `run_code {code}`. Whenever a tool lands in a space another already
+  occupies, re-read the incumbent's description rather than only writing the newcomer's.
+  Rebalancing also has a trap: cutting the incumbent's claim too far reintroduces the ORIGINAL bug,
+  and the suite caught exactly that here (removing "DEFAULT" from `save_content` un-fixed the
+  reason it was added). Scope the claim instead of dropping it.
 - **Two tools that reach the same outcome are chosen by their DESCRIPTIONS, so an unconditional
   claim beats a conditional one.** `save_content` (authored text) and `run_code` + `save_as`
   (computed bytes) both produce an artifact, so nothing fails when the wrong one is picked. The

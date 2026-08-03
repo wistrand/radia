@@ -24,7 +24,7 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { publishCapability } from "./space/capability.ts";
-import { makeSaveTools, makeShareTools, SAVE_SCHEMAS, SHARE_SCHEMAS } from "./tools/save.ts";
+import { makeSaveTools, makeShareTools, SAVE_SCHEMAS, SHARE_SCHEMAS, WORKSPACE_SCHEMAS } from "./tools/save.ts";
 import { bootstrap, mintSession } from "./space/roles.ts";
 import type { ToolDef } from "./provider/openrouter.ts";
 
@@ -118,9 +118,12 @@ check(
   "save_content does not wait for the user to say 'save'",
   /whether or not|none of them contain the word|not only when/i.test(saveContent),
 );
+// It must still claim the DEFAULT, or the original bug returns: the model reached for run_code to
+// store an authored document because save_content sounded optional. Scoped to documents now, so it
+// claims the default without competing for code.
 check(
-  "…and claims the default for authored content",
-  /\bDEFAULT\b/.test(saveContent),
+  "…and claims the default for authored DOCUMENTS",
+  /\bDEFAULT\b/.test(saveContent) && /document/i.test(saveContent),
 );
 
 // The specific shape the model produced. Naming it is what makes the guidance actionable: a model
@@ -133,6 +136,38 @@ check(
 // The failing turn was "create a web page", so HTML has to be listed among what save_content takes.
 // It was not, and every other format the assistant might reach for was.
 check("save_content lists HTML among what it stores", /HTML/.test(saveContent));
+
+// ── three tools, one boundary each ───────────────────────────────────────────────────────────────
+// Adding save_workspace reintroduced the exact overlap this suite was written for: `save_content`
+// still listed "code" among what it stores and still claimed to be "the DEFAULT way to give the
+// user a file", so for a program it competed with a tool that is strictly better at it. A workspace
+// can be RUN, keeps every version, and is what a verdict attaches to; an artifact is bytes.
+//
+// The rule the three now state consistently:
+//   document for the user      -> save_content
+//   code, one file or twenty   -> save_workspace, then run_code {workspace}
+//   throwaway calculation      -> run_code {code}, keep nothing
+for (const def of WORKSPACE_SCHEMAS) await publishCapability(admin, def);
+const desc = new Map(
+  (await admin.queryAll({ kind: "capability" }))
+    .map((r) => r.body as { tool: string; def: ToolDef })
+    .map((b) => [b.tool, b.def.function.description ?? ""]),
+);
+const saveWs = desc.get("save_workspace") ?? "";
+const runCodeNow = desc.get("run_code") ?? "";
+const saveNow = desc.get("save_content") ?? "";
+
+check("save_workspace is advertised", saveWs.length > 0);
+check("save_content no longer offers to store CODE", !/\bcode\b/.test(saveNow.split("NOT for code")[0]));
+check("…and sends a program to save_workspace instead", /save_workspace/.test(saveNow));
+check("…saying WHY, since a model needs a reason and not an instruction", /can be RUN|only bytes/.test(saveNow));
+check("save_workspace claims code whatever its size", /one file or twenty|single file/.test(saveWs));
+check("…and names the one thing that is NOT a workspace", /throwaway/.test(saveWs));
+check("run_code distinguishes its two shapes", /THROWAWAY/.test(runCodeNow) && /workspace/.test(runCodeNow));
+check(
+  "…and does not still claim bare code is for generating files",
+  !/generating file content/i.test(runCodeNow),
+);
 
 // ── the direct route works ───────────────────────────────────────────────────────────────────────
 // Advice to prefer save_content is only sound if one call really does produce the artifact.

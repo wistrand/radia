@@ -109,12 +109,15 @@ export const SAVE_SCHEMAS: ToolDef[] = [
     function: {
       name: "save_content",
       description:
-        "Store text you have written as a file (an artifact) the user can open and keep: HTML, SVG, " +
-        "JSON, CSV, Markdown, code, anything textual. This is the DEFAULT way to give the user a " +
-        "file. Use it whenever the answer IS a document rather than prose: \"create a web page\", " +
-        "\"write me a config\", \"draw an SVG\" all want this, and none of them contain the word " +
-        "save. Do not print your content through run_code to store it; that sends the same text " +
-        "twice and stores what you would have passed here. Pass the exact content and a " +
+        "Store a DOCUMENT you have written as a file the user can open and keep: an HTML page, an " +
+        "SVG, a report, a config, a CSV. This is the DEFAULT way to hand over a document. Use it " +
+        "whenever the answer IS a document rather than " +
+        "prose: \"create a web page\", \"write me a config\", \"draw an SVG\" all want this, and none " +
+        "of them contain the word save. NOT for code: a program belongs in save_workspace, even a " +
+        "single file, because a workspace can be RUN, keeps every version, and lets a verdict " +
+        "attach to it, while an artifact is only bytes. Do not print your content through run_code " +
+        "to store it either; that sends the same text twice and stores what you would have passed " +
+        "here. Pass the exact content and a " +
         "filename; the media type comes from the extension unless media_type overrides it. For " +
         "binary formats, pass base64 and set encoding:\"base64\". Returns {artifactId, mediaType, " +
         "size}. To give the user something they can actually open, pass that artifactId to " +
@@ -190,15 +193,18 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
     function: {
       name: "save_workspace",
       description:
-        "Store a multi-file project as a named workspace, then run it with run_code's `workspace` " +
-        "argument. Use this whenever the thing you are building is more than one file: a module and " +
-        "the script that imports it, code plus a fixture, anything with a directory structure. " +
+        "Store CODE as a named workspace, then run it with run_code's `workspace` argument. This is " +
+        "where every program goes, whether it is one file or twenty: a workspace can be run, keeps " +
+        "each version, and is what a verdict attaches to, so there is no case where a program is " +
+        "better off as a loose artifact. Use it for a module and the script that imports it, code " +
+        "plus a fixture, a single script the user will keep, anything you expect to fix and re-run. " +
         "Paths are relative (src/main.ts, lib/util.ts); absolute paths, '..', and '.git' are " +
         "refused. Saving the same name again replaces the tree and keeps the old version addressable, " +
         "so iterating means saving the whole tree again with your fix, not patching in place. " +
         "Returns {workspace, treeDigest, files, unchanged}; `unchanged: true` means the tree was " +
-        "byte-identical to what was already there and nothing was written. For ONE file with no " +
-        "imports, use run_code's `code` argument instead: a workspace buys nothing there.",
+        "byte-identical to what was already there and nothing was written. The ONE thing that does " +
+        "not belong here is a throwaway calculation whose answer is the output rather than the " +
+        "program: pass that to run_code as `code` and keep nothing.",
       parameters: {
         type: "object",
         properties: {
