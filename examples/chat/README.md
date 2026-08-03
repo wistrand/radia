@@ -387,8 +387,13 @@ Three properties, and the third is the one that matters:
   program change the project: whatever it wrote is captured as the next version and the result
   reports `{changed, removed, newVersion}`. A run that changed nothing commits nothing. Symlinks are
   never captured, and a file-count or byte budget refuses rather than truncating.
-- **Iterating means saving the tree again.** A new version is a successor; every earlier one stays
-  addressable, and an identical tree writes nothing.
+- **Iterating means saving the tree again.** A new version is a successor (a data parent, so
+  `space_lineage` walks the project's history); every earlier one stays addressable, and an
+  identical tree writes nothing.
+- **A fork is reported, never resolved.** Two writers on one base both succeed and both versions
+  survive, because there is no compare-and-swap. `save_workspace` and write-back return
+  `forked: true` when the workspace has more than one head, and the tool description tells the model
+  to say so rather than continue silently. There is no merge.
 - **A verdict binds to the TREE.** `materialize` hashes every artifact against the entry naming it
   and recomputes `treeDigest` from the entries, refusing a manifest that lies about either, so the
   `{workspace, treeDigest}` on a `check` attests to a reproducible input rather than to an event.

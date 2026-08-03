@@ -4,7 +4,7 @@ Sequence and status. The reasoning lives in [design-workspaces.md](design-worksp
 working tree is, and the git relationship) and [design-execution.md](design-execution.md) (why the
 language question is an isolation question). Read those first; this file assumes them.
 
-> **Status: Phases 0-3 DONE.** Phase 4 next (fork detection).
+> **Status: Phases 0-4 DONE.** Phase 5 next (`sandbox` as a record, Deno only).
 
 ## What this is for
 
@@ -62,7 +62,7 @@ Each is scoped to answer its question. Do not merge them.
 | 1 | Manifest, no execution **(done)** | Does a churning tree-as-records hold up? | 1, 3 |
 | 2 | Materialise, read-only **(done)** | Is checkout safe, and does taint survive a filesystem? | 2 |
 | 3 | Write-back + `treeDigest` + `check` **(done)** | Is an attestation worth anything? | 4 |
-| 4 | Fork detection (`basedOn`) | Is concurrent divergence visible? | 5 |
+| 4 | Fork detection (`basedOn`) **(done)** | Is concurrent divergence visible? | 5 |
 | 5 | `sandbox` record, ONE backend | Does the record shape describe a real jail? | — |
 | 6 | A second backend | What breaks when the guarantee stops being uniform? | — |
 
@@ -222,6 +222,28 @@ to follow the capability, not the reasoning that preceded it.
 A successor manifest names its predecessor. Two successors of one predecessor are a visible fork in
 the DAG rather than a silent last-writer-wins. Merge stays unsupported; the overwritten manifest is
 still a record, so this is divergence, not loss.
+
+**Done.** Two halves, and the first was missing entirely:
+
+*The DAG did not exist.* `basedOn` was a body field only, so nothing connected one version to the
+next in the graph and "a visible fork in the DAG" was aspirational. A successor now takes its
+predecessor as a data PARENT as well, so `lineage` walks a project's history and `children` answers
+"what superseded this", which is the query detection rests on.
+
+*`forksOf(name)` returns the HEADS* — versions nothing supersedes — and more than one means a fork.
+Both writes survive with their history intact, which is a permanent reflog rather than a
+force-push: the loser's work is not gone, only elsewhere. `readWorkspace` still answers, and its
+answer is a CHOICE among heads rather than the truth, which is now stated where it is defined.
+
+*The flag answered the wrong question at first.* `forked` initially meant "the manifest I superseded
+already had a successor", which detects CREATING a fork and misses being ON one — and being on one
+is the case that matters, because the writer that lost the race then keeps working, unaware, on a
+head nobody else can see. It now means "this workspace has more than one head", asked after the
+write, one indexed query. The chat surfaces it from `save_workspace` and from write-back, with a
+tool description telling the model to say so rather than continue silently.
+
+Merge is still unsupported and stays that way; this is the detection half of git's answer, which is
+not compare-and-swap either.
 
 ### Phase 5: `sandbox` as a record, Deno only
 

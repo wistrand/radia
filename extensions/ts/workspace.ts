@@ -144,7 +144,7 @@ export interface WriteInput {
 export async function writeWorkspace(
   client: RadiaClient,
   input: WriteInput,
-): Promise<{ id: string; treeDigest: string; files: WorkspaceFile[]; deduped: boolean }> {
+): Promise<{ id: string; treeDigest: string; files: WorkspaceFile[]; deduped: boolean; forked: boolean }> {
   // Validate EVERY path before writing ANY bytes. A tree with one bad path must not leave half its
   // artifacts behind: the manifest is what makes them reachable, and there will be no manifest.
   const entries = Object.entries(input.files);
@@ -176,7 +176,7 @@ export async function writeWorkspace(
   if (before?.treeDigest === treeDigest) {
     // Identical tree: the manifest that exists already says this. Writing another would grow the
     // registry for no new information, which is the growth that makes reads expensive.
-    return { id: before.id, treeDigest, files, deduped: true };
+    return { id: before.id, treeDigest, files, deduped: true, forked: false };
   }
 
   const body: WorkspaceManifest = {
@@ -195,13 +195,67 @@ export async function writeWorkspace(
     ? `workspace:${input.name}:${treeDigest}:after:${before.id}`
     : `workspace:${input.name}:${treeDigest}`;
   const { id } = await client.put(
-    { kind: "workspace", body: body as unknown as Record<string, unknown>, ...(input.taint?.length ? { taint: input.taint } : {}) },
+    {
+      kind: "workspace",
+      body: body as unknown as Record<string, unknown>,
+      // The predecessor is a data PARENT, not only a body field. `basedOn` alone makes the chain
+      // queryable; the edge makes it a graph, so `lineage` walks a project's history and a fork is
+      // a shape somebody can SEE rather than a coincidence of two body values.
+      ...(input.basedOn ? { parentIds: [input.basedOn] } : {}),
+      ...(input.taint?.length ? { taint: input.taint } : {}),
+    },
     key,
   );
-  return { id, treeDigest, files, deduped: false };
+  // Asked AFTER the write, so the answer includes this version: one indexed query, and the honest
+  // reading of "is this workspace forked" rather than "did I cause it".
+  return { id, treeDigest, files, deduped: false, forked: await isForked(client, input.name, input.conversationId) };
 }
 
-/** The current manifest for a name, or null. Exact and bounded: newest-first, one row. */
+/**
+ * Is this workspace forked right now: does it have more than one head?
+ *
+ * The first version of this asked a narrower question — "did the manifest I am superseding already
+ * have a successor" — which detects CREATING a fork and misses being ON one. Building on head A
+ * while head B exists is the case a caller has to be told about, and it is the common one: the
+ * writer that lost the race then keeps working, unaware, on a version nobody else can see.
+ */
+async function isForked(client: RadiaClient, name: string, conversationId?: string): Promise<boolean> {
+  return (await forksOf(client, name, conversationId)).forked;
+}
+
+/**
+ * The HEADS of a workspace: versions nothing supersedes. More than one means a fork.
+ *
+ * There is no compare-and-swap in the substrate, so two writers that read the same manifest both
+ * succeed and latest-wins picks one. That is not data loss — the other version is still a record,
+ * still addressable, and its whole history is intact, which is a permanent reflog rather than a
+ * force-push. What was missing is DETECTION: without it the losing writer's work is merely somewhere
+ * else, and nobody is told. Git's answer to concurrency is not CAS either; it is fork detection
+ * plus explicit reconciliation, and this is the first half. There is no merge.
+ */
+export async function forksOf(
+  client: RadiaClient,
+  name: string,
+  conversationId?: string,
+): Promise<{ heads: (WorkspaceManifest & { id: string })[]; forked: boolean; versions: number }> {
+  const match: Record<string, unknown> = { name };
+  if (conversationId !== undefined) match.conversationId = conversationId;
+  const rows = await client.query({ kind: "workspace", match }, 500, { dir: "desc" });
+  const superseded = new Set(
+    rows.map((r) => (r.body as unknown as WorkspaceManifest).basedOn).filter(Boolean) as string[],
+  );
+  const heads = rows
+    .filter((r) => !superseded.has(r.id))
+    .filter((r) => !(r.body as unknown as WorkspaceManifest).retired)
+    .map((r) => ({ id: r.id, ...(r.body as unknown as WorkspaceManifest) }));
+  return { heads, forked: heads.length > 1, versions: rows.length };
+}
+
+/** The current manifest for a name, or null. Exact and bounded: newest-first, one row.
+ *
+ *  When a name is FORKED this returns the highest id among the heads, which is a choice and not an
+ *  answer: use `forksOf` when it matters which one, since the loser's work is not gone, only
+ *  elsewhere. */
 export async function readWorkspace(
   client: RadiaClient,
   name: string,
@@ -422,7 +476,7 @@ export async function commitWorkspace(
   manifest: WorkspaceManifest & { id: string },
   captured: { files: WorkspaceFile[]; unchanged: boolean },
   opts: { taint?: string[] } = {},
-): Promise<{ id: string; treeDigest: string } | null> {
+): Promise<{ id: string; treeDigest: string; forked: boolean } | null> {
   if (captured.unchanged) return null;
   const treeDigest = await treeDigestOf(captured.files);
   const body: WorkspaceManifest = {
@@ -433,8 +487,13 @@ export async function commitWorkspace(
   };
   delete (body as { id?: string }).id;
   const { id } = await client.put(
-    { kind: "workspace", body: body as unknown as Record<string, unknown>, ...(opts.taint?.length ? { taint: opts.taint } : {}) },
+    {
+      kind: "workspace",
+      body: body as unknown as Record<string, unknown>,
+      parentIds: [manifest.id],
+      ...(opts.taint?.length ? { taint: opts.taint } : {}),
+    },
     `workspace:${manifest.name}:${treeDigest}:after:${manifest.id}`,
   );
-  return { id, treeDigest };
+  return { id, treeDigest, forked: await isForked(client, manifest.name, manifest.conversationId) };
 }

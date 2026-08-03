@@ -210,10 +210,11 @@ Two corrections to the obvious reading, both of which make this better than "uns
   force-pushed branch on a repository whose reflog is permanent and never expires: the other tip is
   reachable, addressable and auditable forever. What is missing is not durability, it is *merge*.
 - **Detection is nearly free, and git's answer is not CAS either** — it is fork detection plus
-  explicit reconciliation. Require a successor manifest to name its predecessor (`basedOn`, and a
-  parent edge), and two successors of one predecessor are a visible fork in the DAG instead of a
-  silent last-writer-wins. No new primitive, one field, and it converts "somebody's work is
-  mysteriously not there" into "these two diverged, here is where".
+  explicit reconciliation. BUILT: a successor names its predecessor in `basedOn` AND takes it as a
+  data parent, so the version chain is a graph; `forksOf` returns the heads, and more than one is a
+  fork. One caveat learned in the building: the useful signal is "this workspace HAS more than one
+  head", not "I just created a second one" — the latter misses the writer who lost the race and
+  keeps working on a head nobody else can see.
 
 So: **fork detection in v1, merge unsupported.** Saying multi-agent editing is unsupported does not
 stop two agents from doing it, and silent divergence is the one outcome worse than either supporting

@@ -18,6 +18,7 @@ import {
   captureWorkspace,
   CAPTURE_LIMITS,
   commitWorkspace,
+  forksOf,
   listWorkspaces,
   readWorkspace,
   TREE_DIGEST_VERSION,
@@ -512,5 +513,76 @@ Deno.test("workspace: capture refuses rather than truncates when a run exceeds i
     } finally {
       await Deno.remove(root, { recursive: true });
     }
+  });
+});
+
+// ── Phase 4: fork detection ──────────────────────────────────────────────────────────────────────
+
+Deno.test("workspace: two writers on one base fork VISIBLY rather than one vanishing", async () => {
+  await withSpace(async (c) => {
+    // There is no compare-and-swap here, so two writers that read the same manifest both succeed
+    // and latest-wins picks one. That is not data loss: the other version is still a record with
+    // its history intact, which is a permanent reflog rather than a force-push. What was missing is
+    // DETECTION, because without it the losing writer's work is merely somewhere else and nobody
+    // is told.
+    await writeWorkspace(c, { name: "race", owner: OWNER, files: { "a.txt": "base\n" } });
+    const base = (await readWorkspace(c, "race"))!;
+    assertEquals((await forksOf(c, "race")).forked, false, "one head to start with");
+
+    // Both writers read the SAME base, as two agents in one conversation would.
+    const first = await writeWorkspace(c, { name: "race", owner: OWNER, files: { "a.txt": "from A\n" }, basedOn: base.id });
+    assertEquals(first.forked, false, "the first successor is not a fork");
+    const second = await writeWorkspace(c, { name: "race", owner: OWNER, files: { "a.txt": "from B\n" }, basedOn: base.id });
+    assertEquals(second.forked, true, "the second one is, and says so at write time");
+
+    const f = await forksOf(c, "race");
+    assertEquals(f.forked, true);
+    assertEquals(f.heads.length, 2, "both writes are heads; neither was overwritten");
+    assertEquals(f.heads.map((h) => h.basedOn).filter((b) => b === base.id).length, 2, "and both name the same base");
+
+    // Nothing was lost. Each head's content is still readable, which is the difference between
+    // divergence and a lost write.
+    const contents = new Set<string>();
+    for (const h of f.heads) {
+      contents.add(new TextDecoder().decode(await c.getArtifact(h.files[0].artifactId)));
+    }
+    assertEquals([...contents].sort(), ["from A\n", "from B\n"]);
+
+    // `readWorkspace` still answers, and its answer is a CHOICE among heads rather than the truth.
+    const cur = await readWorkspace(c, "race");
+    assert(f.heads.some((h) => h.id === cur!.id), "it returns one of the heads");
+
+    // `forked` means "this workspace HAS more than one head", not "I just created a second one".
+    // The narrower reading missed the case that matters: the writer that lost the race keeps
+    // working, unaware, on a head nobody else can see. A later write onto EITHER head still reports
+    // it, because building on one does not resolve the other.
+    const later = await writeWorkspace(c, {
+      name: "race",
+      owner: OWNER,
+      files: { "a.txt": "from A again\n" },
+      basedOn: first.id,
+    });
+    assertEquals(later.forked, true, "still forked after extending one side");
+    assertEquals((await forksOf(c, "race")).heads.length, 2, "and there are still exactly two heads");
+  });
+});
+
+Deno.test("workspace: a version chain is a DAG, so lineage walks a project's history", async () => {
+  await withSpace(async (c) => {
+    // `basedOn` alone makes the chain queryable; the EDGE makes it a graph. Without it, lineage on
+    // a manifest showed nothing and "a visible fork in the DAG" was aspirational.
+    await writeWorkspace(c, { name: "chain", owner: OWNER, files: { "a.txt": "1\n" } });
+    const v1 = (await readWorkspace(c, "chain"))!;
+    await writeWorkspace(c, { name: "chain", owner: OWNER, files: { "a.txt": "2\n" }, basedOn: v1.id });
+    const v2 = (await readWorkspace(c, "chain"))!;
+    await writeWorkspace(c, { name: "chain", owner: OWNER, files: { "a.txt": "3\n" }, basedOn: v2.id });
+    const v3 = (await readWorkspace(c, "chain"))!;
+
+    const ids = (await c.getLineage(v3.id)).map((n) => n.record.id);
+    assert(ids.includes(v2.id) && ids.includes(v1.id), `lineage from the head reaches every version: ${ids.length} records`);
+
+    // And downward: who superseded this one. That is the query fork detection is built on.
+    const children = await c.getChildren(v1.id);
+    assertEquals(children.map((r) => r.id), [v2.id]);
   });
 });

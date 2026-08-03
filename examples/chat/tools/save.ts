@@ -178,6 +178,10 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
           treeDigest: w.treeDigest,
           files: w.files.map((f) => f.path),
           unchanged: w.deduped,
+          // A fork is REPORTED, never silently resolved. Two writers on one base both succeed and
+          // both versions survive; saying so is the difference between divergence and one of them
+          // quietly being somewhere else.
+          ...(w.forked ? { forked: true, note: "another version already superseded the one this was based on; both now exist as separate heads" } : {}),
         };
       } catch (e) {
         // A rejected path is the model's to fix, and the message names which one and why.
@@ -204,7 +208,10 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
         "Returns {workspace, treeDigest, files, unchanged}; `unchanged: true` means the tree was " +
         "byte-identical to what was already there and nothing was written. The ONE thing that does " +
         "not belong here is a throwaway calculation whose answer is the output rather than the " +
-        "program: pass that to run_code as `code` and keep nothing.",
+        "program: pass that to run_code as `code` and keep nothing. If the reply carries " +
+        "`forked: true`, something else changed this workspace while you were working: both " +
+        "versions exist and neither was lost, but you are no longer building on the newest one. " +
+        "Say so rather than continuing silently.",
       parameters: {
         type: "object",
         properties: {

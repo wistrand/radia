@@ -458,7 +458,7 @@ await agentLoop(client, {
 
     // WRITE-BACK: hash after, store the difference, commit a successor. An unchanged tree writes
     // nothing, so a read-only attempt does not manufacture a version.
-    let committed: { id: string; treeDigest: string } | null = null;
+    let committed: { id: string; treeDigest: string; forked: boolean } | null = null;
     let capture: { changed: string[]; removed: string[] } | undefined;
     if (wsWrite && wsRoot && wsManifest) {
       try {
@@ -566,6 +566,7 @@ await agentLoop(client, {
           ...(wsName ? { workspace: wsName, treeDigest: wsTree } : {}),
           ...(capture ? { changed: capture.changed, removed: capture.removed } : {}),
           ...(committed ? { newVersion: committed.treeDigest } : {}),
+          ...(committed?.forked ? { forked: true } : {}),
           ...(checked ? { check: checked } : {}),
           ...(stored ?? {}),
         },
