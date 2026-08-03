@@ -126,9 +126,11 @@ const EXEC_GRANTS: Grant[] = [
   // session has `query` and nothing more, so "the code did what was claimed" is never a record the
   // model authored about itself.
   { kind: "check", operations: ["put"] },
-  // Reads a manifest to materialise it. `query`, not `put`: this worker never authors a tree, it
-  // only serves one, so a bug here cannot invent a workspace.
-  { kind: "workspace", operations: ["query"] },
+  // Reads a manifest to materialise it, and writes a successor when a run with `write: true`
+  // changed the tree. `put` was deliberately withheld at first, on the reasoning that this worker
+  // only SERVES trees; write-back made that false, and the grant had to follow the capability
+  // rather than the other way round.
+  { kind: "workspace", operations: ["query", "put"] },
 ];
 
 // plain user (the REPL): may drive its own conversations and read its own results, nothing more.

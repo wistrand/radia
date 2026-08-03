@@ -68,6 +68,8 @@ writes or the record count grows per attempt. That is the registry stopping rule
 to a TREE rather than to a call id, which is what turns a verdict into an attestation of a specific
 reproducible input.
 
+**BUILT: the worker recomputes, and refuses on disagreement.** What follows is why.
+
 **Who computes `treeDigest` decides whether any of that is worth anything.** An artifact's `digest`
 is server-computed and is a RESERVED field a client cannot set (`ARTIFACT_RESERVED_FIELDS`,
 `src/core/kinds.ts`), so the bytes and their address cannot disagree. A manifest is an ordinary
@@ -145,8 +147,9 @@ records, not from rewriting the export.
 
 ## The three hard parts
 
-**Materialisation is BUILT and read-only** (`materialize`); what follows is the write-back half,
-which is not.
+**Materialisation and write-back are BUILT** (`materialize`, `captureWorkspace`,
+`commitWorkspace`). What follows is the reasoning behind them; the quota, the ignore list and the
+symlink rule all landed as described.
 
 **Write-back is a capability increase.** The sandbox has no write permission today. A workspace
 means `--allow-write=<tmpdir>`, one fresh directory per attempt, deleted after. Contained but real:

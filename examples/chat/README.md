@@ -368,13 +368,16 @@ the program a temp path it could not otherwise know.
 
 Three properties, and the third is the one that matters:
 
-- **Read-only, and enforced rather than promised.** The sandbox gets `--allow-read` on the tree and
-  nothing else, so a write fails with `NotCapable`. It is discarded after the run: the tree of
-  record is the manifest, and until write-back lands (Phase 3 of
-  [plan-workspaces.md](../../agent_docs/plan-workspaces.md)) discarding is the honest behaviour
-  rather than leaving a directory that looks like state.
+- **Read-only by default, and enforced rather than promised.** The sandbox gets `--allow-read` on
+  the tree and nothing else, so a write fails with `NotCapable`. Pass `write: true` to let the
+  program change the project: whatever it wrote is captured as the next version and the result
+  reports `{changed, removed, newVersion}`. A run that changed nothing commits nothing. Symlinks are
+  never captured, and a file-count or byte budget refuses rather than truncating.
 - **Iterating means saving the tree again.** A new version is a successor; every earlier one stays
   addressable, and an identical tree writes nothing.
+- **A verdict binds to the TREE.** `materialize` hashes every artifact against the entry naming it
+  and recomputes `treeDigest` from the entries, refusing a manifest that lies about either, so the
+  `{workspace, treeDigest}` on a `check` attests to a reproducible input rather than to an event.
 - **The manifest is a data PARENT of the result.** That is what stops a classified tree from
   laundering its labels through the filesystem: the substrate cannot see a disk, so the edge is the
   only thing carrying the classification, and one edge speaks for the whole tree because the

@@ -4,8 +4,7 @@ Sequence and status. The reasoning lives in [design-workspaces.md](design-worksp
 working tree is, and the git relationship) and [design-execution.md](design-execution.md) (why the
 language question is an isolation question). Read those first; this file assumes them.
 
-> **Status: Phases 0, 1 and 2 DONE.** Phase 3 next (write-back, `treeDigest` recomputation,
-> `check` binding).
+> **Status: Phases 0-3 DONE.** Phase 4 next (fork detection).
 
 ## What this is for
 
@@ -62,7 +61,7 @@ Each is scoped to answer its question. Do not merge them.
 | 0 | Record size limit **(done)** | Can a body still become an unerasable payload? | 1 |
 | 1 | Manifest, no execution **(done)** | Does a churning tree-as-records hold up? | 1, 3 |
 | 2 | Materialise, read-only **(done)** | Is checkout safe, and does taint survive a filesystem? | 2 |
-| 3 | Write-back + `treeDigest` + `check` | Is an attestation worth anything? | 4 |
+| 3 | Write-back + `treeDigest` + `check` **(done)** | Is an attestation worth anything? | 4 |
 | 4 | Fork detection (`basedOn`) | Is concurrent divergence visible? | 5 |
 | 5 | `sandbox` record, ONE backend | Does the record shape describe a real jail? | — |
 | 6 | A second backend | What breaks when the guarantee stops being uniform? | — |
@@ -185,6 +184,38 @@ workspace convention, which is where Phase 5 will put a `sandbox` RECORD on top 
 Hash before and hash after, store the difference, honour the `ignore` list. The worker that writes
 the `check` recomputes `treeDigest` from the artifacts it materialised and refuses a verdict on
 disagreement, which is what makes the attestation mean anything.
+
+**Done.** The answer to "is an attestation worth anything" is now yes, and it rests on two checks
+that cost nothing because the bytes are already in hand:
+
+*The client-asserted link is closed.* `materialize` hashes every artifact it fetches against the
+entry that names it, and recomputes `treeDigest` from the entries rather than believing the
+manifest's. An artifact's digest is server-computed and cannot be forged; a manifest ENTRY claiming
+that digest for those bytes could be, because a manifest is an ordinary record. Both forgeries are
+refused, and `materialize` returns the digest it VERIFIED rather than the one it was told. A `check`
+now carries `{workspace, treeDigest}`, so a verdict is an attestation of a reproducible input rather
+than a note about an event.
+
+*Write-back is opt-in and captures only the difference.* `run_code {workspace, write: true}` grants
+the sandbox `--allow-write` on that tree and nothing else; without it a write fails `NotCapable`, so
+"read-only" stays enforced rather than promised. After the run, `captureWorkspace` hashes the tree,
+reuses the artifact for anything unchanged, stores what changed, and `commitWorkspace` writes a
+successor — or nothing at all, so a run that only read does not manufacture a version.
+
+Three capture rules that are safety rather than bookkeeping: symlinks are SKIPPED and never
+followed (a program can point one anywhere, and following it would pull a file from outside the tree
+into a record); ignored paths are dropped so build output does not become a version; and a file
+count and byte budget REFUSE rather than truncate, because a partial capture presented as a tree is
+the bounded-read-as-population bug wearing a filesystem.
+
+*Verified end to end through the chat's worker:* a run bumps a counter file, the next run reads the
+bumped value, an `expect` on the second run passes, three versions exist, the untouched file is one
+blob across all of them, and the check's `treeDigest` matches a real version.
+
+*One bug the test found.* The exec worker held `workspace: query` and not `put`, with a comment
+saying it "never authors a tree" — true when written, false the moment write-back landed. The commit
+failed silently into stderr and the loop read as working while producing no versions. The grant has
+to follow the capability, not the reasoning that preceded it.
 
 ### Phase 4: fork detection
 

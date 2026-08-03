@@ -25,7 +25,7 @@
 import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { activeByKey, newestByKey, RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
 import { runCode } from "../../../extensions/ts/sandbox.ts";
-import { materialize, readWorkspace } from "../../../extensions/ts/workspace.ts";
+import { captureWorkspace, commitWorkspace, materialize, readWorkspace } from "../../../extensions/ts/workspace.ts";
 import { progress } from "../space/progress.ts";
 import { arg, argAll } from "../util.ts";
 import { publishCapability } from "../space/capability.ts";
@@ -106,6 +106,16 @@ const RUN_CODE: ToolDef = {
             "call save_workspace again with the new contents. Note your `code` runs from stdin and " +
             "has no path of its own, so it can READ the tree's files but cannot import them; read " +
             "and eval, or keep the logic in `code` and the data in files.",
+        },
+        write: {
+          type: "boolean",
+          description:
+            "Let the program CHANGE the workspace. Off by default: a run that only inspects should " +
+            "not be able to produce a version. With it on, whatever the program wrote is captured " +
+            "as the next version of the tree and the result reports {changed, removed, newVersion}. " +
+            "This is how a program edits its own project (generate a file, fix a file); editing by " +
+            "hand is still save_workspace with the new contents. Symlinks are never captured, and " +
+            "there are limits on how many files and bytes a run may hand back.",
         },
         expect: {
           type: "object",
@@ -345,7 +355,7 @@ await agentLoop(client, {
   leaseSeconds: 60,
   handle: async (rec, c) => {
     const callId = rec.id;
-    const b = rec.body as { tool?: string; args?: { code?: string; workspace?: string }; conversationId?: string; owner?: string };
+    const b = rec.body as { tool?: string; args?: { code?: string; workspace?: string; write?: boolean }; conversationId?: string; owner?: string };
 
     if (b.tool === "save_procedure") return await saveProcedure(rec, c);
     if (b.tool === "read_procedure") return await readProcedure(rec, c);
@@ -402,7 +412,12 @@ await agentLoop(client, {
     let wsRoot: string | undefined;
     let wsParent: string | undefined;
     let wsRoots: string[] = readRoots;
+    let wsTree: string | undefined;
+    let wsManifest: (Awaited<ReturnType<typeof readWorkspace>>) = null;
     const wsName = typeof b.args?.workspace === "string" ? b.args.workspace : undefined;
+    // WRITE is opt-in per call. Reading is the common case and must not carry the capability to
+    // change the tree: a run that only inspects should not be able to produce a version.
+    const wsWrite = b.args?.write === true;
     if (wsName) {
       const manifest = await readWorkspace(c, wsName, b.conversationId);
       if (!manifest) {
@@ -413,7 +428,12 @@ await agentLoop(client, {
         };
       }
       wsRoot = await Deno.makeTempDir({ dir: workspaceRoot, prefix: `${wsName}-` });
-      await materialize(c, manifest, wsRoot);
+      // `materialize` VERIFIES on the way in: every artifact is hashed against the entry that names
+      // it, and the tree digest is recomputed from the entries. A manifest that lies about either
+      // is refused here rather than silently attested to later.
+      const mat = await materialize(c, manifest, wsRoot);
+      wsTree = mat.treeDigest;
+      wsManifest = manifest;
       wsParent = manifest.id;
       // The tree REPLACES the configured read roots rather than adding to them: a run against a
       // workspace should see the workspace, not also whatever directories the operator opened for
@@ -424,7 +444,34 @@ await agentLoop(client, {
     // Run IN the tree when there is one, so relative paths resolve the way they would in a
     // checkout. The alternative was telling the program its temp path, which it cannot otherwise
     // know and which changes every call.
-    const r = await runCode(code, { timeoutMs, readRoots: wsRoots, denyRead, cwd: wsRoot });
+    const r = await runCode(code, {
+      timeoutMs,
+      readRoots: wsRoots,
+      denyRead,
+      cwd: wsRoot,
+      // The tree, and ONLY the tree: a run that may write gets it for exactly the directory it was
+      // given, never the workspace root shared with other calls.
+      writeRoots: wsWrite && wsRoot ? [wsRoot] : [],
+    });
+
+    // WRITE-BACK: hash after, store the difference, commit a successor. An unchanged tree writes
+    // nothing, so a read-only attempt does not manufacture a version.
+    let committed: { id: string; treeDigest: string } | null = null;
+    let capture: { changed: string[]; removed: string[] } | undefined;
+    if (wsWrite && wsRoot && wsManifest) {
+      try {
+        const cap = await captureWorkspace(c, wsManifest, wsRoot, { taint: b.owner ? undefined : undefined });
+        capture = { changed: cap.changed, removed: cap.removed };
+        committed = await commitWorkspace(c, wsManifest, cap);
+        if (committed) {
+          wsTree = committed.treeDigest;
+          wsParent = committed.id; // the result belongs to the tree the run PRODUCED
+        }
+      } catch (e) {
+        // A refused capture (a quota, an unsafe path a program invented) must not read as success.
+        r.stderr += `\n[workspace not captured: ${e}]`;
+      }
+    }
     // Materialised bytes are scratch: the tree of record is the manifest, and Phase 3 (write-back)
     // is what will make anything the run produced durable. Until then, discarding is the honest
     // behaviour rather than leaving a directory that looks like state.
@@ -472,6 +519,9 @@ await agentLoop(client, {
             conversationId: b.conversationId,
             owner: b.owner,
             tool: b.tool ?? "run_code",
+            // WHAT was verified, not just that something was. A verdict against a tree digest is an
+            // attestation of a reproducible input; against a call id it is a note about an event.
+            ...(wsTree ? { workspace: wsName, treeDigest: wsTree } : {}),
             verdict: j.verdict,
             expected: expectation,
             reasons: j.reasons,
@@ -511,7 +561,9 @@ await agentLoop(client, {
           ms: r.ms,
           // Returned as well as recorded, so the model sees the verdict in the same round rather
           // than spending another one asking whether its own run passed.
-          ...(wsName ? { workspace: wsName } : {}),
+          ...(wsName ? { workspace: wsName, treeDigest: wsTree } : {}),
+          ...(capture ? { changed: capture.changed, removed: capture.removed } : {}),
+          ...(committed ? { newVersion: committed.treeDigest } : {}),
           ...(checked ? { check: checked } : {}),
           ...(stored ?? {}),
         },

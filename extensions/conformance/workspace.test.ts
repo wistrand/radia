@@ -15,6 +15,9 @@ import { assert, assertEquals } from "@std/assert";
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../../examples/operator.ts";
 import {
+  captureWorkspace,
+  CAPTURE_LIMITS,
+  commitWorkspace,
   listWorkspaces,
   readWorkspace,
   TREE_DIGEST_VERSION,
@@ -387,5 +390,127 @@ Deno.test("workspace: a classified tree does not launder its labels through the 
     // launders. Same shape as omitting any parent edge, and not something materialising can fix.
     const laundered = await c.put({ kind: "run_result", body: { stdout: "from a file read" } });
     assertEquals((await c.getRecord(laundered.id))!.runtimeMeta.taint, []);
+  });
+});
+
+// ── Phase 3: verification and write-back ─────────────────────────────────────────────────────────
+
+Deno.test("workspace: materialising REFUSES a manifest that lies about its digests", async () => {
+  await withSpace(async (c) => {
+    // The client-asserted link in the attestation chain. An artifact's digest is server-computed
+    // and cannot be forged; a manifest ENTRY claiming that digest for those bytes can be, because a
+    // manifest is an ordinary record. If nothing recomputes, a `check` attests to a tree that never
+    // existed, and the whole point of binding a verdict to a treeDigest is lost.
+    await writeWorkspace(c, { name: "honest", owner: OWNER, files: { "a.txt": "real\n" } });
+    const m = (await readWorkspace(c, "honest"))!;
+    const root = await Deno.makeTempDir({ prefix: "radia-ws-" });
+    try {
+      // Honest manifest: materialises, and hands back the digest it VERIFIED rather than the one
+      // it was told.
+      const ok = await materialize(c, m, root);
+      assertEquals(ok.treeDigest, m.treeDigest);
+
+      // An entry whose digest does not match its artifact's bytes.
+      const lying: WorkspaceManifest = { ...m, files: [{ ...m.files[0], digest: "b".repeat(64) }] };
+      let e1 = "";
+      try {
+        await materialize(c, lying, root);
+      } catch (e) {
+        e1 = (e as Error).message;
+      }
+      assert(/hashes to/.test(e1), `a forged entry digest must be refused, got: ${e1 || "accepted"}`);
+
+      // A tree digest that does not describe its own file list.
+      const wrongTree: WorkspaceManifest = { ...m, treeDigest: "t1:" + "c".repeat(64) };
+      let e2 = "";
+      try {
+        await materialize(c, wrongTree, root);
+      } catch (e) {
+        e2 = (e as Error).message;
+      }
+      assert(/claims treeDigest/.test(e2), `a forged tree digest must be refused, got: ${e2 || "accepted"}`);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  });
+});
+
+Deno.test("workspace: write-back stores what changed and nothing else", async () => {
+  await withSpace(async (c) => {
+    await writeWorkspace(c, {
+      name: "wb",
+      owner: OWNER,
+      files: { "keep.txt": "unchanged\n", "edit.txt": "before\n", "gone.txt": "bye\n" },
+      ignore: ["out"],
+    });
+    const m = (await readWorkspace(c, "wb"))!;
+    const root = await Deno.makeTempDir({ prefix: "radia-ws-" });
+    try {
+      await materialize(c, m, root);
+
+      // A run edits one file, creates one, deletes one, and drops something in an ignored path.
+      await Deno.writeTextFile(`${root}/edit.txt`, "after\n");
+      await Deno.writeTextFile(`${root}/new.txt`, "fresh\n");
+      await Deno.remove(`${root}/gone.txt`);
+      await Deno.mkdir(`${root}/out`, { recursive: true });
+      await Deno.writeTextFile(`${root}/out/build.js`, "artifact of building\n");
+      // …and a symlink pointing outside, which must never be followed into a record.
+      await Deno.symlink("/etc/hostname", `${root}/link.txt`);
+
+      const cap = await captureWorkspace(c, m, root);
+      assertEquals(cap.changed.sort(), ["edit.txt", "new.txt"], "only what changed becomes a new artifact");
+      assertEquals(cap.removed, ["gone.txt"]);
+      const paths = cap.files.map((f) => f.path).sort();
+      assertEquals(paths, ["edit.txt", "keep.txt", "new.txt"], "ignored paths and symlinks are not captured");
+
+      // The untouched file reuses the artifact that already holds those bytes: an attempt costs
+      // what it edited, not the size of the tree.
+      assertEquals(cap.files.find((f) => f.path === "keep.txt")!.artifactId, m.files.find((f) => f.path === "keep.txt")!.artifactId);
+
+      const next = await commitWorkspace(c, m, cap);
+      assert(next, "a changed tree commits a successor");
+      assertEquals(next!.treeDigest, await treeDigestOf(cap.files));
+      const now = (await readWorkspace(c, "wb"))!;
+      assertEquals(now.basedOn, m.id, "and it names the version it supersedes");
+      assertEquals(new TextDecoder().decode(await c.getArtifact(now.files.find((f) => f.path === "edit.txt")!.artifactId)), "after\n");
+
+      // A run that changes NOTHING must not manufacture a version.
+      const root2 = await Deno.makeTempDir({ prefix: "radia-ws-" });
+      try {
+        await materialize(c, now, root2);
+        const cap2 = await captureWorkspace(c, now, root2);
+        assert(cap2.unchanged);
+        assertEquals(await commitWorkspace(c, now, cap2), null);
+      } finally {
+        await Deno.remove(root2, { recursive: true });
+      }
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  });
+});
+
+Deno.test("workspace: capture refuses rather than truncates when a run exceeds its budget", async () => {
+  await withSpace(async (c) => {
+    // A partial capture presented as a tree is the bounded-read-as-population bug wearing a
+    // filesystem: the manifest would describe a project that never existed.
+    await writeWorkspace(c, { name: "budget", owner: OWNER, files: { "a.txt": "a\n" } });
+    const m = (await readWorkspace(c, "budget"))!;
+    const root = await Deno.makeTempDir({ prefix: "radia-ws-" });
+    try {
+      await materialize(c, m, root);
+      for (let i = 0; i < CAPTURE_LIMITS.maxFiles + 5; i++) {
+        await Deno.writeTextFile(`${root}/f${i}.txt`, "x");
+      }
+      let refused = "";
+      try {
+        await captureWorkspace(c, m, root);
+      } catch (e) {
+        refused = (e as Error).message;
+      }
+      assert(/more than .* files/.test(refused), `a file-count budget must refuse, got: ${refused || "captured"}`);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
   });
 });

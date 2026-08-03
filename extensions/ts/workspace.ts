@@ -278,7 +278,7 @@ export async function materialize(
   client: RadiaClient,
   manifest: WorkspaceManifest,
   root: string,
-): Promise<{ root: string; written: number; bytes: number }> {
+): Promise<{ root: string; written: number; bytes: number; treeDigest: string }> {
   const realRoot = await Deno.realPath(root);
   let written = 0;
   let bytes = 0;
@@ -295,9 +295,146 @@ export async function materialize(
       throw new Error(`workspace path ${JSON.stringify(file.path)} escapes the root via a link: ${realDir}`);
     }
     const content = await client.getArtifact(file.artifactId);
+    // VERIFY, because a manifest is an ordinary record and its digests are whatever the writer
+    // said. An artifact's digest is server-computed and cannot be forged; a manifest ENTRY claiming
+    // that digest for those bytes can be. Hashing what we just fetched costs nothing (the bytes are
+    // in hand) and is what turns `treeDigest` from a claim into something worth attesting to.
+    const actual = await sha256Hex(content);
+    if (actual !== file.digest) {
+      throw new Error(
+        `workspace ${JSON.stringify(manifest.name)} entry ${JSON.stringify(file.path)} claims digest ` +
+          `${file.digest.slice(0, 16)}… but its artifact hashes to ${actual.slice(0, 16)}…`,
+      );
+    }
     await Deno.writeFile(target, content, { mode: file.mode === "100755" ? 0o755 : 0o644 });
     written++;
     bytes += content.byteLength;
   }
-  return { root: realRoot, written, bytes };
+  // …and the TREE digest, recomputed from the entries rather than believed. A manifest whose
+  // `treeDigest` does not describe its own file list is not something a verdict may attach to.
+  const recomputed = await treeDigestOf(manifest.files);
+  if (recomputed !== manifest.treeDigest) {
+    throw new Error(
+      `workspace ${JSON.stringify(manifest.name)} claims treeDigest ${manifest.treeDigest} but its ` +
+        `files hash to ${recomputed}`,
+    );
+  }
+  return { root: realRoot, written, bytes, treeDigest: recomputed };
+}
+
+/** sha256 of bytes, lowercase hex: the same content address the runtime computes for an artifact. */
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const d = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Does this path fall under an ignore entry? Exact match, or anything under a directory prefix. */
+function ignored(path: string, ignore: string[] | undefined): boolean {
+  if (!ignore?.length) return false;
+  return ignore.some((i) => path === i || path.startsWith(i.endsWith("/") ? i : i + "/"));
+}
+
+/** Bounds on what a run may hand back. A program that fills a disk is a trivial denial of service,
+ *  and "whatever it produced" is not a size anyone chose. */
+export const CAPTURE_LIMITS = { maxFiles: 2_000, maxBytes: 32 * 1024 * 1024 };
+
+/**
+ * Read a materialised tree back and store what CHANGED.
+ *
+ * Hash before, hash after, store the difference: the same operation `git status` performs, and the
+ * reason the manifest borrows git's model. An unchanged file costs nothing (its artifact is already
+ * there and blobs dedupe by digest), so the cost of an attempt is what it edited.
+ *
+ * Three rules that are safety rather than bookkeeping:
+ *
+ *   - SYMLINKS ARE SKIPPED, never followed. A program can create one pointing anywhere, and
+ *     following it would capture a file from outside the tree into a record. This is the mirror of
+ *     the containment check materialising does, on the way back.
+ *   - Ignored paths are dropped, so build output does not become a version.
+ *   - A count and a byte budget, both refused rather than truncated: a partial capture presented as
+ *     a tree is the bounded-read-as-population bug wearing a filesystem.
+ */
+export async function captureWorkspace(
+  client: RadiaClient,
+  manifest: WorkspaceManifest,
+  root: string,
+  opts: { taint?: string[] } = {},
+): Promise<{ files: WorkspaceFile[]; changed: string[]; removed: string[]; unchanged: boolean }> {
+  const before = new Map(manifest.files.map((f) => [f.path, f]));
+  const found: WorkspaceFile[] = [];
+  const changed: string[] = [];
+  let count = 0;
+  let bytes = 0;
+
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    for await (const entry of Deno.readDir(dir)) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isSymlink) continue; // never followed: it can point outside the tree
+      if (ignored(rel, manifest.ignore)) continue;
+      if (entry.isDirectory) {
+        await walk(`${dir}/${entry.name}`, rel);
+        continue;
+      }
+      if (!entry.isFile) continue;
+      if (++count > CAPTURE_LIMITS.maxFiles) {
+        throw new Error(`workspace produced more than ${CAPTURE_LIMITS.maxFiles} files; refusing to capture`);
+      }
+      // The path came from the FILESYSTEM this time, not from a manifest, but it is about to become
+      // a manifest entry, so it faces the same rules.
+      validatePath(rel);
+      const content = await Deno.readFile(`${dir}/${entry.name}`);
+      bytes += content.byteLength;
+      if (bytes > CAPTURE_LIMITS.maxBytes) {
+        throw new Error(`workspace produced more than ${CAPTURE_LIMITS.maxBytes} bytes; refusing to capture`);
+      }
+      const digest = await sha256Hex(content);
+      const was = before.get(rel);
+      const mode: "100644" | "100755" = (Deno.build.os !== "windows" &&
+          ((await Deno.stat(`${dir}/${entry.name}`)).mode ?? 0) & 0o111)
+        ? "100755"
+        : "100644";
+      if (was && was.digest === digest && was.mode === mode) {
+        found.push(was); // untouched: reuse the artifact that already holds these bytes
+        continue;
+      }
+      const art = await client.putArtifact(content, {
+        mediaType: "application/octet-stream",
+        filename: entry.name,
+        meta: { conversationId: manifest.conversationId ?? "", owner: manifest.owner, workspace: manifest.name },
+        ...(opts.taint?.length ? { taint: opts.taint } : {}),
+      });
+      found.push({ path: rel, mode, digest, artifactId: art.id });
+      changed.push(rel);
+    }
+  };
+  await walk(root, "");
+
+  found.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const nowPaths = new Set(found.map((f) => f.path));
+  const removed = manifest.files.map((f) => f.path).filter((p) => !nowPaths.has(p) && !ignored(p, manifest.ignore));
+  return { files: found, changed, removed, unchanged: changed.length === 0 && removed.length === 0 };
+}
+
+/** Commit a captured tree as the next version of a workspace. Returns null when nothing changed,
+ *  so an attempt that only READ does not manufacture a version. */
+export async function commitWorkspace(
+  client: RadiaClient,
+  manifest: WorkspaceManifest & { id: string },
+  captured: { files: WorkspaceFile[]; unchanged: boolean },
+  opts: { taint?: string[] } = {},
+): Promise<{ id: string; treeDigest: string } | null> {
+  if (captured.unchanged) return null;
+  const treeDigest = await treeDigestOf(captured.files);
+  const body: WorkspaceManifest = {
+    ...manifest,
+    treeDigest,
+    basedOn: manifest.id,
+    files: captured.files,
+  };
+  delete (body as { id?: string }).id;
+  const { id } = await client.put(
+    { kind: "workspace", body: body as unknown as Record<string, unknown>, ...(opts.taint?.length ? { taint: opts.taint } : {}) },
+    `workspace:${manifest.name}:${treeDigest}:after:${manifest.id}`,
+  );
+  return { id, treeDigest };
 }

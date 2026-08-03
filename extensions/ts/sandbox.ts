@@ -55,6 +55,10 @@ export interface RunOptions {
    *  is IN it: relative reads resolve the way they would in a checkout, and nothing has to tell the
    *  program a temp path it could not otherwise know. */
   cwd?: string;
+  /** Absolute paths the program may WRITE. Empty (the default) means it cannot write at all, which
+   *  is the posture every run had until workspaces: the only reason to grant this is a tree whose
+   *  changes are about to be captured, and it should name that tree and nothing else. */
+  writeRoots?: string[];
 }
 
 export interface RunResult {
@@ -123,10 +127,15 @@ export async function runCode(source: string, opts: RunOptions = {}): Promise<Ru
       // env and run stay denied whatever happens here. Reading data is a different risk from
       // being able to change it or send it anywhere.
       ...(readRoots.length ? [`--allow-read=${readRoots.join(",")}`] : []),
+      // WRITE stays denied unless a caller names a directory. Net, env and run are denied whatever
+      // happens here: being able to change a file the caller is about to read back is a different
+      // risk from being able to reach the network with it.
+      ...(opts.writeRoots?.length ? [`--allow-write=${opts.writeRoots.join(",")}`] : []),
       ...(denyRead.length ? [`--deny-read=${denyRead.join(",")}`] : []),
       "-", // the program comes from stdin: no file needs to be readable
     ],
-    // Nothing else is granted: net, write, env, run, ffi and sys are all denied.
+    // Nothing else is granted: net, env, run, ffi and sys are all denied, and so is write unless
+    // the caller named a workspace directory above.
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",
