@@ -54,7 +54,7 @@ hand out unexpiring coordination authority. **`--auth required` is the default.*
 Open mode is a genuine hole (it authorizes every verb for typing nothing), so nothing radia ships
 relies on it: the CLI, the MCP adapter, the console and the examples all present a token. To act as
 a scoped principal, mint a real run token; there is no impersonation shortcut. `radia login human:alice` does exactly
-that for a PERSON, through the same chain (`src/cli.ts`), and the console's Auth tab does it in the
+that for a PERSON, through the same chain (`src/surfaces/cli.ts`), and the console's Auth tab does it in the
 browser. That is what makes identity-scoped grants usable: a grant pinned to `{owner: <principal>}`
 separates two people only if they are two principals, so an app that shares one constant between
 everyone (as `examples/chat` did with `agent:chat-user`) has a scope that binds to the same value

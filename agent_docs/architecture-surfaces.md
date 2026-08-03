@@ -136,10 +136,28 @@ assuming:
 The minted token lives in a variable, not in an `onclick` attribute, so no credential is written
 into the DOM as executable markup (`conformance/console.test.ts`).
 
-## The CLI: `src/cli.ts`
+## Where a surface lives, and why it is a directory
 
-Four verb groups (inspect, coordinate, remediate, and the two identity verbs `login` /
-`permissions`), plus `--json` on every one and `--url` to point elsewhere. `radia help` prints the
+`src/surfaces/` holds the CLI and the MCP adapter. They ship inside the `radia` binary and are not
+the runtime: every one of their edges into `src/` is either shared host infrastructure
+(`platform.ts`, `flags.ts`, `credentials.ts`, `paths.ts`) or a TYPE, which is erased. They reach a
+space over `/v0` through the SDK, exactly as an external client does, and a shortcut through `Space`
+would make them privileged in a way no other client can be.
+
+That property held by habit for a milestone before it was load-bearing. It became load-bearing when
+`workspace-git` needed somewhere legal to live: a workspace is a CONVENTION (`extensions/`), the
+runtime must not know about it, and a client may compose it freely. Stating the rule positionally
+makes the verb obviously fine where the same code in `src/cli.ts` would have looked like a tier
+inversion.
+
+`conformance/layering.test.ts` enforces all of it: the runtime imports neither a surface nor an
+extension, a surface takes no runtime value, an extension never imports `src/`, and nothing outside
+`src/platform.ts` reaches for `Deno.*` (one documented exception, the Postgres socket patch).
+
+## The CLI: `src/surfaces/cli.ts`
+
+Five verb groups (inspect, coordinate, remediate, the two identity verbs `login` / `permissions`,
+and one export), plus `--json` on every one and `--url` to point elsewhere. `radia help` prints the
 authoritative list with flags; it is not restated here, because a hand-copied verb list is the
 drift this doc exists to avoid.
 
@@ -150,12 +168,26 @@ The claim lifecycle is composable rather than stateful: `take --json` prints the
 with its lease, and `ack`/`nack`/`release` accept that object back, either as an argument or as
 `-` to read stdin. So a shell pipeline drives a full claim without the CLI holding session state.
 
+`workspaces` lists what trees exist: one line per name, with the file count, how many versions it
+has been through, and a `FORKED` marker where a name has more than one head. It is not
+`query workspace`, and the difference is the point — every VERSION is a record, so a raw query
+returns three rows for a tree saved three times. The projection is latest-wins-minus-retired, the
+same rule every registry here uses, and it reports `complete: false` rather than printing a prefix
+that reads as a population.
+
+`workspace-git <name> --dir <out>` is the one verb that reaches outside the runtime, into
+`extensions/ts/git.ts`, and it is the reason this layer is a directory rather than an argument. It
+writes a BARE repository, so `git clone <out>` does the checkout; see
+[design-workspaces.md](design-workspaces.md) for why the projection is export-only. It needs
+`workspace: query` and `artifact: read_one`, and nothing more: an export reads exactly what its
+principal could already read, which is why it takes the caller's credential rather than holding one.
+
 `runCli` returns an exit code and never terminates the process itself. One trap it works around:
 `GET /v0/health` is public, so a *rejected* token still returns 200 with `principal=anonymous`.
 Without the explicit warning in the `health` output that reads as "no credential" when it actually
 means "bad credential".
 
-## The MCP adapter: `src/mcp/`
+## The MCP adapter: `src/surfaces/mcp/`
 
 `radia mcp` serves the space to an MCP-capable harness over stdio: newline-delimited JSON-RPC 2.0,
 15 tools. `server.ts` is the transport and dispatch; `tools.ts` is the tool definitions.

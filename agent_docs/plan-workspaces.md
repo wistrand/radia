@@ -4,10 +4,11 @@ Sequence and status. The reasoning lives in [design-workspaces.md](design-worksp
 working tree is, and the git relationship) and [design-execution.md](design-execution.md) (why the
 language question is an isolation question). Read those first; this file assumes them.
 
-> **Status: Phases 0-7 DONE.** Workspaces, write-back, `check`, fork detection, `sandbox` records,
+> **Status: Phases 0-8 DONE.** Workspaces, write-back, `check`, fork detection, `sandbox` records,
 > a second backend (bubblewrap), and selection by capability name (`run_javascript`, `run_python`).
 > Phase 7 answered the selection question with neither of the two options it was written to choose
-> between; see there.
+> between; see there. Phase 8 (git export) was added after the fact, from a request for git READ
+> access: the analysis split it, and the object builder is the half that shipped.
 
 ## What this is for
 
@@ -334,6 +335,45 @@ unreachable advice.
 procedure path and came back as "no procedure named run_python". A `BUILTIN_RUNNERS` set replaces
 the single-name comparison. Any check written against ONE member of a set breaks the moment the set
 grows, and a rename is exactly when it grows.
+
+### Phase 8: git export
+
+**Done.** `extensions/ts/git.ts`, run with `deno task workspace-git --name <ws> --dir <out>`, then
+`git clone <out>`.
+
+*Read-only git access was the ask; the object builder was the half worth doing first.* Measured
+before deciding: `git clone` over plain HTTP needs only the DUMB protocol (git 2.55 probes smart,
+falls back, and clones from a static file server — three route shapes, no pkt-line, no packfile, no
+negotiation), so a server is separable from the objects rather than a prerequisite for them. What
+the server buys beyond a local export is a familiar URL and incremental `pull`; what it costs is a
+credential question this project has not answered (a run token lives ~15 minutes and git persists it
+into `.git/config`) and a bet on a protocol git has repeatedly proposed removing. The objects are
+where the value is, and they need neither.
+
+*The mapping was already there,* which is why the file is small: blob → artifact, tree → the
+manifest's sorted digest list, commit → one manifest version, ref → a head of the `basedOn` chain.
+The sha1 is recomputed at export and thrown away, so SHA-1 never enters the attestation chain.
+
+*Three things the tests caught that reading would not have.*
+
+- **A per-fetch check is not a per-entry check.** Blobs are cached by artifact id across versions, so
+  a later manifest naming the same artifact with a DIFFERENT claimed digest hit the cache and skipped
+  verification entirely. The cache now holds the digest that was verified, and every entry is checked
+  against it. A manifest is ordinary record content; only the artifact's own digest is server-computed.
+- **`created_by` is the author, never the body's `owner`.** Provenance is not authority, and an
+  export taking its author line from the body would let a record name whoever it liked as its writer.
+  The owner claim still travels, as a trailer, where it reads as the claim it is.
+- **A name can be a file in one place and a directory in another,** and only one direction was
+  caught. `a` then `a/b` produced a tree with two entries named `a`: an object that builds, hashes
+  and writes fine, and that `git fsck` rejects. Nothing but real git finds that.
+
+*Erasure propagates, loudly.* A shredded payload makes its commit unreconstructable, and the export
+fails naming the path. The alternative, a placeholder blob, keeps the export working by making it
+LIE: the tree would hash to something the manifest never described, and `git log` would present
+invented bytes as the audited ones.
+
+*A fork is two branches, not a dropped head.* Picking a winner here would be this layer inventing
+the merge policy the design deliberately does not have.
 
 ## Open, and better decided with Phase 1 evidence
 

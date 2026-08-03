@@ -21,6 +21,7 @@ import {
   forksOf,
   listWorkspaces,
   readWorkspace,
+  summarizeWorkspaces,
   TREE_DIGEST_VERSION,
   treeDigestOf,
   validatePath,
@@ -242,6 +243,70 @@ Deno.test("workspace: churn stays cheap to read, and listing is honest about com
     assertEquals(listed.workspaces.filter((w) => w.name === "churn").length, 1, "latest-wins per name");
     // …and an incomplete one says THAT, rather than returning a plausible prefix.
     assertEquals((await listWorkspaces(c, 0)).complete, false);
+  });
+});
+
+Deno.test("workspace: a summary answers what EXISTS, which a raw query cannot", async () => {
+  await withSpace(async (c) => {
+    // The gap this closes. `query workspace` returns every VERSION, so a tree saved three times
+    // reads as three trees; counting rows answers a question nobody asked.
+    let prev: string | undefined;
+    for (const body of ["a\n", "b\n", "c\n"]) {
+      prev = (await writeWorkspace(c, { name: "iterated", owner: OWNER, basedOn: prev, files: { "f.txt": body } })).id;
+    }
+    await writeWorkspace(c, { name: "single", owner: OWNER, files: { "x.txt": "1\n", "y.txt": "2\n" } });
+
+    const raw = await c.query({ kind: "workspace", match: { name: "iterated" } }, 100);
+    assertEquals(raw.length, 3, "three records, as the substrate should have");
+
+    const s = await summarizeWorkspaces(c);
+    assert(s.complete, "a complete scan says so");
+    const iterated = s.workspaces.find((w) => w.name === "iterated")!;
+    assertEquals(iterated.versions, 3, "the history is COUNTED, not listed as separate workspaces");
+    assertEquals(iterated.files, 1);
+    assertEquals(iterated.forked, false);
+    assertEquals(s.workspaces.filter((w) => w.name === "iterated").length, 1, "one line per name");
+    assertEquals(s.workspaces.find((w) => w.name === "single")!.files, 2);
+    // Sorted by name, so two runs against one space produce the same output and a diff means a
+    // change rather than an ordering.
+    assertEquals([...s.workspaces].map((w) => w.name).sort(), s.workspaces.map((w) => w.name));
+
+    // A fork is reported per entry, computed from the SAME paged read rather than a query per name.
+    const base = await writeWorkspace(c, { name: "diverged", owner: OWNER, files: { "z": "0\n" } });
+    await writeWorkspace(c, { name: "diverged", owner: OWNER, basedOn: base.id, files: { "z": "L\n" } });
+    await writeWorkspace(c, { name: "diverged", owner: OWNER, basedOn: base.id, files: { "z": "R\n" } });
+    const forked = (await summarizeWorkspaces(c)).workspaces.find((w) => w.name === "diverged")!;
+    assertEquals(forked.forked, true);
+    assertEquals(forked.heads.length, 2, "both heads survive; neither is merged or dropped");
+
+    // A withdrawn workspace leaves the listing, the same rule `activeByKey` applies everywhere.
+    const gone = await writeWorkspace(c, { name: "withdrawn", owner: OWNER, files: { "q": "1\n" } });
+    assert((await summarizeWorkspaces(c)).workspaces.some((w) => w.name === "withdrawn"));
+    await c.put({
+      kind: "workspace",
+      body: { name: "withdrawn", owner: OWNER, treeDigest: gone.treeDigest, basedOn: gone.id, files: [], retired: true },
+    });
+    assert(!(await summarizeWorkspaces(c)).workspaces.some((w) => w.name === "withdrawn"), "retired leaves the list");
+
+    // INCOMPLETE is reported, never hidden. "I found no workspace called X" and "I could not see
+    // all of them" are different answers, and only one is safe to act on by re-creating X.
+    const partial = await summarizeWorkspaces(c, { maxPages: 0 });
+    assertEquals(partial.complete, false);
+    assertEquals(partial.workspaces, []);
+  });
+});
+
+Deno.test("workspace: a summary scoped to a conversation shows only that conversation's trees", async () => {
+  await withSpace(async (c) => {
+    await writeWorkspace(c, { name: "mine", owner: OWNER, conversationId: "conv-a", files: { "a": "1\n" } });
+    await writeWorkspace(c, { name: "theirs", owner: OWNER, conversationId: "conv-b", files: { "b": "1\n" } });
+    await writeWorkspace(c, { name: "loose", owner: OWNER, files: { "c": "1\n" } });
+
+    // RELEVANCE, not authorization: a session's grant already limits what it may read. The scope
+    // keeps a long-lived space from answering "what am I working on" with every tree anyone made.
+    const scoped = await summarizeWorkspaces(c, { conversationId: "conv-a" });
+    assertEquals(scoped.workspaces.map((w) => w.name), ["mine"]);
+    assertEquals((await summarizeWorkspaces(c)).workspaces.map((w) => w.name).sort(), ["loose", "mine", "theirs"]);
   });
 });
 

@@ -76,7 +76,7 @@ asserts `get` returns intact content.
 ## Package H: `lease_lost` is unobservable in clients (P2)
 
 `renew` reports fencing as a **200 body**, not an error, and every heartbeat discards the
-result: `src/mcp/server.ts` (`.catch(() => {})` on an interval that only `takeClaim` clears),
+result: `src/surfaces/mcp/server.ts` (`.catch(() => {})` on an interval that only `takeClaim` clears),
 `sdk/ts/loop.ts`, `sdk/py/radia.py`. So a quarantined or reclaimed run keeps renewing a dead
 lease for the process lifetime and its handler keeps producing side effects. The design contract
 "a fenced worker runs until it observes `lease_lost`" is currently unmeetable through the SDKs:

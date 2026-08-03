@@ -15,7 +15,7 @@ import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import type { Tool, ToolContext } from "./files.ts";
 import type { ToolDef } from "../provider/openrouter.ts";
 import { bytesFrom, mediaTypeFor } from "../util.ts";
-import { readWorkspace, writeWorkspace } from "../../../extensions/ts/workspace.ts";
+import { readWorkspace, summarizeWorkspaces, writeWorkspace } from "../../../extensions/ts/workspace.ts";
 
 export function makeSaveTools(client: RadiaClient): Record<string, Tool> {
   return {
@@ -188,10 +188,68 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
         return { error: (e as Error).message };
       }
     },
+
+    // The counterpart `save_workspace` shipped without, and the gap had a cost: an assistant that
+    // can only WRITE trees cannot resume one. It re-saved from scratch each time, because asking
+    // "what did I already build" had no answer — the same discovery-not-hardcode rule that governs
+    // tools and models, failing in the direction that spends tokens.
+    //
+    // Scoped to this conversation by default. A session's grant already limits what it can read;
+    // the scope here is about RELEVANCE, so a long-lived space does not answer "what am I working
+    // on" with every tree anyone ever made.
+    list_workspaces: async (a, ctx?: ToolContext) => {
+      const all = a.all === true;
+      const r = await summarizeWorkspaces(client, {
+        conversationId: all ? undefined : ctx?.conversationId,
+      });
+      return {
+        workspaces: r.workspaces.map((w) => ({
+          name: w.name,
+          files: w.files,
+          versions: w.versions,
+          treeDigest: w.treeDigest,
+          // Reported, never resolved. A fork means somebody else wrote a successor to the version
+          // this one was based on; both survive and neither was merged.
+          ...(w.forked ? { forked: true, heads: w.heads.length } : {}),
+        })),
+        // A truncated list must not read as a complete one: "I have no workspace called X" and
+        // "I could not see all of them" are different answers, and only one of them is safe to act
+        // on by re-creating X.
+        ...(r.complete ? {} : { incomplete: true, note: `stopped after ${r.scanned} records; this list may be missing workspaces` }),
+      };
+    },
   };
 }
 
 export const WORKSPACE_SCHEMAS: ToolDef[] = [
+  {
+    type: "function",
+    function: {
+      name: "list_workspaces",
+      description:
+        "What code you have already saved in this conversation, newest version of each. Use it " +
+        "BEFORE save_workspace whenever you might be continuing something rather than starting " +
+        "it: the user saying \"fix the bug\" or \"add a test\" refers to a tree that already " +
+        "exists, and re-creating it from memory loses every file you are not currently thinking " +
+        "about. Also use it when asked what you have built, or when you need a name to pass to a " +
+        "code runner's `workspace` argument and are not certain of it. Returns {workspaces:[{name, " +
+        "files, versions, treeDigest}]}; `versions` is how many times that tree has been saved, so " +
+        "a high count is an iteration history you can still read. `forked: true` on an entry means " +
+        "another version superseded the one a save was based on and both now exist: say so rather " +
+        "than picking one silently. Pass all:true to look beyond this conversation, which is rarely " +
+        "what you want. If the reply carries `incomplete: true`, a name being absent does NOT mean " +
+        "it does not exist, so do not overwrite on that basis.",
+      parameters: {
+        type: "object",
+        properties: {
+          all: {
+            type: "boolean",
+            description: "Include workspaces from other conversations. Off by default; this conversation's trees are almost always the question.",
+          },
+        },
+      },
+    },
+  },
   {
     type: "function",
     function: {

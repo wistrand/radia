@@ -43,6 +43,10 @@ they cross a trust boundary:
   incomparable; that lesson cost this codebase a real bug once already, in `grantKey`.
 - **`validatePath`** is a security boundary. A rule that differs between implementations is a hole,
   not an inconsistency.
+- **The git object encoding** (`gitObjectId` and the tree layout in `ts/git.ts`) has to be byte
+  identical everywhere, or two exports of one workspace are not comparable and `git log` across them
+  is meaningless. It is pinned by known-answer vectors taken from the real `git` binary, plus a
+  round trip through `git fsck` and `git clone` where one is installed.
 
 Both are specified by `extensions/conformance/`, which is the contract any implementation has to
 meet, in any language.
@@ -54,6 +58,8 @@ meet, in any language.
 | `ts/workspace.ts` | multi-file working trees: manifest, tree digest, path safety, materialisation |
 | `ts/sandbox.ts` | running untrusted code in a permissionless subprocess, plus the spec describing that jail and the probe that tries to escape it. Imports nothing |
 | `ts/sandbox-registry.ts` | a sandbox as a RECORD: the operator declares, the worker verifies before serving |
+| `ts/git.ts` | a workspace's version history projected into a real git repository. Export only, no dependency, no `git` binary |
+| `ts/export-git.ts` | the runnable form: `deno task workspace-git --name <ws> --dir <out>` |
 | `conformance/` | the contract an implementation must meet (`deno task extensions`) |
 
 Two isolation backends ship: `deno-permissions` (JS, safe by ABSENCE of flags) and `bubblewrap`

@@ -278,6 +278,30 @@ export async function listWorkspaces(
   client: RadiaClient,
   maxPages = 40,
 ): Promise<{ workspaces: (WorkspaceManifest & { id: string })[]; complete: boolean; scanned: number }> {
+  const { all, complete } = await readAllManifests(client, maxPages);
+  // Newest per name, retirements dropped. Compares ids rather than trusting arrival order.
+  const newest = new Map<string, RadiaRecord>();
+  for (const r of all) {
+    const b = r.body as unknown as WorkspaceManifest;
+    if (!b?.name) continue;
+    const prev = newest.get(b.name);
+    if (!prev || prev.id < r.id) newest.set(b.name, r);
+  }
+  const workspaces = [...newest.values()]
+    .filter((r) => !(r.body as unknown as WorkspaceManifest).retired)
+    .map((r) => ({ id: r.id, ...(r.body as unknown as WorkspaceManifest) }));
+  return { workspaces, complete, scanned: all.length };
+}
+
+/** Every `workspace` record, paged to exhaustion, with whether the answer is complete.
+ *
+ *  Shared so a listing and a summary read the SAME stream once. Two callers each doing their own
+ *  paging is two chances to page differently, and the difference would show up as two commands
+ *  disagreeing about what exists. */
+async function readAllManifests(
+  client: RadiaClient,
+  maxPages: number,
+): Promise<{ all: RadiaRecord[]; complete: boolean }> {
   const all: RadiaRecord[] = [];
   let after: string | undefined;
   let complete = false;
@@ -291,17 +315,76 @@ export async function listWorkspaces(
     }
     after = rows[rows.length - 1].id;
   }
-  // Newest per name, retirements dropped. Compares ids rather than trusting arrival order.
-  const newest = new Map<string, RadiaRecord>();
+  return { all, complete };
+}
+
+/** One line per workspace: what it is now, plus the history behind it. */
+export interface WorkspaceSummary {
+  name: string;
+  owner: string;
+  conversationId?: string;
+  /** The head this line describes. When `forked`, one of several, chosen as `readWorkspace` does. */
+  id: string;
+  treeDigest: string;
+  files: number;
+  /** Manifests written for this name, retirements included. The iteration count. */
+  versions: number;
+  /** Every version nothing supersedes. More than one is a fork. */
+  heads: string[];
+  forked: boolean;
+}
+
+/**
+ * What workspaces exist, and what shape each one is in.
+ *
+ * The question `radia query workspace` cannot answer: a raw query returns every VERSION, so three
+ * rows for one workspace read as three workspaces. The projection is the same latest-wins-minus-
+ * retired rule every registry here uses, plus the fork detection `forksOf` does per name — computed
+ * from the one paged read rather than a query per name, which would be N+1 round trips to say the
+ * same thing.
+ *
+ * `complete: false` is REPORTED, never hidden. A partial list presented as a population is the most
+ * repeated bug in this codebase, and a listing is exactly where it lands.
+ */
+export async function summarizeWorkspaces(
+  client: RadiaClient,
+  opts: { conversationId?: string; maxPages?: number } = {},
+): Promise<{ workspaces: WorkspaceSummary[]; complete: boolean; scanned: number }> {
+  const { all, complete } = await readAllManifests(client, opts.maxPages ?? 40);
+  const byName = new Map<string, RadiaRecord[]>();
   for (const r of all) {
     const b = r.body as unknown as WorkspaceManifest;
     if (!b?.name) continue;
-    const prev = newest.get(b.name);
-    if (!prev || prev.id < r.id) newest.set(b.name, r);
+    if (opts.conversationId !== undefined && b.conversationId !== opts.conversationId) continue;
+    const list = byName.get(b.name);
+    if (list) list.push(r);
+    else byName.set(b.name, [r]);
   }
-  const workspaces = [...newest.values()]
-    .filter((r) => !(r.body as unknown as WorkspaceManifest).retired)
-    .map((r) => ({ id: r.id, ...(r.body as unknown as WorkspaceManifest) }));
+
+  const workspaces: WorkspaceSummary[] = [];
+  for (const [name, rows] of byName) {
+    const superseded = new Set(
+      rows.map((r) => (r.body as unknown as WorkspaceManifest).basedOn).filter(Boolean) as string[],
+    );
+    const heads = rows
+      .filter((r) => !superseded.has(r.id))
+      .filter((r) => !(r.body as unknown as WorkspaceManifest).retired)
+      .sort((a, b) => (a.id < b.id ? 1 : -1));
+    if (heads.length === 0) continue; // withdrawn: every head carries `retired`
+    const head = heads[0].body as unknown as WorkspaceManifest;
+    workspaces.push({
+      name,
+      owner: head.owner,
+      conversationId: head.conversationId,
+      id: heads[0].id,
+      treeDigest: head.treeDigest,
+      files: head.files?.length ?? 0,
+      versions: rows.length,
+      heads: heads.map((r) => r.id),
+      forked: heads.length > 1,
+    });
+  }
+  workspaces.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   return { workspaces, complete, scanned: all.length };
 }
 
@@ -376,8 +459,11 @@ export async function materialize(
   return { root: realRoot, written, bytes, treeDigest: recomputed };
 }
 
-/** sha256 of bytes, lowercase hex: the same content address the runtime computes for an artifact. */
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
+/** sha256 of bytes, lowercase hex: the same content address the runtime computes for an artifact.
+ *
+ *  Exported so the git projection verifies a manifest entry the SAME way materialisation does. Two
+ *  implementations of "is this artifact what the manifest claims" is one implementation too many. */
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const d = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }

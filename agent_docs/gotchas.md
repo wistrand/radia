@@ -1015,6 +1015,39 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   procedure named run_python" — with the capability published and the jail working, which is why it
   read as an execution bug. It is now a `BUILTIN_RUNNERS` set. Grep for the OLD name's remaining
   comparisons before adding a sibling, not after.
+- **A write-only tool is half a tool, and the missing half is the one that saves tokens.**
+  `save_workspace` shipped without a way to LIST, so an assistant told to "fix the bug" re-created
+  the project from memory and lost every file it was not currently thinking about: "what did I
+  already build" had no answer. Whenever a tool creates named state, ask what reads the names back
+  before shipping it. The listing also has to distinguish "no workspace called X" from "I could not
+  see all of them", since only the first is safe to act on by re-creating X.
+- **`query <kind>` is not a listing when versions are records.** Three saves of one workspace are
+  three `workspace` records, so a raw query answers a question nobody asked and counting its rows is
+  wrong twice over. Anything registry-shaped needs the latest-wins-minus-retired projection, and it
+  belongs in ONE place: `summarizeWorkspaces` is shared by `radia workspaces` and the chat's
+  `list_workspaces` precisely so the two cannot disagree about what exists.
+- **A structural test nobody has seen FAIL is a structural test nobody has tested.** The layering
+  guard destructured `matchAll` as `[full, spec]`, which binds group 1 (the import clause) rather
+  than group 2 (the path), so every comparison ran against `{ Space } ` instead of
+  `../core/space.ts`. It passed, green, matching nothing — the exact failure it exists to catch, in
+  itself. Found only by planting a violation in each direction and asserting the guard goes red.
+  Do that for every grep-shaped test; and strip comments first, since two greps in this repo have
+  matched their own explanatory prose (once the comment describing the rule was the only thing
+  breaking it).
+- **A cache keyed on the thing being verified turns one check into no checks.** The git exporter
+  fetched each artifact once and cached its blob id across versions, so a later manifest naming the
+  SAME artifact with a different claimed digest hit the cache and skipped verification entirely. The
+  cache now holds the digest that was verified and every manifest ENTRY is checked against it. The
+  general shape: a per-fetch check is not a per-entry check, and it is the entries that are claims
+  (an artifact's own digest is server-computed; a manifest's copy of it is ordinary record content).
+- **A git tree can hold two entries with one name, and it builds, hashes and writes fine.** `a` as a
+  file plus `a/b` produced exactly that. Only `git fsck` rejects it, which is why the export suite
+  round-trips through the real binary where one is installed rather than trusting its own vectors:
+  vectors written by the same author who wrote the encoding are wrong in the same direction.
+- **A git export's author is `created_by`, never the manifest's `owner`.** Provenance is not
+  authority. `owner` is a body field a client submits, so taking the author line from it would let a
+  record name whoever it liked as its writer. It travels as a trailer instead, where it reads as the
+  claim it is.
 - **Two runners are two overlapping tools, so the SAME description rule applies, and only one half
   of it was written.** `run_python` named `run_javascript`; `run_javascript` did not name
   `run_python`, and it opened with "Run JavaScript" as one word ahead of four hundred about

@@ -24,7 +24,7 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { publishCapability } from "./space/capability.ts";
-import { makeSaveTools, makeShareTools, SAVE_SCHEMAS, SHARE_SCHEMAS, WORKSPACE_SCHEMAS } from "./tools/save.ts";
+import { makeSaveTools, makeShareTools, makeWorkspaceTools, SAVE_SCHEMAS, SHARE_SCHEMAS, WORKSPACE_SCHEMAS } from "./tools/save.ts";
 import { bootstrap, mintSession } from "./space/roles.ts";
 import type { ToolDef } from "./provider/openrouter.ts";
 
@@ -177,6 +177,52 @@ check(
   "…and does not still claim bare code is for generating files",
   !/generating file content/i.test(runCodeNow),
 );
+
+// ── the assistant can see what it already built ──────────────────────────────────────────────────
+// `save_workspace` shipped without a counterpart, and the gap had a cost: an assistant that can only
+// WRITE a tree cannot resume one. Told to "fix the bug", it re-created the project from memory,
+// losing every file it was not currently thinking about, because "what did I already build" had no
+// answer. That is the discovery-not-hardcode rule failing in the direction that spends tokens.
+const wsConv = (await admin.put({ kind: "conversation", body: { title: "trees" } })).id;
+// In process, like the rest of this suite: only the exec worker runs here, and what is under test
+// is the TOOL plus the description the fleet publishes, not the claim path (smoke.ts covers that).
+const wsTools = makeWorkspaceTools(admin);
+const toolCall = (tool: string, args: Record<string, unknown>, conversationId = wsConv) =>
+  wsTools[tool](args, { owner: "human:alice", conversationId, callId: "smoke" }) as Promise<Record<string, unknown>>;
+type Listing = { workspaces: { name: string; files: number; versions: number; forked?: boolean }[]; incomplete?: boolean };
+
+check("list_workspaces is advertised", desc.has("list_workspaces"));
+// An empty answer must be EMPTY, not an error and not a missing field: "nothing yet" is the state
+// every conversation starts in, and a model that cannot read it will not ask again.
+const empty = await toolCall("list_workspaces", {}) as Listing;
+check("a conversation with no trees lists none", Array.isArray(empty.workspaces) && empty.workspaces.length === 0);
+
+await toolCall("save_workspace", { name: "solver", files: { "main.py": "print(1)\n", "lib.py": "X=1\n" } });
+await toolCall("save_workspace", { name: "solver", files: { "main.py": "print(2)\n", "lib.py": "X=1\n" } });
+await toolCall("save_workspace", { name: "notes", files: { "a.md": "hi\n" } });
+const listed = await toolCall("list_workspaces", {}) as Listing;
+check("…and both trees after saving", listed.workspaces.map((w) => w.name).sort().join(",") === "notes,solver", JSON.stringify(listed.workspaces.map((w) => w.name)));
+
+// The iteration count is the point of the field: three saves of one tree are ONE workspace with a
+// history, not three workspaces. A raw `query workspace` cannot say that, which is why the tool
+// exists rather than the model being told to query.
+const solver = listed.workspaces.find((w) => w.name === "solver")!;
+check("a tree saved twice is one workspace with two versions", solver.versions === 2 && solver.files === 2, JSON.stringify(solver));
+
+// Scoped to the conversation by default. Not authorization (the grant already does that): relevance,
+// so a long-lived space does not answer "what am I working on" with every tree anyone ever made.
+const otherConv = (await admin.put({ kind: "conversation", body: { title: "elsewhere" } })).id;
+await toolCall("save_workspace", { name: "unrelated", files: { "z.txt": "z\n" } }, otherConv);
+const stillMine = await toolCall("list_workspaces", {}) as Listing;
+check("another conversation's tree does not appear", !stillMine.workspaces.some((w) => w.name === "unrelated"));
+const everything = await toolCall("list_workspaces", { all: true }) as Listing;
+check("…until all:true asks for it", everything.workspaces.some((w) => w.name === "unrelated"));
+
+// The description has to steer the model to look BEFORE writing, which is the only behaviour that
+// closes the gap; a tool nobody reaches for is the same as no tool.
+const listDesc = desc.get("list_workspaces") ?? "";
+check("…and its description says to check before saving", /BEFORE save_workspace/i.test(listDesc));
+check("…and warns that an incomplete list is not an absent workspace", /incomplete/i.test(listDesc));
 
 // ── the direct route works ───────────────────────────────────────────────────────────────────────
 // Advice to prefer save_content is only sound if one call really does produce the artifact.

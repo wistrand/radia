@@ -72,7 +72,7 @@ explicitly **not** production-readiness.
 - [x] dead-letter state
 - [x] conformance suite as a storage-adapter contract from the first commit
 - [x] TS SDK (`sdk/ts/`) and **Python SDK** (`sdk/py/radia.py`, stdlib only) at parity: client, watches, and an `agent_loop` with heartbeat in both
-- [x] minimal CLI: `radia dev`/`mcp` plus the public-API verbs in `src/cli.ts`
+- [x] minimal CLI: `radia dev`/`mcp` plus the public-API verbs in `src/surfaces/cli.ts`
 
 **Verify:** conformance suite green against the embedded adapter; the under-a-minute
 two-terminal demo works.

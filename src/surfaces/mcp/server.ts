@@ -20,13 +20,13 @@
 // Transport: newline-delimited JSON-RPC 2.0 on stdin/stdout. stdout carries protocol frames
 // ONLY. Every log line goes to stderr, or the harness sees a corrupt stream.
 
-import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
-import { defaultBase, resolveToken } from "../credentials.ts";
-import type { Lease, RadiaRecord } from "../storage/adapter.ts";
-import type { Pattern } from "../core/matching.ts";
+import { RadiaClient, RadiaClientError } from "../../../sdk/ts/client.ts";
+import { defaultBase, resolveToken } from "../../credentials.ts";
+import type { Lease, RadiaRecord } from "../../storage/adapter.ts";
+import type { Pattern } from "../../core/matching.ts";
 import { TOOLS } from "./tools.ts";
-import { flag } from "../flags.ts";
-import { stdin, writeStderr, writeStdout } from "../platform.ts";
+import { flag } from "../../flags.ts";
+import { stdin, writeStderr, writeStdout } from "../../platform.ts";
 
 const SERVER_INFO = { name: "radia", version: "0.0.0" };
 /** Echoed back to the client when it asks for a version we know; otherwise we answer with this. */

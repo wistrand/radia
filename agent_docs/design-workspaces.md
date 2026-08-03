@@ -11,7 +11,9 @@ judged against a stated expectation (`check` records). Both shipped; see
 > lexical revalidation plus a realpath containment check per file, with the tree's taint labels
 > carried on the manifest so one parent edge speaks for the whole tree). Measured, a manifest caps at
 > ~6 300 files against the 1 MiB record limit, which SETTLES the dependency question below in favour
-> of an artifact beside the manifest. Materialisation, write-back and git export are unbuilt.
+> of an artifact beside the manifest. Write-back, fork detection and GIT EXPORT are built too
+> (`captureWorkspace`/`commitWorkspace`, `forksOf`, `exportWorkspaceGit`); import is refused rather
+> than pending, for the reason under "Git" below.
 >
 > Recorded in
 > [plan-milestones.md](plan-milestones.md) as a later goal. The decisions below are made, so the
@@ -132,6 +134,13 @@ negotiation) and is not needed for export.
 - **Mutability.** `gc` deletes unreachable objects, rebase rewrites history, refs move. Records are
   immutable after commit and the one erasure path is deliberate, recorded and operator-only. A store
   whose history can be rewritten cannot back that.
+
+**BUILT**, as described: `extensions/ts/git.ts` (`exportWorkspaceGit`), run with
+`deno task workspace-git`. One commit per manifest version, `basedOn` as the parent chain, every
+head a branch, the sha1 recomputed and discarded. Trailers (`Radia-Workspace`, `Radia-Tree-Digest`,
+`Radia-Based-On`) lead each commit back to the record it came from. A BARE repository, so `git
+clone` does the checkout: a working copy needs a valid `.git/index`, and emitting one wrong produces
+a repository where `git status` lies.
 
 So git is a PROJECTION: emit a loose-object repository on demand, one commit per attempt, the chain
 as history, and a person can `git log`, `git diff` and `git bisect` an agent's debugging session

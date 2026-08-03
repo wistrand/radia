@@ -7,11 +7,14 @@
 // `kind_def` records, `children`/`lineage` follow the graph, and no verb carries a table of
 // known kinds.
 
-import { RadiaClient, RadiaClientError } from "../sdk/ts/client.ts";
-import { defaultBase, resolveToken } from "./credentials.ts";
-import { flag, flags, has, positional } from "./flags.ts";
-import { onShutdown, stdin, UsageError } from "./platform.ts";
-import type { Lease } from "./storage/adapter.ts";
+import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
+// A SURFACE may import a convention; the runtime may not. See conformance/layering.test.ts.
+import { exportWorkspaceGit } from "../../extensions/ts/git.ts";
+import { summarizeWorkspaces } from "../../extensions/ts/workspace.ts";
+import { defaultBase, resolveToken } from "../credentials.ts";
+import { flag, flags, has, positional } from "../flags.ts";
+import { onShutdown, stdin, UsageError } from "../platform.ts";
+import type { Lease } from "../storage/adapter.ts";
 
 const HELP = `radia <command> [options]
 
@@ -50,6 +53,12 @@ Remediate (operator)
   dead-letter --all [--stale <secs>] [--limit <n>] [--drain]
   requeue <record-id>                 return ONE dead-lettered record to available
   requeue --all [--limit <n>] [--drain]
+
+Workspaces (a convention, not a runtime concept: see extensions/)
+  workspaces [--conversation <id>]    what trees exist, newest version of each
+  workspace-git <name> --dir <out> [--conversation <id>] [--branch <n>]
+                                      a workspace's version history as a git repository
+                                      (bare: \`git clone <out>\` for a working copy)
 
 \`take\` prints the claimed record together with its lease; pass that lease object straight back
 to \`ack\`/\`nack\`/\`release\` (as a JSON string, or - to read it from stdin).
@@ -396,6 +405,61 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       if (!lease) return usage("release <lease-json>");
       const r = await client.release(lease);
       return out(ctx, r, () => r.status);
+    }
+
+    // The ONE verb that reaches outside the runtime, and the reason the surfaces layer exists as a
+    // directory rather than an argument. A workspace is a CONVENTION (`extensions/`), not something
+    // the substrate knows about, so the runtime must not import it; the CLI is a `/v0` client and
+    // may. `conformance/layering.test.ts` holds that line in both directions.
+    // `query workspace` cannot answer this: every VERSION is a record, so three rows for one tree
+    // read as three trees. The projection is latest-wins-minus-retired, the same rule every registry
+    // here uses, and it is shared with the chat's tool so the two never disagree.
+    case "workspaces": {
+      const r = await summarizeWorkspaces(client, { conversationId: flag(argv, "--conversation") });
+      return out(ctx, r, () => {
+        if (r.workspaces.length === 0) return "no workspaces";
+        const rows = r.workspaces.map((w) => [
+          w.name + (w.forked ? " (FORKED)" : ""),
+          String(w.files),
+          String(w.versions),
+          w.treeDigest.slice(0, 14) + "…",
+          w.owner,
+        ]);
+        const head = ["NAME", "FILES", "VERSIONS", "TREE", "OWNER"];
+        const width = head.map((h, i) => Math.max(h.length, ...rows.map((row) => row[i].length)));
+        const line = (cells: string[]) => cells.map((c, i) => c.padEnd(width[i])).join("  ").trimEnd();
+        const body = [line(head), ...rows.map(line)];
+        // A truncated list must never read as a complete one, which is the whole reason
+        // `summarizeWorkspaces` reports this instead of returning a plausible prefix.
+        if (!r.complete) body.push(`(INCOMPLETE: stopped after ${r.scanned} records; raise the page budget)`);
+        const forked = r.workspaces.filter((w) => w.forked);
+        for (const w of forked) {
+          body.push(`${w.name}: ${w.heads.length} heads, none merged — radia workspace-git ${w.name} --dir <out>, then git log --graph --all`);
+        }
+        return body.join("\n");
+      });
+    }
+
+    case "workspace-git": {
+      const [name] = positional(argv, 1);
+      const dir = flag(argv, "--dir");
+      if (!name || !dir) return usage("workspace-git <name> --dir <out> [--conversation <id>] [--branch <n>]");
+      const r = await exportWorkspaceGit(client, name, dir, {
+        conversationId: flag(argv, "--conversation"),
+        branch: flag(argv, "--branch"),
+      });
+      const heads = Object.entries(r.branches);
+      return out(ctx, r, () => {
+        const lines = [
+          `${name}: ${r.versions.length} version${r.versions.length === 1 ? "" : "s"}, ${r.objects} objects -> ${r.dir}`,
+          ...heads.map(([b, c]) => `  ${b === r.head ? "*" : " "} ${b} ${c.slice(0, 12)}`),
+        ];
+        // A fork is the one line a reader must not skim: two heads mean somebody wrote a successor
+        // to the same version, and neither side was merged or lost.
+        if (heads.length > 1) lines.push(`  FORKED: ${heads.length} heads, none merged. git log --graph --all`);
+        lines.push(`  git clone ${r.dir} my-checkout`);
+        return lines.join("\n");
+      });
     }
 
     default:

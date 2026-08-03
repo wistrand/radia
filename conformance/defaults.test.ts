@@ -69,7 +69,7 @@ Deno.test("flags: a verb reads its positional through the shared scanner, not ar
   // Comments are stripped first: the rule is explained in a comment that NAMES the thing it
   // forbids, and prose is not code. (The same trap caught the `sessionOwner` guard in
   // examples/chat/smoke-login.ts, which had to match the import rather than the word.)
-  const cli = Deno.readTextFileSync(new URL("../src/cli.ts", import.meta.url))
+  const cli = Deno.readTextFileSync(new URL("../src/surfaces/cli.ts", import.meta.url))
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/\/\/[^\n]*/g, "");
   const direct = [...cli.matchAll(/argv\[0\]/g)];
