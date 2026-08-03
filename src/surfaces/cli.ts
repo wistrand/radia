@@ -32,6 +32,7 @@ Inspect
   login <principal> [--grant k:ops]… [--compact]  mint a session token for a person
                                       (--compact prints the token alone, for $(…) capture)
   shred <artifact-id> [--reason <t>] [--shared]  destroy an artifact's bytes, keep the record
+  revoke <principal> [--reason <t>]   kill an agent definition's token, permanently
   kinds                               declared kinds (a query for kind_def records)
   get <record-id>                     one record
   lineage <record-id>                 ancestry via parent_ids
@@ -176,6 +177,25 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           "  Paste that into the console's principal pill, or send it as Authorization: Bearer.",
           "  It is shown once and expires; mint another with the same command.",
         ].join("\n"));
+    }
+
+    // The off switch the bootstrap chain was missing. A run token expires and can be stopped; a
+    // DEFINITION token minted fresh runs forever, so a leak had no remedy short of rebuilding the
+    // space. Operator-only, and it leaves running work alone: revoke, then stop the runs that matter.
+    case "revoke": {
+      const [who] = positional(argv, 1);
+      if (!who) return usage("revoke <principal> [--reason <text>]");
+      const r = await client.revokeDefinition(who, { reason: flag(argv, "--reason") }) as {
+        agent: string;
+        applied: boolean;
+        alreadyRevoked: boolean;
+      };
+      return out(ctx, r, () =>
+        r.alreadyRevoked
+          ? `${r.agent}: already revoked, nothing to do`
+          : `revoked the definition token for ${r.agent}\n` +
+            `  it can mint no further runs. Runs already minted keep their own tokens until they\n` +
+            `  expire or are stopped: radia doctor, then stop the ones that matter.`);
     }
 
     case "shred": {

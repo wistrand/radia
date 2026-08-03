@@ -1068,6 +1068,25 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   Two fixes: `read_workspace` exists, and `list_workspaces` reports the PATHS rather than a count,
   because "what files are in X" had no data source either and was already being answered from memory
   one question earlier.
+- **Two branches of one function, one of which checked its credential's status and one of which did
+  not.** `resolveCredential` checked `agent_run` for `status === "stopped"` AND `expiresAt`, then
+  returned `{ok: true}` for `agent_definition` on the mere EXISTENCE of a record — no status, no
+  expiry, and no revocation path existed to check for. So the credential design's whole argument
+  ("credentials resolve from records per request, so revocation is immediate") held for every
+  credential except the one that never expires, and a leaked definition token minted fresh runs
+  forever. The fix is the run's own shape: a successor carrying the SAME `tokenHash`, so revocation
+  lands in the single indexed lookup authentication already performs. When two things in one
+  function are the same KIND of thing, read them side by side and ask what one does that the other
+  does not; the asymmetry was two lines apart for a milestone.
+- **A credential that mints authority must not be able to name a privileged subject.** A definition
+  mints runs for its subject, so `createAgentDefinition("human:root")` on a space whose operators
+  include it was a permanent way to mint privileged runs — and until revocation existed, a permanent
+  one. Refused at mint. The general rule: wherever a factory takes a principal, check it against the
+  identities whose authority is NOT expressed as grants, because nothing downstream narrows those.
+- **Revoke and stop are different decisions and must stay separate verbs.** Revoking a definition
+  leaves already-minted runs alive on purpose: conflating them would make "stop handing out new
+  authority" also mean "kill the work in flight", which have different blast radii and belong to
+  different moments in an incident. Revoke first, then stop the runs that matter.
 - **A layering rule and a broken shipping artifact were the same defect, seen from two sides.**
   `sdk/ts/client.ts` imported the wire types AND runtime values from `../../src/`, with its own
   header saying a standalone type surface would be extracted in Phase 7. Phase 7 shipped and it was

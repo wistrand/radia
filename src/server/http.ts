@@ -15,7 +15,7 @@
 import type { Space } from "../core/space.ts";
 import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
-import { handleCreateDefinition, handleCreateRun, handleRenewRun, handleStopRun } from "./handlers/agents.ts";
+import { handleCreateDefinition, handleCreateRun, handleRenewRun, handleRevokeDefinition, handleStopRun } from "./handlers/agents.ts";
 import { handleGetArtifact, handleMintCapability, handlePutArtifact, handleShredArtifact } from "./handlers/artifacts.ts";
 import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleErasures, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
@@ -204,6 +204,15 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
       if ("error" in renewAuth) return problem(401, renewAuth.error, renewAuth.detail);
       const runId = decodeURIComponent(url.pathname.slice("/v0/agent-runs/".length, -"/renew".length));
       return await handleRenewRun(space, req, renewAuth.principal, runId);
+    }
+    // Revoke a definition: `/v0/agent-definitions/{agent}/revoke` (operator only, in the handler).
+    // The one credential in the chain that had no off switch, so a leaked definition token minted
+    // fresh runs forever and rotating the subject left the old one working beside the new.
+    if (req.method === "POST" && url.pathname.startsWith("/v0/agent-definitions/") && url.pathname.endsWith("/revoke")) {
+      const revokeAuth = await resolveAuth(req, space, authRequired);
+      if ("error" in revokeAuth) return problem(401, revokeAuth.error, revokeAuth.detail);
+      const agent = decodeURIComponent(url.pathname.slice("/v0/agent-definitions/".length, -"/revoke".length));
+      return await handleRevokeDefinition(space, req, revokeAuth.principal, agent);
     }
     // Stop a run: `/v0/agent-runs/{id}/stop` (own token or operator, checked in the handler).
     if (req.method === "POST" && url.pathname.startsWith("/v0/agent-runs/") && url.pathname.endsWith("/stop")) {

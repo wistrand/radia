@@ -25,7 +25,22 @@ The **bootstrap chain is built** (`src/core/auth.ts`, `src/server/handlers/agent
 `POST /v0/agent-definitions` (operator) creates an `agent_definition` record, optionally
 assigns its grants, and returns a **definition token** (once); `POST /v0/agent-runs` presents
 that definition token (`Authorization: Bearer`) and mints a short-lived **run token** +
-`agent_run` record; `POST /v0/agent-runs/{id}/stop` stops a run. Requests authenticate with
+`agent_run` record; `POST /v0/agent-runs/{id}/stop` stops a run, and
+`POST /v0/agent-definitions/{agent}/revoke` (operator only) kills a definition token permanently.
+
+**Every credential in the chain is revocable, and that was not true until 2026-08-03.** A run token
+expires (~15 min) and can be stopped; a definition token does not expire, and had no off switch at
+all — `resolveCredential` checked the run branch for `status === "stopped"` and `expiresAt`, then
+returned ok for a definition on the mere existence of a record. So a leaked definition token minted
+fresh runs forever and rotating the subject left the old definition working beside the new one. The
+revocation is a successor carrying the same `tokenHash`, which is what makes it land in the one
+indexed lookup below rather than depending on a second nobody is guaranteed to make. Operator-only,
+unlike `stop`: surrendering your own authority needs no permission, but a holder who could revoke a
+MINTING credential could mint a replacement first, and the caller who actually needs this is
+responding to a leak and no longer holds the token. Revoking leaves already-minted runs alive on
+purpose — "stop handing out new authority" and "kill the work in flight" are different decisions.
+A definition may also not NAME a privileged principal, since that would be a permanent way to mint
+privileged runs. Requests authenticate with
 `Authorization: Bearer <run-token>` → a `run:*` principal that **inherits its agent
 definition's grants** (`Space.grantSubject` maps `run:` → its `agent:`). Tokens are secrets:
 only their sha256 **hash** is stored (in the record body, since a hash is not a secret). Credentials are

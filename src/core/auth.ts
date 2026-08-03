@@ -39,7 +39,13 @@ export type ResolvedToken =
   | { ok: true; kind: "operator"; principal: string }
   | { ok: true; kind: "def"; agent: string }
   | { ok: true; kind: "run"; principal: string; agent: string }
-  | { ok: false; reason: "invalid_token" | "token_expired" | "run_stopped" };
+  | {
+    ok: false;
+    /** `definition_revoked` is distinct from `invalid_token` on purpose: the holder of a revoked
+     *  definition needs to learn that the credential WAS real and is now dead, not that it was
+     *  never valid, or the first thing they do is assume a transport problem and retry. */
+    reason: "invalid_token" | "token_expired" | "run_stopped" | "definition_revoked";
+  };
 
 /**
  * What this process may remember about credentials.

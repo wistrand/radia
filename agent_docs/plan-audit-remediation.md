@@ -1,7 +1,7 @@
 # Plan: audit remediation
 
-> Status: E, G, H, I and K–Q are open; everything else is closed and its guards pass
-> (`deno task conformance`: 415 passed, 0 failed). Each done package is a status line here; its
+> Status: E, G, H, I and L–Q are open; **K is closed** (2026-08-03); everything else is closed and
+> its guards pass (`deno task conformance`: 421 passed, 0 failed). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
 > paths; items marked **reproduced** were verified empirically. Line numbers drift; trust the symbol,
@@ -20,7 +20,7 @@ not by file, because fixing them per-site re-creates the same class next quarter
 
 Ordering rule: **P0 before anything else ships to a non-loopback host.** P0 and P1 are
 correctness/security; P2 is durability and drift. Round two opened the first P0 (**K**, a credential
-with no revocation path), so that rule is now load-bearing rather than hypothetical.
+with no revocation path); it was closed the same day, and no P0 is open.
 
 ## Priority summary
 
@@ -30,7 +30,7 @@ with no revocation path), so that rule is now load-bearing rather than hypotheti
 | G   | Blob write durability                   | P2       | Permanent unhealable corruption       |
 | H   | `lease_lost` unobservable in clients    | P2       | Side effects continue after fencing   |
 | I   | SDK parity + chat example               | P2       | Drift; example-specific data loss     |
-| K   | Unrevocable definition tokens           | P0       | A leaked credential that cannot be killed |
+| ~~K~~ | ~~Unrevocable definition tokens~~     | ~~P0~~   | **CLOSED 2026-08-03**                 |
 | L   | Watch streams cache authorization       | P1       | Revocation does not reach an open stream |
 | M   | `kind_def` is not write-protected       | P1       | One ordinary grant bricks space-wide auth |
 | N   | `clientMeta` escapes the body guards    | P2       | Unbounded, unerasable data in a record |
@@ -129,7 +129,11 @@ atomicity (**G**), `lease_lost` unobservable through heartbeats (**H**), and Pyt
 claiming at ~15 minutes (**I**). Being re-found by a fresh reader is evidence about their severity,
 not new work; close them where they are.
 
-## Package K: definition tokens cannot be revoked (P0)
+## Package K: definition tokens cannot be revoked (P0) — CLOSED 2026-08-03
+
+**Done.** `Space.revokeDefinition`, `POST /v0/agent-definitions/{agent}/revoke` (operator only),
+`radia revoke <principal>`, both SDKs, and a privileged-subject refusal at mint time. Three
+conformance cases in `suites/auth.ts`. The lesson is in [gotchas.md](gotchas.md).
 
 **VERIFIED.** `Space.resolveCredential` (`src/core/space.ts`) reads `agent_run` and checks BOTH
 `status === "stopped"` and `expiresAt`; it then falls through to `newestByHash(AGENT_DEFINITION, …)`
@@ -145,8 +149,10 @@ credential except the one that never expires.
 Fix: give `agent_definition` the same shape `agent_run` has — a `status`/`retired` successor and a
 check beside the existing one. The asymmetry is two adjacent branches in one function.
 
-Guard: a conformance case that retires a definition and asserts the token stops minting, mirrored
-against the existing run-stop case so the two cannot drift apart again.
+Guard: three conformance cases, written against the run-stop case so the two cannot drift apart —
+the token stops minting everywhere (revoked from a Space that never minted it, like the run-stop
+case), running work is untouched and still separately stoppable, and a definition naming a
+privileged principal is refused while an ordinary `human:` one is not.
 
 ## Package L: watch streams cache authorization for their lifetime (P1)
 

@@ -602,6 +602,43 @@ paths:
         "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "409": { $ref: "#/components/responses/Problem" }
+  /agent-definitions/{agent}/revoke:
+    post:
+      operationId: revokeDefinition
+      summary: Kill a definition token, permanently (operator only)
+      description: >-
+        A definition token mints run tokens and never expires, so a leak had no remedy: rotating the
+        subject left the old definition working beside the new one. Revoking writes a successor
+        carrying the same token hash, so the credential stops resolving in the one indexed lookup
+        authentication already performs. Existing RUNS are untouched and are separately revocable
+        with the run stop endpoint — this stops new authority being handed out, it does not kill work
+        in flight. Idempotent: `alreadyRevoked` distinguishes the second call from the first.
+      x-stability: experimental
+      parameters:
+        - { name: agent, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, description: Recorded on the revocation record. }
+      responses:
+        "200":
+          description: "{agent, status, applied, alreadyRevoked}"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent: { type: string }
+                  status: { type: string, enum: [revoked] }
+                  applied: { type: boolean }
+                  alreadyRevoked: { type: boolean }
+        "403": { description: revoking a definition requires an operator }
+        "404": { description: no definition for that principal }
+
   /agent-runs/{runId}/stop:
     post:
       operationId: stopAgentRun

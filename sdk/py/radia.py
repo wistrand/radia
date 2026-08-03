@@ -344,6 +344,15 @@ class RadiaClient:
         """Mint a short-lived run token from a definition token."""
         return self._req("POST", "/v0/agent-runs", {}, {"Authorization": f"Bearer {definition_token}"})
 
+    def revoke_definition(self, agent: str, reason: str = "") -> Dict[str, Any]:
+        """Kill a definition token, permanently. Operator only.
+
+        Existing runs are untouched and are separately revocable with `stop_run`: revoking stops
+        new authority being handed out, it does not kill work in flight.
+        """
+        body: Dict[str, Any] = {"reason": reason} if reason else {}
+        return self._req("POST", "/v0/agent-definitions/" + urllib.parse.quote(agent, safe="") + "/revoke", body)
+
     def stop_run(self, run: str) -> Dict[str, Any]:
         """Stop a run: its token stops resolving and its in-flight leases are invalidated."""
         from urllib.parse import quote

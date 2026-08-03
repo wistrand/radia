@@ -288,6 +288,14 @@ export class RadiaClient {
   }
 
   /** Stop a run (operator, or the run's own definition/run token if this client carries it). */
+  /** Kill a definition token, permanently. Operator only; existing RUNS are untouched and are
+   *  separately revocable with `stopRun`. Idempotent: `alreadyRevoked` says which it was. */
+  revokeDefinition(agent: string, opts: { reason?: string } = {}): Promise<
+    { agent: string; status: string; applied: boolean; alreadyRevoked: boolean }
+  > {
+    return this.req("POST", `/v0/agent-definitions/${encodeURIComponent(agent)}/revoke`, opts.reason ? { reason: opts.reason } : {});
+  }
+
   stopRun(run: string): Promise<{ run: string; status: string; applied: boolean }> {
     return this.req("POST", `/v0/agent-runs/${encodeURIComponent(run)}/stop`);
   }

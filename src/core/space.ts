@@ -741,6 +741,18 @@ export class Space {
     if (!agent.startsWith("agent:") && !agent.startsWith("human:")) {
       throw new RadiaError("invalid_principal", "a definition principal must start with 'agent:' or 'human:'");
     }
+    // A definition mints run tokens for its subject, so a definition NAMING a privileged principal
+    // is a minting credential for privilege. Refused here rather than handled downstream: the
+    // operator set and the supervisor are the two identities whose authority is not expressed as
+    // grants, so nothing later in the chain narrows what such a run could do.
+    if (this.isPrivileged(agent)) {
+      throw new RadiaError(
+        "invalid_principal",
+        `'${agent}' is a privileged principal (an operator or the supervisor); a definition for it ` +
+          `would be a permanent way to mint privileged runs. Name an ordinary principal and grant it ` +
+          `what it needs.`,
+      );
+    }
     const { token, hash } = await mintCredential();
     await this.putRaw({ kind: AGENT_DEFINITION, body: { agent, tokenHash: hash } });
     for (const g of grants) {
@@ -975,9 +987,15 @@ export class Space {
       return { ok: true, kind: "run", principal: b.run, agent: b.agent };
     }
 
-    const def = await this.newestByHash(AGENT_DEFINITION, hash);
-    const agent = (def as { agent?: string } | undefined)?.agent;
-    return agent ? { ok: true, kind: "def", agent } : { ok: false, reason: "invalid_token" };
+    // Symmetric with the run branch above, and it was not: a definition used to authenticate on the
+    // existence of a record alone. `newestByHash` already returns the newest record carrying this
+    // hash, so a revocation successor lands here with no extra read.
+    const def = await this.newestByHash(AGENT_DEFINITION, hash) as
+      | { agent?: string; status?: string }
+      | undefined;
+    if (!def?.agent) return { ok: false, reason: "invalid_token" };
+    if (def.status === "revoked") return { ok: false, reason: "definition_revoked" };
+    return { ok: true, kind: "def", agent: def.agent };
   }
 
   /** The newest record of `kind` carrying this token hash. That is the current state of that
@@ -988,6 +1006,53 @@ export class Space {
   }
 
   /** The mint record for a run (newest wins, so a stopped run reports its stop). */
+  /**
+   * Revoke a definition: its token stops minting runs, permanently.
+   *
+   * The one credential that had no off switch. `agent_run` has carried `status: "stopped"` since
+   * the bootstrap chain shipped and `resolveCredential` checks it, but the definition branch two
+   * lines below returned `{ok: true}` on the mere EXISTENCE of a record — no status, no expiry, no
+   * retirement — so a leaked definition token minted fresh run tokens forever. Rotating the subject
+   * was not a remedy either: the old definition kept working alongside the new one.
+   *
+   * Deliberately identical in shape to `stopRun`, because the property that makes that one correct
+   * is the one that matters here: the successor carries the SAME `tokenHash` as the mint, so
+   * resolving the token finds the revocation in the single indexed lookup it already performs.
+   * A revocation recorded anywhere else depends on a second lookup nobody is guaranteed to make.
+   *
+   * Existing RUNS are untouched. They are separately revocable (`stopRun`), they expire on their
+   * own, and conflating the two would make "stop handing out new authority" mean "kill the work in
+   * flight" — different decisions with different blast radii. Revoke, then stop the runs that
+   * matter, in that order.
+   */
+  async revokeDefinition(agent: string, opts: { reason?: string } = {}): Promise<{ applied: boolean; alreadyRevoked: boolean }> {
+    // Read from the SPACE, never a cache: revoking a definition this process has not seen (another
+    // instance's, or one written before a restart) must not silently report `applied: false` and
+    // leave the token minting.
+    const def = await this.definitionRecord(agent);
+    if (!def?.tokenHash) return { applied: false, alreadyRevoked: false };
+    if (def.status === "revoked") return { applied: true, alreadyRevoked: true };
+    await this.putRaw({
+      kind: AGENT_DEFINITION,
+      body: {
+        agent,
+        tokenHash: def.tokenHash,
+        status: "revoked",
+        ...(opts.reason ? { reason: opts.reason } : {}),
+      },
+    });
+    this.notifier.notify();
+    return { applied: true, alreadyRevoked: false };
+  }
+
+  /** The current state of a definition, folded over its successors the way `runRecord` folds a run's. */
+  private async definitionRecord(agent: string): Promise<{ tokenHash?: string; status?: string } | undefined> {
+    const rows = await this.query({ kind: AGENT_DEFINITION, match: { agent } }, 5, { dir: "desc" });
+    const bodies = rows.map((r) => r.body as { tokenHash?: string; status?: string });
+    if (bodies.length === 0) return undefined;
+    return { tokenHash: bodies.find((b) => b.tokenHash)?.tokenHash, status: bodies[0]?.status };
+  }
+
   private async runRecord(run: string): Promise<{ agent?: string; tokenHash?: string; status?: string } | undefined> {
     const rows = await this.query({ kind: AGENT_RUN, match: { run } }, 5, { dir: "desc" });
     // The stop successor omits nothing, but an older mint carries the hash if a caller wrote one

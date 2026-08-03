@@ -5,7 +5,7 @@
 // through the normal query path. Enforcement WIRING lives at the HTTP boundary; this exercises
 // the policy directly.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import type { Suite } from "../harness.ts";
 import type { StorageAdapter } from "../../src/storage/adapter.ts";
 import { Space } from "../../src/core/space.ts";
@@ -48,6 +48,70 @@ export const authSuites: Suite[] = [
         const r = await s.resolveToken(runToken);
         assert(!r.ok, "a stopped run's token resolves nowhere");
       }
+    },
+  },
+  {
+    name: "a definition token can be revoked, and stops minting everywhere",
+    run: async (adapter) => {
+      const minter = newSpace(adapter);
+      const { definitionToken } = await minter.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "task", operations: ["query"] },
+      ]);
+      assert((await minter.mintRun(definitionToken)).runToken, "the definition mints before revocation");
+
+      // Revoked from a DIFFERENT Space over the same adapter, like the run-stop case above: an
+      // operator responding to a leak is rarely on the process that minted the credential.
+      const other = newSpace(adapter);
+      const first = await other.revokeDefinition("agent:w", { reason: "leaked" });
+      assert(first.applied && !first.alreadyRevoked, "the revocation applies");
+
+      // The symmetry that was missing. `agent_run` has carried a `stopped` status since the chain
+      // shipped and `resolveCredential` checked it; the definition branch two lines away returned
+      // ok on the mere EXISTENCE of a record, so this token minted fresh runs forever.
+      for (const sp of [minter, other, newSpace(adapter)]) {
+        const r = await sp.resolveToken(definitionToken);
+        assert(!r.ok, "a revoked definition resolves nowhere");
+        assertEquals((r as { reason: string }).reason, "definition_revoked");
+      }
+      await assertRejects(() => minter.mintRun(definitionToken), Error);
+
+      // Idempotent, and it says which it was: re-running a revocation during an incident must
+      // neither fail nor read as a second leak.
+      const again = await other.revokeDefinition("agent:w");
+      assert(again.applied && again.alreadyRevoked, "a second revocation is a no-op that says so");
+
+      // Revoking a definition that never existed is a miss, not a silent success.
+      assertEquals((await other.revokeDefinition("agent:nobody")).applied, false);
+    },
+  },
+  {
+    name: "revoking a definition leaves running work alone, because those are different decisions",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const { definitionToken } = await space.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "task", operations: ["query"] },
+      ]);
+      const { run, runToken } = await space.mintRun(definitionToken);
+      await space.revokeDefinition("agent:w");
+
+      // Conflating the two would make "stop handing out new authority" mean "kill the work in
+      // flight", which are different blast radii and belong to different moments. The run keeps its
+      // own token until it expires or is stopped; `stopRun` is still the way to end it.
+      assert((await space.resolveToken(runToken)).ok, "an already-minted run keeps working");
+      await space.stopRun(run);
+      assert(!(await space.resolveToken(runToken)).ok, "…and is still separately stoppable");
+    },
+  },
+  {
+    name: "a definition cannot name a privileged principal",
+    run: async (adapter) => {
+      // A definition mints runs for its subject, so one naming an operator is a permanent way to
+      // mint privileged runs — and until it could be revoked at all, a permanent one.
+      const space = new Space(adapter, { operators: ["human:root"] });
+      await assertRejects(() => space.createAgentDefinition("human:root"), Error, "privileged");
+      // An ordinary principal in the same namespace is unaffected: `human:` is a namespace, not a
+      // privilege, and a person holding scoped grants must still be able to log in.
+      assert((await space.createAgentDefinition("human:alice")).definitionToken);
     },
   },
   {

@@ -87,6 +87,33 @@ export async function handleRenewRun(space: Space, req: Request, principal: stri
   }
 }
 
+/**
+ * POST /v0/agent-definitions/{agent}/revoke: kill a definition token, permanently.
+ *
+ * OPERATOR ONLY, and the asymmetry with `stop` is deliberate. A run may be stopped by its own token
+ * because giving up your own authority needs no permission. A definition is the credential that
+ * MINTS authority, and a holder who can revoke it can also mint a replacement first, so
+ * self-revocation buys nothing an attacker would not simply skip — while the caller who actually
+ * needs this (someone responding to a leak) is by definition not holding the token any more.
+ */
+export async function handleRevokeDefinition(
+  space: Space,
+  req: Request,
+  principal: string,
+  agent: string,
+): Promise<Response> {
+  if (!space.isPrivileged(principal)) {
+    return problem(403, "forbidden", "revoking a definition requires an operator");
+  }
+  const j = await readJson(req);
+  const reason = typeof j?.reason === "string" ? j.reason : undefined;
+  const { applied, alreadyRevoked } = await space.revokeDefinition(agent, { reason });
+  if (!applied) return problem(404, "not_found", `no definition for ${agent}`);
+  // Idempotent, and it says which it was: re-running a revocation during an incident must not read
+  // as a second leak, and must not fail either.
+  return Response.json({ agent, status: "revoked", applied, alreadyRevoked });
+}
+
 export async function handleStopRun(space: Space, req: Request, principal: string, runId: string): Promise<Response> {
   let allowed = space.isPrivileged(principal);
   if (!allowed) {
