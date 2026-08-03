@@ -625,7 +625,7 @@ one file from the same base both succeed, both heads survive with the same `base
 comes back true from both. Nothing is lost and the divergence is visible, which is the behaviour the
 "report, never refuse" choice was made for.
 
-#### 10.2 `edit_workspace` in the chat, and rewriting `save_workspace`'s description
+#### 10.2 `edit_workspace` in the chat, and rewriting `save_workspace`'s description — **DONE**
 
 The tool is a thin wrapper. The DESCRIPTION work is the part that will decide whether it is used, and
 this example has hit the overlapping-description trap three times (`save_content`/`run_javascript`,
@@ -640,6 +640,32 @@ and state the condition that selects it: a NEW tree or a wholesale rewrite goes 
 a change to a file that already exists goes to `edit_workspace`. Guard it in `smoke-save.ts` the way
 the other three boundaries are guarded — read back from the published `capability` records, not from
 imports.
+
+**Done.** `edit_workspace` with both addressing forms, `read_workspace` numbering its output and
+returning the file digest, and fifteen assertions in `smoke-save.ts` read back from the running
+fleet.
+
+*Snake_case on the wire, camelCase inside.* `old_string`/`new_string`/`replace_all`/`start_line`/
+`end_line` are the names a model has been trained on, and those two string fields carry long
+verbatim text copied out of a read — exactly where a habit does the work and a novel name makes the
+model improvise. The extension stays camelCase because every field in that file is; the mapping is
+three lines in the wrapper. One convention per layer.
+
+*The edit returns the new per-file digests.* Without them the cheap addressing form costs a full
+re-read per iteration and stops being cheap, which would have been discovered in use rather than in
+design.
+
+*Numbering the read broke two existing assertions, and the interesting part is which.* They asserted
+`content === "print(2)\n"` — raw bytes — under the name "reads back byte for byte". The intent was
+"this is the stored file and not a fabrication", and that intent survives numbering; the assertion
+did not. Both now strip the numbering and assert through it, with the numbering itself asserted
+separately. A test whose NAME states an intent and whose body states a representation will break on
+a presentation change and look like a regression.
+
+*And numbering has a cost paid by a different reader.* A model relaying a file to a person will show
+the numbers unless told they are not the file, so `read_workspace`'s description says so explicitly
+and a guard holds it there. Cheaper to say than to discover once, which is how the fabrication bug in
+Phase 9 arrived.
 
 #### 10.3 What this is NOT, and the bound it puts on the work
 

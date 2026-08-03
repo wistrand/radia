@@ -15,7 +15,8 @@ import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import type { Tool, ToolContext } from "./files.ts";
 import type { ToolDef } from "../provider/openrouter.ts";
 import { bytesFrom, mediaTypeFor } from "../util.ts";
-import { readWorkspace, summarizeWorkspaces, writeWorkspace } from "../../../extensions/ts/workspace.ts";
+import { editWorkspace, readWorkspace, summarizeWorkspaces, writeWorkspace } from "../../../extensions/ts/workspace.ts";
+import type { WorkspaceEdit } from "../../../extensions/ts/workspace.ts";
 
 export function makeSaveTools(client: RadiaClient): Record<string, Tool> {
   return {
@@ -148,6 +149,15 @@ export const SAVE_SCHEMAS: ToolDef[] = [
  * Written as the WORKER, like `save_content`, but stamped with the SESSION's owner so the tree
  * belongs to whoever asked for it and a scoped grant can bind it.
  */
+/** `cat -n` numbering: right-aligned in six columns, tab, then the line. The format every tool that
+ *  prints line numbers uses, so a model reads it without being told what it is. */
+function numbered(text: string): string {
+  const lines = text.split("\n");
+  const last = lines.length > 0 && lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+  return lines.slice(0, last).map((l, i) => `${String(i + 1).padStart(6)}\t${l}`).join("\n") +
+    (last < lines.length ? "\n" : "");
+}
+
 /** How many paths a listing shows per workspace before it just reports the remainder. */
 const PATHS_SHOWN = 25;
 /** Same cap `read_file` uses: a tool result goes into a context window. */
@@ -214,6 +224,51 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
     // context, stored the reconstruction with save_content, and presented it as the file — saying
     // so, but presenting it. A tool that can save, list and run trees but not read one leaves
     // fabrication as the only route to an answer.
+    // SNAKE_CASE on the wire, camelCase inside. The extension file is TypeScript and every field
+    // there is camelCase; the tool schema is what a MODEL fills in, and `old_string`/`new_string`/
+    // `replace_all` are the names it has been trained on. Those two fields carry long verbatim text
+    // copied out of a read, which is exactly where a trained habit does the work and a novel name
+    // makes the model improvise. One convention per layer, three lines of mapping between them.
+    edit_workspace: async (a, ctx?: ToolContext) => {
+      const name = typeof a.workspace === "string" ? a.workspace.trim() : "";
+      if (!name) return { error: "edit_workspace needs a `workspace`" };
+      const raw = Array.isArray(a.edits) ? a.edits as Record<string, unknown>[] : [];
+      const edits: WorkspaceEdit[] = raw.map((e) => ({
+        path: String(e.path ?? ""),
+        ...(typeof e.old_string === "string" ? { oldString: e.old_string } : {}),
+        newString: String(e.new_string ?? ""),
+        ...(e.replace_all === true ? { replaceAll: true } : {}),
+        ...(typeof e.start_line === "number" ? { startLine: e.start_line } : {}),
+        ...(typeof e.end_line === "number" ? { endLine: e.end_line } : {}),
+        ...(typeof e.expect_digest === "string" ? { expectDigest: e.expect_digest } : {}),
+      }));
+      const add = a.add && typeof a.add === "object" && !Array.isArray(a.add)
+        ? Object.fromEntries(Object.entries(a.add as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
+        : undefined;
+      const remove = Array.isArray(a.remove) ? (a.remove as unknown[]).map(String) : undefined;
+      try {
+        const r = await editWorkspace(client, { name, conversationId: ctx?.conversationId, edits, add, remove });
+        const touched = new Set([...r.changed, ...r.added]);
+        return {
+          workspace: name,
+          treeDigest: r.treeDigest,
+          changed: r.changed,
+          added: r.added,
+          removed: r.removed,
+          // The new digest for everything this call touched, so a follow-up range edit needs no
+          // second read. Without it the cheap form costs a full re-read per iteration and stops
+          // being cheap.
+          digests: Object.fromEntries(r.files.filter((f) => touched.has(f.path)).map((f) => [f.path, f.digest])),
+          ...(r.forked
+            ? { forked: true, note: "another version superseded the one this was based on; both exist as separate heads" }
+            : {}),
+        };
+      } catch (e) {
+        // The message lists EVERY problem, which is the point of validating the batch whole.
+        return { error: (e as Error).message };
+      }
+    },
+
     read_workspace: async (a, ctx?: ToolContext) => {
       const name = typeof a.workspace === "string" ? a.workspace.trim() : "";
       const path = typeof a.path === "string" ? a.path.trim() : "";
@@ -245,13 +300,21 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
         };
       }
       const truncated = bytes.length > MAX_WORKSPACE_READ;
+      const text = new TextDecoder().decode(truncated ? bytes.slice(0, MAX_WORKSPACE_READ) : bytes);
       return {
         workspace: name,
         path,
         size: bytes.length,
         treeDigest: manifest.treeDigest,
+        // The FILE's digest, which `edit_workspace` needs as a precondition. Returned on every read
+        // so an edit never has to ask for it separately.
+        digest: file.digest,
         truncated,
-        content: new TextDecoder().decode(truncated ? bytes.slice(0, MAX_WORKSPACE_READ) : bytes),
+        // NUMBERED, `cat -n` style, because a line-range edit is unusable without it and this is the
+        // format models are trained to read. It costs the string-match path something: a caller will
+        // paste the `NNN\t` prefix into old_string, which edit_workspace diagnoses by name rather
+        // than reporting a bare "not found".
+        content: numbered(text),
       };
     },
 
@@ -293,9 +356,64 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
   {
     type: "function",
     function: {
+      name: "edit_workspace",
+      description:
+        "Change a saved workspace IN PLACE: edit existing files, add new ones, remove old ones, in " +
+        "one call that becomes one new version. Use this for every change to a tree that already " +
+        "exists \u2014 save_workspace REPLACES the whole tree, so using it to change one line means " +
+        "retyping every file, and any file you leave out is DROPPED from the tree. Two ways to say " +
+        "where a change goes, and you may mix them across edits: give `old_string` and `new_string` " +
+        "to replace exact text (must appear exactly once, or add surrounding lines until it does, " +
+        "or pass replace_all), or give `start_line`/`end_line` with `new_string` to replace a whole " +
+        "region without retyping it \u2014 far cheaper for a big block, and it needs `expect_digest` " +
+        "because a line number cannot tell that the file moved. read_workspace gives you both the " +
+        "numbered lines and the `digest` to pass. Do NOT include the line-number prefix in " +
+        "`old_string`; send the file's own text. Everything is checked before anything is written, " +
+        "so a failure changes nothing and reports every problem at once \u2014 fix them all and " +
+        "retry. Returns {changed, added, removed, treeDigest, digests}; `digests` are the new " +
+        "per-file digests, so a follow-up line-range edit needs no second read. `forked: true` " +
+        "means someone else superseded the version this was based on: both exist, say so.",
+      parameters: {
+        type: "object",
+        properties: {
+          workspace: { type: "string", description: "The workspace name, as list_workspaces reports it." },
+          edits: {
+            type: "array",
+            description: "Changes to existing files. Each names ONE form: old_string, or start_line/end_line.",
+            items: {
+              type: "object",
+              properties: {
+                path: { type: "string", description: "A path inside the tree, e.g. 'src/main.py'." },
+                old_string: { type: "string", description: "Exact text to replace, from the file itself and WITHOUT the line-number prefix. Must be unique unless replace_all." },
+                new_string: { type: "string", description: "What replaces it. Empty string deletes the text or the line range." },
+                replace_all: { type: "boolean", description: "Replace every occurrence. Only when you mean all of them; the default refusal is there to stop the wrong one being edited." },
+                start_line: { type: "integer", description: "First line to replace, 1-based and inclusive, as read_workspace numbers them." },
+                end_line: { type: "integer", description: "Last line to replace, inclusive. Ranges in one call may not overlap." },
+                expect_digest: { type: "string", description: "The file `digest` read_workspace returned. Required with start_line/end_line; optional with old_string." },
+              },
+              required: ["path", "new_string"],
+            },
+          },
+          add: {
+            type: "object",
+            description: "New files, as path -> contents. A path that already exists is refused: edit it instead.",
+          },
+          remove: { type: "array", items: { type: "string" }, description: "Paths to delete from the tree." },
+        },
+        required: ["workspace"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "read_workspace",
       description:
-        "Read one file out of a saved workspace, exactly as it was stored. This is how you answer " +
+        "Read one file out of a saved workspace, exactly as it was stored. Lines come back NUMBERED " +
+        "(`     1\u0009the line`) so you can point edit_workspace at a line range; the numbers are " +
+        "added for reference and are NOT part of the file \u2014 strip them before showing the " +
+        "content to anyone, and never include them in an edit's `old_string`. The reply also carries " +
+        "`digest`, which a line-range edit needs. This is how you answer " +
         "\"show me X\" about anything in a tree: read_file does NOT reach workspaces, only the " +
         "sandbox directories on disk. NEVER reproduce a workspace file's contents from memory or " +
         "from earlier in this conversation, not even when you are confident and not even with a " +
@@ -332,7 +450,8 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
         "many times that tree has been saved, so " +
         "a high count is an iteration history you can still read. `forked: true` on an entry means " +
         "another version superseded the one a save was based on and both now exist: say so rather " +
-        "than picking one silently. `thisConversation: true` marks the trees a code runner can " +
+        "than picking one silently. To CHANGE one of these, use edit_workspace; save_workspace " +
+        "replaces a whole tree. `thisConversation: true` marks the trees a code runner can " +
         "actually take as its `workspace` argument: a runner only materialises a tree from the " +
         "conversation it is running in, so to use one from elsewhere, read its files and " +
         "save_workspace them here first, and say that is what you are doing. Pass " +
@@ -354,15 +473,18 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
     function: {
       name: "save_workspace",
       description:
-        "Store CODE as a named workspace, then run it with a code runner's `workspace` argument " +
-        "(run_javascript, run_python). This is " +
+        "Store CODE as a NEW workspace, or replace an existing one wholesale, then run it with a " +
+        "code runner's `workspace` argument (run_javascript, run_python). To CHANGE a tree that " +
+        "already exists, use edit_workspace instead: this call replaces the whole tree, so any file " +
+        "you do not include is dropped, and retyping unchanged files to alter one line is wasted " +
+        "work you will get wrong eventually. This is " +
         "where every program goes, whether it is one file or twenty: a workspace can be run, keeps " +
         "each version, and is what a verdict attaches to, so there is no case where a program is " +
         "better off as a loose artifact. Use it for a module and the script that imports it, code " +
         "plus a fixture, a single script the user will keep, anything you expect to fix and re-run. " +
         "Paths are relative (src/main.ts, lib/util.ts); absolute paths, '..', and '.git' are " +
         "refused. Saving the same name again replaces the tree and keeps the old version addressable, " +
-        "so iterating means saving the whole tree again with your fix, not patching in place. " +
+        "so an old version is never lost. Iterating on a tree is edit_workspace's job, not this one. " +
         "Returns {workspace, treeDigest, files, unchanged}; `unchanged: true` means the tree was " +
         "byte-identical to what was already there and nothing was written. The ONE thing that does " +
         "not belong here is a throwaway calculation whose answer is the output rather than the " +

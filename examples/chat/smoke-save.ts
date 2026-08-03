@@ -242,8 +242,13 @@ check("…and its description says to check before saving", /BEFORE save_workspa
 // reconstruction with save_content, and presented it as the file. It even said so. Save, list and
 // run existed for trees; read did not, and fabrication was the only route left to an answer.
 check("read_workspace is advertised", desc.has("read_workspace"));
+const unnumber = (t: string) => t.split("\n").map((l) => l.replace(/^\s*\d+\t/, "")).join("\n");
 const read = await toolCall("read_workspace", { workspace: "solver", path: "main.py" }) as Record<string, unknown>;
-check("a workspace file reads back byte for byte", read.content === "print(2)\n", JSON.stringify(read.content));
+// Numbered for the line-range edit form, so "byte for byte" is asserted through the numbering rather
+// than against it. The numbers are presentation; the bytes underneath must still be the stored ones.
+check("a workspace file reads back byte for byte", unnumber(read.content as string) === "print(2)\n", JSON.stringify(read.content));
+check("…numbered, with the numbers not part of the file", /^\s+1\t/.test(read.content as string));
+check("…and carries the digest a line-range edit needs", typeof read.digest === "string");
 check("…and says which tree it came from", typeof read.treeDigest === "string" && (read.treeDigest as string).startsWith("t1:"));
 
 const missing = await toolCall("read_workspace", { workspace: "solver", path: "nope.py" }) as Record<string, unknown>;
@@ -259,7 +264,7 @@ await admin.shredArtifact(secret.artifactId, { acknowledgeShared: true, reason: 
 const erased = await toolCall("read_workspace", { workspace: "leaky", path: "secret.txt" }) as Record<string, unknown>;
 check("an erased file reports the erasure", erased.erased === true, JSON.stringify(erased.error).slice(0, 80));
 check("…and tells the model not to reconstruct it", /do not reconstruct/i.test(String(erased.error)));
-check("…while the rest of the tree still reads", ((await toolCall("read_workspace", { workspace: "leaky", path: "keep.py" }) as Record<string, unknown>).content) === "ok\n");
+check("…while the rest of the tree still reads", unnumber((await toolCall("read_workspace", { workspace: "leaky", path: "keep.py" }) as Record<string, unknown>).content as string) === "ok\n");
 
 // The listing has to carry the paths, or "what files are in X" has no data source and gets answered
 // from conversation memory — which is exactly how the fabrication started.
@@ -270,9 +275,57 @@ check(
   JSON.stringify(withPaths.workspaces.find((w) => w.name === "solver")?.paths),
 );
 
+// ── editing in place, and the boundary it opens with save_workspace ──────────────────────────────
+// The fourth tool in this space, and this example has reopened a settled boundary three times by
+// adding one (save_content/run_javascript, then save_workspace, then run_python). The incumbent used
+// to INSTRUCT the behaviour this replaces — "iterating means saving the whole tree again with your
+// fix" — which was correct until edit_workspace existed and is the bug the moment it does.
+check("edit_workspace is advertised", desc.has("edit_workspace"));
+const editDesc = desc.get("edit_workspace") ?? "";
+const saveWsDesc = desc.get("save_workspace") ?? "";
+check("save_workspace no longer tells the model to retype the tree to iterate", !/saving the whole tree again with your fix/i.test(saveWsDesc));
+check("…and sends a CHANGE to edit_workspace", /edit_workspace/.test(saveWsDesc));
+check("…saying why, since a model needs a reason and not an instruction", /dropped|replaces the whole tree/i.test(saveWsDesc));
+check("edit_workspace names save_workspace and what selects it", /save_workspace/.test(editDesc));
+check("…and warns that a whole-tree save DROPS omitted files", /DROPPED|dropped/.test(editDesc));
+check("list_workspaces points a change at edit_workspace too", /edit_workspace/.test(desc.get("list_workspaces") ?? ""));
+
+// Both addressing forms have to be discoverable, and the line-range one is useless without its
+// precondition being stated as required.
+check("edit_workspace documents the line-range form", /start_line/.test(editDesc) && /end_line/.test(editDesc));
+check("…and that a range REQUIRES the digest", /needs `expect_digest`|Required with start_line/.test(editDesc));
+check("…and tells the model not to paste the line-number prefix", /line-number prefix/i.test(editDesc));
+
+const edited = await toolCall("save_workspace", { name: "iter", files: { "main.py": "print(1)\n", "lib.py": "X = 1\n" } }) as Record<string, unknown>;
+void edited;
+const e1 = await toolCall("edit_workspace", {
+  workspace: "iter",
+  edits: [{ path: "main.py", old_string: "print(1)", new_string: "print(2)" }],
+}) as { changed: string[]; digests: Record<string, string>; error?: string };
+check("an edit changes one file", e1.changed?.join(",") === "main.py", JSON.stringify(e1.error ?? e1.changed));
+check("…and returns the new digest, so a range edit needs no second read", typeof e1.digests?.["main.py"] === "string");
+
+// The snake_case wire names are the trained ones; a model filling old_string/new_string is doing
+// what it already does. Verify the mapping to the extension's camelCase actually landed.
+const readBack = await toolCall("read_workspace", { workspace: "iter", path: "main.py" }) as { content: string; digest: string };
+check("the read is NUMBERED, which is what makes a line range usable", /^\s+1\tprint\(2\)/.test(readBack.content), JSON.stringify(readBack.content));
+const e2 = await toolCall("edit_workspace", {
+  workspace: "iter",
+  edits: [{ path: "main.py", start_line: 1, end_line: 1, new_string: "print(3)\n", expect_digest: readBack.digest }],
+}) as { changed: string[]; error?: string };
+check("a line-range edit applies with the digest from the read", e2.changed?.join(",") === "main.py", JSON.stringify(e2.error));
+const e3 = await toolCall("edit_workspace", {
+  workspace: "iter",
+  edits: [{ path: "main.py", start_line: 1, end_line: 1, new_string: "nope\n" }],
+}) as { error?: string };
+check("…and without one it is refused", /expectDigest/.test(e3.error ?? ""), JSON.stringify(e3.error));
+
 const readDesc = desc.get("read_workspace") ?? "";
 check("read_workspace forbids reproducing a file from memory", /NEVER reproduce/i.test(readDesc));
 check("…and says read_file does not reach workspaces", /read_file/.test(readDesc));
+// Numbering is a presentation choice with a cost: a model relaying a file to a person will show the
+// numbers unless told they are not the file. Cheaper to say it than to have it happen once.
+check("…and says the line numbers are not part of the file", /NOT part of the file/.test(readDesc));
 
 // The marker is useless unless the description says what to DO about it.
 check("…and says how to use a tree from another conversation", /save_workspace them here first/i.test(listDesc));
