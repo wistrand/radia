@@ -26,7 +26,7 @@ import type {
 } from "../storage/adapter.ts";
 import { addSeconds } from "./time.ts";
 import { buildRecord, type PutRequest } from "./record.ts";
-import { compilePattern, matchesRecord, type Pattern } from "./matching.ts";
+import { combineMatch, compilePattern, matchesRecord, type Pattern } from "./matching.ts";
 import {
   AGENT_DEFINITION,
   AGENT_RUN,
@@ -136,6 +136,11 @@ export interface TakeOptions {
 }
 
 export interface Watch {
+  /** The client's ORIGINAL pattern, before any grant constraint was ANDed in. Kept because a
+   *  compiled match cannot be un-narrowed: re-deriving the scope means recombining THIS with a
+   *  freshly-read grant set, and recombining the already-narrowed one would ratchet the scope
+   *  tighter on every check. */
+  request: Pattern;
   match: CompiledMatch;
   cursor0: string; // opaque high-water cursor at creation; the stream starts here unless resumed
   /** The principal that created it. A watch is scoped by ITS creator's grants, so attaching must
@@ -1950,13 +1955,50 @@ export class Space {
 
   // ---- watches (M1) ----
 
-  /** Create an ephemeral watch. The stream starts from the current high-water cursor. */
-  async createWatch(pattern: Pattern, owner: string, createdBy?: string[]): Promise<{ watchId: string }> {
-    const match = await this.compileFresh(pattern); // validates the pattern, refreshing a stale kind
+  /** Create an ephemeral watch. The stream starts from the current high-water cursor. Throws
+   *  `forbidden` if the owner holds no grant on the kind. */
+  async createWatch(request: Pattern, owner: string): Promise<{ watchId: string }> {
     const cursor0 = await this.storage.latestCursor();
     const watchId = newUlid();
-    this.watches.set(watchId, { match, cursor0, owner, createdBy });
+    this.watches.set(watchId, await this.scopeWatch(request, owner, cursor0));
     return { watchId };
+  }
+
+  /**
+   * Authorize `request` for `owner` and compile the scoped pattern. The ONE place a watch's scope
+   * is derived, called both at creation and at every revalidation.
+   *
+   * It lives here rather than in the handler because the handler used to do the authorize-and-
+   * combine itself. That was fine while a watch was scoped once; the moment the scope has to be
+   * re-derived, two implementations of the same policy is how one of them drifts and the stale one
+   * is the one still streaming.
+   */
+  private async scopeWatch(request: Pattern, owner: string, cursor0: string): Promise<Watch> {
+    const { constraint, createdBy } = await this.authorizeWatch(owner, request.kind);
+    const scoped: Pattern = { ...request, match: constraint ? combineMatch(request.match, constraint) : request.match };
+    const match = await this.compileFresh(scoped); // validates the pattern, refreshing a stale kind
+    return { request, match, cursor0, owner, createdBy };
+  }
+
+  /**
+   * Re-derive a live watch's scope from the grants that exist NOW, and replace it.
+   *
+   * A watch compiled its scope once and then streamed under it for as long as the connection
+   * lasted, so a revoked or narrowed grant took effect only when the client happened to
+   * disconnect. That contradicts the rule the credential design already states for tokens: hold
+   * only what cannot be revoked, and resolve the rest per request. A stream is a request that
+   * never ends, so it has to re-resolve rather than never resolve.
+   *
+   * Throws `forbidden` when the grant is gone (the caller ends the stream) and `not_found` when
+   * the watch is not the principal's. Scoped by the watch's OWNER, never by the caller: an
+   * operator attaching to somebody else's watch must not widen it to operator scope.
+   */
+  async revalidateWatch(watchId: string, principal: string): Promise<Watch> {
+    const current = this.getWatch(watchId, principal);
+    if (!current) throw new RadiaError("not_found", `no watch ${watchId}`);
+    const fresh = await this.scopeWatch(current.request, current.owner, current.cursor0);
+    this.watches.set(watchId, fresh);
+    return fresh;
   }
 
   /**

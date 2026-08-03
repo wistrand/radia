@@ -16,7 +16,10 @@ boundary (`src/server/http.ts` + the record/take/watch handlers): coordination `
 `query`/`read_one` call `authorize`, and **`watch`** calls `Space.authorizeWatch` (a watch is
 allowed if the principal holds ANY grant on the kind, which makes it a participant, and the grant
 pattern is AND-ed into the watch match, so it wakes only on records inside its scope; no grant →
-`forbidden`). `/v0/ops/*` requires a privileged principal; writing a reserved control kind
+`forbidden`). A watch **re-derives that scope for as long as its stream runs** (`Space.scopeWatch`
+/ `revalidateWatch`), on attach and whenever an `AUTHORIZATION_KINDS` record goes past in the event
+log, so revocation reaches an open connection instead of waiting for a disconnect. The stream also
+re-resolves the credential, so a stopped run loses it. `/v0/ops/*` requires a privileged principal; writing a reserved control kind
 (`grant`/`signal`/`agent_*`) requires privilege, meaning an operator or the supervisor: a logged-in
 `human:alice` is refused like any other principal. Grants are **assigned, never self-declared**.
 Every coordination verb is grant-gated; there is no unauthenticated observe path.

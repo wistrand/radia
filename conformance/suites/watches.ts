@@ -7,6 +7,16 @@ import { assert, assertEquals } from "@std/assert";
 import type { Suite } from "../harness.ts";
 import type { SpaceEvent, StorageAdapter } from "../../src/storage/adapter.ts";
 import { Space } from "../../src/core/space.ts";
+import type { RadiaError } from "../../src/core/errors.ts";
+
+async function forbidden(fn: () => Promise<unknown>): Promise<boolean> {
+  try {
+    await fn();
+    return false;
+  } catch (e) {
+    return (e as RadiaError).code === "forbidden";
+  }
+}
 
 function newSpace(adapter: StorageAdapter): Space {
   const space = new Space(adapter);
@@ -51,7 +61,10 @@ export const watchSuites: Suite[] = [
       assertEquals(await space.matchesEvent(kindOnly, putEvent), true);
 
       // a different kind's event never matches
-      assertEquals(await space.matchesEvent({ match: { kind: "other" }, cursor0: "0", owner: OWNER }, putEvent), false);
+      assertEquals(
+        await space.matchesEvent({ request: { kind: "other" }, match: { kind: "other" }, cursor0: "0", owner: OWNER }, putEvent),
+        false,
+      );
 
       // consume it; the ack event (state consumed) is not a wakeup
       const t = await space.take({ pattern: { kind: "task" } });
@@ -185,6 +198,52 @@ export const watchSuites: Suite[] = [
       await space.put({ kind: "interest", body: { kind: "task" } }, undefined, run);
       assertEquals((await space.matchingInterests("task", { anything: 1 })).interests.length, 1);
       assertEquals((await space.matchingInterests("task", {})).interests.length, 1);
+    },
+  },
+  {
+    name: "revalidateWatch: a revoked grant ends a watch that already exists",
+    run: async (adapter) => {
+      // The defect this closes: a watch compiled its scope ONCE, at creation, and then streamed
+      // under it until the client disconnected. Revocation is a successor record, so `authorizeWatch`
+      // saw it immediately and every future watch was refused; the one already streaming was not.
+      const space = newSpace(adapter);
+      const grant = { principal: "agent:w", kind: "task", operations: ["take"] };
+      await space.put({ kind: "grant", body: grant });
+      const { watchId } = await space.createWatch({ kind: "task" }, "agent:w");
+
+      await space.put({ kind: "grant", body: { ...grant, retired: true } });
+      assert(
+        await forbidden(() => space.revalidateWatch(watchId, "agent:w")),
+        "the live watch must lose its scope when the grant is revoked, not at disconnect",
+      );
+    },
+  },
+  {
+    name: "revalidateWatch: a NARROWED grant narrows the live watch, and does not ratchet",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const wide = { principal: "agent:w", kind: "task", operations: ["take"] };
+      await space.put({ kind: "grant", body: wide });
+      const { watchId } = await space.createWatch({ kind: "task" }, "agent:w");
+      assertEquals(space.getWatch(watchId, "agent:w")!.match.where, undefined, "unrestricted to start");
+
+      // Replace the unscoped grant with a pattern-scoped one: the stream must pick up the narrower
+      // scope, not keep the one it compiled at creation.
+      await space.put({ kind: "grant", body: { ...wide, retired: true } });
+      await space.put({ kind: "grant", body: { ...wide, pattern: { tag: "a" } } });
+      const narrowed = await space.revalidateWatch(watchId, "agent:w");
+      assert(narrowed.match.where, "the live watch did not pick up the grant's pattern");
+
+      // Re-deriving from the ORIGINAL request, not from the already-narrowed match: widening the
+      // grant back must restore the wide scope. Recombining the compiled match instead would
+      // ratchet it tighter on every check and never let go.
+      await space.put({ kind: "grant", body: { ...wide, pattern: { tag: "a" }, retired: true } });
+      await space.put({ kind: "grant", body: wide });
+      assertEquals(
+        (await space.revalidateWatch(watchId, "agent:w")).match.where,
+        undefined,
+        "scope must be re-derived from the client's original pattern, not the narrowed one",
+      );
     },
   },
 ];

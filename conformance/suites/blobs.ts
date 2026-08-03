@@ -220,6 +220,26 @@ export const blobCryptoSuites: BlobCryptoSuite[] = [
     },
   },
   {
+    name: "a truncated payload heals on re-put: a file existing is not proof its bytes are there",
+    run: async ({ cipher, tempDir }) => {
+      // `put` skipped the write whenever ANYTHING existed at the content address, which made a
+      // partial write permanent. A content-addressed store has no "the next write fixes it": the
+      // only party who could repair the object is the caller holding those exact bytes, and that
+      // caller was the one being told to skip. Both regimes, because the plaintext one failed
+      // SILENTLY: `get` streamed the truncated prefix as if it were the artifact.
+      for (const c of [undefined, cipher]) {
+        const label = c ? "sealed" : "plaintext";
+        const dir = tempDir();
+        const store = new FileBlobStore(dir, c);
+        const ref = await store.put(SECRET);
+        Deno.truncateSync(fileIn(dir).path, 3); // what a crash mid-write leaves behind
+        await store.put(SECRET);
+        assertEquals(await drain(await store.get(ref.digest)), SECRET, `re-put must heal a truncated ${label} blob`);
+        assertEquals((await store.stat(ref.digest))?.size, SECRET.byteLength, `stat must agree after healing (${label})`);
+      }
+    },
+  },
+  {
     name: "enabling encryption does not orphan blobs written before it",
     run: async ({ cipher, tempDir }) => {
       const dir = tempDir();

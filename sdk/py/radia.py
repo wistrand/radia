@@ -560,6 +560,11 @@ class RadiaClient:
 
         Reconnects with the last cursor on a dropped stream; a 410 (cursor expired) restarts
         from the beginning. The cursor is opaque: echoed back verbatim, never parsed.
+
+        Raises ``RadiaError`` when the space revokes the stream: a 401/403 on reconnect, or a
+        ``revoked`` frame on a live one. The server re-checks the credential and the grants for as
+        long as the stream runs, so both are terminal and retrying cannot fix either. Reconnecting
+        would turn a revocation into a silent stall indistinguishable from an idle space.
         """
         watch_id = self._req("POST", "/v0/watches", pattern)["watchId"]
         cursor: Optional[str] = None
@@ -574,12 +579,20 @@ class RadiaClient:
                     for frame in _sse_frames(res, stop):
                         if frame.get("id") is not None:
                             cursor = frame["id"]
-                        if frame.get("data"):
+                        # A named frame is control, never a wakeup. Without this branch `revoked`
+                        # parses as a wakeup and is yielded as if a record had matched.
+                        if frame.get("event") == "revoked":
+                            raise RadiaError(
+                                403, "forbidden", f"watch {watch_id} revoked: {frame.get('data', 'no reason given')}"
+                            )
+                        if frame.get("event") is None and frame.get("data"):
                             yield json.loads(frame["data"])
             except urllib.error.HTTPError as e:
                 if e.code == 410:
                     cursor = "0"  # cursor_expired: a real client catches up with a query first
                     continue
+                if e.code in (401, 403):
+                    raise RadiaError(e.code, "forbidden", f"watch {watch_id} refused ({e.code})") from None
                 time.sleep(0.3)
             except urllib.error.URLError:
                 time.sleep(0.3)
@@ -588,7 +601,7 @@ class RadiaClient:
 
 
 def _sse_frames(res, stop: Optional[threading.Event]) -> Iterator[Dict[str, str]]:
-    """Parse an SSE body into ``{id, data}`` frames. Ends when the stream closes."""
+    """Parse an SSE body into ``{id, data, event}`` frames. Ends when the stream closes."""
     frame: Dict[str, str] = {}
     for raw in res:
         if stop is not None and stop.is_set():
@@ -605,6 +618,8 @@ def _sse_frames(res, stop: Optional[threading.Event]) -> Iterator[Dict[str, str]
             frame["id"] = line[3:].strip()
         elif line.startswith("data:"):
             frame["data"] = line[5:].strip()
+        elif line.startswith("event:"):
+            frame["event"] = line[6:].strip()
 
 
 # ---------------------------------------------------------------------------

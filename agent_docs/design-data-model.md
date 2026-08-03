@@ -249,9 +249,17 @@ media type. A kind whose indexing an app extends this way is redeclared with a `
 like any other (only `kind_def` itself is protected), and a redeclaration REPLACES, so the reserved
 paths must be repeated.
 
-Blobs are **content-addressed** by sha256 of the plaintext: an object verifies itself, identical
+Blobs are **content-addressed** by sha256 of the plaintext: an object is verifi*able*, identical
 bytes are stored once, and re-upload is free. Client-facing identity stays the record id, so
 dedup never merges two artifacts into one reference.
+
+Verifi*able*, not verified on every read: a plaintext `get` streams without re-hashing, since
+hashing per read costs a full pass and forces the object into memory. A sealed read verifies for
+free (GCM authenticates the ciphertext against the digest). What holds for plaintext instead is
+that damage cannot be written: `FileBlobStore` writes through a temp file and a rename, and dedups
+on LENGTH rather than existence, so any holder of the bytes repairs the address. See
+`src/storage/blobs.ts` and package G in
+[plan-audit-remediation.md](plan-audit-remediation.md).
 
 **Download capabilities** (`POST /v0/artifacts/{id}/capability`) exist for one concrete reason: a
 browser cannot attach an `Authorization` header to `<img src>`. A capability is scoped to a single

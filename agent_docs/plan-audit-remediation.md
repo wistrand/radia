@@ -27,11 +27,11 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | Pkg | Theme                                   | Severity | Blast radius                          |
 |-----|-----------------------------------------|----------|---------------------------------------|
 | E   | Pushdown soundness                      | P1       | Records invisible to `take` on SQLite |
-| G   | Blob write durability                   | P2       | Permanent unhealable corruption       |
+| ~~G~~ | ~~Blob write durability~~             | ~~P2~~   | **CLOSED 2026-08-03**                 |
 | H   | `lease_lost` unobservable in clients    | P2       | Side effects continue after fencing   |
 | I   | SDK parity + chat example               | P2       | Drift; example-specific data loss     |
 | ~~K~~ | ~~Unrevocable definition tokens~~     | ~~P0~~   | **CLOSED 2026-08-03**                 |
-| L   | Watch streams cache authorization       | P1       | Revocation does not reach an open stream |
+| ~~L~~ | ~~Watch streams cache authorization~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
 | M   | `kind_def` is not write-protected       | P1       | One ordinary grant bricks space-wide auth |
 | N   | `clientMeta` escapes the body guards    | P2       | Unbounded, unerasable data in a record |
 | O   | Multi-instance freshness and ordering   | P1       | Wakeup latency; auth-relevant id races |
@@ -39,7 +39,7 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | Q   | Designed features unreachable           | P2       | A built feature no caller can invoke   |
 | R   | Dead taint parameter; half-tested guard | P2       | Legibility, not leakage (see the entry) |
 
-Packages A, B, C, D, F and J are closed. Their lessons are rules in
+Packages A, B, C, D, F, G, J, K and L are closed. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -74,19 +74,35 @@ Guard: a differential conformance test running the same pattern and fixture set 
 adapter and the bare oracle, asserting identical result sets, over a fixture corpus that includes
 array paths, digit segments, leading zeros, and prototype-shaped names.
 
-## Package G: blob write durability (P2)
+## Package G: blob write durability (P2) — CLOSED 2026-08-03
 
-`FileBlobStore` (`src/storage/blobs.ts`) writes payloads non-atomically (`writeBinaryFile` is a
-plain write, `src/platform.ts`) and dedups on file existence. A crash mid-write leaves a
-truncated file at the final content address, and every later `put` of those bytes sees the file
-present and skips the write, so the store never heals. Unencrypted `get` streams the corrupt
-bytes with no digest verification; encrypted fails GCM forever.
+**VERIFIED.** `FileBlobStore` (`src/storage/blobs.ts`) wrote payloads non-atomically and deduped on
+file EXISTENCE. A crash mid-write left a truncated file at the final content address, and every
+later `put` of those bytes saw a file there and skipped the write, so the store never healed.
+Unencrypted `get` streamed the corrupt prefix with no digest verification; encrypted failed GCM
+forever. The encrypted path was no safer than the plaintext one, only louder: the "an interrupted
+write leaves a key with no payload, self-healing on the next put" comment held for a payload write
+that produced NO file, not for one that produced a short file.
 
-Fix: write to a temp name and rename (atomic on the same filesystem). That also removes the
-need for the key-sidecar-first ordering dance.
+Two changes, because atomicity alone does not satisfy the guard:
 
-Guard: a blob-store conformance case that truncates a stored blob, re-`put`s the same bytes, and
-asserts `get` returns intact content.
+- **`writeAtomic`** (temp name plus `renameFile`, new in `src/platform.ts`) so a crash leaves the
+  address absent rather than short. The temp name carries a random suffix so concurrent puts of the
+  same payload cannot land on each other's partial file.
+- **Length-validated dedup.** `put` compares `fileSize(path)` against the expected on-disk length
+  (plaintext bytes, plus `GCM_TAG_BYTES` when sealed) instead of testing existence. This is what
+  repairs damage that already exists — from before this fix, or from anything outside the process —
+  because the only party who can repair a content-addressed object is the caller holding those
+  exact bytes, and that caller was the one being told to skip. Length rather than digest: the
+  expected value is already in hand, so it costs a `stat` rather than re-hashing every put.
+
+Not done, deliberately: `get` still does not re-hash a plaintext blob. It would cost a full pass
+and force the object into memory, which is what streaming exists to avoid, and it defends only
+against same-length corruption that no longer has a path in from a crash. The overstated
+"self-verifying" claim in the module header is corrected rather than implemented.
+
+Guard: `conformance/suites/blobs.ts`, "a truncated payload heals on re-put", over both the sealed
+and plaintext regimes. Verified to fail against the old existence-only dedup.
 
 ## Package H: `lease_lost` is unobservable in clients (P2)
 
@@ -181,16 +197,46 @@ carrier (see [plan-workspaces.md](plan-workspaces.md) §10.0):
 Guard: materialise a labelled tree, change it through a real run, assert the successor manifest AND
 the tool_result still carry the label.
 
-## Package L: watch streams cache authorization for their lifetime (P1)
+## Package L: watch streams cache authorization for their lifetime (P1) — CLOSED 2026-08-03
 
-**REPORTED.** `authorizeWatch` resolves once when the SSE stream opens; a stopped run or revoked
-grant reportedly keeps receiving wakeups until the client disconnects. If so it is the last holdout
-against the rule the credential design states outright — never remember what can be revoked — and
-the one place where a long-lived connection outlives the authority that opened it.
+**VERIFIED, and wider than reported.** `authorizeWatch` ran once, in `handleCreateWatch`, and the
+compiled scope was stored on the `Watch` for its lifetime. Two holes, not one:
 
-Fix: re-check on a bounded interval inside the stream loop and close on failure.
+1. The live stream never re-checked, so a stopped run or a revoked grant kept receiving wakeups
+   until the client happened to disconnect.
+2. **Re-attaching never re-checked either.** `getWatch` tests OWNERSHIP, which passes for the
+   creator forever, so a client that reconnected with `Last-Event-ID` after its grant was revoked
+   got the stream back. Reconnection restored an authority that revocation had removed.
 
-Guard: open a watch, revoke the grant, assert the stream ends rather than continuing to deliver.
+The second is the worse half and was not in the original report: the first is a window that closes
+when the connection drops, the second is a window the client can reopen at will.
+
+Fixed:
+
+- `Space.scopeWatch` is now the ONE derivation of a watch's scope, called by `createWatch` and by
+  the new `Space.revalidateWatch`. The handler used to do the authorize-and-combine itself, which
+  would have meant two implementations of the same policy the moment re-derivation existed.
+- `Watch.request` keeps the client's ORIGINAL pattern. Re-deriving recombines that with a fresh
+  grant set; recombining the already-narrowed match would ratchet the scope tighter on every check
+  and never widen back. There is a planted-bug-verified guard for exactly this.
+- `handleWatchEvents` re-authorizes on attach (403, since the caller owns the watch and 404 would
+  be a lie) and re-derives inside the loop.
+- The trigger is the EVENT LOG, not a timer: authorization state is records, so the log the loop
+  already reads carries every change that could revoke the stream (`AUTHORIZATION_KINDS`, derived
+  from `WRITE_PROTECTED_KINDS` so it cannot be too small without that one being wrong first). The
+  re-check runs BEFORE the events that follow it in the same batch, so a revocation and a matching
+  record arriving together do not deliver the record. A 30s interval remains as a backstop.
+- Credential liveness re-resolves through `resolveAuth`, passed in as a closure, so there is no
+  second implementation of "is this token still good".
+- Both SDKs now treat revocation as terminal: a `revoked` SSE frame (control, never a wakeup) and a
+  401/403 on reconnect both raise. Previously the TS client's reconnect loop turned a revocation
+  into a silent 3/s spin, which reads exactly like an idle space.
+
+Guards: `conformance/suites/watches.ts` (revoked grant ends a live watch; a narrowed grant narrows
+it and does not ratchet).
+
+Left open deliberately: a watch lives in a per-process `Map`, so multi-instance revocation latency
+is whatever package O ends up being. Within one process it is now immediate.
 
 ## Package M: `kind_def` is not write-protected (P1)
 

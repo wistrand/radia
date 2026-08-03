@@ -7,7 +7,13 @@
 // implementation, or the embedded and hosted paths drift (CLAUDE.md invariant).
 //
 // Blobs are CONTENT-ADDRESSED by sha256 of the plaintext: identical bytes are one object, an
-// object verifies itself, and a re-upload is free. Identity as seen by clients is still the
+// object is VERIFIABLE, and a re-upload is free. Verifiable, not verified: a plaintext `get`
+// streams without re-hashing, because hashing on every read costs a full pass and forces the whole
+// object into memory, which is exactly what streaming exists to avoid. A sealed read does verify,
+// for free, because GCM authenticates the ciphertext against the digest. What closes the gap for
+// plaintext is that damage cannot be WRITTEN: `writeAtomic` below means a crash leaves no file
+// rather than a short one, and `put` compares length before it dedups, so bytes the caller is
+// holding always repair the address. Identity as seen by clients is still the
 // artifact RECORD id, never the digest and never a signed URL (design-data-model §2.4: stable
 // internal ids, because a URL would expire inside an immutable record).
 //
@@ -17,9 +23,19 @@
 // crypto-shredding), and the wrapped DEK lives in destroyable state beside the blob, never in the
 // immutable artifact record. A store with no cipher stores plaintext, which is the default.
 
-import { fileSize, mkdirp, readBinaryFile, readBinaryStream, readTextFile, removeFile, writeBinaryFile, writeTextFile } from "../platform.ts";
+import {
+  fileSize,
+  mkdirp,
+  readBinaryFile,
+  readBinaryStream,
+  readTextFile,
+  removeFile,
+  renameFile,
+  writeBinaryFile,
+  writeTextFile,
+} from "../platform.ts";
 import { sha256Hex } from "../core/ids.ts";
-import type { BlobCipher, SealedKey } from "./crypto.ts";
+import { type BlobCipher, GCM_TAG_BYTES, type SealedKey } from "./crypto.ts";
 
 /** What a stored blob is: its plaintext digest and byte length. */
 export interface BlobRef {
@@ -91,7 +107,8 @@ export class MemoryBlobStore implements BlobStore {
 
 /** Filesystem blobs: `<root>/<first two chars>/<name>`, where `name` is the plaintext digest for
  *  an unencrypted store and HMAC(KEK, digest) for an encrypted one. The fan-out keeps directory
- *  sizes sane; content addressing makes the store self-verifying and idempotent on re-upload. */
+ *  sizes sane; content addressing makes the store idempotent on re-upload and lets any holder of
+ *  the bytes repair an address (see the header on what is verified and what is merely verifiable). */
 export class FileBlobStore implements BlobStore {
   readonly name: string;
 
@@ -123,6 +140,26 @@ export class FileBlobStore implements BlobStore {
     return fileSize(plain) === undefined ? null : { path: plain, key: this.readKey(plain), sealed: false };
   }
 
+  /**
+   * Write so `path` is either absent or COMPLETE, never half of one.
+   *
+   * A content-addressed store makes a partial write permanent rather than transient: the damaged
+   * file sits at the address its correct bytes would hash to, so every later `put` of those bytes
+   * finds something there and skips the write. Ordinary "the next write fixes it" does not apply,
+   * because there is no next write. Rename is the whole fix; the temp name carries a random suffix
+   * so two concurrent puts of the same payload cannot land on each other's partial file.
+   */
+  private async writeAtomic(path: string, bytes: Uint8Array): Promise<void> {
+    const tmp = `${path}.${crypto.randomUUID()}.tmp`;
+    await writeBinaryFile(tmp, bytes);
+    try {
+      renameFile(tmp, path);
+    } catch (e) {
+      removeFile(tmp);
+      throw e;
+    }
+  }
+
   async put(bytes: Uint8Array): Promise<BlobRef> {
     const digest = await sha256Hex(bytes);
     const path = await this.writePath(digest);
@@ -131,9 +168,16 @@ export class FileBlobStore implements BlobStore {
     // encryption this is also what keeps DEDUP working: a second put reuses the stored ciphertext
     // and its DEK rather than sealing the same payload under a second key.
     //
-    // "Already stored" means BOTH parts exist. Checking only the payload would make a half-written
-    // object permanent: a re-put would see the file and skip, so the pair could never heal.
-    const stored = fileSize(path) !== undefined && (!this.cipher || this.readKey(path) !== undefined);
+    // "Already stored" means both parts exist AND THE PAYLOAD IS THE RIGHT LENGTH. Existence alone
+    // is what made damage permanent: a re-put of the correct bytes saw a truncated file, skipped,
+    // and the store could never heal even though the caller was holding exactly what was missing.
+    // Length is checked rather than the digest because the expected value is already known here
+    // (`bytes`), so it costs a `stat` instead of re-hashing the payload on every put. It catches
+    // truncation, which is what a partial write and a partial delete both produce; it does not
+    // claim to catch same-length corruption, and `writeAtomic` above is what makes that unreachable
+    // from a crash.
+    const stored = fileSize(path) === this.expectedSize(bytes.byteLength) &&
+      (!this.cipher || this.readKey(path) !== undefined);
     if (!stored) {
       mkdirp(dir);
       if (this.cipher) {
@@ -145,12 +189,17 @@ export class FileBlobStore implements BlobStore {
         // The wrapped DEK sits beside the payload, NOT in the artifact record: shredding a blob
         // means deleting this file, and records are immutable.
         writeTextFile(`${path}.key`, JSON.stringify(key));
-        await writeBinaryFile(path, ciphertext);
+        await this.writeAtomic(path, ciphertext);
       } else {
-        await writeBinaryFile(path, bytes);
+        await this.writeAtomic(path, bytes);
       }
     }
     return { digest, size: bytes.byteLength };
+  }
+
+  /** On-disk length for a payload of `plaintextSize`. Sealing appends a 16-byte GCM tag. */
+  private expectedSize(plaintextSize: number): number {
+    return this.cipher ? plaintextSize + GCM_TAG_BYTES : plaintextSize;
   }
 
   async get(digest: string): Promise<ReadableStream<Uint8Array> | null> {

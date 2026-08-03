@@ -25,6 +25,10 @@
 
 import { readTextFile, restrictToOwner, UsageError, writeTextFile } from "../platform.ts";
 
+/** AES-GCM's authentication tag, appended to the ciphertext by Web Crypto. Named because the blob
+ *  store derives a sealed payload's expected on-disk length from it. */
+export const GCM_TAG_BYTES = 16;
+
 /** The per-blob key material stored alongside the ciphertext. */
 export interface SealedKey {
   /** DEK wrapped under the space KEK (AES-KW). */

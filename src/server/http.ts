@@ -345,7 +345,12 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     // --- coordination plane, path-param: watch SSE stream ---
     if (req.method === "GET" && url.pathname.startsWith("/v0/watches/") && url.pathname.endsWith("/events")) {
       const id = url.pathname.slice("/v0/watches/".length, -"/events".length);
-      return handleWatchEvents(space, decodeURIComponent(id), principal, req);
+      // The stream re-checks the credential for as long as it runs, through this exact path: a
+      // long-lived connection is one request that never ends, so it re-resolves rather than
+      // trusting the single resolution that opened it.
+      return await handleWatchEvents(space, decodeURIComponent(id), principal, req, async () => {
+        return !("error" in await resolveAuth(req, space, authRequired));
+      });
     }
 
     // Dry run: which interests would receive a record of this shape? A read, gated with the rest of

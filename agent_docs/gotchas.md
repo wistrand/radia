@@ -1505,6 +1505,31 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   such shortcut) breaks retention-vs-lease separation. Keep the five distinct.
 - **Provenance is not authority.** A result with a privileged data parent inherits no
   permission from it. See [design-data-model.md](design-data-model.md).
+- **A long-lived connection is a request that never ends, so it re-resolves rather than never
+  resolves.** The rule "never remember what can be revoked" was written for token caches and read
+  as if a request were the unit. A watch SSE stream authorized once and then streamed under that
+  decision for hours. Every long-lived thing added from here (a stream, a subscription, a
+  materialized view over authorized data) inherits this: bound the staleness at open time or it is
+  unbounded by default. Closed in package L; see
+  [plan-audit-remediation.md](plan-audit-remediation.md).
+- **Ownership is not authorization, and confusing them makes revocation reversible by reconnect.**
+  `getWatch` checks that the caller CREATED the watch, which stays true forever, so gating a
+  reconnect on it alone let a client whose grant had been revoked get its stream back by dropping
+  and re-attaching. An identity check answers "who is this", never "may they still". The two look
+  interchangeable at the call site precisely when one of them has gone stale.
+- **In a content-addressed store, a partial write is permanent, not transient.** Ordinary storage
+  self-corrects because something writes that address again. Content addressing removes that: the
+  only party who would ever write those bytes is a caller holding exactly them, and dedup-on-
+  existence is precisely the rule that tells that caller to skip. So a truncated blob survived every
+  attempt to repair it. Two rules follow, and both are needed: write atomically (temp plus rename,
+  `FileBlobStore.writeAtomic`) so damage cannot be created, and VALIDATE before deduping (compare
+  length, not existence) so damage that exists can still be repaired. "The file is there" is not
+  "the bytes are there". Closed in package G.
+- **Re-derive a narrowed scope from the ORIGINAL request, never from the narrowed result.**
+  Scope is `grant ∧ request`. Recombining the already-combined match with a fresh grant ratchets:
+  each check ANDs another constraint on, so the scope only ever shrinks and a re-widened grant never
+  takes effect. `Watch.request` keeps the client's pattern for this reason. The bug is invisible
+  while grants only get revoked, and appears the first time one is restored.
 
 ## Rejected approaches
 

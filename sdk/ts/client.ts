@@ -597,6 +597,12 @@ export class RadiaClient {
    * records that become available. Reconnects with a cursor on drop; on 410 cursor_expired
    * it restarts from the beginning (a real client would catch-up-query first). Ends when
    * `signal` aborts. M0/M1: use a kind-only pattern for wakeup-by-kind.
+   *
+   * THROWS when the space revokes the stream: a 401/403 on reconnect, or a `revoked` frame on a
+   * live one. Both are terminal, because the server re-checks the credential and the grants for as
+   * long as the stream runs and only ends it when they no longer permit the watch. Retrying cannot
+   * fix either, and the reconnect loop below would otherwise turn a revocation into a silent stall
+   * that looks exactly like an idle space.
    */
   async *watch(pattern: Pattern, signal?: AbortSignal): AsyncGenerator<Wakeup> {
     const { watchId } = await this.req("POST", "/v0/watches", pattern) as { watchId: string };
@@ -617,6 +623,11 @@ export class RadiaClient {
         cursor = "0"; // cursor_expired: restart (a real client catches up via query first)
         continue;
       }
+      if (res.status === 401 || res.status === 403) {
+        // Typed, not a bare Error: `agentLoop` distinguishes a permanent authorization failure from
+        // a transient drop by `status`, and an untyped throw there is retried as a hiccup.
+        throw new RadiaClientError(res.status, "forbidden", `watch ${watchId} refused: ${(await res.text()).slice(0, 200)}`);
+      }
       if (!res.ok || !res.body) {
         await sleep(300);
         continue;
@@ -624,10 +635,11 @@ export class RadiaClient {
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
+      let revoked: string | undefined;
       try {
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done || revoked) break;
           buf += dec.decode(value, { stream: true });
           let sep: number;
           while ((sep = buf.indexOf("\n\n")) >= 0) {
@@ -635,17 +647,28 @@ export class RadiaClient {
             buf = buf.slice(sep + 2);
             let id: string | undefined;
             let data: string | undefined;
+            let event: string | undefined;
             for (const line of frame.split("\n")) {
               if (line.startsWith("id:")) id = line.slice(3).trim();
               else if (line.startsWith("data:")) data = line.slice(5).trim();
+              else if (line.startsWith("event:")) event = line.slice(6).trim();
             }
             if (id !== undefined) cursor = id; // opaque; echo back verbatim on reconnect
-            if (data) yield JSON.parse(data) as Wakeup;
+            // A named frame is control, never a wakeup. Without this branch `revoked` parses as a
+            // Wakeup and is yielded as if a record had matched. Recorded rather than thrown here:
+            // the `catch` below treats any throw as a dropped stream and reconnects, which is
+            // exactly the loop a revocation must not enter.
+            if (event === "revoked") revoked = data ?? "no reason given";
+            else if (event === undefined && data) yield JSON.parse(data) as Wakeup;
+            if (revoked) break;
           }
         }
       } catch {
         // stream dropped; reconnect below
+      } finally {
+        reader.cancel().catch(() => {});
       }
+      if (revoked) throw new RadiaClientError(403, "forbidden", `watch ${watchId} revoked: ${revoked}`);
       if (signal?.aborted) return;
       await sleep(200);
     }

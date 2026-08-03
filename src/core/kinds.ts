@@ -88,6 +88,18 @@ export const INTEREST = WIRE_INTEREST;
 export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, SHRED]);
 
 /**
+ * Kinds whose appearance in the event log means somebody's authorization may have just changed.
+ * A long-lived reader (the watch SSE stream) re-derives its scope when one goes by, so the event
+ * log is the revocation signal and no separate invalidation channel exists.
+ *
+ * DERIVED from `WRITE_PROTECTED_KINDS` rather than listed, and the direction matters. Over-inclusion
+ * costs one wasted registry read (`shred` changes no authorization); under-inclusion is a revoked
+ * grant that keeps streaming. Any kind that can change authorization must be write-protected, so
+ * this set cannot be too small without the other one being wrong first.
+ */
+export const AUTHORIZATION_KINDS: ReadonlySet<string> = WRITE_PROTECTED_KINDS;
+
+/**
  * The closed taint vocabulary: a classification some policy BARS, never a note about origin.
  *
  * Provenance is already in the log (`parent_ids` + `created_by`), so a label that merely records

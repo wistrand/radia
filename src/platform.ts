@@ -119,9 +119,17 @@ export function moduleRelative(url: string, path: string): URL {
 // so the bytes are held once either way.
 // ---------------------------------------------------------------------------
 
-/** Write bytes to a path, creating parent directories. Overwrites. */
+/** Write bytes to a path, creating parent directories. Overwrites. NOT atomic: a crash partway
+ *  leaves a truncated file at `path`. Anything content-addressed wants `renameFile` instead. */
 export async function writeBinaryFile(path: string, bytes: Uint8Array): Promise<void> {
   await Deno.writeFile(path, bytes);
+}
+
+/** Move `from` onto `to`, replacing it. A same-filesystem rename is atomic on POSIX and on Windows,
+ *  which is the whole point: write to a temp name and rename, and readers see the old file or the
+ *  new one, never half of either. */
+export function renameFile(from: string, to: string): void {
+  Deno.renameSync(from, to);
 }
 
 /** A path's byte size, or undefined if it does not exist. */

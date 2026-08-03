@@ -493,10 +493,21 @@ paths:
       operationId: watchEvents
       summary: SSE stream of wakeups for matching, available records
       description: >
-        text/event-stream. Each event: `id: <seq>` and `data: {seq, recordId, kind}`.
+        text/event-stream. Each wakeup: `id: <seq>` and `data: {seq, recordId, kind}`.
         Resume with `Last-Event-ID` (or `?cursor=`); delivery continues after that seq.
         A cursor older than the retained event log returns 410 cursor_expired (dormant
         until event-log GC lands in M2).
+
+
+        AUTHORIZATION IS RE-CHECKED FOR AS LONG AS THE STREAM RUNS, not only when it opens:
+        the credential is re-resolved and the watch's grant scope re-derived, so a revoked
+        or narrowed grant takes effect on the live connection. A stream whose authorization
+        has gone ends with a single `event: revoked` frame carrying `data: {reason}`
+        (`forbidden` or `credential_invalid`), then closes. Attaching (including a
+        `Last-Event-ID` reconnect) re-authorizes too, so 403 is a valid response to a watch
+        the caller created: ownership is not authorization. Clients MUST treat both as
+        terminal; retrying cannot succeed. A `revoked` frame is control, never a wakeup, so
+        a client that ignores the `event:` field would otherwise parse it as one.
       x-stability: stable
       x-phase: "M1"
       parameters:
@@ -509,6 +520,7 @@ paths:
           content:
             text/event-stream:
               schema: { type: string }
+        "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "410": { $ref: "#/components/responses/Problem" }
 
