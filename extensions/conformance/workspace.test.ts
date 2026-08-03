@@ -20,9 +20,12 @@ import {
   TREE_DIGEST_VERSION,
   treeDigestOf,
   validatePath,
+  materialize,
   type WorkspaceFile,
+  type WorkspaceManifest,
   writeWorkspace,
 } from "../ts/workspace.ts";
+import { runCode } from "../ts/sandbox.ts";
 
 const PORT = 7815;
 const url = `http://127.0.0.1:${PORT}`;
@@ -260,5 +263,129 @@ Deno.test("workspace: the record body limit caps a manifest, which forces depend
       refused = (e as Error).message;
     }
     assert(/record_too_large/.test(refused), `10000 files must be refused, got: ${refused || "accepted"}`);
+  });
+});
+
+// ── Phase 2: materialise, read-only ──────────────────────────────────────────────────────────────
+
+Deno.test("workspace: materialising writes exactly the tree, and a run can read it", async () => {
+  await withSpace(async (c) => {
+    await writeWorkspace(c, {
+      name: "mat",
+      owner: OWNER,
+      files: {
+        "src/main.ts": "export const answer = 42\n",
+        "src/lib/util.ts": "export const two = 2\n",
+        "README.md": "docs\n",
+      },
+      modes: { "src/main.ts": "100755" },
+    });
+    const m = (await readWorkspace(c, "mat"))!;
+    const root = await Deno.makeTempDir({ prefix: "radia-ws-" });
+    try {
+      const out = await materialize(c, m, root);
+      assertEquals(out.written, 3);
+
+      // Exactly the tree: contents, nesting and mode.
+      assertEquals(await Deno.readTextFile(`${out.root}/src/main.ts`), "export const answer = 42\n");
+      assertEquals(await Deno.readTextFile(`${out.root}/src/lib/util.ts`), "export const two = 2\n");
+      if (Deno.build.os !== "windows") {
+        assertEquals((await Deno.stat(`${out.root}/src/main.ts`)).mode! & 0o777, 0o755, "executable bit survives");
+        assertEquals((await Deno.stat(`${out.root}/README.md`)).mode! & 0o777, 0o644);
+      }
+
+      // And a sandbox can READ it with nothing else granted: the point of materialising at all.
+      const r = await runCode(
+        `const t = Deno.readTextFileSync(${JSON.stringify(out.root)} + "/src/main.ts"); console.log(t.trim())`,
+        { readRoots: [out.root] },
+      );
+      assert(r.ok, `run failed: ${r.stderr}`);
+      assertEquals(r.stdout.trim(), "export const answer = 42");
+
+      // …and cannot WRITE, which is what "read-only" means here rather than a convention.
+      const w = await runCode(`Deno.writeTextFileSync(${JSON.stringify(out.root)} + "/x", "no")`, { readRoots: [out.root] });
+      assert(!w.ok, "the sandbox must not be able to write into a materialised tree");
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  });
+});
+
+Deno.test("workspace: materialising refuses to escape the root, including through a symlink", async () => {
+  await withSpace(async (c) => {
+    const root = await Deno.makeTempDir({ prefix: "radia-ws-" });
+    const outside = await Deno.makeTempDir({ prefix: "radia-outside-" });
+    try {
+      await Deno.writeTextFile(`${outside}/secret`, "original\n");
+      const art = await c.putArtifact(new TextEncoder().encode("overwritten\n"), { mediaType: "text/plain" });
+
+      // A manifest whose path is lexically fine but resolves outside, because an entry earlier in
+      // sort order planted a link. This is how `git checkout` has historically been escaped, and it
+      // is why lexical validation alone is not enough.
+      await Deno.symlink(outside, `${root}/link`);
+      const hostile: WorkspaceManifest = {
+        name: "hostile",
+        owner: OWNER,
+        treeDigest: "t1:" + "0".repeat(64),
+        files: [{ path: "link/secret", mode: "100644", digest: art.digest, artifactId: art.id }],
+      };
+      let refused = "";
+      try {
+        await materialize(c, hostile, root);
+      } catch (e) {
+        refused = (e as Error).message;
+      }
+      assert(/escapes the root/.test(refused), `a symlinked path must be refused, got: ${refused || "written"}`);
+      assertEquals(await Deno.readTextFile(`${outside}/secret`), "original\n", "and nothing outside was touched");
+
+      // A lexically bad path is refused too, even though `writeWorkspace` would never produce one:
+      // a manifest can arrive from an older build, so this is the last check before a filesystem op.
+      const traversal: WorkspaceManifest = {
+        ...hostile,
+        files: [{ path: "../escape", mode: "100644", digest: art.digest, artifactId: art.id }],
+      };
+      let lexical = "";
+      try {
+        await materialize(c, traversal, root);
+      } catch (e) {
+        lexical = (e as Error).message;
+      }
+      assert(/not allowed/.test(lexical), `traversal must be refused, got: ${lexical || "written"}`);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+      await Deno.remove(outside, { recursive: true });
+    }
+  });
+});
+
+Deno.test("workspace: a classified tree does not launder its labels through the filesystem", async () => {
+  await withSpace(async (c) => {
+    // THE Phase 2 question. Bytes go to disk, code reads them, output comes back — and the
+    // substrate cannot observe a filesystem. So the labels have to travel on the RECORD graph, and
+    // the manifest is what makes that affordable: one parent edge instead of one per file.
+    await writeWorkspace(c, {
+      name: "classified",
+      owner: OWNER,
+      files: { "data.txt": "from a file read\n" },
+      taint: ["file"],
+    });
+    const m = (await readWorkspace(c, "classified"))!;
+
+    // Every file carries the label, so erasing or barring one is possible per file…
+    const art = await c.getRecord(m.files[0].artifactId);
+    assertEquals(art!.runtimeMeta.taint, ["file"]);
+    // …and the MANIFEST carries the union, so one edge speaks for the tree.
+    assertEquals((await c.getRecord(m.id))!.runtimeMeta.taint, ["file"]);
+
+    // A result that names the manifest inherits it. This is the anti-laundering property: the run
+    // read those bytes off a disk the substrate cannot see, and the classification still arrives.
+    await c.registerKind({ kind: "run_result", indexedPaths: [], claimable: false });
+    const result = await c.put({ kind: "run_result", body: { stdout: "from a file read" }, parentIds: [m.id] });
+    assertEquals((await c.getRecord(result.id))!.runtimeMeta.taint, ["file"]);
+
+    // And the hole this leaves, stated rather than hidden: a result that does NOT name the manifest
+    // launders. Same shape as omitting any parent edge, and not something materialising can fix.
+    const laundered = await c.put({ kind: "run_result", body: { stdout: "from a file read" } });
+    assertEquals((await c.getRecord(laundered.id))!.runtimeMeta.taint, []);
   });
 });

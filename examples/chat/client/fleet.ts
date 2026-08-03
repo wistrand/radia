@@ -92,7 +92,7 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
   ]));
 
   // Exec: may spawn `deno` and reach the space, nothing else. The child it spawns gets no
-  // permissions at all (tools/exec-sandbox.ts), so the dangerous half of the pair holds no credential.
+  // permissions at all (extensions/ts/sandbox.ts), so the dangerous half of the pair holds no credential.
   procs.push(spawn([
     `--allow-net=127.0.0.1:${port}`,
     "--allow-run=deno",

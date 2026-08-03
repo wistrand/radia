@@ -4,8 +4,8 @@ Sequence and status. The reasoning lives in [design-workspaces.md](design-worksp
 working tree is, and the git relationship) and [design-execution.md](design-execution.md) (why the
 language question is an isolation question). Read those first; this file assumes them.
 
-> **Status: Phases 0 and 1 DONE.** Phase 2 next, and it needs the taint decision, which
-> landed (see [design-taint.md](design-taint.md)).
+> **Status: Phases 0, 1 and 2 DONE.** Phase 3 next (write-back, `treeDigest` recomputation,
+> `check` binding).
 
 ## What this is for
 
@@ -61,7 +61,7 @@ Each is scoped to answer its question. Do not merge them.
 |---|-------------------------------|-----------------------------------------------------|--------|
 | 0 | Record size limit **(done)** | Can a body still become an unerasable payload? | 1 |
 | 1 | Manifest, no execution **(done)** | Does a churning tree-as-records hold up? | 1, 3 |
-| 2 | Materialise, read-only | Is checkout safe, and does taint survive a filesystem? | 2 |
+| 2 | Materialise, read-only **(done)** | Is checkout safe, and does taint survive a filesystem? | 2 |
 | 3 | Write-back + `treeDigest` + `check` | Is an attestation worth anything? | 4 |
 | 4 | Fork detection (`basedOn`) | Is concurrent divergence visible? | 5 |
 | 5 | `sandbox` record, ONE backend | Does the record shape describe a real jail? | — |
@@ -144,6 +144,33 @@ wholesale (`..` traversal, `.Git` case folding, symlink-then-write) because mate
 TRUSTED worker writing model-influenced paths outside any jail. And taint: if a materialised file is
 tainted, the run's output must inherit it, which means workspace files are data parents of the call
 or the laundering path stays open.
+
+**Done** (`materialize` in `extensions/ts/workspace.ts`). The answers:
+
+*Is checkout safe?* Two guards, and neither is redundant. `validatePath` is the LEXICAL check and
+runs again at materialise even though `writeWorkspace` already refused an unsafe path, because a
+manifest can arrive from an older build and this is the last check before a path becomes a
+filesystem operation. On top of it, a REALPATH containment check per file: lexical validation cannot
+see a symlink, and a symlink is how checkout has historically been escaped (an earlier entry plants
+one, a later entry writes through it). The contract exercises that for real — it plants a link to a
+directory outside the root, tries to write through it, and asserts both the refusal and that the
+file outside is untouched. Files are written in sorted order rather than concurrently, so a failure
+reproduces.
+
+*Does taint survive a filesystem?* Only if it travels on the RECORD graph, because the substrate
+cannot observe a disk. Naming every file as a parent does not scale (a 5 000-file tree cannot have
+5 000 parents), so **the manifest carries the union of its tree's labels** and one parent edge
+speaks for the whole tree. `writeWorkspace` takes `taint` and raises it on every artifact AND on the
+manifest, so per-file barring and erasure still work while a run needs one edge.
+
+*The hole that remains, stated rather than hidden:* a result that does not name the manifest still
+launders. That is the documented "taint launders by omitting the parent edge", unchanged, and not
+something materialising can fix. The contract asserts it in both directions so nobody reads the
+passing case as a guarantee.
+
+*Also moved here:* `exec-sandbox.ts` became `extensions/ts/sandbox.ts`. It imports nothing, the
+runtime executes nothing, and a sandbox is meaningless inside one app — so it belongs beside the
+workspace convention, which is where Phase 5 will put a `sandbox` RECORD on top of it.
 
 ### Phase 3: write-back, `treeDigest`, `check`
 

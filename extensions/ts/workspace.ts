@@ -122,6 +122,16 @@ export interface WriteInput {
   ignore?: string[];
   /** The manifest being superseded. Omit for a new workspace. */
   basedOn?: string;
+  /**
+   * Classification labels for this tree's contents (`file`/`net`/`foreign`).
+   *
+   * Raised on every file's artifact AND on the manifest. The manifest is what makes one parent edge
+   * enough: a run naming a 5 000-file tree cannot list 5 000 parents, so the manifest carries the
+   * union and a result that names it inherits the lot. Without that, materialising a classified
+   * tree and reading it back would launder the labels through the filesystem, which is the same
+   * hole as omitting a parent edge on a direct put.
+   */
+  taint?: string[];
 }
 
 /**
@@ -153,6 +163,7 @@ export async function writeWorkspace(
         filename: path.split("/").pop(),
         // What a grant pattern binds, exactly as the chat's other writers stamp it.
         meta: { conversationId: input.conversationId ?? "", owner: input.owner, workspace: input.name },
+        ...(input.taint?.length ? { taint: input.taint } : {}),
       });
       return { path, mode: input.modes?.[path] ?? "100644", digest: art.digest, artifactId: art.id } as WorkspaceFile;
     }));
@@ -183,7 +194,10 @@ export async function writeWorkspace(
   const key = before?.retired
     ? `workspace:${input.name}:${treeDigest}:after:${before.id}`
     : `workspace:${input.name}:${treeDigest}`;
-  const { id } = await client.put({ kind: "workspace", body: body as unknown as Record<string, unknown> }, key);
+  const { id } = await client.put(
+    { kind: "workspace", body: body as unknown as Record<string, unknown>, ...(input.taint?.length ? { taint: input.taint } : {}) },
+    key,
+  );
   return { id, treeDigest, files, deduped: false };
 }
 
@@ -235,4 +249,55 @@ export async function listWorkspaces(
     .filter((r) => !(r.body as unknown as WorkspaceManifest).retired)
     .map((r) => ({ id: r.id, ...(r.body as unknown as WorkspaceManifest) }));
   return { workspaces, complete, scanned: all.length };
+}
+
+/**
+ * Write a tree into a directory, so a sandbox can read it.
+ *
+ * This is `git checkout`, and it is the DANGEROUS direction, which is easy to miss because it looks
+ * like the safe one. Execution runs untrusted code inside a jail; materialisation runs the TRUSTED
+ * worker over model-influenced paths, outside any jail, creating files. Every entry is therefore
+ * re-validated here even though `writeWorkspace` already refused an unsafe path: a manifest may have
+ * been written by an older build, or by something else entirely, and this is the last check before
+ * a path becomes a filesystem operation.
+ *
+ * Two guards, and neither is redundant:
+ *
+ *   - `validatePath` on every entry, which is the lexical check (traversal, absolute, `.git`,
+ *     trailing dot or space, Windows separators).
+ *   - A REALPATH containment check on the directory each file lands in. Lexical validation cannot
+ *     see a symlink, and a symlink is how checkout has historically been escaped: an earlier entry
+ *     creates one, a later entry writes through it. Resolving the parent and requiring it to stay
+ *     under the root closes that, and it is why files are written in sorted order (deterministic,
+ *     so a failure reproduces) rather than concurrently.
+ *
+ * Read-only by intent: nothing here writes back, and the caller is expected to hand the sandbox
+ * `--allow-read=<root>` and nothing else.
+ */
+export async function materialize(
+  client: RadiaClient,
+  manifest: WorkspaceManifest,
+  root: string,
+): Promise<{ root: string; written: number; bytes: number }> {
+  const realRoot = await Deno.realPath(root);
+  let written = 0;
+  let bytes = 0;
+  for (const file of [...manifest.files].sort((a, b) => (a.path < b.path ? -1 : 1))) {
+    validatePath(file.path);
+    const target = `${realRoot}/${file.path}`;
+    const dir = target.slice(0, target.lastIndexOf("/"));
+    await Deno.mkdir(dir, { recursive: true });
+    // Resolve AFTER creating the directory: a symlink planted by an earlier entry resolves here,
+    // and `..` that survived lexical validation would too. Compared with a trailing separator so
+    // `/tmp/root-evil` cannot pass as being inside `/tmp/root`.
+    const realDir = await Deno.realPath(dir);
+    if (realDir !== realRoot && !realDir.startsWith(realRoot + "/")) {
+      throw new Error(`workspace path ${JSON.stringify(file.path)} escapes the root via a link: ${realDir}`);
+    }
+    const content = await client.getArtifact(file.artifactId);
+    await Deno.writeFile(target, content, { mode: file.mode === "100755" ? 0o755 : 0o644 });
+    written++;
+    bytes += content.byteLength;
+  }
+  return { root: realRoot, written, bytes };
 }

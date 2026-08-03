@@ -23,7 +23,7 @@
 //
 //   tools/        what those workers actually do
 //     files.ts (sandboxed file + compute) · space.ts (inspect + remediate)
-//     save.ts (store content) · exec-sandbox.ts (permissionless code execution)
+//     save.ts (store content); the sandbox itself is extensions/ts/sandbox.ts
 //     workers/exec.ts also serves save_procedure/read_procedure: named, reusable programs
 //
 //   space/        how this app uses Radia

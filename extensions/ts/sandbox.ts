@@ -1,3 +1,13 @@
+// Running untrusted code in a permissionless subprocess.
+//
+// An EXTENSION: the runtime executes nothing, and a sandbox is meaningless inside one
+// application, so it sits beside the workspace convention rather than in either neighbour (see
+// extensions/README.md). Phase 5 of plan-workspaces.md puts a `sandbox` RECORD on top of this;
+// what is here is only the mechanism.
+//
+// It imports NOTHING. That is the property worth keeping: the jail is Deno's permission flags,
+// so there is no policy to get wrong and nothing to keep in sync with the runtime.
+//
 // The sandbox: run model-written JavaScript with nothing.
 //
 // A fresh `deno` subprocess with (by default) ZERO permissions: no `--allow-net`, `--allow-read`,

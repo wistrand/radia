@@ -2,7 +2,7 @@
 
 Why the language question is really an isolation question, how a space gains a language, and what
 stops being true when it does. Nothing here is built beyond the JS runner that exists today
-(`examples/chat/workers/exec.ts`, `examples/chat/tools/exec-sandbox.ts`).
+(`examples/chat/workers/exec.ts` dispatches; `extensions/ts/sandbox.ts` is the jail).
 
 > **Status: design.** The SHAPE is decided: a sandbox is a record, matched by pattern like anything
 > else. The isolation backends and the open questions at the end are not. Read [design-workspaces.md](design-workspaces.md) alongside this: a

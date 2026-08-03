@@ -384,7 +384,7 @@ get rediscovered as new.
 | `matchesEvent` fires only on `state === "available"` and is watch-specific          | `matchesEvent`, `src/core/space.ts`             |
 | Event log carries no bodies (`seq, cursor, id, ts` + operation/record/kind/state)   | `SpaceEvent`, `src/storage/adapter.ts`          |
 | Procedure source is a content-addressed artifact; result carries `{name, recordId, artifactId}` and the procedure record as lineage parent | `examples/chat/workers/exec.ts` |
-| Sandbox child holds no credentials                                                 | `examples/chat/tools/exec-sandbox.ts`           |
+| Sandbox child holds no credentials                                                 | `extensions/ts/sandbox.ts`                      |
 | Hash-chained log unbuilt; events table has no hash column                          | both adapters; `design-observability.md`        |
 | No sweeper exists; expiry evaluated lazily                                         | the only `setInterval` in the RUNTIME is the MCP heartbeat (the console page has its own, in the browser) |
 | `GrantDef` has no TTL/expiry field                                                 | `src/core/kinds.ts`                             |

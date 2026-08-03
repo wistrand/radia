@@ -1,11 +1,11 @@
 // Code-execution worker. Claims `tool_call{tool:"run_code"}` and runs the model's program in a
-// permissionless subprocess (tools/exec-sandbox.ts), then acks the output as a TAINTED `tool_result`.
+// permissionless subprocess (extensions/ts/sandbox.ts), then acks the output as a TAINTED `tool_result`.
 //
 // Three processes, three blast radii. The worker never executes, the executor never holds
 // anything:
 //
 //   workers/exec.ts   run token + space access + --allow-run   claims work, acks results
-//     └── deno run -    NO permissions, program on stdin       the actual execution (tools/exec-sandbox.ts)
+//     └── deno run -    NO permissions, program on stdin       the actual execution (extensions/ts/sandbox.ts)
 //
 // This is why it is a separate worker rather than a tool in `workers/tools.ts`: spawning needs
 // `--allow-run` (which that process deliberately lacks), and it holds a run token that model-written
@@ -24,7 +24,7 @@
 
 import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { activeByKey, newestByKey, RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
-import { runCode } from "../tools/exec-sandbox.ts";
+import { runCode } from "../../../extensions/ts/sandbox.ts";
 import { progress } from "../space/progress.ts";
 import { arg, argAll } from "../util.ts";
 import { publishCapability } from "../space/capability.ts";

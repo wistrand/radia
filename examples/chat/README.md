@@ -251,13 +251,15 @@ operation, so the session's existing `query`/`read_one` grants already permit it
 when writing grant sets: a `read_one` grant also confers a stream of wakeups for every matching
 record, though reading each one still needs the grant.
 
-**The assistant can run code, in a process that holds nothing** (`workers/exec.ts`, `tools/exec-sandbox.ts`).
+**The assistant can run code, in a process that holds nothing** (`workers/exec.ts` dispatches;
+the jail itself is [`extensions/ts/sandbox.ts`](../../extensions/ts/sandbox.ts), shared rather than
+owned by this app).
 `run_code` is a discovered tool like any other. What makes it safe is the shape around it: three
 processes with three blast radii.
 
 ```
 workers/exec.ts        run token · space access · --allow-run   claims work, acks results
-  └── deno run -       NO permissions, program on stdin      tools/exec-sandbox.ts
+  └── deno run -       NO permissions, program on stdin      extensions/ts/sandbox.ts
 ```
 
 The worker never executes and the executor never holds anything. This is why it is not a tool in
@@ -626,7 +628,7 @@ Five areas. `chat.ts` opens with the same map.
 | `files.ts` | sandboxed file + compute tools (`read_file`, `list_files`, `search_files`, `stat`, `time`, `calc`) |
 | `space.ts` | space inspection (`space_stats`/`query`/`count`/`lineage`/`children`/`events`/`doctor`) and remediation (`reclaim`/`dead_letter`/`requeue`) |
 | `save.ts` | `save_content`: store text the assistant wrote as an artifact |
-| `exec-sandbox.ts` | the sandbox itself: `deno run -` with zero permissions, output cap, kill timer |
+| (the sandbox itself moved to [`extensions/ts/sandbox.ts`](../../extensions/ts/sandbox.ts): `deno run -` with zero permissions, output cap, kill timer) |
 
 **`space/`: how this app uses Radia**
 

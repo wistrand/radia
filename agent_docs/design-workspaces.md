@@ -7,7 +7,9 @@ judged against a stated expectation (`check` records). Both shipped; see
 
 > **Status: the manifest half is BUILT** (`extensions/ts/workspace.ts`, Phase 1 of
 > [plan-workspaces.md](plan-workspaces.md)): the `workspace` kind, per-file artifacts, `treeDigest`,
-> `basedOn`, write-time path validation, and content-keyed writes. Measured, a manifest caps at
+> `basedOn`, write-time path validation, content-keyed writes, and safe MATERIALISATION (Phase 2:
+> lexical revalidation plus a realpath containment check per file, with the tree's taint labels
+> carried on the manifest so one parent edge speaks for the whole tree). Measured, a manifest caps at
 > ~6 300 files against the 1 MiB record limit, which SETTLES the dependency question below in favour
 > of an artifact beside the manifest. Materialisation, write-back and git export are unbuilt.
 >
@@ -142,6 +144,9 @@ Resist: the faithful history IS the audit product, and noisy linear history is e
 records, not from rewriting the export.
 
 ## The three hard parts
+
+**Materialisation is BUILT and read-only** (`materialize`); what follows is the write-back half,
+which is not.
 
 **Write-back is a capability increase.** The sandbox has no write permission today. A workspace
 means `--allow-write=<tmpdir>`, one fresh directory per attempt, deleted after. Contained but real:

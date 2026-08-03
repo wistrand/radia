@@ -86,7 +86,7 @@ export const CLASSIFY_MODEL = Deno.env.get("RADIA_CHAT_CLASSIFY_MODEL") ?? "goog
 export const IMAGE_MODEL = Deno.env.get("RADIA_CHAT_IMAGE_MODEL") ?? "google/gemini-2.5-flash-image";
 
 /** How long a model-written program may run. Short on purpose: it is also the bound on how long a
- *  runaway allocation can hold host memory (tools/exec-sandbox.ts explains why the heap flag is not enough). */
+ *  runaway allocation can hold host memory (extensions/ts/sandbox.ts explains why the heap flag is not enough). */
 export const EXEC_TIMEOUT_MS = Deno.env.get("RADIA_CHAT_EXEC_TIMEOUT_MS") ?? "5000";
 
 /** Where generated artifacts are also written locally, if set. */

@@ -51,13 +51,15 @@ meet, in any language.
 
 | Path | Role |
 |--------------------------|--------------------------------------------------------------|
-| `ts/workspace.ts` | multi-file working trees: manifest, tree digest, path safety |
+| `ts/workspace.ts` | multi-file working trees: manifest, tree digest, path safety, materialisation |
+| `ts/sandbox.ts` | running untrusted code in a permissionless subprocess. Imports nothing |
 | `conformance/` | the contract an implementation must meet (`deno task extensions`) |
 
-Planned, per [design-execution.md](../agent_docs/design-execution.md): `sandbox` records and the
-runner that serves them. A sandbox describes an execution environment, which is meaningless inside
-one application and is not something the runtime executes, so it belongs here rather than in either
-neighbour.
+Planned, per [design-execution.md](../agent_docs/design-execution.md): the `sandbox` RECORD and the
+worker that serves one. The runner MECHANISM is already here; what is missing is the record that
+describes a jail and the boot probe that verifies the description is true. Both belong here for the
+same reason the runner does: an execution environment is meaningless inside one application, and the
+runtime executes nothing.
 
 ## Language parity
 
