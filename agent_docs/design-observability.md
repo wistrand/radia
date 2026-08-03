@@ -59,8 +59,12 @@ diagnostics use age/state heuristics, not pattern-match analysis).
   DERIVED and reported: a shred marker plus a present blob is a reversed erasure
   (`Space.erasures`, `GET /v0/ops/erasures`, and a finding in `diagnostics`/`radia doctor`).
   One `stat` per shred, asked when an operator asks, rather than a query on every artifact read.
-  Remediation is deliberately absent: re-shredding would destroy the innocent later record's bytes
-  too, so the choice belongs to a person who can see both.
+  Remediation is NAMED but never automatic: the finding prints the `radia shred <id> --shared` that
+  re-erases, together with what it costs, because re-shredding also destroys the bytes for the later
+  record that legitimately stored them. The existing shared-payload refusal already forces that
+  choice, so stating it in the finding only moves the surprise earlier. The loop then closes on its
+  own — `holds` is derived from present state, so re-erasing flips every marker for that digest back
+  at once, including the one written before the payload returned.
 
 ## Event log
 

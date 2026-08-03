@@ -157,7 +157,7 @@ extension, a surface takes no runtime value, an extension never imports `src/`, 
 ## The CLI: `src/surfaces/cli.ts`
 
 Five verb groups (inspect, coordinate, remediate, the two identity verbs `login` / `permissions`,
-and one export), plus `--json` on every one and `--url` to point elsewhere. `radia help` prints the
+and workspaces), plus `--json` on every one and `--url` to point elsewhere. `radia help` prints the
 authoritative list with flags; it is not restated here, because a hand-copied verb list is the
 drift this doc exists to avoid.
 
@@ -181,6 +181,11 @@ writes a BARE repository, so `git clone <out>` does the checkout; see
 [design-workspaces.md](design-workspaces.md) for why the projection is export-only. It needs
 `workspace: query` and `artifact: read_one`, and nothing more: an export reads exactly what its
 principal could already read, which is why it takes the caller's credential rather than holding one.
+
+`erasures [--undone]` reports every shred and whether its payload is still gone, and `doctor`
+carries the same finding with the remedy attached. Both exist because shredding destroys the
+runtime's copy rather than the ability to store those bytes, so an erasure can silently stop
+holding; see [design-observability.md](design-observability.md).
 
 `runCli` returns an exit code and never terminates the process itself. One trap it works around:
 `GET /v0/health` is public, so a *rejected* token still returns 200 with `principal=anonymous`.

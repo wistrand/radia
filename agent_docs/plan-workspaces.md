@@ -4,11 +4,13 @@ Sequence and status. The reasoning lives in [design-workspaces.md](design-worksp
 working tree is, and the git relationship) and [design-execution.md](design-execution.md) (why the
 language question is an isolation question). Read those first; this file assumes them.
 
-> **Status: Phases 0-8 DONE.** Workspaces, write-back, `check`, fork detection, `sandbox` records,
+> **Status: Phases 0-9 DONE.** Workspaces, write-back, `check`, fork detection, `sandbox` records,
 > a second backend (bubblewrap), and selection by capability name (`run_javascript`, `run_python`).
 > Phase 7 answered the selection question with neither of the two options it was written to choose
-> between; see there. Phase 8 (git export) was added after the fact, from a request for git READ
-> access: the analysis split it, and the object builder is the half that shipped.
+> between; see there. Phases 8 and 9 were added after the fact, both from live use rather than from
+> this plan: git export (from a request for git READ access, split so the object builder shipped
+> first) and the read side of a workspace (from watching a model fabricate a file's contents because
+> nothing could read one).
 
 ## What this is for
 
@@ -390,6 +392,42 @@ someone tries.
 
 *A fork is two branches, not a dropped head.* Picking a winner here would be this layer inventing
 the merge policy the design deliberately does not have.
+
+### Phase 9: the read side
+
+**Done.** `radia workspaces`, the chat's `list_workspaces` and `read_workspace`, and
+`summarizeWorkspaces` in `extensions/ts/workspace.ts` behind all three.
+
+*Every phase before this one built the WRITE side, and the gap only showed up in a live session.*
+Trees could be saved, materialised, run and exported, and nothing could list them or read a file out
+of one. What that cost is specific and worse than an inconvenience: asked to show a file, the model
+tried `read_file` (sandbox paths only, denied), reconstructed the contents from earlier in the
+conversation, stored the reconstruction with `save_content`, and answered with it. It said it was a
+reconstruction, which no user reads as "this is not the file". **Fabrication is what fills a missing
+read path**, so the absence of a reader was a correctness problem, not a convenience one.
+
+*The listing had the same defect one question earlier.* "What files are in X" was also answered from
+memory, because `list_workspaces` reported a file COUNT. It reports the paths now. Once a model is
+answering questions about a tree from memory, answering the next one the same way is a short step.
+
+*`query workspace` is not a listing,* which is the substrate-shaped half of the lesson. Every
+version is a record, so three saves of one tree return three rows, and counting them is wrong twice
+over. Anything registry-shaped needs the latest-wins-minus-retired projection, and it belongs in ONE
+place: `summarizeWorkspaces` is shared by the CLI verb and the chat tool precisely so the two cannot
+disagree about what exists.
+
+*A tool scoped more tightly than the GRANT contradicts the tools that are not.* `list_workspaces`
+first filtered to the current conversation while `space_count` was owner-scoped by the grant: one
+answered 8, the other none, both correctly, and the model spent eight tool rounds failing to
+reconcile them. The narrowing was doing no security work either, since the query is bounded by the
+grant regardless. Where relevance genuinely differs from permission, MARK the rows
+(`thisConversation: true`) rather than hiding them.
+
+*And erasure had to become legible here too.* A shredded file made `materialize` throw, which
+`agentLoop` nacked, which re-claimed the call until the CLIENT's deadline — a two-minute hang with
+no reason given. A permanent failure is a RESULT, never a throw. Both the runner and the reader now
+say the payload was erased, that it is permanent, and that the fix is a successor tree without that
+path.
 
 ## Open, and better decided with Phase 1 evidence
 

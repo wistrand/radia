@@ -39,10 +39,26 @@ resequencing: shipping the top three serves agents and newcomers and does nothin
 | 7 | "Who can see this record"                               | Operator  | The read-side twin of the dry-run matcher; same machinery                  |
 | 8 | Replay with an explicit horizon                         | Operator  | A dividend already earned; the window closes when retention GC lands       |
 | 9 | Taint overlay (colour by label), then provenance         | Operator  | The substrate change LANDED (labels, not one bit), so the overlay is rendering; provenance is a pruned lineage walk |
+| — | Erasures that no longer hold                             | Operator  | **DONE, unplanned.** Arrived from a live incident rather than this list; see below |
 
 Items 1 and 2 are independent of everything else and of each other. Item 3 is the one whose absence
 explains why the newcomer's question has no answer today, so treat a slip there as a slip in adoption
 rather than in tooling.
+
+### The one that arrived from an incident
+
+`GET /v0/ops/erasures` and the `radia doctor` finding were not on this list and would not have been:
+nobody asks for a view of erasures until one stops holding. A shred destroys the runtime's copy and
+not the ability to store those bytes, so a payload can return to the same content address, and
+`shredOf` had exactly one caller, inside the branch that runs AFTER a read has already failed —
+which made a reversed erasure invisible rather than merely ineffective.
+
+It belongs in this document because it is the shape [design-inspection.md](design-inspection.md)
+argues for and the order above does not predict. The question is an operator's, the answer is
+DERIVED from present state rather than recorded (a marker plus a present blob), and it costs one
+`stat` per shred asked at ask-time instead of a check on every read. The general lesson for the
+backlog: an inspection item whose absence is only felt during an incident will never surface from
+reasoning about audiences, so incidents deserve a place in how this list is resequenced.
 
 ## Not scheduled, and why
 

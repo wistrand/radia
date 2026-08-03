@@ -269,7 +269,19 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
             const x = e as { artifactId?: string; reason?: string; at?: string };
             lines.push(`  ${x.artifactId}${x.reason ? ` (${x.reason})` : ""} shredded ${x.at}`);
           }
+          if ((undone.sample ?? []).length > 5) lines.push(`  …and ${(undone.sample ?? []).length - 5} more in the sample`);
           lines.push("  radia erasures --undone for the full list");
+          // The remedy AND its cost together. A finding that names a problem and not the fix gets
+          // read as unfixable; a fix named without its cost gets run without the decision. Erasing
+          // is by CONTENT, so re-shredding destroys the bytes for the later record that legitimately
+          // stored them too — `shred` refuses without `--shared` precisely to force that choice, so
+          // saying it here only moves the surprise earlier.
+          const first = (undone.sample ?? [])[0] as { artifactId?: string } | undefined;
+          lines.push(
+            `  to re-erase: radia shred ${first?.artifactId ?? "<artifact-id>"} --shared` +
+              " — this destroys those bytes for EVERY record holding them, including whoever stored" +
+              " them again, and the finding clears once the payload is gone",
+          );
         }
         if (undone && !undone.complete) lines.push(`erasure scan INCOMPLETE after ${undone.checked} records: more may not hold`);
         if (lines.length === 1) lines.push("no dead-letters, stuck leases, stale work, or undone erasures");

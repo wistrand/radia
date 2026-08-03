@@ -395,6 +395,24 @@ Code never goes to `save_content`, even a single file: the same bytes as a works
 ability to run it, version it or attach a verdict to it. The only thing that is not a workspace is a
 program not worth keeping.
 
+**And a fourth tool, because writing without reading is worse than incomplete.** For a milestone the
+assistant could save a tree, materialise it, run it and export it, and could not LIST what it had
+saved or READ a file out of one. Asked to show a file, it tried `read_file` (sandbox paths only,
+denied), rebuilt the contents from earlier in the conversation, stored the reconstruction with
+`save_content`, and answered with it — noting it was a reconstruction, which no user reads as "this
+is not the file". Fabrication is what fills a missing read path. `list_workspaces` reports the paths
+(not just a count, which was being answered from memory one question earlier) and `read_workspace`
+returns a file's stored bytes with the tree digest they came from, and refuses to be a substitute
+for guessing: its description forbids reproducing a workspace file from memory, with or without a
+caveat.
+
+**Erasure is legible on both routes.** A shredded payload makes a tree unrunnable, and it used to do
+so by hanging: `materialize` threw, `agentLoop` nacked, the call was re-claimed until the client's
+tool deadline, and the user saw `timed out waiting for 'run_python'` with no reason. A permanent
+failure is a RESULT, never a throw. The runner and `read_workspace` now say the same thing — the
+payload was ERASED, permanently, and the fix is a successor tree without that path — because the
+alternative a model reaches for when it gets nothing usable is reconstructing the file.
+
 **A project is a workspace, not a string.** `save_workspace(name, files)` stores a multi-file tree
 (the convention lives in [`extensions/ts/workspace.ts`](../../extensions/ts/workspace.ts)), and
 both runners take a `workspace` argument that materialises it into a fresh directory and run the
@@ -593,12 +611,20 @@ as real output takes the line, and is TTY-only, so piped output is unchanged. Pr
 a `retentionUntil` (they're chatter, not history) and any client sees the same stream, including
 the console Feed.
 
-**Absence of progress is the stall signal.** A call nobody claimed produces no `progress` record,
-which is how a configuration failure is told apart from a slow model: past ~2.5s with nothing, the
-chat says `no worker serves 'search_files'` or `no worker claimed this call. Is the
-router/inference fleet running?` instead of sitting silent until its timeout, and the timeout error
-names the last stage reached. This works for a scoped session too (a `progress` query grant), with
-no `/ops/*` access.
+**Absence of progress is a WAITING signal, and only sometimes a stall.** A call nobody claimed
+produces no `progress` record, so past ~9s with nothing the chat offers a hint instead of sitting
+silent until its timeout, and the timeout error names the last stage reached. This works for a
+scoped session too (a `progress` query grant), with no `/ops/*` access.
+
+The hint says only what a client can support, which is narrower than it first claimed. It used to
+read `no worker serves 'x'` after 2.5 seconds — but most tools emit no progress records at all, so
+it accused a worker that was about to answer, then vanished under the reply, which is why it read as
+a flicker rather than as a bug. What a client CAN prove is what is advertised, because that set is
+what it handed the model; **liveness it cannot**, since a `capability` record is an advertisement and
+a stopped worker's record lingers, and a scoped session cannot read the envelope to see whether the
+call was claimed. So an advertised tool gets `no result yet from 'x'`, an unadvertised one gets
+`nothing advertises 'x'`, and the timeout names both possibilities rather than picking the alarming
+one.
 
 **A credential is required; there is no default identity.** Two of them, and they are not the same
 principal:

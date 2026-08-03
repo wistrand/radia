@@ -465,6 +465,15 @@ class RadiaClient:
     def diagnostics(self) -> Dict[str, Any]:
         return self._req("GET", "/v0/ops/diagnostics")
 
+    def erasures(self, undone: bool = False) -> Dict[str, Any]:
+        """Every shred, and whether its payload is still gone.
+
+        A shred destroys the runtime's copy, not the ability to store those bytes: the content
+        address stays valid, so anyone holding the payload can write it again and every record
+        referencing it reads once more. `holds: False` marks an erasure that was reversed.
+        """
+        return self._req("GET", "/v0/ops/erasures" + ("?undone=true" if undone else ""))
+
     def query_envelopes(
         self,
         state: str,

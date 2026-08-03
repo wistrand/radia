@@ -329,6 +329,28 @@ export const recordSuites: Suite[] = [
       const d = await space.diagnostics();
       assertEquals(d.undoneErasures?.count, 1);
       assertEquals(d.undoneErasures?.checked, 2);
+
+      // THE LOOP CLOSES, which is what makes the finding worth reporting rather than a permanent
+      // scar. Re-erasing needs `acknowledgeShared` — by now two records hold those bytes and both
+      // lose them — so the cost is stated before the act rather than discovered after it.
+      const restored = (await space.query({ kind: "artifact", match: { digest: leaked.digest } }, 10))[0];
+      let refusedWithoutAck = "";
+      try {
+        await space.shredArtifact(restored.id);
+      } catch (e) {
+        refusedWithoutAck = (e as Error).message;
+      }
+      assert(refusedWithoutAck.includes("all of them lose it"), refusedWithoutAck || "expected a shared-payload refusal");
+
+      await space.shredArtifact(restored.id, { acknowledgeShared: true, reason: "re-erased" });
+      assertEquals((await space.erasures({ onlyUndone: true })).erasures.length, 0, "the finding clears");
+      // EVERY marker for that digest flips back, including the one written before the re-upload,
+      // because `holds` is derived from present state rather than tracked. Nothing has to remember
+      // the sequence, so nothing can disagree with it.
+      const markers = (await space.erasures()).erasures.filter((e) => e.digest === leaked.digest);
+      assertEquals(markers.length, 2, "one marker per erasure EVENT, not per digest");
+      assert(markers.every((e) => e.holds), "all of them hold again");
+      assertEquals(await space.readArtifact(leaked.id), null, "and the payload is gone once more");
     },
   },
   {

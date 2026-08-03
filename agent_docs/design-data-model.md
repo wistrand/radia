@@ -286,7 +286,7 @@ valid after the payload is destroyed, so the chain still verifies and the space 
 artifact with this digest was here, and was erased". A plain row delete would take that away, which
 is why erasure is a successor record and not a deletion.
 
-Four properties that are decisions, not details:
+Five properties that are decisions, not details:
 
 - **Under a KEK this is crypto-shredding**, and `BlobStore.delete` destroys the key BEFORE the
   ciphertext, so an interrupted erase leaves unreadable bytes rather than readable ones. Without a
@@ -301,6 +301,22 @@ Four properties that are decisions, not details:
   the caller passes `acknowledgeShared`.
 - **A shredded read is `410`, never `404`.** "Erased" and "never existed" must not be the same
   answer, or an auditor cannot tell a destroyed record from a mistyped id.
+- **An erasure can stop holding, and the honest answer is to REPORT it, not to prevent it.** The
+  content address stays valid, so anyone holding the payload can store it again; the blob returns
+  and every record referencing it reads once more. It happened by accident before anyone tried it:
+  a model still carrying the erased text in its context re-saved it through an ordinary tool.
+  Neither obvious guard survives scrutiny. Refusing a WRITE whose digest was once shredded poisons a
+  content address for the whole space (shred an empty file and nothing may ever store one) and
+  breaks any program that legitimately recomputes the same output. Refusing to SERVE the shredded
+  record while identical bytes are readable through a newer one protects the paper trail rather than
+  the person, and makes a broken guarantee look intact. So the state is DERIVED — a marker plus a
+  present blob is a reversed erasure — and surfaced by `Space.erasures`, `GET /v0/ops/erasures`, and
+  a finding in `radia doctor` that names `radia shred <id> --shared` as the remedy along with what
+  re-erasing costs. See [design-observability.md](design-observability.md).
+
+The word "irreversible" used to appear here and in CLAUDE.md's invariant, and it was wrong. What
+shredding destroys is the runtime's COPY; it cannot make those bytes unstorable, and pretending
+otherwise is how a guarantee erodes without anyone noticing.
 
 **What this does NOT cover, and the gap is real.** Record bodies are plaintext JSON, because the
 routing language matches on them, so there is no erasure path for a body. In `examples/chat` the
