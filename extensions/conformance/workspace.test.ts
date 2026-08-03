@@ -29,7 +29,8 @@ import {
   type WorkspaceManifest,
   writeWorkspace,
 } from "../ts/workspace.ts";
-import { runCode } from "../ts/sandbox.ts";
+import { denoSandbox, probeSandbox, runCode } from "../ts/sandbox.ts";
+import { declareSandbox, listSandboxes, readSandbox, SANDBOX_KIND, verifySandbox } from "../ts/sandbox-registry.ts";
 
 const PORT = 7815;
 const url = `http://127.0.0.1:${PORT}`;
@@ -584,5 +585,72 @@ Deno.test("workspace: a version chain is a DAG, so lineage walks a project's his
     // And downward: who superseded this one. That is the query fork detection is built on.
     const children = await c.getChildren(v1.id);
     assertEquals(children.map((r) => r.id), [v2.id]);
+  });
+});
+
+// ── Phase 5: a sandbox as a record, with the probe that makes it worth anything ──────────────────
+
+Deno.test("sandbox: the spec describes the jail runCode actually builds", () => {
+  const bare = denoSandbox();
+  assertEquals(bare.network, false);
+  assertEquals(bare.processes, false);
+  assertEquals(bare.env, false);
+  assertEquals(bare.readonlyPaths, [], "no filesystem unless a caller granted roots");
+  assertEquals(bare.writablePaths, [], "and no write, which is the posture every run had before workspaces");
+  assert(bare.runtime.startsWith("deno "), "the runtime is named, because a guarantee is only as old as its build");
+
+  // A configured jail describes what it GOT, not what was intended: a record that always claimed
+  // "no filesystem" would be the prose problem with extra steps.
+  const withTree = denoSandbox({ readRoots: ["/tmp/x"], writeRoots: ["/tmp/x"] });
+  assertEquals(withTree.readonlyPaths, ["/tmp/x"]);
+  assertEquals(withTree.writablePaths, ["/tmp/x"]);
+});
+
+Deno.test("sandbox: the probe actually tries to escape, and the jail holds", async () => {
+  // A description nobody tested is a more convincing version of an unenforced sentence, because
+  // structured data LOOKS authoritative. Each attempt is a real operation a program would make, and
+  // the probe passes only when it FAILS inside the jail.
+  const spec = denoSandbox();
+  const results = await probeSandbox(spec);
+  const claims = results.map((r) => r.claim).sort();
+  assertEquals(claims, ["env", "filesystem", "network", "processes", "writable"], "every boolean claim is tested");
+  for (const r of results) {
+    assert(r.held, `the jail did not hold for ${r.claim}: ${r.detail}`);
+  }
+  assertEquals(await verifySandbox(spec), [], "nothing to report when every claim holds");
+
+  // …and the probe is not vacuous: granting a capability makes the matching claim untestable rather
+  // than passing silently, so a jail that CAN write is never reported as one that cannot.
+  const open = denoSandbox({ writeRoots: ["/tmp"] });
+  const openResults = await probeSandbox(open, { writeRoots: ["/tmp"] });
+  assert(!openResults.some((r) => r.claim === "writable"), "a claim that was not made is not probed");
+});
+
+Deno.test("sandbox: a declaration is a record an operator can query and a policy can bind", async () => {
+  await withSpace(async (c) => {
+    await c.registerKind(SANDBOX_KIND);
+    const spec = denoSandbox({ name: "deno-strict" });
+    const { id } = await declareSandbox(c, spec);
+    assert(id);
+
+    // Content-keyed: a fleet restarting must not append a record per boot, because this registry is
+    // read to decide what may execute and unbounded growth is what makes a bounded read dangerous.
+    const again = await declareSandbox(c, spec);
+    assertEquals(again.id, id, "the same jail declared twice is one record");
+
+    const read = await readSandbox(c, "deno-strict");
+    assertEquals(read!.isolation, "deno-permissions");
+    assertEquals(read!.network, false);
+    assertEquals((await listSandboxes(c)).length, 1, "one entry per name, latest wins");
+
+    // THE reason this is a record rather than prose: a policy can bind the property that matters.
+    const noNetwork = await c.query({ kind: "sandbox", match: { network: false } }, 10);
+    assertEquals(noNetwork.length, 1, "'which of my sandboxes cannot reach the network' is a query");
+
+    // A changed jail is a successor, not a conflict: the guarantee moved, and the old claim stays
+    // readable so a verdict reached under it still means something.
+    await declareSandbox(c, { ...spec, memoryMb: 64 });
+    assertEquals((await readSandbox(c, "deno-strict"))!.memoryMb, 64);
+    assertEquals((await c.query({ kind: "sandbox", match: { name: "deno-strict" } }, 10)).length, 2);
   });
 });

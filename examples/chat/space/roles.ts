@@ -131,6 +131,10 @@ const EXEC_GRANTS: Grant[] = [
   // only SERVES trees; write-back made that false, and the grant had to follow the capability
   // rather than the other way round.
   { kind: "workspace", operations: ["query", "put"] },
+  // Reads the operator's declaration of the jail it runs in. `query` only: a worker that could
+  // write its own guarantees would be back to a manifest claim, which is what the split of
+  // declare-versus-verify exists to prevent.
+  { kind: "sandbox", operations: ["query"] },
 ];
 
 // plain user (the REPL): may drive its own conversations and read its own results, nothing more.

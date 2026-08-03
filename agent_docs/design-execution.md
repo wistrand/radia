@@ -4,8 +4,11 @@ Why the language question is really an isolation question, how a space gains a l
 stops being true when it does. Nothing here is built beyond the JS runner that exists today
 (`examples/chat/workers/exec.ts` dispatches; `extensions/ts/sandbox.ts` is the jail).
 
-> **Status: design.** The SHAPE is decided: a sandbox is a record, matched by pattern like anything
-> else. The isolation backends and the open questions at the end are not. Read [design-workspaces.md](design-workspaces.md) alongside this: a
+> **Status: the shape is BUILT for one backend** (Phase 5 of
+> [plan-workspaces.md](plan-workspaces.md)): `SandboxSpec` and `probeSandbox` in
+> `extensions/ts/sandbox.ts`, the registry in `extensions/ts/sandbox-registry.ts`, with the operator
+> declaring and the worker refusing to serve a jail whose claims do not hold. A SECOND backend,
+> where fail-open becomes real, is not built, and neither are the open questions at the end. Read [design-workspaces.md](design-workspaces.md) alongside this: a
 > multi-file working tree and a second language interact, and the interaction is not small.
 
 ## Contents
@@ -291,10 +294,10 @@ requirement. The upside stands: a vendored dependency set is part of the audited
 Three things were listed as open and are decided by sections of this document; leaving them open
 would contradict the arguments that motivate them.
 
-- **The OPERATOR writes `sandbox` records.** A manifest claim is descriptive by definition and an
+- **BUILT. The OPERATOR writes `sandbox` records.** A manifest claim is descriptive by definition and an
   execution guarantee must not be. The operator configured the launcher; the worker only believes
   things about it.
-- **A runner probes each backend at boot and refuses to advertise one that fails.** Required by
+- **BUILT. A runner probes each backend at boot and refuses to advertise one that fails.** Required by
   "fail-closed by absence, fail-open by presence": without it the flip from safe-by-default to
   unsafe-by-default is undetectable, and the record makes it look verified.
 - **The `sandbox` body uses OCI's vocabulary** where OCI has a name for the thing.

@@ -26,6 +26,8 @@ import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { activeByKey, newestByKey, RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
 import { runCode } from "../../../extensions/ts/sandbox.ts";
 import { captureWorkspace, commitWorkspace, materialize, readWorkspace } from "../../../extensions/ts/workspace.ts";
+import { denoSandbox } from "../../../extensions/ts/sandbox.ts";
+import { verifySandbox } from "../../../extensions/ts/sandbox-registry.ts";
 import { progress } from "../space/progress.ts";
 import { arg, argAll } from "../util.ts";
 import { publishCapability } from "../space/capability.ts";
@@ -351,6 +353,23 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
   return { id: latest.id, ...(latest.body as { name: string; artifactId: string; description?: string; retired?: boolean }) };
 }
 
+// PROVE THE JAIL BEFORE SERVING ANYTHING. The operator declared what this environment guarantees;
+// this worker is the only thing that can test whether the declaration is true, and a record nobody
+// verified is a more convincing version of an unenforced sentence, because structured data looks
+// authoritative. Failing claims are NAMED, and the worker refuses to start rather than warning: a
+// policy relying on an unverified guarantee is worse than no policy, since it looks like one.
+{
+  const spec = denoSandbox({ name: "deno", readRoots, timeoutMs });
+  const failed = await verifySandbox(spec, { readRoots, timeoutMs });
+  if (failed.length > 0) {
+    console.error(
+      "exec worker: refusing to serve. The jail does not match its declaration: " +
+        failed.map((f) => `${f.claim} (${f.detail})`).join(", "),
+    );
+    Deno.exit(1);
+  }
+}
+
 await agentLoop(client, {
   name: "exec",
   patterns,
@@ -524,6 +543,9 @@ await agentLoop(client, {
             // WHAT was verified, not just that something was. A verdict against a tree digest is an
             // attestation of a reproducible input; against a call id it is a note about an event.
             ...(wsTree ? { workspace: wsName, treeDigest: wsTree } : {}),
+            // WHERE it was verified. A verdict from a jail with a filesystem and one from a jail
+            // with none are not the same evidence, and nothing else in the record says which.
+            sandbox: "deno",
             verdict: j.verdict,
             expected: expectation,
             reasons: j.reasons,

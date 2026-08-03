@@ -5,6 +5,7 @@
 // not quadratic) and the whole conversation is reconstructible from the space.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
+import { SANDBOX_KIND } from "../../../extensions/ts/sandbox-registry.ts";
 
 export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // A `capability` record = a tool a worker serves ({tool, def}). The chatbot DISCOVERS its
@@ -91,6 +92,10 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     ],
     sortablePaths: ["attempt"],
   });
+  // A `sandbox` = an execution environment and what it guarantees, declared by the OPERATOR and
+  // verified by the worker before it serves anything. A record rather than prose because a grant
+  // can bind `{network: false}` and a sentence in a tool description cannot.
+  await client.registerKind(SANDBOX_KIND);
   // A `workspace` = one version of a multi-file working tree: a manifest of {path, mode, digest,
   // artifactId} with the bytes stored as artifacts. Latest-wins by name like `procedure`, so a new
   // version is a successor and every earlier one stays readable.

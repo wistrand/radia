@@ -5,8 +5,10 @@
 // extensions/README.md). Phase 5 of plan-workspaces.md puts a `sandbox` RECORD on top of this;
 // what is here is only the mechanism.
 //
-// It imports NOTHING. That is the property worth keeping: the jail is Deno's permission flags,
-// so there is no policy to get wrong and nothing to keep in sync with the runtime.
+// It imports NOTHING, including for the SandboxSpec and the probe below. That is the property
+// worth keeping: the jail is Deno's permission flags, so there is no policy to get wrong and
+// nothing to keep in sync with the runtime. Publishing a spec as a record needs a client, so that
+// lives next door in sandbox-registry.ts rather than here.
 //
 // The sandbox: run model-written JavaScript with nothing.
 //
@@ -175,4 +177,101 @@ export async function runCode(source: string, opts: RunOptions = {}): Promise<Ru
     truncated: out.truncated || err.truncated,
     ms: Date.now() - started,
   };
+}
+
+// ── What this jail CLAIMS, and proving it ────────────────────────────────────────────────────────
+
+/**
+ * A description of an execution environment: what a policy can bar, stated as data.
+ *
+ * The point is that these are the fields a GRANT can scope on and a `check` can reference, not
+ * prose in a tool description. A record that says `network: false` is matchable; a sentence saying
+ * so is only readable, and only by a model.
+ *
+ * The vocabulary stays small and boolean where a Deno jail is boolean. OCI's names are the right
+ * borrow once a container backend lands (namespaces, mounts, rlimits, readonlyPaths, seccomp), but
+ * forcing them onto a permission model that has no namespaces would be a translation nobody asked
+ * for. See agent_docs/design-execution.md.
+ */
+export interface SandboxSpec {
+  name: string;
+  language: string;
+  /** How the jail is built. The one thing a reader must not have to infer. */
+  isolation: "deno-permissions";
+  network: boolean;
+  /** Absolute paths the program may read; empty means no filesystem at all. */
+  readonlyPaths: string[];
+  /** Absolute paths it may write; empty means it cannot write. */
+  writablePaths: string[];
+  processes: boolean;
+  env: boolean;
+  memoryMb: number;
+  timeoutMsMax: number;
+  runtime: string;
+}
+
+/** The jail `runCode` actually builds, for a given configuration. */
+export function denoSandbox(opts: RunOptions & { name?: string } = {}): SandboxSpec {
+  const { timeoutMs, memoryMb } = { ...DEFAULTS, ...opts };
+  return {
+    name: opts.name ?? "deno",
+    language: "javascript",
+    isolation: "deno-permissions",
+    network: false,
+    readonlyPaths: opts.readRoots ?? [],
+    writablePaths: opts.writeRoots ?? [],
+    processes: false,
+    env: false,
+    memoryMb,
+    timeoutMsMax: timeoutMs,
+    runtime: `deno ${Deno.version.deno}`,
+  };
+}
+
+/** One thing a probe tried, and whether the jail held. */
+export interface ProbeResult {
+  claim: string;
+  held: boolean;
+  detail?: string;
+}
+
+/**
+ * Try to break out of the jail, and report per claim.
+ *
+ * A description nobody tested is a more convincing version of an unenforced sentence, which is the
+ * failure this whole record shape exists to avoid: structured data LOOKS authoritative. So a runner
+ * proves each claim before advertising it, at boot, once.
+ *
+ * The escape attempts are deliberately the ones a real program would make, and each is inverted:
+ * the probe passes when the operation FAILS. A probe that cannot break out is the evidence; a probe
+ * that succeeds means the record is lying and nothing should serve it.
+ */
+export async function probeSandbox(spec: SandboxSpec, opts: RunOptions = {}): Promise<ProbeResult[]> {
+  const attempts: { claim: string; onlyIf: boolean; code: string }[] = [
+    { claim: "network", onlyIf: !spec.network, code: `await fetch("http://127.0.0.1:1/")` },
+    { claim: "processes", onlyIf: !spec.processes, code: `new Deno.Command("echo").outputSync()` },
+    { claim: "env", onlyIf: !spec.env, code: `Deno.env.get("HOME")` },
+    {
+      claim: "filesystem",
+      onlyIf: spec.readonlyPaths.length === 0,
+      code: `Deno.readTextFileSync("/etc/hostname")`,
+    },
+    {
+      claim: "writable",
+      onlyIf: spec.writablePaths.length === 0,
+      // Writes into the temp area rather than the tree: a jail that CAN write would otherwise leave
+      // the evidence somewhere the next probe reads as real.
+      code: `Deno.writeTextFileSync("/tmp/radia-probe-should-not-exist", "escaped")`,
+    },
+  ];
+  const out: ProbeResult[] = [];
+  for (const a of attempts) {
+    if (!a.onlyIf) continue; // nothing claimed, nothing to disprove
+    const r = await runCode(`try { ${a.code}; console.log("ESCAPED") } catch { console.log("held") }`, opts);
+    // A denied permission may surface as a caught error OR as a killed process; both are the jail
+    // holding. Only the word ESCAPED means the claim is false.
+    const escaped = r.stdout.includes("ESCAPED");
+    out.push({ claim: a.claim, held: !escaped, ...(escaped ? { detail: "the operation succeeded inside the jail" } : {}) });
+  }
+  return out;
 }

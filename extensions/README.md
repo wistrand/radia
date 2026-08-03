@@ -52,14 +52,13 @@ meet, in any language.
 | Path | Role |
 |--------------------------|--------------------------------------------------------------|
 | `ts/workspace.ts` | multi-file working trees: manifest, tree digest, path safety, materialisation |
-| `ts/sandbox.ts` | running untrusted code in a permissionless subprocess. Imports nothing |
+| `ts/sandbox.ts` | running untrusted code in a permissionless subprocess, plus the spec describing that jail and the probe that tries to escape it. Imports nothing |
+| `ts/sandbox-registry.ts` | a sandbox as a RECORD: the operator declares, the worker verifies before serving |
 | `conformance/` | the contract an implementation must meet (`deno task extensions`) |
 
-Planned, per [design-execution.md](../agent_docs/design-execution.md): the `sandbox` RECORD and the
-worker that serves one. The runner MECHANISM is already here; what is missing is the record that
-describes a jail and the boot probe that verifies the description is true. Both belong here for the
-same reason the runner does: an execution environment is meaningless inside one application, and the
-runtime executes nothing.
+Planned, per [design-execution.md](../agent_docs/design-execution.md): a SECOND isolation backend
+(bubblewrap or a container). That is where the guarantee stops being uniform and a claim can
+fail-open, which is why one backend shipped first.
 
 ## Language parity
 

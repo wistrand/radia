@@ -37,8 +37,10 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { assignUserGrants, bootstrap, setSessionOwner } from "./space/roles.ts";
-import { apiKey, execRoots, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
+import { apiKey, EXEC_TIMEOUT_MS, execRoots, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
 import { launchFleet, spawnSpace } from "./client/fleet.ts";
+import { denoSandbox } from "../../extensions/ts/sandbox.ts";
+import { declareSandbox } from "../../extensions/ts/sandbox-registry.ts";
 import { ToolSet } from "./client/turn.ts";
 import { Thread } from "./client/thread.ts";
 import { runTurn } from "./client/turn.ts";
@@ -155,6 +157,14 @@ const scope = scopeMode === "conversation"
 // authority.
 const tokens = await bootstrap(admin, scope);
 await assignUserGrants(admin, owner, scope);
+// The OPERATOR declares the jail it is about to launch a worker into. Not the worker: a manifest
+// claim is descriptive by definition, and an execution guarantee must not be. This process
+// configured the flags, so it is the one that can honestly say what they are.
+await declareSandbox(admin, denoSandbox({
+  name: "deno",
+  readRoots: execRoots,
+  timeoutMs: Number(EXEC_TIMEOUT_MS),
+}));
 procs.push(...launchFleet(tokens, loginToken));
 
 const tools = new ToolSet(session);
