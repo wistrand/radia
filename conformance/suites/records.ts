@@ -293,6 +293,62 @@ export const recordSuites: Suite[] = [
     },
   },
   {
+    name: "an erasure that stopped holding is REPORTED, since neither refusing the write nor the read is right",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      const SECRET = new TextEncoder().encode("the thing someone exercised a right to erase\n");
+      const leaked = await space.putArtifact(SECRET, { mediaType: "text/plain", filename: "leak.txt" });
+      const other = await space.putArtifact(new TextEncoder().encode("unrelated\n"), { mediaType: "text/plain" });
+      await space.shredArtifact(leaked.id, { reason: "subject request" });
+      await space.shredArtifact(other.id, { reason: "retention" });
+
+      const before = await space.erasures({ onlyUndone: true });
+      assertEquals(before.erasures.length, 0, "both erasures hold to begin with");
+      assertEquals(before.checked, 2);
+      assert(before.complete, "a scan that reached the end says so");
+
+      // The accident that exposed all of this: a model still holding the erased text in its context
+      // re-saved it through an ordinary tool. The blob returns to the same content address and every
+      // record referencing it reads again — nothing in the system noticed, because `shredOf` was
+      // consulted only AFTER a read had already failed.
+      await space.putArtifact(SECRET, { mediaType: "text/plain", filename: "reconstructed.txt" });
+      assert((await space.readArtifact(leaked.id)) !== null, "the shredded record reads again: that is the fact being reported");
+
+      const after = await space.erasures({ onlyUndone: true });
+      assertEquals(after.erasures.length, 1, "the reversed erasure is found");
+      assertEquals(after.erasures[0].artifactId, leaked.id);
+      assertEquals(after.erasures[0].holds, false);
+      assertEquals(after.erasures[0].reason, "subject request");
+
+      // The one that still holds is not swept up with it: this is a report, not an alarm.
+      const all = await space.erasures();
+      assertEquals(all.erasures.length, 2);
+      assertEquals(all.erasures.filter((e) => e.holds).length, 1);
+
+      // And it reaches the health report, which is where an operator will actually meet it.
+      const d = await space.diagnostics();
+      assertEquals(d.undoneErasures?.count, 1);
+      assertEquals(d.undoneErasures?.checked, 2);
+    },
+  },
+  {
+    name: "a scoped caller is told nothing about erasures rather than a reassuring zero",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      const a = await space.putArtifact(new TextEncoder().encode("gone\n"), { mediaType: "text/plain" });
+      await space.shredArtifact(a.id, { reason: "leaked" });
+      await space.putArtifact(new TextEncoder().encode("gone\n"), { mediaType: "text/plain" });
+
+      // Unscoped: the finding is there.
+      assertEquals((await space.diagnostics()).undoneErasures?.count, 1);
+      // Scoped: ABSENT, never 0. Shred records are operator-visible, so a session reporting "no
+      // erasure was undone" would be reassurance on no evidence — the same trap that makes every
+      // other scoped count carry a `scope` note.
+      const scoped = await space.diagnostics({ createdBy: ["agent:x"], kinds: ["artifact"] });
+      assertEquals(scoped.undoneErasures, undefined);
+    },
+  },
+  {
     name: "a body over the size limit is refused, because a body can never be erased",
     run: async (adapter) => {
       // The familiar reason for a size limit is that bodies stay queryable JSON: matched against,

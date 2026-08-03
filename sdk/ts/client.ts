@@ -448,6 +448,13 @@ export class RadiaClient {
     return this.req("GET", "/v0/ops/diagnostics");
   }
 
+  /** Every erasure and whether it STILL HOLDS: a shred destroys the runtime's copy, not the ability
+   *  to store those bytes again, so a payload can return to the same content address. `undone`
+   *  narrows to the ones that were reversed. */
+  erasures(opts: { undone?: boolean } = {}): Promise<unknown> {
+    return this.req("GET", `/v0/ops/erasures${opts.undone ? "?undone=true" : ""}`);
+  }
+
   /** Control-plane remediation: 'reclaim' | 'dead-letter' | 'requeue'. Returns {applied}. */
   async admin(action: "reclaim" | "dead-letter" | "requeue", recordId: string): Promise<{ applied: boolean }> {
     return await this.req("POST", `/v0/ops/records/${encodeURIComponent(recordId)}/${action}`);

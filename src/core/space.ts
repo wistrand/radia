@@ -195,6 +195,23 @@ export interface Diagnostics {
    *  Reference kinds (`claimable:false`: facts, config, grants, history) are excluded: they sit
    *  available forever by design and are not stale. */
   staleAvailable: { count: number; thresholdSeconds: number; sample: unknown[] };
+  /** Erasures that no longer hold: the bytes are back at the same content address. ABSENT for a
+   *  scoped caller rather than zero, because a confident `0` about something the caller cannot see
+   *  is the "empty scoped answer reads as empty space" failure this file already guards elsewhere. */
+  undoneErasures?: { count: number; checked: number; complete: boolean; sample: unknown[] };
+}
+
+/** One shred, and whether it still means anything. */
+export interface ErasureStatus {
+  shredId: string;
+  artifactId: string;
+  digest: string;
+  reason: string;
+  at: string;
+  method: string;
+  /** False when the payload is present again, which is a REVERSED erasure and the only interesting
+   *  value here. */
+  holds: boolean;
 }
 
 /** A short, generic label for a graph node: kind plus a common discriminating field. */
@@ -1144,7 +1161,13 @@ export class Space {
   }
 
   /**
-   * Destroy an artifact's bytes, irreversibly, and record that it happened.
+   * Destroy an artifact's bytes and record that it happened.
+   *
+   * NOT irreversible, and the doc used to say it was. This destroys the runtime's COPY; the content
+   * address stays valid, so anyone holding the payload can store it again and every record that
+   * referenced it reads once more. `Space.erasures` reports a shred in that state rather than
+   * pretending otherwise; see the erasure invariant in CLAUDE.md for why neither refusing the write
+   * nor refusing the read is the fix.
    *
    * Immutability is the substrate's core property and erasure is a real requirement (a subject
    * exercising a right, a secret written by accident, a retention deadline), so this is a carve-out
@@ -2003,6 +2026,20 @@ export class Space {
     const stale = await this.queryEnvelopes({ state: "available", staleSeconds: STALE_S, limit: SAMPLE, excludeKinds: referenceKinds, scope });
     const env = (r: { envelope: Envelope }) => r.envelope;
 
+    // OMITTED for a scoped caller, not zeroed. Shred records are operator-visible, so a session
+    // would get a confident `0` about something it cannot see — the same trap `describeScope` exists
+    // for, and worse here, because "no erasure was undone" is exactly the reassurance nobody should
+    // receive on no evidence.
+    const erasures = scope ? null : await this.erasures({ onlyUndone: true });
+    const undone = erasures
+      ? {
+        count: erasures.erasures.length,
+        checked: erasures.checked,
+        complete: erasures.complete,
+        sample: erasures.erasures.slice(0, 10),
+      }
+      : undefined;
+
     return {
       now,
       // No `expired` count: expiry is IMPLICIT. A lease that lapses leaves the record in state
@@ -2025,7 +2062,65 @@ export class Space {
         sample: stuck.slice(0, 10).map((r) => ({ recordId: env(r).recordId, kind: env(r).kind, leaseId: env(r).leaseId, leasedUntil: env(r).leasedUntil, attempt: env(r).attempt })),
       },
       staleAvailable: { count: stale.length, thresholdSeconds: STALE_S, sample: stale.slice(0, 10).map((r) => ({ recordId: env(r).recordId, kind: env(r).kind, availableAt: env(r).availableAt })) },
+      // In the health report because a reversed erasure is the most consequential thing this can
+      // find, and nothing else was ever going to surface it.
+      ...(undone ? { undoneErasures: undone } : {}),
     };
+  }
+
+  /**
+   * Every erasure and whether it STILL HOLDS.
+   *
+   * Shredding destroys the runtime's copy, not the ability to store those bytes: the content address
+   * stays valid, so anyone holding the payload can write it again and every record referencing it
+   * reads once more. Nothing in the system noticed. `shredOf` had exactly one caller, inside the
+   * branch that runs after a read has already failed, so a reversed erasure was not merely a no-op,
+   * it was INVISIBLE.
+   *
+   * Detection rather than enforcement, and that is the design rather than a compromise:
+   *
+   *   - Refusing to STORE a payload whose digest was once shredded poisons a content address for
+   *     the whole space, and breaks a program that legitimately recomputes the same output.
+   *   - Refusing to SERVE the shredded record while identical bytes are readable through a newer
+   *     one protects the paper trail rather than the person, and makes a broken guarantee look
+   *     intact — the failure this codebase names in the sandbox design.
+   *
+   * So the honest move is to report the true fact ("this erasure was undone") instead of the
+   * misleading one ("this record is erased"), and to put it where an operator asks rather than on
+   * the read path, which costs one `stat` per shred instead of a query per artifact read.
+   *
+   * Pages to exhaustion and reports `complete`, because a partial list of erasures read as a
+   * population would say "all erasures hold" about a space nobody finished scanning.
+   */
+  async erasures(opts: { onlyUndone?: boolean } = {}): Promise<{
+    erasures: ErasureStatus[];
+    checked: number;
+    complete: boolean;
+  }> {
+    const view = await readRegistry<Record<string, unknown>>(
+      (limit, after) => this.query({ kind: SHRED }, limit, { dir: "desc", after }),
+      (_body, r) => r.id,
+    );
+    const out: ErasureStatus[] = [];
+    for (const [shredId, rec] of view.entries) {
+      const b = rec.body as Record<string, unknown>;
+      const digest = typeof b.digest === "string" ? b.digest : "";
+      if (!digest) continue;
+      // The whole check: a marker plus present bytes means the erasure was reversed. Derived, so it
+      // cannot drift from the thing it describes and nothing has to be kept up to date.
+      const holds = (await this.blobs.stat(digest)) === null;
+      if (opts.onlyUndone && holds) continue;
+      out.push({
+        shredId,
+        artifactId: String(b.artifactId ?? ""),
+        digest,
+        reason: String(b.reason ?? ""),
+        at: String(b.at ?? ""),
+        method: String(b.method ?? ""),
+        holds,
+      });
+    }
+    return { erasures: out, checked: view.entries.size, complete: view.complete };
   }
 
   /** Un-stick an expired lease: force it back to available (attempt +1). Only if the lease

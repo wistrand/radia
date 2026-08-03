@@ -51,7 +51,7 @@ content, not by addressing.
 | `src/paths.ts`                          | the one runtime directory: everything a space writes (db, blobs, KEK) lands under `./.radia` (`RADIA_DIR` moves it). Never name a runtime path at a call site; that is how the project root grew four `.radia-*` siblings |
 | `src/ui/index.html`                     | dev web console served at `GET /` (no build, public API only); the **Space** tab streams the ops event log into a property-similarity map (bounded, evicting finished records before live ones); the **Auth** tab mints a person's session (operator only, the console's `radia login`) and the pasted token in `sessionStorage` decides the identity, read back from `ops/permissions` rather than assumed to be the operator |
 | `src/ui/vendor/`                        | prebuilt browser assets served under `/ui/`: `blitzoom.bundle.js` (`<bz-graph>`, layout for the Space tab), pinned to an upstream commit; see the README there |
-| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes, `resolveAuth` Bearer, ops-plane gate, operator-token injection), `problem.ts` (RFC 9457), `handlers/` (`records.ts` + authorize, `leases.ts`, `agents.ts` = bootstrap chain, `artifacts.ts` = bytes in/out + download capabilities + **shred** (the erasure carve-out), `ops.ts` = ops plane: stats/events/lineage/children/graph/envelope-query/diagnostics/admin/remediate/declassify/shred, `watches.ts` SSE = grant-gated `authorizeWatch`) |
+| `src/server/`                           | HTTP surface: `http.ts` (`startServer`, routes, `resolveAuth` Bearer, ops-plane gate, operator-token injection), `problem.ts` (RFC 9457), `handlers/` (`records.ts` + authorize, `leases.ts`, `agents.ts` = bootstrap chain, `artifacts.ts` = bytes in/out + download capabilities + **shred** (the erasure carve-out), `ops.ts` = ops plane: stats/events/lineage/children/graph/envelope-query/diagnostics/erasures/admin/remediate/declassify/shred, `watches.ts` SSE = grant-gated `authorizeWatch`) |
 | `src/storage/`                          | `adapter.ts` (the `StorageAdapter` port: records/leases/idempotency/events/graph + compiled-match AST, plus the optional `prepareKind` physical hint; kinds are records, not a port concern), `blobs.ts` (the `BlobStore` port: artifact bytes, content-addressed; memory + filesystem impls), `crypto.ts` (optional blob encryption: per-blob AES-GCM DEK wrapped under a space KEK), `row.ts` (shared row/value mapping), `pushdown.ts` (compiled pattern → a **sound** SQL pre-filter; the oracle still decides, see the soundness contract at the top of the file), `pgbase.ts` (shared Postgres-dialect body over a minimal SQL port) + `pglite.ts`, `postgres.ts` (both bind their driver to `pgbase`), `sqlite.ts` (own dialect) |
 | `src/core/`                             | storage-agnostic logic: `space.ts` (service: put/take/settle, watches, lineage + graph, kinds-as-records, envelope query, `authorize`/grants, delegation, taint, bootstrap chain), `record.ts` (`buildRecord`, metadata split), `matching.ts` (compile + oracle + order + `combineMatch`), `kinds.ts` (indexing contract + `kind_def`/`grant`/`signal`/`agent_*`/`artifact` reserved kinds), `auth.ts` (token mint/hash; `CredentialStore` holds only what cannot be revoked, so credentials resolve from records per request), `take.ts` (claim ranking), `registry.ts` (the latest-wins / additive projections every registry is built from, and `retired: true`), `notifier.ts` (watch wakeup), `time.ts`, `ids.ts` (**monotonic** ULIDs; latest-wins depends on it), `errors.ts` |
 | `sdk/README.md`                         | SDK overview + parity table (TS and Python); start here for client work |
@@ -257,7 +257,17 @@ live at the top of the relevant `agent_docs/` file, not here.
   the content address stays valid. A record BODY has no erasure path, because bodies must stay
   plaintext JSON for matching. So the existing "artifact bytes never travel inside a record" rule is
   also the erasure boundary: extend it from "too large for a body" to "erasable, whatever its size".
-  Erasure is by CONTENT (identical payloads are one blob), irreversible, and operator-only.
+  Erasure is by CONTENT (identical payloads are one blob) and operator-only. **It destroys the
+  runtime's copy; it does not make those bytes unstorable.** Anyone holding the payload can write it
+  again, the blob returns to the same content address, and every record referencing it reads once
+  more, at which point the erasure silently stops holding. Refusing a write whose digest was once
+  shredded is NOT the fix and was tried: it poisons a content address for the whole space (shred an
+  empty file and nothing can ever store one) and breaks any program that legitimately recomputes the
+  same output. Nor is refusing to serve the shredded RECORD while the identical bytes are readable
+  through a newer one: that protects the paper trail rather than the person, and makes a broken
+  guarantee look intact. What holds instead is DETECTION: a shred whose digest is present again is
+  reported as an erasure that no longer holds (`Space.erasures`, `GET /v0/ops/erasures`,
+  `radia doctor`), because the state is derivable and hiding it is the only unrecoverable part.
 - **A blob's digest is over plaintext, and its key is destroyable.** Encryption is optional, but
   when it is on the content address still hashes the plaintext (so integrity and the event chain
   survive crypto-shredding), and the wrapped DEK lives beside the blob, never in the immutable

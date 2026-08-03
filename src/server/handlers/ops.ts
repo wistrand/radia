@@ -229,6 +229,31 @@ export async function handleDiagnostics(space: Space, scope?: StatsScope | null)
 }
 
 /**
+ * Every erasure, and whether it still holds.
+ *
+ * OPERATOR-ONLY by living on this plane, which is right for two reasons: a shred record names an
+ * artifact somebody destroyed, and the answer is only actionable by whoever could shred again.
+ *
+ * `?undone=true` narrows to the ones that were REVERSED, which is the question anyone actually has.
+ */
+export async function handleErasures(space: Space, url: URL): Promise<Response> {
+  const onlyUndone = url.searchParams.get("undone") === "true";
+  const r = await space.erasures({ onlyUndone });
+  return Response.json({
+    ...r,
+    // Never let an empty list read as "every erasure holds" when the scan stopped early. This is the
+    // bounded-read-as-population trap, and an erasure report is the worst place to fall into it.
+    ...(r.complete ? {} : {
+      note: `the scan did not reach the end after ${r.checked} shred records; this list is a PREFIX, ` +
+        `not a population`,
+    }),
+    ...(onlyUndone && r.erasures.length === 0 && r.complete
+      ? { note: `all ${r.checked} erasures still hold: no shredded payload is readable again` }
+      : {}),
+  });
+}
+
+/**
  * Dry run: which registered interests would receive this record?
  *
  * A read of the interest registry, so it sits on the observe plane rather than beside `put`. It

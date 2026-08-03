@@ -17,7 +17,7 @@ import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
 import { handleCreateDefinition, handleCreateRun, handleRenewRun, handleStopRun } from "./handlers/agents.ts";
 import { handleGetArtifact, handleMintCapability, handlePutArtifact, handleShredArtifact } from "./handlers/artifacts.ts";
-import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
+import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleErasures, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem, statusFor } from "./problem.ts";
 import { RadiaError } from "../core/errors.ts";
@@ -396,6 +396,10 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
         return await handleEvents(space, url, opsScope);
       case "GET /v0/ops/diagnostics":
         return await handleDiagnostics(space, opsScope);
+      // Erasures, and whether they still hold. On the ops plane because a shred record names what
+      // somebody destroyed, and because only an operator can act on the answer.
+      case "GET /v0/ops/erasures":
+        return await handleErasures(space, url);
 
       default:
         return problem(404, "not_found", `no route for ${route}`);

@@ -25,7 +25,9 @@ Options common to every command:
 Inspect
   health                              backend, DB clock, resolved principal
   stats                               record counts by kind and state
-  doctor                              diagnostics: dead-letters, stuck leases, stale work
+  doctor                              diagnostics: dead-letters, stuck leases, stale work,
+                                      erasures that no longer hold
+  erasures [--undone]                 every shred, and whether its payload is still gone
   permissions <principal>             what that principal can actually do (the fold over its grants)
   login <principal> [--grant k:ops]… [--compact]  mint a session token for a person
                                       (--compact prints the token alone, for $(…) capture)
@@ -221,6 +223,31 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       });
     }
 
+    // A shred destroys the runtime's COPY, never the ability to store those bytes: the content
+    // address stays valid, so anyone holding the payload can write it back and every record that
+    // referenced it reads again. Nothing noticed until this existed. See the erasure invariant in
+    // CLAUDE.md for why neither refusing the write nor refusing the read is the fix.
+    case "erasures": {
+      const undoneOnly = has(argv, "--undone");
+      const r = await client.erasures({ undone: undoneOnly }) as {
+        erasures: { artifactId: string; digest: string; reason: string; at: string; method: string; holds: boolean }[];
+        checked: number;
+        complete: boolean;
+      };
+      return out(ctx, r, () => {
+        if (r.erasures.length === 0) {
+          return r.complete
+            ? `no ${undoneOnly ? "undone " : ""}erasures (${r.checked} shred records checked)`
+            : `none found, but the scan stopped after ${r.checked} records: this is a PREFIX`;
+        }
+        const lines = r.erasures.map((e) =>
+          `${e.holds ? "held " : "UNDONE"}  ${e.artifactId}  ${e.digest.slice(0, 12)}…  ${e.method}  ${e.at}${e.reason ? `  ${e.reason}` : ""}`
+        );
+        if (!r.complete) lines.push(`(INCOMPLETE after ${r.checked} records; more may exist)`);
+        return lines.join("\n");
+      });
+    }
+
     case "doctor": {
       const d = await client.diagnostics() as Diagnostics;
       return out(ctx, d, () => {
@@ -229,7 +256,23 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         if (d.deadLetter?.count) lines.push(`dead-letter: ${d.deadLetter.count}`);
         if (d.stuckLeases?.count) lines.push(`stuck leases: ${d.stuckLeases.count} (expired but still held)`);
         if (d.staleAvailable?.count) lines.push(`stale available: ${d.staleAvailable.count}`);
-        if (lines.length === 1) lines.push("no dead-letters, stuck leases, or stale work");
+        // FIRST among the findings when there is one, and worded as the security event it is. An
+        // erasure that stopped holding outranks a stuck lease: somebody destroyed a payload and it
+        // is readable again, and until this existed nothing in the system would ever have said so.
+        const undone = d.undoneErasures;
+        if (undone?.count) {
+          lines.push(
+            `ERASURES NO LONGER HOLDING: ${undone.count} of ${undone.checked} — the payload is back ` +
+              `at the same content address and every record referencing it reads again`,
+          );
+          for (const e of (undone.sample ?? []).slice(0, 5)) {
+            const x = e as { artifactId?: string; reason?: string; at?: string };
+            lines.push(`  ${x.artifactId}${x.reason ? ` (${x.reason})` : ""} shredded ${x.at}`);
+          }
+          lines.push("  radia erasures --undone for the full list");
+        }
+        if (undone && !undone.complete) lines.push(`erasure scan INCOMPLETE after ${undone.checked} records: more may not hold`);
+        if (lines.length === 1) lines.push("no dead-letters, stuck leases, stale work, or undone erasures");
         return lines.join("\n");
       });
     }
@@ -553,4 +596,5 @@ interface Diagnostics {
   deadLetter?: { count: number };
   stuckLeases?: { count: number };
   staleAvailable?: { count: number };
+  undoneErasures?: { count: number; checked: number; complete: boolean; sample: unknown[] };
 }

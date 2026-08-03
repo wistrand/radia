@@ -768,7 +768,7 @@ paths:
   /ops/diagnostics:
     get:
       operationId: diagnostics
-      summary: Derived health report covering counts, dead-letters, stuck leases, stale-available (dev console)
+      summary: Derived health report covering counts, dead-letters, stuck leases, stale-available, and erasures that no longer hold (dev console)
       x-stability: experimental
       responses:
         "200":
@@ -783,6 +783,55 @@ paths:
                   deadLetter: { type: object }
                   stuckLeases: { type: object }
                   staleAvailable: { type: object }
+                  undoneErasures:
+                    type: object
+                    description: >-
+                      Erasures whose payload is readable again. ABSENT for a scoped caller rather
+                      than zero: shred records are operator-visible, so a `0` would be reassurance
+                      on no evidence.
+
+  /ops/erasures:
+    get:
+      operationId: erasures
+      summary: Every shred, and whether its payload is still gone
+      description: >-
+        A shred destroys the runtime's COPY, not the ability to store those bytes: the content
+        address stays valid, so anyone holding the payload can write it again and every record
+        referencing it reads once more. `holds:false` marks an erasure that was reversed. Refusing
+        such a write would poison a content address for the whole space, and refusing to serve the
+        shredded record while identical bytes are readable through a newer one would protect the
+        paper trail rather than the person; reporting the true state is the answer instead.
+      x-stability: experimental
+      parameters:
+        - name: undone
+          in: query
+          required: false
+          schema: { type: string, enum: ["true"] }
+          description: Only the erasures that no longer hold.
+      responses:
+        "200":
+          description: "{erasures, checked, complete}"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  erasures:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        shredId: { type: string }
+                        artifactId: { type: string }
+                        digest: { type: string }
+                        reason: { type: string }
+                        at: { type: string }
+                        method: { type: string, enum: [delete, crypto-shred] }
+                        holds: { type: boolean }
+                  checked: { type: integer }
+                  complete:
+                    type: boolean
+                    description: False means the list is a PREFIX; an empty result then does not mean every erasure holds.
 
   /ops/records/{recordId}/{action}:
     post:

@@ -1068,6 +1068,12 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   Two fixes: `read_workspace` exists, and `list_workspaces` reports the PATHS rather than a count,
   because "what files are in X" had no data source either and was already being answered from memory
   one question earlier.
+- **An undone erasure was not just a no-op, it was INVISIBLE.** `shredOf` had exactly one caller,
+  inside the branch that runs after a read has already failed, so once the bytes returned nothing in
+  the system ever consulted the shred record again. The fix is detection, not enforcement: a marker
+  plus a present blob is a reversed erasure, derivable in one `stat`, reported by `Space.erasures`,
+  `GET /v0/ops/erasures` and `radia doctor`. Scoped callers get the field OMITTED rather than zero,
+  because "no erasure was undone" is the one reassurance nobody should receive on no evidence.
 - **Erasure by content cannot mean "these bytes may never exist here again".** A pre-write check
   refusing any payload whose digest was ever shredded was written and reverted the same hour: it
   poisons a content address for the whole space, so shredding an empty file or `"hello\n"` blocks

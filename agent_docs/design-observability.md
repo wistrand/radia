@@ -47,6 +47,20 @@ diagnostics use age/state heuristics, not pattern-match analysis).
   (`Space.shredArtifact`, `POST /v0/ops/records/{id}/shred`), and only for artifacts: record bodies
   are plaintext JSON because the routing language matches on them, so they have no erasure path. See
   [design-data-model.md](design-data-model.md), "Erasure".
+- **An erasure can stop holding, and that is an observability problem rather than an enforcement
+  one.** Shredding destroys the runtime's copy; the content address stays valid, so anyone holding
+  the payload can store it again and every record referencing it reads once more. It happened by
+  accident before anyone tried it deliberately: a model still carrying the erased text in its
+  context re-saved it through an ordinary tool. Neither obvious guard is acceptable — refusing the
+  WRITE poisons a content address for the whole space (shred an empty file and nothing can store
+  one again), and refusing to SERVE the shredded record while identical bytes are readable through a
+  newer one protects the paper trail rather than the person, which is the "structured data looks
+  authoritative" failure named in [design-execution.md](design-execution.md). So the fact is
+  DERIVED and reported: a shred marker plus a present blob is a reversed erasure
+  (`Space.erasures`, `GET /v0/ops/erasures`, and a finding in `diagnostics`/`radia doctor`).
+  One `stat` per shred, asked when an operator asks, rather than a query on every artifact read.
+  Remediation is deliberately absent: re-shredding would destroy the innocent later record's bytes
+  too, so the choice belongs to a person who can see both.
 
 ## Event log
 
