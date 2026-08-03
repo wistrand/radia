@@ -34,7 +34,7 @@ ephemeral range; an unrelated outbound connection holding it, even in TIME_WAIT,
 fail with a docker "address already in use" that reads like a stale container and is not one).
 
 Each Postgres test runs in its own ephemeral schema, dropped on close, so it is safe to point at a
-database you care about. The live-server run adds its own storage tests to the embedded 322, and it
+database you care about. The live-server run adds its own storage tests to the embedded 444, and it
 is the only run that actually *contends* for claims, which is why a claim-path change needs it (see
 "Writing a suite" below).
 
@@ -102,7 +102,11 @@ Six conventions worth copying rather than reinventing:
   and never acked, with the lease forced expired via a negative `leaseSeconds`. Deterministic, no
   sleeps, and no test-only code paths in production. See `suites/faults.ts`.
 - **Never assert on wall-clock timing.** All time comparisons use the database clock; a test that
-  sleeps is a test that flakes in CI.
+  sleeps is a test that flakes in CI. The one exception is where LATENCY IS THE CONTRACT: the
+  cross-instance wakeup (`suites/watches.ts`, `notifier.test.ts`) has nothing else to assert, since
+  the pre-fix build produced the same records, just ~15s later. Those bounds are set an order of
+  magnitude above the mechanism (a 250ms poll asserted under 10s) so the margin, not the scheduler,
+  decides the outcome.
 - **Keep crypto deterministic.** The blob-crypto suites use a fixed KEK, so a failure means a
   behavior change rather than a coin flip. Randomness stays inside the implementation (DEKs,
   nonces), never in the assertions.
