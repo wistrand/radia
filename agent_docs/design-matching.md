@@ -8,7 +8,12 @@ Spec and rationale for pattern matching. Origin: outline §3.
 that defines what a pattern matches. The per-kind indexing contract is
 `src/core/kinds.ts` (an in-memory registry). Declarations are **not a side table**: each is a
 `kind_def` record, written via `put` and reloaded at startup by querying those records
-(`Space.loadKinds`); the registry is a cache/projection. The one bootstrap is the `kind_def`
+(`Space.loadKinds`); the registry is a cache/projection. Because `put` registers a declaration in
+the writing PROCESS's registry, that startup read is not enough with several instances over one
+database, so a compile that fails with `unknown_kind` or `undeclared_path` re-reads that one kind
+and retries once (`Space.compileFresh`). Symptom-driven rather than periodic: those two errors are
+exactly what a stale projection produces, it costs nothing when nothing is stale, and it covers a
+REDECLARED kind, which a refresh-on-miss would not. The one bootstrap is the `kind_def`
 meta-kind itself (`META_KIND_DEF`), defined in code so a query for `kind_def` records can
 compile.
 

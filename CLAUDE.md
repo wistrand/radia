@@ -126,7 +126,10 @@ out-of-band. Four applications already made:
 - **Kinds are records, not a side table.** A kind declaration is a `kind_def` record
   (body = the indexing contract), written via `put` and discovered by `query {kind:kind_def}`.
   There is no `kinds` table and no `/v0/kinds` endpoint. The registry is a cache/projection rebuilt from
-  those records at startup; a redeclaration is a successor record (latest wins), not a mutation.
+  those records at startup AND re-read per kind when a compile shows the projection is stale, which
+  is what makes it correct with several instances over one database (a declaration written through
+  one process registers in that process's registry only). A redeclaration is a successor record
+  (latest wins), not a mutation.
   One bootstrap: the `kind_def` meta-kind is defined in code so its own records can compile.
   See `src/core/kinds.ts` (`KIND_DEF`, `META_KIND_DEF`) and `Space.put`/`loadKinds`.
 - **Observability/control is a coherent, grant-gated plane, not scattered endpoints.** The
