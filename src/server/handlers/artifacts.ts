@@ -17,6 +17,7 @@ import type { Space } from "../../core/space.ts";
 import { ARTIFACT, type ArtifactDef, clientTaint, validateArtifactDef } from "../../core/kinds.ts";
 import { RadiaError } from "../../core/errors.ts";
 import { problem, statusFor } from "../problem.ts";
+import { TREE_PREFIX } from "../http.ts";
 
 /** Media types safe to hand a browser for inline display. Raster images, audio and video only:
  *  NOT `image/svg+xml` (scriptable), not `application/pdf` (scriptable in some viewers), not
@@ -35,7 +36,13 @@ function renderable(mediaType: string): boolean {
  * get there (capability URLs only), and the response pins the document into an opaque origin with
  * no network access. Never widen this on the main origin.
  */
-const RENDERABLE_ISOLATED = /^(?:text\/(?:html|plain|css|markdown)|image\/svg\+xml|application\/(?:xhtml\+xml|json))$/i;
+const RENDERABLE_ISOLATED =
+  /^(?:text\/(?:html|plain|css|markdown|javascript)|image\/svg\+xml|application\/(?:xhtml\+xml|json|javascript))$/i;
+// `text/javascript` was added with the tree route and changes less than it looks: Content-Disposition
+// governs NAVIGATION, not subresource loading, so a page's `<script src>` ran under the old list too.
+// What this changes is that opening a `.js` file directly shows it instead of downloading it, which
+// is what already happened for `.css`. The security property comes from the origin and the CSP, never
+// from this list.
 
 /** Read the request body with a hard ceiling, without trusting Content-Length. */
 async function readCapped(req: Request, limit: number): Promise<Uint8Array | "too_large"> {
@@ -129,6 +136,19 @@ export async function handleGetArtifact(
   /** True when serving from the isolated artifact origin, where scriptable content is safe to
    *  render because it shares no origin with the console and can reach nothing. */
   isolated = false,
+  /** The origin a TREE's subresources may be fetched from, or null for a single artifact.
+   *
+   *  The isolated policy was written for one SELF-CONTAINED file: `default-src 'none'` with
+   *  `script-src 'unsafe-inline'` allows an inline `<script>` and denies `<script src>`, and
+   *  `img-src data:` allows a data URI and denies an image file. That is exactly right for one
+   *  artifact and makes a multi-file page impossible — a `<link href="style.css">` is blocked.
+   *
+   *  Widened by naming the artifact origin EXPLICITLY rather than with `'self'`. The document is
+   *  sandboxed without `allow-same-origin`, so it lives in an OPAQUE origin and `'self'` matches
+   *  nothing; a host source is compared against the URL and still works. So a tree may load its own
+   *  files and gains nothing else: `connect-src` stays absent under `default-src 'none'`, so fetch,
+   *  XHR and WebSocket are still denied, which was always the property doing the real work. */
+  treeOrigin?: string | null,
 ): Promise<Response> {
   try {
     if (principal !== null) {
@@ -187,7 +207,15 @@ export async function handleGetArtifact(
       // operator in open mode. On the isolated origin scripts and styles are allowed to run, since
       // rendering a page is the point and there is nothing left for them to reach.
       "content-security-policy": isolated
-        ? "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:"
+        ? treeOrigin
+          // A TREE: its own files, and still no network. Note what is NOT added — `connect-src`
+          // stays unlisted, so `default-src 'none'` denies fetch/XHR/WebSocket exactly as before.
+          // The sandbox keeps `allow-same-origin` off, so one tree's document cannot reach another's
+          // storage even though both are served from this origin.
+          ? `sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' ${treeOrigin}; ` +
+            `style-src 'unsafe-inline' ${treeOrigin}; img-src data: ${treeOrigin}; font-src data: ${treeOrigin}; ` +
+            `media-src data: ${treeOrigin}`
+          : "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:"
         : "default-src 'none'; sandbox",
     };
     return new Response(found.stream, { status: 200, headers });
@@ -231,6 +259,70 @@ export async function handleShredArtifact(space: Space, req: Request, recordId: 
       if (e.code === "shared_payload") return problem(409, e.code, e.message);
       return problem(422, e.code, e.message);
     }
+    throw e;
+  }
+}
+
+/**
+ * POST /v0/capabilities — mint one capability over a SET of artifacts, addressed by path.
+ *
+ * Generic on purpose. The runtime is told `{path, artifactId}` pairs and learns nothing about what
+ * they are: an extension builds the index from a workspace manifest, and any other application that
+ * wants to serve a set of named blobs uses the same endpoint. Teaching `src/` what a manifest is
+ * would have put a convention inside the runtime; teaching it that a capability can carry an index
+ * did not.
+ *
+ * EVERY entry is authorized against the caller's read grant, here, once. That is what keeps the
+ * served path credential-free, and it is why this is a mint rather than a lookup: a caller cannot
+ * assemble a capability over bytes it could not already read.
+ */
+export async function handleMintPathCapability(space: Space, req: Request, principal: string): Promise<Response> {
+  let j: Record<string, unknown> | null = null;
+  try {
+    const parsed = await req.json();
+    j = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return problem(400, "invalid_body", "expected a JSON object");
+  }
+  const raw = Array.isArray(j?.entries) ? j.entries as Record<string, unknown>[] : null;
+  if (!raw || raw.length === 0) {
+    return problem(400, "invalid_body", "expected {entries: [{path, artifactId}, …]} with at least one entry");
+  }
+  if (raw.length > 5_000) return problem(400, "invalid_body", `too many entries (${raw.length}); a capability indexes at most 5000`);
+  const entries: { path: string; artifactId: string }[] = [];
+  for (const e of raw) {
+    const path = typeof e.path === "string" ? e.path : "";
+    const artifactId = typeof e.artifactId === "string" ? e.artifactId : "";
+    if (!path || !artifactId) return problem(400, "invalid_body", "each entry needs a non-empty path and artifactId");
+    entries.push({ path, artifactId });
+  }
+  try {
+    const { constraint, createdBy } = await space.readAccess(principal, "read_one", ARTIFACT);
+    for (const entry of entries) {
+      const rec = await space.getRecord(entry.artifactId);
+      // 404 rather than 403 for a record outside the caller's scope, matching the per-record reads:
+      // a mint must not become an existence oracle either.
+      if (!rec || rec.kind !== ARTIFACT || !space.authorAllows(createdBy, rec)) {
+        return problem(404, "not_found", `no artifact ${entry.artifactId} (for path ${JSON.stringify(entry.path)})`);
+      }
+      if (constraint && !space.bodyMatchesGrant(ARTIFACT, rec.body, constraint)) {
+        return problem(403, "forbidden", `artifact ${entry.artifactId} (path ${JSON.stringify(entry.path)}) is outside the pattern scope of your read grant`);
+      }
+    }
+    const { capability, expiresAt } = space.mintPathCapability(entries);
+    return new Response(
+      JSON.stringify({
+        capability,
+        expiresAt,
+        entries: entries.length,
+        // Absolute, like the single-artifact form: a relative URL is unopenable by anything that is
+        // not the console, and the caller cannot know what to prepend.
+        url: `${space.artifactOrigin}${TREE_PREFIX}${capability}/`,
+      }),
+      { status: 201, headers: { "content-type": "application/json" } },
+    );
+  } catch (e) {
+    if (e instanceof RadiaError) return problem(statusFor(e.code, 403), e.code, e.message);
     throw e;
   }
 }

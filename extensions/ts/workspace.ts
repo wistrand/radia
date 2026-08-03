@@ -21,6 +21,49 @@
 
 import type { RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
 
+/**
+ * The media type a path implies, `text/plain` when unknown.
+ *
+ * Every file in a tree used to be stored as `application/octet-stream`, which meant NO workspace
+ * file could render in a browser — not a whole site, not even one page on its own. A live session
+ * only got an HTML page to display by round-tripping it through a code runner and `save_as`, which
+ * derives a type from a filename. A tree that can be run and exported and not looked at was a gap in
+ * the shape of the data, not in the viewer.
+ *
+ * A CLAIM, not a fact, exactly as it is for `save_content`: the server validates the string and does
+ * not verify the bytes. That is safe because rendering is decided by the SERVER's allowlist, and the
+ * scriptable types are inline only on the isolated artifact origin — so a wrong or lying type
+ * changes what a download is called, never whether something executes. Duplicated from
+ * `examples/chat/util.ts` rather than shared: an extension may not import an example, and the two
+ * are the same table for the same reason rather than one being the other's authority.
+ */
+export function mediaTypeFor(path: string): string {
+  const ext = path.toLowerCase().split("/").pop()?.split(".").pop() ?? "";
+  return ({
+    html: "text/html",
+    htm: "text/html",
+    css: "text/css",
+    js: "text/javascript",
+    mjs: "text/javascript",
+    json: "application/json",
+    svg: "image/svg+xml",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    ico: "image/x-icon",
+    md: "text/markdown",
+    csv: "text/csv",
+    txt: "text/plain",
+    xml: "application/xml",
+    yaml: "application/yaml",
+    yml: "application/yaml",
+    wasm: "application/wasm",
+    woff2: "font/woff2",
+  } as Record<string, string>)[ext] ?? "text/plain";
+}
+
 /** One file in a tree. `digest` is the artifact's content address, so two workspaces sharing a file
  *  share the blob and erasing it erases the payload for both. */
 export interface WorkspaceFile {
@@ -159,7 +202,7 @@ export async function writeWorkspace(
     const batch = await Promise.all(entries.slice(i, i + CONCURRENCY).map(async ([path, contents]) => {
       const bytes = typeof contents === "string" ? new TextEncoder().encode(contents) : contents;
       const art = await client.putArtifact(bytes, {
-        mediaType: "application/octet-stream",
+        mediaType: mediaTypeFor(path),
         filename: path.split("/").pop(),
         // What a grant pattern binds, exactly as the chat's other writers stamp it.
         meta: { conversationId: input.conversationId ?? "", owner: input.owner, workspace: input.name },
@@ -742,7 +785,7 @@ export async function editWorkspace(
   const written = new Map<string, WorkspaceFile>();
   for (const [path, bytes] of rewritten) {
     const art = await client.putArtifact(bytes, {
-      mediaType: "application/octet-stream",
+      mediaType: mediaTypeFor(path),
       filename: path.split("/").pop(),
       meta: { conversationId: input.conversationId ?? head.conversationId ?? "", owner: head.owner, workspace: input.name },
     });
@@ -786,6 +829,45 @@ export async function editWorkspace(
     // REPORTED, never refused: consistent with every other writer here. Both heads survive, and an
     // edit inherits every file it did not mention, so the caller needs to know its base moved.
     forked: await isForked(client, input.name, input.conversationId),
+  };
+}
+
+/**
+ * Mint a browsable URL for one version of a tree.
+ *
+ * The whole implementation is "turn a manifest into a path index and hand it to the runtime", which
+ * is the point: the runtime learned that a capability may carry an index, not what a workspace is.
+ * Serving happens on the ISOLATED artifact origin, which exists precisely so model-written HTML
+ * never renders beside the console.
+ *
+ * A SNAPSHOT of the version that is current when this is called, never a name that follows edits.
+ * The tempting alternative — a URL that always shows the newest version — would serve content
+ * authorized LATER, possibly written by somebody else, under a capability whose authorization was
+ * decided at mint. Re-share after editing; the link is short-lived anyway.
+ *
+ * The link is short-lived and PROCESS-LOCAL (`Space.downloadCaps` is a map in memory), so it dies on
+ * restart. That is a view, not storage: what makes a tree durable is the records, or
+ * `radia workspace-git`, which turns one into a real git repository that outlives every process here.
+ */
+export async function shareWorkspace(
+  client: RadiaClient,
+  name: string,
+  conversationId?: string,
+): Promise<{ url: string; expiresAt: string; files: number; treeDigest: string; entry: string | null }> {
+  const manifest = await readWorkspace(client, name, conversationId) ?? await readWorkspace(client, name);
+  if (!manifest) throw new Error(`no workspace named ${JSON.stringify(name)} to share`);
+  if (manifest.files.length === 0) throw new Error(`workspace ${JSON.stringify(name)} has no files to serve`);
+  const r = await client.pathCapability(
+    manifest.files.map((f) => ({ path: f.path, artifactId: f.artifactId })),
+  );
+  // `/` serves `index.html`; say whether there is one rather than handing back a URL that 404s.
+  const entry = manifest.files.some((f) => f.path === "index.html") ? "index.html" : null;
+  return {
+    url: r.url,
+    expiresAt: r.expiresAt,
+    files: manifest.files.length,
+    treeDigest: manifest.treeDigest,
+    entry,
   };
 }
 
@@ -970,7 +1052,7 @@ export async function captureWorkspace(
         continue;
       }
       const art = await client.putArtifact(content, {
-        mediaType: "application/octet-stream",
+        mediaType: mediaTypeFor(rel),
         filename: entry.name,
         meta: { conversationId: manifest.conversationId ?? "", owner: manifest.owner, workspace: manifest.name },
       });

@@ -304,6 +304,27 @@ manifest from exactly what it is passed, so a partial save truncates the tree ra
 it, and the current instruction ("save the whole tree again with your fix") fights the model's
 economics until something removes the incentive.
 
+## Serving a tree
+
+Planned, not built: [plan-workspaces.md](plan-workspaces.md) §11. A workspace can be written, read,
+edited, run and exported, and cannot be LOOKED AT — a multi-file website is the first case where the
+tree has to leave the substrate as a set rather than a file at a time.
+
+The shape is settled. The runtime does NOT learn what a workspace is: a download capability is
+generalised from "one artifact" to "a `path → artifactId` index supplied at mint", which is
+workspace-agnostic, and the extension computes the index from a manifest. URLs are
+`/v0/w/<cap>/<path>` because a browser resolves relative links against the URL path, served from the
+ISOLATED artifact origin that `--artifact-port` already provides for untrusted HTML. Authorization
+happens once at mint, over every artifact in the tree.
+
+Two consequences worth knowing in advance. **Path traversal is structurally absent** — the path is
+matched against a fixed index, so there is no filesystem to escape and the index is the allowlist;
+this is the second time (after `validatePath`) that not having a filesystem was the answer. And
+**capabilities are an in-memory map today**, process-local with a five-minute TTL, which is right for
+viewing an image and wrong for a link somebody pastes to somebody else. That is §11.0 and it gates
+the rest, because persisting them collides with the stopping rule in [CLAUDE.md](../CLAUDE.md):
+high-churn and security-critical state is a poor fit for records.
+
 ## What this buys that git does not
 
 **Lead with per-file erasure.** Anyone who has run `git filter-repo` or BFG to purge a leaked

@@ -74,6 +74,10 @@ export interface RunResult {
 }
 
 const DEFAULTS = { timeoutMs: 5_000, maxOutputBytes: 64 * 1024, memoryMb: 128 };
+/** Probes run once at boot and get longer than ordinary work: a cold interpreter under a fresh
+ *  namespace is measurably slower than a warm one, and a probe that times out now REFUSES the
+ *  sandbox rather than passing it, so a tight bound turns a slow machine into a broken fleet. */
+const PROBE_TIMEOUT_MS = 30_000;
 
 /** Read a stream up to a byte cap, then stop reading (the writer gets EPIPE, which is the point:
  *  a program that prints forever is truncated rather than allowed to exhaust this process). */
@@ -358,19 +362,21 @@ export interface ProbeResult {
  */
 export async function probeSandbox(
   spec: SandboxSpec,
-  opts: RunOptions & { bwrap?: BwrapOptions } = {},
+  opts: RunOptions & { bwrap?: BwrapOptions; networkTarget?: string } = {},
 ): Promise<ProbeResult[]> {
   // The escape attempts, once per backend, because a probe written in the wrong language proves
   // nothing. Each is a real operation, and each PASSES only when it fails inside the jail.
+  const host = (opts.networkTarget ?? "").split(":")[0];
+  const port = (opts.networkTarget ?? "").split(":")[1];
   const js = {
-    network: `await fetch("http://127.0.0.1:1/")`,
+    network: `await fetch("http://${opts.networkTarget}/")`,
     processes: `new Deno.Command("echo").outputSync()`,
     env: `Deno.env.get("HOME")`,
     filesystem: `Deno.readTextFileSync("/etc/hostname")`,
     writable: `Deno.writeTextFileSync("/tmp/radia-probe-should-not-exist", "escaped")`,
   };
   const py = {
-    network: `import socket; socket.create_connection(("1.1.1.1",53),timeout=2)`,
+    network: `import socket; socket.create_connection(("${host}",${port}),timeout=2)`,
     processes: `import subprocess; subprocess.run(["echo"],check=True)`,
     env: `import os; assert os.environ["HOME"]`,
     filesystem: `open("/etc/hostname").read()`,
@@ -399,13 +405,55 @@ export async function probeSandbox(
   const out: ProbeResult[] = [];
   for (const a of attempts) {
     if (!a.onlyIf) continue; // nothing claimed, nothing to disprove
+
+    // THE NETWORK CLAIM NEEDS A TARGET THAT IS KNOWN TO BE LISTENING, and the caller supplies it.
+    //
+    // This used to connect to `1.1.1.1:53`, which made the verdict depend on the public internet:
+    // on a machine that was offline, slow or behind an egress filter the connect failed, the probe
+    // reported "held", and a jail with NO network isolation passed its own verification. Opening a
+    // listener here was the obvious repair and is the wrong one — a worker is granted `--allow-net`
+    // for the space's address and nothing else, so a prober that listens cannot run inside the very
+    // process that needs to probe.
+    //
+    // So: no target, no verdict. Unverified is a FAILED claim, never a pass. The space's own address
+    // is the natural argument — every worker can already reach it, and it is always listening.
+    if (a.claim === "network" && !opts.networkTarget) {
+      out.push({
+        claim: "network",
+        held: false,
+        detail: "no networkTarget was supplied, so 'no network' could not be tested; pass a " +
+          "host:port this process can already reach (the space's own address will do)",
+      });
+      continue;
+    }
+
     const program = wrap(src[a.claim]);
     const r = bwrap
-      ? await runBwrap(program, { command: ["python3", "-"], ...(opts.bwrap ?? {}), timeoutMs: opts.timeoutMs })
-      : await runCode(program, opts);
-    // A denied permission may surface as a caught error OR as a killed process; both are the jail
-    // holding. Only the word ESCAPED means the claim is false.
+      ? await runBwrap(program, {
+        command: ["python3", "-"],
+        ...(opts.bwrap ?? {}),
+        timeoutMs: opts.timeoutMs ?? PROBE_TIMEOUT_MS,
+      })
+      : await runCode(program, { ...opts, timeoutMs: opts.timeoutMs ?? PROBE_TIMEOUT_MS });
+
+    // THREE outcomes, and reading them as two was a fail-open bug. A denied operation is caught and
+    // reports "held"; an escape reports "ESCAPED"; and a probe that never finished — a cold
+    // interpreter past its timeout, a crash, an interpreter that is not there — reports NEITHER, and
+    // `!stdout.includes("ESCAPED")` counted that as the jail holding. So an unverifiable jail passed
+    // its own verification, which is the single direction this mechanism exists to prevent. It
+    // surfaced as an intermittent conformance failure rather than as an alarm, which is how a
+    // fail-open default usually announces itself.
     const escaped = r.stdout.includes("ESCAPED");
+    const held = r.stdout.includes("held");
+    if (!escaped && !held) {
+      out.push({
+        claim: a.claim,
+        held: false,
+        detail: `the probe did not complete (${r.timedOut ? "timed out" : `exit ${r.exitCode}`}), so the ` +
+          `claim is unverified rather than proven${r.stderr ? `: ${r.stderr.slice(0, 200)}` : ""}`,
+      });
+      continue;
+    }
     out.push({ claim: a.claim, held: !escaped, ...(escaped ? { detail: "the operation succeeded inside the jail" } : {}) });
   }
   return out;

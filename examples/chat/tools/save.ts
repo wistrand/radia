@@ -15,7 +15,7 @@ import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import type { Tool, ToolContext } from "./files.ts";
 import type { ToolDef } from "../provider/openrouter.ts";
 import { bytesFrom, mediaTypeFor } from "../util.ts";
-import { editWorkspace, readWorkspace, summarizeWorkspaces, writeWorkspace } from "../../../extensions/ts/workspace.ts";
+import { editWorkspace, readWorkspace, shareWorkspace, summarizeWorkspaces, writeWorkspace } from "../../../extensions/ts/workspace.ts";
 import type { WorkspaceEdit } from "../../../extensions/ts/workspace.ts";
 
 export function makeSaveTools(client: RadiaClient): Record<string, Tool> {
@@ -85,7 +85,9 @@ export const SHARE_SCHEMAS: ToolDef[] = [
       description:
         "Turn an artifact you stored into a URL the user can OPEN in a browser. Use it whenever " +
         "you have just produced a file the user will want to look at (a web page, an image, an " +
-        "SVG, a report) and whenever they ask for a link. The artifact id you get back from " +
+        "SVG, a report) and whenever they ask for a link. For a multi-file SITE use share_workspace " +
+        "instead: this opens exactly one artifact, so a page needing a separate stylesheet or " +
+        "script would arrive without them. The artifact id you get back from " +
         "save_content or a code runner is how you REFER to an artifact, not how anyone opens one: that " +
         "URL needs an Authorization header, which a browser cannot attach to a typed address or " +
         "an <img src>, so quoting it hands the user a 401. Returns {url, expiresAt}. Give the user " +
@@ -275,6 +277,28 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
       }
     },
 
+    // The counterpart to `share_artifact` for a whole tree. `share_artifact` opens ONE file, so a
+    // page whose stylesheet is a second file could never be shown — the link rendered a document
+    // with no CSS and a broken script tag.
+    share_workspace: async (a, ctx?: ToolContext) => {
+      const name = typeof a.workspace === "string" ? a.workspace.trim() : "";
+      if (!name) return { error: "share_workspace needs a `workspace`" };
+      try {
+        const r = await shareWorkspace(client, name, ctx?.conversationId);
+        return {
+          ...r,
+          ...(r.entry
+            ? {}
+            : {
+              note: "this tree has no index.html, so the base URL will not open anything; " +
+                "add one, or hand over a URL naming a specific file",
+            }),
+        };
+      } catch (e) {
+        return { error: (e as Error).message };
+      }
+    },
+
     read_workspace: async (a, ctx?: ToolContext) => {
       const name = typeof a.workspace === "string" ? a.workspace.trim() : "";
       const path = typeof a.path === "string" ? a.path.trim() : "";
@@ -417,6 +441,30 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
             description: "New files, as path -> contents. A path that already exists is refused: edit it instead.",
           },
           remove: { type: "array", items: { type: "string" }, description: "Paths to delete from the tree." },
+        },
+        required: ["workspace"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "share_workspace",
+      description:
+        "Turn a whole workspace into a URL the user can OPEN in a browser \u2014 the way to show a " +
+        "multi-file page, where share_artifact can only ever open ONE file and would leave the " +
+        "stylesheet and scripts unreachable. Use it whenever what you built is a site rather than a " +
+        "single document: index.html plus CSS, scripts, images. The base URL serves index.html, and " +
+        "relative links inside the page resolve against it, so `<link href=\"style.css\">` works. " +
+        "Returns {url, expiresAt, files, treeDigest, entry}. Give the user the url exactly as " +
+        "returned and say it expires. It is a SNAPSHOT of the tree as it is now: edit the workspace " +
+        "and the old link keeps showing the old version, so share again after changing something. " +
+        "If `entry` is null there is no index.html and the base URL opens nothing \u2014 say so " +
+        "rather than handing it over. Only files IN the workspace are reachable through it.",
+      parameters: {
+        type: "object",
+        properties: {
+          workspace: { type: "string", description: "The workspace name, as list_workspaces reports it." },
         },
         required: ["workspace"],
       },

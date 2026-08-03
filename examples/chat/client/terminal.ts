@@ -51,20 +51,38 @@ export async function showArtifact(client: RadiaClient, output: unknown): Promis
   }
 }
 
+// ONE reader for the whole process, shared by the line reader and the cancel watcher.
+//
+// `Deno.stdin.readable.getReader()` is exclusive, so two of them cannot coexist — and the watcher
+// has to read the same stream, because that is where Escape arrives. They never overlap in practice:
+// the REPL is strictly sequential (read a line, run a turn, read a line), so exactly one of them is
+// reading at any moment. What they do share is `pushback`, below.
+let sharedReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+function stdinReader(): ReadableStreamDefaultReader<Uint8Array> {
+  return sharedReader ??= Deno.stdin.readable.getReader();
+}
+/** Bytes read by one consumer that belong to the other. A `read()` already in flight cannot be
+ *  cancelled, so when the watcher stops it hands back whatever arrived — which is also what makes
+ *  type-ahead during a turn survive into the next prompt instead of vanishing. */
+let pushback = "";
+
 /** Read stdin a line at a time. Works for an interactive TTY and for piped input, unlike prompt(). */
 export function lineReader(): () => Promise<string | null> {
-  const stdin = Deno.stdin.readable.getReader();
   const decoder = new TextDecoder();
   let buf = "";
   return async function nextLine(): Promise<string | null> {
     while (true) {
+      if (pushback) {
+        buf += pushback;
+        pushback = "";
+      }
       const nl = buf.indexOf("\n");
       if (nl >= 0) {
         const line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
         return line;
       }
-      const { value, done } = await stdin.read();
+      const { value, done } = await stdinReader().read();
       if (done) {
         const rest = buf;
         buf = "";
@@ -72,5 +90,48 @@ export function lineReader(): () => Promise<string | null> {
       }
       buf += decoder.decode(value, { stream: true });
     }
+  };
+}
+
+/**
+ * Watch for Escape while a turn is in flight. Returns a stop function.
+ *
+ * RAW MODE ONLY WHILE A TURN RUNS. Cooked mode delivers nothing until Enter, so Escape would arrive
+ * after the thing it was meant to interrupt had finished. Raw mode also stops Ctrl-C raising SIGINT,
+ * which is why it is entered for the turn and left immediately afterwards: at the prompt, Ctrl-C
+ * must still kill the process.
+ *
+ * A no-op when stdin is not a terminal, so piped input and the smoke suites are unaffected.
+ */
+export function watchCancel(onCancel: () => void): () => void {
+  if (!Deno.stdin.isTerminal()) return () => {};
+  Deno.stdin.setRaw(true);
+  let stopped = false;
+  (async () => {
+    const decoder = new TextDecoder();
+    while (!stopped) {
+      const { value, done } = await stdinReader().read();
+      if (done) return;
+      const text = decoder.decode(value, { stream: true });
+      if (stopped) {
+        // The read was already in flight when the turn ended: these bytes are the next prompt's.
+        pushback += text;
+        return;
+      }
+      // ESC alone. An arrow key or any other escape SEQUENCE also starts with 0x1b, so requiring
+      // the byte to arrive on its own is what separates "the user pressed Escape" from "the user
+      // pressed Up". Not perfect — a fast terminal can coalesce — but wrong in the safe direction:
+      // a missed cancel is a wait, a false one would discard work nobody asked to discard.
+      if (text === "\x1b") {
+        onCancel();
+        return;
+      }
+    }
+  })().catch(() => {});
+  return () => {
+    stopped = true;
+    try {
+      Deno.stdin.setRaw(false);
+    } catch { /* not a terminal any more, or already restored */ }
   };
 }

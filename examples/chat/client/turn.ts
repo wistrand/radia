@@ -15,6 +15,31 @@ import { dim, endStatus, showArtifact, trunc, write } from "./terminal.ts";
 import { Waiter, waitWake } from "./waiting.ts";
 
 const MAX_ROUNDS = 8;
+
+/**
+ * The user pressed Escape. A distinct type so the REPL can say "cancelled" rather than "[error]".
+ *
+ * WHAT CANCELLING DOES AND DOES NOT DO, because the difference is not cosmetic. It stops this
+ * process WAITING. It does not stop the worker: an `llm_call` already claimed is still being served,
+ * and a `tool_call` already claimed still runs to completion and still writes its result. Those
+ * records land whether or not anyone is watching, which is what an at-least-once substrate means and
+ * is why the message says so instead of implying the work was undone.
+ */
+export class TurnCancelled extends Error {
+  constructor() {
+    super("cancelled");
+    this.name = "TurnCancelled";
+  }
+}
+
+/** Set for the duration of a turn; `cancelTurn()` trips it. */
+let cancel: AbortController | null = null;
+
+/** Trip the in-flight turn, if any. Safe to call when nothing is running. */
+export function cancelTurn(): void {
+  cancel?.abort();
+}
+
 const INFERENCE_DEADLINE_MS = 120_000;
 const TOOL_DEADLINE_MS = 30_000;
 /** `request_grant` waits on a PERSON, so it gets a human deadline rather than a worker one, and a
@@ -44,6 +69,8 @@ export async function runTurn(
   // attempt now walks back through the ones it replaced, so "how did this end up working" is a
   // query rather than a reconstruction from the transcript.
   const priorAttempt = new Map<string, { id: string; n: number }>();
+  cancel = new AbortController();
+  try {
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     write("\nassistant> ");
@@ -83,6 +110,11 @@ export async function runTurn(
     return;
   }
   write(`\n[stopped: ${MAX_ROUNDS} tool rounds without an answer]\n`);
+  } finally {
+    // Cleared whether the turn ended, threw or was cancelled, so a stale controller cannot make the
+    // NEXT turn abort before it starts.
+    cancel = null;
+  }
 }
 
 async function runToolCall(
@@ -135,7 +167,17 @@ async function runToolCall(
   try {
     result = await awaitToolResult(client, toolCallId, prefix, call.function.name, tools, onToolWait);
   } catch (e) {
-    const output = { error: e instanceof Error ? e.message : String(e) };
+    // A CANCELLED turn takes this path too, and that is the point of it being here rather than in a
+    // narrower catch. The assistant's `tool_calls` message is already on the thread; leaving its
+    // reply absent is what makes every later turn in the conversation unsendable, so Escape has to
+    // answer the call it interrupted exactly as a timeout does. The wording differs because the
+    // model should learn what happened: the user stopped waiting, and the worker did not stop.
+    const output = e instanceof TurnCancelled
+      ? {
+        error: "the user cancelled this turn. The tool was already claimed and is still running, " +
+          "so its result will land in the space; nothing here is a failure of the tool.",
+      }
+      : { error: e instanceof Error ? e.message : String(e) };
     await thread.append({ role: "tool", tool_call_id: call.id, content: JSON.stringify(output) }, [toolCallId]);
     throw e;
   }
@@ -224,6 +266,13 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
     }
     if (!printed) await waiter.pump(callId, stall); // status only until output takes the line
     await waitWake();
+    // Checked AFTER the wait rather than before the read, so a result that arrived while the user
+    // was reaching for Escape is still delivered. Cancelling a turn that already finished would
+    // throw away an answer for nothing.
+    if (cancel?.signal.aborted) {
+      endStatus(waiter.prefix);
+      throw new TurnCancelled();
+    }
   }
   throw waiter.timeout(stall, "timed out waiting for inference. Is OPENROUTER_API_KEY valid and the model available?");
 }
@@ -267,6 +316,10 @@ async function awaitToolResult(
     if (onToolWait) await onToolWait(tool);
     await waiter.pump(callId, stall);
     await waitWake();
+    if (cancel?.signal.aborted) {
+      endStatus(prefix);
+      throw new TurnCancelled();
+    }
   }
   throw waiter.timeout(
     stall,

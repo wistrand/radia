@@ -16,7 +16,7 @@ import type { Space } from "../core/space.ts";
 import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
 import { handleCreateDefinition, handleCreateRun, handleRenewRun, handleRevokeDefinition, handleStopRun } from "./handlers/agents.ts";
-import { handleGetArtifact, handleMintCapability, handlePutArtifact, handleShredArtifact } from "./handlers/artifacts.ts";
+import { handleGetArtifact, handleMintCapability, handleMintPathCapability, handlePutArtifact, handleShredArtifact } from "./handlers/artifacts.ts";
 import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleErasures, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem, statusFor } from "./problem.ts";
@@ -109,6 +109,29 @@ export function makeArtifactHandler(space: Space) {
       if (!id) return capabilityRefused(space);
       return await handleGetArtifact(space, id, null, true);
     }
+    // A TREE, addressed by path: `/v0/w/<capability>/<path>`. A browser resolves `./style.css`
+    // against the URL PATH, so one opaque token per artifact cannot serve a multi-file page however
+    // many capabilities you mint. The runtime knows nothing about workspaces here — a capability
+    // carries a path index somebody else built, and this looks a path up in it.
+    //
+    // Traversal is not defended against because it cannot happen: the lookup is an exact match in a
+    // fixed map. `..`, an absolute path and an encoded separator all simply miss.
+    if (req.method === "GET" && url.pathname.startsWith(TREE_PREFIX)) {
+      const rest = url.pathname.slice(TREE_PREFIX.length);
+      const slash = rest.indexOf("/");
+      if (slash < 0) return capabilityRefused(space);
+      const cap = decodeURIComponent(rest.slice(0, slash));
+      // A bare directory serves `index.html`, the one convention a site needs and the only one.
+      const raw = rest.slice(slash + 1);
+      const path = decodeURIComponent(raw === "" || raw.endsWith("/") ? `${raw}index.html` : raw);
+      const id = space.resolveCapabilityPath(cap, path);
+      // One answer for an unknown capability, an expired one and a path that is not in the tree: a
+      // probe must not be able to map what a tree contains.
+      if (!id) return capabilityRefused(space);
+      // The origin is passed so the page may load ITS OWN files: `'self'` matches nothing in a
+      // sandboxed opaque document, so the policy has to name the host.
+      return await handleGetArtifact(space, id, null, true, space.artifactOrigin);
+    }
     const capability = url.searchParams.get("capability");
     if (req.method !== "GET" || !url.pathname.startsWith("/v0/artifacts/")) {
       return problem(404, "not_found", "this origin serves artifact bytes by capability URL only");
@@ -130,6 +153,9 @@ export function makeArtifactHandler(space: Space) {
  *  length problem, but still under `/v0`: a root-level path would save three characters and buy an
  *  unversioned public surface with no evolution story. */
 export const SHORT_ARTIFACT_PREFIX = "/v0/a/";
+/** `/v0/w/<capability>/<path>`: a SET of artifacts addressed by path. `w` for the shape a caller
+ *  sees (a working tree), not for anything the runtime knows about one. */
+export const TREE_PREFIX = "/v0/w/";
 
 /** One wording for a capability that is missing, wrong or lapsed, so the two origins cannot drift
  *  into explaining the same failure differently. */
@@ -193,6 +219,14 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     // Minting a run reads its DEFINITION token directly (a def token isn't a coordination
     // principal), so it runs before principal resolution rejects non-run bearer tokens.
     if (route === "POST /v0/agent-runs") return await handleCreateRun(space, req);
+    // Mint a capability over a SET of artifacts, addressed by path. Generic: the runtime is handed
+    // {path, artifactId} pairs and never learns what they are, so a workspace is one caller rather
+    // than a concept in here.
+    if (route === "POST /v0/capabilities") {
+      const auth = await resolveAuth(req, space, authRequired);
+      if ("error" in auth) return problem(401, auth.error, auth.detail);
+      return await handleMintPathCapability(space, req, auth.principal);
+    }
     // Renew a run: `/v0/agent-runs/{id}/renew` (own token or operator, checked in the handler).
     //
     // An EXPIRED token cannot renew itself: `resolveAuth` rejects it before this, so the answer is

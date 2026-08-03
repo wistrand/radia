@@ -1086,6 +1086,18 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   never be the recommended one. Pinned in `smoke-selfgrant.ts` by capturing the prompt at the file
   descriptor and asserting the warning's POSITION relative to the options, not just its presence —
   the receipt was always printed, so a presence check would have passed before the fix.
+- **An inconclusive probe was read as a passing one, which is fail-OPEN in the component whose job
+  is to disbelieve.** `escaped = stdout.includes("ESCAPED")` had two outcomes for three cases: a
+  denied operation says "held", an escape says "ESCAPED", and a probe that never ran — cold
+  interpreter past its timeout, missing binary — says neither and was counted as held. So an
+  unverifiable jail passed its own verification. It surfaced as an intermittent conformance failure
+  rather than as an alarm, which is how a fail-open default usually announces itself. Now a probe
+  with no conclusive output is a FAILED claim and the worker refuses to serve.
+- **A conformance test that reaches the public internet is not a conformance test.** The network
+  probe connected to `1.1.1.1:53`, so it reported "held" on a machine that was merely offline or
+  behind an egress filter — meaning a jail with no network isolation would have passed. A loopback
+  listener opened by the prober discriminates exactly as well, cannot be wrong about it, and stops
+  every worker boot making an outbound connection.
 - **A precondition can be real and still guard the wrong thing.** A line-range edit required
   `expectDigest`, which proves the file has not changed — and says nothing about whether the range
   points where the caller meant. A model aimed at the wrong lines, the digest matched, and the edit

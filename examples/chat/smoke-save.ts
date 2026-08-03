@@ -152,6 +152,10 @@ check("save_content lists HTML among what it stores", /HTML/.test(saveContent));
 //   code, one file or twenty   -> save_workspace, then run_javascript {workspace}
 //   throwaway calculation      -> run_javascript {code}, keep nothing
 for (const def of WORKSPACE_SCHEMAS) await publishCapability(admin, def);
+// Published here as well as further down, because the boundary between share_artifact and
+// share_workspace is asserted against THIS map. Publishing is content-keyed, so the second call
+// writes nothing.
+for (const def of SHARE_SCHEMAS) await publishCapability(admin, def);
 const desc = new Map(
   (await admin.queryAll({ kind: "capability" }))
     .map((r) => r.body as { tool: string; def: ToolDef })
@@ -338,6 +342,27 @@ const e3 = await toolCall("edit_workspace", {
   edits: [{ path: "main.py", start_line: 1, end_line: 1, new_string: "nope\n" }],
 }) as { error?: string };
 check("…and without one it is refused", /expectDigest/.test(e3.error ?? ""), JSON.stringify(e3.error));
+
+// A whole tree as a link. The boundary with share_artifact is the fourth in this space and the same
+// rule applies: each names the other and states what selects it. One file goes to share_artifact; a
+// site whose page needs a stylesheet cannot, because a capability over one artifact leaves the rest
+// unreachable however many you mint.
+check("share_workspace is advertised", desc.has("share_workspace"));
+const shareWsDesc = desc.get("share_workspace") ?? "";
+check("…and says share_artifact opens only ONE file", /share_artifact can only ever open ONE file/.test(shareWsDesc));
+check("…and that the link is a SNAPSHOT, not a live view", /share again after changing/.test(shareWsDesc));
+check("share_artifact points a multi-file site at share_workspace", /share_workspace/.test(desc.get("share_artifact") ?? ""));
+
+const shared = await toolCall("share_workspace", { workspace: "solver" }) as {
+  url?: string;
+  files?: number;
+  entry?: string | null;
+  note?: string;
+  error?: string;
+};
+check("a tree shares as a URL", typeof shared.url === "string" && shared.files === 2, JSON.stringify(shared.error ?? shared));
+// solver has no index.html, so the base URL opens nothing — said rather than handed over silently.
+check("…and a tree with no index.html says the base URL opens nothing", shared.entry === null && /no index.html/.test(shared.note ?? ""));
 
 const readDesc = desc.get("read_workspace") ?? "";
 check("read_workspace forbids reproducing a file from memory", /NEVER reproduce/i.test(readDesc));

@@ -4,7 +4,8 @@ Sequence and status. The reasoning lives in [design-workspaces.md](design-worksp
 working tree is, and the git relationship) and [design-execution.md](design-execution.md) (why the
 language question is an isolation question). Read those first; this file assumes them.
 
-> **Status: Phases 0-10 DONE**, including 10.6 (what first real use found). Workspaces, write-back, `check`, fork detection, `sandbox` records,
+> **Status: Phases 0-10 DONE**, including 10.6 (what first real use found). Phase 11 (serving a
+> tree) is planned and gated on one decision, 11.0. Workspaces, write-back, `check`, fork detection, `sandbox` records,
 > a second backend (bubblewrap), and selection by capability name (`run_javascript`, `run_python`).
 > Phase 7 answered the selection question with neither of the two options it was written to choose
 > between; see there. Phases 8 and 9 were added after the fact, both from live use rather than from
@@ -75,6 +76,7 @@ Each is scoped to answer its question. Do not merge them.
 | 8 | Git export **(done)** | Is the git correspondence real, or only shaped like it? | — |
 | 9 | The read side **(done)** | What does an agent do when it cannot read? | — |
 | 10 | Editing in place | Does the immutable version model survive fine-grained change? | 3, 5 |
+| 11 | Serving a tree **(planned)** | Can a tree be VIEWED without the runtime learning what a tree is? | 2 |
 
 **Phases 0-5 need no new isolation mechanism.** Every model stress worth finding is reachable with
 the Deno sandbox that already exists. Multi-language execution adds a large security surface and NO
@@ -770,6 +772,135 @@ file.
 the last step rather than the finish. The version model is what made the session recoverable: the
 model restored from verbatim tool output and PROVED it, with the tree digest returning to its exact
 pre-damage value. "Nothing is lost" stopped being a design slogan for one turn.
+
+### Phase 11: serving a tree
+
+**The question:** a workspace can be written, read, edited, run and exported, and it cannot be
+LOOKED AT. A multi-file website is the obvious case — `index.html` referencing `style.css` and
+`script.js` — and it is the first one where the tree has to leave the substrate as a set rather than
+as a file at a time. The phase question is whether that can happen without `src/` learning what a
+workspace is.
+
+*Stress 2 (materialisation) in a new place: this is checkout to a browser rather than to a jail.*
+
+#### 11.0 Decide first: how long does a shared link live, and where — **DECIDED: single-process**
+
+Not a code gate but a PRODUCT gate, and it changes what gets built. Capabilities are an in-memory
+map today:
+
+```ts
+private readonly downloadCaps = new Map<string, { recordId: string; expiresAt: number }>();
+```
+
+Process-local, lost on restart, invisible to a second instance, default TTL 300 seconds. That is
+right for "look at this image" and wrong for "here is the site I built", which is a link somebody
+pastes to somebody else. The feature does not create the limitation; it makes it load-bearing.
+
+And the obvious repair collides with this project's own stopping rule: persisting capabilities as
+records is exactly the shape CLAUDE.md warns against — **high-churn AND security-critical**, where a
+stale read is a silent misauthorization. So the three candidates are:
+
+1. **Accept single-process.** A shared link dies on restart, documented. Cheapest, and consistent
+   with a dev tool; wrong the moment anyone runs two instances.
+2. **Longer TTL, same memory.** Buys hours, not durability. Changes nothing structural.
+3. **Persist them, carefully.** Bounded relevance rather than replayed history (only what can still
+   be presented), which is the shape the stopping rule actually recommends for credentials.
+
+**Decided 2026-08-03: accept single-process (option 1).** A capability is a VIEW, not storage, and
+the durable answers already exist: the records themselves, and `radia workspace-git`, which turns a
+tree into a real git repository on disk that outlives every process here. Persisting capabilities
+would have put high-churn, security-critical state into records to make a five-minute link survive a
+restart — paying the stopping rule's price for the wrong thing.
+
+#### 11.1 Generalize the capability; do NOT teach the runtime about workspaces — **DONE**
+
+The tier problem is real: serving a tree means resolving path → artifact through a manifest, which
+is `src/` knowing what a workspace is. And the escape used for git serving does not apply — a
+browser hitting a capability URL carries no credential, so "a separate process passing the caller's
+token through" has no token to pass.
+
+**So generalize the primitive instead.** A capability maps to one `recordId` today; make it map to a
+`path → artifactId` index supplied AT MINT TIME. The runtime learns "a capability may name a set of
+artifacts by path", which is workspace-agnostic; the extension computes the index from a manifest.
+Any application wanting to serve a set of named blobs gets the same primitive, and a workspace is
+one caller rather than a concept in the runtime.
+
+Same move as two earlier ones in this codebase: the erasure carve-out generalised "too large for a
+body" to "erasable, whatever its size", and a sandbox became a RECORD rather than a worker's
+identity. In both cases the runtime learned a more general fact instead of a domain concept.
+
+URL shape `/{origin}/v0/w/<cap>/<path>`, because a browser resolves `./style.css` against the URL
+PATH — which is the whole reason one opaque token per artifact cannot work.
+
+*Path traversal is structurally absent, and that is worth stating.* The path is matched against a
+fixed index built at mint: no filesystem, no normalisation, no `..`, no symlink. **The index is the
+allowlist.** "Serve a directory over HTTP" is normally a CVE generator; serving from records is not,
+and this is the second time (after `validatePath`) that the answer came from not having a filesystem
+rather than from guarding one.
+
+*On the ISOLATED artifact origin, never the space's.* `--artifact-port` exists precisely so untrusted
+HTML does not render on the console's origin, and a tree of model-written HTML is the case it was
+built for. Reuse it rather than adding a second story.
+
+**Done** (`Space.mintPathCapability`, `POST /v0/capabilities`, `GET /v0/w/<cap>/<path>`,
+`shareWorkspace`, and the chat's `share_workspace`).
+
+*The blocker was not media types; it was the CSP.* The isolated origin's policy is
+`default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:` — written
+for ONE self-contained artifact, and it makes a multi-file page impossible: `<link href="style.css">`
+and `<script src="app.js">` are both denied. That is why the fireworks page rendered and a site could
+not have. Widened for tree responses by naming the artifact ORIGIN explicitly rather than `'self'`,
+because the document is sandboxed without `allow-same-origin` and therefore opaque, where `'self'`
+matches nothing while a host source still does. `connect-src` stays unlisted, so `default-src 'none'`
+denies fetch, XHR and WebSocket exactly as before — the property that was always doing the real work.
+
+*Verified against a real page*: `index.html` + `style.css` + `app.js` + a nested `img/dot.svg`, each
+served with the type its path implies, `/` serving `index.html`, and `/nope.txt`, `/%2e%2e/secret`,
+`/INDEX.HTML` and `/style.css/` all refused because they are not keys in the index.
+
+*Authorization stays at MINT.* Every artifact in the index is checked against the caller's read grant
+once, at mint, bounded by the tree — the property `share_artifact` already has, and what keeps the
+served path credential-free.
+
+#### 11.2 Media types, which block even the single-file case — **DONE**
+
+All three write paths in `extensions/ts/workspace.ts` set `mediaType: "application/octet-stream"`, so
+no workspace file renders in a browser TODAY, one at a time or otherwise. The fireworks page in the
+live session only rendered because the model round-tripped it through `run_javascript` + `save_as`,
+which derives a type from the filename.
+
+Derive from the path extension at write time. `mediaTypeFor` exists but lives in
+`examples/chat/util.ts`, and an extension may not import an example, so it moves to `extensions/`.
+The type stays a client CLAIM, validated and not verified, which is already true of `save_content`.
+
+#### 11.3 Snapshot or live
+
+A capability over a manifest VERSION is immutable and matches the posture everywhere else. One over a
+workspace NAME follows edits, which is what someone iterating actually wants — save, refresh, look.
+
+Default to the version, offer the name explicitly, and the reason is not purity: **a name-following
+capability can serve content authorized LATER**, possibly written by someone else, under a URL whose
+authorization was decided at mint. That is the one way this feature could hand out something nobody
+approved.
+
+#### 11.4 Verification
+
+- a tree with `index.html`, `style.css` and a script renders as a page, with relative links resolving
+- `/v0/w/<cap>/` serves `index.html`; a path not in the index is 404 and never touches a filesystem
+- a path with `..`, an absolute path and a URL-encoded traversal all miss the index rather than being
+  normalised into it
+- the capability is refused at mint when the caller cannot read every artifact in the tree
+- a shredded file is 410 on its path while the rest of the site still serves
+- the link is served from the ISOLATED origin, and the console's origin does not serve it
+- a version-scoped capability keeps serving the version it was minted for after the tree is edited
+
+#### 11.5 What this is not
+
+Not a web host. No server-side execution, no upload, and **no directory listing by default**: a
+manifest holds every path, so a listing leaks the shape of a tree in a way the single-artifact
+capability never could. The honest framing is "a static snapshot of a tree, served read-only from
+records" — enough for a multi-file website, and stopping well short of anything that needs a hosting
+story.
 
 ## Open, and better decided with Phase 1 evidence
 

@@ -438,7 +438,11 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
 // honest outcome rather than a tool that fails on first use.
 {
   const js = denoSandbox({ name: "deno", readRoots, timeoutMs });
-  const failed = await verifySandbox(js, { readRoots, timeoutMs });
+  // The SPACE's own address as the network probe target: this worker can already reach it (that is
+  // its one `--allow-net` grant), it is always listening, and it needs no outbound connection. A
+  // probe with no target reports the claim UNVERIFIED, which refuses the jail.
+  const networkTarget = new URL(url).host;
+  const failed = await verifySandbox(js, { readRoots, timeoutMs, networkTarget });
   if (failed.length > 0) {
     console.error(
       "exec worker: refusing to serve. The Deno jail does not match its declaration: " +
@@ -452,7 +456,7 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
   await declareSandbox(client, js);
 
   const py = bwrapSandbox({ command: ["python3", "-"], language: "python", name: "python", timeoutMs });
-  const pyFailed = await verifySandbox(py, { timeoutMs, bwrap: { command: ["python3", "-"], timeoutMs } })
+  const pyFailed = await verifySandbox(py, { timeoutMs, networkTarget, bwrap: { command: ["python3", "-"], timeoutMs } })
     .catch((e) => [{ claim: "backend", held: false, detail: String(e) }]);
   if (pyFailed.length === 0) {
     patterns.push({ kind: "tool_call", match: { tool: "run_python" } });

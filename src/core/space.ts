@@ -234,7 +234,20 @@ export class Space {
   /** Live download capabilities: token -> the one artifact it opens, and when it lapses. In
    *  memory and short-lived by design. A capability is a delegation of a read the caller already
    *  held, not a credential, and it must not outlive the process that issued it. */
-  private readonly downloadCaps = new Map<string, { recordId: string; expiresAt: number }>();
+  /**
+   * Live download capabilities. IN MEMORY on purpose, and the limitation is accepted rather than
+   * unnoticed: they are process-local, lost on restart, and invisible to a second instance.
+   * Persisting them would put high-churn, security-critical state into records, which is the one
+   * shape CLAUDE.md's stopping rule names as a bad fit. A capability is a short-lived view, not
+   * durable state — what makes a TREE durable is the records themselves, or `radia workspace-git`,
+   * which turns one into a real git repository on disk that outlives every process here.
+   *
+   * `index` is present when the capability opens a SET of artifacts by path rather than one record.
+   */
+  private readonly downloadCaps = new Map<
+    string,
+    { recordId?: string; index?: Map<string, string>; expiresAt: number }
+  >();
 
   constructor(
     private readonly storage: StorageAdapter,
@@ -1314,19 +1327,62 @@ export class Space {
    *  to read it; this delegates that read to a context that cannot send an Authorization header
    *  (an `<img src>` in the console), which is why the design specifies capabilities rather than
    *  putting a bearer token in a URL. */
+  /**
+   * Mint a capability over a SET of artifacts, addressed by path.
+   *
+   * The runtime learns "a capability may name artifacts by path" and nothing else — not what a
+   * workspace is, not what a manifest is, not that these paths are a website. The caller supplies
+   * the index; an extension builds it from a tree, and any other application wanting to serve a set
+   * of named blobs gets the same primitive. That is the same generalisation the erasure carve-out
+   * made ("too large for a body" became "erasable, whatever its size") rather than teaching `src/`
+   * a domain concept.
+   *
+   * PATH TRAVERSAL IS STRUCTURALLY ABSENT here, which is worth stating because "serve a directory
+   * over HTTP" is normally where it lives. The path is looked up in this fixed index; there is no
+   * filesystem to escape, no normalisation to get wrong, and `..` simply misses. The index IS the
+   * allowlist.
+   *
+   * Authorization happens at MINT, over every entry, exactly as the single-artifact form does — so
+   * the served path carries no credential and needs no grant read per request.
+   */
+  mintPathCapability(entries: { path: string; artifactId: string }[]): { capability: string; expiresAt: string } {
+    const { capability, expiresAt, at } = this.newCapability();
+    this.downloadCaps.set(capability, { index: new Map(entries.map((e) => [e.path, e.artifactId])), expiresAt: at });
+    this.sweepCapabilities();
+    return { capability, expiresAt };
+  }
+
+  /** Which artifact does this capability serve at this path? `null` for an unknown capability, an
+   *  expired one, or a path the index does not contain — the caller cannot tell those apart, which
+   *  is deliberate: a probe learns nothing about the shape of the tree. */
+  resolveCapabilityPath(capability: string, path: string): string | null {
+    const cap = this.downloadCaps.get(capability);
+    if (!cap?.index) return null;
+    if (cap.expiresAt <= Date.now()) {
+      this.downloadCaps.delete(capability);
+      return null;
+    }
+    return cap.index.get(path) ?? null;
+  }
+
+  private newCapability(): { capability: string; expiresAt: string; at: number } {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    const capability = btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+    const at = Date.now() + this.ctx.downloadCapabilitySeconds * 1000;
+    return { capability, expiresAt: new Date(at).toISOString(), at };
+  }
+
   mintDownloadCapability(recordId: string): { capability: string; expiresAt: string } {
     // 16 random bytes as base64url: 22 characters instead of the 64 hex ones this used to emit.
     // These travel in a URL a person is shown, pastes and sometimes reads aloud, and length is the
     // property that decides whether that is bearable. 128 bits is not a compromise here: the token
     // opens ONE artifact for a few minutes and is not an identity, so the exposure a guess would
     // buy is bounded in both directions. Guessing 2^128 inside that window is not a thing.
-    const bytes = new Uint8Array(16);
-    crypto.getRandomValues(bytes);
-    const capability = btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-    const expiresAt = Date.now() + this.ctx.downloadCapabilitySeconds * 1000;
-    this.downloadCaps.set(capability, { recordId, expiresAt });
+    const { capability, expiresAt, at } = this.newCapability();
+    this.downloadCaps.set(capability, { recordId, expiresAt: at });
     this.sweepCapabilities();
-    return { capability, expiresAt: new Date(expiresAt).toISOString() };
+    return { capability, expiresAt };
   }
 
   /**
@@ -1341,7 +1397,7 @@ export class Space {
       this.downloadCaps.delete(capability);
       return null;
     }
-    return cap.recordId;
+    return cap.recordId ?? null;
   }
 
   /** Does this capability open this artifact, right now? Scoped to one record on purpose: a

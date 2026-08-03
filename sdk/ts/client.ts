@@ -577,6 +577,16 @@ export class RadiaClient {
 
   /** A short-lived, single-artifact download capability. Use it for contexts that cannot send an
    *  Authorization header (an `<img src>`). The returned `url` is relative to the space. */
+  /** Mint one capability over a SET of artifacts addressed by path, for serving a tree. Every
+   *  entry is authorized against this caller's read grant at mint, so the served URL needs none. */
+  pathCapability(
+    entries: { path: string; artifactId: string }[],
+  ): Promise<{ capability: string; expiresAt: string; entries: number; url: string }> {
+    return this.req("POST", "/v0/capabilities", { entries }) as Promise<
+      { capability: string; expiresAt: string; entries: number; url: string }
+    >;
+  }
+
   artifactCapability(recordId: string): Promise<{ capability: string; expiresAt: string; url: string }> {
     return this.req("POST", `/v0/artifacts/${encodeURIComponent(recordId)}/capability`);
   }

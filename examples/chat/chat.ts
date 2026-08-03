@@ -261,6 +261,9 @@ while (true) {
     // returns with it, so the assistant can retry inside its remaining rounds. Throttled, because
     // this runs on every poll of the wait loop and each pass is a query.
     let lastReview = 0;
+    // Escape trips the turn; the watcher is stopped in `finally` so raw mode never outlives it and
+    // Ctrl-C keeps working at the prompt.
+    stopWatching = watchCancel(cancelTurn);
     await runTurn(session, thread, tools, async (tool) => {
       if (tool !== "request_grant" || Date.now() - lastReview < 1000) return;
       lastReview = Date.now();
@@ -272,7 +275,18 @@ while (true) {
       }
     });
   } catch (e) {
-    write(`\n[error] ${e}\n`);
+    // Cancelling is a thing the user did, not a fault: say what it did and, more importantly, what
+    // it did NOT do. The worker keeps its claim, so the answer or the tool result still lands in the
+    // space — visible on the Feed and in the thread — and pretending the work was undone would be
+    // the one wrong thing to say about an at-least-once substrate.
+    if (e instanceof TurnCancelled) {
+      write(dim("\n[cancelled] the workers keep their claims, so results still land in the space\n"));
+    } else {
+      write(`\n[error] ${e}\n`);
+    }
+  } finally {
+    stopWatching?.();
+    stopWatching = null;
   }
   // Between turns as well, as the backstop: a request written by a worker rather than asked for
   // through the blocking tool (or one whose turn died) would otherwise sit pending forever.

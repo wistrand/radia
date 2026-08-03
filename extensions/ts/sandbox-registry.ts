@@ -84,6 +84,10 @@ export async function verifySandbox(
     timeoutMs?: number;
     /** How to reach the interpreter, for a backend that needs one named. */
     bwrap?: BwrapOptions;
+    /** `host:port` this process can already reach, used to test a `network: false` claim. Without it
+     *  the claim is reported UNVERIFIED rather than passing: a probe with nothing to dial cannot
+     *  tell an isolated jail from an offline machine. The space's own address is the natural one. */
+    networkTarget?: string;
   } = {},
 ): Promise<ProbeResult[]> {
   const results = await probeSandbox(spec, opts);

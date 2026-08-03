@@ -22,6 +22,7 @@ import {
   forksOf,
   listWorkspaces,
   readWorkspace,
+  shareWorkspace,
   summarizeWorkspaces,
   TREE_DIGEST_VERSION,
   treeDigestOf,
@@ -40,9 +41,13 @@ const OWNER = "human:alice";
 
 /** One space for the whole file: these are contract checks, not isolation checks, and a space per
  *  test would spend more time booting than asserting. */
-async function withSpace<T>(fn: (c: RadiaClient) => Promise<T>): Promise<T> {
+async function withSpace<T>(fn: (c: RadiaClient) => Promise<T>, opts: { artifactPort?: number } = {}): Promise<T> {
+  // `--artifact-port 0` by default: most of this suite never fetches bytes over HTTP, and an
+  // isolated origin per test is a second listener for nothing. The tree-serving case needs one,
+  // because HTML renders INLINE only there — on the main origin it is always a download, which is
+  // the property that makes serving model-written pages safe at all.
   const space = new Deno.Command(Deno.execPath(), {
-    args: ["run", "-A", "src/main.ts", "dev", "--port", String(PORT), "--artifact-port", "0"],
+    args: ["run", "-A", "src/main.ts", "dev", "--port", String(PORT), "--artifact-port", String(opts.artifactPort ?? 0)],
     stdout: "null",
     stderr: "inherit",
   }).spawn();
@@ -83,6 +88,31 @@ async function withSpace<T>(fn: (c: RadiaClient) => Promise<T>): Promise<T> {
   } finally {
     space.kill();
     await space.status;
+  }
+}
+
+/**
+ * Run a probe against a loopback listener that is certainly accepting.
+ *
+ * A `network: false` claim is tested by DIALLING something, and the target has to be supplied: with
+ * none the claim comes back UNVERIFIED, because a probe with nothing to dial cannot tell an isolated
+ * jail from an offline machine. That used to be `1.1.1.1:53`, which made the verdict depend on the
+ * public internet — offline, the connect failed, the probe said "held", and a jail with no network
+ * isolation passed. In production the argument is the space's own address; here it is this.
+ */
+async function withProbeTarget<T>(fn: (networkTarget: string) => Promise<T>): Promise<T> {
+  const target = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  (async () => {
+    for await (const conn of target) {
+      try {
+        conn.close();
+      } catch { /* only the connect has to succeed */ }
+    }
+  })().catch(() => {});
+  try {
+    return await fn(`127.0.0.1:${(target.addr as Deno.NetAddr).port}`);
+  } finally {
+    target.close();
   }
 }
 
@@ -843,6 +873,58 @@ Deno.test("workspace: an edit names ONE form, and a pasted line-number prefix sa
   });
 });
 
+Deno.test("workspace: a tree serves as a multi-file site, and only what the manifest lists", async () => {
+  await withSpace(async (c) => {
+    await writeWorkspace(c, {
+      name: "site",
+      owner: OWNER,
+      files: {
+        "index.html": '<!doctype html>\n<link rel="stylesheet" href="style.css">\n<script src="app.js"></script>\n',
+        "style.css": "h1 { color: rebeccapurple }\n",
+        "app.js": "console.log(1);\n",
+        "img/dot.svg": '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>\n',
+      },
+    });
+    const share = await shareWorkspace(c, "site");
+    assertEquals(share.files, 4);
+    assertEquals(share.entry, "index.html");
+
+    const base = share.url.replace(/\/$/, "");
+    const get = (p: string) => fetch(`${base}${p}`);
+
+    // A bare directory serves index.html — the one convention a site needs.
+    const root = await get("/");
+    assertEquals(root.status, 200);
+    assertEquals(root.headers.get("content-type"), "text/html");
+    // Inline, because this is the ISOLATED origin. On the main origin HTML is always a download.
+    assert(root.headers.get("content-disposition")?.startsWith("inline"), root.headers.get("content-disposition") ?? "");
+    // The policy names the artifact ORIGIN rather than 'self': the document is sandboxed without
+    // allow-same-origin, so it is opaque and 'self' would match nothing.
+    const csp = root.headers.get("content-security-policy") ?? "";
+    assert(/script-src [^;]*http/.test(csp), csp);
+    // …and gains no network. `connect-src` is unlisted, so `default-src 'none'` still denies fetch.
+    assert(!csp.includes("connect-src"), csp);
+    await root.body?.cancel();
+
+    // Media types come from the PATH now. Every file used to be application/octet-stream, which is
+    // why no workspace file could render, one at a time or otherwise.
+    for (const [path, type] of [["/style.css", "text/css"], ["/app.js", "text/javascript"], ["/img/dot.svg", "image/svg+xml"]]) {
+      const r = await get(path);
+      assertEquals(r.status, 200, path);
+      assertEquals(r.headers.get("content-type"), type, path);
+      await r.body?.cancel();
+    }
+
+    // THE MANIFEST IS THE ALLOWLIST. There is no filesystem to escape and no normalisation to get
+    // wrong: a path that is not an exact key simply misses, whatever it is spelled like.
+    for (const path of ["/nope.txt", "/%2e%2e/secret", "/img/", "/INDEX.HTML", "/style.css/"]) {
+      const r = await get(path);
+      assert(r.status >= 400, `${path} served ${r.status}`);
+      await r.body?.cancel();
+    }
+  }, { artifactPort: PORT + 1 });
+});
+
 Deno.test("workspace: labels survive the RETURN trip, which is the leg the name promised", async () => {
   await withSpace(async (c) => {
     // The case above covers materialising OUT. It was named for a round trip and tested one leg, so
@@ -1106,18 +1188,22 @@ Deno.test("sandbox: the probe actually tries to escape, and the jail holds", asy
   // structured data LOOKS authoritative. Each attempt is a real operation a program would make, and
   // the probe passes only when it FAILS inside the jail.
   const spec = denoSandbox();
-  const results = await probeSandbox(spec);
+  const results = await withProbeTarget((networkTarget) => probeSandbox(spec, { networkTarget }));
   const claims = results.map((r) => r.claim).sort();
   assertEquals(claims, ["env", "filesystem", "network", "processes", "writable"], "every boolean claim is tested");
   for (const r of results) {
     assert(r.held, `the jail did not hold for ${r.claim}: ${r.detail}`);
   }
-  assertEquals(await verifySandbox(spec), [], "nothing to report when every claim holds");
+  assertEquals(
+    await withProbeTarget((networkTarget) => verifySandbox(spec, { networkTarget })),
+    [],
+    "nothing to report when every claim holds",
+  );
 
   // …and the probe is not vacuous: granting a capability makes the matching claim untestable rather
   // than passing silently, so a jail that CAN write is never reported as one that cannot.
   const open = denoSandbox({ writeRoots: ["/tmp"] });
-  const openResults = await probeSandbox(open, { writeRoots: ["/tmp"] });
+  const openResults = await withProbeTarget((networkTarget) => probeSandbox(open, { writeRoots: ["/tmp"], networkTarget }));
   assert(!openResults.some((r) => r.claim === "writable"), "a claim that was not made is not probed");
 });
 
@@ -1174,7 +1260,11 @@ Deno.test("sandbox: bubblewrap runs another language, and describes what it ACTU
   assert(spec.writablePaths.includes("/"), "an ephemeral writable root is declared, not hidden");
   assertEquals(denoSandbox().writablePaths, []);
 
-  assertEquals(await verifySandbox(spec, { bwrap: { command: ["python3", "-"] } }), [], "and every claim it DOES make holds");
+  assertEquals(
+    await withProbeTarget((networkTarget) => verifySandbox(spec, { networkTarget, bwrap: { command: ["python3", "-"] } })),
+    [],
+    "and every claim it DOES make holds",
+  );
 });
 
 Deno.test("sandbox: the probe catches a jail that lies, which is why fail-open is survivable", async () => {
@@ -1185,15 +1275,38 @@ Deno.test("sandbox: the probe catches a jail that lies, which is why fail-open i
   //
   // That flip is the whole reason a declaration is probed rather than believed. A structured claim
   // nobody tested is MORE convincing than prose and no more true.
+  await withProbeTarget(async (networkTarget) => {
   const honest = bwrapSandbox({ command: ["python3", "-"], name: "sealed" });
-  assertEquals(await verifySandbox(honest, { bwrap: { command: ["python3", "-"] } }), []);
+  assertEquals(await verifySandbox(honest, { networkTarget, bwrap: { command: ["python3", "-"] } }), []);
 
   // The same spec — still claiming `network: false` — served by a jail built without the flag.
   const failed = await verifySandbox(honest, {
+    networkTarget,
     bwrap: { command: ["python3", "-"], unshare: ["--unshare-user"] },
   });
   assertEquals(failed.map((f) => f.claim), ["network"], "the lie is caught, and NAMED");
   assert(failed[0].detail?.includes("succeeded"), "with what actually happened, so it is actionable");
+
+  // AN INCONCLUSIVE PROBE IS A FAILED CLAIM, not a passing one. `!stdout.includes("ESCAPED")` used
+  // to mean "held", so a probe that never ran — a cold interpreter past its timeout, a missing
+  // binary — pronounced the jail sealed. That is fail-OPEN in the one component whose entire job is
+  // to disbelieve a declaration, and it surfaced as an intermittent test rather than as an alarm.
+  const unrunnable = await verifySandbox(honest, {
+    networkTarget,
+    bwrap: { command: ["definitely-not-an-interpreter", "-"] },
+  });
+  assert(unrunnable.length > 0, "a probe that cannot run must not report the jail as sealed");
+  assert(
+    unrunnable.every((f) => !f.held && /did not complete|unverified/.test(f.detail ?? "")),
+    JSON.stringify(unrunnable),
+  );
+
+  // …and with NO target the network claim is unverified rather than passing, which is the whole
+  // reason the target is an argument instead of a constant.
+  const untargeted = await verifySandbox(honest, { bwrap: { command: ["python3", "-"] } });
+  assertEquals(untargeted.map((f) => f.claim), ["network"]);
+  assert(/no networkTarget/.test(untargeted[0].detail ?? ""), untargeted[0].detail ?? "");
+  });
 });
 
 Deno.test("sandbox: two backends coexist as records a policy can tell apart", async () => {
