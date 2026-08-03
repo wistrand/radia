@@ -38,10 +38,37 @@ export function isRetired(body: unknown): boolean {
 }
 
 /**
+ * Which of two records for one key is NEWER: `created_at` first, the id only as a tie-break.
+ *
+ * `created_at` is stamped by the DATABASE (`Space.putRaw` reads `storage.now()`; all time
+ * comparisons use the DB clock), so it is the one ordering every instance agrees on. The id alone
+ * is not: a ULID's timestamp comes from the writing PROCESS's clock, so two instances whose clocks
+ * differ by a second order a second's worth of writes backwards, and a revocation could lose to
+ * the grant it revokes. Skew is the dangerous part, and this removes it.
+ *
+ * Within one DB millisecond the ids decide, and that is deliberate rather than leftover: ULIDs are
+ * monotonic per process, a retire-then-revive pair lands inside one millisecond routinely, and
+ * resolving that tie any other way (toward retirement, say) discards real ordering information.
+ * That exact "fail-closed" rule was tried and reverted for breaking revival.
+ *
+ * WHAT THIS STILL IS NOT: commit order. `created_at` is read before the transaction commits, so
+ * two instances writing the same key inside one DB millisecond remain a tie broken by id. Closing
+ * that needs a comparator the database assigns AT COMMIT — the `xid8` + snapshot-watermark
+ * machinery the event cursor already uses (design-storage.md, "Watch delivery under
+ * concurrency") — which means carrying that token on the record, i.e. through the frozen wire
+ * contract. Not done. The residual race is one millisecond wide instead of one clock-skew wide.
+ */
+function newer(a: RadiaRecord, b: RadiaRecord): boolean {
+  const at = a.runtimeMeta?.createdAt, bt = b.runtimeMeta?.createdAt;
+  if (at && bt && at !== bt) return bt > at;
+  return a.id < b.id;
+}
+
+/**
  * The newest record per key, retired or not. Use when you need to see a withdrawal: deciding
  * whether to report "already retired", or auditing what a key used to be.
  *
- * Order-independent by construction: it compares ids (ULIDs, so the highest is newest) instead of
+ * Order-independent by construction: it compares timestamps and ids (see `newer`) instead of
  * trusting the order the caller happened to read records in.
  */
 export function newestByKey<T = unknown>(
@@ -53,7 +80,7 @@ export function newestByKey<T = unknown>(
     const key = keyOf(r.body as T, r);
     if (key === undefined) continue;
     const prev = out.get(key);
-    if (!prev || prev.id < r.id) out.set(key, r);
+    if (!prev || newer(prev, r)) out.set(key, r);
   }
   return out;
 }
@@ -64,18 +91,9 @@ export function newestByKey<T = unknown>(
  * Retirement is applied AFTER the newest-per-key pass, never as a filter over the input. Filtering
  * first would let an older, non-retired record become "newest" and resurrect the entry.
  *
- * KNOWN LIMIT, and the obvious fix was tried and reverted. "Newer" here means a higher ULID, and
- * ULID monotonicity is per PROCESS: two runtime instances on one Postgres, writing to the same
- * key in the same millisecond, sort arbitrarily relative to each other. Resolving that tie toward
- * retirement (fail-closed, so a revocation can never lose a race) looks right and is not: within a
- * single process the ids ARE strictly ordered, and a retire-then-revive pair lands in one
- * millisecond routinely. The rule discarded real ordering information and broke revival, which is
- * a far more common operation than a cross-instance write race. A correct fix needs a comparator
- * the DATABASE assigns, and specifically a COMMIT-order one: a bigserial has the same defect as
- * `events.seq` (assigned at insert, committed out of order; see design-storage.md "Watch delivery
- * under concurrency"), so it would have to be the xid8 machinery the event cursor already uses.
- * Not worth that until a multi-instance deployment is real; until then, do not race a retirement
- * and its revival from two instances.
+ * "Newest" is `newer` above: the DB-assigned `created_at`, id as the tie-break. Read that comment
+ * before changing this rule; both halves of it are load-bearing, and the residual limit (a
+ * same-millisecond cross-instance race is still decided by id) is stated there.
  */
 export function activeByKey<T = unknown>(
   records: RadiaRecord[],

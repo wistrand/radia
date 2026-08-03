@@ -1,7 +1,7 @@
 # Plan: audit remediation
 
-> Status: H, I, N and O–R are open; **E, K, L and M are closed** (2026-08-03); everything else is closed and
-> its guards pass (`deno task conformance`: 437 passed, 0 failed). Each done package is a status line here; its
+> Status: H, I, N, P, Q and R are open; **E, K, L, M and O are closed** (2026-08-03); everything else is closed and
+> its guards pass (`deno task conformance`: 444 passed, 0 failed). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
 > paths; items marked **reproduced** were verified empirically. Line numbers drift; trust the symbol,
@@ -34,12 +34,12 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~L~~ | ~~Watch streams cache authorization~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
 | ~~M~~ | ~~`kind_def` is not write-protected~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
 | N   | `clientMeta` escapes the body guards    | P2       | Unbounded, unerasable data in a record |
-| O   | Multi-instance freshness and ordering   | P1       | Wakeup latency; auth-relevant id races |
+| ~~O~~ | ~~Multi-instance freshness + ordering~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
 | P   | Contracts nothing checks                | P2       | Drift in exactly the claims held loudest |
 | Q   | Designed features unreachable           | P2       | A built feature no caller can invoke   |
 | R   | Dead taint parameter; half-tested guard | P2       | Legibility, not leakage (see the entry) |
 
-Packages A, B, C, D, E, F, G, J, K, L and M are closed. Their lessons are rules in
+Packages A, B, C, D, E, F, G, J, K, L, M and O are closed. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -290,23 +290,48 @@ Fix: include `clientMeta` in both checks, counted against the same budget.
 Guard: extend the existing record-limit conformance case to assert a `clientMeta` over the limit is
 refused, and that a NUL in `clientMeta` is refused like one in a body.
 
-## Package O: multi-instance freshness and ordering (P1)
+## Package O: multi-instance freshness and ordering (P1) — CLOSED 2026-08-03
 
 Two gaps remain now that the kind registry refreshes itself
 (`Space.compileFresh`, closed 2026-08-03):
 
-- **Cross-instance watch wakeups do not happen.** `src/core/notifier.ts` is an in-process waiter
-  list and no `LISTEN`/`NOTIFY` code exists in `src/`. Self-healing (the event log is truth, poll
-  catches up), so nothing is lost — but every cross-instance hop degrades to poll latency, which is
-  felt per turn in an interactive agent session. This is the dimension that actually regresses with
-  N>1; throughput is not.
-- **ULID monotonicity is per-process.** Latest-wins registries decide "newer" by comparing ids, and
-  across instances they agree only to the millisecond. Grants live in those registries, so the
-  theoretical bad outcome is auth-relevant. Low probability and operator-driven, but it wants a
-  DB-assigned ordering rather than a documented "do not race a retirement across instances".
+- **Cross-instance watch wakeups did not happen.** `src/core/notifier.ts` was an in-process waiter
+  list and no `LISTEN`/`NOTIFY` code existed in `src/`. Self-healing (the event log is truth, poll
+  catches up), so nothing was lost — but every cross-instance hop degraded to the caller's
+  keepalive, 15s in the SSE loop, which is felt per turn in an interactive agent session. This is
+  the dimension that actually regresses with N>1; throughput is not.
+- **ULID monotonicity is per-process.** Latest-wins registries decided "newer" by comparing ids,
+  and across instances a ULID's timestamp is the writing PROCESS's clock. Grants live in those
+  registries, so the bad outcome is auth-relevant.
 
-Guard for the first: a two-instance test asserting a watch on A wakes for a record written through
-B within the notify path rather than the poll interval.
+**CLOSED 2026-08-03**, both, and the second one narrower than it was stated.
+
+The wakeup is a POLL OF THE EVENT LOG driven by the waiter, not `LISTEN`/`NOTIFY`: the Postgres
+driver this build uses (deno-postgres 0.19) exposes no asynchronous notification API at all, which
+was checked rather than assumed. `Notifier` takes an optional `poll` and runs it every
+`CHANGE_POLL_MS` (250ms) **only while somebody is waiting**, so an idle space holds no timer and
+issues no queries, and a busy one costs one query per interval per SPACE however many streams are
+open. `Space.pollForForeignChanges` reads a single event after its cursor; the first poll of a
+space's life reports a change unconditionally, because a record written before it took a baseline
+would otherwise be the one wakeup the mechanism exists to deliver. Two properties fell out: a
+timed-out waiter now removes itself (the deferred "Notifier waiters accumulate" item below is
+closed with it), and the poll's failures never reach the stream.
+
+Ordering is now the DB-assigned `created_at`, with the id as the tie-break (`newer`, in
+`sdk/ts/registry.ts`, mirrored in the Python SDK's `list_kinds`). What that fixes is CLOCK SKEW,
+which is the unbounded part: two instances a second apart ordered a second of writes backwards, so
+a revocation could lose to the grant it revoked. What it does not fix is commit order — `created_at`
+is read before the transaction commits, so two instances writing one key inside a single DB
+millisecond remain a tie broken by id. Closing that needs the `xid8` + watermark machinery the
+event cursor already uses, carried on the record and therefore through the frozen wire contract;
+not done, and the residual race is one millisecond wide instead of one clock-skew wide.
+
+Guards: `suites/watches.ts` runs two Space objects over one database and asserts the watch wakes
+from the other's write rather than its keepalive (verified to fail at 19.2s with the poll removed);
+`conformance/notifier.test.ts` pins the waiter/poll state machine (no polling while idle, no
+wakeup without a change, a failing poll never reaching the stream, waiters not accumulating); and
+`registry.test.ts` pins the skewed-clock revocation, in both arrival orders and in the revive
+direction, plus the same-millisecond tie still following the ids.
 
 ## Package P: contracts nothing checks (P2)
 
@@ -372,8 +397,8 @@ shared root and covers both dialects at once, which is why it belongs in E rathe
 
 ## Deferred: low severity
 
-Batch these; none warrant individual attention. Watches map never pruned and `Notifier` waiters
-accumulate on timeout (unbounded growth from a cheap authenticated call); credentials file
+Batch these; none warrant individual attention. Watches map never pruned (the `Notifier`
+half of that item closed with package O); credentials file
 created at umask then chmod'd, leaving a world-readable window (`src/credentials.ts`);
 `parent_ids` existence documented as checked at commit but
 never is; `valueEq` compares objects by `JSON.stringify` and is key-order-sensitive;

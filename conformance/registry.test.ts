@@ -5,19 +5,24 @@
 // retirement and its revival in the same millisecond, records processed out of id order. Building
 // the ids directly is the only way to pin those deterministically.
 //
-// One case is deliberately absent: two records for the same key from DIFFERENT instances in the
-// same millisecond. Their order is genuinely undefined (ULID monotonicity is per process), and the
-// fail-closed rule that would define it was implemented, measured against the suite, and reverted.
-// It broke same-millisecond revival, which is common, to fix a cross-instance race, which is not.
-// See `activeByKey`'s comment and gotchas.md.
+// Ordering is by the DB-assigned `created_at`, with the id as the tie-break, so most cases here
+// hold `created_at` fixed and vary only the ids: that is the intra-process question, and the ids
+// are what answers it. The cross-instance cases at the bottom do the opposite.
+//
+// One case remains deliberately absent: two records for the same key, from DIFFERENT instances,
+// inside the same DB millisecond. Their order is genuinely undefined, and the fail-closed rule
+// that would define it was implemented, measured against the suite, and reverted. It broke
+// same-millisecond revival, which is common, to fix a race that is not. See `newer` in
+// sdk/ts/registry.ts and gotchas.md.
 
 import { assertEquals } from "@std/assert";
 import { activeByKey, grantKey } from "../src/core/registry.ts";
 import type { RadiaRecord } from "../src/storage/adapter.ts";
 
 /** A record with a hand-made id. `ms` is the ULID's 10-character timestamp half; `low` stands in
- *  for the 16 random characters two instances would disagree about. */
-function rec(ms: string, low: string, body: unknown): RadiaRecord {
+ *  for the 16 random characters two instances would disagree about. `at` is the DB clock, which
+ *  defaults to one fixed instant so a case that says nothing about it is decided by the ids. */
+function rec(ms: string, low: string, body: unknown, at = "2026-07-26T00:00:00.000Z"): RadiaRecord {
   return {
     id: `${ms}${low.padEnd(16, "0")}`,
     kind: "grant",
@@ -25,7 +30,7 @@ function rec(ms: string, low: string, body: unknown): RadiaRecord {
     bodySha256: "",
     runtimeMeta: {
       createdBy: "human:local",
-      createdAt: "2026-07-26T00:00:00.000Z",
+      createdAt: at,
       schemaVersion: 1,
       taint: false,
     },
@@ -75,6 +80,40 @@ Deno.test("registry: the newest record decides, whatever order the rows arrive i
   assertEquals(forward.size, 0, "a later revocation wins");
   const shuffled = activeByKey([rec(MS_B, "A", REVOKED), rec(MS_A, "A", GRANT)], grantKey);
   assertEquals(shuffled.size, 0, "…and still wins when the older record is processed last");
+});
+
+Deno.test("registry: a revocation from a slow-clocked instance still wins (the DB clock decides)", () => {
+  // Audit package O. Two instances on one database; instance A's clock runs a second ahead, so it
+  // mints HIGHER ULIDs than instance B for writes that happen earlier in real time. B revokes the
+  // grant a full second later by the database's own clock, and ordering by id alone kept the
+  // grant alive: the revocation looked older than the thing it revoked. Clock skew is unbounded,
+  // which is what made this worse than the same-millisecond tie below.
+  const granted = rec("01K0000009", "A", GRANT, "2026-07-26T00:00:01.000Z"); // instance A, clock ahead
+  const revoked = rec("01K0000000", "B", REVOKED, "2026-07-26T00:00:02.000Z"); // instance B, later by the DB
+  assertEquals(activeByKey([granted, revoked], grantKey).size, 0, "the later DB timestamp wins");
+  assertEquals(activeByKey([revoked, granted], grantKey).size, 0, "…in either arrival order");
+
+  // And the converse, so this is an ordering rule and not a bias toward retirement: a re-grant
+  // that is later by the DB clock revives, even though its id is lower.
+  const regranted = rec("01K0000000", "C", GRANT, "2026-07-26T00:00:03.000Z");
+  assertEquals(activeByKey([granted, revoked, regranted], grantKey).size, 1, "a later re-grant revives");
+});
+
+Deno.test("registry: inside one DB millisecond the ids still decide", () => {
+  // The tie-break has to stay the id: within a process ULIDs are strictly increasing, and
+  // retire-then-revive lands in one millisecond routinely. Same `created_at`, ids ordered.
+  const at = "2026-07-26T00:00:05.000Z";
+  const revived = activeByKey([rec(MS_A, "AAA", REVOKED, at), rec(MS_A, "AAB", GRANT, at)], grantKey);
+  assertEquals(revived.size, 1, "a higher id in the same DB millisecond is still newer");
+
+  // A record written before this build stamped nothing here would fall back to the id as well;
+  // missing timestamps must not make a projection throw or silently prefer the older record.
+  const noStamp = (r: RadiaRecord) => ({ ...r, runtimeMeta: undefined }) as unknown as RadiaRecord;
+  assertEquals(
+    activeByKey([noStamp(rec(MS_A, "AAA", GRANT)), noStamp(rec(MS_B, "AAA", REVOKED))], grantKey).size,
+    0,
+    "with no timestamps at all the id order still holds",
+  );
 });
 
 Deno.test("registry: a grant whose scoping field this build does not understand grants nothing", () => {

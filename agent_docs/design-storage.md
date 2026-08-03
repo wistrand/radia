@@ -141,8 +141,8 @@ at startup):
 
 | Cache | Source records | Staleness across instances | Fix |
 |-------|----------------|----------------------------|-----|
-| kind registry (`Space.loadKinds`)      | `kind_def`  | a kind declared on A is unknown to B → B can't compile patterns for it or index it | refresh on miss / on `kind_def` write |
-| `Notifier` (`src/core/notifier.ts`)    | event log   | a watch on B doesn't wake for a mutation on A | Postgres `LISTEN/NOTIFY` (already the design; see the watch row)  |
+| kind registry (`Space.loadKinds`)      | `kind_def`  | **closed 2026-08-03**: a kind declared on A was unknown to B until reload, so B could not compile patterns for it | done (`Space.compileFresh` re-reads the kind when a compile shows the projection stale) |
+| `Notifier` (`src/core/notifier.ts`)    | event log   | **closed 2026-08-03**: a waiting stream polls the log every `CHANGE_POLL_MS`, so a watch on B wakes for a mutation on A | done (poll, not `LISTEN/NOTIFY`: deno-postgres 0.19 has no async notification API) |
 
 **Credentials are deliberately not in this table.** There is no token cache to go stale:
 `Space.resolveCredential` (`src/core/space.ts`) reads the `agent_definition` / `agent_run` records
@@ -154,13 +154,17 @@ operator token hashes (process-lifetime, never records, since the console needs 
 agent exists) and a run → agent memo that is immutable for the life of the run. Never cache state
 whose failure mode is silent misauthorization; resolve it from records per request instead.
 
-Only the `Notifier` gap is self-healing: the event log is the source of truth, so a missed
+The `Notifier` gap was always self-healing (the event log is the source of truth, so a missed
 cross-instance wakeup **degrades to poll-catchup, never a lost event**, *given a gap-free event
-cursor* (see "Watch delivery under concurrency" below). The remaining gap is the **kind
-registry**: a kind declared on another instance is unknown until reload, so it needs
-on-miss/on-write refresh before HA is correct.
-(Open: LISTEN/NOTIFY-driven invalidation vs. bounded TTLs vs. the on-miss-hydrate pattern; likely a
-mix, cache-dependent.)
+cursor*; see "Watch delivery under concurrency" below), and it is now closed by making that
+catch-up prompt instead of keepalive-paced: a parked waiter polls the log on a 250ms interval and
+wakes on anything committed after its cursor. It is a poll rather than `LISTEN`/`NOTIFY` because
+the driver offers no third option, and the cost is bounded by running only while a stream is
+actually waiting (`src/core/notifier.ts`, `Space.pollForForeignChanges`). The kind registry gap is
+closed separately, by `Space.compileFresh` re-reading a kind when a compile shows the projection
+stale.
+(Open, for the caches that remain: LISTEN/NOTIFY-driven invalidation vs. bounded TTLs vs. the
+on-miss-hydrate pattern; likely a mix, cache-dependent.)
 
 ## Watch delivery under concurrency
 

@@ -124,6 +124,40 @@ export const watchSuites: Suite[] = [
     },
   },
   {
+    // Audit package O. The in-process Notifier only knows this Space's own mutations, so a watch
+    // used to sleep on a record another instance wrote until its caller's keepalive (15s in the
+    // SSE loop) — self-healing, never a lost event, but felt directly in every cross-instance hop
+    // of an interactive turn. Two Space objects over one database is exactly that arrangement:
+    // separate notifiers, one event log.
+    name: "a watch wakes for a record written through ANOTHER instance, not on its keepalive",
+    run: async (adapter) => {
+      const a = newSpace(adapter);
+      const b = newSpace(adapter); // second instance, same database, its own Notifier
+
+      // Drain the baseline: the first poll of a Space's life reports a change unconditionally
+      // (it has no cursor yet and must not swallow a write from before it took one). Without
+      // this the rest of the case would pass whether or not anything was ever written.
+      await a.waitForEvents(2_000);
+
+      let woke = false;
+      const waiting = a.waitForEvents(20_000).then(() => {
+        woke = true;
+      });
+      await new Promise((r) => setTimeout(r, 800));
+      assertEquals(woke, false, "nothing was written, so nothing may claim a wakeup");
+
+      const started = performance.now();
+      await b.put({ kind: "task", body: { tag: "from-b" } });
+      await waiting;
+      const elapsed = performance.now() - started;
+      assert(elapsed < 10_000, `woke via the log, not the keepalive (${elapsed.toFixed(0)}ms)`);
+
+      // And the wakeup is real: A can see B's record, which is what the stream would deliver.
+      const seen = await a.query({ kind: "task", match: { tag: "from-b" } });
+      assertEquals(seen.length, 1, "the instance that woke can read what the other wrote");
+    },
+  },
+  {
     name: "interest: a dry run reports who would receive a record, before it is written",
     run: async (adapter) => {
       const space = newSpace(adapter);

@@ -194,9 +194,14 @@ class RadiaClient:
             name = body.get("kind")
             if not name:
                 continue
+            # Newest = DB-assigned ``createdAt`` first, id only as the tie-break, matching
+            # ``newer`` in sdk/ts/registry.ts. A ULID's timestamp is the writing PROCESS's clock,
+            # so ordering by id alone puts two skewed instances' writes in the wrong order; the
+            # id still decides inside one DB millisecond, where it carries real per-process order.
+            order = ((rec.get("runtimeMeta") or {}).get("createdAt") or "", rec["id"])
             prev = latest.get(name)
-            if prev is None or prev[0] < rec["id"]:
-                latest[name] = (rec["id"], body)
+            if prev is None or prev[0] < order:
+                latest[name] = (order, body)
         # Retirement is applied AFTER newest-per-key, never as a filter over the input: filtering
         # first lets an older, non-retired record become "newest" and resurrect a withdrawn kind.
         return [v[1] for v in latest.values() if v[1].get("retired") is not True]

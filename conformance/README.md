@@ -23,7 +23,7 @@ flowchart LR
 ```
 
 ```bash
-deno task conformance                     # sqlite + pglite + the blob port   (437 tests, ~13s)
+deno task conformance                     # sqlite + pglite + the blob port   (444 tests, ~19s)
 scripts/pg-conformance.sh                 # + a live Postgres
 RADIA_PG_URL=postgres://… scripts/pg-conformance.sh   # against your own server
 ```

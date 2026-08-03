@@ -465,9 +465,32 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   could be outranked by the record it retired. This was latent in `loadKinds` and the capability
   projection long before retirement existed; it surfaced as a conformance test that passed alone
   and failed in a full run, which is the signature of same-millisecond id collisions. `newUlid()`
-  now uses `monotonicUlid()`. The honest limit: monotonicity is PER PROCESS, so several runtime
-  instances on one Postgres are still only millisecond-accurate relative to each other. Do not
-  race a retirement and its revival from two instances.
+  now uses `monotonicUlid()`. The honest limit: monotonicity is PER PROCESS.
+- **Across instances the id is the TIE-BREAK, not the clock: registries order by `created_at`
+  first.** A ULID's timestamp half is the WRITING PROCESS's clock, so ordering a registry by id
+  alone imports every instance's clock skew into an authorization decision — two instances a second
+  apart ordered a second's worth of writes backwards, and a revocation could lose to the grant it
+  revoked. `created_at` is stamped from the DB clock (`storage.now()`), so it is the one ordering
+  everybody agrees on; `newer` in `sdk/ts/registry.ts` uses it, with the id deciding inside one
+  millisecond, where it carries real per-process order (retire-then-revive lands there routinely,
+  and the "prefer the retirement on a tie" rule was tried and reverted for breaking revival). What
+  this is still NOT is commit order: `created_at` is read before the transaction commits, so a
+  same-DB-millisecond race between instances remains undefined. Closing that means the `xid8` +
+  watermark machinery from the event cursor, carried on the record and so through the frozen wire
+  contract. The window went from clock-skew-wide to one millisecond, not to zero.
+- **A watch wakeup crosses instances by POLLING THE EVENT LOG, and the poll only runs while
+  somebody waits.** `Notifier.notify()` knows about this Space's own mutations and nothing else, so
+  a watch on instance A slept through B's write until its caller's keepalive (15s in the SSE loop):
+  self-healing, never a lost event, but every cross-instance hop of an interactive turn paid it.
+  `LISTEN`/`NOTIFY` is not the fix available here — deno-postgres 0.19 exposes no asynchronous
+  notification API at all (checked: `QueryClient` has `queryArray`/`queryObject`/transactions and
+  no notification hook) — so a waiter drives `Space.pollForForeignChanges` every `CHANGE_POLL_MS`
+  instead. Two properties are what keep it from being a background job: it runs ONLY while a waiter
+  is parked (an idle space holds no timer and issues no queries), and it is one query per interval
+  per SPACE regardless of how many streams are open. The first poll of a space's life always
+  reports a change, because a record written before it took its baseline cursor would otherwise be
+  exactly the wakeup this exists to deliver. Errors are swallowed: the poll is a hint, the log is
+  the truth, and a database hiccup must not take down an SSE connection.
 - **Predicate pushdown is a SOUND pre-filter, never a second opinion.** `src/storage/pushdown.ts`
   renders part of a compiled pattern into SQL, but the oracle in `core/matching.ts` still decides
   every match. The asymmetry is the whole safety argument: over-returning is free (the oracle

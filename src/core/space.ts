@@ -235,7 +235,10 @@ export class Space {
   private readonly kinds = new KindRegistry();
   private readonly creds = new CredentialStore();
   private readonly ctx: SpaceContext;
-  private readonly notifier = new Notifier();
+  private readonly notifier = new Notifier(() => this.pollForForeignChanges());
+  /** How far the cross-instance poll has read the event log. `undefined` until the first poll,
+   *  which is why that first one always reports a change (see `pollForForeignChanges`). */
+  private changeCursor?: string;
   private readonly watches = new Map<string, Watch>();
   /** Live download capabilities: token -> the one artifact it opens, and when it lapses. In
    *  memory and short-lived by design. A capability is a delegation of a read the caller already
@@ -2122,9 +2125,41 @@ export class Space {
     return watch.match.where ? matchesRecord(rec, watch.match) : true;
   }
 
-  /** Resolve when a mutation occurs (a watch wakeup) or after timeoutMs (keepalive). */
+  /** Resolve when a mutation occurs (a watch wakeup) or after timeoutMs (keepalive). A mutation
+   *  made by another instance counts: see `pollForForeignChanges`. */
   waitForEvents(timeoutMs: number): Promise<void> {
     return this.notifier.wait(timeoutMs);
+  }
+
+  /**
+   * Has anything been committed to the event log that this process did not do?
+   *
+   * The in-process `Notifier` only knows about mutations THIS Space performed, so with two
+   * instances over one database (or two Space objects in one process) a watch used to sleep until
+   * its caller's keepalive, ~15s per cross-instance hop, which an interactive agent turn feels
+   * directly. `src/core/notifier.ts` calls this while a stream is waiting, and the shared log is
+   * what both sides can see. Deliberately not LISTEN/NOTIFY: the Postgres driver this build uses
+   * (deno-postgres 0.19) exposes no asynchronous notification API at all, so a poll of the log is
+   * the only cross-instance signal available, and it is one query per interval per SPACE no matter
+   * how many streams are open.
+   *
+   * Reads ONE event, because the answer is a boolean; the streams re-read the log from their own
+   * cursors. It does not distinguish this instance's own writes, so a local mutation can cost one
+   * extra loop iteration (wake, find nothing new, wait again) before the cursor catches up. That
+   * is the cheap direction of the trade: the expensive one would be missing a wakeup.
+   */
+  private async pollForForeignChanges(): Promise<boolean> {
+    if (this.changeCursor === undefined) {
+      // First poll of this space's life. Take the baseline and report a change anyway: a record
+      // written between the caller's last read and this baseline is already below the cursor, so
+      // reporting "nothing" here would be the one wakeup this whole mechanism exists to deliver.
+      this.changeCursor = await this.storage.latestCursor();
+      return true;
+    }
+    const events = await this.storage.getEvents(this.changeCursor, 1);
+    if (events.length === 0) return false;
+    this.changeCursor = events[events.length - 1].cursor;
+    return true;
   }
 
   // ---- envelope query + diagnostics + remediation (ops plane; would be grant-gated) ----
