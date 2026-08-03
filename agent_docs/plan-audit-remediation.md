@@ -1,7 +1,7 @@
 # Plan: audit remediation
 
 > Status: H, I, N and O–R are open; **E, K, L and M are closed** (2026-08-03); everything else is closed and
-> its guards pass (`deno task conformance`: 421 passed, 0 failed). Each done package is a status line here; its
+> its guards pass (`deno task conformance`: 437 passed, 0 failed). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
 > paths; items marked **reproduced** were verified empirically. Line numbers drift; trust the symbol,

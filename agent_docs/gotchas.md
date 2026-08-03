@@ -543,6 +543,12 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
     inlined into DDL, so `prepareKind` skips any path pushdown declines rather than escaping it. It
     calls `pushablePath` outright now: it carried its own copy of the alphabet rule, and the two
     drifted the moment digit segments stopped being pushable.
+  * **`pg_statistic_ext` is server-wide; a statistics object is not.** The "already created?" check
+    asked by NAME only, so the first space to declare a path claimed that name for the entire
+    server and every other space in its own schema ran on the planner's guess forever, silently and
+    permanently. It is scoped by `stxnamespace = current_schema()::regnamespace` now. Pinned in
+    `planner.test.ts`; the conformance harness hits this on every run, since it shares one PGlite
+    across per-test schemas.
   A fresh space declares its kinds before it has rows, so the ANALYZE at declaration time measures
   an empty table; the estimate becomes real at the next autoanalyze. Nothing is wrong when a brand
   new space plans a claim badly for a while.

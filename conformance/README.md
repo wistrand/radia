@@ -23,7 +23,7 @@ flowchart LR
 ```
 
 ```bash
-deno task conformance                     # sqlite + pglite + the blob port   (322 tests)
+deno task conformance                     # sqlite + pglite + the blob port   (437 tests, ~13s)
 scripts/pg-conformance.sh                 # + a live Postgres
 RADIA_PG_URL=postgres://… scripts/pg-conformance.sh   # against your own server
 ```
@@ -53,6 +53,7 @@ is the only run that actually *contends* for claims, which is why a claim-path c
 | File | Role |
 |------|------|
 | `run.test.ts` | entry point: enumerates implementations, registers every suite against each |
+| `adapters.ts` | the implementations under test, and how each is isolated per test: SQLite gets a fresh `:memory:` database, PGlite and Postgres get an ephemeral schema on ONE shared server (see below) |
 | `harness.ts`  | the `Suite` / `BlobSuite` / `BlobCryptoSuite` types and setup/teardown |
 | `suites/`     | one file per behavior area (records, matching, **pushdown soundness**, **graph: children + lineage**, leases + claim fairness, idempotency, events, watches, faults, auth, taint, admin + selector-driven remediation, blobs + encryption) |
 | `http.test.ts` | the HTTP boundary, driving `makeHandler` directly: authentication and run renewal, the artifact inline/download allowlist and capability URLs, erasure (410 vs 404, shared payloads, forged shred markers), and a table of wrong-typed fields per endpoint |
@@ -61,6 +62,15 @@ is the only run that actually *contends* for claims, which is why a claim-path c
 | `registry.test.ts` | latest-wins projections over hand-made ids |
 | `console.test.ts`  | the dev console, lifted out of the page source: HTML escaping, no credential in the page or in an event handler, and the sign-in gate |
 | `defaults.test.ts` | the posture an unconfigured space lands in: `--auth`, the runtime directory, optional-value flags |
+
+**One PGlite for the process, one schema per test.** Booting a WASM Postgres per test cost ~350ms
+around single-digit ms of work, so `adapters.ts` boots one instance at module load and gives each
+test an ephemeral schema, exactly as the standalone Postgres rows already worked (measured per
+create-init-work-close cycle: 362ms → 17ms). A test still gets fresh tables; what it no longer gets
+is a virgin *database*, so a test that reads a server-wide catalog must construct its own
+`PgliteAdapter()` rather than take the harness's (`planner.test.ts` does, and pins the one place
+that catalog scoping actually mattered). PGlite is a single connection and `search_path` is state
+on it, so a shared instance is sequential-use only; the harness runs a test at a time.
 
 The files outside `suites/` are NOT adapter-parameterized, and that is the rule for where a test
 belongs: the shared run is for PORT contracts, so anything that has one implementation (the HTTP

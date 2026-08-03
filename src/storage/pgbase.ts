@@ -369,8 +369,12 @@ export class PgSqlAdapter implements StorageAdapter {
       if (!segments) continue;
       const name = `radia_stat_${segments.join("_")}`;
       if (name.length > 63) continue; // Postgres identifier limit; a path that long is pathological
+      // Scoped to the CURRENT schema, because a statistics object is a schema object and
+      // `pg_statistic_ext` is server-wide: an unscoped check let one space's statistics stop a
+      // second space in another schema on the same server from ever getting its own.
       const existing = await this.sql.query<{ n: number }>(
-        "select count(*)::int as n from pg_statistic_ext where stxname = $1",
+        "select count(*)::int as n from pg_statistic_ext where stxname = $1 " +
+          "and stxnamespace = current_schema()::regnamespace",
         [name],
       );
       if (Number(existing.rows[0]?.n ?? 0) > 0) continue;

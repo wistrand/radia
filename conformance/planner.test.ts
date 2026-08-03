@@ -13,6 +13,7 @@
 // is planned on a guess", for the measurements and the method to re-run them.
 
 import { assert, assertEquals } from "@std/assert";
+import { PGlite } from "@electric-sql/pglite";
 import { Space } from "../src/core/space.ts";
 import { PgliteAdapter } from "../src/storage/pglite.ts";
 
@@ -70,6 +71,33 @@ Deno.test("planner: a path that cannot be inlined into DDL is skipped, not escap
     assertEquals(await statNames(adapter), ["radia_stat_outer_inner"]);
   } finally {
     await adapter.close();
+  }
+});
+
+Deno.test("planner: statistics are per SCHEMA, so a second space on one server is not starved", async () => {
+  // `pg_statistic_ext` is server-wide while a statistics object belongs to a schema. Asking it
+  // only by NAME meant the first space to declare `tag` claimed the name for the whole server,
+  // and every other space in its own schema silently ran on the planner's guess forever. Two
+  // spaces on one server is the standalone Postgres deployment, and (since the conformance
+  // harness shares one PGlite) also every run of this suite.
+  const db = new PGlite();
+  const one = new PgliteAdapter(undefined, { instance: db, schema: "plan_one", ephemeral: true });
+  const two = new PgliteAdapter(undefined, { instance: db, schema: "plan_two", ephemeral: true });
+  const declare = async (a: PgliteAdapter) => {
+    await a.init();
+    await new Space(a).persistKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
+  };
+  try {
+    await declare(one);
+    await declare(two);
+    const r = await db.query<{ nsp: string }>(
+      "select stxnamespace::regnamespace::text as nsp from pg_statistic_ext where stxname = 'radia_stat_tag' order by 1",
+    );
+    assertEquals(r.rows.map((x) => x.nsp), ["plan_one", "plan_two"], "each schema gets its own object");
+  } finally {
+    await one.close();
+    await two.close(); // ephemeral: the schemas go with them
+    await db.close();
   }
 });
 
