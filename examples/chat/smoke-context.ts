@@ -54,6 +54,58 @@ const d = assembleContext(row(0, "system", "s"), orphan);
 check("orphaned tool replies are trimmed", d.messages.filter((m) => m.role === "tool").length === 0);
 check("…but the rest of the window is kept", d.messages.length === 3);
 
+// ── the direction that bricked a real conversation ───────────────────────────────────────────────
+// An assistant `tool_calls` whose reply never arrived. OpenAI rejects the whole payload — "must be
+// followed by tool messages responding to each tool_call_id" — so once one is on a durable thread,
+// EVERY later turn in that conversation fails identically and the conversation is unusable. Seen in
+// a live session after a turn stopped on its round cap; the thread had 59 messages and none of them
+// could be sent again.
+const callRow = (index: number, ids: string[], content?: string): ThreadRow => ({
+  index,
+  role: "assistant",
+  ...(content === undefined ? {} : { content }),
+  tool_calls: ids.map((id) => ({ id, type: "function", function: { name: "t", arguments: "{}" } })),
+});
+const replyRow = (index: number, id: string): ThreadRow => ({ index, role: "tool", tool_call_id: id, content: "{}" });
+
+const unanswered = assembleContext(row(0, "system", "s"), [
+  row(1, "user"),
+  callRow(2, ["call_a"]),
+  row(3, "user", "next question"),
+]);
+check(
+  "an assistant tool_calls with no reply is dropped",
+  !unanswered.messages.some((m) => m.tool_calls),
+  JSON.stringify(unanswered.messages.map((m) => m.role)),
+);
+check("…and the rest of the conversation survives", unanswered.messages.length === 3);
+
+// Partially answered: keep what WAS answered rather than dropping the message whole, because
+// dropping it orphans the surviving replies and trades one protocol violation for the other.
+const partial = assembleContext(row(0, "system", "s"), [
+  callRow(1, ["call_a", "call_b"]),
+  replyRow(2, "call_a"),
+  row(3, "assistant", "done"),
+]);
+const kept = partial.messages.find((m) => m.tool_calls);
+check("a partially answered message keeps the answered calls", kept?.tool_calls?.length === 1, JSON.stringify(kept?.tool_calls));
+check("…and its surviving reply is not orphaned", partial.messages.filter((m) => m.role === "tool").length === 1);
+
+// An assistant message that SAID something keeps its text when its calls are dropped: the content
+// is real history, and only the unanswerable half has to go.
+const spoke = assembleContext(row(0, "system", "s"), [callRow(1, ["call_x"], "let me look that up"), row(2, "user")]);
+check("text survives when the unanswered calls are stripped", spoke.messages.some((m) => m.content === "let me look that up"));
+check("…without the calls", !spoke.messages.some((m) => m.tool_calls));
+
+// The old rule only trimmed LEADING tool rows, so a reply orphaned mid-window went straight to the
+// provider. Same defect, one position over.
+const interior = assembleContext(row(0, "system", "s"), [
+  row(1, "user"),
+  replyRow(2, "call_gone"),
+  row(3, "assistant", "hi"),
+]);
+check("a reply orphaned mid-window is trimmed too", !interior.messages.some((m) => m.role === "tool"));
+
 // A conversation with no system message at all must not fabricate one.
 const e = assembleContext(undefined, [row(0, "user")]);
 check("no system message means no head", e.messages.length === 1 && e.messages[0].role === "user");

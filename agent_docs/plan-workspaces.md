@@ -372,6 +372,22 @@ fails naming the path. The alternative, a placeholder blob, keeps the export wor
 LIE: the tree would hash to something the manifest never described, and `git log` would present
 invented bytes as the audited ones.
 
+*`--partial` was added after the first real shred, and the distinction it turns on is worth
+keeping.* "Refuse or fabricate" was a false pair. OMITTING the entry is neither: a tree that does
+not contain `secret.txt` makes no claim about `secret.txt`, so the only dishonesty left is silence
+about the difference. That is what the option pays for — the subject line carries `[N erased]`
+(`git log --oneline` is what a reader scans), the commit that lost an entry carries
+`Radia-Partial` and `Radia-Erased` trailers, and the repository's `description` carries the list,
+which is the one channel that survives the directory being handed to somebody who never saw the
+console. `Radia-Tree-Digest` still names the MANIFEST, so recomputing it from what git holds
+disagrees on purpose, and the `Radia-Partial` beside it is what says that is expected.
+
+It skips ERASURE ONLY, discriminated on 410 rather than on the error reading like one. A 404 is a
+manifest pointing at something that never existed, and a forged digest is content disagreeing with
+its claim; both stay fatal with `partial: true` set. Widening this to "skip anything unreadable"
+is how a broken tree becomes an export nobody questions, and both cases carry a test that fails if
+someone tries.
+
 *A fork is two branches, not a dropped head.* Picking a winner here would be this layer inventing
 the merge policy the design deliberately does not have.
 

@@ -29,17 +29,27 @@ export interface ThreadRow {
  *   a fresh system message mid-thread, and the windowing notice used to be its own system message
  *   right after the head. Both are folded into the single leading message here.
  *
- *   NO ORPHANED tool replies. A `tool` message must answer a preceding `tool_calls`, so a reply
- *   whose call fell outside the window is trimmed rather than dragging its call back in.
+ *   TOOL CALLS AND REPLIES ARE PAIRED, IN BOTH DIRECTIONS. A `tool` message must answer a preceding
+ *   `tool_calls`, and — the direction that was missing — an assistant `tool_calls` must be answered
+ *   by a reply for EVERY id it names. OpenAI rejects the payload outright otherwise: "An assistant
+ *   message with 'tool_calls' must be followed by tool messages responding to each tool_call_id."
+ *
+ *   The second direction is not hypothetical and not recoverable without this. A turn that stops on
+ *   its round cap, a worker that never answers before the tool deadline, a killed process: any of
+ *   them leaves an assistant `tool_calls` on the thread with no reply, and from then on EVERY turn
+ *   in that conversation assembles the same rejected payload. The thread is durable, so the damage
+ *   is permanent and repair has to happen here — a fix that only stops new ones does nothing for a
+ *   conversation already holding one.
+ *
+ *   A partially answered message keeps the calls that WERE answered rather than being dropped
+ *   whole, because dropping it would orphan those replies and trade one violation for the other.
  */
 export function assembleContext(
   system: ThreadRow | undefined,
   window: ThreadRow[],
 ): { messages: ChatMessage[]; hidden: number } {
-  const tail = [...window];
-  while (tail.length > 0 && tail[0].role === "tool") tail.shift();
   // Older system messages are history, not instructions: they must not reach the body.
-  const body = tail.filter((m) => m.role !== "system");
+  const body = pairToolCalls(window.filter((m) => m.role !== "system"));
   const hidden = body.length > 0 ? Math.max(0, body[0].index - 1) : 0;
   const note = hidden === 0
     ? ""
@@ -49,6 +59,38 @@ export function assembleContext(
       `They are not lost; retrieve them if you need them.]`;
   const head: ChatMessage[] = system ? [{ role: "system", content: `${system.content ?? ""}${note}` }] : [];
   return { messages: [...head, ...body.map(toMessage)], hidden };
+}
+
+/**
+ * Keep only tool calls that were answered, and only replies whose call survived.
+ *
+ * One ordered pass, which is what makes the two rules consistent: `live` grows as surviving calls
+ * are emitted, so a reply is kept only when its call came EARLIER and stayed. That also subsumes
+ * the old rule (trim leading `tool` rows) and fixes what it missed — a reply orphaned in the MIDDLE
+ * of a window, which the leading-only trim let through.
+ */
+function pairToolCalls(rows: ThreadRow[]): ThreadRow[] {
+  const answered = new Set<string>();
+  for (const m of rows) if (m.role === "tool" && m.tool_call_id) answered.add(m.tool_call_id);
+
+  const out: ThreadRow[] = [];
+  const live = new Set<string>();
+  for (const m of rows) {
+    if (m.role === "tool") {
+      if (m.tool_call_id && live.has(m.tool_call_id)) out.push(m);
+      continue;
+    }
+    if (m.tool_calls && m.tool_calls.length > 0) {
+      const kept = m.tool_calls.filter((c) => answered.has(c.id));
+      // Nothing answered and nothing said: the message carries no information a provider will take.
+      if (kept.length === 0 && !(m.content ?? "").trim()) continue;
+      for (const c of kept) live.add(c.id);
+      out.push(kept.length === m.tool_calls.length ? m : { ...m, tool_calls: kept.length > 0 ? kept : undefined });
+      continue;
+    }
+    out.push(m);
+  }
+  return out;
 }
 
 export function toMessage(m: ThreadRow): ChatMessage {

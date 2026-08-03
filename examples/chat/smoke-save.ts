@@ -26,6 +26,7 @@ import { registerChatKinds } from "./space/kinds.ts";
 import { publishCapability } from "./space/capability.ts";
 import { makeSaveTools, makeShareTools, makeWorkspaceTools, SAVE_SCHEMAS, SHARE_SCHEMAS, WORKSPACE_SCHEMAS } from "./tools/save.ts";
 import { bootstrap, mintSession } from "./space/roles.ts";
+import { summarizeWorkspaces } from "../../extensions/ts/workspace.ts";
 import type { ToolDef } from "./provider/openrouter.ts";
 
 const PORT = 7809;
@@ -189,7 +190,10 @@ const wsConv = (await admin.put({ kind: "conversation", body: { title: "trees" }
 const wsTools = makeWorkspaceTools(admin);
 const toolCall = (tool: string, args: Record<string, unknown>, conversationId = wsConv) =>
   wsTools[tool](args, { owner: "human:alice", conversationId, callId: "smoke" }) as Promise<Record<string, unknown>>;
-type Listing = { workspaces: { name: string; files: number; versions: number; forked?: boolean }[]; incomplete?: boolean };
+type Listing = {
+  workspaces: { name: string; files: number; versions: number; paths?: string[]; forked?: boolean; thisConversation?: boolean }[];
+  incomplete?: boolean;
+};
 
 check("list_workspaces is advertised", desc.has("list_workspaces"));
 // An empty answer must be EMPTY, not an error and not a missing field: "nothing yet" is the state
@@ -209,19 +213,69 @@ check("…and both trees after saving", listed.workspaces.map((w) => w.name).sor
 const solver = listed.workspaces.find((w) => w.name === "solver")!;
 check("a tree saved twice is one workspace with two versions", solver.versions === 2 && solver.files === 2, JSON.stringify(solver));
 
-// Scoped to the conversation by default. Not authorization (the grant already does that): relevance,
-// so a long-lived space does not answer "what am I working on" with every tree anyone ever made.
+// NOT scoped to the conversation, and the reason is a live failure. Hiding the rest made this tool
+// contradict `space_count`, which is owner-scoped by the grant: one said 8 workspaces, the other said
+// none, both correctly, and the model burned eight tool rounds trying to reconcile them.
 const otherConv = (await admin.put({ kind: "conversation", body: { title: "elsewhere" } })).id;
 await toolCall("save_workspace", { name: "unrelated", files: { "z.txt": "z\n" } }, otherConv);
-const stillMine = await toolCall("list_workspaces", {}) as Listing;
-check("another conversation's tree does not appear", !stillMine.workspaces.some((w) => w.name === "unrelated"));
-const everything = await toolCall("list_workspaces", { all: true }) as Listing;
-check("…until all:true asks for it", everything.workspaces.some((w) => w.name === "unrelated"));
+const across = await toolCall("list_workspaces", {}) as Listing;
+check("a tree from another conversation IS listed", across.workspaces.some((w) => w.name === "unrelated"));
+// …but marked, because a code runner only materialises a tree from its own conversation. A name the
+// model cannot use, with no way to know why, is what sent it in circles in the first place.
+check(
+  "…and marked so the runnable ones are distinguishable",
+  across.workspaces.find((w) => w.name === "solver")?.thisConversation === true &&
+    across.workspaces.find((w) => w.name === "unrelated")?.thisConversation === undefined,
+  JSON.stringify(across.workspaces.map((w) => [w.name, w.thisConversation ?? false])),
+);
+const narrowed = await toolCall("list_workspaces", { conversation_only: true }) as Listing;
+check("…and conversation_only narrows on request", !narrowed.workspaces.some((w) => w.name === "unrelated"));
+check("the count agrees with what the space itself reports", across.workspaces.length === (await summarizeWorkspaces(admin)).workspaces.length);
 
 // The description has to steer the model to look BEFORE writing, which is the only behaviour that
 // closes the gap; a tool nobody reaches for is the same as no tool.
 const listDesc = desc.get("list_workspaces") ?? "";
 check("…and its description says to check before saving", /BEFORE save_workspace/i.test(listDesc));
+// ── reading a tree, which is what fabrication filled in for ──────────────────────────────────────
+// The live failure: asked to show a workspace file, the model tried read_file (sandbox only,
+// denied), then RECONSTRUCTED the contents from earlier in the conversation, stored the
+// reconstruction with save_content, and presented it as the file. It even said so. Save, list and
+// run existed for trees; read did not, and fabrication was the only route left to an answer.
+check("read_workspace is advertised", desc.has("read_workspace"));
+const read = await toolCall("read_workspace", { workspace: "solver", path: "main.py" }) as Record<string, unknown>;
+check("a workspace file reads back byte for byte", read.content === "print(2)\n", JSON.stringify(read.content));
+check("…and says which tree it came from", typeof read.treeDigest === "string" && (read.treeDigest as string).startsWith("t1:"));
+
+const missing = await toolCall("read_workspace", { workspace: "solver", path: "nope.py" }) as Record<string, unknown>;
+check("a missing path is an error that LISTS what is there", Array.isArray(missing.paths) && (missing.paths as string[]).includes("main.py"));
+
+// An erased payload must produce an explanation, because reconstruction is what a model does when
+// it gets nothing it can use.
+const doomed = await toolCall("save_workspace", { name: "leaky", files: { "keep.py": "ok\n", "secret.txt": "OOPS\n" } }) as Record<string, unknown>;
+void doomed;
+const leaky = (await admin.query({ kind: "workspace", match: { name: "leaky" } }, 1, { dir: "desc" }))[0];
+const secret = (leaky.body as { files: { path: string; artifactId: string }[] }).files.find((f) => f.path === "secret.txt")!;
+await admin.shredArtifact(secret.artifactId, { acknowledgeShared: true, reason: "leaked" });
+const erased = await toolCall("read_workspace", { workspace: "leaky", path: "secret.txt" }) as Record<string, unknown>;
+check("an erased file reports the erasure", erased.erased === true, JSON.stringify(erased.error).slice(0, 80));
+check("…and tells the model not to reconstruct it", /do not reconstruct/i.test(String(erased.error)));
+check("…while the rest of the tree still reads", ((await toolCall("read_workspace", { workspace: "leaky", path: "keep.py" }) as Record<string, unknown>).content) === "ok\n");
+
+// The listing has to carry the paths, or "what files are in X" has no data source and gets answered
+// from conversation memory — which is exactly how the fabrication started.
+const withPaths = await toolCall("list_workspaces", {}) as Listing;
+check(
+  "the listing reports the PATHS, not just a count",
+  (withPaths.workspaces.find((w) => w.name === "solver")?.paths ?? []).join(",") === "lib.py,main.py",
+  JSON.stringify(withPaths.workspaces.find((w) => w.name === "solver")?.paths),
+);
+
+const readDesc = desc.get("read_workspace") ?? "";
+check("read_workspace forbids reproducing a file from memory", /NEVER reproduce/i.test(readDesc));
+check("…and says read_file does not reach workspaces", /read_file/.test(readDesc));
+
+// The marker is useless unless the description says what to DO about it.
+check("…and says how to use a tree from another conversation", /save_workspace them here first/i.test(listDesc));
 check("…and warns that an incomplete list is not an absent workspace", /incomplete/i.test(listDesc));
 
 // ── the direct route works ───────────────────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@
 // needs a framework.
 
 /** Switches that take no value, so positional scanning does not swallow the next token. */
-export const VALUELESS = new Set(["--json", "--untainted", "--help", "-h", "--all", "--drain", "--compact"]);
+export const VALUELESS = new Set(["--json", "--untainted", "--help", "-h", "--all", "--drain", "--compact", "--partial"]);
 
 /** The value of `--name`, or undefined. First occurrence wins, not last, which keeps
  *  a wrapper script's defaults overridable by appending, the usual shell expectation. */

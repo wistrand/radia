@@ -16,7 +16,14 @@ import { endStatus, showStatus } from "./terminal.ts";
 
 const WAKE_FALLBACK_MS = 250;
 const WAKE_KINDS = ["llm_chunk", "llm_result", "tool_result"];
-const STALL_MS = 2500;
+// How long before the status line stops saying "waiting" and offers the caller's hint instead.
+//
+// Raised from 2 500 after the hint turned out to be wrong most of the time it appeared. The trigger
+// is "no progress record yet", and most tools emit no progress records AT ALL, so the old value
+// fired on every ordinary tool that took longer than a couple of seconds: a jailed python start, an
+// image, a workspace materialise. The hint is a DIAGNOSIS, so it should wait until "this is taking
+// unusually long" is actually true, and the elapsed seconds are on screen the whole time anyway.
+const STALL_MS = 9000;
 const PROGRESS_POLL_MS = 400; // progress changes a few times per call; chunks change constantly
 
 const waiters = new Set<() => void>();

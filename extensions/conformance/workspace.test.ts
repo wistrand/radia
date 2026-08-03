@@ -246,6 +246,29 @@ Deno.test("workspace: churn stays cheap to read, and listing is honest about com
   });
 });
 
+Deno.test("workspace: materialising an erased payload names the PATH, not just the artifact", async () => {
+  await withSpace(async (c) => {
+    const ws = await writeWorkspace(c, { name: "erased-mat", owner: OWNER, files: { "ok.txt": "fine\n", "gone.txt": "SECRET\n" } });
+    await c.shredArtifact(ws.files.find((f) => f.path === "gone.txt")!.artifactId, {
+      acknowledgeShared: true,
+      reason: "leaked",
+    });
+    const manifest = (await readWorkspace(c, "erased-mat"))!;
+    let message = "";
+    try {
+      await materialize(c, manifest, await Deno.makeTempDir());
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    // "this artifact's content was destroyed" alone leaves the caller holding an id and a tree it
+    // may never have listed. The path is the only part anyone can act on.
+    assert(message.includes("gone.txt"), `expected the path in: ${message}`);
+    assert(message.includes("ERASED"), message);
+    // …and what to DO, because an erased payload is permanent and a retry is wasted effort.
+    assert(message.includes("successor"), message);
+  });
+});
+
 Deno.test("workspace: a summary answers what EXISTS, which a raw query cannot", async () => {
   await withSpace(async (c) => {
     // The gap this closes. `query workspace` returns every VERSION, so a tree saved three times

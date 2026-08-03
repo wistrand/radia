@@ -466,6 +466,124 @@ Deno.test("[git] a forged manifest digest is refused, not exported", async () =>
   });
 });
 
+Deno.test("[git] --partial exports what survives, and says so where it cannot be missed", async () => {
+  const hasGit = await haveGit();
+  await withSpace(async (c) => {
+    const dir = await Deno.makeTempDir({ prefix: "radia-partial-" });
+    try {
+      const v1 = await writeWorkspace(c, { name: "leaky", owner: OWNER, files: { "app.py": "v1\n", "secret.txt": "OOPS\n" } });
+      const v2 = await writeWorkspace(c, { name: "leaky", owner: OWNER, basedOn: v1.id, files: { "app.py": "v2\n", "secret.txt": "OOPS\n" } });
+      await writeWorkspace(c, { name: "leaky", owner: OWNER, basedOn: v2.id, files: { "app.py": "v3\n" } });
+      await c.shredArtifact(v1.files.find((f) => f.path === "secret.txt")!.artifactId, {
+        acknowledgeShared: true,
+        reason: "leaked",
+      });
+
+      // The default is still to refuse, and now it names the way forward. An option nobody can find
+      // is the same as no option.
+      const refused = await assertRejects(() => exportWorkspaceGit(c, "leaky", dir), Error);
+      assertStringIncludes(refused.message, "Pass partial");
+
+      const r = await exportWorkspaceGit(c, "leaky", dir, { partial: true });
+      assertEquals(r.partial, true);
+      // Two versions carried the file, so two entries were omitted — the count is per VERSION, not
+      // per path, because that is what a reader of the history loses.
+      assertEquals(r.erased.length, 2);
+      assertEquals([...new Set(r.erased.map((e) => e.path))], ["secret.txt"]);
+      assertEquals(r.versions.map((v) => v.erased.length), [1, 1, 0]);
+
+      // The repository's own description carries it, which is the only channel that survives the
+      // directory being passed to somebody who never saw the console output.
+      assertStringIncludes(await Deno.readTextFile(`${dir}/description`), "PARTIAL:");
+      assertStringIncludes(await Deno.readTextFile(`${dir}/description`), "secret.txt");
+
+      if (!hasGit) {
+        console.log("    (git checks skipped: no git binary)");
+        return;
+      }
+      // Still a VALID repository. Omitting an entry is a different tree, not a broken one; a
+      // placeholder blob would have been the broken-by-lying alternative.
+      assert((await git(["--git-dir", dir, "fsck", "--strict"])).ok, "a partial export is still a valid repo");
+
+      // The path is ABSENT from the tree rather than present with invented bytes.
+      const tree = await git(["--git-dir", dir, "ls-tree", "--name-only", "main~2"]);
+      assertEquals(tree.out.trim().split("\n"), ["app.py"]);
+
+      // `git log --oneline` is what a reader scans, so the gap has to be in the SUBJECT, not only
+      // in a trailer nobody expands.
+      const log = await git(["--git-dir", dir, "log", "--format=%s", "main"]);
+      assertEquals(log.out.trim().split("\n").filter((l) => l.includes("[1 erased]")).length, 2);
+
+      // And machine-readable, naming which path, on the commit that lost it.
+      const trailers = await git([
+        "--git-dir",
+        dir,
+        "log",
+        "--format=%(trailers:key=Radia-Erased,valueonly)",
+        "main~2",
+        "-1",
+      ]);
+      assertEquals(trailers.out.trim(), "secret.txt");
+      const partial = await git(["--git-dir", dir, "log", "--format=%(trailers:key=Radia-Partial,valueonly)", "main", "-1"]);
+      assertEquals(partial.out.trim(), "", "the version that never carried the file is NOT marked partial");
+    } finally {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    }
+  });
+});
+
+Deno.test("[git] --partial skips ERASURE only, never a failure that merely looks like one", async () => {
+  await withSpace(async (c) => {
+    const dir = await Deno.makeTempDir({ prefix: "radia-notgone-" });
+    try {
+      const real = await writeWorkspace(c, { name: "strict", owner: OWNER, files: { "a.txt": "real\n" } });
+
+      // A 410 means the runtime deliberately destroyed the bytes and they are not coming back. A 404
+      // does not: it is a manifest pointing at something that never existed, which is a broken tree
+      // rather than an erased one. Skipping it would hand back a repository that looks complete.
+      await c.put({
+        kind: "workspace",
+        body: {
+          name: "strict",
+          owner: OWNER,
+          treeDigest: real.treeDigest,
+          basedOn: real.id,
+          files: [{ ...real.files[0], path: "ghost.txt", artifactId: "01JJJJJJJJJJJJJJJJJJJJJJJJ" }],
+        },
+      });
+      const err = await assertRejects(() => exportWorkspaceGit(c, "strict", dir, { partial: true }), Error);
+      assertStringIncludes(err.message, "ghost.txt");
+      assert(!err.message.includes("Pass partial"), "a 404 must not advertise partial as the fix");
+    } finally {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    }
+  });
+});
+
+Deno.test("[git] --partial does not launder a forged manifest digest", async () => {
+  await withSpace(async (c) => {
+    const dir = await Deno.makeTempDir({ prefix: "radia-forge2-" });
+    try {
+      const real = await writeWorkspace(c, { name: "forge2", owner: OWNER, files: { "a.txt": "real\n" } });
+      await c.put({
+        kind: "workspace",
+        body: {
+          name: "forge2",
+          owner: OWNER,
+          treeDigest: real.treeDigest,
+          basedOn: real.id,
+          files: [{ ...real.files[0], digest: "f".repeat(64) }],
+        },
+      });
+      // Content that DISAGREES with its claim is not content that is missing. Letting `partial`
+      // cover it is how a forged tree becomes an export nobody questions.
+      await assertRejects(() => exportWorkspaceGit(c, "forge2", dir, { partial: true }), Error, "hashes to");
+    } finally {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    }
+  });
+});
+
 Deno.test("[git] an erased payload fails the export loudly instead of inventing content", async () => {
   await withSpace(async (c) => {
     const dir = await Deno.makeTempDir({ prefix: "radia-shred-" });

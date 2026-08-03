@@ -559,7 +559,29 @@ await agentLoop(client, {
       // `materialize` VERIFIES on the way in: every artifact is hashed against the entry that names
       // it, and the tree digest is recomputed from the entries. A manifest that lies about either
       // is refused here rather than silently attested to later.
-      const mat = await materialize(c, manifest, wsRoot);
+      //
+      // ANSWERED, never thrown. A handler that throws is nacked and the call becomes claimable
+      // again (`sdk/ts/loop.ts`), which is right for a transient fault and exactly wrong for a
+      // permanent one: an erased payload is not coming back, so retrying re-fails until the
+      // CLIENT's deadline and the user sees "timed out waiting for 'run_python'" with no reason.
+      // That is what a shredded file in a tree did — the retry loop turned a one-line explanation
+      // into a two-minute hang.
+      let mat;
+      try {
+        mat = await materialize(c, manifest, wsRoot);
+      } catch (e) {
+        return {
+          kind: "tool_result",
+          body: {
+            callId,
+            conversationId: b.conversationId,
+            owner: b.owner,
+            ok: false,
+            output: e instanceof Error ? e.message : String(e),
+          },
+          taint: [],
+        };
+      }
       wsTree = mat.treeDigest;
       wsManifest = manifest;
       wsParent = manifest.id;

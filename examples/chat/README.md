@@ -206,7 +206,8 @@ Tools: `read_file`, `list_files`, `search_files`, `stat` (sandboxed to `RADIA_CH
 default `examples/chat/sandbox`; `list_files`/`read_file`/`stat` return `size` + `modified`
 so size/date questions get ground truth, not guesses), `time`, `calc`, `save_content` (store
 text as an artifact), `share_artifact` (an openable link for one), `save_workspace` (a multi-file
-tree), `list_workspaces` (what trees this conversation already has), `run_javascript` and
+tree), `list_workspaces` (what trees exist, with their paths), `read_workspace` (one file out of a
+tree, byte for byte), `run_javascript` and
 `run_python` (sandboxed execution, optionally against a workspace),
 `save_procedure`/`read_procedure`
 (name a program and keep it; see below), and `generate_image`.

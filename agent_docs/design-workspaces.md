@@ -136,7 +136,10 @@ negotiation) and is not needed for export.
   whose history can be rewritten cannot back that.
 
 **BUILT**, as described: `extensions/ts/git.ts` (`exportWorkspaceGit`), run with
-`deno task workspace-git`. One commit per manifest version, `basedOn` as the parent chain, every
+`radia workspace-git`. An erased payload fails the export by default and is OMITTED under
+`--partial`, never replaced: the commit that lost an entry names it in its own trailers and the
+repository's description carries the list, so the gap travels with the artifact rather than living
+in a console line. One commit per manifest version, `basedOn` as the parent chain, every
 head a branch, the sha1 recomputed and discarded. Trailers (`Radia-Workspace`, `Radia-Tree-Digest`,
 `Radia-Based-On`) lead each commit back to the record it came from. A BARE repository, so `git
 clone` does the checkout: a working copy needs a valid `.git/index`, and emitting one wrong produces

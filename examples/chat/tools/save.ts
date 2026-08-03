@@ -148,6 +148,11 @@ export const SAVE_SCHEMAS: ToolDef[] = [
  * Written as the WORKER, like `save_content`, but stamped with the SESSION's owner so the tree
  * belongs to whoever asked for it and a scoped grant can bind it.
  */
+/** How many paths a listing shows per workspace before it just reports the remainder. */
+const PATHS_SHOWN = 25;
+/** Same cap `read_file` uses: a tool result goes into a context window. */
+const MAX_WORKSPACE_READ = 64 * 1024;
+
 export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
   return {
     save_workspace: async (a, ctx?: ToolContext) => {
@@ -194,13 +199,66 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
     // "what did I already build" had no answer — the same discovery-not-hardcode rule that governs
     // tools and models, failing in the direction that spends tokens.
     //
-    // Scoped to this conversation by default. A session's grant already limits what it can read;
-    // the scope here is about RELEVANCE, so a long-lived space does not answer "what am I working
-    // on" with every tree anyone ever made.
+    // EVERYTHING THE SESSION MAY READ, marked by conversation — not this conversation only.
+    //
+    // Conversation scoping looked like "relevance" and behaved like a contradiction. In a live
+    // session `space_count {kind: workspace}` answered 8 and `list_workspaces` answered none, both
+    // correctly, because the session's GRANT is owner-scoped while this tool was not. The model
+    // could not reconcile the two and spent eight tool rounds trying, ending with no answer.
+    //
+    // The narrowing was never doing security work either: the query is bounded by the grant, so a
+    // session sees its own trees and no one else's whatever this passes. Scoping it twice only hid
+    // rows from the caller most likely to need them.
+    // READING a tree, which is what was missing and what the absence cost. Faced with "show
+    // hello.txt" and no way to read a workspace file, the model reconstructed the text from its
+    // context, stored the reconstruction with save_content, and presented it as the file — saying
+    // so, but presenting it. A tool that can save, list and run trees but not read one leaves
+    // fabrication as the only route to an answer.
+    read_workspace: async (a, ctx?: ToolContext) => {
+      const name = typeof a.workspace === "string" ? a.workspace.trim() : "";
+      const path = typeof a.path === "string" ? a.path.trim() : "";
+      if (!name || !path) return { error: "read_workspace needs a `workspace` and a `path`" };
+      const manifest = await readWorkspace(client, name, ctx?.conversationId) ??
+        await readWorkspace(client, name);
+      if (!manifest) return { error: `no workspace named ${JSON.stringify(name)} that you can see` };
+      const file = manifest.files.find((f) => f.path === path);
+      if (!file) {
+        return {
+          error: `no file ${JSON.stringify(path)} in workspace ${JSON.stringify(name)}`,
+          paths: manifest.files.map((f) => f.path).slice(0, PATHS_SHOWN),
+        };
+      }
+      let bytes: Uint8Array;
+      try {
+        bytes = await client.getArtifact(file.artifactId);
+      } catch (e) {
+        // The case that started all this. An erased payload must produce an EXPLANATION, because
+        // the alternative the model reaches for is reconstructing the content from memory.
+        const gone = (e as { status?: number }).status === 410;
+        return {
+          error: gone
+            ? `${JSON.stringify(path)} cannot be read: its payload was ERASED, permanently. Do not ` +
+              `reconstruct it — say it was erased. To make the tree usable again, save a successor ` +
+              `with save_workspace containing the other files and not this one.`
+            : (e as Error).message,
+          erased: gone ? true : undefined,
+        };
+      }
+      const truncated = bytes.length > MAX_WORKSPACE_READ;
+      return {
+        workspace: name,
+        path,
+        size: bytes.length,
+        treeDigest: manifest.treeDigest,
+        truncated,
+        content: new TextDecoder().decode(truncated ? bytes.slice(0, MAX_WORKSPACE_READ) : bytes),
+      };
+    },
+
     list_workspaces: async (a, ctx?: ToolContext) => {
-      const all = a.all === true;
+      const here = ctx?.conversationId;
       const r = await summarizeWorkspaces(client, {
-        conversationId: all ? undefined : ctx?.conversationId,
+        conversationId: a.conversation_only === true ? here : undefined,
       });
       return {
         workspaces: r.workspaces.map((w) => ({
@@ -208,6 +266,16 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
           files: w.files,
           versions: w.versions,
           treeDigest: w.treeDigest,
+          // The PATHS, not just how many. "show files in X" had no data source without them, so the
+          // model answered from conversation memory — and once it was answering a question about a
+          // tree from memory, answering the NEXT one (what is IN a file) from memory too was a short
+          // step. Capped, because a manifest holds thousands of entries and a listing is not a place
+          // to spend a context window.
+          paths: w.paths.slice(0, PATHS_SHOWN),
+          ...(w.paths.length > PATHS_SHOWN ? { morePaths: w.paths.length - PATHS_SHOWN } : {}),
+          // The runner only materialises a tree from ITS conversation, so a listing that did not
+          // say which is which would hand the model a name it cannot use and no way to know why.
+          ...(here !== undefined && w.conversationId === here ? { thisConversation: true } : {}),
           // Reported, never resolved. A fork means somebody else wrote a successor to the version
           // this one was based on; both survive and neither was merged.
           ...(w.forked ? { forked: true, heads: w.heads.length } : {}),
@@ -225,26 +293,57 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
   {
     type: "function",
     function: {
+      name: "read_workspace",
+      description:
+        "Read one file out of a saved workspace, exactly as it was stored. This is how you answer " +
+        "\"show me X\" about anything in a tree: read_file does NOT reach workspaces, only the " +
+        "sandbox directories on disk. NEVER reproduce a workspace file's contents from memory or " +
+        "from earlier in this conversation, not even when you are confident and not even with a " +
+        "caveat: what you write is then your reconstruction presented as the file, and the user " +
+        "cannot tell the difference. If you cannot read it, say so. Returns {content, size, " +
+        "treeDigest, truncated}; `truncated: true` means you got the first part only. If the reply " +
+        "carries `erased: true`, the payload was permanently destroyed — report that it was erased, " +
+        "do not reconstruct it, and offer to save a successor tree without that path.",
+      parameters: {
+        type: "object",
+        properties: {
+          workspace: { type: "string", description: "The workspace name, as list_workspaces reports it." },
+          path: { type: "string", description: "A path inside the tree, e.g. 'src/main.py'. list_workspaces reports the paths." },
+        },
+        required: ["workspace", "path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "list_workspaces",
       description:
-        "What code you have already saved in this conversation, newest version of each. Use it " +
+        "What code you have already saved, newest version of each, across every conversation you " +
+        "can see. Use it " +
         "BEFORE save_workspace whenever you might be continuing something rather than starting " +
         "it: the user saying \"fix the bug\" or \"add a test\" refers to a tree that already " +
         "exists, and re-creating it from memory loses every file you are not currently thinking " +
         "about. Also use it when asked what you have built, or when you need a name to pass to a " +
         "code runner's `workspace` argument and are not certain of it. Returns {workspaces:[{name, " +
-        "files, versions, treeDigest}]}; `versions` is how many times that tree has been saved, so " +
+        "files, versions, paths, treeDigest}]}; `paths` is what is actually in the tree, so answer " +
+        "\"what files are in X\" from it rather than from memory (`morePaths` counts any beyond the " +
+        "first few). Use read_workspace to see what is IN one of those files. `versions` is how " +
+        "many times that tree has been saved, so " +
         "a high count is an iteration history you can still read. `forked: true` on an entry means " +
         "another version superseded the one a save was based on and both now exist: say so rather " +
-        "than picking one silently. Pass all:true to look beyond this conversation, which is rarely " +
-        "what you want. If the reply carries `incomplete: true`, a name being absent does NOT mean " +
-        "it does not exist, so do not overwrite on that basis.",
+        "than picking one silently. `thisConversation: true` marks the trees a code runner can " +
+        "actually take as its `workspace` argument: a runner only materialises a tree from the " +
+        "conversation it is running in, so to use one from elsewhere, read its files and " +
+        "save_workspace them here first, and say that is what you are doing. Pass " +
+        "conversation_only:true to hide the rest. If the reply carries `incomplete: true`, a name " +
+        "being absent does NOT mean it does not exist, so do not overwrite on that basis.",
       parameters: {
         type: "object",
         properties: {
-          all: {
+          conversation_only: {
             type: "boolean",
-            description: "Include workspaces from other conversations. Off by default; this conversation's trees are almost always the question.",
+            description: "List only this conversation's trees. Off by default, because the session can read all of its own and hiding them contradicts what the space_* tools report.",
           },
         },
       },

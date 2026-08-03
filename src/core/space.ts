@@ -1112,6 +1112,7 @@ export class Space {
     }
     validateArtifactDef({ digest: "", mediaType: meta.mediaType, size: 0, filename: meta.filename });
     validateArtifactFields(meta.appFields);
+
     const ref = await this.blobs.put(bytes);
     // Authoritative fields LAST: an app field can never shadow the digest, size or media type the
     // runtime computed, whatever the caller sent.

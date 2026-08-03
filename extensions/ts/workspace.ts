@@ -327,6 +327,9 @@ export interface WorkspaceSummary {
   id: string;
   treeDigest: string;
   files: number;
+  /** Every path in the head, sorted. A count answers "how big"; only the paths answer "what is in
+   *  it", and a caller with no way to ask that will answer it from somewhere less reliable. */
+  paths: string[];
   /** Manifests written for this name, retirements included. The iteration count. */
   versions: number;
   /** Every version nothing supersedes. More than one is a fork. */
@@ -379,6 +382,7 @@ export async function summarizeWorkspaces(
       id: heads[0].id,
       treeDigest: head.treeDigest,
       files: head.files?.length ?? 0,
+      paths: (head.files ?? []).map((f) => f.path).sort(),
       versions: rows.length,
       heads: heads.map((r) => r.id),
       forked: heads.length > 1,
@@ -431,7 +435,22 @@ export async function materialize(
     if (realDir !== realRoot && !realDir.startsWith(realRoot + "/")) {
       throw new Error(`workspace path ${JSON.stringify(file.path)} escapes the root via a link: ${realDir}`);
     }
-    const content = await client.getArtifact(file.artifactId);
+    // Named, because the caller's failure message is otherwise "this artifact's content was
+    // destroyed" with no indication of WHICH file, in a tree the caller may not have listed.
+    let content: Uint8Array;
+    try {
+      content = await client.getArtifact(file.artifactId);
+    } catch (e) {
+      const status = (e as { status?: number }).status;
+      throw new Error(
+        `workspace ${JSON.stringify(manifest.name)} cannot be materialised: ${JSON.stringify(file.path)} ` +
+          `(artifact ${file.artifactId}) is unreadable` +
+          (status === 410
+            ? `, because its payload was ERASED. That is permanent: save a successor tree without ` +
+              `this path to make the workspace usable again.`
+            : `: ${e instanceof Error ? e.message : e}`),
+      );
+    }
     // VERIFY, because a manifest is an ordinary record and its digests are whatever the writer
     // said. An artifact's digest is server-computed and cannot be forged; a manifest ENTRY claiming
     // that digest for those bytes can be. Hashing what we just fetched costs nothing (the bytes are

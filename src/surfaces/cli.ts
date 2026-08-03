@@ -56,9 +56,11 @@ Remediate (operator)
 
 Workspaces (a convention, not a runtime concept: see extensions/)
   workspaces [--conversation <id>]    what trees exist, newest version of each
-  workspace-git <name> --dir <out> [--conversation <id>] [--branch <n>]
+  workspace-git <name> --dir <out> [--conversation <id>] [--branch <n>] [--partial]
                                       a workspace's version history as a git repository
-                                      (bare: \`git clone <out>\` for a working copy)
+                                      (bare: \`git clone <out>\` for a working copy).
+                                      --partial exports what survives an ERASED payload,
+                                      naming every omission in the commit that lost it
 
 \`take\` prints the claimed record together with its lease; pass that lease object straight back
 to \`ack\`/\`nack\`/\`release\` (as a JSON string, or - to read it from stdin).
@@ -443,10 +445,11 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
     case "workspace-git": {
       const [name] = positional(argv, 1);
       const dir = flag(argv, "--dir");
-      if (!name || !dir) return usage("workspace-git <name> --dir <out> [--conversation <id>] [--branch <n>]");
+      if (!name || !dir) return usage("workspace-git <name> --dir <out> [--conversation <id>] [--branch <n>] [--partial]");
       const r = await exportWorkspaceGit(client, name, dir, {
         conversationId: flag(argv, "--conversation"),
         branch: flag(argv, "--branch"),
+        partial: has(argv, "--partial"),
       });
       const heads = Object.entries(r.branches);
       return out(ctx, r, () => {
@@ -457,6 +460,13 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         // A fork is the one line a reader must not skim: two heads mean somebody wrote a successor
         // to the same version, and neither side was merged or lost.
         if (heads.length > 1) lines.push(`  FORKED: ${heads.length} heads, none merged. git log --graph --all`);
+        // Loud, and listed. "Exported successfully" over a repository missing files is one step away
+        // from here, so the omissions get their own lines rather than a count.
+        if (r.partial) {
+          lines.push(`  PARTIAL: ${r.erased.length} file version(s) omitted, payload ERASED:`);
+          for (const path of [...new Set(r.erased.map((e) => e.path))].sort()) lines.push(`    ${path}`);
+          lines.push(`  each commit that lost one says so; see the repo's description file`);
+        }
         lines.push(`  git clone ${r.dir} my-checkout`);
         return lines.join("\n");
       });

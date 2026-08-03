@@ -71,7 +71,7 @@ export async function runTurn(
     if (message.tool_calls?.length) {
       write("\n");
       for (const call of message.tool_calls) {
-        await runToolCall(client, thread, call, onToolWait, priorAttempt);
+        await runToolCall(client, thread, call, tools, onToolWait, priorAttempt);
       }
       continue; // the model reads the tool results from the thread on the next call
     }
@@ -89,6 +89,7 @@ async function runToolCall(
   client: RadiaClient,
   thread: Thread,
   call: { id: string; function: { name: string; arguments: string } },
+  tools: ToolSet,
   onToolWait?: ToolWaitHook,
   priorAttempt?: Map<string, { id: string; n: number }>,
 ): Promise<void> {
@@ -121,7 +122,23 @@ async function runToolCall(
     },
     parentIds: previous ? [thread.id, previous.id] : [thread.id],
   });
-  const result = await awaitToolResult(client, toolCallId, prefix, call.function.name, onToolWait);
+  // EVERY exit from here appends a reply, including the failures. The assistant's `tool_calls`
+  // message is already on the thread by now, and a provider rejects the whole payload if any id it
+  // names goes unanswered — so a throw between those two writes does not lose one turn, it makes
+  // the CONVERSATION permanently unusable: every later turn reassembles the same broken history.
+  // That is what a tool deadline used to do, since `awaitToolResult` throws.
+  //
+  // `assembleContext` repairs a thread that already holds one (it must: this cannot fix history).
+  // This is the other half, and it is the better half — the model gets to SEE "timed out" and try
+  // something else, where a repaired context just silently lacks the call.
+  let result: { ok: boolean; output: unknown };
+  try {
+    result = await awaitToolResult(client, toolCallId, prefix, call.function.name, tools, onToolWait);
+  } catch (e) {
+    const output = { error: e instanceof Error ? e.message : String(e) };
+    await thread.append({ role: "tool", tool_call_id: call.id, content: JSON.stringify(output) }, [toolCallId]);
+    throw e;
+  }
   priorAttempt?.set(call.function.name, { id: toolCallId, n: attempt });
   write(`-> ${trunc(JSON.stringify(result.output), 80)}\n`);
   await showArtifact(client, result.output);
@@ -216,10 +233,28 @@ async function awaitToolResult(
   callId: string,
   prefix: string,
   tool: string,
+  tools: ToolSet,
   onToolWait?: ToolWaitHook,
 ): Promise<{ ok: boolean; output: unknown }> {
   const waiter = new Waiter(client, prefix);
-  const stall = tool === "request_grant" ? "waiting for you to approve or refuse" : `no worker serves '${tool}'`;
+  // WHAT THIS CAN ACTUALLY KNOW, which is less than it used to claim. The old hint read "no worker
+  // serves 'x'" after 2.5 seconds without a `progress` record, and that is not what the absence of a
+  // progress record means: most tools emit none at all, so any tool slower than 2.5s accused a
+  // worker that was about to answer. The line then vanished under the reply, which is why it read as
+  // a flicker rather than as a bug.
+  //
+  // The strong claim IS available, but from the capability set rather than from a timer: a client
+  // knows what is advertised, because that set is what it handed the model. LIVENESS is not
+  // available — a `capability` record is an advertisement, and a stopped worker's record lingers —
+  // and a scoped session cannot read the envelope to see whether the call was ever claimed. So the
+  // advertised case says only what it can support, and the timeout names both possibilities rather
+  // than picking the alarming one.
+  const advertised = tools.all().some((t) => t.function.name === tool);
+  const stall = tool === "request_grant"
+    ? "waiting for you to approve or refuse"
+    : advertised
+    ? `no result yet from '${tool}'`
+    : `nothing advertises '${tool}'`;
   const deadline = Date.now() + (tool === "request_grant" ? HUMAN_DEADLINE_MS : TOOL_DEADLINE_MS);
   while (Date.now() < deadline) {
     const result = await client.readOne({ kind: "tool_result", match: { callId } });
@@ -233,7 +268,11 @@ async function awaitToolResult(
     await waiter.pump(callId, stall);
     await waitWake();
   }
-  throw waiter.timeout(stall, `timed out waiting for '${tool}'`);
+  throw waiter.timeout(
+    stall,
+    `timed out waiting for '${tool}'` +
+      (advertised ? " — its worker may have stopped, or the call may just be slow" : ""),
+  );
 }
 
 // ---- the tool set is discovered, never hard-coded ----

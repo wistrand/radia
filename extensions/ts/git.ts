@@ -454,15 +454,26 @@ function commitMessage(
   record: RadiaRecord,
   files: number,
   previous?: WorkspaceManifest,
+  erased: string[] = [],
 ): string {
-  const summary = manifest.retired
+  const base = manifest.retired
     ? `${manifest.name}: retired`
     : previous
     ? `${manifest.name}: ${describeChange(previous, manifest)}`
     : `${manifest.name}: ${files} file${files === 1 ? "" : "s"}`;
+  // The gap belongs in the SUBJECT, not only in a trailer. `git log --oneline` is what a reader
+  // scans, and a commit that quietly lost a file there is the silence this option exists to avoid.
+  const summary = erased.length > 0 ? `${base} [${erased.length} erased]` : base;
   const trailers = [
     `Radia-Workspace: ${record.id}`,
+    // Still the MANIFEST's digest, because the trailer's job is to lead back to the record. When
+    // entries were omitted it no longer describes this git tree, which is why `Radia-Partial`
+    // sits beside it: recomputing the digest from what git holds SHOULD disagree, and a reader
+    // needs to know that is expected rather than corruption.
     `Radia-Tree-Digest: ${manifest.treeDigest}`,
+    ...(erased.length > 0
+      ? ["Radia-Partial: true", ...erased.map((path) => `Radia-Erased: ${path}`)]
+      : []),
     ...(manifest.basedOn ? [`Radia-Based-On: ${manifest.basedOn}`] : []),
     ...(manifest.conversationId ? [`Radia-Conversation: ${manifest.conversationId}`] : []),
     `Radia-Owner: ${manifest.owner}`,
@@ -544,6 +555,7 @@ async function writeBareRepo(
   objects: GitObject[],
   branches: Record<string, string>,
   head: string,
+  erased: { version: string; path: string; artifactId: string }[] = [],
 ): Promise<number> {
   await Deno.mkdir(`${dir}/objects/info`, { recursive: true });
   await Deno.mkdir(`${dir}/refs/heads`, { recursive: true });
@@ -566,9 +578,20 @@ async function writeBareRepo(
     `${dir}/config`,
     "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n",
   );
+  // `description` travels WITH the repository. A caller who only saw the console output can forget
+  // an export was partial; someone handed the directory a month later never knew. This is the one
+  // place the omission survives being passed around.
+  const notice = erased.length === 0 ? "" : [
+    "",
+    `PARTIAL: ${erased.length} file version${erased.length === 1 ? "" : "s"} omitted because the payload was ERASED.`,
+    "The commits that lost an entry carry Radia-Partial and Radia-Erased trailers, and their",
+    "Radia-Tree-Digest describes the manifest rather than the tree git holds. Omitted:",
+    ...[...new Set(erased.map((e) => e.path))].sort().map((path) => `  ${path}`),
+    "",
+  ].join("\n");
   await Deno.writeTextFile(
     `${dir}/description`,
-    "A Radia workspace, exported. Read-only: nothing here flows back.\n",
+    `A Radia workspace, exported. Read-only: nothing here flows back.\n${notice}`,
   );
   // The dumb-protocol advertisement, sorted, one `<sha>\t<ref>` line each.
   const advert = Object.entries(branches)

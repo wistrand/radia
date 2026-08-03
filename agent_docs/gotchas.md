@@ -1015,6 +1015,67 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   procedure named run_python" — with the capability published and the jail working, which is why it
   read as an execution bug. It is now a `BUILTIN_RUNNERS` set. Grep for the OLD name's remaining
   comparisons before adding a sibling, not after.
+- **"Refuse or fabricate" is usually a false pair.** The git export refused an erased payload
+  because the obvious repair (a placeholder blob) would make the tree hash to something the manifest
+  never described. OMITTING the entry is a third option and an honest one: a tree that does not
+  contain the file makes no claim about it. What made it honest was closing the remaining gap,
+  silence — the subject line, the commit trailers and the repository `description` each say what is
+  missing, the last because it is the only channel that survives the directory being passed on.
+- **Discriminate a skippable failure by its STATUS, never by how its message reads.** `--partial`
+  skips a 410 (bytes deliberately destroyed) and nothing else. A 404 is a manifest pointing at
+  something that never existed; a digest mismatch is content disagreeing with its claim. Both look
+  like "cannot read that file" and neither is erasure, and skipping them would return a repository
+  that looks complete. Any "best effort" option needs this line drawn explicitly, with a test on the
+  wrong side of it.
+- **A worker handler must ANSWER a permanent failure, never throw it.** `agentLoop` nacks a throwing
+  handler and the record becomes claimable again (`sdk/ts/loop.ts`), which is right for a transient
+  fault and exactly wrong for one that cannot succeed on retry. A shredded file in a workspace made
+  `materialize` throw, so `run_python {workspace}` re-failed in a loop until the CLIENT's tool
+  deadline and the user saw `timed out waiting for 'run_python'` with no reason given. Returning a
+  `tool_result` turned a two-minute hang into a one-line explanation in about a second. Ask of every
+  throw in a handler: can a retry possibly help? If not, it is a result.
+- **A status hint is a DIAGNOSIS and must be evidence-based, not timer-based.** The chat showed
+  "no worker serves 'x'" after 2.5 seconds without a `progress` record — but most tools emit no
+  progress records at all, so it accused a worker that was about to answer, then vanished under the
+  reply. What a client can actually prove is what is ADVERTISED (that set is what it handed the
+  model); LIVENESS it cannot, since a `capability` record is an advertisement and a stopped worker's
+  record lingers, and a scoped session cannot read the envelope. So the hint now claims only the
+  provable half and the timeout names both possibilities.
+- **An assistant `tool_calls` with no reply BRICKS a conversation, permanently.** OpenAI rejects the
+  whole payload ("must be followed by tool messages responding to each tool_call_id"), and the thread
+  is durable, so every later turn reassembles the same rejected history: 59 messages, none of them
+  sendable. Produced by any throw between writing the assistant message and writing the reply —
+  `awaitToolResult` throwing on the tool deadline was the live one. Two fixes, and BOTH are needed:
+  `runToolCall` appends a reply on every exit path including failure (prevention, and the model gets
+  to see "timed out"), and `assembleContext` pairs calls to replies in both directions (repair,
+  which is the only thing that helps a conversation already holding one). A partially answered
+  message keeps the calls that WERE answered — dropping it whole orphans the surviving replies and
+  trades one protocol violation for the other.
+- **A tool scoped more narrowly than the GRANT contradicts the tools that are not.** `list_workspaces`
+  filtered to the current conversation while `space_count` was owner-scoped by the grant: one
+  answered 8, the other none, both correctly, and the model spent eight tool rounds failing to
+  reconcile them before giving up. The narrowing was doing no security work either, since the query
+  is bounded by the grant regardless. Where relevance really does differ from permission, MARK the
+  rows (`thisConversation: true`) rather than hiding them, and say in the description what to do
+  about the difference — a name the model cannot use, with no way to know why, is worse than a
+  longer list.
+- **When a model cannot READ something, it reconstructs it, and says so while presenting it as
+  real.** Workspaces had save, list and run, and no read. Asked to show a file in a tree, the model
+  tried `read_file` (sandbox paths only, denied), rebuilt the contents from earlier in the
+  conversation, stored the reconstruction with `save_content`, and answered with it — noting that it
+  was a reconstruction, which no user reads as "this is not the file". Fabrication is what fills a
+  missing read path, so the absence of a reader is not a convenience gap, it is a correctness one.
+  Two fixes: `read_workspace` exists, and `list_workspaces` reports the PATHS rather than a count,
+  because "what files are in X" had no data source either and was already being answered from memory
+  one question earlier.
+- **Erasure by content cannot mean "these bytes may never exist here again".** A pre-write check
+  refusing any payload whose digest was ever shredded was written and reverted the same hour: it
+  poisons a content address for the whole space, so shredding an empty file or `"hello\n"` blocks
+  every later write of it, and it breaks any program that legitimately recomputes the same output.
+  Erasure destroys the runtime's copy; someone re-uploading bytes they already hold learned nothing
+  from it. What IS worth fixing is that the erasure must be legible where it bites — the runner and
+  the reader now say "ERASED, permanently, save a successor without this path" instead of hanging or
+  returning nothing.
 - **A write-only tool is half a tool, and the missing half is the one that saves tokens.**
   `save_workspace` shipped without a way to LIST, so an assistant told to "fix the bug" re-created
   the project from memory and lost every file it was not currently thinking about: "what did I

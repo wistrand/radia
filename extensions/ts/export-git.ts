@@ -30,7 +30,7 @@ function flag(name: string): string | undefined {
 const name = flag("name");
 const dir = flag("dir");
 if (!name || !dir) {
-  console.error("usage: --name <workspace> --dir <output> [--url <space>] [--conversation <id>] [--branch <name>]");
+  console.error("usage: --name <workspace> --dir <output> [--url <space>] [--conversation <id>] [--branch <name>] [--partial]");
   Deno.exit(2);
 }
 
@@ -46,6 +46,7 @@ const client = new RadiaClient(url, { token });
 const result = await exportWorkspaceGit(client, name, dir, {
   conversationId: flag("conversation"),
   branch: flag("branch"),
+  partial: Deno.args.includes("--partial"),
 });
 
 const branches = Object.entries(result.branches);
@@ -60,5 +61,9 @@ for (const [branch, commit] of branches) {
 // successor to the same version, and neither side's work is lost or merged.
 if (branches.length > 1) {
   console.log(`  this workspace FORKED: ${branches.length} heads, none merged. git log --graph --all`);
+}
+if (result.partial) {
+  console.log(`  PARTIAL: ${result.erased.length} file version(s) omitted, payload ERASED:`);
+  for (const path of [...new Set(result.erased.map((e) => e.path))].sort()) console.log(`    ${path}`);
 }
 console.log(`  git clone ${result.dir} my-checkout`);
