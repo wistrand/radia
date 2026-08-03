@@ -1068,6 +1068,17 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   Two fixes: `read_workspace` exists, and `list_workspaces` reports the PATHS rather than a count,
   because "what files are in X" had no data source either and was already being answered from memory
   one question earlier.
+- **A registry rebuilt only at startup is single-instance by accident.** `loadKinds` ran once, and
+  `put` of a `kind_def` registers the declaration in the WRITING process's registry only, so with
+  N instances over one database a kind declared on A was unknown to B until B restarted, and a kind
+  REDECLARED on A left B compiling against the old contract. Reads failed; writes were always fine,
+  because one GIN index serves every path, so the declaration governs COMPILATION and not physical
+  storage. Fixed by driving the refresh from the SYMPTOM (`unknown_kind` / `undeclared_path` →
+  re-read that one kind → retry once) rather than from a timer: a periodic refresh has a staleness
+  window by construction and polls forever to close a gap that is usually not open, and refresh-on-
+  MISS alone would have fixed only the first half, since a stale declaration is not a missing one.
+  The old conformance test asserted `unknown_kind` before `loadKinds()` — the bug written down as
+  expected behaviour, which is the form these live longest in.
 - **An undone erasure was not just a no-op, it was INVISIBLE.** `shredOf` had exactly one caller,
   inside the branch that runs after a read has already failed, so once the bytes returned nothing in
   the system ever consulted the shred record again. The fix is detection, not enforcement: a marker

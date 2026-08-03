@@ -1296,8 +1296,8 @@ export class Space {
     for (const [token, cap] of this.downloadCaps) if (cap.expiresAt <= now) this.downloadCaps.delete(token);
   }
 
-  readOne(pattern: Pattern, scope?: StatsScope): Promise<RadiaRecord | null> {
-    return this.storage.readOne(this.compile(pattern), scope);
+  async readOne(pattern: Pattern, scope?: StatsScope): Promise<RadiaRecord | null> {
+    return await this.storage.readOne(await this.compileFresh(pattern), scope);
   }
 
   /**
@@ -1310,15 +1310,15 @@ export class Space {
    * the whole sort key plus the oracle's type rules, so combining them is rejected rather than
    * silently resolved one way.
    */
-  query(pattern: Pattern, limit = 100, page?: Page, scope?: StatsScope): Promise<RadiaRecord[]> {
-    const compiled = this.compile(pattern);
+  async query(pattern: Pattern, limit = 100, page?: Page, scope?: StatsScope): Promise<RadiaRecord[]> {
+    const compiled = await this.compileFresh(pattern);
     if (page && (page.after || page.dir) && compiled.orderBy?.length) {
       throw new RadiaError(
         "invalid_pattern",
         "a keyset page (after/dir) is only defined for the natural id order; drop order_by, or page without a cursor",
       );
     }
-    return this.storage.query(compiled, limit, page, scope);
+    return await this.storage.query(compiled, limit, page, scope);
   }
 
   /** Record counts by kind and state (dev UI overview). `scope` makes it a genuine self-aggregate,
@@ -1568,7 +1568,7 @@ export class Space {
   /** Claim work under a fenced lease. Returns the record + lease, or null if none is claimable.
    *  The lease is owned by the claiming `principal` (a `run:*`, so a stopped run's leases can be
    *  quarantined); defaults to the space's run id for in-process/operator callers. */
-  take(sel: TakeInput, opts: TakeOptions = {}, principal?: string): Promise<TakeResult | null> {
+  async take(sel: TakeInput, opts: TakeOptions = {}, principal?: string): Promise<TakeResult | null> {
     const spec: LeaseSpec = {
       leaseId: newUlid(),
       ownerRun: principal ?? this.ctx.runId,
@@ -1579,8 +1579,8 @@ export class Space {
       createdBy: opts.createdBy,
     };
     const selector: TakeSelector = "recordId" in sel
-      ? { recordId: sel.recordId, pattern: sel.pattern ? this.compile(sel.pattern) : undefined }
-      : { pattern: this.compile(sel.pattern) };
+      ? { recordId: sel.recordId, pattern: sel.pattern ? await this.compileFresh(sel.pattern) : undefined }
+      : { pattern: await this.compileFresh(sel.pattern) };
     return this.storage.take(selector, spec).then((r) => {
       this.notifier.notify(); // a claim changes state; a nack/release elsewhere may reopen work
       return r;
@@ -1831,7 +1831,7 @@ export class Space {
 
   /** Create an ephemeral watch. The stream starts from the current high-water cursor. */
   async createWatch(pattern: Pattern, owner: string, createdBy?: string[]): Promise<{ watchId: string }> {
-    const match = this.compile(pattern); // validates the pattern
+    const match = await this.compileFresh(pattern); // validates the pattern, refreshing a stale kind
     const cursor0 = await this.storage.latestCursor();
     const watchId = newUlid();
     this.watches.set(watchId, { match, cursor0, owner, createdBy });
@@ -2191,6 +2191,72 @@ export class Space {
     // Validates predicate/order_by paths against the kind's declaration; throws RadiaError
     // (undeclared_path, unknown_kind, unsortable_path, ...).
     return compilePattern(pattern, this.kinds.get(pattern.kind));
+  }
+
+  /**
+   * Compile, and if the kind registry turns out to be STALE, re-read that one kind and try again.
+   *
+   * The registry is a projection over `kind_def` records, and `loadKinds` runs once at startup. With
+   * a single process that is complete; with N instances over one database it is not, because
+   * `put` registers a declaration in the writing PROCESS's registry only. A kind declared through
+   * instance A was then unknown to B until B restarted, and a kind REDECLARED on A left B compiling
+   * against the old contract — so a query naming a newly indexed path failed on B and succeeded on
+   * A, which is a correctness gap rather than a freshness one.
+   *
+   * Driven by the SYMPTOM rather than by a timer, which is what makes it cover both cases at once
+   * and cost nothing when nothing is stale: `unknown_kind` and `undeclared_path` are exactly the two
+   * errors a stale registry produces, and both are recoverable by re-reading one record. A periodic
+   * refresh would have a staleness window by construction and would poll forever to close a gap that
+   * is usually not open.
+   *
+   * Writes never needed this. One GIN index serves every path (`pgbase.ts`), so a record put through
+   * an instance that has never heard of its kind is still fully indexed and still matchable — the
+   * declaration governs COMPILATION, not physical storage. That is why this is a read-path fix.
+   *
+   * ONE retry, and a second failure is returned to the caller: past the refresh the error is a real
+   * client error (a genuinely undeclared kind, a genuinely undeclared path), and retrying again
+   * would turn a 400 into a loop. The cost of a miss is one indexed `limit 1` read on a request that
+   * was going to fail anyway.
+   */
+  private async compileFresh(pattern: Pattern): Promise<CompiledMatch> {
+    try {
+      return this.compile(pattern);
+    } catch (e) {
+      const code = e instanceof RadiaError ? e.code : "";
+      if (code !== "unknown_kind" && code !== "undeclared_path") throw e;
+      if (!(await this.refreshKind(pattern.kind))) throw e;
+      return this.compile(pattern);
+    }
+  }
+
+  /**
+   * Re-read ONE kind's declaration and adopt it if it is newer. Returns whether anything changed.
+   *
+   * Exact and bounded (`limit 1, dir desc` on an indexed field), which is the SAFE shape of a
+   * registry read: the dangerous shape is a bounded read whose result is treated as a population,
+   * and one row keyed by name is not that. `loadKinds` stays the paging read, because "every kind"
+   * genuinely is a population.
+   */
+  private async refreshKind(kind: string): Promise<boolean> {
+    if (kind === KIND_DEF) return false; // the meta-kind is defined in code; nothing to re-read
+    let rows: RadiaRecord[];
+    try {
+      rows = await this.query({ kind: KIND_DEF, match: { kind } }, 1, { dir: "desc" });
+    } catch {
+      return false; // a storage error here must surface as the ORIGINAL compile error, not as this
+    }
+    if (rows.length === 0) return false;
+    let def: KindDef;
+    try {
+      def = this.kindDefFromBody(rows[0].body);
+    } catch {
+      return false; // a malformed persisted declaration is not an improvement on what we have
+    }
+    const current = this.kinds.get(def.kind);
+    if (current && JSON.stringify(current) === JSON.stringify(def)) return false;
+    this.kinds.register(def);
+    await this.prepareStorageFor(def);
+    return true;
   }
 
   private ref(lease: Lease): LeaseRef {

@@ -7,6 +7,9 @@ update when the competitive landscape or evidence base changes.
 - Thesis
 - Evidence (stated carefully)
 - Prior art and the gap
+  - The lineage, and what killed each generation
+  - The Postgres-native contemporaries (DBOS, Marten/Wolverine)
+  - The durable-execution incumbent (Temporal)
 - Naming
 
 ## Thesis
@@ -31,12 +34,120 @@ do not overclaim.
 ## Prior art and the gap
 
 Prior art: JavaSpaces (pattern matching, read/take, leases, notifications,
-transactions), GigaSpaces, LangGraph (durable execution, shared state).
+transactions), GigaSpaces, LangGraph (durable execution, shared state). The full lineage, and the
+reason its repeated failures are evidence FOR this design rather than against it, is below.
 
 The defensible gap: **no prominent LLM-native runtime combines JSON content matching,
 competitive leased claims, agent-scoped authorization, lineage, cost-aware activation,
 and MCP integration behind a language-neutral protocol.** The distinction from graph
 orchestrators is topology-free, content-based coordination rather than durability.
+
+### The lineage, and what killed each generation
+
+Two ancestries meet here, and neither is cited casually: the coordination verbs come from the
+tuple-space line, the capability half from OSGi's service registry. Both are thirty-year-old ideas
+with long production records and well-documented failure modes, and the failure modes are the
+argument.
+
+**The tuple-space line (Linda, 1985 → JavaSpaces → TSpaces, GigaSpaces, Klaim, Tupleware).**
+Buravlev, De Nicola and Mezzina's survey (*Tuple Spaces Implementations and Their Efficiency*,
+COORDINATION 2016) benchmarks nine of them and is the strongest single citation available here,
+because it states the paradox in its own abstract: Linda is "intuitive, easy to understand and to
+use" and simultaneously "the least used paradigm". Three findings transfer directly:
+
+- **Matching quality decided everything, and nobody made it the database's problem.** The survey
+  measured Klaim's local read at 10× Tupleware's and could only conjecture why; profiling stopped
+  at the library boundary. Radia's equivalent regression (`read_one` 102 ms → 29 µs) was diagnosed
+  with `EXPLAIN`, GIN indexes and planner statistics, because matching is SQL here. Of the nine
+  systems only Grinda reached for real indexing, and it was the least maintained.
+- **Security was absent.** Of nine systems, two had any access control at all (TSpaces
+  permissions, Klaim's type-based access). The lineage treated it as an optional feature; here it
+  is the product, and that single difference explains most of the architecture.
+- **Code mobility was a selection criterion, and is now a liability.** The authors chose systems
+  to study partly for it; LuaTS ships Lua to the server for "flexible search". "Patterns are data,
+  not code" is a deliberate inversion, and a decade of security experience since sides against a
+  search predicate that is code — far more so in a space shared by mutually untrusting agents.
+
+Only GigaSpaces ever got fast, by partitioning on a routing field and colocating worker code inside
+partitions. That is the road not taken: model calls stay outside the runtime by invariant, so
+colocation is foreclosed, and one-space-one-Postgres forecloses partitioning. For fine-grained
+compute, where coordination throughput IS the product, that ceiling was fatal. For agents whose work
+units cost seconds of model latency, it is headroom.
+
+**The capability half: OSGi (1999 → today).** The service registry is the most fully developed prior
+art for content-scoped discovery: services registered with arbitrary properties, discovered by
+LDAP-style filters, with the *whiteboard pattern* ("Listeners Considered Harmful") inverting listener
+registration exactly the way `capability` records do. `ServiceTracker` is `agentLoop` with the
+lifecycle race handled by hand; a bundle's departure is a `retired: true` successor. Three of its
+outcomes are load-bearing here:
+
+- **In-process trust boundaries did not hold.** OSGi tried seriously for two decades (per-bundle
+  permissions, ConditionalPermissionAdmin, signed bundles); almost nobody deployed it, and Java's
+  SecurityManager deprecation removed the foundation. The boundary that works is a process and a
+  protocol with a mediator, which is where the runtime sits.
+- **The registry did not survive the network.** Remote Services specified nearly this shape and
+  never saw real adoption, because a model built on live references leaks over a network. Records
+  instead of references is the fix: a provider's departure is an ordinary data condition.
+- **It lost the mainstream to simpler things, not to better ones.** Resolver errors, classloader
+  isolation and a compendium spec of thousands of pages did the damage; the systems that absorbed
+  its ideas won by being startable in an afternoon. That is the same claim as the `npx radia dev`
+  adoption thesis, and it is the reason surface discipline belongs beside the invariants rather
+  than in a style guide.
+
+*The OSGi half is first-hand.* Radia's author wrote the Knopflerfish OSGi service tutorial, which
+means the corrections above are second-system fixes rather than convergent evolution: the listener
+race that every service tutorial must teach ("register the listener, then enumerate what already
+exists, then reconcile") is not encapsulated here the way `ServiceTracker` encapsulates it, it is
+deleted — a watch has a cursor into a durable log, so "catch up, then stream, miss nothing" is the
+contract. Registries are projections over an append-only stream rather than mutable state, so there
+are no dangling references because there are no references. Record it as provenance, not as a
+citation.
+
+**The adoption risk this lineage actually names.** Both ancestries were technically sound and both
+lost to orchestration — Spring beat OSGi by offering the registry's benefits with the dynamism
+removed; Declarative Services succeeded by hiding it; Temporal and DBOS thrive today on "write your
+coordination as ordinary imperative code with a call stack". Choreography keeps losing not because
+it is worse but because people think in narratives. **So the wager is specific and should be stated
+as one: LLM agents may be the first population that does not carry the handicap** — an agent reads
+the capabilities present now, matches on what is in front of it, and tolerates topology changing
+between turns, which is what OSGi asked of humans and mostly did not get.
+
+Two honest qualifications. First, models fail at it too, and `gotchas.md` is substantially a
+catalogue of such incidents; but on inspection most are LEGIBILITY failures rather than cognitive
+ones (a listing that returned a count where the question was "which files", a tool scoped tighter
+than the grant that issued it, an erased payload that hung instead of explaining). Fabrication is
+what fills a missing read path, so those are properties of the medium. Second, humans do not leave
+the loop even if agents adapt: they still have to trust, debug and audit what emerged, which is why
+[design-inspection.md](design-inspection.md) is aimed at the failure mode that actually killed the
+predecessors.
+
+And nothing forbids orchestration ON the substrate — the pipeline example's planner already is one.
+OSGi's own history suggests that is not a betrayal of the model but the thing that makes it
+survivable for people who cannot love it raw.
+
+### The Postgres-native contemporaries (DBOS, Marten/Wolverine)
+
+DBOS is the closest living relative: the same three bets (Postgres as sole arbiter, stateless
+processes over it, durable facts at operation granularity rather than event-sourced history) and a
+near-identical write budget per unit of work. Its published numbers are the best available evidence
+for this architecture's ceiling — ~144K checkpoint writes/sec WAL-bound, and ~12.1K queued
+workflows/sec where the bottleneck was **lock contention at the head of the queue**, the same wall
+as a single-winner claim gate and as JavaSpaces' contended take. Three systems, three decades, one
+invariant.
+
+The divergence is trust topology, not performance. In DBOS every app process is a direct Postgres
+client — one trust domain holding database credentials — and routing is static (function name, queue
+name). Radia inserts exactly one server to create a boundary between many mutually untrusting
+principals, and pays an HTTP hop plus authorization per operation for it. **DBOS is what this
+architecture looks like with zero spent on trust and routing; those two cells are the entire
+difference.** (The .NET analogue is Marten + Wolverine, which mirrors the storage philosophy —
+Postgres jsonb documents, an append-only event store, projections — and likewise has neither content
+routing nor a trust boundary.)
+
+One caution against over-reading DBOS's numbers as this project's headroom: they come from a
+saturation test on a tuned Postgres with app processes writing directly, while every operation here
+additionally compiles a pattern, ranks candidates, authorizes, and appends an event behind an HTTP
+hop. Same wall, same shape, unknown distance from it.
 
 ### The durable-execution incumbent (Temporal)
 
