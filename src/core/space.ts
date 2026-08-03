@@ -37,6 +37,7 @@ import {
   parseTaintAllowlist,
   SHRED,
   type ArtifactDef,
+  assertReservedCompatible,
   GRANT,
   type GrantDef,
   type GrantOp,
@@ -276,6 +277,8 @@ export class Space {
    *  Synchronous so direct callers see it immediately; use persistKind to store it durably
    *  (as a kind_def record). Most in-process callers (tests, examples) only need this. */
   registerKind(def: KindDef): void {
+    validateKindDef(def);
+    assertReservedCompatible(def); // in-process is not a licence to shrink a reserved kind either
     this.kinds.register(def);
   }
 
@@ -330,17 +333,23 @@ export class Space {
       (b) => (typeof b?.kind === "string" ? b.kind : undefined),
     );
     for (const rec of view.entries.values()) {
+      let def: KindDef;
       try {
-        this.kinds.register(rec.body as KindDef);
+        // Validated, not cast. A declaration that a live `put` would refuse must not be adopted
+        // just because it is already in the log: a redeclaration of a reserved kind written before
+        // that rule existed would otherwise reinstate itself on every restart.
+        def = this.kindDefFromBody(rec.body);
       } catch {
-        // skip a malformed persisted declaration rather than fail startup
+        // skip a malformed or reserved-incompatible persisted declaration rather than fail startup
         continue;
       }
-      await this.prepareStorageFor(rec.body as KindDef);
+      this.kinds.register(def);
+      await this.prepareStorageFor(def);
     }
   }
 
-  /** Validate a kind_def record body as a KindDef. Rejects redefining the built-in meta-kind. */
+  /** Validate a kind_def record body as a KindDef. Rejects redefining the built-in meta-kind, and
+   *  any redeclaration that drops what a reserved kind's own machinery compiles against. */
   private kindDefFromBody(body: unknown): KindDef {
     if (body === null || typeof body !== "object") {
       throw new RadiaError("invalid_kind", "a kind_def record body must be a KindDef object");
@@ -350,6 +359,7 @@ export class Space {
       throw new RadiaError("reserved_kind", `'${KIND_DEF}' is the built-in meta-kind and cannot be redeclared`);
     }
     validateKindDef(def);
+    assertReservedCompatible(def);
     return def;
   }
 
@@ -1101,15 +1111,26 @@ export class Space {
   /** `principal` is the RESOLVED caller (server-assigned `created_by` + idempotency scope); it
    *  defaults to the space's own identity for in-process/operator callers. */
   async put(req: PutRequest, idempotencyKey?: string, principal?: string): Promise<{ id: string }> {
+    const declared = this.validateReservedBody(req); // throws RadiaError before anything commits
+    const id = await this.putRaw(req, idempotencyKey, { principal });
+    if (declared) await this.adoptKind(declared); // also on idempotent replay
+    return id;
+  }
+
+  /**
+   * Pre-commit validation of a body the RUNTIME reads back, shared by the two ways a record enters
+   * the space: `put` and an `ack` result. Returns the declaration when the write IS a kind
+   * declaration, so the caller adopts it only once the commit succeeded.
+   *
+   * Shared rather than duplicated because it was duplicated in exactly one of the two places. An
+   * `ack` emitting `kind_def` skipped every check here, so a result body could register a kind the
+   * same body would be refused for on `put`. The general shape of this class of bug is a second
+   * write path that grew after the first one learned a rule.
+   */
+  private validateReservedBody(req: PutRequest): KindDef | undefined {
     // A kind_def record IS a kind declaration: validate its body as a KindDef before commit,
     // so the substrate coordinates its own schema through the normal write path (no side table).
-    if (req.kind === KIND_DEF) {
-      const def = this.kindDefFromBody(req.body); // throws RadiaError on an invalid declaration
-      const id = await this.putRaw(req, idempotencyKey, { principal });
-      this.kinds.register(def); // reflect it in this process's registry (also on idempotent replay)
-      await this.prepareStorageFor(def);
-      return id;
-    }
+    if (req.kind === KIND_DEF) return this.kindDefFromBody(req.body);
     // A grant record IS an authorization grant: validate its body before commit. Write-protection
     // (that only a privileged principal may put one) is enforced at the API boundary.
     if (req.kind === GRANT) {
@@ -1117,7 +1138,14 @@ export class Space {
       validateGrantDef(def);
       this.checkGrantPattern(def);
     }
-    return this.putRaw(req, idempotencyKey, { principal });
+    return undefined;
+  }
+
+  /** Reflect a committed declaration in THIS process's registry (other instances re-read it
+   *  through `compileFresh`). */
+  private async adoptKind(def: KindDef): Promise<void> {
+    this.kinds.register(def);
+    await this.prepareStorageFor(def);
   }
 
   private async putRaw(
@@ -1727,7 +1755,11 @@ export class Space {
     if (!guard.ok) return { status: "lease_lost" };
     const owner = guard.owner; // authoritative lease owner (envelope), used for authority derivation
     let resultInput: PutInput | undefined;
+    let declared: KindDef | undefined;
     if (result) {
+      // A result body the runtime reads back is validated exactly as a `put` body is, before
+      // anything is consumed: emitting a record through a lease is not a way around the rule.
+      declared = this.validateReservedBody(result);
       const now = await this.storage.now();
       const parentIds = [
         lease.recordId,
@@ -1777,6 +1809,7 @@ export class Space {
       result: result ? { kind: result.kind, body: result.body } : null,
     }, principal);
     const r = await this.storage.ack(this.ref(lease), resultInput, idem);
+    if (declared && r.status === "ok") await this.adoptKind(declared);
     this.notifier.notify(); // an emitted result is a new available record to wake on
     return r;
   }

@@ -371,6 +371,46 @@ export const META_RESERVED: KindDef[] = [
   },
 ];
 
+/** The code-defined contract for a reserved kind, by name. */
+const META_RESERVED_BY_KIND = new Map(META_RESERVED.map((d) => [d.kind, d]));
+
+/**
+ * A reserved kind may be EXTENDED by a redeclaration, never SHRUNK.
+ *
+ * `META_RESERVED` is not decoration: `authorize` compiles patterns against `grant.principal`/
+ * `grant.kind`, and credential resolution against `agent_definition.tokenHash`. Drop one of those
+ * paths and every authorization fails `undeclared_path` (fail-closed, but space-wide) until someone
+ * finds the successor record. That needed no operator, only an ordinary `put: kind_def` grant, which
+ * is the point: a grant scoped to one app kind is not a licence to rewrite the auth schema.
+ *
+ * Refusing the SHRINK rather than the kind is what keeps this narrow. Adding an index to `artifact`
+ * stays a legal thing for an app to do, and the auth-critical paths stay undroppable. `claimable` is
+ * pinned too, since flipping `grant` to claimable turns authorization state into work.
+ *
+ * Checked on every path a declaration can enter by (`put`, `ack`, `loadKinds`, `refreshKind`), NOT
+ * only the write: a declaration written before this rule existed is still sitting in the log, and
+ * startup adopting it is exactly how the damage persisted across restarts.
+ */
+export function assertReservedCompatible(def: KindDef): void {
+  const required = META_RESERVED_BY_KIND.get(def.kind);
+  if (!required) return; // an app-owned kind is freely redeclarable
+  const declared = new Map((def.indexedPaths ?? []).map((p) => [p.path, p.type]));
+  for (const need of required.indexedPaths) {
+    if (declared.get(need.path) !== need.type) {
+      throw new RadiaError(
+        "reserved_kind",
+        `'${def.kind}' is a reserved kind: a redeclaration must keep the indexed path ` +
+          `'${need.path}' (${need.type}) the runtime compiles against`,
+      );
+    }
+  }
+  if (required.claimable !== undefined && def.claimable !== required.claimable) {
+    throw new RadiaError(
+      "reserved_kind",
+      `'${def.kind}' is a reserved kind: 'claimable' is fixed at ${required.claimable}`,
+    );
+  }
+}
 
 function validPath(path: string): boolean {
   // Dotted segments only; no empty segment (rejects "", "a.", ".a", "a..b"). Literal dots

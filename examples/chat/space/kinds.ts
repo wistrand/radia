@@ -20,6 +20,8 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // scoped on (the body is runtime-built, and a pattern matches the body), so any session holding
   // an artifact id could read it. The runtime's own paths are repeated here because a redeclaration
   // REPLACES rather than merges (latest-wins), and dropping `digest` would break dedup by content.
+  // The runtime enforces exactly that now: a reserved kind may be EXTENDED, never shrunk, so
+  // omitting `digest`/`mediaType`/`claimable` here is refused with `reserved_kind`.
   await client.registerKind({
     kind: "artifact",
     indexedPaths: [

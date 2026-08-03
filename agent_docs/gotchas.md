@@ -281,8 +281,9 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   ASCII JSON header; a header is a ByteString, so non-ASCII is refused rather than mangled). The
   runtime's own fields are applied last and supplying one is refused outright, so nothing an app
   sends can forge a digest, size or media type. The chat stamps `conversationId` on every artifact
-  it writes and REDECLARES the reserved `artifact` kind to index it (legal, since only `kind_def`
-  is protected), repeating `digest`/`mediaType` because a redeclaration replaces rather than merges.
+  it writes and REDECLARES the reserved `artifact` kind to index it (legal: a reserved kind may be
+  extended, only not shrunk), repeating `digest`/`mediaType` because a redeclaration replaces rather
+  than merges. That repetition is now also what keeps the redeclaration accepted.
   **And the narrowing had to learn about it.** Grant patterns UNION, so approving an unpatterned
   self-scoped grant beside a patterned one replaces "this conversation" with "everything this agent
   ever wrote", a widening performed by the act of narrowing. The approval flow now inherits the
@@ -755,6 +756,24 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   name (by ULID id). Re-registering an identical def is idempotent (deterministic key from
   `kindDefKey`), so restarts don't grow records. Don't reintroduce a `kinds` table or a
   `/v0/kinds` endpoint; that's the side-table-beside-the-substrate this replaced.
+
+- **A reserved kind may be EXTENDED by a redeclaration, never SHRUNK, and that is enforced on
+  every path a declaration enters by.** `authorize` compiles against `grant.principal`/`grant.kind`
+  and credential resolution against `agent_definition.tokenHash`, so a successor `kind_def` dropping
+  one of those paths made every authorization in the space fail `undeclared_path` (fail-closed, but
+  space-wide), and reinstated on every restart by `loadKinds`. It needed no operator: `kind_def` is
+  deliberately NOT write-protected (an app declares its own kinds), so an ordinary `put: kind_def`
+  grant was the whole vector. The fix is `assertReservedCompatible` (`src/core/kinds.ts`), which
+  refuses dropping a code-defined path of a `META_RESERVED` kind or changing its `claimable`, and is
+  principal-independent. Adding an index to a reserved kind stays legal, which the chat relies on
+  (`conversationId` on `artifact`); note a redeclaration REPLACES rather than merges, so an
+  extension must repeat the runtime's own paths. Two subtler halves are the reusable lesson:
+  **the check belongs on every write path, not the one you thought of** (`ack` results skipped
+  `Space.put`'s `kind_def` validation entirely, so a lease was a way around a rule the direct write
+  obeyed; both go through `validateReservedBody` now), and **a startup that CASTS what a live write
+  validates cannot recover from anything already in the log** (`loadKinds` adopted the stored body
+  unchecked, so a pre-rule declaration outlived the fix; it validates now and skips what it would
+  refuse).
 
 - **`created_by` and idempotency scope are the RESOLVED caller, threaded from the handler, not
   `ctx.principal`.** `put`/`ack`/settle take an optional trailing `principal`; the handlers pass the

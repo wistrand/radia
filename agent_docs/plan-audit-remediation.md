@@ -1,6 +1,6 @@
 # Plan: audit remediation
 
-> Status: E, G, H, I and L–R are open; **K is closed** (2026-08-03); everything else is closed and
+> Status: E, H, I, N and O–R are open; **K, L and M are closed** (2026-08-03); everything else is closed and
 > its guards pass (`deno task conformance`: 421 passed, 0 failed). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
@@ -32,14 +32,14 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | I   | SDK parity + chat example               | P2       | Drift; example-specific data loss     |
 | ~~K~~ | ~~Unrevocable definition tokens~~     | ~~P0~~   | **CLOSED 2026-08-03**                 |
 | ~~L~~ | ~~Watch streams cache authorization~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
-| M   | `kind_def` is not write-protected       | P1       | One ordinary grant bricks space-wide auth |
+| ~~M~~ | ~~`kind_def` is not write-protected~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
 | N   | `clientMeta` escapes the body guards    | P2       | Unbounded, unerasable data in a record |
 | O   | Multi-instance freshness and ordering   | P1       | Wakeup latency; auth-relevant id races |
 | P   | Contracts nothing checks                | P2       | Drift in exactly the claims held loudest |
 | Q   | Designed features unreachable           | P2       | A built feature no caller can invoke   |
 | R   | Dead taint parameter; half-tested guard | P2       | Legibility, not leakage (see the entry) |
 
-Packages A, B, C, D, F, G, J, K and L are closed. Their lessons are rules in
+Packages A, B, C, D, F, G, J, K, L and M are closed. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -238,24 +238,34 @@ it and does not ratchet).
 Left open deliberately: a watch lives in a per-process `Map`, so multi-instance revocation latency
 is whatever package O ends up being. Within one process it is now immediate.
 
-## Package M: `kind_def` is not write-protected (P1)
+## Package M: `kind_def` is not write-protected (P1) — CLOSED 2026-08-03
 
 **VERIFIED.** `WRITE_PROTECTED_KINDS` (`src/core/kinds.ts`) is
 `{GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, SHRED}` — `KIND_DEF` is absent. So any principal
-holding an ordinary `put: kind_def` grant can redeclare a reserved kind and drop the indexed paths
+holding an ordinary `put: kind_def` grant could redeclare a reserved kind and drop the indexed paths
 that `authorize` and credential resolution compile against, producing `undeclared_path` on every
 authorization and persisting across restarts through `loadKinds`.
 
-This sharpens the "Deferred: low severity" entry below, which recorded that reserved kinds *other
+This sharpened the "Deferred: low severity" entry below, which recorded that reserved kinds *other
 than* `kind_def` can be redeclared. The vector is what changed: not an operator mistake but an
-ordinary grant, which moves it out of the deferred batch.
+ordinary grant, which moved it out of the deferred batch.
 
-Fix: add `KIND_DEF` to the protected set, or refuse a redeclaration that removes a path
-`META_RESERVED` depends on. The second is narrower and keeps app-owned kinds freely redeclarable.
-Note also that `ack` results bypass `Space.put`'s `kind_def` body validation entirely.
+Fixed the narrow way rather than by protecting the kind. `KIND_DEF` stays writable, because
+declaring kinds is a thing an app legitimately does with an ordinary grant; what is refused is the
+SHRINK. `assertReservedCompatible` (`src/core/kinds.ts`) rejects a redeclaration of a `META_RESERVED`
+kind that drops one of the code-defined indexed paths or changes `claimable`; extending one (the
+chat adds `conversationId` to `artifact`) stays legal. Principal-independent, so the operator is
+bound by it too: nobody has a reason to remove `grant.principal`.
 
-Guard: a case asserting a non-operator `put: kind_def` grant cannot redeclare a reserved kind, and
-one asserting an `ack` result of kind `kind_def` is validated like any other.
+Three entry points, not one. `Space.put` and `Space.ack` now share `validateReservedBody`, closing
+the second write path (an `ack` result skipped the `kind_def` checks entirely, and a valid one was
+never adopted into the writing process's registry). `loadKinds` validates instead of casting, so a
+declaration written before this rule cannot reinstate itself at startup. The write-path check alone
+would have left the damage in place across every reboot.
+
+Guards in `conformance/suites/kinds.ts`: a `put: kind_def` grant that authorizes but cannot shrink
+`grant`; the same body refused through `ack`, with a valid one adopted and surviving a restart; and
+a shrunken declaration planted directly through the adapter that startup declines to adopt.
 
 ## Package N: `clientMeta` escapes the body guards (P2)
 
@@ -351,9 +361,8 @@ shared root and covers both dialects at once, which is why it belongs in E rathe
 
 Batch these; none warrant individual attention. Watches map never pruned and `Notifier` waiters
 accumulate on timeout (unbounded growth from a cheap authenticated call); credentials file
-created at umask then chmod'd, leaving a world-readable window (`src/credentials.ts`); reserved
-control kinds other than `kind_def` can be redeclared and brick authorization across restarts
-(fail-closed, operator-recoverable); `parent_ids` existence documented as checked at commit but
+created at umask then chmod'd, leaving a world-readable window (`src/credentials.ts`);
+`parent_ids` existence documented as checked at commit but
 never is; `valueEq` compares objects by `JSON.stringify` and is key-order-sensitive;
 `PutResult.deduped` is never true; pattern-take OFFSET pagination transiently skips claimable
 rows; `lease_epoch` is not monotonic per record; `ownerGuard` can turn a succeeded settle's

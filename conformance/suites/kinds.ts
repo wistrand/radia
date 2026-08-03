@@ -6,6 +6,7 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import type { Suite } from "../harness.ts";
 import { Space } from "../../src/core/space.ts";
+import { buildRecord } from "../../src/core/record.ts";
 import { RadiaError } from "../../src/core/errors.ts";
 
 function expectError(fn: () => unknown, code: string): void {
@@ -17,6 +18,22 @@ function expectError(fn: () => unknown, code: string): void {
   }
   assertEquals(got, code);
 }
+
+async function errorCode(fn: () => Promise<unknown>): Promise<string | undefined> {
+  try {
+    await fn();
+    return undefined;
+  } catch (e) {
+    return (e as { code?: string }).code;
+  }
+}
+
+/** The `grant` declaration the runtime compiles `authorize` against, minus `principal`. */
+const SHRUNK_GRANT = {
+  kind: "grant",
+  indexedPaths: [{ path: "kind", type: "keyword" as const }],
+  claimable: false,
+};
 
 export const kindSuites: Suite[] = [
   {
@@ -207,6 +224,119 @@ export const kindSuites: Suite[] = [
         () => b.query({ kind: "ticket", match: { nope: 1 } }, 10),
         RadiaError,
       );
+    },
+  },
+  {
+    name: "a redeclaration cannot drop what a reserved kind's own machinery compiles against",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+
+      // The vector is an ORDINARY grant, not an operator. `kind_def` is deliberately not
+      // write-protected (an app declares its own kinds), so `put: kind_def` is a grant a worker
+      // legitimately holds, and it used to be enough to drop `grant.principal`, after which every
+      // authorization in the space failed `undeclared_path`, fail-closed but space-wide.
+      await space.createAgentDefinition("agent:dev", [
+        { principal: "agent:dev", kind: "kind_def", operations: ["put"] },
+      ]);
+      assertEquals(await space.authorize("agent:dev", "put", "kind_def"), null, "declaring kinds stays an ordinary grant");
+
+      // Refused as a DECLARATION, so which principal wrote it never enters into it.
+      assertEquals(
+        await errorCode(() => space.put({ kind: "kind_def", body: SHRUNK_GRANT }, undefined, "agent:dev")),
+        "reserved_kind",
+      );
+      assertEquals(await errorCode(() => space.persistKind(SHRUNK_GRANT)), "reserved_kind", "…including for an operator");
+
+      // Nor may it be flipped to claimable: authorization state must not become work.
+      assertEquals(
+        await errorCode(() =>
+          space.persistKind({
+            kind: "grant",
+            indexedPaths: [{ path: "principal", type: "keyword" }, { path: "kind", type: "keyword" }],
+            claimable: true,
+          })
+        ),
+        "reserved_kind",
+      );
+
+      // EXTENSION stays legal. The rule is about shrinking, not about redeclaring: an app adding an
+      // index to a reserved kind is an ordinary thing to want, and nothing here should stop it.
+      await space.persistKind({
+        kind: "grant",
+        indexedPaths: [
+          { path: "principal", type: "keyword" },
+          { path: "kind", type: "keyword" },
+          { path: "note", type: "keyword" },
+        ],
+        claimable: false,
+      });
+      assertEquals(await space.authorize("agent:dev", "put", "kind_def"), null, "authorization survives the extension");
+      assertEquals(await space.readOne({ kind: "grant", match: { note: "x" } }), null, "…and the new path is queryable");
+    },
+  },
+  {
+    name: "an ack result declaring a kind is validated and adopted exactly like a put",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
+      await space.put({ kind: "task", body: { tag: "a" } });
+      const claim = await space.take({ pattern: { kind: "task" } });
+      assert(claim, "expected a claim");
+
+      // `ack` is the second way a record enters the space and it grew after `put` learned this
+      // rule, so it skipped every kind_def check: an emitted result could declare what a `put` of
+      // the identical body is refused for.
+      assertEquals(
+        await errorCode(() => space.ack(claim.lease, { kind: "kind_def", body: SHRUNK_GRANT })),
+        "reserved_kind",
+      );
+      assertEquals(
+        await errorCode(() => space.ack(claim.lease, { kind: "kind_def", body: { kind: "", indexedPaths: [] } })),
+        "invalid_kind",
+        "an invalid declaration is refused through ack too",
+      );
+      // Refused BEFORE anything is consumed: the lease is intact and the task is still leased.
+      assertEquals((await space.ack(claim.lease, { kind: "kind_def", body: { kind: "ticket", indexedPaths: [{ path: "status", type: "keyword" }] } })).status, "ok");
+
+      // …and a valid one is ADOPTED, not merely stored: the declaring process can use the kind on
+      // the next line, which is the whole reason `put` registers after commit.
+      assertEquals(await space.readOne({ kind: "ticket", match: { status: "open" } }), null);
+      const reloaded = new Space(adapter);
+      await reloaded.loadKinds();
+      assertEquals(await reloaded.readOne({ kind: "ticket", match: { status: "open" } }), null, "and it survives a restart");
+    },
+  },
+  {
+    name: "a reserved-incompatible declaration already in the log is not adopted at startup",
+    run: async (adapter) => {
+      // The damage persisted across restarts, which is the part a write-path check alone does not
+      // undo: `loadKinds` cast the stored body straight into the registry, so a declaration written
+      // before this rule existed would reinstate itself on every boot. Planted through the adapter
+      // because no write path will accept it any more.
+      const seeded = new Space(adapter);
+      seeded.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
+      await seeded.createAgentDefinition("agent:dev", [
+        { principal: "agent:dev", kind: "task", operations: ["put"] },
+      ]);
+
+      const now = await adapter.now();
+      const { record, bodyJson } = await buildRecord({ kind: "kind_def", body: SHRUNK_GRANT }, {
+        principal: "agent:dev",
+        schemaVersion: 1,
+        maxRecordBytes: 1 << 20,
+        now,
+      });
+      await adapter.put({
+        record,
+        bodyJson,
+        envelope: { kind: record.kind, availableAt: now, claimUntil: undefined, deadlineAt: undefined, effectivePriority: 0 },
+      });
+
+      const restarted = new Space(adapter);
+      restarted.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
+      await restarted.loadKinds();
+      // Still the code-defined contract, so the grant lookup still compiles and still answers.
+      assertEquals(await restarted.authorize("agent:dev", "put", "task"), null, "a granted principal still authorizes");
     },
   },
 ];

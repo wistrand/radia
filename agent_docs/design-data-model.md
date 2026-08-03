@@ -246,8 +246,10 @@ body offers nothing to bind, so any principal holding an artifact id can read th
 does not help: `parent_ids` is not body, and matching is body-only by design. The runtime's fields
 are applied last and supplying one is refused, so app metadata can never forge a digest, size or
 media type. A kind whose indexing an app extends this way is redeclared with a `kind_def` record
-like any other (only `kind_def` itself is protected), and a redeclaration REPLACES, so the reserved
-paths must be repeated.
+like any other, and a redeclaration REPLACES, so the reserved paths must be repeated. That is
+enforced, not advisory: a reserved kind may be extended and never shrunk
+(`assertReservedCompatible`, `src/core/kinds.ts`), because dropping `grant.principal` would fail
+every authorization in the space.
 
 Blobs are **content-addressed** by sha256 of the plaintext: an object is verifi*able*, identical
 bytes are stored once, and re-upload is free. Client-facing identity stays the record id, so

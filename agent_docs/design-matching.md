@@ -123,8 +123,10 @@ above), expressed through the substrate rather than a bespoke table/endpoint (se
 [CLAUDE.md](../CLAUDE.md) "Design principle"). Declare a kind by `put`-ing a `kind_def`
 record; discover kinds by `query {kind: kind_def}`. Records are immutable, so re-declaring a
 kind emits a **successor** `kind_def` record (latest per kind name wins on reload) rather than
-mutating the prior one. The server validates a `kind_def` body on `put` (M0 status: `Space.put`
-special-cases the reserved kind), and rejects redeclaring `kind_def` itself. The meta-kind is
+mutating the prior one. The server validates a `kind_def` body wherever a record enters (M0/M1 status: `put` and an `ack`
+result share `Space.validateReservedBody`, and `loadKinds` re-validates what it reads back), rejects
+redeclaring `kind_def` itself, and rejects a redeclaration of any other reserved kind that drops a
+path the runtime compiles against or changes its `claimable` (`assertReservedCompatible`). The meta-kind is
 the one declaration defined in code (`META_KIND_DEF`), which breaks the bootstrap cycle so its
 own records can compile. Because they are ordinary records, kind declarations appear in the
 event log and are watchable.
