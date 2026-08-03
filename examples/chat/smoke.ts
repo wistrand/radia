@@ -28,6 +28,7 @@ const SUITES = [
   { name: "save", file: "smoke-save.ts", about: "the two routes to a stored file, and the tool descriptions that choose between them" },
   { name: "login", file: "smoke-login.ts", about: "a person's own credential: who the session is, and that two people on one space cannot read each other" },
   { name: "scope", file: "smoke-scope.ts", about: "what a scoped session may read: identity (all its own conversations) vs conversation (this thread only)" },
+  { name: "runners", file: "smoke-runners.ts", about: "a second language as a capability: an unstartable jail is undiscoverable, and each name reaches its own runtime" },
   { name: "fleet", file: "smoke-fleet.ts", about: "model advertisements the router discovers: publish, restart, withdraw, revive" },
 ];
 

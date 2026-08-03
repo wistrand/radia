@@ -43,7 +43,7 @@ outside world).
 ## Testing it without a model
 
 ```bash
-deno task chat-test              # all eleven suites, ~50s
+deno task chat-test              # all twelve suites, ~60s
 deno task chat-test longthread   # one by name
 ```
 
@@ -67,6 +67,10 @@ real assembly, with no API key:
 | `selfgrant` | forbidden → request → human approval → self-scoped reads, on both the ops and coordination planes. The ask BLOCKS on the human's answer and the answer names the scope actually granted, so the whole escalation fits in one turn instead of two |
 | `inspect` | session isolation (a session reads only its own conversation), the `space_*` TOOLS on a busy space: paging past a wall of another author's events, answering "what may I do" from the enforcement rather than by inference, and the full escalation loop: a grant approved at the wrong scope authorizes nothing, and the prompt has to say so |
 | `scope` | what a scoped session may read under both postures: identity (all its own conversations, including worker-produced results) vs conversation (this thread only) |
+| `iterate` | the code-gen loop as records: attempts that link into a chain, and a verdict the session has no grant to author |
+| `save` | the two routes to a stored file, read back out of the `capability` records the running fleet publishes rather than imported, since a fix nobody republished changes nothing for the model |
+| `login` | a person's own credential: who the session is, and that two people on one space cannot read each other |
+| `runners` | a second language as a capability: a jail the host cannot start is UNDISCOVERABLE rather than a runtime error, and each tool name reaches its own runtime. The Python half skips itself where `bwrap` is absent |
 | `fleet` | model advertisements: publish, restart without growing the space, withdraw on shutdown, revive |
 
 The long thread is the one that pays for itself: bugs here come from the SHAPE of accumulated
@@ -91,7 +95,7 @@ flowchart TB
     I -.->|"escalate → next tier by rank"| SP
     SP -->|"take {tool_call, tool}"| T["tools<br/>agent:chat-tools<br/>sandboxed reads, no env"]
     SP -->|"take {tool_call, generate_image}"| G["images<br/>agent:chat-images<br/>API key, no files"]
-    SP -->|"take {tool_call, run_code · save_procedure · &lt;saved name&gt;}"| X["exec<br/>agent:chat-exec<br/>--allow-run, no key, no files"]
+    SP -->|"take {tool_call, run_javascript · run_python · save_procedure · &lt;saved name&gt;}"| X["exec<br/>agent:chat-exec<br/>--allow-run, no key, no files"]
     X -->|"program on stdin"| SB["deno run -<br/>NO permissions at all"]
     SB -->|"stdout / stderr"| X
     T -->|"tool_result · artifact (save_content)"| SP
@@ -202,7 +206,8 @@ Tools: `read_file`, `list_files`, `search_files`, `stat` (sandboxed to `RADIA_CH
 default `examples/chat/sandbox`; `list_files`/`read_file`/`stat` return `size` + `modified`
 so size/date questions get ground truth, not guesses), `time`, `calc`, `save_content` (store
 text as an artifact), `share_artifact` (an openable link for one), `save_workspace` (a multi-file
-tree), `run_code` (sandboxed execution, optionally against a workspace), `save_procedure`/`read_procedure`
+tree), `run_javascript` and `run_python` (sandboxed execution, optionally against a workspace),
+`save_procedure`/`read_procedure`
 (name a program and keep it; see below), and `generate_image`.
 
 **Inspection tools** (`tools/space.ts`) make the chatbot a conversational inspector of its own
@@ -254,13 +259,27 @@ record, though reading each one still needs the grant.
 **The assistant can run code, in a process that holds nothing** (`workers/exec.ts` dispatches;
 the jail itself is [`extensions/ts/sandbox.ts`](../../extensions/ts/sandbox.ts), shared rather than
 owned by this app).
-`run_code` is a discovered tool like any other. What makes it safe is the shape around it: three
+`run_javascript` is a discovered tool like any other. What makes it safe is the shape around it: three
 processes with three blast radii.
 
 ```
 workers/exec.ts        run token · space access · --allow-run   claims work, acks results
   └── deno run -       NO permissions, program on stdin      extensions/ts/sandbox.ts
+  └── bwrap python3 -  namespaces, no network, no host writes  extensions/ts/sandbox.ts
 ```
+
+**A language is a CAPABILITY NAME, not an argument.** `run_python` is published only where its jail
+exists and passes its probe, so a space without `bwrap` never advertises it and the model never
+picks a tool it cannot reach. That is the same discovery path as every other tool: the capability
+list IS the answer to "what can this space run", with no separate `language` argument that can name
+something nobody serves, and no fallback that would silently run Python somewhere weaker than the
+record claims. `space_query {kind: sandbox}` reads back what each jail actually guarantees.
+
+Their jails differ, and the difference is not cosmetic. The Deno child is safe by the ABSENCE of
+permission flags; the bubblewrap child is safe by the PRESENCE of namespace flags, and it can see
+the host's `/usr` (it has to, to find `python3`) where the Deno child sees nothing. Both are probed
+at boot and neither is served if a claim fails. See
+[design-execution.md](../../agent_docs/design-execution.md).
 
 The worker never executes and the executor never holds anything. This is why it is not a tool in
 `workers/tools.ts`: spawning needs `--allow-run` (which that process deliberately lacks), and it holds
@@ -313,7 +332,7 @@ Six details carry the weight:
   the tools-worker's, both would race for every call, and the model would still be shown the real
   tool's description. It is re-checked at execution as well as at save, because a worker may start
   serving the name later.
-- **A result names the procedure version that produced it.** For `run_code` the program is in the
+- **A result names the procedure version that produced it.** For `run_javascript` the program is in the
   `tool_call` body, so "what exactly ran" is a query; a procedure call carries only `{tool, args}`
   and the code can be re-saved, so the `tool_result` records `{procedure: {name, recordId,
   artifactId}}` and takes the procedure record as a PARENT. "Which code produced this?" is then a
@@ -322,7 +341,7 @@ Six details carry the weight:
   used a saved procedure, said yes, had not, and invented a reason for the mismatch.
 
 **Two routes to a stored file, split by where the bytes come from.** `save_content`
-(`tools/save.ts`) stores text the assistant *wrote*, in one call. `run_code`'s `save_as` stores what
+(`tools/save.ts`) stores text the assistant *wrote*, in one call. `run_javascript`'s `save_as` stores what
 a program *printed*. The line between them is whether the content had to be COMPUTED: if the model
 already knows what the file says, running a program that prints it back sends the same text twice
 and stores exactly what the direct call would have. The rule that still holds is the one about
@@ -331,7 +350,7 @@ Messages-as-blobs would break matching, pattern scoping, windowing and the Feed 
 
 Getting that line wrong is a description bug, not a substrate one, and it shipped. Asked to "create
 a web page with a js clock", the assistant wrote the HTML as a JS string literal, `console.log`'d
-it, and stored stdout. `run_code` claimed "that is how you save a file" with no condition and never
+it, and stored stdout. `run_javascript` claimed "that is how you save a file" with no condition and never
 mentioned `save_content`, while `save_content` waited for the user to say "save" (which that request
 does not) and did not list HTML among what it takes. Both now name the boundary and each other.
 `smoke-save.ts` reads the descriptions back out of the `capability` records the running fleet
@@ -339,7 +358,7 @@ publishes, which is the path the guidance actually travels; a description fixed 
 republished would pass an import-based check while the fleet still advertised the old text. What it
 cannot check is which tool a model picks, and it says so.
 
-**An artifact id refers; a capability URL opens.** `save_content` and `run_code --save_as` hand back
+**An artifact id refers; a capability URL opens.** `save_content` and `run_javascript --save_as` hand back
 an `artifactId`, and the URL built from it (`/v0/artifacts/{id}`) needs an `Authorization` header,
 which a browser cannot attach to a typed address or an `<img src>`. So the assistant could produce a
 file and had no honest way to hand it over: it quoted a URL that 401s, or invented a capability URL
@@ -367,8 +386,8 @@ reopens a boundary two tools had settled:
 | You want | Tool |
 |-------------------------------------------|------------------------------------------|
 | a document for the user (page, SVG, report, config) | `save_content` |
-| CODE, one file or twenty | `save_workspace`, then `run_code {workspace}` |
-| a throwaway calculation whose answer is the output | `run_code {code}`, keep nothing |
+| CODE, one file or twenty | `save_workspace`, then `run_javascript`/`run_python` `{workspace}` |
+| a throwaway calculation whose answer is the output | `run_javascript {code}`, keep nothing |
 
 Code never goes to `save_content`, even a single file: the same bytes as a workspace, minus the
 ability to run it, version it or attach a verdict to it. The only thing that is not a workspace is a
@@ -376,7 +395,7 @@ program not worth keeping.
 
 **A project is a workspace, not a string.** `save_workspace(name, files)` stores a multi-file tree
 (the convention lives in [`extensions/ts/workspace.ts`](../../extensions/ts/workspace.ts)), and
-`run_code` takes a `workspace` argument that materialises it into a fresh directory and runs the
+both runners take a `workspace` argument that materialises it into a fresh directory and run the
 program INSIDE it, so relative paths resolve the way they would in a checkout. Nothing has to tell
 the program a temp path it could not otherwise know.
 
@@ -417,7 +436,7 @@ eight tries were eight siblings: lineage from the last said nothing about the se
 `parent_ids`, which is the right answer here rather than an accident: a fix written from classified
 output carries the same labels.
 
-*A pass is evidence, not an opinion.* `run_code` takes an optional `expect`
+*A pass is evidence, not an opinion.* `run_javascript` takes an optional `expect`
 (`exit_zero` / `stdout_equals` / `stdout_contains`), stated BEFORE the run. The exec-worker judges
 the result and writes a `check` record; the verdict also comes back in the tool result, so the model
 does not spend a round asking whether its own run passed. The session has `check: query` and **no**
@@ -434,7 +453,7 @@ Deliberately NOT done: a parse check before the sandbox spawn (a syntax error co
 expensive part of a bad attempt is the model round, not the process), and no-progress detection over
 the attempt chain. The chain now exists, so the second is buildable when it earns its place.
 
-**Code output can become an artifact.** `run_code` takes
+**Code output can become an artifact.** `run_javascript` takes
 `save_as` (plus optional `media_type` and `encoding: "base64"` for binary): stdout is stored as an
 artifact and the result carries `{artifactId, mediaType, size}` instead of the payload. Output over
 4 KB is stored automatically, with a preview inline, since a large payload in a `tool_result` would
@@ -443,7 +462,7 @@ otherwise land in the message thread and be re-sent on every later turn.
 For computed bytes the direction matters. They come **from the sandbox**, never from the model's
 tokens: a program that derives its output from data writes it once, instead of the model emitting
 the whole result into the context first. That argument holds only when the content is derived; for
-content the model authored, the tokens are already spent and `run_code` merely spends them again.
+content the model authored, the tokens are already spent and `run_javascript` merely spends them again.
 That is also why the exec worker's artifact grant is `put` only: it may store what it produced, never read what anyone else stored.
 (An SVG saved this way downloads rather than rendering inline, by the same rule that keeps
 scriptable media out of the console's origin.)
@@ -457,7 +476,7 @@ Three properties fall out of the substrate rather than being bolted on:
   [design-taint.md](../../agent_docs/design-taint.md)). Labels union through `ack`, a consumer
   states what it accepts with `allowTaint`, and clearing one needs a privileged declassify.
 - **Every program is auditable by query.** The source lives in the `tool_call` body, so
-  `space_query {kind: tool_call, match: {tool: "run_code"}}` is the complete execution log, with
+  `space_query {kind: tool_call, match: {tool: "run_javascript"}}` is the complete execution log, with
   each result as its child.
 - **Retry is sound *because* the sandbox is empty.** `tool_call` is claimable work, so an expired
   lease is retried. That is safe only because a permissionless child has no side effect to double. Grant
@@ -666,7 +685,7 @@ Five areas. `chat.ts` opens with the same map.
 | `router.ts` | claims UNTIERED `llm_call`s, classifies the turn, re-dispatches to a tier (`replyTo` keeps the result correlated) |
 | `tools.ts` | claims `tool_call` for every tool it serves; sandboxed permissions, no env |
 | `images.ts` | claims `tool_call{generate_image}` → image model → artifact → a reference |
-| `exec.ts` | claims `tool_call{run_code}` → permissionless subprocess → tainted result, optionally an artifact |
+| `exec.ts` | claims `tool_call{run_javascript}` and, where the jail probes clean, `tool_call{run_python}` → sandboxed subprocess → tainted result, optionally an artifact |
 
 **`tools/`: what those workers actually do**
 

@@ -1,9 +1,9 @@
 // `save_content`: persist something the assistant wrote as an artifact.
 //
-// The counterpart to `run_code`'s `save_as`, which only covers bytes a PROGRAM produced. Content
+// The counterpart to a code runner's `save_as`, which only covers bytes a PROGRAM produced. Content
 // the model composed directly (an SVG it drew in prose, a config it drafted, a summary worth
 // keeping) has no other route out of the conversation, and telling it to re-emit the same text
-// inside a `run_code` literal costs the identical tokens and lands in the thread identically. So
+// inside a `run_javascript` literal costs the identical tokens and lands in the thread identically. So
 // the direct tool is not a shortcut around the "bytes never travel inside a record" rule; it is
 // the honest shape for content whose only source is the model's own output.
 //
@@ -85,7 +85,7 @@ export const SHARE_SCHEMAS: ToolDef[] = [
         "Turn an artifact you stored into a URL the user can OPEN in a browser. Use it whenever " +
         "you have just produced a file the user will want to look at (a web page, an image, an " +
         "SVG, a report) and whenever they ask for a link. The artifact id you get back from " +
-        "save_content or run_code is how you REFER to an artifact, not how anyone opens one: that " +
+        "save_content or a code runner is how you REFER to an artifact, not how anyone opens one: that " +
         "URL needs an Authorization header, which a browser cannot attach to a typed address or " +
         "an <img src>, so quoting it hands the user a 401. Returns {url, expiresAt}. Give the user " +
         "the url exactly as returned and say it expires; never edit it, and never construct such a " +
@@ -95,7 +95,7 @@ export const SHARE_SCHEMAS: ToolDef[] = [
       parameters: {
         type: "object",
         properties: {
-          artifact_id: { type: "string", description: "The artifactId returned by save_content, run_code with save_as, or generate_image." },
+          artifact_id: { type: "string", description: "The artifactId returned by save_content, a code runner with save_as, or generate_image." },
         },
         required: ["artifact_id"],
       },
@@ -115,15 +115,15 @@ export const SAVE_SCHEMAS: ToolDef[] = [
         "prose: \"create a web page\", \"write me a config\", \"draw an SVG\" all want this, and none " +
         "of them contain the word save. NOT for code: a program belongs in save_workspace, even a " +
         "single file, because a workspace can be RUN, keeps every version, and lets a verdict " +
-        "attach to it, while an artifact is only bytes. Do not print your content through run_code " +
-        "to store it either; that sends the same text twice and stores what you would have passed " +
+        "attach to it, while an artifact is only bytes. Do not print your content through a code runner " +
+        "(run_javascript, run_python) to store it either; that sends the same text twice and stores what you would have passed " +
         "here. Pass the exact content and a " +
         "filename; the media type comes from the extension unless media_type overrides it. For " +
         "binary formats, pass base64 and set encoding:\"base64\". Returns {artifactId, mediaType, " +
         "size}. To give the user something they can actually open, pass that artifactId to " +
         "share_artifact; the id alone is a reference, not a link. Only when the bytes must be " +
-        "COMPUTED (a program derives them from data you do not already have in hand) use run_code " +
-        "with save_as instead.",
+        "COMPUTED (a program derives them from data you do not already have in hand) use a code runner " +
+        "(run_javascript, run_python) with save_as instead.",
       parameters: {
         type: "object",
         properties: {
@@ -139,7 +139,7 @@ export const SAVE_SCHEMAS: ToolDef[] = [
 ];
 
 /**
- * `save_workspace`: store a multi-file tree the assistant wrote, so `run_code` can run against it.
+ * `save_workspace`: store a multi-file tree the assistant wrote, so a code runner can run against it.
  *
  * The counterpart to `save_content` for something that is not one file. A program with an import,
  * a fixture and a test is three files and one relationship, and squeezing it into a single `code`
@@ -197,7 +197,8 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
     function: {
       name: "save_workspace",
       description:
-        "Store CODE as a named workspace, then run it with run_code's `workspace` argument. This is " +
+        "Store CODE as a named workspace, then run it with a code runner's `workspace` argument " +
+        "(run_javascript, run_python). This is " +
         "where every program goes, whether it is one file or twenty: a workspace can be run, keeps " +
         "each version, and is what a verdict attaches to, so there is no case where a program is " +
         "better off as a loose artifact. Use it for a module and the script that imports it, code " +
@@ -208,7 +209,7 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
         "Returns {workspace, treeDigest, files, unchanged}; `unchanged: true` means the tree was " +
         "byte-identical to what was already there and nothing was written. The ONE thing that does " +
         "not belong here is a throwaway calculation whose answer is the output rather than the " +
-        "program: pass that to run_code as `code` and keep nothing. If the reply carries " +
+        "program: pass that to a code runner as `code` and keep nothing. If the reply carries " +
         "`forked: true`, something else changed this workspace while you were working: both " +
         "versions exist and neither was lost, but you are no longer building on the newest one. " +
         "Say so rather than continuing silently.",

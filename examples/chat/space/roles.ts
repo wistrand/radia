@@ -100,7 +100,8 @@ const TOOLS_GRANTS: Grant[] = [
   { kind: "workspace", operations: ["put", "query"] }, // save_workspace: authors a tree for a session
 ];
 
-// exec-worker: claims `tool_call{run_code}` and runs the model's program in a permissionless
+// exec-worker: claims `tool_call{run_javascript}` (and `{run_python}` where the jail probes clean)
+// and runs the model's program in a permissionless
 // subprocess. It needs --allow-run (to spawn) but holds no API key and reads no files itself.
 //
 // Saved procedures widened this set, and it is worth being precise about how much. The worker now
@@ -131,10 +132,13 @@ const EXEC_GRANTS: Grant[] = [
   // only SERVES trees; write-back made that false, and the grant had to follow the capability
   // rather than the other way round.
   { kind: "workspace", operations: ["query", "put"] },
-  // Reads the operator's declaration of the jail it runs in. `query` only: a worker that could
-  // write its own guarantees would be back to a manifest claim, which is what the split of
-  // declare-versus-verify exists to prevent.
-  { kind: "sandbox", operations: ["query"] },
+  // Reads the operator's declaration, and declares the backends whose AVAILABILITY only it can
+  // determine: whether bubblewrap exists on this host is not something the launcher knows, and a
+  // jail is only declared here after its probe passed. The declare-versus-verify split still holds
+  // where it matters — nothing is advertised on the strength of a claim, only on a passed probe —
+  // but the earlier comment overstated it: `query` alone could not express a backend the operator
+  // cannot see.
+  { kind: "sandbox", operations: ["query", "put"] },
 ];
 
 // plain user (the REPL): may drive its own conversations and read its own results, nothing more.
@@ -203,6 +207,13 @@ export function userGrants(scope?: Record<string, unknown>): Grant[] {
     // A tree the session owns. Scoped like the rest, so a session sees its own workspaces and no
     // one else's, and the runtime enforces the stamp on the way in as well as the way out.
     { kind: "workspace", operations: ["query"], ...scoped },
+    // UNSCOPED, and that is the point rather than an oversight. A `sandbox` record is written by the
+    // exec-worker, so a scope binding it to this session's own records would match nothing, and the
+    // session could not answer "what can you run, and under what isolation" about the very jails its
+    // code runs in. Nothing here is a secret: the record states guarantees, which is what makes the
+    // difference between two jails inspectable instead of a sentence in a banner. `query` only, so a
+    // session can read what a jail claims and can never declare one.
+    { kind: "sandbox", operations: ["query"] },
   ];
 }
 

@@ -56,9 +56,15 @@ meet, in any language.
 | `ts/sandbox-registry.ts` | a sandbox as a RECORD: the operator declares, the worker verifies before serving |
 | `conformance/` | the contract an implementation must meet (`deno task extensions`) |
 
-Planned, per [design-execution.md](../agent_docs/design-execution.md): a SECOND isolation backend
-(bubblewrap or a container). That is where the guarantee stops being uniform and a claim can
-fail-open, which is why one backend shipped first.
+Two isolation backends ship: `deno-permissions` (JS, safe by ABSENCE of flags) and `bubblewrap`
+(any interpreter, safe by PRESENCE of them). That difference is why every declaration is PROBED
+before it is served — verified directly, a bwrap jail missing `--unshare-all` reaches the network
+while its record still claims it cannot.
+
+Selection is by CAPABILITY NAME, not by a field: a runner publishes `run_javascript` or
+`run_python` only where that backend probed clean, so an unavailable language is undiscoverable
+rather than a runtime failure. Nothing dispatches on a sandbox record; the record is what a policy
+binds to and what the probe tests. See [design-execution.md](../agent_docs/design-execution.md).
 
 ## Language parity
 

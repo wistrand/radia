@@ -197,6 +197,16 @@ console.log(
     ? `code execution: readable roots ${execRoots.join(", ")} (still no network, no write, no env)`
     : "code execution: no filesystem (set RADIA_CHAT_EXEC_DIRS to grant read-only roots)",
 );
+// The guarantee above is the DENO jail's, and it is not uniform across languages: a bubblewrap jail
+// has to make an interpreter visible (so it sees /usr) and does not stop fork/exec. Saying "code
+// execution is X" once, for two jails that differ, is exactly the prose claim the `sandbox` record
+// exists to replace, so point at the record rather than restating a half-true sentence. Which
+// languages are actually served is not known yet here: the worker probes at boot and publishes only
+// what held, so the capability list is the answer and the banner must not pre-empt it.
+console.log(
+  "  languages are discovered, not configured: whichever run_* tools the exec worker advertises. " +
+    "Ask 'what can you run and under what isolation?' — the guarantees differ per jail and live in `sandbox` records.",
+);
 console.log(
   `space ${url}${usingRunning ? " (existing)" : ` (spawned, persisted at ${spaceDb})`}. Open it and watch the Feed tab. Ctrl-D to quit.`,
 );

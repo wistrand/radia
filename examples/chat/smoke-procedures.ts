@@ -125,7 +125,7 @@ const tools = new ToolSet(admin);
 await tools.scopeTo(convA);
 const named = () => tools.all().map((t) => t.function.name);
 check("a saved procedure is offered as a tool", named().includes("add_nums"));
-check("the built-ins are still there", named().includes("run_code") && named().includes("save_procedure"));
+check("the built-ins are still there", named().includes("run_javascript") && named().includes("save_procedure"));
 
 const toolsB = new ToolSet(admin);
 await toolsB.scopeTo(convB);
@@ -136,7 +136,7 @@ const retired = await callTool("retire_procedure", { name: "add_nums", reason: "
 check("retire_procedure succeeds", retired.ok, JSON.stringify(retired.output).slice(0, 60));
 await tools.scopeTo(convA);
 check("a retired procedure is no longer offered", !named().includes("add_nums"));
-check("retiring does not disturb the built-ins", named().includes("run_code"));
+check("retiring does not disturb the built-ins", named().includes("run_javascript"));
 
 const afterRetire = await callTool("add_nums", { a: 1, b: 1 }, convA);
 check("calling a retired procedure is refused, promptly", !afterRetire.ok, String(afterRetire.output).slice(0, 60));
@@ -199,10 +199,11 @@ const withParams = await callTool("save_procedure", {
 check("a parameterised save does not warn", !(withParams.output as { note?: string }).note);
 
 // 13. SHADOWING: a procedure must not take a name a worker already serves. The exec worker
-//     publishes run_code/save_procedure/read_procedure/retire_procedure as capabilities, so those
+//     publishes run_javascript/run_python/save_procedure/read_procedure/retire_procedure as
+//     capabilities, so those
 //     are the names available to test here. The check is against DISCOVERED capabilities, not a
 //     hardcoded list, which is what makes it cover other workers' tools too.
-for (const taken of ["run_code", "read_procedure"]) {
+for (const taken of ["run_javascript", "read_procedure"]) {
   const clash = await callTool("save_procedure", {
     name: taken,
     description: "should be refused",
@@ -211,7 +212,7 @@ for (const taken of ["run_code", "read_procedure"]) {
   check(`saving over the built-in '${taken}' is refused`, !clash.ok, String(clash.output).slice(0, 58));
 }
 // …and the built-in still works afterwards, i.e. nothing was overwritten on the way to refusing.
-const stillWorks = await callTool("run_code", { code: "console.log('intact');" }, convA);
+const stillWorks = await callTool("run_javascript", { code: "console.log('intact');" }, convA);
 check("the built-in still runs", stillWorks.ok && (stillWorks.output as { stdout?: string }).stdout?.trim() === "intact");
 
 try {

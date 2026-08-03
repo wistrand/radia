@@ -17,7 +17,7 @@
 // nobody runs anything, rather than something running under a guarantee that was never true.
 
 import type { RadiaClient } from "../../sdk/ts/client.ts";
-import { probeSandbox, type ProbeResult, type SandboxSpec } from "./sandbox.ts";
+import { type BwrapOptions, probeSandbox, type ProbeResult, type SandboxSpec } from "./sandbox.ts";
 
 /** The kind's indexing contract. Every field a policy might bind is indexed, which is the whole
  *  reason this is a record: `{network: false}` has to be matchable, not merely readable. */
@@ -78,7 +78,13 @@ export async function listSandboxes(client: RadiaClient): Promise<(SandboxSpec &
  */
 export async function verifySandbox(
   spec: SandboxSpec,
-  opts: { readRoots?: string[]; writeRoots?: string[]; timeoutMs?: number } = {},
+  opts: {
+    readRoots?: string[];
+    writeRoots?: string[];
+    timeoutMs?: number;
+    /** How to reach the interpreter, for a backend that needs one named. */
+    bwrap?: BwrapOptions;
+  } = {},
 ): Promise<ProbeResult[]> {
   const results = await probeSandbox(spec, opts);
   return results.filter((r) => !r.held);

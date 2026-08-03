@@ -147,7 +147,7 @@ the baseline [plan-validation.md](plan-validation.md) asks for before anything i
 
 Open question, worth resolving before the query is trusted: "demonstrably needed a stronger
 model" needs a ground truth that is not itself a model's opinion. Candidates: a tool error
-the stronger tier avoids, a numeric answer checkable by `run_code`, or a turn the user
+the stronger tier avoids, a numeric answer checkable by `run_javascript`, or a turn the user
 repeats. Pick one that is mechanically checkable, or the calibration measure inherits the
 problem it is measuring.
 

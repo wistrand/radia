@@ -1,4 +1,4 @@
-// Code-execution worker. Claims `tool_call{tool:"run_code"}` and runs the model's program in a
+// Code-execution worker. Claims `tool_call{tool:"run_javascript"}` and runs the model's program in a
 // permissionless subprocess (extensions/ts/sandbox.ts), then acks the output as a TAINTED `tool_result`.
 //
 // Three processes, three blast radii. The worker never executes, the executor never holds
@@ -26,8 +26,8 @@ import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { activeByKey, newestByKey, RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
 import { runCode } from "../../../extensions/ts/sandbox.ts";
 import { captureWorkspace, commitWorkspace, materialize, readWorkspace } from "../../../extensions/ts/workspace.ts";
-import { denoSandbox } from "../../../extensions/ts/sandbox.ts";
-import { verifySandbox } from "../../../extensions/ts/sandbox-registry.ts";
+import { bwrapSandbox, denoSandbox, runBwrap } from "../../../extensions/ts/sandbox.ts";
+import { declareSandbox, verifySandbox } from "../../../extensions/ts/sandbox-registry.ts";
 import { progress } from "../space/progress.ts";
 import { arg, argAll } from "../util.ts";
 import { publishCapability } from "../space/capability.ts";
@@ -62,12 +62,26 @@ const INLINE_MAX = 4096;
 // The description is the documentation: the model learns the dialect and the limits from here,
 // never from the chat's system prompt. Saying what is DENIED matters as much as what is allowed.
 // A model that knows there is no network will not waste a turn discovering it.
-const RUN_CODE: ToolDef = {
+// Built per boot rather than declared once, because the sibling it names has to EXIST. Naming a
+// tool nobody serves is unreachable advice: the model calls it and gets "unknown tool", which is the
+// same defect as naming none. `run_python` is published only where its jail probed clean, so this
+// description can only cross-reference it once that is known.
+function runJavascriptDef(pythonServed: boolean): ToolDef {
+  return {
   type: "function",
   function: {
-    name: "run_code",
+    name: "run_javascript",
     description:
-      `Run JavaScript in a sandbox and get its output back. Two shapes, and picking the wrong one ` +
+      `Run JavaScript in a sandbox and get its output back. ` +
+      (pythonServed
+        ? `JAVASCRIPT ONLY: a Python program goes to run_python, and passing one here fails with a ` +
+          `SyntaxError rather than running it. The language of the program decides the tool, and ` +
+          `nothing else does. Shelling out to another interpreter is not a workaround: this sandbox ` +
+          `cannot start processes at all. `
+        : `JAVASCRIPT ONLY, and it is the only language this space runs: there is no Python here, so ` +
+          `a task that needs one has to be solved in JavaScript or not at all. Say so rather than ` +
+          `writing Python and hoping. `) +
+      `Two shapes, and picking the wrong one ` +
       `is the common mistake. Bare 'code' is a THROWAWAY: use it when the answer is the output ` +
       `(a calculation, parsing, checking your own reasoning) and the program itself is not worth ` +
       `keeping, because nothing is stored. When the PROGRAM is the point, save_workspace first and ` +
@@ -145,7 +159,8 @@ const RUN_CODE: ToolDef = {
       required: ["code"],
     },
   },
-};
+  };
+}
 
 const SAVE_PROCEDURE: ToolDef = {
   type: "function",
@@ -158,7 +173,7 @@ const SAVE_PROCEDURE: ToolDef = {
       "code you expect to run more than once: a calculation you will repeat with different " +
       "inputs, a parser, a checker. Saving costs one call; re-pasting the same program every " +
       "time costs its full length in every message that follows. The code runs in the SAME " +
-      "sandbox as run_code, with the same limits. Re-saving the same name replaces it. Returns " +
+      "sandbox as run_javascript, with the same limits. Re-saving the same name replaces it. Returns " +
       "{name, artifactId, size}.",
     parameters: {
       type: "object",
@@ -213,7 +228,6 @@ const RETIRE_PROCEDURE: ToolDef = {
   },
 };
 
-await publishCapability(client, RUN_CODE);
 await publishCapability(client, SAVE_PROCEDURE);
 await publishCapability(client, READ_PROCEDURE);
 await publishCapability(client, RETIRE_PROCEDURE);
@@ -225,7 +239,12 @@ await publishCapability(client, RETIRE_PROCEDURE);
 
 /** This worker's own tools. A fallback for the check below, for the moment before capabilities
  *  have been read (or if this run has no grant to read them). */
-const RESERVED = new Set(["run_code", "save_procedure", "read_procedure", "retire_procedure"]);
+/** Tool names this worker executes DIRECTLY rather than resolving as a saved procedure. Every
+ *  runner must be listed: adding `run_python` while the check compared against ONE name sent every
+ *  Python call down the procedure path, where it came back as "no procedure named run_python". */
+const BUILTIN_RUNNERS = new Set(["run_javascript", "run_python"]);
+
+const RESERVED = new Set([...BUILTIN_RUNNERS, "save_procedure", "read_procedure", "retire_procedure"]);
 
 /** What the caller said the run would do. Data only: no regex, no expression to evaluate, so a
  *  reader (or an auditor) can see exactly what was claimed. */
@@ -305,8 +324,60 @@ const NAME_RE = /^[a-z][a-z0-9_]{0,40}$/;
 // without a restart and without claiming `tool_call` wholesale (which would steal other workers'
 // work). Every procedure the space already holds is added at startup; new ones arrive on the watch
 // below. Dispatch stays content-routed: one pattern per tool name, exactly like a built-in tool.
+const RUN_PYTHON: ToolDef = {
+  type: "function",
+  function: {
+    name: "run_python",
+    description:
+      `Run Python 3 in a sandbox and get its output back. PYTHON ONLY, and it is the tool for every ` +
+      `Python program: run_javascript cannot parse Python and fails with a SyntaxError, so the ` +
+      `language you wrote decides the tool and nothing else does. ` +
+      `The same shape as run_javascript and the ` +
+      `same rules: bare 'code' is a THROWAWAY whose answer is the output, 'workspace' runs against ` +
+      `a saved tree with your program inside it, 'write' lets it change that tree, 'expect' records ` +
+      `a verdict, 'save_as' stores stdout as an artifact. Print with print(); stdout is what you ` +
+      `get back. ` +
+      `The JAIL DIFFERS from run_javascript and the difference is worth knowing: this one is built ` +
+      `from namespaces rather than permission flags, so it has NO network and cannot see your ` +
+      `files, but it CAN see the Python installation it needs to exist and it can start processes. ` +
+      `run_javascript can do neither. Ask space_query {kind:"sandbox"} for what each one guarantees. ` +
+      `Runs for at most ${Math.round(timeoutMs / 1000)}s.`,
+    parameters: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "The Python program. Use print() to return anything." },
+        workspace: {
+          type: "string",
+          description:
+            "Run against a saved workspace: your program runs INSIDE the tree, so relative paths " +
+            "work and open('src/main.py') reads that file. Save it first with save_workspace. Your " +
+            "`code` arrives on stdin and has no path of its own, so it cannot be imported by the " +
+            "tree's files; to RUN a file you saved, pass code that executes it, e.g. " +
+            "import runpy; runpy.run_path('src/main.py', run_name='__main__'). The tree is read-only unless you " +
+            "pass write, and it is discarded after the run, so a file your program writes does not " +
+            "persist by itself.",
+        },
+        write: { type: "boolean", description: "Let the program change the workspace; changes become a new version." },
+        save_as: { type: "string", description: "Filename to store COMPUTED stdout under as an artifact." },
+        media_type: { type: "string" },
+        encoding: { type: "string", enum: ["utf8", "base64"] },
+        expect: {
+          type: "object",
+          description: "What this run should do, stated before it runs. Same clauses as run_javascript.",
+          properties: {
+            exit_zero: { type: "boolean" },
+            stdout_equals: { type: "string" },
+            stdout_contains: { type: "string" },
+          },
+        },
+      },
+      required: ["code"],
+    },
+  },
+};
+
 const patterns = [
-  { kind: "tool_call", match: { tool: "run_code" } },
+  { kind: "tool_call", match: { tool: "run_javascript" } },
   { kind: "tool_call", match: { tool: "save_procedure" } },
   { kind: "tool_call", match: { tool: "read_procedure" } },
   { kind: "tool_call", match: { tool: "retire_procedure" } },
@@ -358,15 +429,51 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
 // verified is a more convincing version of an unenforced sentence, because structured data looks
 // authoritative. Failing claims are NAMED, and the worker refuses to start rather than warning: a
 // policy relying on an unverified guarantee is worse than no policy, since it looks like one.
+// PROVE EACH JAIL BEFORE ADVERTISING IT. Per backend, because the guarantee is not uniform: under
+// Deno "no network" is the ABSENCE of a flag, and under bubblewrap it is the PRESENCE of one, so a
+// bwrap jail missing `--unshare-all` is silently open while its record still claims otherwise.
+//
+// A backend that fails is not served, and its tool is never published: the model cannot call what
+// nobody advertises. On a host without bwrap that means Python is simply absent, which is the
+// honest outcome rather than a tool that fails on first use.
 {
-  const spec = denoSandbox({ name: "deno", readRoots, timeoutMs });
-  const failed = await verifySandbox(spec, { readRoots, timeoutMs });
+  const js = denoSandbox({ name: "deno", readRoots, timeoutMs });
+  const failed = await verifySandbox(js, { readRoots, timeoutMs });
   if (failed.length > 0) {
     console.error(
-      "exec worker: refusing to serve. The jail does not match its declaration: " +
+      "exec worker: refusing to serve. The Deno jail does not match its declaration: " +
         failed.map((f) => `${f.claim} (${f.detail})`).join(", "),
     );
     Deno.exit(1);
+  }
+  // Declared as well as verified. A `check` names the jail its verdict was reached in, so a jail
+  // that never lands in the registry leaves that reference dangling and "which of my sandboxes has
+  // a filesystem" silently omits the default one.
+  await declareSandbox(client, js);
+
+  const py = bwrapSandbox({ command: ["python3", "-"], language: "python", name: "python", timeoutMs });
+  const pyFailed = await verifySandbox(py, { timeoutMs, bwrap: { command: ["python3", "-"], timeoutMs } })
+    .catch((e) => [{ claim: "backend", held: false, detail: String(e) }]);
+  if (pyFailed.length === 0) {
+    patterns.push({ kind: "tool_call", match: { tool: "run_python" } });
+    await publishCapability(client, RUN_PYTHON);
+    await declareSandbox(client, py);
+    await publishCapability(client, runJavascriptDef(true));
+  } else {
+    await publishCapability(client, runJavascriptDef(false));
+    // Two very different outcomes, and reporting them alike taught the wrong thing. A jail that
+    // could not START (no `bwrap` installed, no permission to spawn it) is an ABSENT language: an
+    // ordinary fact about this host, and the notice should read like one. A jail that ran and then
+    // failed a claim it declared is a jail that LIED, which is the case this whole probe exists for
+    // and must stay loud.
+    const unavailable = pyFailed.length === 1 && pyFailed[0].claim === "backend";
+    console.error(
+      unavailable
+        ? "exec worker: run_python unavailable on this host (no bwrap), serving run_javascript only"
+        : `exec worker: REFUSING to serve run_python, its jail does not match its declaration: ${
+          pyFailed.map((f) => `${f.claim} (${f.detail})`).join(", ")
+        }`,
+    );
   }
 }
 
@@ -385,13 +492,13 @@ await agentLoop(client, {
     // A named procedure: the code comes from the artifact it was saved as, and the call's own
     // arguments are handed to it as `args`.
     //
-    // PROVENANCE. For `run_code` the program is in the tool_call body, so "what exactly ran" is a
+    // PROVENANCE. For `run_javascript` the program is in the tool_call body, so "what exactly ran" is a
     // query. A procedure call carries only {tool, args}, and the code lives elsewhere and can be
     // re-saved, so without this the result could never be attributed to the version that produced
     // it. `provenance` becomes a parent link plus a body field on the result below.
     let provenance: { name: string; recordId: string; artifactId: string } | undefined;
     let code = String(b.args?.code ?? "");
-    if (b.tool && b.tool !== "run_code") {
+    if (b.tool && !BUILTIN_RUNNERS.has(b.tool)) {
       // Checked at execution too, not just at save: a worker may have started serving this name
       // since. The real tool wins: this worker refuses rather than answering for it.
       if ((await capabilityNames(c)).has(b.tool)) {
@@ -419,11 +526,11 @@ await agentLoop(client, {
       code = `const args = ${JSON.stringify(b.args ?? {})};\n${source}`;
     }
     // The source is already in the tool_call record, so every program the model ever ran is
-    // auditable by query: `{kind: tool_call, tool: "run_code"}` is the execution log, with the
+    // auditable by query: `{kind: tool_call, tool: "run_javascript"}` is the execution log, with the
     // result and any artifact as its children.
     await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "executing", by: ME, note: `${code.length} chars` }, [callId]);
     if (!code.trim()) {
-      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: "run_code needs a `code` argument" }, taint: [] };
+      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: `${b.tool} needs a \`code\` argument` }, taint: [] };
     }
     // A WORKSPACE turns the run into one over a real tree: materialise it into a fresh directory,
     // hand the sandbox read access to that and nothing else, and throw it away afterwards. The
@@ -465,15 +572,24 @@ await agentLoop(client, {
     // Run IN the tree when there is one, so relative paths resolve the way they would in a
     // checkout. The alternative was telling the program its temp path, which it cannot otherwise
     // know and which changes every call.
-    const r = await runCode(code, {
+    const jail = b.tool === "run_python" ? "python" : "javascript";
+    const r = jail === "python"
+      ? await runBwrap(code, {
+        command: ["python3", "-"],
+        timeoutMs,
+        readRoots: wsRoots,
+        writeRoots: wsWrite && wsRoot ? [wsRoot] : [],
+        cwd: wsRoot,
+      })
+      : await runCode(code, {
       timeoutMs,
       readRoots: wsRoots,
       denyRead,
       cwd: wsRoot,
-      // The tree, and ONLY the tree: a run that may write gets it for exactly the directory it was
-      // given, never the workspace root shared with other calls.
-      writeRoots: wsWrite && wsRoot ? [wsRoot] : [],
-    });
+        // The tree, and ONLY the tree: a run that may write gets it for exactly the directory it
+        // was given, never the workspace root shared with other calls.
+        writeRoots: wsWrite && wsRoot ? [wsRoot] : [],
+      });
 
     // WRITE-BACK: hash after, store the difference, commit a successor. An unchanged tree writes
     // nothing, so a read-only attempt does not manufacture a version.
@@ -539,13 +655,13 @@ await agentLoop(client, {
             callId,
             conversationId: b.conversationId,
             owner: b.owner,
-            tool: b.tool ?? "run_code",
+            tool: b.tool ?? "run_javascript",
             // WHAT was verified, not just that something was. A verdict against a tree digest is an
             // attestation of a reproducible input; against a call id it is a note about an event.
             ...(wsTree ? { workspace: wsName, treeDigest: wsTree } : {}),
             // WHERE it was verified. A verdict from a jail with a filesystem and one from a jail
             // with none are not the same evidence, and nothing else in the record says which.
-            sandbox: "deno",
+            sandbox: jail === "python" ? "python" : "deno",
             verdict: j.verdict,
             expected: expectation,
             reasons: j.reasons,

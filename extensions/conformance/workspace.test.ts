@@ -29,7 +29,7 @@ import {
   type WorkspaceManifest,
   writeWorkspace,
 } from "../ts/workspace.ts";
-import { denoSandbox, probeSandbox, runCode } from "../ts/sandbox.ts";
+import { bwrapSandbox, denoSandbox, probeSandbox, runBwrap, runCode } from "../ts/sandbox.ts";
 import { declareSandbox, listSandboxes, readSandbox, SANDBOX_KIND, verifySandbox } from "../ts/sandbox-registry.ts";
 
 const PORT = 7815;
@@ -652,5 +652,76 @@ Deno.test("sandbox: a declaration is a record an operator can query and a policy
     await declareSandbox(c, { ...spec, memoryMb: 64 });
     assertEquals((await readSandbox(c, "deno-strict"))!.memoryMb, 64);
     assertEquals((await c.query({ kind: "sandbox", match: { name: "deno-strict" } }, 10)).length, 2);
+  });
+});
+
+// ── Phase 6: a second backend, and the reason the probe exists ───────────────────────────────────
+
+Deno.test("sandbox: bubblewrap runs another language, and describes what it ACTUALLY got", async () => {
+  const spec = bwrapSandbox({ command: ["python3", "-"], language: "python", name: "py" });
+  assertEquals(spec.isolation, "bubblewrap");
+  assertEquals(spec.language, "python");
+
+  const r = await runBwrap("print(6*7)", { command: ["python3", "-"] });
+  assert(r.ok, `bwrap python failed: ${r.stderr}`);
+  assertEquals(r.stdout.trim(), "42");
+
+  // The spec states the trade rather than flattering the jail. Making an interpreter reachable
+  // means binding the host's /usr, so this jail sees a filesystem where the Deno one sees nothing
+  // — measured at ~4 200 binaries against zero. A record claiming otherwise would be the prose
+  // problem with extra steps.
+  assert(spec.readonlyPaths.includes("/usr"), "the binds an interpreter needs ARE its filesystem");
+  assertEquals(denoSandbox().readonlyPaths, [], "…and the Deno jail genuinely has none");
+
+  // Likewise the ephemeral root: bwrap's root is a tmpfs, so a program CAN write. It reaches
+  // nothing outside and vanishes with the process, but "cannot write" would be false, and the
+  // probe caught exactly that claim on its first run.
+  assert(spec.writablePaths.includes("/"), "an ephemeral writable root is declared, not hidden");
+  assertEquals(denoSandbox().writablePaths, []);
+
+  assertEquals(await verifySandbox(spec, { bwrap: { command: ["python3", "-"] } }), [], "and every claim it DOES make holds");
+});
+
+Deno.test("sandbox: the probe catches a jail that lies, which is why fail-open is survivable", async () => {
+  // THE Phase 6 question. Under Deno, "no network" is the ABSENCE of --allow-net: forget every flag
+  // and you get the safe answer. Under bubblewrap it is the PRESENCE of --unshare-net: forget one
+  // and the jail is silently open while the record still says otherwise. Verified directly, outside
+  // this code: a sealed jail refuses a socket, and the same jail without --unshare-all connects.
+  //
+  // That flip is the whole reason a declaration is probed rather than believed. A structured claim
+  // nobody tested is MORE convincing than prose and no more true.
+  const honest = bwrapSandbox({ command: ["python3", "-"], name: "sealed" });
+  assertEquals(await verifySandbox(honest, { bwrap: { command: ["python3", "-"] } }), []);
+
+  // The same spec — still claiming `network: false` — served by a jail built without the flag.
+  const failed = await verifySandbox(honest, {
+    bwrap: { command: ["python3", "-"], unshare: ["--unshare-user"] },
+  });
+  assertEquals(failed.map((f) => f.claim), ["network"], "the lie is caught, and NAMED");
+  assert(failed[0].detail?.includes("succeeded"), "with what actually happened, so it is actionable");
+});
+
+Deno.test("sandbox: two backends coexist as records a policy can tell apart", async () => {
+  await withSpace(async (c) => {
+    await c.registerKind(SANDBOX_KIND);
+    await declareSandbox(c, denoSandbox({ name: "js" }));
+    await declareSandbox(c, bwrapSandbox({ command: ["python3", "-"], language: "python", name: "py" }));
+
+    assertEquals((await listSandboxes(c)).length, 2);
+    // The guarantee stopped being uniform, and that is now a QUERY rather than tribal knowledge:
+    // an operator asking "which of these can reach a filesystem" gets an answer from the space.
+    const byIsolation = await c.query({ kind: "sandbox", match: { isolation: "bubblewrap" } }, 10);
+    assertEquals(byIsolation.length, 1);
+    assertEquals((byIsolation[0].body as { language: string }).language, "python");
+
+    // Both still claim no network, which is what makes them comparable at all…
+    assertEquals((await c.query({ kind: "sandbox", match: { network: false } }, 10)).length, 2);
+    // …and they differ on the axis that a latency table hides.
+    const js = await readSandbox(c, "js");
+    const py = await readSandbox(c, "py");
+    assertEquals(js!.readonlyPaths.length, 0);
+    assert(py!.readonlyPaths.length > 0, "one of these sees a filesystem and the other does not");
+    assertEquals(js!.processes, false);
+    assertEquals(py!.processes, true, "a namespace jail does not stop fork/exec the way permissions do");
   });
 });

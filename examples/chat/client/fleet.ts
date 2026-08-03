@@ -95,8 +95,15 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
     ...toolRoots.flatMap((r) => ["--dir", r]),
   ]));
 
-  // Exec: may spawn `deno` and reach the space, nothing else. The child it spawns gets no
+  // Exec: may spawn `deno` and `bwrap` and reach the space, nothing else. The child it spawns gets no
   // permissions at all (extensions/ts/sandbox.ts), so the dangerous half of the pair holds no credential.
+  //
+  // TWO NAMES, because a language is a capability name and each one has its own jail: `deno` runs
+  // `run_javascript`, `bwrap` runs `run_python`. Naming both is not the same as granting both, since
+  // the worker PROBES each jail at boot and publishes nothing for one that fails. On a host without
+  // bubblewrap the permission is simply unused and Python is absent, which is the honest outcome.
+  // Listing the binaries rather than passing a bare `--allow-run` matters: bare means ANY executable,
+  // and the whole point of this process is that it can start two specific jails and nothing else.
   //
   // WORKSPACE ROOT. Materialising a tree means the WORKER writes files, which it previously could
   // not do at all, so this is a real capability increase and it is scoped to one directory created
@@ -106,7 +113,7 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
   // very process meant to read it.
   procs.push(spawn([
     `--allow-net=127.0.0.1:${port}`,
-    "--allow-run=deno",
+    "--allow-run=deno,bwrap",
     "--allow-env=HOME", // only to give the sandboxed child a module-cache home
     `--allow-write=${workspaceRoot}`,
     `--allow-read=${workspaceRoot}`, // to read back what it just wrote, and nothing else

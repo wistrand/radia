@@ -52,7 +52,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // record (reference) advertises which tier→model each worker serves, for discovery + the console.
   // `conversationId` is indexed on both work kinds because both BODIES carry it. A field a
   // record holds but its kind does not declare is invisible to matching, so a scoped query is
-  // rejected with `undeclared_path` rather than answered. That is what makes "how many run_code
+  // rejected with `undeclared_path` rather than answered. That is what makes "how many run_javascript
   // did we do in THIS conversation" reachable in one query instead of a walk down children.
   await client.registerKind({
     kind: "llm_call",

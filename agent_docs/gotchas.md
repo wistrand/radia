@@ -952,6 +952,11 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   not, so they cannot". So the missing limit is the mechanism by which unerasable data enters a
   space: base64 a secret into a body and no operator verb reaches it. That moves the record-size
   limit above the rest of the unbuilt resource limits, which only bound cost.
+- **A jail's own description is the first thing to distrust, including your own.** `bwrapSandbox`
+  claimed `writablePaths: []` and the probe caught it on the first run: bubblewrap's root is a
+  tmpfs, so a program CAN write there. Nothing escapes and nothing persists, but the claim was
+  false, and a record is only worth something if it says what the jail GOT rather than what was
+  intended. Write the probe before believing the spec, even when you wrote both.
 - **Prefer a guarantee that holds by ABSENCE over one that holds by presence.** Deno's sandbox is
   safe because nothing was granted: forget every flag and you get the safe answer. A bubblewrap or
   container jail is safe because `--unshare-net` / `--network=none` was passed: forget one and you
@@ -986,7 +991,7 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   Both SDKs have had `artifactCapability` since artifacts shipped, and the chat had no tool for it,
   so the assistant could store a file and not hand it over. Asked for a link it quoted the id-based
   URL (a `401` in a browser) or invented a capability URL, because inventing was the only move left:
-  `run_code` has no network, and `request_grant` asks for a permission when what was missing is a
+  `run_javascript` has no network, and `request_grant` asks for a permission when what was missing is a
   VERB. Before concluding a model "does not understand" something, check that a tool for it exists
   and that a description says when to reach for it. See `share_artifact` in
   `examples/chat/tools/save.ts`.
@@ -1003,22 +1008,54 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   running (`--artifact-port 0`). The console resolves that against its own origin; an agent hands it
   to a user verbatim and it opens nothing, with no way for the model to know what to prepend. The
   chat's tool resolves it against the client's base before returning.
+- **A check written against ONE member of a set breaks the moment the set grows, and a rename is
+  exactly when it grows.** The exec worker decided "this is a saved procedure, not a built-in" with
+  `b.tool !== "run_code"`. Renaming that to `run_javascript` kept it correct; adding `run_python`
+  beside it did not, so every Python call went down the procedure path and came back as "no
+  procedure named run_python" — with the capability published and the jail working, which is why it
+  read as an execution bug. It is now a `BUILTIN_RUNNERS` set. Grep for the OLD name's remaining
+  comparisons before adding a sibling, not after.
+- **Two runners are two overlapping tools, so the SAME description rule applies, and only one half
+  of it was written.** `run_python` named `run_javascript`; `run_javascript` did not name
+  `run_python`, and it opened with "Run JavaScript" as one word ahead of four hundred about
+  `save_as`. Asked for "python code finding the first 10 primes", the model called
+  `run_javascript` with a Python program, twice, read back a `SyntaxError`, and then tried
+  `os.system('python3 …')` to get out of it. Nothing was broken. The fix is the rule that already
+  existed for `save_content`/`run_javascript`: each names the other AND states the condition that
+  selects it (here: the language written), in the OPENING clause where a model comparing tools
+  reads. The shelling-out attempt needed its own sentence, because "cannot start processes" was
+  true and buried.
+- **A description may only name a tool that EXISTS, so a cross-reference between optional tools has
+  to be built per boot.** `run_python` is published only where its jail probes clean, so a static
+  `run_javascript` description naming it is unreachable advice on every host without bubblewrap:
+  the model calls it and gets "unknown tool", which is the same defect as naming no alternative.
+  `runJavascriptDef(pythonServed)` builds both variants, and the sibling is published BEFORE the
+  description that names it — a description pointing at a tool that is not there yet is a failure,
+  while one that does not mention it yet is merely incomplete.
+- **A language is a CAPABILITY NAME, not an argument or a router decision.** `run_python` is
+  published only where its jail probes clean, so a space without `bwrap` never advertises it. A
+  `requires: {language}` argument would be expressible everywhere and fail at execution, after the
+  model committed a turn to it; a router would have to fall back, and a fallback means running
+  somewhere weaker than asked. The `llm_call` tier router is NOT the precedent: a tier is a
+  judgement about a turn, worth delegating; a language is a fact the caller already holds, because
+  it wrote the program. A router earns its place only when a caller states REQUIREMENTS rather than
+  a name. See [design-execution.md](design-execution.md).
 - **Adding a THIRD overlapping tool reopens a boundary two tools had already settled.** Fixing
-  `run_code` vs `save_content` did not survive `save_workspace` arriving: `save_content` still
+  `run_javascript` vs `save_content` did not survive `save_workspace` arriving: `save_content` still
   listed "code" among what it stores and still claimed to be "the DEFAULT way to give the user a
   file", so for a program it competed with a tool strictly better at it (a workspace can be RUN,
   keeps every version, and is what a verdict attaches to; an artifact is bytes). The rule now stated
   in all three: a document goes to `save_content`, code of ANY size goes to `save_workspace`, a
-  throwaway calculation goes to `run_code {code}`. Whenever a tool lands in a space another already
+  throwaway calculation goes to `run_javascript {code}`. Whenever a tool lands in a space another already
   occupies, re-read the incumbent's description rather than only writing the newcomer's.
   Rebalancing also has a trap: cutting the incumbent's claim too far reintroduces the ORIGINAL bug,
   and the suite caught exactly that here (removing "DEFAULT" from `save_content` un-fixed the
   reason it was added). Scope the claim instead of dropping it.
 - **Two tools that reach the same outcome are chosen by their DESCRIPTIONS, so an unconditional
-  claim beats a conditional one.** `save_content` (authored text) and `run_code` + `save_as`
+  claim beats a conditional one.** `save_content` (authored text) and `run_javascript` + `save_as`
   (computed bytes) both produce an artifact, so nothing fails when the wrong one is picked. The
-  model consistently picked `run_code` because its description said "that is how you save a file"
-  with no condition and never named `save_content`, while `save_content` deferred to `run_code`,
+  model consistently picked `run_javascript` because its description said "that is how you save a file"
+  with no condition and never named `save_content`, while `save_content` deferred to `run_javascript`,
   gated its trigger on the user saying "save", and did not list HTML. Asked to "create a web page",
   the assistant wrapped the HTML in a `console.log` and stored stdout, sending the content twice.
   When two tools overlap, each must name the other AND state the condition that selects it; a

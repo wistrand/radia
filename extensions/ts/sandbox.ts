@@ -147,6 +147,40 @@ export async function runCode(source: string, opts: RunOptions = {}): Promise<Ru
     env: { HOME: Deno.env.get("HOME") ?? "/tmp", PATH: "/usr/bin:/bin" },
   }).spawn();
 
+  return await drive(child, source, timeoutMs, maxOutputBytes, started);
+}
+
+/** Spawn a jailer, feed it a program on stdin, capture capped output. Shared by every backend so
+ *  the timeout, the kill and the output cap cannot drift between them. */
+async function spawnCaptured(
+  bin: string,
+  args: string[],
+  source: string,
+  timeoutMs: number,
+  maxOutputBytes: number,
+  cwd?: string,
+): Promise<RunResult> {
+  const started = Date.now();
+  const child = new Deno.Command(bin, {
+    args,
+    ...(cwd ? { cwd } : {}),
+    stdin: "piped",
+    stdout: "piped",
+    stderr: "piped",
+    clearEnv: true,
+    env: { HOME: "/tmp", PATH: "/usr/bin:/bin" },
+  }).spawn();
+  return await drive(child, source, timeoutMs, maxOutputBytes, started);
+}
+
+/** The half every backend shares: write the program, kill on timeout, read both streams capped. */
+async function drive(
+  child: Deno.ChildProcess,
+  source: string,
+  timeoutMs: number,
+  maxOutputBytes: number,
+  started: number,
+): Promise<RunResult> {
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
@@ -197,7 +231,11 @@ export interface SandboxSpec {
   name: string;
   language: string;
   /** How the jail is built. The one thing a reader must not have to infer. */
-  isolation: "deno-permissions";
+  /** How the jail is built, and the field a reader must not have to infer. The two differ in a way
+   *  that matters more than the name: `deno-permissions` is safe by ABSENCE (forget every flag and
+   *  you get the safe answer), while `bubblewrap` is safe by PRESENCE (forget `--unshare-net` and
+   *  the jail is silently open). That flip is why every backend is probed before it is served. */
+  isolation: "deno-permissions" | "bubblewrap";
   network: boolean;
   /** Absolute paths the program may read; empty means no filesystem at all. */
   readonlyPaths: string[];
@@ -208,6 +246,78 @@ export interface SandboxSpec {
   memoryMb: number;
   timeoutMsMax: number;
   runtime: string;
+}
+
+/**
+ * A bubblewrap jail: namespaces instead of permission flags, so it can run ANY interpreter.
+ *
+ * Measured before choosing it, and the numbers are not the ones a latency table suggests. bwrap
+ * starts in ~13 ms against the Deno runner's ~35 ms, so it is the fast path. It is also far weaker
+ * on filesystem, and inherently so rather than by misconfiguration: making `python3` reachable means
+ * binding the host's `/usr`, and the jail then sees ~4 200 binaries where the Deno jail sees
+ * nothing. That is a real trade, not a bug, which is exactly why the spec must state the roots it
+ * actually got rather than the ones intended.
+ */
+export interface BwrapOptions extends RunOptions {
+  /** The interpreter, and the paths that have to be visible for it to exist. */
+  command: string[];
+  bind?: string[];
+  /** Namespace flags. Overridable ONLY so a test can build a deliberately weakened jail and prove
+   *  the probe catches it; production callers take the default, which unshares everything. A jail
+   *  whose isolation is a flag somebody can omit is the entire reason the probe exists. */
+  unshare?: string[];
+}
+
+const BWRAP_BASE = [
+  "--unshare-all", // net, pid, ipc, uts, cgroup: the flag whose absence opens the jail silently
+  "--die-with-parent",
+  "--new-session", // no controlling terminal, so the child cannot push input back into ours
+  "--proc",
+  "/proc",
+  "--dev",
+  "/dev",
+  "--tmpfs",
+  "/tmp",
+];
+
+/** Run under bubblewrap. Same contract as `runCode`: source on stdin, output captured and capped. */
+export async function runBwrap(source: string, opts: BwrapOptions): Promise<RunResult> {
+  const { timeoutMs, maxOutputBytes } = { ...DEFAULTS, ...opts };
+  const binds = (opts.bind ?? ["/usr", "/lib", "/lib64", "/bin", "/etc/alternatives"])
+    .flatMap((b) => ["--ro-bind-try", b, b]);
+  const roots = (opts.readRoots ?? []).flatMap((r) => ["--ro-bind-try", r, r]);
+  const writable = (opts.writeRoots ?? []).flatMap((r) => ["--bind-try", r, r]);
+  const base = opts.unshare ? [...opts.unshare, ...BWRAP_BASE.slice(1)] : BWRAP_BASE;
+  const args = [...base, ...binds, ...roots, ...writable];
+  if (opts.cwd) args.push("--chdir", opts.cwd);
+  args.push("--", ...opts.command);
+  return await spawnCaptured("bwrap", args, source, timeoutMs, maxOutputBytes, opts.cwd);
+}
+
+/** The jail `runBwrap` builds, described honestly: the binds a program needs to exist ARE its
+ *  readable filesystem, and a spec that omitted them would be the prose problem with extra steps. */
+export function bwrapSandbox(
+  opts: BwrapOptions & { name?: string; language?: string },
+): SandboxSpec {
+  const { timeoutMs, memoryMb } = { ...DEFAULTS, ...opts };
+  return {
+    name: opts.name ?? "bwrap",
+    language: opts.language ?? "unknown",
+    isolation: "bubblewrap",
+    network: false,
+    readonlyPaths: [...(opts.bind ?? ["/usr", "/lib", "/lib64", "/bin"]), ...(opts.readRoots ?? [])],
+    // The EPHEMERAL root and /tmp are writable, and saying otherwise was a lie the probe caught on
+    // its first run. bwrap's root is a tmpfs: a program can create files there, they reach nothing
+    // outside the jail, and they vanish with the process. That is meaningfully different from the
+    // Deno jail, which cannot write at all, and the difference belongs in the record rather than in
+    // somebody's memory.
+    writablePaths: ["/", "/tmp", ...(opts.writeRoots ?? [])],
+    processes: true, // a namespace jail does not stop fork/exec the way a permission model does
+    env: true,
+    memoryMb,
+    timeoutMsMax: timeoutMs,
+    runtime: opts.command.join(" "),
+  };
 }
 
 /** The jail `runCode` actually builds, for a given configuration. */
@@ -246,28 +356,53 @@ export interface ProbeResult {
  * the probe passes when the operation FAILS. A probe that cannot break out is the evidence; a probe
  * that succeeds means the record is lying and nothing should serve it.
  */
-export async function probeSandbox(spec: SandboxSpec, opts: RunOptions = {}): Promise<ProbeResult[]> {
-  const attempts: { claim: string; onlyIf: boolean; code: string }[] = [
-    { claim: "network", onlyIf: !spec.network, code: `await fetch("http://127.0.0.1:1/")` },
-    { claim: "processes", onlyIf: !spec.processes, code: `new Deno.Command("echo").outputSync()` },
-    { claim: "env", onlyIf: !spec.env, code: `Deno.env.get("HOME")` },
-    {
-      claim: "filesystem",
-      onlyIf: spec.readonlyPaths.length === 0,
-      code: `Deno.readTextFileSync("/etc/hostname")`,
-    },
-    {
-      claim: "writable",
-      onlyIf: spec.writablePaths.length === 0,
-      // Writes into the temp area rather than the tree: a jail that CAN write would otherwise leave
-      // the evidence somewhere the next probe reads as real.
-      code: `Deno.writeTextFileSync("/tmp/radia-probe-should-not-exist", "escaped")`,
-    },
+export async function probeSandbox(
+  spec: SandboxSpec,
+  opts: RunOptions & { bwrap?: BwrapOptions } = {},
+): Promise<ProbeResult[]> {
+  // The escape attempts, once per backend, because a probe written in the wrong language proves
+  // nothing. Each is a real operation, and each PASSES only when it fails inside the jail.
+  const js = {
+    network: `await fetch("http://127.0.0.1:1/")`,
+    processes: `new Deno.Command("echo").outputSync()`,
+    env: `Deno.env.get("HOME")`,
+    filesystem: `Deno.readTextFileSync("/etc/hostname")`,
+    writable: `Deno.writeTextFileSync("/tmp/radia-probe-should-not-exist", "escaped")`,
+  };
+  const py = {
+    network: `import socket; socket.create_connection(("1.1.1.1",53),timeout=2)`,
+    processes: `import subprocess; subprocess.run(["echo"],check=True)`,
+    env: `import os; assert os.environ["HOME"]`,
+    filesystem: `open("/etc/hostname").read()`,
+    writable: `open("/radia-probe-should-not-exist","w").write("escaped")`,
+  };
+  const bwrap = spec.isolation === "bubblewrap";
+  const src = bwrap ? py : js;
+  const wrap = (body: string) =>
+    bwrap
+      ? `try:\n    ${body}\n    print("ESCAPED")\nexcept Exception:\n    print("held")\n`
+      : `try { ${body}; console.log("ESCAPED") } catch { console.log("held") }`;
+
+  const attempts: { claim: keyof typeof js; onlyIf: boolean }[] = [
+    { claim: "network", onlyIf: !spec.network },
+    { claim: "processes", onlyIf: !spec.processes },
+    { claim: "env", onlyIf: !spec.env },
+    // A jail with roots can read SOMETHING by design, so the claim under test is narrower: it must
+    // not reach a path nobody granted. `/etc/hostname` is outside every root these backends bind.
+    { claim: "filesystem", onlyIf: !spec.readonlyPaths.some((p) => p === "/etc" || p === "/") },
+    // Only meaningful when the spec claims NO write. A jail with an ephemeral writable root claims
+    // one, so there is nothing to disprove; the claim is then carried by the record for a policy to
+    // read, not by a probe.
+    { claim: "writable", onlyIf: spec.writablePaths.length === 0 },
   ];
+
   const out: ProbeResult[] = [];
   for (const a of attempts) {
     if (!a.onlyIf) continue; // nothing claimed, nothing to disprove
-    const r = await runCode(`try { ${a.code}; console.log("ESCAPED") } catch { console.log("held") }`, opts);
+    const program = wrap(src[a.claim]);
+    const r = bwrap
+      ? await runBwrap(program, { command: ["python3", "-"], ...(opts.bwrap ?? {}), timeoutMs: opts.timeoutMs })
+      : await runCode(program, opts);
     // A denied permission may surface as a caught error OR as a killed process; both are the jail
     // holding. Only the word ESCAPED means the claim is false.
     const escaped = r.stdout.includes("ESCAPED");

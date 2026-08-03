@@ -4,7 +4,10 @@ Sequence and status. The reasoning lives in [design-workspaces.md](design-worksp
 working tree is, and the git relationship) and [design-execution.md](design-execution.md) (why the
 language question is an isolation question). Read those first; this file assumes them.
 
-> **Status: Phases 0-4 DONE.** Phase 5 next (`sandbox` as a record, Deno only).
+> **Status: Phases 0-7 DONE.** Workspaces, write-back, `check`, fork detection, `sandbox` records,
+> a second backend (bubblewrap), and selection by capability name (`run_javascript`, `run_python`).
+> Phase 7 answered the selection question with neither of the two options it was written to choose
+> between; see there.
 
 ## What this is for
 
@@ -64,7 +67,7 @@ Each is scoped to answer its question. Do not merge them.
 | 3 | Write-back + `treeDigest` + `check` **(done)** | Is an attestation worth anything? | 4 |
 | 4 | Fork detection (`basedOn`) **(done)** | Is concurrent divergence visible? | 5 |
 | 5 | `sandbox` record, ONE backend | Does the record shape describe a real jail? | — |
-| 6 | A second backend | What breaks when the guarantee stops being uniform? | — |
+| 6 | A second backend **(done)** | What breaks when the guarantee stops being uniform? | — |
 
 **Phases 0-5 need no new isolation mechanism.** Every model stress worth finding is reachable with
 the Deno sandbox that already exists. Multi-language execution adds a large security surface and NO
@@ -168,7 +171,7 @@ something materialising can fix. The contract asserts it in both directions so n
 passing case as a guarantee.
 
 *Wired into the chat*, so it is drivable by hand rather than only by the contract: `save_workspace`
-stores a tree, `run_code {workspace}` materialises it and runs the program INSIDE it (cwd = the
+stores a tree, `run_javascript {workspace}` materialises it and runs the program INSIDE it (cwd = the
 tree, so relative paths resolve like a checkout), the manifest becomes a parent of the result, and
 the directory is discarded. Two things the wiring taught: the program has no way to learn a temp
 path, so running in the tree is the only workable answer; and the materialised root must live
@@ -196,7 +199,7 @@ refused, and `materialize` returns the digest it VERIFIED rather than the one it
 now carries `{workspace, treeDigest}`, so a verdict is an attestation of a reproducible input rather
 than a note about an event.
 
-*Write-back is opt-in and captures only the difference.* `run_code {workspace, write: true}` grants
+*Write-back is opt-in and captures only the difference.* `run_javascript {workspace, write: true}` grants
 the sandbox `--allow-write` on that tree and nothing else; without it a write fails `NotCapable`, so
 "read-only" stays enforced rather than promised. After the run, `captureWorkspace` hashes the tree,
 reuses the artifact for anything unchanged, stores what changed, and `commitWorkspace` writes a
@@ -255,6 +258,82 @@ with nothing new to get wrong.
 ### Phase 6: a second backend
 
 Where fail-open becomes real. Read [design-execution.md](design-execution.md) again before starting.
+
+**Done.** A bubblewrap backend (`runBwrap`, `bwrapSandbox`) running python beside the Deno jail,
+with the probe made backend-aware so it tests each in the language that jail actually runs.
+
+*The answer to "what breaks":* the guarantee stops being uniform, and the record is what keeps that
+visible. Both jails claim `network: false` and they differ on the axes a latency table hides —
+`readonlyPaths` is empty for Deno and includes `/usr` for bwrap (an interpreter has to come from
+somewhere), and `processes` is false for Deno and TRUE for bwrap, because a namespace jail does not
+stop fork/exec the way a permission model does. "Which of these can reach a filesystem" is a query
+now, not tribal knowledge.
+
+*The probe earned itself twice, immediately.*
+
+It caught a lie in my own spec on the first run: `bwrapSandbox` claimed `writablePaths: []`, and
+bwrap's root is a tmpfs, so a program CAN write. Nothing escapes and nothing persists, but the claim
+was false, and it is now declared (`["/", "/tmp"]`) rather than hidden. A record is only worth
+something if it says what the jail GOT.
+
+And it catches the fail-open case directly, which is the reason this phase was flagged as different.
+Verified outside the code first: a bwrap jail with `--unshare-all` refuses a socket, and the same
+jail without it connects. So the probe builds a deliberately weakened jail, serves it under a spec
+still claiming `network: false`, and reports `["network"]` with what actually happened. Under Deno
+that class of bug cannot exist, because "no network" is the ABSENCE of a flag; under bubblewrap it is
+the PRESENCE of one, and a structured claim nobody tested is more convincing than prose and no more
+true.
+
+### Phase 7: selection, by capability name
+
+**Done.** `run_code` became `run_javascript`, and `run_python` joined it as a `capability` like any
+other, served by the same worker.
+
+*The open question answered itself once a real second language was in the chat, and it answered
+NEITHER option.* Both candidates assumed the caller picks a SANDBOX: a router that reads requirements
+and picks one, or an agent naming one directly. Both are wrong, and for the same reason. A sandbox is
+a deployment detail (which jail, which backend, which host had `bwrap` installed), and a caller that
+names one is binding to something it cannot know. What a caller knows is the LANGUAGE, because it
+wrote the program.
+
+So the tool name carries it, and three things follow that neither candidate gave:
+
+- an unavailable language is UNDISCOVERABLE rather than a runtime error, since `run_python` is
+  published only where the bwrap probe passed. A `requires: {language}` argument is expressible
+  everywhere and fails at execution, after the model committed a turn to it.
+- nothing falls back, because there is no request to satisfy. A router that cannot honour
+  `network: false` must fail or substitute, and substituting means running somewhere weaker than
+  asked.
+- discovery is the path that already exists. The capability list answers "what can this space run";
+  `space_query {kind: sandbox}` answers "under what guarantees".
+
+*The `llm_call` tier precedent does not transfer,* which is the part worth keeping. A tier is a
+JUDGEMENT about a turn, so it is worth delegating to a worker that can read the turn. A language is
+a fact the caller already holds. A router still earns its place for a caller stating REQUIREMENTS
+rather than a name (subsumption is not expressible as a pattern, so a worker must match); nobody
+does yet.
+
+*The registry was missing its default entry, and only a cross-check found it.* The Deno jail was
+verified at boot and never DECLARED, so `check` records naming `sandbox: "deno"` pointed at nothing
+and "which of my sandboxes has a filesystem" silently omitted the one every space has. The probe
+could not catch this: it tests whether a declaration is true, not whether one exists. What caught it
+was asserting both jails are declared AND that they disagree, which is the assertion worth writing,
+since a registry with one entry looks healthy.
+
+*Naming the language in the tool is only half the mechanism; the other half is the DESCRIPTIONS,
+and it was missed.* With both runners advertised, asked for "python code finding the first 10
+primes", the model called `run_javascript` with a Python program twice and then tried
+`os.system('python3 …')`. `run_python` named its sibling and `run_javascript` did not, which is the
+exact asymmetry that made `run_javascript` beat `save_content` a milestone earlier: an
+unconditional claim beats a conditional one, and a one-way cross-reference is not a boundary. The
+cross-reference has to be built per boot, too, since naming a tool this host does not serve is
+unreachable advice.
+
+*One bug, and it is the shape to expect from a rename.* The dispatch tested `b.tool !==
+"run_javascript"` to decide "this is a saved procedure", so every Python call went down the
+procedure path and came back as "no procedure named run_python". A `BUILTIN_RUNNERS` set replaces
+the single-name comparison. Any check written against ONE member of a set breaks the moment the set
+grows, and a rename is exactly when it grows.
 
 ## Open, and better decided with Phase 1 evidence
 

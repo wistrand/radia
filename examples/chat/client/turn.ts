@@ -241,7 +241,7 @@ async function awaitToolResult(
 // Each worker publishes what it serves as a `capability` record. The chat keeps a live set by
 // WATCHING those records: a new worker's capability streams in and the tool is available on the
 // next turn, with no code change here and no per-turn re-query. The chat never learns that `calc` or
-// `run_code` exist; it learns that whatever is advertised exists, and dispatches by content.
+// `run_javascript` exist; it learns that whatever is advertised exists, and dispatches by content.
 
 interface ProcedureBody {
   name: string;

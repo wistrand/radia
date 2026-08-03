@@ -30,14 +30,14 @@ server-computed") and [design-data-model.md](design-data-model.md).
 
 ## The measurement
 
-One `run_code` in a conversation, and the classification never comes back down:
+One `run_javascript` in a conversation, and the classification never comes back down:
 
 ```
 conversation    taint=false
 user msg        taint=false
 llm_call        taint=false
 tool_call       taint=false
-tool_result     taint=true     <- one run_code
+tool_result     taint=true     <- one run_javascript
 assistant msg   taint=true     <- quotes the result, so it is a data parent
 next llm_call   taint=true     <- takes the thread
 ```

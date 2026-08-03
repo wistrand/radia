@@ -2,14 +2,14 @@
 //
 //   deno run -A examples/chat/smoke-save.ts
 //
-// `save_content` takes text the model WROTE. `run_code` + `save_as` takes bytes a program COMPUTED.
+// `save_content` takes text the model WROTE. `run_javascript` + `save_as` takes bytes a program COMPUTED.
 // Both end in the same place (an `artifact` record + blob), so nothing fails when the wrong one is
 // picked; it just costs the content twice and buries an authored document inside a program that
 // only echoes it.
 //
 // That is exactly what happened. Asked to "create a web page with a js clock", the assistant wrote
 // the HTML as a JS string literal, console.log'd it, and stored stdout. The cause was in the
-// descriptions, which is where a tool's usage lives in this app: `run_code` claimed "that is how
+// descriptions, which is where a tool's usage lives in this app: `run_javascript` claimed "that is how
 // you save a file (SVG, JSON, CSV, Markdown, code) for the user" with no condition and no mention
 // of `save_content`, while `save_content` deferred politely in the other direction and gated its
 // own trigger on the user saying "save" (which "create a web page" does not).
@@ -60,7 +60,7 @@ function check(name: string, ok: boolean, detail = "") {
 // ── the descriptions, read the way the assistant reads them ──────────────────────────────────────
 // Not imported as constants: published as `capability` records and queried back, because that is
 // the path the guidance actually travels. A description fixed in source but never republished would
-// pass an import-based test while the running fleet still advertised the old text. So `run_code`'s
+// pass an import-based test while the running fleet still advertised the old text. So `run_javascript`'s
 // comes from the exec-worker PROCESS, launched here exactly as the chat launches it.
 for (const def of SAVE_SCHEMAS) await publishCapability(admin, def);
 const tokens = await bootstrap(admin);
@@ -82,7 +82,7 @@ const worker = new Deno.Command(Deno.execPath(), {
 }).spawn();
 // It advertises on startup; wait for the record rather than guessing at a sleep.
 for (let i = 0; i < 100; i++) {
-  if ((await admin.query({ kind: "capability", match: { tool: "run_code" } }, 1)).length > 0) break;
+  if ((await admin.query({ kind: "capability", match: { tool: "run_javascript" } }, 1)).length > 0) break;
   await new Promise((r) => setTimeout(r, 200));
 }
 
@@ -91,20 +91,23 @@ const caps = new Map(
     .map((r) => r.body as { tool: string; def: ToolDef })
     .map((b) => [b.tool, b.def.function.description ?? ""]),
 );
-const runCode = caps.get("run_code") ?? "";
+const runCode = caps.get("run_javascript") ?? "";
 const saveContent = caps.get("save_content") ?? "";
 
 check("both tools are advertised as capability records", runCode.length > 0 && saveContent.length > 0);
 
 // The asymmetry that caused the bug: only one of the two knew the other existed, so the one making
 // the unconditional claim won. Each must now name the other.
-check("run_code names save_content", /save_content/.test(runCode));
-check("save_content names run_code", /run_code/.test(saveContent));
+check("run_javascript names save_content", /save_content/.test(runCode));
+// The counterpart reference stays GENERIC ("a code runner"), because there are two of them now and
+// only one is advertised on a host without bubblewrap. A description naming a tool that this space
+// does not serve is the same defect as one naming no tool at all.
+check("save_content names the code runner", /code runner/.test(saveContent));
 
 // run_code must no longer claim the whole job. The exact sentence is gone; what replaces it has to
 // carry a CONDITION, because an unconditional claim beats a conditional one when a model compares.
 check(
-  "run_code no longer claims to be how you save a file",
+  "run_javascript no longer claims to be how you save a file",
   !/that is how you\s+save a file/i.test(runCode),
 );
 check(
@@ -129,7 +132,7 @@ check(
 // The specific shape the model produced. Naming it is what makes the guidance actionable: a model
 // about to do this reads a description that describes what it is about to do.
 check(
-  "run_code warns against printing authored content back through it",
+  "run_javascript warns against printing authored content back through it",
   /roundtrip|twice/i.test(runCode),
 );
 
@@ -145,8 +148,8 @@ check("save_content lists HTML among what it stores", /HTML/.test(saveContent));
 //
 // The rule the three now state consistently:
 //   document for the user      -> save_content
-//   code, one file or twenty   -> save_workspace, then run_code {workspace}
-//   throwaway calculation      -> run_code {code}, keep nothing
+//   code, one file or twenty   -> save_workspace, then run_javascript {workspace}
+//   throwaway calculation      -> run_javascript {code}, keep nothing
 for (const def of WORKSPACE_SCHEMAS) await publishCapability(admin, def);
 const desc = new Map(
   (await admin.queryAll({ kind: "capability" }))
@@ -154,7 +157,7 @@ const desc = new Map(
     .map((b) => [b.tool, b.def.function.description ?? ""]),
 );
 const saveWs = desc.get("save_workspace") ?? "";
-const runCodeNow = desc.get("run_code") ?? "";
+const runCodeNow = desc.get("run_javascript") ?? "";
 const saveNow = desc.get("save_content") ?? "";
 
 check("save_workspace is advertised", saveWs.length > 0);
@@ -163,7 +166,13 @@ check("…and sends a program to save_workspace instead", /save_workspace/.test(
 check("…saying WHY, since a model needs a reason and not an instruction", /can be RUN|only bytes/.test(saveNow));
 check("save_workspace claims code whatever its size", /one file or twenty|single file/.test(saveWs));
 check("…and names the one thing that is NOT a workspace", /throwaway/.test(saveWs));
-check("run_code distinguishes its two shapes", /THROWAWAY/.test(runCodeNow) && /workspace/.test(runCodeNow));
+check("run_javascript distinguishes its two shapes", /THROWAWAY/.test(runCodeNow) && /workspace/.test(runCodeNow));
+
+// A retired tool name in a live description is unreachable advice: the model calls it and gets
+// "unknown tool". `run_code` became `run_javascript` when a second language arrived, and the names
+// survived in six descriptions the rename did not touch, because nothing compiled against them.
+const stale = [...desc.entries()].filter(([, d]) => /\brun_code\b/.test(d)).map(([t]) => t);
+check(`no description names the retired run_code${stale.length ? ": " + stale.join(", ") : ""}`, stale.length === 0);
 check(
   "…and does not still claim bare code is for generating files",
   !/generating file content/i.test(runCodeNow),

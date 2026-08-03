@@ -72,7 +72,7 @@ const worker = new Deno.Command(Deno.execPath(), {
   stdin: "null",
 }).spawn();
 for (let i = 0; i < 100; i++) {
-  if ((await admin.query({ kind: "capability", match: { tool: "run_code" } }, 1)).length > 0) break;
+  if ((await admin.query({ kind: "capability", match: { tool: "run_javascript" } }, 1)).length > 0) break;
   await new Promise((r) => setTimeout(r, 200));
 }
 
@@ -84,7 +84,7 @@ async function attempt(
   const { id } = await admin.put({
     kind: "tool_call",
     body: {
-      tool: "run_code",
+      tool: "run_javascript",
       args: { code, ...(opts.expect ? { expect: opts.expect } : {}) },
       conversationId: conv,
       owner: OWNER,
@@ -126,7 +126,7 @@ check("lineage from the last attempt reaches the first", ids.includes(a1.id) && 
 check("…and the conversation, so the chain is anchored", ids.includes(conv));
 
 const chain = await admin.query(
-  { kind: "tool_call", match: { conversationId: conv, tool: "run_code" }, orderBy: [{ path: "attempt", dir: "asc" }] },
+  { kind: "tool_call", match: { conversationId: conv, tool: "run_javascript" }, orderBy: [{ path: "attempt", dir: "asc" }] },
   50,
 );
 check("the chain reads in attempt order", chain.map((r) => (r.body as { attempt: number }).attempt).join(",") === "1,2,3");

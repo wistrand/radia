@@ -4,11 +4,16 @@ Why the language question is really an isolation question, how a space gains a l
 stops being true when it does. Nothing here is built beyond the JS runner that exists today
 (`examples/chat/workers/exec.ts` dispatches; `extensions/ts/sandbox.ts` is the jail).
 
-> **Status: the shape is BUILT for one backend** (Phase 5 of
-> [plan-workspaces.md](plan-workspaces.md)): `SandboxSpec` and `probeSandbox` in
-> `extensions/ts/sandbox.ts`, the registry in `extensions/ts/sandbox-registry.ts`, with the operator
-> declaring and the worker refusing to serve a jail whose claims do not hold. A SECOND backend,
-> where fail-open becomes real, is not built, and neither are the open questions at the end. Read [design-workspaces.md](design-workspaces.md) alongside this: a
+> **Status: BUILT for TWO backends** (Deno permissions and bubblewrap), with the operator declaring,
+> the worker refusing to serve a jail whose claims do not hold, and the probe testing each backend
+> in the language that jail actually runs. `SandboxSpec` and `probeSandbox` are in
+> `extensions/ts/sandbox.ts`, the registry in `extensions/ts/sandbox-registry.ts`.
+>
+> SELECTION is built, and NOT the way this document proposed. A language is a CAPABILITY NAME
+> (`run_javascript`, `run_python`), published only where its jail probes clean; there is no router,
+> no `requires` argument, and no `sandbox` field on a `tool_call`. See "Selection: the capability
+> name is the answer" below. What follows was written before any of this shipped; the marked items
+> are done. Read [design-workspaces.md](design-workspaces.md) alongside this: a
 > multi-file working tree and a second language interact, and the interaction is not small.
 
 ## Contents
@@ -25,7 +30,7 @@ stops being true when it does. Nothing here is built beyond the JS runner that e
 
 ## The actual constraint
 
-`run_code` looks like a JavaScript feature. It is not. **Deno's permission flags ARE the sandbox**:
+`run_javascript` looks like a JavaScript feature. It is not. **Deno's permission flags ARE the sandbox**:
 the child gets `--no-prompt --no-remote --ext=js` and zero permissions, so no network, no writes, no
 environment and no subprocesses is a property of how the process was started, not a convention the
 program is asked to respect. Nothing in that mechanism generalises. Every other language needs a
@@ -74,7 +79,36 @@ successor, discovered by query. What changes by making it data rather than a wor
 - **Discovery is uniform.** The chat already learns its tools from `capability` records and its
   models from `model` records. Environments were the one thing it would have had to be told.
 
-### Routing: the precedent already exists
+### Selection: the capability name is the answer
+
+**BUILT, and it superseded the router below.** The reasoning is kept because the router argument is
+still correct for the case it was written about, and the reason it does not apply here is the point.
+
+A language is a tool name. `run_javascript` and `run_python` are two `capability` records served by
+the same worker, each published only if the jail behind it passed its probe at boot.
+
+Three properties fall out, and each one was a defect in the router shape:
+
+- **An unavailable language is UNDISCOVERABLE, not a runtime error.** A space with no `bwrap` never
+  publishes `run_python`, so the model never picks it. With a `requires: {language}` argument the
+  call is expressible everywhere and fails at execution, which is a worse failure: the model has
+  already committed a turn to it.
+- **Nothing has to fall back.** A router that cannot satisfy a request must either fail or pick
+  something else, and "something else" means running Python somewhere weaker than the caller asked
+  for. There is no fallback path here because there is no request to satisfy.
+- **It is the discovery path that already exists.** The capability list answers "what can this space
+  run" with no second mechanism. `space_query {kind: sandbox}` answers "under what guarantees".
+
+**Why the `llm_call` tier precedent does not transfer.** Tier selection is a JUDGEMENT about a turn
+(is this hard enough to need the expensive model), so it is a decision worth delegating to a worker
+that can read the turn. Language is not a judgement: the model wrote the program, so it already
+knows which language it wrote. A router would be classifying a fact the caller holds.
+
+The router earns its place when a caller states REQUIREMENTS rather than a name (`network: false`,
+`memory >= 2G`, "any Python that cannot see the filesystem"), because subsumption is not expressible
+as a pattern and a worker has to do the matching. That case is real and unbuilt. It is not this one.
+
+### Routing: the precedent already exists (superseded, kept for the argument)
 
 `workers/router.ts` claims UNTIERED `llm_call`s (`{tier: {$exists: false}}`), classifies the turn,
 and re-dispatches a tiered one that an inference-worker serves. Model selection is delegated to the
@@ -83,7 +117,7 @@ substrate rather than decided in the client.
 Execution takes the same shape. A call arrives unassigned:
 
 ```
-tool_call{ tool: "run_code", requires: {language: "python", network: false} }
+tool_call{ tool: "run_javascript", requires: {language: "python", network: false} }
 ```
 
 A sandbox-router claims `{sandbox: {$exists: false}}`, reads the `sandbox` registry, picks one that
@@ -235,7 +269,7 @@ v1**: a `sandbox` record nobody verifies is decoration, in exactly the way a `tr
 recomputes is (see [design-workspaces.md](design-workspaces.md)).
 
 The general rule: **a claim a model reads is only as good as the enforcement behind it.** The
-`run_code`/`save_content` overlap in [gotchas.md](gotchas.md) was the same failure in the tool
+`run_javascript`/`save_content` overlap in [gotchas.md](gotchas.md) was the same failure in the tool
 layer, where the fix could only be wording because nothing could enforce it. Here something can, so
 wording is not the fix.
 
@@ -278,7 +312,7 @@ translate forever.
 
 ## Where this collides with workspaces
 
-Single-file `run_code` takes source directly, which is why it needs no build concept. A multi-file
+Single-file `run_javascript` takes source directly, which is why it needs no build concept. A multi-file
 workspace needs an **entrypoint declaration**: how this project is run, which is per-language and
 per-project. That is `{runner, entrypoint, args}` in the workspace manifest, and it is new design
 rather than a field.
@@ -304,7 +338,10 @@ would contradict the arguments that motivate them.
 
 ## Open questions
 
-1. **Which backend, given that latency and filesystem surface trade against each other?** Not
+1. **BUILT: both.** Deno for JS, bubblewrap for anything else, and the trade is recorded in each
+   spec rather than argued — bwrap sees `/usr` where Deno sees nothing, and permits fork/exec where
+   Deno does not. Open now only as a DEPLOYMENT choice.
+   Which backend, given that latency and filesystem surface trade against each other? Not
    "bwrap or container" as a speed question. bwrap over the host `/usr` is fast and exposes three
    orders of magnitude more filesystem than the Deno jail beside it; a purpose-built image is small
    and 25x slower; a minimal rootfs per language is bwrap-fast with image-sized surface, and is the
@@ -312,10 +349,11 @@ would contradict the arguments that motivate them.
 2. **Conversation-scoped or owner-scoped grants on `tool_call{sandbox}`?** Same open question as
    workspaces, and it should get the same answer, since a workspace and the environment that runs it
    are two halves of one permission.
-3. **Does the sandbox-router exist from the start, or does an agent name a sandbox directly?**
-   Direct naming is less machinery and makes the agent choose an environment it may not understand.
-   The router is the `llm_call` tier precedent and the same argument applies: selection is a decision
-   to delegate, not one to encode in a client.
+3. **BUILT: neither.** The question assumed the choice was WHICH SANDBOX, and a caller that names
+   a sandbox is naming a deployment detail it should not know. A caller names a LANGUAGE, by naming
+   the tool, and the worker owns which jail serves it. A router is still the right answer for a
+   caller that states requirements instead of a name; nobody does yet. See "Selection: the
+   capability name is the answer".
 4. **How much environment does a `check` carry?** A reference to the sandbox record is the narrow
    version. The broad version pins the interpreter version and the dependency set too, which is what
    [research-applications.md](research-applications.md) §5 actually wants, and which only becomes
