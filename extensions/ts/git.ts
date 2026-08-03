@@ -30,6 +30,7 @@
 // Packfile READING is where git's real complexity lives (delta chains, negotiation) and export
 // never touches it.
 
+import { RadiaClientError } from "../../sdk/ts/client.ts";
 import type { RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
 import { sha256Hex, validatePath, type WorkspaceManifest } from "./workspace.ts";
 
@@ -233,6 +234,8 @@ export interface ExportedVersion {
   tree: string;
   files: number;
   retired: boolean;
+  /** Paths omitted from this commit because their payload was erased. Empty unless `partial`. */
+  erased: string[];
 }
 
 export interface GitExportResult {
@@ -244,6 +247,11 @@ export interface GitExportResult {
   versions: ExportedVersion[];
   objects: number;
   bytes: number;
+  /** True when at least one entry was omitted. The repository is then a SUBSET of the workspace,
+   *  and every commit that lost something says so in its own trailers. */
+  partial: boolean;
+  /** Every omission, so a caller can report what the reader will not find. */
+  erased: { version: string; path: string; artifactId: string }[];
 }
 
 export interface GitExportOptions {
@@ -253,6 +261,24 @@ export interface GitExportOptions {
   /** Cap on how many pages of `workspace` records to read. A partial history is refused, not
    *  truncated: see the note in `collectVersions`. */
   maxPages?: number;
+  /**
+   * Export what survives when a payload has been ERASED, instead of refusing.
+   *
+   * The default refuses because the obvious repair is a lie: a placeholder blob would make the tree
+   * hash to something the manifest never described, and `git log` would present invented bytes as
+   * the audited ones. Omitting the entry is not that. A tree that does not contain `secret.txt`
+   * makes no claim about `secret.txt`; it is simply a different tree, and the only dishonesty left
+   * is silence about the difference. So every commit that lost an entry NAMES it in its own
+   * trailers, the repository's `description` carries the list, and the result reports it.
+   *
+   * ERASURE ONLY. A 410 means the bytes were deliberately destroyed and are not coming back. An
+   * integrity failure (a manifest claiming a digest its artifact does not hash to) stays fatal
+   * whatever this is set to: that is not missing content, it is content disagreeing with its claim,
+   * and skipping it quietly is how a forged tree becomes an export nobody questions. A permission
+   * error stays fatal for the same reason — an export you are not allowed to read in full must not
+   * come back looking complete.
+   */
+  partial?: boolean;
 }
 
 /**
@@ -284,6 +310,10 @@ export async function exportWorkspaceGit(
   // version 2 names the SAME artifact with a different claimed digest, the cache hits, and the check
   // never runs. A per-fetch check is not a per-entry check, and it is the entries that are claims.
   const verified = new Map<string, { digest: string; blobId: string }>();
+  // Asked once. The same erased artifact appears in every version that carried the file, and
+  // re-requesting it per version is N round trips to be told the same 410.
+  const erasedArtifacts = new Map<string, string>();
+  const erased: { version: string; path: string; artifactId: string }[] = [];
   const commitByRecord = new Map<string, string>();
   const manifestByRecord = new Map<string, WorkspaceManifest>();
   const exported: ExportedVersion[] = [];
@@ -291,8 +321,14 @@ export async function exportWorkspaceGit(
   for (const version of versions) {
     const manifest = version.body as unknown as WorkspaceManifest;
     const entries: GitBlobEntry[] = [];
+    const versionErased: string[] = [];
 
     for (const file of manifest.files ?? []) {
+      if (erasedArtifacts.has(file.artifactId)) {
+        erased.push({ version: version.id, path: file.path, artifactId: file.artifactId });
+        versionErased.push(file.path);
+        continue;
+      }
       const seen = verified.get(file.artifactId);
       if (seen) {
         if (seen.digest !== file.digest) {
@@ -314,10 +350,22 @@ export async function exportWorkspaceGit(
         try {
           bytes = await client.getArtifact(file.artifactId);
         } catch (e) {
+          // 410 Gone is the runtime saying "this WAS here and was destroyed" (`src/server/handlers/
+          // artifacts.ts`), which is exactly and only what `partial` is allowed to skip. Anything
+          // else — 403, 404, a dead connection — is a different problem wearing the same shape, and
+          // treating it as an erasure would hand back a repository that looks complete.
+          const gone = e instanceof RadiaClientError && e.status === 410;
+          if (gone && opts.partial) {
+            erasedArtifacts.set(file.artifactId, file.path);
+            erased.push({ version: version.id, path: file.path, artifactId: file.artifactId });
+            versionErased.push(file.path);
+            continue;
+          }
           throw new Error(
             `workspace ${JSON.stringify(name)} version ${version.id} cannot be exported: the payload for ` +
               `${JSON.stringify(file.path)} (artifact ${file.artifactId}) is unreadable, which is what a shredded ` +
-              `artifact looks like. A git export cannot represent an erased file: ${e instanceof Error ? e.message : e}`,
+              `artifact looks like. A git export cannot represent an erased file: ${e instanceof Error ? e.message : e}` +
+              (gone ? ". Pass partial to export everything that survives, with the gap recorded in each commit." : ""),
           );
         }
         // The same verification `materialize` does, for the same reason: an artifact's digest is
@@ -351,7 +399,7 @@ export async function exportWorkspaceGit(
       parents: parent ? [parent] : [],
       author: identity,
       committer: identity,
-      message: commitMessage(manifest, version, entries.length, previousManifest),
+      message: commitMessage(manifest, version, entries.length, previousManifest, versionErased),
     });
     objects.set(commit.id, commit);
     commitByRecord.set(version.id, commit.id);
@@ -363,6 +411,7 @@ export async function exportWorkspaceGit(
       tree: root,
       files: entries.length,
       retired: manifest.retired === true,
+      erased: versionErased,
     });
   }
 
@@ -382,8 +431,17 @@ export async function exportWorkspaceGit(
     branches[branch] = commitByRecord.get(head.id)!;
   }
 
-  const bytes = await writeBareRepo(dir, [...objects.values()], branches, mainBranch);
-  return { dir, branches, head: mainBranch, versions: exported, objects: objects.size, bytes };
+  const bytes = await writeBareRepo(dir, [...objects.values()], branches, mainBranch, erased);
+  return {
+    dir,
+    branches,
+    head: mainBranch,
+    versions: exported,
+    objects: objects.size,
+    bytes,
+    partial: erased.length > 0,
+    erased,
+  };
 }
 
 /** The commit message: a summary line, then trailers that lead back to the records.
