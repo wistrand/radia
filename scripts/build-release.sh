@@ -74,13 +74,32 @@ JSON
   OPTIONAL_DEPS="$OPTIONAL_DEPS\n    \"@radia/radia-$os-$arch\": \"$VERSION\","
 done
 
+# The SDK and the EXTENSIONS ship in the same package as the launcher: an agent author who has
+# `radia` has the client and the conventions built on it. They are source, not a build artifact,
+# because the whole distribution promise is that nothing compiles at install time.
+#
+# Note the versioning asymmetry, which is deliberate: `sdk/` mirrors the FROZEN /v0 contract, while
+# `extensions/` are conventions that evolve. Anything normative inside an extension (the tree digest)
+# carries its own version tag so a change is detectable rather than silent. See extensions/README.md.
+mkdir -p "$OUT/npm/radia/sdk" "$OUT/npm/radia/extensions"
+cp sdk/ts/*.ts "$OUT/npm/radia/sdk/"
+cp -r extensions/ts/*.ts "$OUT/npm/radia/extensions/"
+cp extensions/README.md "$OUT/npm/radia/extensions/"
+# The SDK import inside an extension is `../../sdk/ts/client.ts` in the repo and `../sdk/` once
+# staged, so rewrite it rather than shipping a path that resolves to nothing.
+sed -i.bak 's|\.\./\.\./sdk/ts/|../sdk/|g' "$OUT/npm/radia/extensions/"*.ts && rm -f "$OUT/npm/radia/extensions/"*.bak
+
 cat > "$OUT/npm/radia/package.json" <<JSON
 {
   "name": "radia",
   "version": "$VERSION",
   "description": "Content-routed coordination runtime for LLM agents",
   "bin": { "radia": "bin/radia.js" },
-  "files": ["bin"],
+  "files": ["bin", "sdk", "extensions"],
+  "exports": {
+    ".": "./sdk/client.ts",
+    "./extensions/*": "./extensions/*.ts"
+  },
   "optionalDependencies": {$(printf "%b" "$OPTIONAL_DEPS" | sed '$ s/,$//')
   }
 }

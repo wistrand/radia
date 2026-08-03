@@ -5,7 +5,13 @@ The two prerequisites are: attempts link (`attempt` / `retryOf` on `tool_call`),
 judged against a stated expectation (`check` records). Both shipped; see
 [../examples/chat/README.md](../examples/chat/README.md).
 
-> **Status: design, unscheduled.** Recorded in
+> **Status: the manifest half is BUILT** (`extensions/ts/workspace.ts`, Phase 1 of
+> [plan-workspaces.md](plan-workspaces.md)): the `workspace` kind, per-file artifacts, `treeDigest`,
+> `basedOn`, write-time path validation, and content-keyed writes. Measured, a manifest caps at
+> ~6 300 files against the 1 MiB record limit, which SETTLES the dependency question below in favour
+> of an artifact beside the manifest. Materialisation, write-back and git export are unbuilt.
+>
+> Recorded in
 > [plan-milestones.md](plan-milestones.md) as a later goal. The decisions below are made, so the
 > open work is implementation and the four questions at the end.
 >

@@ -25,6 +25,9 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
       { path: "digest", type: "keyword" },
       { path: "mediaType", type: "keyword" },
       { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" },
+      // Which working tree a file belongs to. Needed to ANSWER "erase this workspace's payloads":
+      // erasure is per artifact, so the set has to be findable without walking every manifest.
+      { path: "workspace", type: "keyword" },
     ],
     claimable: false,
   });
@@ -87,6 +90,24 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
       { path: "retryOf", type: "keyword" },
     ],
     sortablePaths: ["attempt"],
+  });
+  // A `workspace` = one version of a multi-file working tree: a manifest of {path, mode, digest,
+  // artifactId} with the bytes stored as artifacts. Latest-wins by name like `procedure`, so a new
+  // version is a successor and every earlier one stays readable.
+  //
+  // `treeDigest` is indexed because it is the tree's IDENTITY: it is how a re-written identical
+  // tree is recognised (and skipped), and eventually what a `check` attaches to. `basedOn` is
+  // indexed so a fork is a query: two manifests naming one predecessor diverged.
+  await client.registerKind({
+    kind: "workspace",
+    indexedPaths: [
+      { path: "name", type: "keyword" },
+      { path: "owner", type: "keyword" },
+      { path: "conversationId", type: "keyword" },
+      { path: "treeDigest", type: "keyword" },
+      { path: "basedOn", type: "keyword" },
+    ],
+    claimable: false,
   });
   // A `check` = whether a run did what was CLAIMED of it, decided by the worker that ran it.
   //

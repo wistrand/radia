@@ -84,6 +84,7 @@ deno task chat         # a CLI LLM chatbot (needs OPENROUTER_API_KEY): thinking,
                        # and sandboxed code execution are all records; watch the Feed tab
 deno task stress       # fill a space with waves of activity to watch in the Space tab
 deno task conformance  # the port contract suites (storage adapters + the blob store)
+deno task extensions   # the extension contract (workspace manifests, tree digests, path safety)
 deno task bench        # throughput, latency percentiles, scaling curves; see bench/README.md
 ```
 
@@ -213,6 +214,11 @@ the tool list.
 and pip packages are thin launchers that exec it, so once published `npx radia dev` and
 `pipx run radia dev` will need neither Deno nor a compile step. Nothing is on npm or PyPI yet, and
 neither launcher has been run end to end, so treat both as untested.
+
+The npm package also carries the **TypeScript SDK** and the **extensions** as source, so an agent
+author who has `radia` has the client and the conventions built on it with nothing to compile. The
+two are versioned differently on purpose: the SDK mirrors the frozen `/v0` contract, while an
+extension is a convention that evolves. See [extensions/README.md](extensions/README.md).
 
 ## How it works
 

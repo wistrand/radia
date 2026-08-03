@@ -4,7 +4,8 @@ Sequence and status. The reasoning lives in [design-workspaces.md](design-worksp
 working tree is, and the git relationship) and [design-execution.md](design-execution.md) (why the
 language question is an isolation question). Read those first; this file assumes them.
 
-> **Status: Phase 0 DONE.** Nothing else started.
+> **Status: Phases 0 and 1 DONE.** Phase 2 next, and it needs the taint decision, which
+> landed (see [design-taint.md](design-taint.md)).
 
 ## What this is for
 
@@ -59,7 +60,7 @@ Each is scoped to answer its question. Do not merge them.
 | # | Phase | Question it answers | Stress |
 |---|-------------------------------|-----------------------------------------------------|--------|
 | 0 | Record size limit **(done)** | Can a body still become an unerasable payload? | 1 |
-| 1 | Manifest, no execution | Does a churning tree-as-records hold up? | 1, 3 |
+| 1 | Manifest, no execution **(done)** | Does a churning tree-as-records hold up? | 1, 3 |
 | 2 | Materialise, read-only | Is checkout safe, and does taint survive a filesystem? | 2 |
 | 3 | Write-back + `treeDigest` + `check` | Is an attestation worth anything? | 4 |
 | 4 | Fork detection (`basedOn`) | Is concurrent divergence visible? | 5 |
@@ -94,9 +95,45 @@ enforcement.
 
 `workspace` kind, per-file artifacts, `treeDigest`, `basedOn`. No sandbox involvement.
 
-Deliverable is a `smoke-workspace.ts` that ASSERTS answers, not a feature: 5 000 files across 40
-successors, with "read this workspace" exact and bounded, "list all workspaces" complete or honestly
-incomplete, and the storage cost of a session stated as a number.
+Deliverable is a contract that ASSERTS answers, not a feature: churn across many successors, with
+"read this workspace" exact and bounded, "list all workspaces" complete or honestly incomplete, and
+the point where the record body limit bites stated as a number.
+
+**Done** (`extensions/ts/workspace.ts`, contract in `extensions/conformance/`). It began in
+`examples/chat/space/` and moved: a workspace is a convention more than one app wants and the
+runtime has no business knowing, which is the definition of an extension. The answers:
+
+*Stress 3, churn: the shape holds, and better than the stopping rule suggested.* Reading one
+workspace after 40 successors is **2.8 ms**, because it is `limit 1, dir:desc` on an indexed name,
+not a projection over history. Every version stays addressable, so nothing is lost. The expensive
+direction is LISTING, which pages to exhaustion and reports `complete: false` rather than a
+plausible prefix. So high-churn is fine here as long as reads are keyed; the rule's warning is about
+reads that treat a page as a population, and this shape does not have one on the hot path.
+
+*Stress 1, bodies: measured, and the limit binds where it should.*
+
+```
+  100 files   16 KiB      3 000 files  479 KiB
+1 000 files  158 KiB      6 000 files  959 KiB
+                         10 000 files  REFUSED (record_too_large)
+```
+
+A manifest caps at roughly **6 300 files**, which is the number this phase owed. That settles the
+open question below: a vendored dependency tree cannot live inline, so it must be an artifact
+beside the manifest. Phase 0's limit is what makes that a wall rather than a preference.
+
+*Storage per session, stated:* 40 attempts on a 2-file tree cost 40 manifests totalling **18.7 KiB**
+(478 bytes each) and 80 artifact records over **one** blob for the file that never changed. Churn
+costs what changed, not the tree. The manifests are the part that cannot be erased.
+
+*Not in the plan, but it belonged here:* path validation runs at WRITE, so an unsafe path never
+enters a manifest and Phase 2's materialise-side check is defence in depth rather than the only
+guard. The list is git's checkout history (`..`, absolute, `.git` in any case for CVE-2014-9390,
+trailing dot or space), not one rediscovered incident by incident.
+
+*Measured and fixed on the way:* sequential artifact writes cost ~1.8 ms each, so a 6 000-file tree
+took eleven seconds in round trips rather than bytes. Bounded concurrency of 16 brought it to 8.7 s;
+an unbounded fan-out over a large tree is a self-inflicted load test.
 
 ### Phase 2: materialise, read-only
 
@@ -122,6 +159,8 @@ still a record, so this is divergence, not loss.
 
 ### Phase 5: `sandbox` as a record, Deno only
 
+Lands in `extensions/`, beside the workspace convention, for the same reason it did.
+
 The record describes a jail that already exists, and the boot probe verifies it. Proves the shape
 with nothing new to get wrong.
 
@@ -131,10 +170,10 @@ Where fail-open becomes real. Read [design-execution.md](design-execution.md) ag
 
 ## Open, and better decided with Phase 1 evidence
 
-- **Does the dependency set live in the manifest or beside it?** The measurement says a body can
-  hold 20 000 entries, and the erasure argument says it should not: a vendored dependency set as its
-  own content-addressed ARTIFACT keeps the body small and bounded, dedupes across every workspace
-  sharing it, and can be erased. Leaning strongly that way; Phase 1 should size both.
+- **SETTLED by Phase 1: the dependency set lives BESIDE the manifest.** Not a preference any more:
+  the record limit refuses a manifest past ~6 300 entries, so a vendored tree cannot be inline even
+  if someone wanted it to. As its own content-addressed artifact it keeps the body bounded, dedupes
+  across every workspace sharing it, and can be erased.
 - **Conversation-scoped or owner-scoped?** Same question as the chat's session grants, and it should
   get the same answer. Whichever is chosen, exercise BOTH postures from day one: testing one half of
   a documented either/or is how two bugs shipped in the chat (see [gotchas.md](gotchas.md)).

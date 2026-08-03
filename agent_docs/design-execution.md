@@ -170,6 +170,15 @@ option in the table whose security model is *better* rather than merely equivale
 toolchain: a wasm build per language, and "run this Python script" means shipping a CPython wasm of
 roughly ten megabytes. Right direction, later.
 
+## Where this lands
+
+`extensions/`, beside the workspace convention, not `src/` and not one application. A `sandbox`
+record describes an execution environment: the runtime does not execute anything, so it has no
+business knowing what a jail is, and an environment is meaningless inside a single app. Both halves
+of the admission rule in [extensions/README.md](../extensions/README.md) are met, and the third
+applies too — a runner's declared guarantees are attestable, so the probe that verifies them is a
+contract other implementations must meet rather than one worker's private check.
+
 ## Proposed: one runner worker, many sandboxes
 
 A single runner worker that serves whatever `sandbox` records it is granted, rather than one worker

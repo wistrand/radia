@@ -24,7 +24,8 @@ credential they bootstrap with, so `demo` and `stress` need no extra step; the c
 runs as YOU, which is a credential only you can mint.
 
 Every example talks to the space over the public `/v0` API through the SDK in
-[`../sdk/ts`](../sdk/ts), never through a runtime internal. That is deliberate: they model what an
+[`../sdk/ts`](../sdk/ts) and the conventions in [`../extensions`](../extensions/README.md), never
+through a runtime internal. That is deliberate: they model what an
 external agent author writes, so anything they can do, your code can do too.
 
 Two narrow exceptions, both outside that path and worth naming so nobody widens them:

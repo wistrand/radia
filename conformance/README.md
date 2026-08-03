@@ -67,6 +67,12 @@ belongs: the shared run is for PORT contracts, so anything that has one implemen
 surface, the console, the defaults) or knows a specific dialect (the backfill, the planner) is a
 standalone `*.test.ts`. They still run under `deno task conformance`, which globs the directory.
 
+**What does NOT belong here: extension contracts.** `extensions/` holds conventions built on the
+substrate rather than parts of it, and `extensions/conformance/` (`deno task extensions`) is their
+tier. The split follows the dependency rule: everything in this directory may import `src/`, and
+nothing in an extension may. A test that spawns `radia dev` and drives it over `/v0` is an extension
+test even when it feels like a port test.
+
 Two of these test SOURCE TEXT rather than behavior, which is unusual enough to justify. The console
 is one file with no build step, so there is no module to import; `console.test.ts` lifts functions
 out of the page and evaluates them, and the extraction fails loudly if one is renamed, so the test

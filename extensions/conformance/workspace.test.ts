@@ -1,0 +1,264 @@
+// The workspace convention's contract: what any implementation must satisfy.
+//
+//   deno task extensions
+//
+// Two of these are NORMATIVE rather than convenient (see ../README.md). `treeDigestOf` is what a
+// `check` attests to, so a verdict computed by another language binding is comparable only if the
+// digest matches byte for byte. `validatePath` is a security boundary, and a rule that differs
+// between implementations is a hole rather than an inconsistency. Both are specified here: this
+// file is the contract, not a regression net for one implementation.
+//
+// The rest answers Phase 1 of agent_docs/plan-workspaces.md: does a churning tree-as-records hold
+// up, and where does the record body limit bite. No execution, no sandbox, no materialisation.
+
+import { assert, assertEquals } from "@std/assert";
+import { RadiaClient } from "../../sdk/ts/client.ts";
+import { operatorToken } from "../../examples/operator.ts";
+import {
+  listWorkspaces,
+  readWorkspace,
+  TREE_DIGEST_VERSION,
+  treeDigestOf,
+  validatePath,
+  type WorkspaceFile,
+  writeWorkspace,
+} from "../ts/workspace.ts";
+
+const PORT = 7815;
+const url = `http://127.0.0.1:${PORT}`;
+const OWNER = "human:alice";
+
+/** One space for the whole file: these are contract checks, not isolation checks, and a space per
+ *  test would spend more time booting than asserting. */
+async function withSpace<T>(fn: (c: RadiaClient) => Promise<T>): Promise<T> {
+  const space = new Deno.Command(Deno.execPath(), {
+    args: ["run", "-A", "src/main.ts", "dev", "--port", String(PORT), "--artifact-port", "0"],
+    stdout: "null",
+    stderr: "inherit",
+  }).spawn();
+  const probe = new RadiaClient(url);
+  for (let i = 0; i < 100; i++) {
+    try {
+      await probe.health();
+      break;
+    } catch {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+  const c = new RadiaClient(url, { token: operatorToken(url) });
+  await c.registerKind({
+    kind: "workspace",
+    indexedPaths: [
+      { path: "name", type: "keyword" },
+      { path: "owner", type: "keyword" },
+      { path: "conversationId", type: "keyword" },
+      { path: "treeDigest", type: "keyword" },
+      { path: "basedOn", type: "keyword" },
+    ],
+    claimable: false,
+  });
+  await c.registerKind({
+    kind: "artifact",
+    indexedPaths: [
+      { path: "digest", type: "keyword" },
+      { path: "mediaType", type: "keyword" },
+      { path: "owner", type: "keyword" },
+      { path: "conversationId", type: "keyword" },
+      { path: "workspace", type: "keyword" },
+    ],
+    claimable: false,
+  });
+  try {
+    return await fn(c);
+  } finally {
+    space.kill();
+    await space.status;
+  }
+}
+
+// ── NORMATIVE: the tree digest ───────────────────────────────────────────────────────────────────
+
+Deno.test("workspace: the tree digest is a fixed function of the tree, and carries its version", async () => {
+  const files: WorkspaceFile[] = [
+    { path: "src/a.ts", mode: "100644", digest: "a".repeat(64), artifactId: "x" },
+    { path: "src/b.ts", mode: "100644", digest: "b".repeat(64), artifactId: "y" },
+  ];
+  const d = await treeDigestOf(files);
+
+  // The VERSION is in the digest. Without it, a digest from a later algorithm is another 64 hex
+  // characters: indistinguishable from an older one and silently incomparable. `grantKey` needed
+  // exactly this prefix after a field rename, for exactly this reason.
+  assert(d.startsWith(`${TREE_DIGEST_VERSION}:`), `expected a version prefix, got ${d}`);
+  assertEquals(d.split(":")[1].length, 64);
+  assert(/^[0-9a-f]{64}$/.test(d.split(":")[1]), "lowercase hex, no padding");
+
+  // A property of the TREE, not of write order.
+  assertEquals(await treeDigestOf([files[1], files[0]]), d);
+
+  // Every input participates: path, mode and content each change it.
+  assert(await treeDigestOf([{ ...files[0], path: "src/c.ts" }, files[1]]) !== d, "path");
+  assert(await treeDigestOf([{ ...files[0], mode: "100755" }, files[1]]) !== d, "mode");
+  assert(await treeDigestOf([{ ...files[0], digest: "c".repeat(64) }, files[1]]) !== d, "content");
+
+  // The artifact id does NOT: the same bytes stored twice are two records and one tree.
+  assertEquals(await treeDigestOf([{ ...files[0], artifactId: "other" }, files[1]]), d);
+
+  // NUL-separated, so no field can forge a boundary: a path containing the separator between the
+  // other fields must not collide with a different tree.
+  const forged = await treeDigestOf([{ path: "src/a.ts\u0000100644", mode: "100644", digest: "a".repeat(64), artifactId: "x" }]);
+  const plain = await treeDigestOf([{ path: "src/a.ts", mode: "100644", digest: "a".repeat(64), artifactId: "x" }]);
+  assert(forged !== plain, "a path may not impersonate a field boundary");
+
+  // A KNOWN-ANSWER vector, computed rather than asserted from memory, so a second implementation
+  // has something to check itself against without running this one. Input: a single entry
+  // `a\0100644\0` + sixty-four zeros, sha256, prefixed with the version.
+  assertEquals(
+    await treeDigestOf([{ path: "a", mode: "100644", digest: "0".repeat(64), artifactId: "" }]),
+    "t1:a0054683443a3545bfc1aecb8d04b729deb3d2412bafb5ac7ecd83b274acc898",
+  );
+});
+
+// ── NORMATIVE: path safety ───────────────────────────────────────────────────────────────────────
+
+Deno.test("workspace: path validation is git's checkout list, not one rediscovered per incident", () => {
+  // Materialisation is the TRUSTED worker writing model-influenced paths outside any jail, so an
+  // unsafe path must never enter a manifest. Each entry names a real class of failure.
+  const refused: [string, string][] = [
+    ["/etc/passwd", "absolute"],
+    ["../escape", "traversal"],
+    ["src/../../out", "traversal mid-path"],
+    ["C:\\win", "windows drive"],
+    ["a\\b", "backslash separator"],
+    ["src//a.ts", "empty segment"],
+    ["src/a.ts ", "trailing space (some filesystems strip it, so two entries collide)"],
+    ["src/a.", "trailing dot (same)"],
+    [".git/config", "would collide with an exported repository"],
+    [".GIT/config", "case folding, CVE-2014-9390"],
+    ["src/.Git/x", "case folding, nested"],
+    ["", "empty"],
+    ["a\u0000b", "NUL"],
+    ["x".repeat(513), "unbounded length"],
+  ];
+  for (const [path, why] of refused) {
+    let ok = false;
+    try {
+      validatePath(path);
+      ok = true;
+    } catch { /* expected */ }
+    assert(!ok, `${JSON.stringify(path)} must be refused: ${why}`);
+  }
+  for (const path of ["a.ts", "src/a.ts", "a/b/c/d.txt", "src/.hidden", "with space/x.ts", "a.git"]) {
+    validatePath(path); // throws on failure
+  }
+});
+
+// ── the convention against a real space ──────────────────────────────────────────────────────────
+
+Deno.test("workspace: identical bytes share a blob, and re-writing a tree writes nothing", async () => {
+  await withSpace(async (c) => {
+    const a = await writeWorkspace(c, {
+      name: "ws",
+      owner: OWNER,
+      files: { "src/b.ts": "console.log(2)", "src/a.ts": "console.log(1)" },
+    });
+    const b = await writeWorkspace(c, {
+      name: "ws2",
+      owner: OWNER,
+      files: { "src/a.ts": "console.log(1)", "src/b.ts": "console.log(2)" },
+    });
+    assertEquals(a.treeDigest, b.treeDigest, "the same tree, whatever the write order");
+    assertEquals(a.files[0].path, "src/a.ts", "stored sorted, so a manifest reads the same way twice");
+
+    // One blob, two artifact records. This is what makes per-file erasure meaningful and keeps a
+    // shared dependency tree from costing its size once per workspace.
+    assertEquals(a.files[0].digest, b.files[0].digest);
+    assert(a.files[0].artifactId !== b.files[0].artifactId);
+
+    // A workspace churns per attempt, and unbounded growth is what makes a bounded read dangerous.
+    const again = await writeWorkspace(c, {
+      name: "ws",
+      owner: OWNER,
+      files: { "src/a.ts": "console.log(1)", "src/b.ts": "console.log(2)" },
+    });
+    assert(again.deduped && again.id === a.id, "an identical tree is not a new version");
+
+    // A tree with ONE bad path leaves no artifacts behind, because there will be no manifest to
+    // make them reachable.
+    let wrote = true;
+    try {
+      await writeWorkspace(c, { name: "evil", owner: OWNER, files: { "../out": "x" } });
+    } catch {
+      wrote = false;
+    }
+    assert(!wrote);
+    assertEquals(await readWorkspace(c, "evil"), null);
+  });
+});
+
+Deno.test("workspace: churn stays cheap to read, and listing is honest about completeness", async () => {
+  await withSpace(async (c) => {
+    const CHURN = 40;
+    let prev: string | undefined;
+    for (let i = 0; i < CHURN; i++) {
+      prev = (await writeWorkspace(c, {
+        name: "churn",
+        owner: OWNER,
+        files: { "src/main.ts": `export const attempt = ${i}\n`, "README.md": "stable\n" },
+        basedOn: prev,
+      })).id;
+    }
+
+    // The question CLAUDE.md's stopping rule asks. Reading one workspace is keyed and bounded, so
+    // depth does not matter; it is LISTING that has to page.
+    const t = performance.now();
+    const cur = await readWorkspace(c, "churn");
+    const readMs = performance.now() - t;
+    assert(readMs < 100, `reading after ${CHURN} versions took ${readMs.toFixed(1)}ms`);
+    const body = await c.getArtifact(cur!.files.find((f) => f.path === "src/main.ts")!.artifactId);
+    assert(new TextDecoder().decode(body).includes(`= ${CHURN - 1}`), "the newest version wins");
+    assert(cur!.basedOn, "each version names the one it supersedes, so a fork is visible");
+
+    // Nothing is lost: every version stays addressable. This is why last-writer-wins is divergence
+    // rather than data loss.
+    assertEquals((await c.query({ kind: "workspace", match: { name: "churn" } }, 100)).length, CHURN);
+
+    // Churn costs what CHANGED. The unchanged file is one blob across every version.
+    const all = await c.query({ kind: "workspace", match: { name: "churn" } }, 100);
+    const digests = new Set(
+      all.map((r) => (r.body as { files: WorkspaceFile[] }).files.find((f) => f.path === "README.md")!.digest),
+    );
+    assertEquals(digests.size, 1);
+
+    const listed = await listWorkspaces(c);
+    assert(listed.complete, "a complete scan says so");
+    assertEquals(listed.workspaces.filter((w) => w.name === "churn").length, 1, "latest-wins per name");
+    // …and an incomplete one says THAT, rather than returning a plausible prefix.
+    assertEquals((await listWorkspaces(c, 0)).complete, false);
+  });
+});
+
+Deno.test("workspace: the record body limit caps a manifest, which forces dependencies out of line", async () => {
+  await withSpace(async (c) => {
+    // The number this phase owed. A manifest is a record body, and a body cannot be erased, so the
+    // limit is what turns "put the dependency tree beside the manifest" from a preference into a
+    // wall. Two points bracket it rather than a full ladder: the contract is that a limit EXISTS
+    // and bites in this range, not the exact file count.
+    const tree = (n: number) => {
+      const files: Record<string, string> = {};
+      for (let i = 0; i < n; i++) files[`src/mod${Math.floor(i / 100)}/f${i}.ts`] = `export const x = ${i}\n`;
+      return files;
+    };
+    const ok = await writeWorkspace(c, { name: "under", owner: OWNER, files: tree(3000) });
+    const rec = await c.getRecord(ok.id);
+    const bytes = new TextEncoder().encode(JSON.stringify(rec!.body)).length;
+    assert(bytes < 1024 * 1024, `3000 files is ${Math.round(bytes / 1024)} KiB, under the limit`);
+
+    let refused = "";
+    try {
+      await writeWorkspace(c, { name: "over", owner: OWNER, files: tree(10000) });
+    } catch (e) {
+      refused = (e as Error).message;
+    }
+    assert(/record_too_large/.test(refused), `10000 files must be refused, got: ${refused || "accepted"}`);
+  });
+});

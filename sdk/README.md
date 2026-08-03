@@ -16,6 +16,12 @@ whatever an SDK can do, a plain HTTP client can too.
 | Bootstrap   | `grant` / `createAgentDefinition` / `createRun` / `stopRun` | `grant` / `create_agent_definition` / `create_run` / `stop_run` |
 | Dependencies| none beyond the runtime | none, standard library only (3.9+) |
 
+**Beside the SDK: [extensions/](../extensions/README.md).** The SDK is one method per `/v0` verb,
+with no policy, and carries the wire contract's stability promise. An extension is an opinionated
+CONVENTION built on those verbs (a `workspace` manifest, a `sandbox` record) and evolves
+independently. Both ship in the npm package; only this half is frozen. If something here starts
+making decisions rather than making requests, it belongs one directory over.
+
 **TypeScript is the full surface; Python is frozen to the core.** The table above is the frozen
 core: coordination verbs, watches, artifacts, remediation, the basic ops reads, and bootstrap.
 Python tracks that set and nothing more. The inspection surface (`digest`, `thread`, `dryRun`,

@@ -60,7 +60,7 @@ explicitly **not** production-readiness.
 > embedded storage, ordered phases with verify steps) is in
 > [plan-m0-implementation.md](plan-m0-implementation.md).
 
-- [x] `deno task dev`: embedded storage (PGlite/SQLite), single process, **web console** (dev UI), bundled **MCP adapter** (`radia mcp`). Distribution staged by `deno task release` (binaries + npm/pip shims); `npx radia dev` awaits a publish.
+- [x] `deno task dev`: embedded storage (PGlite/SQLite), single process, **web console** (dev UI), bundled **MCP adapter** (`radia mcp`). Distribution staged by `deno task release` (binaries + npm/pip shims, with the TS SDK and `extensions/` shipped as source in the npm package); `npx radia dev` awaits a publish.
 - [x] put / take / ack / nack / release / renew
 - [x] record + envelope split with denormalized routing columns
 - [x] `body_sha256` on every record

@@ -209,6 +209,15 @@ launcher `execv`s the bundled binary; `exec` matters, so `radia mcp`'s stdio sta
 or the binary boots and then 404s. `deno task compile` carries the same flags for the single-binary
 build.
 
+The npm package carries more than the launcher: the TypeScript SDK and `extensions/` ship as SOURCE
+beside it, so an agent author who has `radia` has the client and the conventions built on it with
+nothing to compile. One trap the build has to handle: an extension imports the SDK as
+`../../sdk/ts/client.ts` in the repo and `../sdk/` once staged, so the script rewrites the path.
+Nothing type-checks the staged tree, so a wrong path there would be a silent break rather than a
+build failure. The two are versioned differently on purpose (the SDK mirrors the frozen wire
+contract; an extension is a convention that evolves), which is why they are separate directories in
+the package rather than one.
+
 **Unverified:** `npx radia dev` and `pipx run radia dev` have never been executed end to end.
 That needs a registry publish. Only the host target has been compiled; the four cross-compiled
 targets and the staged package metadata are best-effort until someone publishes once.

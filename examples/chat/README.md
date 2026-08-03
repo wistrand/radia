@@ -43,7 +43,7 @@ outside world).
 ## Testing it without a model
 
 ```bash
-deno task chat-test              # all eleven suites, ~30s
+deno task chat-test              # all eleven suites, ~50s
 deno task chat-test longthread   # one by name
 ```
 
@@ -632,10 +632,17 @@ Five areas. `chat.ts` opens with the same map.
 
 | File | Role |
 |------|------|
-| `kinds.ts` | the record kinds: `conversation`/`message`/`llm_*`/`tool_*`/`capability`/`model`/`progress` |
-| `roles.ts` | least-privilege grant sets + the bootstrap chain (agent definitions → run tokens; admin vs user) |
+| `kinds.ts` | the record kinds: `conversation`/`message`/`llm_*`/`tool_*`/`check`/`workspace`/`capability`/`model`/`progress` |
+| `roles.ts` | least-privilege grant sets + the bootstrap chain (agent definitions → run tokens) |
 | `capability.ts` | advertising a tool as a content-keyed `capability` record |
+| `model.ts` | advertising a tier→model so the router can discover the fleet |
 | `progress.ts` | turn progress as records, so a waiting client can see who is doing what |
+
+Several of these are conventions rather than app policy, and the line is worth watching: anything
+here that a SECOND application would want belongs in [`../../extensions`](../../extensions/README.md)
+instead. `workspace.ts` started in this directory and moved for exactly that reason. What stays is
+what is genuinely this app's: its own kinds, and `roles.ts`, which is a policy decision about who
+may do what in a chat.
 
 **`provider/`: the outside world**
 
