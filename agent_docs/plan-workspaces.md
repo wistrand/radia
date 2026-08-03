@@ -168,6 +168,14 @@ launders. That is the documented "taint launders by omitting the parent edge", u
 something materialising can fix. The contract asserts it in both directions so nobody reads the
 passing case as a guarantee.
 
+*Wired into the chat*, so it is drivable by hand rather than only by the contract: `save_workspace`
+stores a tree, `run_code {workspace}` materialises it and runs the program INSIDE it (cwd = the
+tree, so relative paths resolve like a checkout), the manifest becomes a parent of the result, and
+the directory is discarded. Two things the wiring taught: the program has no way to learn a temp
+path, so running in the tree is the only workable answer; and the materialised root must live
+OUTSIDE `.radia`, because the sandbox child is denied that directory and in Deno a deny beats an
+allow.
+
 *Also moved here:* `exec-sandbox.ts` became `extensions/ts/sandbox.ts`. It imports nothing, the
 runtime executes nothing, and a sandbox is meaningless inside one app — so it belongs beside the
 workspace convention, which is where Phase 5 will put a `sandbox` RECORD on top of it.

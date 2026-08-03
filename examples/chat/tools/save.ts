@@ -15,6 +15,7 @@ import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import type { Tool, ToolContext } from "./files.ts";
 import type { ToolDef } from "../provider/openrouter.ts";
 import { bytesFrom, mediaTypeFor } from "../util.ts";
+import { readWorkspace, writeWorkspace } from "../../../extensions/ts/workspace.ts";
 
 export function makeSaveTools(client: RadiaClient): Record<string, Tool> {
   return {
@@ -129,6 +130,85 @@ export const SAVE_SCHEMAS: ToolDef[] = [
           encoding: { type: "string", enum: ["utf8", "base64"], description: "How `content` encodes the bytes." },
         },
         required: ["content", "filename"],
+      },
+    },
+  },
+];
+
+/**
+ * `save_workspace`: store a multi-file tree the assistant wrote, so `run_code` can run against it.
+ *
+ * The counterpart to `save_content` for something that is not one file. A program with an import,
+ * a fixture and a test is three files and one relationship, and squeezing it into a single `code`
+ * string loses the relationship, the paths, and any chance of changing one file at a time.
+ *
+ * Written as the WORKER, like `save_content`, but stamped with the SESSION's owner so the tree
+ * belongs to whoever asked for it and a scoped grant can bind it.
+ */
+export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
+  return {
+    save_workspace: async (a, ctx?: ToolContext) => {
+      const name = typeof a.name === "string" ? a.name.trim() : "";
+      if (!name) return { error: "save_workspace needs a `name`" };
+      const files = a.files;
+      if (!files || typeof files !== "object" || Array.isArray(files)) {
+        return { error: "save_workspace needs `files` as an object of path -> contents" };
+      }
+      const entries = Object.entries(files as Record<string, unknown>);
+      if (entries.length === 0) return { error: "save_workspace needs at least one file" };
+      const contents: Record<string, string> = {};
+      for (const [path, v] of entries) {
+        if (typeof v !== "string") return { error: `file ${JSON.stringify(path)} must be a string` };
+        contents[path] = v;
+      }
+      try {
+        const prev = await readWorkspace(client, name, ctx?.conversationId);
+        const w = await writeWorkspace(client, {
+          name,
+          owner: ctx?.owner ?? "",
+          conversationId: ctx?.conversationId,
+          files: contents,
+          basedOn: prev?.id,
+        });
+        return {
+          workspace: name,
+          treeDigest: w.treeDigest,
+          files: w.files.map((f) => f.path),
+          unchanged: w.deduped,
+        };
+      } catch (e) {
+        // A rejected path is the model's to fix, and the message names which one and why.
+        return { error: (e as Error).message };
+      }
+    },
+  };
+}
+
+export const WORKSPACE_SCHEMAS: ToolDef[] = [
+  {
+    type: "function",
+    function: {
+      name: "save_workspace",
+      description:
+        "Store a multi-file project as a named workspace, then run it with run_code's `workspace` " +
+        "argument. Use this whenever the thing you are building is more than one file: a module and " +
+        "the script that imports it, code plus a fixture, anything with a directory structure. " +
+        "Paths are relative (src/main.ts, lib/util.ts); absolute paths, '..', and '.git' are " +
+        "refused. Saving the same name again replaces the tree and keeps the old version addressable, " +
+        "so iterating means saving the whole tree again with your fix, not patching in place. " +
+        "Returns {workspace, treeDigest, files, unchanged}; `unchanged: true` means the tree was " +
+        "byte-identical to what was already there and nothing was written. For ONE file with no " +
+        "imports, use run_code's `code` argument instead: a workspace buys nothing there.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "A short name for this project, reused to update it." },
+          files: {
+            type: "object",
+            description: "Path -> file contents. Relative paths only, e.g. {\"src/main.ts\": \"...\"}.",
+          },
+        },
+        required: ["name", "files"],
       },
     },
   },

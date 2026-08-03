@@ -25,6 +25,7 @@
 import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { activeByKey, newestByKey, RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
 import { runCode } from "../../../extensions/ts/sandbox.ts";
+import { materialize, readWorkspace } from "../../../extensions/ts/workspace.ts";
 import { progress } from "../space/progress.ts";
 import { arg, argAll } from "../util.ts";
 import { publishCapability } from "../space/capability.ts";
@@ -41,6 +42,11 @@ const timeoutMs = Number(arg("--timeout-ms") ?? "5000");
 // filesystem, which is the default. Deliberately a SEPARATE setting from the file tools' roots:
 // widening what `read_file` can see must not silently widen what executed code can see.
 const readRoots = argAll("--dir").filter(Boolean);
+/** Where materialised trees land. Granted to this worker by the launcher as its ONLY write access,
+ *  and outside `.radia` on purpose: the sandbox child is denied that directory (it holds the KEK
+ *  and the database), and in Deno a deny beats an allow, so a tree materialised there would be
+ *  unreadable by the process meant to read it. */
+const workspaceRoot = arg("--workspace-root") ?? "";
 // Denied even if a root would otherwise cover them: the space's blob key and its operator
 // credential. `--deny-read` beats `--allow-read`, so pointing `--dir` at a directory containing
 // them still does not expose them.
@@ -63,6 +69,8 @@ const RUN_CODE: ToolDef = {
       `data transformation, COMPUTING file content from data, and checking your own reasoning ` +
       `(anything ` +
       `where running beats guessing). Print results with console.log; stdout is what you get back. ` +
+      `Pass 'workspace' to run against a saved multi-file tree instead of a bare snippet; it is ` +
+      `materialised read-only for the run and discarded after. ` +
       `Pass save_as to STORE stdout as an artifact instead of only returning it. Use that ONLY for ` +
       `bytes the program COMPUTED. If you already know the content, you are not computing it: ` +
       `wrapping text you wrote in a console.log and printing it back is a roundtrip that sends ` +
@@ -88,6 +96,17 @@ const RUN_CODE: ToolDef = {
       type: "object",
       properties: {
         code: { type: "string", description: "The JavaScript program. Use console.log to return anything." },
+        workspace: {
+          type: "string",
+          description:
+            "Run against a saved workspace instead of a bare snippet. Your program runs INSIDE the " +
+            "tree, so relative paths work: Deno.readTextFileSync('src/main.ts') reads that file. " +
+            "Save it first with save_workspace. The tree is READ-ONLY and discarded after the run, " +
+            "so a file your program writes does not persist and is NOT how you change the project: " +
+            "call save_workspace again with the new contents. Note your `code` runs from stdin and " +
+            "has no path of its own, so it can READ the tree's files but cannot import them; read " +
+            "and eval, or keep the logic in `code` and the data in files.",
+        },
         expect: {
           type: "object",
           description:
@@ -326,7 +345,7 @@ await agentLoop(client, {
   leaseSeconds: 60,
   handle: async (rec, c) => {
     const callId = rec.id;
-    const b = rec.body as { tool?: string; args?: { code?: string }; conversationId?: string; owner?: string };
+    const b = rec.body as { tool?: string; args?: { code?: string; workspace?: string }; conversationId?: string; owner?: string };
 
     if (b.tool === "save_procedure") return await saveProcedure(rec, c);
     if (b.tool === "read_procedure") return await readProcedure(rec, c);
@@ -375,7 +394,41 @@ await agentLoop(client, {
     if (!code.trim()) {
       return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: "run_code needs a `code` argument" }, taint: [] };
     }
-    const r = await runCode(code, { timeoutMs, readRoots, denyRead });
+    // A WORKSPACE turns the run into one over a real tree: materialise it into a fresh directory,
+    // hand the sandbox read access to that and nothing else, and throw it away afterwards. The
+    // manifest becomes a data PARENT of the result, which is what stops a classified tree from
+    // laundering its labels through the filesystem: the substrate cannot see a disk, so the edge is
+    // the only thing that carries the classification.
+    let wsRoot: string | undefined;
+    let wsParent: string | undefined;
+    let wsRoots: string[] = readRoots;
+    const wsName = typeof b.args?.workspace === "string" ? b.args.workspace : undefined;
+    if (wsName) {
+      const manifest = await readWorkspace(c, wsName, b.conversationId);
+      if (!manifest) {
+        return {
+          kind: "tool_result",
+          body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: `no workspace '${wsName}' saved in this conversation; save_workspace first` },
+          taint: [],
+        };
+      }
+      wsRoot = await Deno.makeTempDir({ dir: workspaceRoot, prefix: `${wsName}-` });
+      await materialize(c, manifest, wsRoot);
+      wsParent = manifest.id;
+      // The tree REPLACES the configured read roots rather than adding to them: a run against a
+      // workspace should see the workspace, not also whatever directories the operator opened for
+      // ad-hoc file reads.
+      wsRoots = [wsRoot];
+      await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "executing", by: ME, note: `workspace ${wsName} (${manifest.files.length} files)` }, [callId]);
+    }
+    // Run IN the tree when there is one, so relative paths resolve the way they would in a
+    // checkout. The alternative was telling the program its temp path, which it cannot otherwise
+    // know and which changes every call.
+    const r = await runCode(code, { timeoutMs, readRoots: wsRoots, denyRead, cwd: wsRoot });
+    // Materialised bytes are scratch: the tree of record is the manifest, and Phase 3 (write-back)
+    // is what will make anything the run produced durable. Until then, discarding is the honest
+    // behaviour rather than leaving a directory that looks like state.
+    if (wsRoot) await Deno.remove(wsRoot, { recursive: true }).catch(() => {});
 
     // Store stdout when asked to, or when it is too big to belong in the thread. The bytes come
     // from the SANDBOX, not from the model's tokens: content generated by code never round-trips
@@ -458,6 +511,7 @@ await agentLoop(client, {
           ms: r.ms,
           // Returned as well as recorded, so the model sees the verdict in the same round rather
           // than spending another one asking whether its own run passed.
+          ...(wsName ? { workspace: wsName } : {}),
           ...(checked ? { check: checked } : {}),
           ...(stored ?? {}),
         },
@@ -465,7 +519,12 @@ await agentLoop(client, {
       // The procedure record becomes a PARENT of the result, so "which code produced this?" is a
       // lineage walk rather than a guess. That is the question a model answered wrong from memory,
       // and then invented a reason for. The claimed tool_call is added as a parent by `ack`.
-      ...(provenance ? { parentIds: [provenance.recordId] } : {}),
+      //
+      // A workspace manifest is a parent for a different reason: it carries the tree's
+      // classification labels, so naming it is how a run over a classified tree inherits them.
+      ...(provenance || wsParent
+        ? { parentIds: [...(provenance ? [provenance.recordId] : []), ...(wsParent ? [wsParent] : [])] }
+        : {}),
       taint: readRoots.length > 0 ? ["file"] : [],
       // Classified by what the sandbox could REACH, not by the fact that code ran: "a program
       // produced this" is a graph fact the log already answers. With read roots the output may

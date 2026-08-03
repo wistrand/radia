@@ -97,6 +97,7 @@ const TOOLS_GRANTS: Grant[] = [
   { kind: "artifact", operations: ["put"] }, // save_content: WRITE only, it never reads one back
   { kind: "capability", operations: ["put"] },
   { kind: "progress", operations: ["put"] }, // reports which tool it is running
+  { kind: "workspace", operations: ["put", "query"] }, // save_workspace: authors a tree for a session
 ];
 
 // exec-worker: claims `tool_call{run_code}` and runs the model's program in a permissionless
@@ -125,6 +126,9 @@ const EXEC_GRANTS: Grant[] = [
   // session has `query` and nothing more, so "the code did what was claimed" is never a record the
   // model authored about itself.
   { kind: "check", operations: ["put"] },
+  // Reads a manifest to materialise it. `query`, not `put`: this worker never authors a tree, it
+  // only serves one, so a bug here cannot invent a workspace.
+  { kind: "workspace", operations: ["query"] },
 ];
 
 // plain user (the REPL): may drive its own conversations and read its own results, nothing more.
@@ -190,6 +194,9 @@ export function userGrants(scope?: Record<string, unknown>): Grant[] {
     // OWN files. The pattern is what makes this safe: the same scope that limits `read_one` limits
     // the listing, so it enumerates this identity's artifacts and nobody else's.
     { kind: "artifact", operations: ["read_one", "query"], ...scoped },
+    // A tree the session owns. Scoped like the rest, so a session sees its own workspaces and no
+    // one else's, and the runtime enforces the stamp on the way in as well as the way out.
+    { kind: "workspace", operations: ["query"], ...scoped },
   ];
 }
 

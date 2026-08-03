@@ -201,8 +201,8 @@ full compromise of it yields a process that can print bytes to its parent. Path 
 Tools: `read_file`, `list_files`, `search_files`, `stat` (sandboxed to `RADIA_CHAT_DIRS`,
 default `examples/chat/sandbox`; `list_files`/`read_file`/`stat` return `size` + `modified`
 so size/date questions get ground truth, not guesses), `time`, `calc`, `save_content` (store
-text as an artifact), `share_artifact` (an openable link for one), `run_code` (sandboxed
-execution), `save_procedure`/`read_procedure`
+text as an artifact), `share_artifact` (an openable link for one), `save_workspace` (a multi-file
+tree), `run_code` (sandboxed execution, optionally against a workspace), `save_procedure`/`read_procedure`
 (name a program and keep it; see below), and `generate_image`.
 
 **Inspection tools** (`tools/space.ts`) make the chatbot a conversational inspector of its own
@@ -359,6 +359,31 @@ time against the caller's `artifact: read_one` grant, so a scoped user cannot tu
 may not read into a link that needs no token; running it as the worker would do exactly that. That
 is also why it needs no grant of its own: one permission, checked once, instead of two that must
 agree.
+
+**A project is a workspace, not a string.** `save_workspace(name, files)` stores a multi-file tree
+(the convention lives in [`extensions/ts/workspace.ts`](../../extensions/ts/workspace.ts)), and
+`run_code` takes a `workspace` argument that materialises it into a fresh directory and runs the
+program INSIDE it, so relative paths resolve the way they would in a checkout. Nothing has to tell
+the program a temp path it could not otherwise know.
+
+Three properties, and the third is the one that matters:
+
+- **Read-only, and enforced rather than promised.** The sandbox gets `--allow-read` on the tree and
+  nothing else, so a write fails with `NotCapable`. It is discarded after the run: the tree of
+  record is the manifest, and until write-back lands (Phase 3 of
+  [plan-workspaces.md](../../agent_docs/plan-workspaces.md)) discarding is the honest behaviour
+  rather than leaving a directory that looks like state.
+- **Iterating means saving the tree again.** A new version is a successor; every earlier one stays
+  addressable, and an identical tree writes nothing.
+- **The manifest is a data PARENT of the result.** That is what stops a classified tree from
+  laundering its labels through the filesystem: the substrate cannot see a disk, so the edge is the
+  only thing carrying the classification, and one edge speaks for the whole tree because the
+  manifest holds the union.
+
+The worker's write access is scoped to one directory created by the launcher, and it sits in the OS
+temp area rather than under `.radia` on purpose: the sandbox child is denied that directory (it holds
+the KEK and the database), and in Deno a deny beats an allow, so a tree materialised there would be
+unreadable by the very process meant to read it.
 
 **Code generation is a loop, and the loop is records.** Write, run, read the error, fix, rerun. Two
 parts of that had no representation in the space and now do.

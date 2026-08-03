@@ -10,7 +10,7 @@ import { progress } from "../space/progress.ts";
 import { makeTools, TOOL_SCHEMAS } from "../tools/files.ts";
 import { INSPECT_SCHEMAS, makeInspectTools } from "../tools/space.ts";
 import { makeRemediateTools, REMEDIATE_SCHEMAS } from "../tools/space.ts";
-import { makeSaveTools, makeShareTools, SAVE_SCHEMAS, SHARE_SCHEMAS } from "../tools/save.ts";
+import { makeSaveTools, makeShareTools, makeWorkspaceTools, SAVE_SCHEMAS, SHARE_SCHEMAS, WORKSPACE_SCHEMAS } from "../tools/save.ts";
 import { arg, argAll } from "../util.ts";
 import { publishCapability } from "../space/capability.ts";
 
@@ -44,12 +44,14 @@ const tools = {
   // authorized at mint time against the caller's read grant, so minting it as the worker would let
   // a scoped user turn an artifact it cannot read into a link that needs no token.
   ...makeShareTools(spaceClient),
+  // Authors a tree as the WORKER (it holds `workspace: put`), stamped with the session's owner.
+  ...makeWorkspaceTools(client),
 };
 
 // Publish this worker's capabilities as `capability` records so agents can DISCOVER the
 // available tools from the space (no hard-coded tool list). In a real system this
 // registration would be grant-gated: an untrusted worker publishing a tool is a threat.
-const schemas = [...TOOL_SCHEMAS, ...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS, ...SAVE_SCHEMAS, ...SHARE_SCHEMAS];
+const schemas = [...TOOL_SCHEMAS, ...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS, ...SAVE_SCHEMAS, ...SHARE_SCHEMAS, ...WORKSPACE_SCHEMAS];
 for (const name of Object.keys(tools)) {
   const def = schemas.find((s) => s.function.name === name);
   if (def) await publishCapability(client, def);

@@ -183,6 +183,7 @@ radia watch job                               # stream wakeups
 radia doctor                                  # dead-letters, stuck leases, stale work
 radia reclaim --all --drain                   # un-stick every expired lease
 radia login human:alice --grant job:query     # a scoped session for a person
+radia login human:alice --compact            # the token alone, for TOK=$(…)
 radia permissions human:alice                 # what that principal can actually do
 ```
 

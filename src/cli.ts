@@ -24,7 +24,8 @@ Inspect
   stats                               record counts by kind and state
   doctor                              diagnostics: dead-letters, stuck leases, stale work
   permissions <principal>             what that principal can actually do (the fold over its grants)
-  login <principal> [--grant k:ops]…  mint a session token for a person (repeatable --grant)
+  login <principal> [--grant k:ops]… [--compact]  mint a session token for a person
+                                      (--compact prints the token alone, for $(…) capture)
   shred <artifact-id> [--reason <t>] [--shared]  destroy an artifact's bytes, keep the record
   kinds                               declared kinds (a query for kind_def records)
   get <record-id>                     one record
@@ -124,8 +125,11 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // `human:*` was an operator by name shape, so the only human credential available was
       // god-mode. Now a person is an ordinary principal unless the space names them an operator,
       // and this mints their session through the same bootstrap chain every agent uses.
-      const who = argv[0];
-      if (!who) return usage("login <principal> [--grant <kind>:<op,op>]…");
+      // `positional`, not `argv[0]`: a flag written before the principal would otherwise BE the
+      // principal. Silent rather than loud, since a principal is just a string — `permissions
+      // --json alice` cheerfully reported on a principal named "--json".
+      const [who] = positional(argv, 1);
+      if (!who) return usage("login <principal> [--grant <kind>:<op,op>]… [--compact]");
       if (!who.startsWith("human:")) return usage("login <principal>  (principal must start with 'human:')");
       const grants = flags(argv, "--grant").map((g) => {
         const [kind, ops] = String(g).split(":");
@@ -139,6 +143,13 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // plane, so an app (the chat) or an earlier login may already have given this principal its
       // set. Saying "nothing yet" on the strength of an empty argv is the promise-vs-enforcement
       // gap this codebase keeps rediscovering; ask the space instead.
+      // `--compact`: the token and nothing else, for `TOK=$(radia login human:me --compact)`.
+      // Deliberately not `--json`, which is the machine-readable form of the WHOLE answer; this is
+      // the one field a shell almost always wants, on stdout with no decoration to strip.
+      if (has(argv, "--compact")) {
+        console.log(run.runToken);
+        return 0;
+      }
       const held = await client.permissions(who) as { kinds: { kind: string; operations: string[] }[] };
       return out(ctx, { principal: who, run: run.run, token: run.runToken, expiresAt: run.expiresAt, kinds: held.kinds }, () =>
         [
@@ -156,7 +167,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
 
     case "shred": {
       // Erasure is irreversible and by CONTENT, so the verb says both out loud before doing it.
-      const id = argv[0];
+      const [id] = positional(argv, 1);
       if (!id) return usage("shred <artifact-record-id> [--reason <text>] [--shared]");
       const r = await client.shredArtifact(id, {
         reason: flag(argv, "--reason"),
@@ -175,7 +186,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
     case "permissions": {
       // "What can this principal do?" is the question behind every grant bug in this codebase,
       // asked directly instead of inferred from a denial.
-      const who = argv[0];
+      const [who] = positional(argv, 1);
       if (!who) return usage("permissions <principal>");
       const p = await client.permissions(who) as {
         privileged: boolean;

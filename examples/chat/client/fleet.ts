@@ -36,6 +36,10 @@ function spawn(args: string[]): Deno.ChildProcess {
  * access through a worker that happens to hold more. It used to be optional, which meant the
  * privileged path was the one you got by not passing it.
  */
+/** Where materialised workspace trees live for the life of this chat. One directory, created here
+ *  so the exec worker's write grant can name it exactly. */
+export const workspaceRoot = Deno.makeTempDirSync({ prefix: "radia-ws-" });
+
 export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.ChildProcess[] {
   const { inferenceToken, routerToken, toolsToken, imagesToken, execToken } = tokens;
   const procs: Deno.ChildProcess[] = [];
@@ -93,11 +97,21 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
 
   // Exec: may spawn `deno` and reach the space, nothing else. The child it spawns gets no
   // permissions at all (extensions/ts/sandbox.ts), so the dangerous half of the pair holds no credential.
+  //
+  // WORKSPACE ROOT. Materialising a tree means the WORKER writes files, which it previously could
+  // not do at all, so this is a real capability increase and it is scoped to one directory created
+  // here rather than granted broadly. It lives in the OS temp area on purpose: the sandbox child is
+  // handed `--deny-read` on `.radia` (it holds the KEK and the database), and a deny beats an
+  // allow in Deno, so a tree materialised under the runtime directory would be unreadable by the
+  // very process meant to read it.
   procs.push(spawn([
     `--allow-net=127.0.0.1:${port}`,
     "--allow-run=deno",
     "--allow-env=HOME", // only to give the sandboxed child a module-cache home
+    `--allow-write=${workspaceRoot}`,
+    `--allow-read=${workspaceRoot}`, // to read back what it just wrote, and nothing else
     "examples/chat/workers/exec.ts",
+    "--workspace-root", workspaceRoot,
     "--url", local,
     "--token", execToken,
     "--timeout-ms", EXEC_TIMEOUT_MS,

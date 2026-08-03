@@ -57,3 +57,30 @@ Deno.test("flags: an optional-value flag distinguishes bare, valued and absent",
   assertEquals(optionalFlag(["--db", "--port", "7788"], "--db"), "");
   assertEquals(optionalFlag(["--port", "7788"], "--db"), undefined);
 });
+
+Deno.test("flags: a verb reads its positional through the shared scanner, not argv[0]", () => {
+  // A flag written BEFORE a positional would otherwise be taken as the positional, and for a verb
+  // whose argument is a bare string that failure is SILENT: `permissions --json alice` cheerfully
+  // reported on a principal named "--json" and printed a well-formed answer about nobody.
+  //
+  // The three verbs added most recently (`login`, `shred`, `permissions`) each had it. Checked
+  // structurally rather than by driving the CLI: the rule is "use the scanner", and a per-verb
+  // behavioural test would pass the moment someone added a fourth verb that does not.
+  // Comments are stripped first: the rule is explained in a comment that NAMES the thing it
+  // forbids, and prose is not code. (The same trap caught the `sessionOwner` guard in
+  // examples/chat/smoke-login.ts, which had to match the import rather than the word.)
+  const cli = Deno.readTextFileSync(new URL("../src/cli.ts", import.meta.url))
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+  const direct = [...cli.matchAll(/argv\[0\]/g)];
+  assertEquals(direct.length, 0, "a verb still indexes argv directly; use positional(argv, n)");
+
+  // …and the scanner has to know which switches carry no value, or it eats the token after one.
+  const flags = Deno.readTextFileSync(new URL("../src/flags.ts", import.meta.url));
+  for (const valueless of ["--json", "--compact", "--untainted", "--all", "--drain"]) {
+    assert(
+      new RegExp(`VALUELESS[^)]*"${valueless}"`, "s").test(flags),
+      `${valueless} takes no value and must be in VALUELESS, or it swallows the next token`,
+    );
+  }
+});

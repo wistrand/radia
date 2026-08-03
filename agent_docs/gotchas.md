@@ -911,6 +911,14 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   details and are not: an ABSENT expectation records no verdict rather than a passing one (an
   unverified run must not read as successful), and a TIMEOUT fails `exit_zero` (a killed process has
   a null exit code, and treating that as zero turns the worst outcome into a pass).
+- **A CLI verb must read its positional through `positional()`, never `argv[0]`.** A flag written
+  before the argument is otherwise taken AS the argument, and for a verb whose argument is a bare
+  string the failure is silent: `radia permissions --json alice` reported on a principal named
+  "--json" and printed a well-formed answer about nobody. Three verbs had it (`login`, `shred`,
+  `permissions`), all added recently, all reading `argv[0]` while the other ten used the scanner.
+  A new valueless switch must also join `VALUELESS` in `src/flags.ts`, or the scanner eats the token
+  after it. Guarded structurally in `conformance/defaults.test.ts`, which strips comments first,
+  because the rule is explained in a comment that names the thing it forbids.
 - **An empty allowlist is not the absence of one, and collapsing them inverts a security control.**
   `allowTaint: []` means "accept nothing classified", the STRICTEST barrier there is; `undefined`
   means no barrier at all. A helper that returned `undefined` for an empty array turned the

@@ -51,6 +51,10 @@ export interface RunOptions {
   /** Paths denied even inside a granted root. `--deny-read` beats `--allow-read` in Deno, so this
    *  is a hard exclusion, not a convention. */
   denyRead?: string[];
+  /** Working directory for the child. Set when running against a materialised tree so the program
+   *  is IN it: relative reads resolve the way they would in a checkout, and nothing has to tell the
+   *  program a temp path it could not otherwise know. */
+  cwd?: string;
 }
 
 export interface RunResult {
@@ -107,6 +111,7 @@ export async function runCode(source: string, opts: RunOptions = {}): Promise<Ru
   const denyRead = opts.denyRead ?? [];
   const started = Date.now();
   const child = new Deno.Command("deno", {
+    ...(opts.cwd ? { cwd: opts.cwd } : {}),
     args: [
       "run",
       "--no-prompt", // a denied permission fails; it never waits for a human that isn't there
