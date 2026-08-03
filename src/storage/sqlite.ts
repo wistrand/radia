@@ -92,7 +92,8 @@ class SqliteJson implements JsonDialect {
     this.params.push(v);
     return "?";
   }
-  /** Safe to inline: `pushablePath` has already restricted segments to `[A-Za-z0-9_]`. */
+  /** Safe to inline: `pushablePath` has already restricted segments to `[A-Za-z0-9_]`, minus
+   *  all-digit ones, so `$.a.0` (a key named "0", NULL over an array here) never gets rendered. */
   private at(path: string[]): string {
     return `json_extract(${this.col}, '$.${path.join(".")}')`;
   }

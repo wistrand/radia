@@ -1,6 +1,6 @@
 # Plan: audit remediation
 
-> Status: E, H, I, N and O–R are open; **K, L and M are closed** (2026-08-03); everything else is closed and
+> Status: H, I, N and O–R are open; **E, K, L and M are closed** (2026-08-03); everything else is closed and
 > its guards pass (`deno task conformance`: 421 passed, 0 failed). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
@@ -26,7 +26,7 @@ with no revocation path); it was closed the same day, and no P0 is open.
 
 | Pkg | Theme                                   | Severity | Blast radius                          |
 |-----|-----------------------------------------|----------|---------------------------------------|
-| E   | Pushdown soundness                      | P1       | Records invisible to `take` on SQLite |
+| ~~E~~ | ~~Pushdown soundness~~                | ~~P1~~   | **CLOSED 2026-08-03**                 |
 | ~~G~~ | ~~Blob write durability~~             | ~~P2~~   | **CLOSED 2026-08-03**                 |
 | H   | `lease_lost` unobservable in clients    | P2       | Side effects continue after fencing   |
 | I   | SDK parity + chat example               | P2       | Drift; example-specific data loss     |
@@ -39,7 +39,7 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | Q   | Designed features unreachable           | P2       | A built feature no caller can invoke   |
 | R   | Dead taint parameter; half-tested guard | P2       | Legibility, not leakage (see the entry) |
 
-Packages A, B, C, D, F, G, J, K, L and M are closed. Their lessons are rules in
+Packages A, B, C, D, E, F, G, J, K, L and M are closed. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -50,29 +50,40 @@ table), and D made a churning registry (the interest registry, saved lenses) saf
 
 ---
 
-## Package E: pushdown soundness (P1)
+## Package E: pushdown soundness (P1) — CLOSED 2026-08-03
 
-The contract at the top of `src/storage/pushdown.ts` is that the SQL pre-filter may over-include
-but never over-exclude. Three violations:
+**VERIFIED.** Four findings (the three recorded on 2026-07-27 plus the shared-path extension found
+in round two), all of them one question: what does a path SEGMENT address? The oracle answered with
+JavaScript property access, the two dialects each answered with their own JSON path grammar, and
+the pre-filter excluded records the oracle accepts, which is the one direction
+`src/storage/pushdown.ts` may never take.
 
-- **SQLite numeric path segments.** `SqliteJson.at` (`src/storage/sqlite.ts`) compiles
-  `choices.0.message` to `json_extract(..., '$.a.0')`, which is NULL for arrays; only `$.a[0]`
-  indexes. The oracle and Postgres both resolve element 0. Records become invisible to `take`
-  on SQLite only: a false-empty space, plus direct backend drift.
-- **Prototype/property paths.** `getPath` (`src/core/matching.ts`) uses bare property access, so
-  `length` on an array and `constructor`/`toString` on any object resolve for the oracle and are
-  absent in SQL. Marked `exact`, so the pushed LIMIT compounds it. Arguably the root fix belongs
-  in `getPath`: restrict to own properties of plain objects.
-- **Postgres leading-zero segments.** `{a,00}` integer-parses to element 0; the oracle returns
-  undefined. Over-inclusion, but marked `exact`, so a pushed LIMIT can return fewer records than
-  exist.
+Closed at two roots rather than per dialect:
 
-Fix the compilation for the first, tighten `getPath` for the second, and drop `exact` where the
-dialect cannot promise it for the third.
+- **`pushablePath` declines all-digit segments** (`src/storage/pushdown.ts`). That single rule
+  covers the SQLite `$.a.0` case (a key lookup, NULL over an array), the Postgres `@>` containment
+  term (`{"items":{"0":v}}` is not what an array contains), and the leading-zero over-inclusion
+  (`{a,00}` subscripts to element 0 while the oracle finds no such property) — the last of which
+  mattered because the node was marked `exact`, so the caller's LIMIT rode into SQL under a filter
+  that over-includes. The oracle handles every path, so the cost is a lost pre-filter on a shape no
+  kind here declares.
+- **`getPath` resolves own properties only** (`src/core/matching.ts`), and an array only by a
+  canonical index (`0`, never `00` or `length`). The prototype half of the finding is the opposite
+  direction from the rest: SQL was right and the ORACLE was inventing values, so narrowing the
+  oracle is the root fix rather than teaching SQL about the prototype chain. A body that genuinely
+  carries a key named `length` or `constructor` is data and still routes.
 
-Guard: a differential conformance test running the same pattern and fixture set against every
-adapter and the bare oracle, asserting identical result sets, over a fixture corpus that includes
-array paths, digit segments, leading zeros, and prototype-shaped names.
+Not done: nothing needed dropping `exact`, because both shapes that could not honor it are no
+longer pushed at all. `PgSqlAdapter.prepareKind` now calls `pushablePath` instead of carrying a
+copy of the alphabet rule, which is what let the statistics expression and the pushed predicate
+drift apart in the first place.
+
+Guard in `conformance/suites/pushdown.ts`: a differential case running each pattern through the
+adapter AND through the bare oracle over one fixture corpus (array indexes, digit keys, leading
+zeros, prototype-shaped names, and real keys that happen to use those names), asserting identical
+result sets plus an explicit expected set so both halves cannot break together; and a second case
+pinning that an array-index pattern still fills a limited page and still finds work through `take`,
+which is the headline symptom (a space reported empty while holding ten matching records).
 
 ## Package G: blob write durability (P2) — CLOSED 2026-08-03
 
@@ -341,10 +352,12 @@ intersects; `design-auth.md` still describing the one-bit taint model; the `owne
 asserting an invariant the deferred list already contradicts; the operator token resolving to
 `local:dev` where two docs say `human:local`; "six kinds defined in code" (it is eight).
 
-## Extends Package E: the array-index hole is in the SHARED path
+## Extends Package E: the array-index hole is in the SHARED path — CLOSED 2026-08-03
 
-**VERIFIED**, and it is latent rather than active. `pushablePath` (`src/storage/pushdown.ts`) admits
-all-digit segments (`SEGMENT = /^[A-Za-z0-9_]+$/`), while the oracle's `getPath` resolves `items.0`
+Closed with E, by the `pushablePath` rule described there; the record of what it was follows.
+
+**VERIFIED**, and it was latent rather than active. `pushablePath` (`src/storage/pushdown.ts`) admitted
+all-digit segments (`SEGMENT = /^[A-Za-z0-9_]+$/`), while the oracle's `getPath` resolved `items.0`
 into an array element through ordinary property access. So Postgres's `@>` containment term
 (`{items:{"0":v}}` against a JSON array) and SQLite's `$.items.0` both fail where the oracle
 matches: the pre-filter excludes a record the oracle would have returned, silently.

@@ -474,15 +474,35 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   rejects the extras), under-returning is a silent lost record, and for `take`, an empty space
   reported while work sits in it. So anything not expressible EXACTLY renders as `TRUE`: object
   and array equality (the oracle compares serialized text, so key order matters; jsonb normalizes
-  it), `$any`/`$each`, a range against a non-ASCII bound, and any path segment outside
+  it), `$any`/`$each`, a range against a non-ASCII bound, any path segment outside
   `[A-Za-z0-9_]` (segments are inlined into a JSON path literal so the planner can match an index,
-  and restricting the alphabet is what makes inlining injection-proof). Three traps that are not
+  and restricting the alphabet is what makes inlining injection-proof), and any ALL-DIGIT segment
+  (the next entry). Three traps that are not
   obvious until they bite: rendering a node BINDS PARAMETERS as a side effect, so a caller that
   discards the SQL must roll the parameters back too (`mark`/`rollback`), since an `$or` that discards
   one branch used to leave orphan bindings and fail the statement; `json_extract` returns SQL NULL
   for *both* an absent key and a JSON `null`, so presence is always asked via `json_type`; and an
   unguarded jsonb `>` will happily compare a string to a number, because jsonb has a total order
   across types. Every comparison is therefore type-guarded first.
+- **A path segment means three different things to the oracle, Postgres and SQLite, and the
+  disagreement is in the unsound direction.** Two shapes, both closed at their root rather than per
+  dialect (audit package E). **All-digit segments** (`items.0`, `a.00`): the oracle indexes an array
+  element through property access, Postgres' `#>` takes it as a subscript (`00` too, parsed as 0),
+  SQLite's `$.items.0` is a KEY lookup that is NULL over an array, and the `@>` containment term
+  asks whether an array contains `{"0": v}`, which it does not. So a record the oracle accepts got
+  EXCLUDED on both dialects, and the leading-zero case over-included while still marked `exact`,
+  which drags the caller's LIMIT along with it. `pushablePath` (`src/storage/pushdown.ts`) now
+  declines them; the oracle handles every path, so the cost is a lost pre-filter on a shape no kind
+  in this repo declares. **Prototype-shaped names** (`arr.length`, `obj.constructor`): the fix is
+  the opposite direction, in the ORACLE. `getPath` used bare property access, so those resolved for
+  every record while SQL correctly saw nothing there. Teaching SQL about JavaScript's prototype
+  chain would be absurd, so `getPath` resolves own properties only, and an array only by a
+  canonical index. A body that really holds a key named `length` is still data and still routes.
+  The reusable rule: when the oracle and SQL disagree, ask which one is describing STORED DATA;
+  usually it is SQL, and the oracle is the thing to narrow. Pinned by the differential case in
+  `conformance/suites/pushdown.ts`, which runs each pattern through the adapter and through the
+  bare oracle over one corpus and demands identical result sets, because under-return is invisible
+  to any test that only checks the adapter against itself.
 - **The claim index must be ordered like the claim, and `state` must not lead it.** The candidate
   window sorts by `effective_priority desc, available_at asc, record_id asc`; an index only serves
   that if its columns are in that order. `idx_runtime_claim` is not (it leads with `available_at`)
@@ -520,8 +540,9 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
     structural, and dropping either term is not an option (one is the index, the other is the
     exactness that lets a LIMIT be pushed).
   * **The statistics expression must match `PgJson.at` character for character**, and the path is
-    inlined into DDL, so `prepareKind` skips any path outside `[A-Za-z0-9_]` rather than escaping
-    it, the same rule pushdown uses for the same reason.
+    inlined into DDL, so `prepareKind` skips any path pushdown declines rather than escaping it. It
+    calls `pushablePath` outright now: it carried its own copy of the alphabet rule, and the two
+    drifted the moment digit segments stopped being pushable.
   A fresh space declares its kinds before it has rows, so the ANALYZE at declaration time measures
   an empty table; the estimate becomes real at the next autoanalyze. Nothing is wrong when a brand
   new space plans a claim badly for a while.

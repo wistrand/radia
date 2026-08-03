@@ -73,6 +73,12 @@ Explicit, deterministic, conformance-tested:
   distribute over arrays.
 - `$not` is field-level only, depth 1.
 - Dotted paths only. Literal dots in keys are rejected at schema registration.
+- A path addresses STORED DATA. A segment resolves an own property, or an array element by a
+  canonical index (`items.0`, never `items.00`); nothing on the prototype (`arr.length`,
+  `obj.constructor`) resolves, though a body carrying a key of that name does. `getPath` in
+  `src/core/matching.ts`; the reason it is not JavaScript property access is that SQL cannot
+  reproduce it, and the pre-filter must never disagree (see
+  [plan-audit-remediation.md](plan-audit-remediation.md), package E).
 
 ## Operator whitelist
 

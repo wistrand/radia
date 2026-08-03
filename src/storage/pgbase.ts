@@ -41,7 +41,7 @@ import {
   runtimeInsertValues,
 } from "./row.ts";
 import { firstByOrder, matchesRecord, orderRecords, pageRecords } from "../core/matching.ts";
-import { isTrivial, type JsonDialect, pushdown } from "./pushdown.ts";
+import { isTrivial, type JsonDialect, pushablePath, pushdown } from "./pushdown.ts";
 import { type Candidate, rankClaimable } from "../core/take.ts";
 import { addSeconds, minIso } from "../core/time.ts";
 import { newUlid } from "../core/ids.ts";
@@ -271,7 +271,8 @@ class PgJson implements JsonDialect {
     this.params.push(v);
     return `$${this.offset + this.params.length}`;
   }
-  /** Safe to inline: `pushablePath` has already restricted segments to `[A-Za-z0-9_]`. */
+  /** Safe to inline: `pushablePath` has already restricted segments to `[A-Za-z0-9_]`, minus
+   *  all-digit ones, which `#>` would resolve as an array subscript the oracle does not. */
   private at(path: string[]): string {
     return `${this.col} #> '{${path.join(",")}}'`;
   }
@@ -361,11 +362,11 @@ export class PgSqlAdapter implements StorageAdapter {
   async prepareKind(_kind: string, paths: string[]): Promise<void> {
     let created = 0;
     for (const path of paths) {
-      const segments = path.split(".");
-      // Same alphabet restriction as pushdown: the path is INLINED into DDL here, so anything
-      // outside it is skipped rather than escaped. A path that cannot be pushed down cannot
-      // benefit from statistics anyway.
-      if (!segments.every((s) => s.length > 0 && /^[A-Za-z0-9_]+$/.test(s))) continue;
+      // `pushablePath` itself, not a copy of its rule: the path is INLINED into DDL here, so
+      // anything it declines is skipped rather than escaped, and a path that cannot be pushed down
+      // cannot benefit from statistics anyway. The two drifted apart once already.
+      const segments = pushablePath(path);
+      if (!segments) continue;
       const name = `radia_stat_${segments.join("_")}`;
       if (name.length > 63) continue; // Postgres identifier limit; a path that long is pathological
       const existing = await this.sql.query<{ n: number }>(

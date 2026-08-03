@@ -25,6 +25,11 @@
 //     Range comparisons on strings are pushed only against an ASCII bound, under byte-order
 //     collation. See `asciiBound`.
 //   - **Array quantifiers** (`$any`/`$each`) are not pushed at all yet.
+//   - **A path addresses stored data, not an array index and not a prototype.** An all-digit
+//     segment means different elements to each dialect and to the oracle, so it is not pushed at
+//     all (see `pushablePath`); a prototype-shaped name (`length`, `constructor`) resolves for
+//     neither side, because `getPath` was tightened to own properties rather than teaching SQL
+//     about JavaScript.
 
 import type { CmpOp, MatchNode } from "./adapter.ts";
 
@@ -85,9 +90,28 @@ export interface JsonDialect {
  */
 const SEGMENT = /^[A-Za-z0-9_]+$/;
 
+/**
+ * An all-digit segment is where the two dialects and the oracle stop agreeing, in both directions
+ * at once, so it is declined at the shared root rather than patched per dialect:
+ *
+ *   - `items.0` against a JSON array. The oracle indexes element 0; Postgres' `#>` does too; but
+ *     SQLite's `$.items.0` addresses a KEY named "0" and is NULL for an array, and the `@>`
+ *     containment term Postgres pushes first asks about `{"items":{"0":v}}`, which an array does
+ *     not contain. Both EXCLUDE a record the oracle accepts, which is the unsound direction.
+ *   - `a.00` against a JSON array. Postgres integer-parses the segment to element 0 and matches
+ *     where the oracle (no such own property) does not. Over-inclusion is safe on its own, but the
+ *     node would be marked `exact`, and an exact filter carries the caller's LIMIT into SQL: the
+ *     page then fills with rows the oracle rejects and real matches below them are never fetched.
+ *
+ * The cost is that a kind declaring a digit segment loses pre-filtering on it and falls back to
+ * the oracle, which handles every path. No kind in this repo declares one.
+ */
+const ALL_DIGITS = /^[0-9]+$/;
+
 export function pushablePath(path: string): string[] | null {
   const parts = path.split(".");
-  return parts.length > 0 && parts.every((p) => SEGMENT.test(p)) ? parts : null;
+  const ok = (p: string) => SEGMENT.test(p) && !ALL_DIGITS.test(p);
+  return parts.length > 0 && parts.every(ok) ? parts : null;
 }
 
 /** A bound whose ordering is identical under UTF-16 code units and UTF-8 bytes (see below). */

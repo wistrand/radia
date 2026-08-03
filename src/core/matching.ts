@@ -239,12 +239,33 @@ function asObject(v: unknown, ctxKey: string): Record<string, unknown> {
 // Evaluation (the oracle)
 // ---------------------------------------------------------------------------
 
-/** Resolve a dotted path against a record body. Absent -> undefined (never null). */
+/** An array index as JSON can express it: `0`, `12`, never `00`, `+1` or `length`. */
+const ARRAY_INDEX = /^(0|[1-9][0-9]*)$/;
+
+/**
+ * Resolve a dotted path against a record body, over STORED DATA ONLY. Absent -> undefined (never
+ * null).
+ *
+ * Only own properties resolve, and an array is indexed only by a canonical index. Bare property
+ * access reached the prototype instead: `arr.length` returned a number and `obj.constructor` /
+ * `obj.toString` returned a function, for every record in the space. Nothing in the stored JSON
+ * holds those keys, so `storage/pushdown.ts` renders them as absent and the pre-filter EXCLUDES a
+ * record this said matched, which is the one direction that file may never take. The root fix is
+ * here rather than in the SQL: a prototype property is not data anybody put in the space, so no
+ * pattern should be able to route on it. A body that really carries a key named `length` or
+ * `constructor` still resolves, because that one IS data.
+ */
 export function getPath(root: unknown, path: string): unknown {
   let cur: unknown = root;
   for (const part of path.split(".")) {
     if (cur === null || typeof cur !== "object") return undefined;
-    cur = (cur as Record<string, unknown>)[part];
+    if (Array.isArray(cur)) {
+      if (!ARRAY_INDEX.test(part)) return undefined;
+      cur = cur[Number(part)];
+    } else {
+      if (!Object.hasOwn(cur, part)) return undefined;
+      cur = (cur as Record<string, unknown>)[part];
+    }
   }
   return cur;
 }

@@ -16,6 +16,8 @@
 import { assert, assertEquals } from "@std/assert";
 import type { Suite } from "../harness.ts";
 import { Space } from "../../src/core/space.ts";
+import { compilePattern, matchesRecord } from "../../src/core/matching.ts";
+import type { KindDef } from "../../src/core/kinds.ts";
 
 function newSpace(adapter: Parameters<Suite["run"]>[0]): Space {
   const space = new Space(adapter);
@@ -49,7 +51,117 @@ async function finds(space: Space, match: Record<string, unknown>, ids: string[]
   );
 }
 
+/**
+ * The path shapes where SQL, the two dialects, and the oracle each have their own instinct: an
+ * array index, a leading zero, a digit segment mid-path, and a name that is a property of every
+ * JavaScript object but of no JSON document. Declared as indexed paths because a kind may declare
+ * any non-empty segments (`validPath`), so none of this needs an exotic client to reach.
+ */
+const AWKWARD: KindDef = {
+  kind: "awkward",
+  indexedPaths: [
+    { path: "label", type: "keyword" },
+    { path: "arr.0", type: "keyword" },
+    { path: "arr.00", type: "keyword" },
+    { path: "arr.length", type: "integer" },
+    { path: "m.0", type: "keyword" },
+    { path: "m.00", type: "keyword" },
+    { path: "obj.constructor", type: "keyword" },
+    { path: "obj.toString", type: "keyword" },
+    { path: "deep.0.k", type: "keyword" },
+  ],
+};
+
+/** The fixture corpus, keyed by `label` so a failure names the record rather than a ULID. */
+const CORPUS: Record<string, unknown>[] = [
+  { label: "array", arr: ["a", "b"] },
+  { label: "digit-keys", m: { "0": "a", "00": "z" } },
+  { label: "proto-named-keys", obj: { constructor: "c", toString: "t" } },
+  { label: "plain-obj", obj: { other: 1 } },
+  { label: "nested-index", deep: [{ k: "v" }] },
+  { label: "empty-array", arr: [] },
+  { label: "bare", other: 1 },
+];
+
 export const pushdownSuites: Suite[] = [
+  {
+    // The guard for audit package E. Every case is differential: the same pattern goes through the
+    // adapter (pre-filter, then oracle over what came back) and through the BARE oracle over the
+    // same corpus, and the two result sets must be identical. That comparison is what catches
+    // under-return, since a record excluded by SQL never reaches the oracle to be rejected — the
+    // adapter simply answers with less. The explicit label list on each case then keeps the
+    // comparison honest, so a change that broke both halves the same way cannot pass.
+    name: "the pre-filter agrees with the oracle on array indexes, digit segments and prototype names",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind(AWKWARD);
+      const ids = new Map<string, string>();
+      for (const body of CORPUS) {
+        const { id } = await space.put({ kind: "awkward", body });
+        ids.set(id, body.label as string);
+      }
+
+      const all = await space.query({ kind: "awkward" }, 100);
+      assertEquals(all.length, CORPUS.length, "the unfiltered corpus is what both sides filter");
+
+      const differential = async (match: Record<string, unknown>, expected: string[], why: string) => {
+        const compiled = compilePattern({ kind: "awkward", match }, AWKWARD);
+        const oracle = all.filter((r) => matchesRecord(r, compiled)).map((r) => ids.get(r.id)!).sort();
+        const got = (await space.query({ kind: "awkward", match }, 100)).map((r) => ids.get(r.id)!).sort();
+        const pattern = JSON.stringify(match);
+        assertEquals(got, oracle, `pre-filter and oracle disagree on ${pattern}: ${why}`);
+        assertEquals(oracle, [...expected].sort(), `the oracle itself changed verdict on ${pattern}: ${why}`);
+      };
+
+      // An array element. The oracle indexes it; SQLite's `$.arr.0` is a KEY lookup and NULL over
+      // an array; the `@>` term Postgres pushes asks whether the array contains {"0": "a"}. Both
+      // dialects excluded this record before the segment stopped being pushed.
+      await differential({ "arr.0": "a" }, ["array"], "an array index must not be pushed");
+      // Leading zero: no such own property, so the oracle says no. Postgres' path parser reads
+      // `00` as subscript 0 and would have matched — and marked the node exact, so a caller's
+      // limit would ride along into SQL on a filter that over-includes.
+      await differential({ "arr.00": "a" }, [], "a leading-zero subscript is not a property");
+      // `length` is on the prototype, not in the document. The oracle used to resolve it to 2 and
+      // SQL saw nothing, so the record vanished from the answer instead of being rejected.
+      await differential({ "arr.length": 2 }, [], "an array length is not stored data");
+      await differential({ "arr.length": { $exists: true } }, [], "nor does it exist");
+      await differential({ "obj.toString": { $exists: true } }, ["proto-named-keys"], "nor does a method");
+      // The other half of that rule: a document that really carries those names is ordinary data
+      // and must still route.
+      await differential({ "obj.constructor": "c" }, ["proto-named-keys"], "a real key of that name routes");
+      // Digit segments over an object, where the disagreement is SQLite-only, and mid-path.
+      await differential({ "m.0": "a" }, ["digit-keys"], "a digit KEY is still a key");
+      await differential({ "m.00": "z" }, ["digit-keys"], "a leading-zero key likewise");
+      await differential({ "deep.0.k": "v" }, ["nested-index"], "a digit segment mid-path");
+      await differential({ label: { $exists: true } }, CORPUS.map((b) => b.label as string), "the control path");
+    },
+  },
+  {
+    name: "an unpushable digit segment does not carry the caller's limit into SQL",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind(AWKWARD);
+      // Non-matching records first, so they own the low ids and a pushed limit would return only
+      // misses. `arr.0` is exactly the shape that used to render as an exact filter matching
+      // nothing at all, which is worse: `take` reported an empty space holding ten records.
+      for (let i = 0; i < 50; i++) await space.put({ kind: "awkward", body: { label: "miss", arr: ["miss"] } });
+      const hits: string[] = [];
+      for (let i = 0; i < 10; i++) {
+        hits.push((await space.put({ kind: "awkward", body: { label: "hit", arr: ["hit"] } })).id);
+      }
+      const byId = [...hits].sort();
+
+      const page = await space.query({ kind: "awkward", match: { "arr.0": "hit" } }, 5);
+      assertEquals(page.map((r) => r.id), byId.slice(0, 5), "a limited query looks past the miss prefix");
+      assertEquals((await space.readOne({ kind: "awkward", match: { "arr.0": "hit" } }))?.id, byId[0]);
+
+      const claimed = await space.take({ pattern: { kind: "awkward", match: { "arr.0": "hit" } } }, {
+        leaseSeconds: 60,
+      });
+      assert(claimed, "and a claim on an array-index pattern finds work rather than an empty space");
+      assert(hits.includes(claimed!.record.id), "the claimed record is one of the matches");
+    },
+  },
   {
     name: "a JSON null is present, a missing key is not (SQL conflates them; the oracle must not)",
     run: async (adapter) => {
