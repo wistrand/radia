@@ -393,6 +393,323 @@ export async function summarizeWorkspaces(
 }
 
 /**
+ * One change to one file, addressed either by CONTENT or by POSITION.
+ *
+ * THE INVARIANT IS THAT EVERY EDIT CARRIES A PRECONDITION, and the two forms differ only in where it
+ * comes from. `oldString` IS its own precondition: the content both addresses the edit and verifies
+ * it, which is why it needs nothing else. A line range carries none — line 12 is whatever line 12
+ * currently is — so a stale base would corrupt silently instead of failing, and `expectDigest` is
+ * therefore REQUIRED there. That is one rule with two expressions rather than two ways to edit.
+ *
+ * Both exist because each is cheap where the other is not. Replacing a forty-line function by
+ * content means emitting those forty lines verbatim as `oldString`, so string matching costs
+ * O(size of the region) in the caller's output — the exact cost this operation exists to remove.
+ * A range costs O(1) plus a digest. Conversely a one-word change by range needs a fresh numbered
+ * read, where a string match needs nothing.
+ */
+export interface WorkspaceEdit {
+  path: string;
+  /** CONTENT form. Exact, and unique unless `replaceAll`. */
+  oldString?: string;
+  newString: string;
+  /** Required when `oldString` occurs more than once. Absent, a non-unique match is a REFUSAL. */
+  replaceAll?: boolean;
+  /** POSITION form: 1-based, INCLUSIVE, matching every tool that prints line numbers. Requires
+   *  `expectDigest`, and ranges within one batch may not overlap. */
+  startLine?: number;
+  endLine?: number;
+  /** The file's sha256 as the caller last saw it. Optional for the content form, REQUIRED for a
+   *  range, because a range has no other way to know the file has not moved under it. */
+  expectDigest?: string;
+}
+
+export interface EditInput {
+  name: string;
+  conversationId?: string;
+  edits?: WorkspaceEdit[];
+  /** New files, path -> contents. A path that already exists is a refusal, not an overwrite. */
+  add?: Record<string, string | Uint8Array>;
+  modes?: Record<string, "100644" | "100755">;
+  /** Paths to drop. A path that is not there is a refusal, not a no-op. */
+  remove?: string[];
+}
+
+/**
+ * Change a tree in place: edits, additions and removals, applied as ONE new version.
+ *
+ * The unit is one LOGICAL CHANGE rather than one string replacement, which is why adds and removes
+ * are here instead of in a second call. Real code changes span them ("add a module and wire it into
+ * main"), and splitting them would either leave "add one file to a twenty-file tree" costing a
+ * whole-tree rewrite — the exact cost this exists to remove — or turn one change into two versions
+ * a caller has to sequence. See agent_docs/plan-workspaces.md §10.1 for the alternatives declined.
+ *
+ * VALIDATE EVERYTHING, THEN WRITE ONCE. Every edit, add and remove is checked against the current
+ * bytes before a single artifact is written, so all-or-nothing falls out of the ordering rather than
+ * needing a mechanism, and there is no partial version to explain afterwards. Failures are reported
+ * TOGETHER: a caller that learns one problem per round trip fixes one problem per round trip.
+ *
+ * EXACT STRINGS, never a regex, a diff or a line range. A regex is a search predicate that is code;
+ * a diff puts a grammar between the caller and the file and fails partially; line ranges break under
+ * the concurrent writers this design assumes. And a non-unique `oldString` is an ERROR rather than a
+ * first-match, which is the safety property of the whole operation: silently editing the wrong
+ * occurrence is what would make this worse than rewriting the file.
+ *
+ * Only touched files are re-uploaded; everything else keeps its existing artifact, so the cost of a
+ * change is the size of the change. Labels need nothing explicit: the successor names its
+ * predecessor as a data parent, so the tree's union is inherited (§10.0).
+ */
+export async function editWorkspace(
+  client: RadiaClient,
+  input: EditInput,
+): Promise<
+  {
+    id: string;
+    treeDigest: string;
+    files: WorkspaceFile[];
+    changed: string[];
+    added: string[];
+    removed: string[];
+    forked: boolean;
+  }
+> {
+  const head = await readWorkspace(client, input.name, input.conversationId);
+  if (!head) throw new Error(`no workspace named ${JSON.stringify(input.name)} to edit`);
+
+  const edits = input.edits ?? [];
+  const adds = Object.entries(input.add ?? {});
+  const removes = input.remove ?? [];
+  if (edits.length === 0 && adds.length === 0 && removes.length === 0) {
+    throw new Error("editWorkspace needs at least one of `edits`, `add` or `remove`");
+  }
+
+  const byPath = new Map(head.files.map((f) => [f.path, f]));
+  const problems: string[] = [];
+  const rewritten = new Map<string, Uint8Array>();
+
+  // ── validate ─────────────────────────────────────────────────────────────────────────────────
+  // Fetch each edited file ONCE even when several edits touch it, and apply them in order so two
+  // edits to one file compose instead of racing over the same original bytes.
+  const editedPaths = [...new Set(edits.map((e) => e.path))];
+  const current = new Map<string, string>();
+  for (const path of editedPaths) {
+    const file = byPath.get(path);
+    if (!file) {
+      problems.push(`${path}: not in this workspace`);
+      continue;
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = await client.getArtifact(file.artifactId);
+    } catch (e) {
+      const gone = (e as { status?: number }).status === 410;
+      problems.push(
+        gone
+          ? `${path}: its payload was ERASED and cannot be edited; save a successor without this path`
+          : `${path}: unreadable (${e instanceof Error ? e.message : e})`,
+      );
+      continue;
+    }
+    // Verified, not believed — the same check `materialize` makes. A manifest is an ordinary record
+    // and its digests are claims; only the artifact's own digest is server-computed.
+    const actual = await sha256Hex(bytes);
+    if (actual !== file.digest) {
+      problems.push(`${path}: the manifest claims ${file.digest.slice(0, 12)}… but the artifact hashes to ${actual.slice(0, 12)}…`);
+      continue;
+    }
+    // A NUL means these are not text, and a string replacement over decoded binary would corrupt
+    // it silently. Refuse rather than mangle.
+    if (bytes.includes(0)) {
+      problems.push(`${path}: not a text file (contains NUL); replace it with add/remove instead`);
+      continue;
+    }
+    current.set(path, new TextDecoder().decode(bytes));
+  }
+
+  // RANGES LAST, AND DESCENDING. A range names a position, so applying one shifts every line below
+  // it: two ranges in one batch applied top-down would leave the second pointing at whatever moved
+  // into its place. Sorting descending means no edit ever moves a line an unapplied edit refers to,
+  // and overlapping ranges are refused outright rather than silently resolved. Content edits run
+  // first because they are position-independent, and any line numbers they shift are only consulted
+  // by the ranges that follow — which is why those ranges are validated against the ORIGINAL text.
+  const ordered = [...edits.entries()].sort(([, a], [, b]) => {
+    const ra = a.startLine !== undefined, rb = b.startLine !== undefined;
+    if (ra !== rb) return ra ? 1 : -1;
+    return ra ? (b.startLine ?? 0) - (a.startLine ?? 0) : 0;
+  });
+  const original = new Map(current);
+  const claimed = new Map<string, [number, number][]>();
+
+  for (const [i, edit] of ordered) {
+    const where = `edit ${i + 1} (${edit.path})`;
+    if (!current.has(edit.path)) continue; // already reported above
+    const byRange = edit.startLine !== undefined || edit.endLine !== undefined;
+    const byContent = edit.oldString !== undefined;
+    if (byRange === byContent) {
+      problems.push(`${where}: give either oldString or startLine/endLine, not ${byContent ? "both" : "neither"}`);
+      continue;
+    }
+    // The digest is optional for a content edit and REQUIRED for a range: content verifies itself,
+    // a position cannot. Checked for both when present.
+    if (byRange && !edit.expectDigest) {
+      problems.push(`${where}: a line range needs expectDigest, because a position cannot tell that the file moved under it`);
+      continue;
+    }
+    if (edit.expectDigest && edit.expectDigest !== byPath.get(edit.path)!.digest) {
+      problems.push(
+        `${where}: expected digest ${edit.expectDigest.slice(0, 12)}… but the file is now ` +
+          `${byPath.get(edit.path)!.digest.slice(0, 12)}…; re-read it before editing`,
+      );
+      continue;
+    }
+
+    if (byRange) {
+      // Validated against the ORIGINAL text: the numbers came from a read of that, and letting an
+      // earlier content edit move them would make the range mean something the caller never saw.
+      const lines = original.get(edit.path)!.split("\n");
+      const hadTrailing = lines.length > 0 && lines[lines.length - 1] === "";
+      const body = hadTrailing ? lines.slice(0, -1) : lines;
+      const start = edit.startLine ?? 0;
+      const end = edit.endLine ?? start;
+      if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start) {
+        problems.push(`${where}: startLine/endLine must be whole numbers with startLine <= endLine (1-based, inclusive)`);
+        continue;
+      }
+      if (end > body.length) {
+        problems.push(`${where}: lines ${start}-${end} but the file has ${body.length}`);
+        continue;
+      }
+      const taken = claimed.get(edit.path) ?? [];
+      if (taken.some(([s, e]) => start <= e && end >= s)) {
+        problems.push(`${where}: lines ${start}-${end} overlap another edit in this batch`);
+        continue;
+      }
+      taken.push([start, end]);
+      claimed.set(edit.path, taken);
+      // The replacement is spliced verbatim; a caller that wants a trailing newline includes one,
+      // exactly as with the content form.
+      const replacement = edit.newString === "" ? [] : edit.newString.replace(/\n$/, "").split("\n");
+      const now = current.get(edit.path)!.split("\n");
+      const nowBody = hadTrailing ? now.slice(0, -1) : now;
+      nowBody.splice(start - 1, end - start + 1, ...replacement);
+      current.set(edit.path, nowBody.join("\n") + (hadTrailing ? "\n" : ""));
+      continue;
+    }
+
+    const oldString = edit.oldString!;
+    if (oldString === edit.newString) {
+      problems.push(`${where}: oldString and newString are identical, so this edit does nothing`);
+      continue;
+    }
+    if (oldString === "") {
+      problems.push(`${where}: oldString is empty; use \`add\` to create a file`);
+      continue;
+    }
+    const text = current.get(edit.path)!;
+    const count = text.split(oldString).length - 1;
+    if (count === 0) {
+      // The commonest cause once reads are numbered: the caller pasted the `NNN\t` prefix along
+      // with the line. Say so, because "not found" alone sends them looking at whitespace.
+      const stripped = oldString.replace(/^\s*\d+\t/gm, "");
+      const hint = stripped !== oldString && text.includes(stripped)
+        ? "; it matches once the line-number prefixes are removed, so send the file's own text"
+        : " (whitespace and indentation are significant)";
+      problems.push(`${where}: oldString not found${hint}`);
+      continue;
+    }
+    if (count > 1 && !edit.replaceAll) {
+      problems.push(`${where}: oldString appears ${count} times; add more surrounding context to make it unique, or pass replaceAll`);
+      continue;
+    }
+    current.set(edit.path, edit.replaceAll ? text.split(oldString).join(edit.newString) : text.replace(oldString, edit.newString));
+  }
+
+  const removeSet = new Set(removes);
+  for (const path of removes) {
+    if (!byPath.has(path)) problems.push(`remove ${path}: not in this workspace`);
+  }
+  for (const [path] of adds) {
+    try {
+      validatePath(path);
+    } catch (e) {
+      problems.push(`add ${path}: ${(e as Error).message}`);
+      continue;
+    }
+    // An add onto an existing path is a refusal rather than an overwrite: "create" and "replace the
+    // contents of" are different intentions and the caller knows which one it meant.
+    if (byPath.has(path) && !removeSet.has(path)) problems.push(`add ${path}: already exists; edit it, or remove it first`);
+  }
+
+  if (problems.length > 0) {
+    throw new Error(
+      `editWorkspace(${JSON.stringify(input.name)}) made no changes; ${problems.length} problem` +
+        `${problems.length === 1 ? "" : "s"}:\n  ${problems.join("\n  ")}`,
+    );
+  }
+
+  // ── write ────────────────────────────────────────────────────────────────────────────────────
+  const changed: string[] = [];
+  for (const [path, text] of current) {
+    const bytes = new TextEncoder().encode(text);
+    if (await sha256Hex(bytes) === byPath.get(path)!.digest) continue; // an edit that restored the original
+    rewritten.set(path, bytes);
+    changed.push(path);
+  }
+  const added: string[] = [];
+  for (const [path, contents] of adds) {
+    rewritten.set(path, typeof contents === "string" ? new TextEncoder().encode(contents) : contents);
+    added.push(path);
+  }
+
+  const written = new Map<string, WorkspaceFile>();
+  for (const [path, bytes] of rewritten) {
+    const art = await client.putArtifact(bytes, {
+      mediaType: "application/octet-stream",
+      filename: path.split("/").pop(),
+      meta: { conversationId: input.conversationId ?? head.conversationId ?? "", owner: head.owner, workspace: input.name },
+    });
+    written.set(path, {
+      path,
+      mode: input.modes?.[path] ?? byPath.get(path)?.mode ?? "100644",
+      digest: art.digest,
+      artifactId: art.id,
+    });
+  }
+
+  // Untouched files keep their EXISTING artifact, which is the whole saving: the cost of a change is
+  // the size of the change, not the size of the tree.
+  const files = head.files
+    .filter((f) => !removeSet.has(f.path))
+    .map((f) => written.get(f.path) ?? f)
+    .concat([...written.values()].filter((f) => !byPath.has(f.path)));
+  files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+
+  const treeDigest = await treeDigestOf(files);
+  const body: WorkspaceManifest = { ...head, treeDigest, basedOn: head.id, files };
+  delete (body as { id?: string }).id;
+  const { id } = await client.put(
+    {
+      kind: "workspace",
+      body: body as unknown as Record<string, unknown>,
+      // Inheritance rides this edge and nothing else: the successor carries the predecessor's label
+      // union through `Space.computeTaint`. See §10.0.
+      parentIds: [head.id],
+    },
+    `workspace:${input.name}:${treeDigest}:after:${head.id}`,
+  );
+  return {
+    id,
+    treeDigest,
+    files,
+    changed,
+    added,
+    removed: removes,
+    // REPORTED, never refused: consistent with every other writer here. Both heads survive, and an
+    // edit inherits every file it did not mention, so the caller needs to know its base moved.
+    forked: await isForked(client, input.name, input.conversationId),
+  };
+}
+
+/**
  * Write a tree into a directory, so a sandbox can read it.
  *
  * This is `git checkout`, and it is the DANGEROUS direction, which is easy to miss because it looks
@@ -513,11 +830,27 @@ export const CAPTURE_LIMITS = { maxFiles: 2_000, maxBytes: 32 * 1024 * 1024 };
  *   - A count and a byte budget, both refused rather than truncated: a partial capture presented as
  *     a tree is the bounded-read-as-population bug wearing a filesystem.
  */
+/**
+ * NO `taint` OPTION, deliberately, and the distinction is the whole classification model:
+ *
+ *   an explicit RAISE  — a caller asserting something the graph does not know ("this tree came off
+ *     a filesystem") — is applied wherever the caller says, including every file artifact, because
+ *     raising is monotone and needs no trust. That is `writeWorkspace({taint})`.
+ *   INHERITANCE — a derived tree carrying what its predecessor carried — travels on the record
+ *     graph and nowhere else. `commitWorkspace` writes `parentIds: [manifest.id]`, so
+ *     `Space.computeTaint` unions the predecessor's labels into the successor with nothing
+ *     explicit anywhere.
+ *
+ * A write-back is pure inheritance: it has nothing of its own to assert. Labelling the artifacts it
+ * writes would be a denormalised copy of a graph fact, which is the thing `design-taint.md` argues
+ * against. The parameter used to exist and its one caller passed
+ * `{ taint: b.owner ? undefined : undefined }` — a dead ternary that read like a decision and was
+ * mistaken for a laundering hole by two separate reviews. See agent_docs/plan-workspaces.md §10.0.
+ */
 export async function captureWorkspace(
   client: RadiaClient,
   manifest: WorkspaceManifest,
   root: string,
-  opts: { taint?: string[] } = {},
 ): Promise<{ files: WorkspaceFile[]; changed: string[]; removed: string[]; unchanged: boolean }> {
   const before = new Map(manifest.files.map((f) => [f.path, f]));
   const found: WorkspaceFile[] = [];
@@ -560,7 +893,6 @@ export async function captureWorkspace(
         mediaType: "application/octet-stream",
         filename: entry.name,
         meta: { conversationId: manifest.conversationId ?? "", owner: manifest.owner, workspace: manifest.name },
-        ...(opts.taint?.length ? { taint: opts.taint } : {}),
       });
       found.push({ path: rel, mode, digest, artifactId: art.id });
       changed.push(rel);
@@ -580,6 +912,9 @@ export async function commitWorkspace(
   client: RadiaClient,
   manifest: WorkspaceManifest & { id: string },
   captured: { files: WorkspaceFile[]; unchanged: boolean },
+  /** A RAISE, never inheritance: labels the caller knows about and the graph does not (the run
+   *  reached the network). Inheritance from the predecessor happens through `parentIds` below and
+   *  needs nothing here. */
   opts: { taint?: string[] } = {},
 ): Promise<{ id: string; treeDigest: string; forked: boolean } | null> {
   if (captured.unchanged) return null;

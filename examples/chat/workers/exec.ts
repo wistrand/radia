@@ -619,7 +619,7 @@ await agentLoop(client, {
     let capture: { changed: string[]; removed: string[] } | undefined;
     if (wsWrite && wsRoot && wsManifest) {
       try {
-        const cap = await captureWorkspace(c, wsManifest, wsRoot, { taint: b.owner ? undefined : undefined });
+        const cap = await captureWorkspace(c, wsManifest, wsRoot);
         capture = { changed: cap.changed, removed: cap.removed };
         committed = await commitWorkspace(c, wsManifest, cap);
         if (committed) {

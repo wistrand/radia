@@ -237,6 +237,73 @@ exactly the attempt chain.
 content-addressed cache directory keyed by digest, hardlinked in, is the standard fix and is easier
 to design for than to retrofit.
 
+## Where a tree's classification lives
+
+**The manifest is the carrier; the union is the semantics.** Decided 2026-08-03, and both halves are
+forced rather than chosen.
+
+The union, because a jailed run is OPAQUE: it can read one file and write those bytes into another,
+and nothing in the substrate sees it. So a changed file inherits the whole tree's labels, not its
+own file's. Per-file inheritance would be more useful and would be a lie. Labels are therefore sticky
+within a tree and come down only by declassify, which is what monotone means.
+
+The manifest, because one edge already answers the question. `commitWorkspace` writes
+`parentIds: [manifest.id]` and the exec worker's result names the manifest too, so `computeTaint`
+unions the predecessor's labels into both with nothing explicit anywhere. Individual file artifacts
+stay BARE on purpose: a label exists only where a lineage walk is too slow
+([design-taint.md](design-taint.md)), and labelling every file as well is a denormalised copy of a
+graph fact that can drift from it.
+
+The cost is that the carrier is only as good as the edges. Any derived record that fails to name the
+manifest loses the classification silently — the documented parent-edge hole, landing in a specific
+place. That is the thing to test, not the propagation, which the runtime does.
+
+### The trigger that reopens this
+
+Manifest-only is the REVERSIBLE choice, not the permanently right one, and it is worth being exact
+about which argument holds it up — because the obvious one does not.
+
+*The argument that does not apply.* "A label exists only where a lineage walk is too slow"
+([design-taint.md](design-taint.md)) presupposes that a walk exists. From a file artifact there is
+none: the manifest references it as a BODY field, not a parent edge, so neither `lineage` nor
+`children` connects the two. The rule was cited for this decision and does not reach it.
+
+*The arguments that do.* Recovery exists by QUERY rather than by walk — an artifact's body carries
+`workspace: <name>`, indexed, so `artifact → readWorkspace(name) → labels` answers an auditor, which
+is the audience the taint design says should walk the log. And adding labels to file artifacts later
+is purely additive and monotone: no migration, nothing invalidated. Removing them would not be. With
+no barrier in use yet, the sparse option costs nothing and keeps the dense one available.
+
+**Revisit the moment anyone wants a barrier at FILE granularity rather than tree granularity.**
+`share_artifact` is where it will surface first: a capability URL for one file of a classified tree
+serves bytes from a record carrying no label, and the recovery query fails there twice over — it
+resolves the workspace NAME to the current head, whose labels may differ from the version that
+artifact belonged to, and it is a per-candidate query on a path measured at ~125x the claim itself.
+At that point label the file artifacts too. Until then, do not.
+
+One related asymmetry to keep in view. The union rule is FORCED for a run (the jail is opaque, so
+bytes can move between files unseen) and merely CHOSEN for an edit, where the substrate performs the
+change and knows which artifact the bytes came from. They were unified so that one record type has
+one propagation rule. If tree-scope saturation ever becomes the problem the boolean was — every
+workspace carrying every label, and an allowlist grant able to claim none of them — the edit path is
+where to split first, because it is the one where per-file inheritance is sound.
+
+## Editing in place
+
+Planned, not built: [plan-workspaces.md](plan-workspaces.md) §10. The shape is settled — an exact
+`oldString` → `newString` match, never a regex (a search predicate that is code), a diff (a grammar
+between the model and the file) or a line range (breaks under the concurrent writers this design
+assumes); a non-unique match is an error rather than a first-match; a BATCH of edits is one version,
+because a version-per-edit turns `versions` from "how many attempts" into "how many keystrokes"; and
+an optional `expectDigest` makes the lost update an error instead of a merge.
+
+Two things worth knowing before that lands. It is ERGONOMICS rather than capability — a run with
+`write: true` can already edit a file — so it does not justify a patch format or a merge strategy.
+And the hazard it closes is not the token cost that motivates it: `writeWorkspace` builds the
+manifest from exactly what it is passed, so a partial save truncates the tree rather than patching
+it, and the current instruction ("save the whole tree again with your fix") fights the model's
+economics until something removes the incentive.
+
 ## What this buys that git does not
 
 **Lead with per-file erasure.** Anyone who has run `git filter-repo` or BFG to purge a leaked

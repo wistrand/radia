@@ -11,11 +11,12 @@
 // The rest answers Phase 1 of agent_docs/plan-workspaces.md: does a churning tree-as-records hold
 // up, and where does the record body limit bite. No execution, no sandbox, no materialisation.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../../examples/operator.ts";
 import {
   captureWorkspace,
+  editWorkspace,
   CAPTURE_LIMITS,
   commitWorkspace,
   forksOf,
@@ -480,6 +481,298 @@ Deno.test("workspace: a classified tree does not launder its labels through the 
     // launders. Same shape as omitting any parent edge, and not something materialising can fix.
     const laundered = await c.put({ kind: "run_result", body: { stdout: "from a file read" } });
     assertEquals((await c.getRecord(laundered.id))!.runtimeMeta.taint, []);
+  });
+});
+
+Deno.test("workspace: an edit changes what it names and keeps every artifact it does not", async () => {
+  await withSpace(async (c) => {
+    const v1 = await writeWorkspace(c, {
+      name: "edited",
+      owner: OWNER,
+      files: { "main.py": "print(1)\n", "lib.py": "X = 1\n", "README.md": "docs\n" },
+    });
+    const r = await editWorkspace(c, {
+      name: "edited",
+      edits: [{ path: "main.py", oldString: "print(1)", newString: "print(2)" }],
+    });
+    assertEquals(r.changed, ["main.py"]);
+    assertEquals(r.added, []);
+    assertEquals(r.removed, []);
+
+    // THE SAVING, and the only reason this exists: an untouched file keeps its EXISTING artifact, so
+    // the cost of a change is the size of the change rather than the size of the tree.
+    const before = new Map(v1.files.map((f) => [f.path, f.artifactId]));
+    const after = new Map(r.files.map((f) => [f.path, f.artifactId]));
+    assertEquals(after.get("lib.py"), before.get("lib.py"), "untouched files are not re-uploaded");
+    assertEquals(after.get("README.md"), before.get("README.md"));
+    assert(after.get("main.py") !== before.get("main.py"), "the edited file is a new artifact");
+
+    assertEquals(new TextDecoder().decode(await c.getArtifact(after.get("main.py")!)), "print(2)\n");
+    // One successor, based on the head, so the history is a chain rather than a pile.
+    const versions = await c.query({ kind: "workspace", match: { name: "edited" } }, 10);
+    assertEquals(versions.length, 2);
+    assertEquals((await readWorkspace(c, "edited"))!.basedOn, v1.id);
+  });
+});
+
+Deno.test("workspace: a non-unique match is REFUSED, which is the safety property", async () => {
+  await withSpace(async (c) => {
+    await writeWorkspace(c, { name: "dup", owner: OWNER, files: { "a.py": "x = 1\nx = 1\n" } });
+    // Silently editing the wrong occurrence is what would make an edit worse than a rewrite, so a
+    // count above one is an error and the message says how many, not "not found".
+    const err = await assertRejects(
+      () => editWorkspace(c, { name: "dup", edits: [{ path: "a.py", oldString: "x = 1", newString: "x = 2" }] }),
+      Error,
+    );
+    assert(/appears 2 times/.test(err.message), err.message);
+    assertEquals((await readWorkspace(c, "dup"))!.files.length, 1);
+    assertEquals((await c.query({ kind: "workspace", match: { name: "dup" } }, 10)).length, 1, "nothing was written");
+
+    // …and replaceAll is the explicit opt-in.
+    const r = await editWorkspace(c, {
+      name: "dup",
+      edits: [{ path: "a.py", oldString: "x = 1", newString: "x = 2", replaceAll: true }],
+    });
+    assertEquals(
+      new TextDecoder().decode(await c.getArtifact(r.files[0].artifactId)),
+      "x = 2\nx = 2\n",
+    );
+  });
+});
+
+Deno.test("workspace: a batch is validated whole, reports EVERY problem, and writes nothing on failure", async () => {
+  await withSpace(async (c) => {
+    await writeWorkspace(c, { name: "batch", owner: OWNER, files: { "a.py": "keep\n", "b.py": "keep\n" } });
+    const err = await assertRejects(
+      () =>
+        editWorkspace(c, {
+          name: "batch",
+          edits: [
+            { path: "a.py", oldString: "keep", newString: "ok" }, // fine
+            { path: "b.py", oldString: "absent", newString: "x" }, // not found
+            { path: "gone.py", oldString: "a", newString: "b" }, // no such file
+          ],
+          add: { "a.py": "dup\n" }, // already exists
+          remove: ["nope.py"], // not there
+        }),
+      Error,
+    );
+    // A caller that learns one problem per round trip fixes one problem per round trip.
+    assert(/4 problems/.test(err.message), err.message);
+    for (const fragment of ["b.py", "gone.py", "a.py: already exists", "nope.py"]) {
+      assert(err.message.includes(fragment), `expected ${fragment} in:\n${err.message}`);
+    }
+    // Validate-then-write means there is no partial version to explain.
+    assertEquals((await c.query({ kind: "workspace", match: { name: "batch" } }, 10)).length, 1);
+  });
+});
+
+Deno.test("workspace: one batch mixing edit, add and remove is ONE version", async () => {
+  await withSpace(async (c) => {
+    await writeWorkspace(c, { name: "mixed", owner: OWNER, files: { "main.py": "old\n", "drop.py": "bye\n" } });
+    // The unit is one LOGICAL change. "Add a module and wire it into main" is the ordinary shape of
+    // a code change, and splitting it would make one change into two versions to sequence.
+    const r = await editWorkspace(c, {
+      name: "mixed",
+      edits: [{ path: "main.py", oldString: "old", newString: "new" }],
+      add: { "lib/util.py": "def helper(): ...\n" },
+      remove: ["drop.py"],
+    });
+    assertEquals(r.changed, ["main.py"]);
+    assertEquals(r.added, ["lib/util.py"]);
+    assertEquals(r.removed, ["drop.py"]);
+    assertEquals(r.files.map((f) => f.path), ["lib/util.py", "main.py"]);
+    assertEquals((await c.query({ kind: "workspace", match: { name: "mixed" } }, 10)).length, 2, "one version, not three");
+  });
+});
+
+Deno.test("workspace: expectDigest is optional, and oldString is already a precondition", async () => {
+  await withSpace(async (c) => {
+    const v1 = await writeWorkspace(c, { name: "pre", owner: OWNER, files: { "a.py": "one\n" } });
+    const digest = v1.files[0].digest;
+    await editWorkspace(c, { name: "pre", edits: [{ path: "a.py", oldString: "one", newString: "two" }] });
+
+    // A stale digest is caught and NAMED, rather than merged.
+    const err = await assertRejects(
+      () =>
+        editWorkspace(c, {
+          name: "pre",
+          edits: [{ path: "a.py", oldString: "two", newString: "three", expectDigest: digest }],
+        }),
+      Error,
+    );
+    assert(/re-read it before editing/.test(err.message), err.message);
+
+    // …and WITHOUT the field, a change to the region still fails on its own, which is why the
+    // precondition is optional: `oldString` is the specific staleness check that matters.
+    await assertRejects(
+      () => editWorkspace(c, { name: "pre", edits: [{ path: "a.py", oldString: "one", newString: "x" }] }),
+      Error,
+      "not found",
+    );
+  });
+});
+
+Deno.test("workspace: an edit inherits the tree's labels and refuses binary and erased files", async () => {
+  await withSpace(async (c) => {
+    await writeWorkspace(c, { name: "cls", owner: OWNER, files: { "a.py": "x\n" }, taint: ["file"] });
+    const r = await editWorkspace(c, { name: "cls", edits: [{ path: "a.py", oldString: "x", newString: "y" }] });
+    // Nothing explicit: the successor names its predecessor, so `computeTaint` unions (§10.0).
+    assertEquals((await c.getRecord(r.id))!.runtimeMeta.taint, ["file"]);
+
+    // A string replacement over decoded binary corrupts it silently, so refuse instead of mangling.
+    await writeWorkspace(c, { name: "bin", owner: OWNER, files: { "b.dat": new Uint8Array([1, 0, 2]) } });
+    await assertRejects(
+      () => editWorkspace(c, { name: "bin", edits: [{ path: "b.dat", oldString: "\u0001", newString: "z" }] }),
+      Error,
+      "not a text file",
+    );
+
+    // And an erased payload says so, with the remedy, rather than failing as "not found".
+    const ws = await writeWorkspace(c, { name: "gone", owner: OWNER, files: { "s.txt": "secret\n" } });
+    await c.shredArtifact(ws.files[0].artifactId, { acknowledgeShared: true, reason: "leaked" });
+    const err = await assertRejects(
+      () => editWorkspace(c, { name: "gone", edits: [{ path: "s.txt", oldString: "secret", newString: "x" }] }),
+      Error,
+    );
+    assert(/ERASED/.test(err.message), err.message);
+  });
+});
+
+Deno.test("workspace: a line range replaces a region without re-emitting it, and needs a digest", async () => {
+  await withSpace(async (c) => {
+    const v1 = await writeWorkspace(c, {
+      name: "ranged",
+      owner: OWNER,
+      files: { "a.py": "L1\nL2\nL3\nL4\nL5\n" },
+    });
+    const digest = v1.files[0].digest;
+
+    // A position carries NO precondition of its own — line 2 is whatever line 2 currently is — so
+    // the digest is what makes it safe, and it is required rather than encouraged.
+    const err = await assertRejects(
+      () => editWorkspace(c, { name: "ranged", edits: [{ path: "a.py", startLine: 2, endLine: 3, newString: "X\n" }] }),
+      Error,
+    );
+    assert(/needs expectDigest/.test(err.message), err.message);
+
+    // With one, the region goes away without ever being re-emitted — the saving that content
+    // matching cannot give, since it would have to carry L2 and L3 verbatim.
+    const r = await editWorkspace(c, {
+      name: "ranged",
+      edits: [{ path: "a.py", startLine: 2, endLine: 3, newString: "TWO\nTHREE\nEXTRA\n", expectDigest: digest }],
+    });
+    assertEquals(
+      new TextDecoder().decode(await c.getArtifact(r.files[0].artifactId)),
+      "L1\nTWO\nTHREE\nEXTRA\nL4\nL5\n",
+    );
+  });
+});
+
+Deno.test("workspace: ranges in one batch cannot overlap, and do not shift each other", async () => {
+  await withSpace(async (c) => {
+    const v1 = await writeWorkspace(c, { name: "multi", owner: OWNER, files: { "a.py": "1\n2\n3\n4\n5\n6\n" } });
+    const digest = v1.files[0].digest;
+
+    // Applying top-down would leave the second range pointing at whatever moved into its place, so
+    // ranges apply DESCENDING. Both here are stated against the file the caller actually read.
+    const r = await editWorkspace(c, {
+      name: "multi",
+      edits: [
+        { path: "a.py", startLine: 2, endLine: 2, newString: "TWO\n", expectDigest: digest },
+        { path: "a.py", startLine: 5, endLine: 5, newString: "FIVE\nFIVE-B\n", expectDigest: digest },
+      ],
+    });
+    assertEquals(
+      new TextDecoder().decode(await c.getArtifact(r.files[0].artifactId)),
+      "1\nTWO\n3\n4\nFIVE\nFIVE-B\n6\n",
+      "the earlier range did not move the later one",
+    );
+
+    // Overlap is refused rather than resolved: there is no correct answer and picking one silently
+    // is the same class of mistake as a first-match replacement.
+    const now = (await readWorkspace(c, "multi"))!.files[0].digest;
+    const over = await assertRejects(
+      () =>
+        editWorkspace(c, {
+          name: "multi",
+          edits: [
+            { path: "a.py", startLine: 1, endLine: 3, newString: "A\n", expectDigest: now },
+            { path: "a.py", startLine: 3, endLine: 4, newString: "B\n", expectDigest: now },
+          ],
+        }),
+      Error,
+    );
+    assert(/overlap/.test(over.message), over.message);
+  });
+});
+
+Deno.test("workspace: an edit names ONE form, and a pasted line-number prefix says so", async () => {
+  await withSpace(async (c) => {
+    const v1 = await writeWorkspace(c, { name: "forms", owner: OWNER, files: { "a.py": "alpha\nbeta\n" } });
+    for (const [edit, fragment] of [
+      [{ path: "a.py", newString: "x" }, "neither"],
+      [{ path: "a.py", oldString: "alpha", newString: "x", startLine: 1, endLine: 1, expectDigest: v1.files[0].digest }, "both"],
+    ] as const) {
+      const err = await assertRejects(() => editWorkspace(c, { name: "forms", edits: [edit] }), Error);
+      assert(err.message.includes(fragment), `expected ${fragment} in: ${err.message}`);
+    }
+
+    // Numbered reads are what make ranges usable, and they bring back the oldest failure in this
+    // family: the caller pastes the `NNN\t` prefix along with the line. "Not found" alone sends them
+    // hunting through whitespace, so the message names the actual cause.
+    const err = await assertRejects(
+      () => editWorkspace(c, { name: "forms", edits: [{ path: "a.py", oldString: "     1\talpha", newString: "x" }] }),
+      Error,
+    );
+    assert(/line-number prefixes/.test(err.message), err.message);
+  });
+});
+
+Deno.test("workspace: labels survive the RETURN trip, which is the leg the name promised", async () => {
+  await withSpace(async (c) => {
+    // The case above covers materialising OUT. It was named for a round trip and tested one leg, so
+    // a write-back could have laundered and this suite would have stayed green. It does not — the
+    // successor names its predecessor as a data parent, so `computeTaint` unions — but "it does not"
+    // was an inference until something asserted it, and an audit read the missing assertion as a
+    // hole (agent_docs/plan-audit-remediation.md, package R).
+    await writeWorkspace(c, {
+      name: "roundtrip",
+      owner: OWNER,
+      files: { "data.txt": "secret\n", "keep.txt": "untouched\n" },
+      taint: ["file"],
+    });
+    const before = (await readWorkspace(c, "roundtrip"))!;
+
+    const root = await Deno.makeTempDir({ prefix: "radia-roundtrip-" });
+    try {
+      await materialize(c, before, root);
+      await Deno.writeTextFile(`${root}/data.txt`, "changed by a run\n");
+      const cap = await captureWorkspace(c, before, root);
+      const committed = (await commitWorkspace(c, before, cap))!;
+
+      // THE ASSERTION. Nothing was passed explicitly; the label arrives on the parent edge.
+      assertEquals((await c.getRecord(committed.id))!.runtimeMeta.taint, ["file"], "the successor inherits");
+
+      // A result naming the successor inherits it too, which is how the exec worker's tool_result
+      // stays classified (`parentIds: [..., wsParent]`).
+      await c.registerKind({ kind: "run_result", indexedPaths: [], claimable: false });
+      const result = await c.put({ kind: "run_result", body: { ok: true }, parentIds: [committed.id] });
+      assertEquals((await c.getRecord(result.id))!.runtimeMeta.taint, ["file"]);
+
+      // The file artifacts the write-back produced are BARE, on purpose: inheritance travels on the
+      // graph, and a copy on every artifact is a denormalised graph fact that can drift from it.
+      // An explicit RAISE is the other thing and still labels artifacts — see the case above, where
+      // `writeWorkspace({taint})` does exactly that. Two mechanisms, not one inconsistently applied.
+      const after = (await readWorkspace(c, "roundtrip"))!;
+      const changed = after.files.find((f) => f.path === "data.txt")!;
+      assertEquals((await c.getRecord(changed.artifactId))!.runtimeMeta.taint, []);
+      // …while a file the run did not touch still points at the ORIGINAL artifact, which was raised.
+      const kept = after.files.find((f) => f.path === "keep.txt")!;
+      assertEquals((await c.getRecord(kept.artifactId))!.runtimeMeta.taint, ["file"]);
+    } finally {
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+    }
   });
 });
 

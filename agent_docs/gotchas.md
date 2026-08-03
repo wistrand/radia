@@ -1068,6 +1068,32 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   Two fixes: `read_workspace` exists, and `list_workspaces` reports the PATHS rather than a count,
   because "what files are in X" had no data source either and was already being answered from memory
   one question earlier.
+- **A RAISE and an INHERITANCE look alike and need opposite rules.** Asking "should file artifacts
+  carry labels at all" admitted no answer that was right for both: a caller asserting what the graph
+  does not know ("this tree came off a filesystem") may label whatever it likes, because raising is
+  monotone and needs no trust; a derived tree carrying what its predecessor carried must travel on
+  the record graph and nowhere else, or the copy can drift from the fact. `writeWorkspace` does the
+  first, a write-back and an edit do the second. The question that produced a decision was the wrong
+  question, and taking its answer literally would have deleted a tested feature.
+- **Check a cited rule's PRECONDITION before leaning on it.** "A label exists only where a lineage
+  walk is too slow" was cited to justify leaving workspace file artifacts unlabelled — but there is
+  no lineage walk from an artifact to its manifest (the reference is a body field, not a parent
+  edge), so the rule does not reach the case it was used to decide. The decision survived on two
+  different arguments (recovery by query, and additivity making it reversible), which is lucky
+  rather than sound. A rule invoked outside its precondition is worse than no rule: it ends the
+  discussion while leaving the reasoning wrong, and the next reader inherits the citation, not the
+  check.
+- **A dead ternary reads as a decision, which is why it survives review.**
+  `{ taint: b.owner ? undefined : undefined }` sat in the exec worker's write-back call and looked
+  deliberate enough that a reviewer and an audit both read it as a laundering hole. It was neither:
+  the parent edge already carried the labels, so the parameter was redundant rather than unfilled.
+  A leftover expression whose branches are identical is worse than a missing argument, because a
+  missing argument reads as missing.
+- **A defect that SHRINKS under checking deserves the same write-up as one that grows.** The same
+  finding went from "write-back carries no labels at all" to "artifacts only" to "correct by design",
+  across two corrections, because each check narrowed it. Recording only the confirmed defects
+  teaches the reader that reviews find bugs; recording the walk-backs teaches them to check first,
+  which is the more useful habit and the one that produced the right answer here.
 - **Two branches of one function, one of which checked its credential's status and one of which did
   not.** `resolveCredential` checked `agent_run` for `status === "stopped"` AND `expiresAt`, then
   returned `{ok: true}` for `agent_definition` on the mere EXISTENCE of a record — no status, no

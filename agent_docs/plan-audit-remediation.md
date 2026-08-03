@@ -1,6 +1,6 @@
 # Plan: audit remediation
 
-> Status: E, G, H, I and L–Q are open; **K is closed** (2026-08-03); everything else is closed and
+> Status: E, G, H, I and L–R are open; **K is closed** (2026-08-03); everything else is closed and
 > its guards pass (`deno task conformance`: 421 passed, 0 failed). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
@@ -37,6 +37,7 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | O   | Multi-instance freshness and ordering   | P1       | Wakeup latency; auth-relevant id races |
 | P   | Contracts nothing checks                | P2       | Drift in exactly the claims held loudest |
 | Q   | Designed features unreachable           | P2       | A built feature no caller can invoke   |
+| R   | Dead taint parameter; half-tested guard | P2       | Legibility, not leakage (see the entry) |
 
 Packages A, B, C, D, F and J are closed. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
@@ -153,6 +154,32 @@ Guard: three conformance cases, written against the run-stop case so the two can
 the token stops minting everywhere (revoked from a Space that never minted it, like the run-stop
 case), running work is untouched and still separately stoppable, and a definition naming a
 privileged principal is refused while an ordinary `human:` one is not.
+
+## Package R: a dead taint parameter, and a guard that tests one leg (P2)
+
+**Downgraded twice while being written, which is the part worth recording.** It was filed as
+"write-back launders classification labels (P1)" on the strength of
+`captureWorkspace(c, wsManifest, wsRoot, { taint: b.owner ? undefined : undefined })` in
+`examples/chat/workers/exec.ts` — a ternary whose branches are identical. Checking the propagation
+path found the successor manifest carries `parentIds: [manifest.id]` and the run's result carries
+`parentIds: [..., wsParent]`, so `Space.computeTaint` unions the predecessor's labels into both with
+no explicit taint anywhere. Nothing launders. The claim went from "carries no labels at all" to
+"artifacts only" to "correct by design".
+
+What remains, after the 2026-08-03 decision that the union is the semantics and the MANIFEST is the
+carrier (see [plan-workspaces.md](plan-workspaces.md) §10.0):
+
+- The dead ternary should go, and `captureWorkspace` should not take a `taint` option at all — file
+  artifacts are bare by decision, so the parameter implies a mechanism that is not the mechanism.
+  `commitWorkspace` keeps one, narrowed to a monotone RAISE rather than inheritance.
+- The conformance case "a classified tree does not launder its labels through the filesystem" covers
+  `materialize` and not the return trip, so it is named for a round trip and tests the outbound leg.
+- The carrier depends on every derived record naming the manifest. `exec.ts` does; a future path
+  that forgets loses the labels silently, which is the documented parent-edge hole landing somewhere
+  specific enough to test.
+
+Guard: materialise a labelled tree, change it through a real run, assert the successor manifest AND
+the tool_result still carry the label.
 
 ## Package L: watch streams cache authorization for their lifetime (P1)
 

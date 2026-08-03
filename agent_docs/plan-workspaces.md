@@ -4,7 +4,7 @@ Sequence and status. The reasoning lives in [design-workspaces.md](design-worksp
 working tree is, and the git relationship) and [design-execution.md](design-execution.md) (why the
 language question is an isolation question). Read those first; this file assumes them.
 
-> **Status: Phases 0-9 DONE.** Workspaces, write-back, `check`, fork detection, `sandbox` records,
+> **Status: Phases 0-9 DONE; Phase 10 (editing in place) planned, not started.** Workspaces, write-back, `check`, fork detection, `sandbox` records,
 > a second backend (bubblewrap), and selection by capability name (`run_javascript`, `run_python`).
 > Phase 7 answered the selection question with neither of the two options it was written to choose
 > between; see there. Phases 8 and 9 were added after the fact, both from live use rather than from
@@ -71,6 +71,10 @@ Each is scoped to answer its question. Do not merge them.
 | 4 | Fork detection (`basedOn`) **(done)** | Is concurrent divergence visible? | 5 |
 | 5 | `sandbox` record, ONE backend | Does the record shape describe a real jail? | — |
 | 6 | A second backend **(done)** | What breaks when the guarantee stops being uniform? | — |
+| 7 | Selection by capability name **(done)** | Who decides which language runs? | — |
+| 8 | Git export **(done)** | Is the git correspondence real, or only shaped like it? | — |
+| 9 | The read side **(done)** | What does an agent do when it cannot read? | — |
+| 10 | Editing in place | Does the immutable version model survive fine-grained change? | 3, 5 |
 
 **Phases 0-5 need no new isolation mechanism.** Every model stress worth finding is reachable with
 the Deno sandbox that already exists. Multi-language execution adds a large security surface and NO
@@ -428,6 +432,254 @@ grant regardless. Where relevance genuinely differs from permission, MARK the ro
 no reason given. A permanent failure is a RESULT, never a throw. Both the runner and the reader now
 say the payload was erased, that it is permanent, and that the fix is a successor tree without that
 path.
+
+### Phase 10: editing in place
+
+**The question:** does a version-per-write model survive changes an order of magnitude smaller than
+a version? Every phase so far wrote a whole tree at a time, so "a version" and "a unit of work" were
+the same thing. An edit breaks that, and the interesting failures are all downstream of it: version
+inflation, fork frequency, and the classification a derived byte carries.
+
+*Ordered by model risk, like every phase here, which puts the security prerequisite first and the
+ergonomics second even though the ergonomics are what was asked for.*
+
+#### 10.0 Prerequisite: settle the carrier, which turned out to be smaller than it looked — **DONE**
+
+**Decided 2026-08-03.** Two rules, and they fit together rather than competing:
+
+- **The UNION of the tree is the semantics.** A changed file inherits the whole tree's labels, not
+  its own file's. This is forced rather than chosen: a jailed run is opaque, so it can read
+  `secret.txt` and write those bytes into `out.txt` with nothing in the substrate able to see it.
+  Per-file precision would be more useful and would be a lie. Labels are therefore sticky within a
+  tree, cleared only by declassify — which is what monotone means and is accepted.
+- **The MANIFEST is the carrier.** File artifacts stay bare — the REVERSIBLE choice rather than the
+  permanently right one, and held up by additivity (labelling artifacts later is monotone and needs
+  no migration) plus recovery by query (`artifact.workspace` → `readWorkspace`), NOT by the
+  lineage-walk density rule, whose precondition fails here. `design-workspaces.md`, "The trigger
+  that reopens this", records what revisits it: a barrier wanted at file granularity, which
+  `share_artifact` will surface first.
+
+*And with those two, the mechanism is already complete.* This section began as "close the laundering
+hole" and the hole is not there:
+
+```
+commitWorkspace   parentIds: [manifest.id]        the successor manifest inherits the union
+exec.ts (result)  parentIds: [..., wsParent]      the run's RESULT inherits it too
+```
+
+`Space.computeTaint` unions data parents, so a labelled tree propagates through write-back and
+through every result that names the manifest, with no explicit taint anywhere. The claim that write-
+back launders was wrong, and was corrected twice on the way down: from "carries no labels at all" to
+"artifacts only" to "correct by design". Recorded because a defect that shrinks under checking is
+worth the same write-up as one that grows.
+
+What is actually wrong is smaller and is about legibility, not leakage:
+
+1. **A dead parameter that implies the wrong mechanism.** `examples/chat/workers/exec.ts` passes
+   `{ taint: b.owner ? undefined : undefined }` — a ternary whose branches are identical, so it
+   reads as a decision and is a no-op. Under the rules above, `captureWorkspace` should not take a
+   `taint` option at all: artifacts are bare by decision. `commitWorkspace` keeps one, narrowed to
+   what it is for — a monotone RAISE by a caller who knows something the graph does not (the run
+   reached the network), never inheritance, which the parent edge does.
+2. **A guard named for a round trip that tests one leg.** "A classified tree does not launder its
+   labels through the filesystem" passes today and covers `materialize` only. The return trip —
+   materialise a labelled tree, change it through a real run, assert the successor and the result
+   still carry the label — is the assertion the name promises.
+3. **The carrier is only as good as the edges.** Every derived record must name the manifest or its
+   successor; `exec.ts` does, and a future path that forgets loses the labels silently. That is the
+   documented hole in [design-taint.md](design-taint.md) ("a caller that omits a parent edge omits
+   its labels") landing in a specific place, so it wants a specific test rather than a note.
+
+**Done.** `captureWorkspace` lost its `taint` option, the dead ternary in `exec.ts` is gone, and a
+return-trip conformance case asserts the successor manifest and a result naming it both inherit the
+label with nothing passed explicitly.
+
+*The decision needed one more distinction than the question captured, and it is the useful part.*
+Taken literally, "the manifest is the carrier, file artifacts stay bare" would have deleted a tested,
+deliberate feature: `writeWorkspace({taint})` labels every file artifact, and the existing case
+asserts it with a comment explaining that this is what makes per-file barring possible. The coherent
+reading separates two things that look alike:
+
+  an explicit RAISE — a caller asserting what the graph does not know ("this tree came off a
+    filesystem") — applies wherever the caller says, artifacts included, because raising is monotone
+    and needs no trust.
+  INHERITANCE — a derived tree carrying what its predecessor carried — travels on the record graph
+    and nowhere else.
+
+`writeWorkspace` does the first and keeps its behaviour; a write-back and an edit are purely the
+second and now pass nothing. Two mechanisms, not one applied inconsistently. Worth noticing that the
+question as asked ("should artifacts carry labels at all") admitted no answer that was right for both.
+
+**This did not block 10.1.** Nothing labels a workspace today — the chat's `save_workspace` passes
+no `taint`, which is right, since the bytes are the model's own and provenance rides the message
+chain. So there is no live leak to race. Do 1 and 2, then start the edit tool, which inherits a
+mechanism that works.
+
+*What an EDIT carries, decided by the same two rules.* The union of the tree, on the successor
+manifest, through `basedOn` — identical to write-back. Per-file would be sound for an edit (unlike a
+run, the substrate performs the change and knows which artifact the bytes came from), and it is
+still not worth having: two propagation rules for one kind of record is how the two disagree later.
+
+#### 10.1 `editWorkspace` in `extensions/` — **DONE**
+
+`editWorkspace(client, {name, conversationId?, edits, add?, remove?})`, beside `writeWorkspace`.
+An edit is `{path, oldString, newString, replaceAll?, expectDigest?}`.
+
+**Decided 2026-08-03.** Seven choices; each is recorded with the alternative it beats, because every
+one of them has a plausible other answer and the reasoning is the part that will not be obvious in
+six months.
+
+*The atomic unit is ONE LOGICAL CHANGE, not one string replacement.* So the call takes edits, file
+ADDS and file REMOVES together and writes a single version. Real code changes routinely span them
+("add a module and wire it into main"), and the alternatives both fail on the same case: an
+edit-only tool leaves "add one file to a twenty-file tree" costing a whole-tree rewrite, which is the
+token problem this phase exists to fix; a separate merge-in tool turns one logical change into two
+versions the model has to sequence. The cost accepted is that `edit` is no longer purely a string
+replacement and the surface carries three verbs.
+
+*TWO ADDRESSING FORMS, one invariant.* Never a regex (a search predicate that is CODE, the wrong
+direction for a project whose routing language is deliberately data) and never a diff (a grammar
+between the model and the file, failing partially). But content and POSITION both, because the rule
+that matters is not string-versus-line, it is that **every edit carries a precondition**:
+
+  `oldString` IS its own precondition — the content addresses the edit and verifies it, so it needs
+    nothing else.
+  a line range has none — line 12 is whatever line 12 currently is — so `expectDigest` is REQUIRED
+    there, and with one it is exactly as safe.
+
+An earlier draft of this plan dismissed ranges as "breaking under any concurrent change". True of
+UNPROTECTED ranges, and the protection was already specified two paragraphs later without the two
+being connected. The correction came from the observation that models edit by line number readily
+once a read gives them numbered output, which is worth taking seriously rather than designing
+against.
+
+Both exist because each is cheap where the other is not. Replacing a forty-line function by content
+means emitting those forty lines verbatim as `oldString`: string matching costs O(size of the
+region), which is the very cost this phase exists to remove, and it removes it only for small
+changes. A range costs O(1) plus a digest. A one-word change is the reverse — a range would need a
+fresh numbered read where a match needs nothing.
+
+Two rules the position form needs and the content form does not: ranges apply DESCENDING, so an
+earlier one never moves a line a later one refers to, and overlapping ranges in one batch are
+refused rather than resolved, because there is no correct answer and picking one silently is the
+same mistake as a first-match replacement. Ranges are validated against the text the caller READ,
+not against the text a preceding content edit produced.
+
+*The cost accepted: numbered reads bring back the oldest failure in this family.* `read_workspace`
+must number its output for ranges to be usable, and a caller will paste the `NNN\t` prefix into
+`oldString`. Not preventable, so it is DIAGNOSED: a not-found match retries with the prefixes
+stripped and, if that matches, says so, because "not found" alone sends the caller hunting through
+whitespace.
+
+*A non-unique `oldString` is an ERROR, not a first-match.* The safety property of the whole tool:
+silently editing the wrong occurrence is what would make it worse than a rewrite. `replaceAll` is
+the explicit opt-in, and the refusal says how many were found.
+
+*Validate everything, then write once.* Every `oldString`, every add's path, every remove's presence
+is checked against the current bytes BEFORE any artifact is written. All-or-nothing then falls out
+of the ordering rather than needing a mechanism, and there is no partial version to explain.
+
+*Report ALL failures, not the first.* A model that gets one failure per round trip fixes them one
+per round trip. This costs nothing and is the difference between one retry and five.
+
+*`expectDigest` is OPTIONAL, and the reason is that `oldString` is already a precondition.* If
+another writer changed the region being edited, the match fails on its own — the specific staleness
+that matters, caught for free. `expectDigest` adds only the case where someone changed a DIFFERENT
+part of the same file, which is real but narrower, so it is available and not mandatory. It requires
+`read_workspace` to start returning the file's digest, which is a coupled change to make in the same
+step or the field is unusable.
+
+*A fork is REPORTED, never refusing the write.* Consistent with `save_workspace` and
+`commitWorkspace`, and with the design's stance throughout: detection, not prevention, because
+nothing is lost and both heads survive. The argument for refusing was real and was declined — an
+edit implicitly inherits every file it does not mention, so a stale base carries the other head's
+state in a way an explicit whole-tree save does not — but a second propagation rule for one record
+type is the cost, and the project has one rule everywhere else. Revisit only if a real session shows
+an edit built on a superseded head doing damage the report did not prevent.
+
+Concurrency needs no new machinery beyond that: read the head, apply, write with `basedOn: head.id`,
+and the existing detection reports divergence. What DOES change is frequency — edits make forks
+common rather than rare, which promotes the `forked` report from a safety net to a load-bearing path.
+Batching is most of the mitigation.
+
+Labels follow §10.0 unchanged: the successor manifest inherits the tree's union through `basedOn`,
+file artifacts stay bare, nothing explicit anywhere.
+
+NOT normative, unlike `treeDigestOf` and `validatePath`: nothing attests to an edit and no second
+implementation has to agree byte for byte. It gets a contract test, not a spec.
+
+**Done** (`editWorkspace` in `extensions/ts/workspace.ts`, six cases in the contract suite). Two
+things surfaced while building that the decisions did not anticipate:
+
+*Two edits to one file had to compose, not race.* Each edited file is fetched ONCE and the edits
+apply in sequence to the accumulating text. Applying each against the original bytes would make the
+second silently lose the first, which is the same class of bug as a first-match replacement and just
+as quiet.
+
+*An edit that restores the original writes nothing.* After applying, each file is re-hashed and
+dropped from the write set if it matches what the manifest already had — so an edit-and-revert pair
+does not manufacture a version, matching `commitWorkspace`'s existing "unchanged writes nothing".
+
+Measured on the concurrency question the decision left open: two writers editing DIFFERENT regions of
+one file from the same base both succeed, both heads survive with the same `basedOn`, and `forked`
+comes back true from both. Nothing is lost and the divergence is visible, which is the behaviour the
+"report, never refuse" choice was made for.
+
+#### 10.2 `edit_workspace` in the chat, and rewriting `save_workspace`'s description
+
+The tool is a thin wrapper. The DESCRIPTION work is the part that will decide whether it is used, and
+this example has hit the overlapping-description trap three times (`save_content`/`run_javascript`,
+then `save_workspace` arriving as a third, then `run_javascript`/`run_python`). The incumbent
+currently *instructs* the behaviour the new tool exists to replace:
+
+> "Saving the same name again replaces the tree… so iterating means saving the whole tree again with
+> your fix, not patching in place."
+
+That sentence is correct today and becomes the bug tomorrow. Both descriptions have to name the other
+and state the condition that selects it: a NEW tree or a wholesale rewrite goes to `save_workspace`,
+a change to a file that already exists goes to `edit_workspace`. Guard it in `smoke-save.ts` the way
+the other three boundaries are guarded — read back from the published `capability` records, not from
+imports.
+
+#### 10.3 What this is NOT, and the bound it puts on the work
+
+`run_python {workspace, write: true}` can already edit a file today. So this is ERGONOMICS, not new
+capability, and it has to beat "write a Python script that does a string replace and round-trip it
+through a jail" — which it easily does for a small change, and which is the reason not to build a
+patch format, a merge strategy, or a diff grammar to go with it.
+
+The measured claim to make afterwards, since this phase is justified by a number nobody has taken:
+tokens emitted per iteration of a real debugging loop, before and after. The storage saving is zero
+and should be stated as zero — `writeWorkspace` already dedupes by content, so an unchanged file in a
+re-saved tree moves no bytes. The waste is entirely the model's output.
+
+#### 10.4 Verification
+
+- uniqueness: two occurrences and no `replaceAll` is a refusal that says how many it found
+- a failed edit in a batch leaves the tree untouched, with no partial version written, and reports
+  EVERY failure rather than the first
+- one batch mixing an edit, an add and a remove produces exactly ONE version
+- an add whose path already exists, and a remove whose path does not, are refusals rather than
+  silent no-ops
+- `expectDigest` mismatch errors and names the file, rather than merging; and an edit WITHOUT one
+  still fails on a changed region, because `oldString` is itself a precondition
+- labels survive an edit (10.0's answer, applied here): the successor carries the tree's union
+- a concurrent edit forks visibly, reports it, and loses neither side
+- the descriptions name each other, read back from the running fleet
+- `read_workspace` returns the file digest `expectDigest` needs (the coupled change, tested together
+  or the field is decorative)
+
+#### 10.5 The hazard this closes, which is not the one that was asked about
+
+`writeWorkspace` builds the manifest from EXACTLY what it is passed — there is no merge with the
+previous version — so a partial save does not patch a tree, it truncates it, and the head silently
+loses every file the model did not retype. The old version survives, so nothing is destroyed, but the
+current tree is wrong and nothing says so.
+
+The request was about token cost. The reason to do it is that the current instruction fights the
+model's economics: told to retype 500 lines to change three, a model under context pressure will
+eventually send only the file it changed. An edit tool removes the incentive rather than restating
+the rule, which is the same lesson as every other description fix in this example.
 
 ## Open, and better decided with Phase 1 evidence
 
