@@ -249,6 +249,21 @@ still records that a file with that path and digest existed (see
 [design-data-model.md](design-data-model.md), "Erasure"). The single-archive shape loses this
 completely, which is the strongest reason to reject it.
 
+**And that surviving record is the caveat this section has to carry, because it sits right under the
+headline claim.** The manifest keeps the path AND the plaintext sha256 of the erased file, in a body
+that has no erasure path of its own — so `credentials/prod-db.txt` outlives its own payload, and
+anyone with a candidate secret and read access to the manifest can hash it and confirm that exact
+content was in that tree. A workspace is the WORST case for this in the whole system: the artifact
+record alone leaks the digest, and the manifest adds the filename next to it, which is often the
+more telling half.
+
+So the operational chore is genuinely gone and the guarantee is narrower than "the leaked credential
+is erased". A shredded build output, dataset or document is gone in every practical sense. A shredded
+credential is unreadable and still confirmable, and its PATH is plaintext forever. If the tree ever
+held something that cannot survive being confirmed, the remedy is not a better shred: it is that the
+value should not have been committed to a space, exactly as with git. What this design removes is the
+blast radius, not the disclosure.
+
 Then: every file version content-addressed and attributable to a RUN; the dependency set inside the
 record, which a lockfile only claims (postinstall scripts, registry drift and yanked versions all
 mean a lockfile does not prove what bytes ran); grants scoping which workspace an agent may touch,

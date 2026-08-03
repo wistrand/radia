@@ -45,8 +45,11 @@ diagnostics use age/state heuristics, not pattern-match analysis).
 - `body_sha256` hashes **plaintext**, and the event chain hashes content hashes, not
   content, so crypto-shredding a payload leaves the chain verifiable. **Built for artifacts**
   (`Space.shredArtifact`, `POST /v0/ops/records/{id}/shred`), and only for artifacts: record bodies
-  are plaintext JSON because the routing language matches on them, so they have no erasure path. See
-  [design-data-model.md](design-data-model.md), "Erasure".
+  are plaintext JSON because the routing language matches on them, so they have no erasure path. The
+  same property that keeps the chain verifiable is what bounds erasure: the digest it hashes stays in
+  an unerasable body, so a shredded payload remains CONFIRMABLE to anyone holding a candidate.
+  Erasure protects high-entropy payloads; see [design-data-model.md](design-data-model.md),
+  "Erasure".
 - **An erasure can stop holding, and that is an observability problem rather than an enforcement
   one.** Shredding destroys the runtime's copy; the content address stays valid, so anyone holding
   the payload can store it again and every record referencing it reads once more. It happened by

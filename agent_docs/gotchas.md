@@ -1099,6 +1099,21 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   plus a present blob is a reversed erasure, derivable in one `stat`, reported by `Space.erasures`,
   `GET /v0/ops/erasures` and `radia doctor`. Scoped callers get the field OMITTED rather than zero,
   because "no erasure was undone" is the one reassurance nobody should receive on no evidence.
+- **A measurement that settles one question gets read as settling the next one.** Phase 1 measured
+  manifest SCALING and found the ~6 300-entry cap, which genuinely settles where a dependency set
+  lives (out of line, no choice). `plan-workspaces.md` then wrote "SETTLED", and the adjacent
+  question — whether the materialisation cache that decision requires is cheap or even buildable —
+  was never measured and is still unbuilt. When a measurement decides something, write down what it
+  did NOT decide, or the confidence leaks sideways.
+- **Erasure leaves a confirmation oracle, and the argument against it was already in the repo,
+  pointed at the neighbouring case.** The plaintext sha256 lives in the artifact record's body,
+  which has no erasure path, so a shredded payload stays confirmable to anyone with a candidate —
+  while `BlobCipher.storageName` HMACs the same value precisely because a storage name must reveal
+  nothing about its content. Two layers, opposite postures, one documented. And
+  `design-data-model.md` already reasoned that a retained `body_sha256` leaves a low-entropy body
+  brute-forceable, concluding "the digest that makes artifact erasure safe is the thing that makes
+  body erasure unsafe" — its own counter-example, carried one case short. When a doc states a
+  hazard, check the sentence next to it for the case it was not applied to.
 - **Erasure by content cannot mean "these bytes may never exist here again".** A pre-write check
   refusing any payload whose digest was ever shredded was written and reverted the same hour: it
   poisons a content address for the whole space, so shredding an empty file or `"hello\n"` blocks

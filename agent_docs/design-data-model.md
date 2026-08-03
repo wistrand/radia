@@ -286,7 +286,7 @@ valid after the payload is destroyed, so the chain still verifies and the space 
 artifact with this digest was here, and was erased". A plain row delete would take that away, which
 is why erasure is a successor record and not a deletion.
 
-Five properties that are decisions, not details:
+Six properties that are decisions, not details:
 
 - **Under a KEK this is crypto-shredding**, and `BlobStore.delete` destroys the key BEFORE the
   ciphertext, so an interrupted erase leaves unreadable bytes rather than readable ones. Without a
@@ -301,6 +301,26 @@ Five properties that are decisions, not details:
   the caller passes `acknowledgeShared`.
 - **A shredded read is `410`, never `404`.** "Erased" and "never existed" must not be the same
   answer, or an auditor cannot tell a destroyed record from a mistyped id.
+- **The retained digest is a CONFIRMATION ORACLE, and this is the limit of what erasure buys.**
+  `ArtifactDef.digest` is the sha256 of the plaintext and lives in the artifact record's BODY, which
+  has no erasure path — so after a shred, anyone who can read that record and who holds a candidate
+  payload can hash it and confirm that this exact content was here. The blob layer takes the
+  opposite posture on the same value and says so: `BlobCipher.storageName` HMACs the digest because
+  a storage name "reveals nothing about the content it addresses". The record layer keeps it in
+  plaintext, permanently, on purpose — the chain verifies over it and `shredOf` answers `410` from
+  it — so the two layers disagree by design and only one of them used to admit it.
+  **A workspace manifest compounds this**: it carries the path beside the digest, so
+  `credentials/prod-db.txt` survives its own payload.
+
+  Not fixable without giving up what the carve-out is for: HMAC the digest in the record and content
+  addressing stops working for legitimate readers, and the event chain loses the value it hashes. So
+  the honest statement is a scoping one rather than a defect, and it is the sentence an operator
+  needs before deciding whether a shred was sufficient: **erasure protects HIGH-ENTROPY payloads.**
+  A destroyed document, image or key file is gone in every practical sense, because nobody can
+  produce a candidate to test. A destroyed password, an API key of known format, a short piece of
+  PII — a name, an address, a phone number — remains confirmable to anyone with a guess and read
+  access to the record. Where that is not acceptable, the payload must never have been an artifact
+  in this space; erasure after the fact cannot get it back.
 - **An erasure can stop holding, and the honest answer is to REPORT it, not to prevent it.** The
   content address stays valid, so anyone holding the payload can store it again; the blob returns
   and every record referencing it reads once more. It happened by accident before anyone tried it:
@@ -323,8 +343,15 @@ routing language matches on them, so there is no erasure path for a body. In `ex
 message text a person typed lives in a `message` body, which means the chat can erase the files it
 produced and not the conversation that produced them. Closing that needs body redaction, a separate
 carve-out with its own hard problem: keeping `body_sha256` after redacting a low-entropy body (a
-name, an email, a phone number) leaves it brute-forceable, so the digest that makes artifact erasure
-safe is the thing that makes body erasure unsafe. Not built, and not to be bolted onto this one.
+name, an email, a phone number) leaves it brute-forceable.
+
+That argument used to end "so the digest that makes artifact erasure safe is the thing that makes
+body erasure unsafe", which was its own counter-example and stood here uncorrected for a while. The
+retained digest does not make artifact erasure safe; it makes artifact erasure CONFIRMABLE, by
+exactly the reasoning above (see the sixth property). Bodies are worse only in degree — a body's
+digest is unavoidable where an artifact's is at least out of line — and the entropy caveat is the
+same one. Reason from the property, not from the old sentence. Not built, and not to be bolted onto
+this one.
 
 **Finding every derived copy is the part most systems cannot do.** Erasure's hard half is not the
 original, it is the copies: which results quoted it, which artifacts came from it. `parent_ids`

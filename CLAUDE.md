@@ -260,8 +260,14 @@ live at the top of the relevant `agent_docs/` file, not here.
   the content address stays valid. A record BODY has no erasure path, because bodies must stay
   plaintext JSON for matching. So the existing "artifact bytes never travel inside a record" rule is
   also the erasure boundary: extend it from "too large for a body" to "erasable, whatever its size".
-  Erasure is by CONTENT (identical payloads are one blob) and operator-only. **It destroys the
-  runtime's copy; it does not make those bytes unstorable.** Anyone holding the payload can write it
+  Erasure is by CONTENT (identical payloads are one blob) and operator-only. **It protects
+  HIGH-ENTROPY payloads only.** The plaintext sha256 stays in the artifact record's body, which has
+  no erasure path, so anyone holding a candidate can hash it and confirm the content was here: a
+  destroyed document is gone in every practical sense, a destroyed password or short piece of PII is
+  merely unreadable. That is inherent (the chain verifies over that digest and `shredOf` answers 410
+  from it), so it is a scoping rule and not a defect: content that cannot survive being confirmed
+  must never become an artifact here. **Erasure also destroys the runtime's copy only; it does not
+  make those bytes unstorable.** Anyone holding the payload can write it
   again, the blob returns to the same content address, and every record referencing it reads once
   more, at which point the erasure silently stops holding. Refusing a write whose digest was once
   shredded is NOT the fix and was tried: it poisons a content address for the whole space (shred an
