@@ -360,6 +360,15 @@ const shared = await toolCall("share_workspace", { workspace: "solver" }) as {
   note?: string;
   error?: string;
 };
+// The affordance has to travel with the RESULT, not sit in a description. A model holding a freshly
+// split multi-file page reasoned that opaque artifact URLs made relative links impossible and told
+// the user no link was possible — with share_workspace in its tool list the whole time.
+const sited = await toolCall("save_workspace", { name: "asite", files: { "index.html": "<h1>hi</h1>\n", "style.css": "h1{}\n" } }) as Record<string, unknown>;
+check("saving a tree with an index.html says it is a browsable site", sited.site === true, JSON.stringify(sited.note ?? "").slice(0, 60));
+check("…and names share_workspace at the moment it applies", /share_workspace/.test(String(sited.note)));
+const plain = await toolCall("save_workspace", { name: "nosite", files: { "a.py": "x\n" } }) as Record<string, unknown>;
+check("…and a tree that is not a site says nothing", plain.site === undefined);
+
 check("a tree shares as a URL", typeof shared.url === "string" && shared.files === 2, JSON.stringify(shared.error ?? shared));
 // solver has no index.html, so the base URL opens nothing — said rather than handed over silently.
 check("…and a tree with no index.html says the base URL opens nothing", shared.entry === null && /no index.html/.test(shared.note ?? ""));

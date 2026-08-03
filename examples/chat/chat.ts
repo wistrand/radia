@@ -43,9 +43,9 @@ import { denoSandbox } from "../../extensions/ts/sandbox.ts";
 import { declareSandbox } from "../../extensions/ts/sandbox-registry.ts";
 import { ToolSet } from "./client/turn.ts";
 import { Thread } from "./client/thread.ts";
-import { runTurn } from "./client/turn.ts";
+import { cancelTurn, runTurn, TurnCancelled } from "./client/turn.ts";
 import { watchWakeups } from "./client/waiting.ts";
-import { lineReader, write } from "./client/terminal.ts";
+import { dim, lineReader, watchCancel, write } from "./client/terminal.ts";
 import { reviewGrantRequests } from "./client/grants.ts";
 import { sleep } from "./util.ts";
 
@@ -255,6 +255,7 @@ while (true) {
     write(`\ncould not record that message: ${(e as Error).message}\n`);
     continue;
   }
+  let stopWatching: (() => void) | null = null;
   try {
     // The hook is what collapses the escalation loop into ONE turn: while a `request_grant` is in
     // flight the person is asked here, the decision is written back as a record, and the tool call

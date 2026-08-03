@@ -898,13 +898,35 @@ Deno.test("workspace: a tree serves as a multi-file site, and only what the mani
     assertEquals(root.headers.get("content-type"), "text/html");
     // Inline, because this is the ISOLATED origin. On the main origin HTML is always a download.
     assert(root.headers.get("content-disposition")?.startsWith("inline"), root.headers.get("content-disposition") ?? "");
-    // The policy names the artifact ORIGIN rather than 'self': the document is sandboxed without
-    // allow-same-origin, so it is opaque and 'self' would match nothing.
     const csp = root.headers.get("content-security-policy") ?? "";
-    assert(/script-src [^;]*http/.test(csp), csp);
-    // …and gains no network. `connect-src` is unlisted, so `default-src 'none'` still denies fetch.
+    // ALLOW-SAME-ORIGIN, which a single artifact does not get and a tree must. Without it the
+    // document sits in an opaque origin, every subresource fetch is CROSS-origin, and a
+    // `<script type="module">` fails on missing CORS while a classic `<script src>` survives — so a
+    // page split into a module and a stylesheet, which is what a model produces when asked to split
+    // one, did not load at all.
+    assert(/sandbox allow-scripts allow-same-origin/.test(csp), csp);
+    assert(/script-src [^;]*'self'/.test(csp), csp);
+    // …and still gains NO network. `connect-src` is unlisted, so `default-src 'none'` denies fetch,
+    // XHR and WebSocket. That is the property doing the real work, and it survives the widening.
     assert(!csp.includes("connect-src"), csp);
     await root.body?.cancel();
+
+    // A single artifact keeps the tighter policy: the widening is scoped to trees, which are the
+    // only thing that needs to load its own files.
+    const one = await fetch(`${base}/style.css`);
+    await one.body?.cancel();
+    const single = await c.putArtifact(new TextEncoder().encode("<b>hi</b>"), { mediaType: "text/html" });
+    const capOne = await c.artifactCapability(single.id) as { url: string };
+    const alone = await fetch(capOne.url);
+    const soloCsp = alone.headers.get("content-security-policy") ?? "";
+    assert(!soloCsp.includes("allow-same-origin"), soloCsp);
+    await alone.body?.cancel();
+
+    // A browser asks for this on every navigation and it is never in a tree: 204, not a blocked
+    // resource in the console that reads like a fault.
+    const fav = await get("/favicon.ico");
+    assertEquals(fav.status, 204);
+    await fav.body?.cancel();
 
     // Media types come from the PATH now. Every file used to be application/octet-stream, which is
     // why no workspace file could render, one at a time or otherwise.

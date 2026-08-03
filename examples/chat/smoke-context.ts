@@ -106,6 +106,27 @@ const interior = assembleContext(row(0, "system", "s"), [
 ]);
 check("a reply orphaned mid-window is trimmed too", !interior.messages.some((m) => m.role === "tool"));
 
+// ── a CANCELLED turn has to leave the thread sendable ────────────────────────────────────────────
+// Escape lands in exactly the window that bricks a conversation: after the assistant's `tool_calls`
+// is on the thread and before its reply. `runToolCall` answers the call it interrupted for the same
+// reason a timeout does, so the pairing pass below has something to pair.
+const cancelled = assembleContext(row(0, "system", "s"), [
+  row(1, "user"),
+  callRow(2, ["call_x"]),
+  { index: 3, role: "tool", tool_call_id: "call_x", content: JSON.stringify({ error: "the user cancelled this turn" }) },
+  row(4, "user", "next question"),
+]);
+const cancelledCall = cancelled.messages.find((m) => m.tool_calls);
+check("a cancelled turn keeps its tool_calls", !!cancelledCall);
+check(
+  "…because the cancellation ANSWERED the call",
+  cancelledCall?.tool_calls?.every((tc) => cancelled.messages.some((m) => m.role === "tool" && m.tool_call_id === tc.id)) ?? false,
+);
+// The counterexample, so the assertion above is not passing for an unrelated reason: without the
+// appended reply the pairing pass drops the call, and the turn the user cancelled is simply gone.
+const unrepaired = assembleContext(row(0, "system", "s"), [row(1, "user"), callRow(2, ["call_x"]), row(3, "user")]);
+check("…and without one it would have been dropped", !unrepaired.messages.some((m) => m.tool_calls));
+
 // A conversation with no system message at all must not fabricate one.
 const e = assembleContext(undefined, [row(0, "user")]);
 check("no system message means no head", e.messages.length === 1 && e.messages[0].role === "user");

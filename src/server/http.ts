@@ -124,6 +124,12 @@ export function makeArtifactHandler(space: Space) {
       // A bare directory serves `index.html`, the one convention a site needs and the only one.
       const raw = rest.slice(slash + 1);
       const path = decodeURIComponent(raw === "" || raw.endsWith("/") ? `${raw}index.html` : raw);
+      // A browser asks for this on every navigation and it is never in a tree. Answering 404 is
+      // correct and fills the console with a blocked-resource warning that looks like a real fault;
+      // 204 says "there isn't one" without the noise.
+      if (path === "favicon.ico" && !space.resolveCapabilityPath(cap, path)) {
+        return new Response(null, { status: 204 });
+      }
       const id = space.resolveCapabilityPath(cap, path);
       // One answer for an unknown capability, an expired one and a path that is not in the tree: a
       // probe must not be able to map what a tree contains.

@@ -28,7 +28,8 @@ export { RESERVED_KINDS };
 // Re-exported because every client that reads a registry (capabilities, models, kinds, an app's
 // own kinds) needs the SAME latest-wins-minus-retired rule the runtime uses. Six hand-rolled
 // copies of this loop existed before it was shared, and the failure mode is silent.
-export { activeByKey, activeSet, grantKey, isRetired, newestByKey, RETIRED } from "./registry.ts";
+export { activeByKey, activeSet, grantKey, isRetired, newestByKey, readRegistry, RETIRED } from "./registry.ts";
+export type { RegistryView } from "./registry.ts";
 
 export type { AckResult, KindDef, Lease, Page, PutRequest, RadiaRecord, SpaceEvent, Pattern };
 

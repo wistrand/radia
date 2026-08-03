@@ -7,7 +7,7 @@
 // per-turn decision belongs to a worker, which is what makes this loop short enough to read.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
-import { activeByKey, newestByKey } from "../../../sdk/ts/client.ts";
+import { activeByKey, newestByKey, readRegistry } from "../../../sdk/ts/client.ts";
 import type { ChatMessage, ToolDef } from "../provider/openrouter.ts";
 import type { Thread } from "./thread.ts";
 import { sessionOwner } from "../space/roles.ts";
@@ -386,15 +386,28 @@ export class ToolSet {
    *  it, and a saved name that collided would silently change what a call does. */
   private async refresh(): Promise<void> {
     // Capabilities first: what the workers serve, one per tool name.
-    // `dir: "desc"` is essential, not a flourish. A limited query returns the OLDEST matches,
-    // and a busy space accumulates capability records faster than it has tools, so an ascending
-    // page of 500 on a space with 505 records showed every tool EXCEPT the one published most
-    // recently. The chat then ran without a tool it had been given, and the model correctly
-    // reported it did not have it.
-    const caps = activeByKey<{ tool: string; def: ToolDef }>(
-      await this.client.query({ kind: "capability" }, 500, { dir: "desc" }),
+    //
+    // PAGED TO EXHAUSTION, because a bounded read of a registry is the bug this project keeps
+    // rediscovering. The first version read an ascending page of 500 and lost the NEWEST tool on a
+    // space with 505 records; `dir: "desc"` fixed the direction and left the boundedness, which just
+    // moves which tools vanish — from the newest to the least recently republished. Measured on a
+    // real space mid-session: 737 capability records for 33 tools, so the page was within 1.5x of
+    // silently dropping tools again, and the failure is invisible (the model simply never mentions
+    // a capability it was given).
+    //
+    // CLAUDE.md says registry state is read through `readRegistry`, never a hand-rolled
+    // `query(kind, N)`. This was the hand-rolled one.
+    const view = await readRegistry<{ tool: string; def: ToolDef }>(
+      (limit, after) => this.client.query({ kind: "capability" }, limit, { dir: "desc", after }),
       (b) => b.tool,
     );
+    const caps = view.entries;
+    // A partial read means the tool list is a guess. Say so once rather than running a turn that
+    // silently lacks something: "the assistant does not have that tool" is indistinguishable from
+    // "the assistant did not think to use it", and the second is what everyone assumes.
+    if (!view.complete) {
+      write(dim(`\n[tool list may be incomplete: stopped after ${view.entries.size} tools]\n`));
+    }
     // A capability whose `def` is not a tool definition is skipped rather than passed on. One
     // malformed record would otherwise break EVERY turn (the whole list goes to the model), and
     // publishing is only as trustworthy as the workers holding a `capability: put` grant.

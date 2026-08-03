@@ -858,6 +858,21 @@ denies fetch, XHR and WebSocket exactly as before — the property that was alwa
 served with the type its path implies, `/` serving `index.html`, and `/nope.txt`, `/%2e%2e/secret`,
 `/INDEX.HTML` and `/style.css/` all refused because they are not keys in the index.
 
+*And then a browser found what the test could not.* A tree document also needs `allow-same-origin`,
+which a single artifact deliberately does not get. Without it the document sits in an OPAQUE origin,
+which makes every subresource fetch cross-origin: a classic `<script src>` survives that and a
+`<script type="module">` does not, because module fetches are CORS-mode and this server has no
+business sending `Access-Control-Allow-Origin`. So the first real page — split into markup, a
+stylesheet and an ES module, which is exactly what a model produces when asked to split one — loaded
+nothing. The conformance case passed throughout, because it asserted headers rather than execution,
+and a classic script is the shape a header check cannot tell apart from a module.
+
+What the widening costs is bounded and worth stating: a tree shares the ARTIFACT origin with other
+trees and can read storage there. Nothing else writes any — that origin serves capability-gated bytes
+and holds no credential, which is why it exists — and reaching another tree still needs its
+capability. What it does NOT cost is network egress: `connect-src` stays unlisted under
+`default-src 'none'`, which was always the property doing the real work rather than opacity.
+
 *Authorization stays at MINT.* Every artifact in the index is checked against the caller's read grant
 once, at mint, bounded by the tree — the property `share_artifact` already has, and what keeps the
 served path credential-free.

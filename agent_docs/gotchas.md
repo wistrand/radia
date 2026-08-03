@@ -1041,6 +1041,13 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   model); LIVENESS it cannot, since a `capability` record is an advertisement and a stopped worker's
   record lingers, and a scoped session cannot read the envelope. So the hint now claims only the
   provable half and the timeout names both possibilities.
+- **Anything that abandons a turn mid-flight must answer the tool call it interrupted.** Escape-to-
+  cancel lands in precisely the window that bricks a conversation, so it appends a `tool` reply
+  exactly as a timeout does. The general rule: every early exit from a turn is a candidate for the
+  unanswered-`tool_calls` bug, and the place to fix it is the one exit path all of them share, not
+  each new feature. Cancelling also stops only the WAITING — a claimed `llm_call` or `tool_call`
+  still completes and still writes its result, so a message that implies the work was undone is
+  wrong about an at-least-once substrate.
 - **An assistant `tool_calls` with no reply BRICKS a conversation, permanently.** OpenAI rejects the
   whole payload ("must be followed by tool messages responding to each tool_call_id"), and the thread
   is durable, so every later turn reassembles the same rejected history: 59 messages, none of them
@@ -1110,6 +1117,30 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   it MEANT to do, discovering the real damage a turn later. A bounded window over what changed costs
   a few dozen tokens and removes the gap between doing and describing. Frugality about output has a
   floor, and it is "enough for the caller to tell the truth about what happened".
+- **A header assertion cannot tell a classic script from a module.** The tree-serving conformance
+  case checked the CSP and the media types and passed, while the first real page in a browser loaded
+  nothing: the document was sandboxed without `allow-same-origin`, so its origin was opaque, so every
+  subresource fetch was cross-origin, so `<script type="module">` failed on missing CORS. A classic
+  `<script src>` survives that, which is why the hand-written fixture worked and the model's output
+  did not. Where the contract is "a browser can render this", a test over response headers is a
+  proxy, and the gap between the proxy and the thing is exactly one browser behaviour nobody
+  remembered.
+- **A bounded read of a registry stays a bug after you fix its DIRECTION.** The chat's tool list read
+  an ascending page of 500 and lost the newest tool on a space with 505 records. The fix was
+  `dir: "desc"` — which corrected which tools vanish (least-recently-republished instead of newest)
+  and left the boundedness. Measured mid-session on a real space: **737 capability records for 33
+  tools**, so the page was within 1.5x of silently dropping tools again. CLAUDE.md already said
+  registry state is read through `readRegistry`, never a hand-rolled `query(kind, N)`; this was the
+  hand-rolled one, in the most consequential place, and the failure mode is invisible — "the
+  assistant does not have that tool" is indistinguishable from "it did not think to use it".
+- **A tool description is only read once the model is already considering that tool.** With
+  `share_workspace` in its list, a model holding a freshly split three-file page reasoned that opaque
+  artifact URLs made relative links impossible and told the user no link could be given. The
+  description was correct and never consulted, because the model was not asking "which sharing tool"
+  — it was asking "is this possible at all". Fix: the RESULT carries the affordance at the moment it
+  applies (a saved tree containing `index.html` says it is a browsable site and names the tool), the
+  same move as `forked` and `incomplete`. Where a capability only becomes relevant because of what
+  just happened, announce it in the thing that just happened.
 - **A tool tested with an operator client does not test the WORKER's authority.** `read_workspace`
   and `edit_workspace` were driven in `smoke-save.ts` through `makeWorkspaceTools(admin)`, which is
   right for testing descriptions and edit semantics and cannot catch what shipped: the tools worker

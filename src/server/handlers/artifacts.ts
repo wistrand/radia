@@ -208,13 +208,27 @@ export async function handleGetArtifact(
       // rendering a page is the point and there is nothing left for them to reach.
       "content-security-policy": isolated
         ? treeOrigin
-          // A TREE: its own files, and still no network. Note what is NOT added — `connect-src`
-          // stays unlisted, so `default-src 'none'` denies fetch/XHR/WebSocket exactly as before.
-          // The sandbox keeps `allow-same-origin` off, so one tree's document cannot reach another's
-          // storage even though both are served from this origin.
-          ? `sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' ${treeOrigin}; ` +
-            `style-src 'unsafe-inline' ${treeOrigin}; img-src data: ${treeOrigin}; font-src data: ${treeOrigin}; ` +
-            `media-src data: ${treeOrigin}`
+          // A TREE: its own files, and still no network.
+          //
+          // `allow-same-origin` is present here and absent for a single artifact, which is the one
+          // difference and was not optional. Without it the document sits in an OPAQUE origin, and
+          // an opaque origin makes every subresource fetch CROSS-origin: a classic `<script src>`
+          // survives that, and `<script type="module">` does not — module fetches are CORS-mode, so
+          // the browser demanded an `Access-Control-Allow-Origin` this server has no business
+          // sending. A page split into a module and its stylesheet, which is exactly what a model
+          // produces when asked to split one, failed to load at all.
+          //
+          // What it costs is bounded and worth naming: a tree's document now shares the ARTIFACT
+          // origin with other trees, so it can read storage there. Nothing else writes any — this
+          // origin serves capability-gated bytes and holds no credential, which is the whole reason
+          // it exists — and reaching another tree still requires knowing its capability. What it
+          // does NOT cost is network egress: `connect-src` remains unlisted under
+          // `default-src 'none'`, so fetch, XHR and WebSocket are denied exactly as before, and that
+          // was always the property doing the real work rather than the origin being opaque.
+          ? `sandbox allow-scripts allow-same-origin; default-src 'none'; ` +
+            `script-src 'self' 'unsafe-inline' ${treeOrigin}; style-src 'self' 'unsafe-inline' ${treeOrigin}; ` +
+            `img-src 'self' data: ${treeOrigin}; font-src 'self' data: ${treeOrigin}; ` +
+            `media-src 'self' data: ${treeOrigin}`
           : "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:"
         : "default-src 'none'; sandbox",
     };

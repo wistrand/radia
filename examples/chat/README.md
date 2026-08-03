@@ -47,6 +47,17 @@ deno task chat-test              # all twelve suites, ~60s
 deno task chat-test longthread   # one by name
 ```
 
+**Escape cancels a turn.** It stops this process WAITING; it does not stop a worker. An `llm_call`
+or `tool_call` already claimed runs to completion and its result still lands in the space, which is
+what at-least-once means and is why the message says so rather than implying the work was undone.
+Raw mode is entered only for the duration of a turn, so Ctrl-C still kills the process at the prompt,
+and it is a no-op when stdin is not a terminal.
+
+The part that is not cosmetic: a cancel lands in exactly the window that BRICKS a conversation —
+after the assistant's `tool_calls` is on the thread and before its reply. So cancelling answers the
+call it interrupted, the way a timeout does, and says the tool is still running. `smoke-context.ts`
+pins both halves, including the counterexample where the missing reply drops the turn entirely.
+
 This app is where bugs surface first, and most of them live in the app's own handling of
 ACCUMULATED STATE rather than in the runtime: a resumed thread with a system message
 mid-conversation (rejected by every provider), a capability page that does not reach the newest

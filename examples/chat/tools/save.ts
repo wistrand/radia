@@ -165,6 +165,28 @@ const PATHS_SHOWN = 25;
 /** Same cap `read_file` uses: a tool result goes into a context window. */
 const MAX_WORKSPACE_READ = 64 * 1024;
 
+/**
+ * A note carried BY THE RESULT when a tree looks like a site.
+ *
+ * A tool description is only attended to once the model is already considering that tool, and a
+ * model holding a freshly split three-file page was not: it reasoned, correctly for the world of a
+ * week ago, that "artifact URLs are opaque hashes so `href=\"styles.css\"` cannot resolve" and told
+ * the user it could not hand over a link — while `share_workspace` sat in its tool list, unused.
+ *
+ * So the affordance travels with the thing it applies to, at the moment it applies. Same move as
+ * `forked` and `incomplete`: the answer says what the caller can do next rather than relying on
+ * recall.
+ */
+function siteHint(paths: string[]): { site?: true; note?: string } {
+  if (!paths.includes("index.html")) return {};
+  return {
+    site: true,
+    note: "this tree has an index.html, so it is a browsable site: share_workspace gives one URL " +
+      "where relative links between these files resolve. share_artifact opens a single file and " +
+      "would leave the others unreachable.",
+  };
+}
+
 export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
   return {
     save_workspace: async (a, ctx?: ToolContext) => {
@@ -190,11 +212,13 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
           files: contents,
           basedOn: prev?.id,
         });
+        const paths = w.files.map((f) => f.path);
         return {
           workspace: name,
           treeDigest: w.treeDigest,
-          files: w.files.map((f) => f.path),
+          files: paths,
           unchanged: w.deduped,
+          ...siteHint(paths),
           // A fork is REPORTED, never silently resolved. Two writers on one base both succeed and
           // both versions survive; saying so is the difference between divergence and one of them
           // quietly being somewhere else.
@@ -263,6 +287,7 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
           // second read. Without it the cheap form costs a full re-read per iteration and stops
           // being cheap.
           digests: Object.fromEntries(r.files.filter((f) => touched.has(f.path)).map((f) => [f.path, f.digest])),
+          ...siteHint(r.files.map((f) => f.path)),
           // What actually changed, numbered. Without it the caller describes the outcome from what
           // it MEANT, which is how a range edit that removed six structural tags got reported as
           // "the style block is now ZZZZZ".
