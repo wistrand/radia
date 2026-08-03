@@ -1068,6 +1068,52 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   Two fixes: `read_workspace` exists, and `list_workspaces` reports the PATHS rather than a count,
   because "what files are in X" had no data source either and was already being answered from memory
   one question earlier.
+- **"Deduped" at one layer is not deduped at the next.** Phase 10 asserted the storage saving from an
+  edit was ZERO, reasoning from the blob store: identical bytes share a blob, so re-saving a tree
+  moves no bytes. True, and the wrong layer. `putArtifact` is called once per file per save and
+  creates an artifact RECORD each time, so a six-file tree re-saved for a one-line change appends six
+  records where an edit appends one. The claim was made from a real property of a neighbouring
+  component instead of from a measurement, which is the same shape as citing a rule whose
+  precondition does not hold — and it survived until someone measured it on the way to measuring
+  something else.
+- **Narrowing a grant can leave a session with LESS than it had, and the prompt said so too late.**
+  Approving `[own]` retires any wider grant carrying the same operations — correct, because grants
+  union and leaving the wide one standing would make the narrowing theatre. But it means the
+  conservative-sounding answer is destructive: a scoped user reading workspace files through
+  `artifact: read_one` lost that access entirely when a human chose `[own]` on an unrelated artifact
+  request. The consequence line already existed and printed AFTER the decision, as a receipt. **A
+  cost disclosed after the choice is not a disclosure**, and an option that removes access must
+  never be the recommended one. Pinned in `smoke-selfgrant.ts` by capturing the prompt at the file
+  descriptor and asserting the warning's POSITION relative to the options, not just its presence —
+  the receipt was always printed, so a presence check would have passed before the fix.
+- **A precondition can be real and still guard the wrong thing.** A line-range edit required
+  `expectDigest`, which proves the file has not changed — and says nothing about whether the range
+  points where the caller meant. A model aimed at the wrong lines, the digest matched, and the edit
+  removed four structural tags while reporting that it had replaced a style block. Positional
+  addressing needs a CONTENT check (quote the boundary lines), and the last line is the one that
+  catches it: a caller knows what it is starting at and miscounts where the region ends. When adding
+  a precondition, name the failure it does not cover.
+- **A tool that returns no evidence gets its result described from intent.** The edit returned
+  `changed` and a digest and no content, deliberately, to stay cheap. The caller then reported what
+  it MEANT to do, discovering the real damage a turn later. A bounded window over what changed costs
+  a few dozen tokens and removes the gap between doing and describing. Frugality about output has a
+  floor, and it is "enough for the caller to tell the truth about what happened".
+- **A tool tested with an operator client does not test the WORKER's authority.** `read_workspace`
+  and `edit_workspace` were driven in `smoke-save.ts` through `makeWorkspaceTools(admin)`, which is
+  right for testing descriptions and edit semantics and cannot catch what shipped: the tools worker
+  held `artifact: put` and no `read_one`, so every read and every edit in a real chat answered
+  `forbidden` while the suite stayed green. The comment beside the grant said "WRITE only, it never
+  reads one back" — true when written, false the moment a reader was added and the grant list did
+  not follow. Third instance of this exact shape (the exec worker's missing `workspace: put`, then
+  its missing `sandbox: put`). **When a worker gains a capability, its grants are part of the
+  change**, and at least one assertion has to run through a live worker over a real `tool_call`,
+  because that is the only thing that exercises the identity rather than the code.
+- **An error that does not say what to do next gets diagnosed creatively.** `oldString not found`
+  was accurate and useless: the model had guessed the text instead of reading it, concluded the
+  failure was a permissions problem, and asked for a grant — which the human then narrowed, breaking
+  the read access it did have. One bad message produced a three-step cascade ending in less access
+  than it started with. The message now names the likely cause, says to read the file, and states
+  what it is NOT. Whenever a tool can fail for a reason the caller could fix, say which reason.
 - **A RAISE and an INHERITANCE look alike and need opposite rules.** Asking "should file artifacts
   carry labels at all" admitted no answer that was right for both: a caller asserting what the graph
   does not know ("this tree came off a filesystem") may label whatever it likes, because raising is

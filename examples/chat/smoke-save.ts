@@ -294,7 +294,10 @@ check("list_workspaces points a change at edit_workspace too", /edit_workspace/.
 // precondition being stated as required.
 check("edit_workspace documents the line-range form", /start_line/.test(editDesc) && /end_line/.test(editDesc));
 check("…and that a range REQUIRES the digest", /needs `expect_digest`|Required with start_line/.test(editDesc));
+check("…and the boundary quotes, with WHY the last one matters", /expect_last_line/.test(editDesc) && /reaching further than you meant/.test(editDesc));
+check("…and says to read the preview rather than report intent", /rather than reporting what you intended/.test(editDesc));
 check("…and tells the model not to paste the line-number prefix", /line-number prefix/i.test(editDesc));
+check("…and says to READ before editing, which is what a guessed old_string costs", /READ THE FILE FIRST/.test(editDesc));
 
 const edited = await toolCall("save_workspace", { name: "iter", files: { "main.py": "print(1)\n", "lib.py": "X = 1\n" } }) as Record<string, unknown>;
 void edited;
@@ -311,9 +314,25 @@ const readBack = await toolCall("read_workspace", { workspace: "iter", path: "ma
 check("the read is NUMBERED, which is what makes a line range usable", /^\s+1\tprint\(2\)/.test(readBack.content), JSON.stringify(readBack.content));
 const e2 = await toolCall("edit_workspace", {
   workspace: "iter",
-  edits: [{ path: "main.py", start_line: 1, end_line: 1, new_string: "print(3)\n", expect_digest: readBack.digest }],
-}) as { changed: string[]; error?: string };
+  edits: [{
+    path: "main.py",
+    start_line: 1,
+    end_line: 1,
+    new_string: "print(3)\n",
+    expect_digest: readBack.digest,
+    expect_first_line: "print(2)",
+  }],
+}) as { changed: string[]; preview?: { path: string; text: string }[]; error?: string };
 check("a line-range edit applies with the digest from the read", e2.changed?.join(",") === "main.py", JSON.stringify(e2.error));
+// The result SHOWS the change, so the model need not describe it from intent — which is how an edit
+// that removed six structural tags got reported as "the style block is now ZZZZZ".
+check("…and the result previews what actually changed", /print\(3\)/.test(e2.preview?.[0]?.text ?? ""), JSON.stringify(e2.preview));
+// A range that reaches past what the caller quoted is refused, and the LAST line is what catches it.
+const e4 = await toolCall("edit_workspace", {
+  workspace: "iter",
+  edits: [{ path: "main.py", start_line: 1, end_line: 1, new_string: "x\n", expect_digest: (await toolCall("read_workspace", { workspace: "iter", path: "main.py" }) as { digest: string }).digest, expect_first_line: "not this line" }],
+}) as { error?: string };
+check("…and a misquoted boundary is refused", /expectFirstLine does not match/.test(e4.error ?? ""), JSON.stringify(e4.error).slice(0, 90));
 const e3 = await toolCall("edit_workspace", {
   workspace: "iter",
   edits: [{ path: "main.py", start_line: 1, end_line: 1, new_string: "nope\n" }],
@@ -330,6 +349,66 @@ check("…and says the line numbers are not part of the file", /NOT part of the 
 // The marker is useless unless the description says what to DO about it.
 check("…and says how to use a tree from another conversation", /save_workspace them here first/i.test(listDesc));
 check("…and warns that an incomplete list is not an absent workspace", /incomplete/i.test(listDesc));
+
+// ── the same tools, through the REAL worker ──────────────────────────────────────────────────────
+//
+// Everything above drives `makeWorkspaceTools(admin)` in process, with an OPERATOR client. That is
+// right for testing descriptions and edit semantics and CANNOT catch the defect that actually shipped:
+// the tools worker held `artifact: put` and no `read_one`, so every read_workspace and every
+// edit_workspace in a real chat answered `forbidden` while these assertions stayed green. The
+// operator client had authority the worker does not.
+//
+// So one pass through a live worker over real `tool_call` records. It is slower and it tests a
+// different thing: not what the tool does, but whether the identity that runs it may.
+const toolsWorker = new Deno.Command(Deno.execPath(), {
+  args: [
+    "run",
+    `--allow-net=127.0.0.1:${PORT}`,
+    "--allow-read=.",
+    "examples/chat/workers/tools.ts",
+    "--url",
+    url,
+    "--token",
+    tokens.toolsToken,
+    "--session-token",
+    tokens.toolsToken,
+    "--dir",
+    ".",
+  ],
+  stdout: "null",
+  stderr: "inherit",
+  stdin: "null",
+}).spawn();
+try {
+  for (let i = 0; i < 100; i++) {
+    if ((await admin.query({ kind: "capability", match: { tool: "edit_workspace" } }, 1)).length > 0) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  const wConv = (await admin.put({ kind: "conversation", body: { title: "worker" } })).id;
+  const viaWorker = async (tool: string, args: unknown) => {
+    const { id } = await admin.put({ kind: "tool_call", body: { tool, args, conversationId: wConv, owner: "human:alice" } });
+    for (let i = 0; i < 150; i++) {
+      const r = await admin.readOne({ kind: "tool_result", match: { callId: id } });
+      if (r) return (r.body as { output: Record<string, unknown> }).output;
+      await new Promise((res) => setTimeout(res, 200));
+    }
+    throw new Error(`no tool_result for ${tool}`);
+  };
+
+  await viaWorker("save_workspace", { name: "wk", files: { "a.py": "print(1)\n" } });
+  const wRead = await viaWorker("read_workspace", { workspace: "wk", path: "a.py" }) as Record<string, unknown>;
+  check("the WORKER may read a workspace file", typeof wRead.content === "string", JSON.stringify(wRead.error ?? "").slice(0, 80));
+  const wEdit = await viaWorker("edit_workspace", {
+    workspace: "wk",
+    edits: [{ path: "a.py", old_string: "print(1)", new_string: "print(2)" }],
+  }) as Record<string, unknown>;
+  check("…and may edit one", (wEdit.changed as string[] | undefined)?.join(",") === "a.py", JSON.stringify(wEdit.error ?? "").slice(0, 80));
+} finally {
+  try {
+    toolsWorker.kill();
+    await toolsWorker.status;
+  } catch { /* already gone */ }
+}
 
 // ── the direct route works ───────────────────────────────────────────────────────────────────────
 // Advice to prefer save_content is only sound if one call really does produce the artifact.

@@ -41,6 +41,7 @@ constant result size is the signal.
 | `suites/lineage.ts` | `childrenOf` and `getLineage`, the documented hotspot, measured |
 | `suites/scale.ts` | the same operations re-measured at 2k / 10k / 40k records |
 | `suites/blobs.ts` | artifact bytes, and what encryption costs |
+| `edit-cost.ts` | standalone: what an edit costs versus rewriting a tree, in emitted characters and in records written. Not a timing suite, so it is run directly rather than through the harness |
 
 ## What the first run found
 

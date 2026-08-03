@@ -240,6 +240,8 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
         ...(e.replace_all === true ? { replaceAll: true } : {}),
         ...(typeof e.start_line === "number" ? { startLine: e.start_line } : {}),
         ...(typeof e.end_line === "number" ? { endLine: e.end_line } : {}),
+        ...(typeof e.expect_first_line === "string" ? { expectFirstLine: e.expect_first_line } : {}),
+        ...(typeof e.expect_last_line === "string" ? { expectLastLine: e.expect_last_line } : {}),
         ...(typeof e.expect_digest === "string" ? { expectDigest: e.expect_digest } : {}),
       }));
       const add = a.add && typeof a.add === "object" && !Array.isArray(a.add)
@@ -259,6 +261,10 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
           // second read. Without it the cheap form costs a full re-read per iteration and stops
           // being cheap.
           digests: Object.fromEntries(r.files.filter((f) => touched.has(f.path)).map((f) => [f.path, f.digest])),
+          // What actually changed, numbered. Without it the caller describes the outcome from what
+          // it MEANT, which is how a range edit that removed six structural tags got reported as
+          // "the style block is now ZZZZZ".
+          preview: r.preview,
           ...(r.forked
             ? { forked: true, note: "another version superseded the one this was based on; both exist as separate heads" }
             : {}),
@@ -359,18 +365,28 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
       name: "edit_workspace",
       description:
         "Change a saved workspace IN PLACE: edit existing files, add new ones, remove old ones, in " +
-        "one call that becomes one new version. Use this for every change to a tree that already " +
+        "one call that becomes one new version. READ THE FILE FIRST with read_workspace and copy " +
+        "`old_string` out of what it returns \u2014 text you remember or expect is the single " +
+        "commonest reason an edit fails, and the failure looks like nothing else, so do not guess. " +
+        "Use this for every change to a tree that already " +
         "exists \u2014 save_workspace REPLACES the whole tree, so using it to change one line means " +
         "retyping every file, and any file you leave out is DROPPED from the tree. Two ways to say " +
         "where a change goes, and you may mix them across edits: give `old_string` and `new_string` " +
         "to replace exact text (must appear exactly once, or add surrounding lines until it does, " +
         "or pass replace_all), or give `start_line`/`end_line` with `new_string` to replace a whole " +
         "region without retyping it \u2014 far cheaper for a big block, and it needs `expect_digest` " +
-        "because a line number cannot tell that the file moved. read_workspace gives you both the " +
+        "because a line number cannot tell that the file moved, plus `expect_first_line` and (when " +
+        "the range is more than one line) `expect_last_line`, quoting those two lines as you read " +
+        "them. Those are not ceremony: the digest only proves the file has not changed, and quoting " +
+        "the LAST line is what catches a range reaching further than you meant \u2014 which is how " +
+        "one edit removed a </head>, a <body> and the start of a <script> while reporting that it " +
+        "had replaced a style block. read_workspace gives you the " +
         "numbered lines and the `digest` to pass. Do NOT include the line-number prefix in " +
         "`old_string`; send the file's own text. Everything is checked before anything is written, " +
         "so a failure changes nothing and reports every problem at once \u2014 fix them all and " +
-        "retry. Returns {changed, added, removed, treeDigest, digests}; `digests` are the new " +
+        "retry. Returns {changed, added, removed, treeDigest, digests, preview}; `preview` is a " +
+        "numbered window over what actually changed \u2014 read it before describing the result, " +
+        "rather than reporting what you intended. `digests` are the new " +
         "per-file digests, so a follow-up line-range edit needs no second read. `forked: true` " +
         "means someone else superseded the version this was based on: both exist, say so.",
       parameters: {
@@ -389,6 +405,8 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
                 replace_all: { type: "boolean", description: "Replace every occurrence. Only when you mean all of them; the default refusal is there to stop the wrong one being edited." },
                 start_line: { type: "integer", description: "First line to replace, 1-based and inclusive, as read_workspace numbers them." },
                 end_line: { type: "integer", description: "Last line to replace, inclusive. Ranges in one call may not overlap." },
+                expect_first_line: { type: "string", description: "The text of start_line as you read it, without the number prefix. Required with start_line." },
+                expect_last_line: { type: "string", description: "The text of end_line as you read it. Required when the range covers more than one line \u2014 this is the one that catches a range reaching further than you meant." },
                 expect_digest: { type: "string", description: "The file `digest` read_workspace returned. Required with start_line/end_line; optional with old_string." },
               },
               required: ["path", "new_string"],

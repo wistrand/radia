@@ -415,9 +415,24 @@ export interface WorkspaceEdit {
   /** Required when `oldString` occurs more than once. Absent, a non-unique match is a REFUSAL. */
   replaceAll?: boolean;
   /** POSITION form: 1-based, INCLUSIVE, matching every tool that prints line numbers. Requires
-   *  `expectDigest`, and ranges within one batch may not overlap. */
+   *  `expectDigest` and the boundary assertions below, and ranges within one batch may not overlap. */
   startLine?: number;
   endLine?: number;
+  /**
+   * The lines the caller believes it is replacing, as a CONTENT check on a positional address.
+   *
+   * `expectDigest` proves the file has not changed. It cannot prove the range points where the
+   * caller meant, and that is the failure that actually happened: a model aimed at lines 7-15
+   * believing they were a `<style>` block, the digest matched because nothing had changed, and the
+   * edit removed `</head>`, `<body>`, a `<canvas>` and the opening of a `<script>` as well.
+   *
+   * `expectLastLine` is the one that catches it. A caller knows what it is starting at; where the
+   * region ENDS is what it miscounts. Required whenever the range spans more than one line, and
+   * `expectFirstLine` is required always — together they cost two lines of output against the forty
+   * the content form would have carried, so the cheap addressing stays cheap.
+   */
+  expectFirstLine?: string;
+  expectLastLine?: string;
   /** The file's sha256 as the caller last saw it. Optional for the content form, REQUIRED for a
    *  range, because a range has no other way to know the file has not moved under it. */
   expectDigest?: string;
@@ -469,6 +484,8 @@ export async function editWorkspace(
     changed: string[];
     added: string[];
     removed: string[];
+    /** A numbered window over what actually changed, per file. */
+    preview: { path: string; text: string }[];
     forked: boolean;
   }
 > {
@@ -578,6 +595,31 @@ export async function editWorkspace(
         problems.push(`${where}: lines ${start}-${end} but the file has ${body.length}`);
         continue;
       }
+      // The CONTENT check on a positional address. Compared after stripping a pasted `NNN\t`
+      // prefix, because the numbers come from a numbered read and a caller will include them.
+      const unnumber = (t: string) => t.replace(/^\s*\d+\t/, "");
+      const boundary = (want: string | undefined, actual: string, which: string): boolean => {
+        if (want === undefined) {
+          problems.push(
+            `${where}: a line range needs expect${which}Line — the digest proves the file has not ` +
+              `changed, it cannot prove the range points where you meant`,
+          );
+          return false;
+        }
+        if (unnumber(want) !== actual) {
+          problems.push(
+            `${where}: expect${which}Line does not match line ${which === "First" ? start : end}. ` +
+              `Expected ${JSON.stringify(unnumber(want))}, found ${JSON.stringify(actual)}`,
+          );
+          return false;
+        }
+        return true;
+      };
+      if (!boundary(edit.expectFirstLine, body[start - 1], "First")) continue;
+      // Only required when the range spans more than one line: for a single line the first check
+      // already pinned it, and demanding the same string twice is friction with no evidence behind it.
+      if (end !== start && !boundary(edit.expectLastLine, body[end - 1], "Last")) continue;
+
       const taken = claimed.get(edit.path) ?? [];
       if (taken.some(([s, e]) => start <= e && end >= s)) {
         problems.push(`${where}: lines ${start}-${end} overlap another edit in this batch`);
@@ -610,9 +652,15 @@ export async function editWorkspace(
       // The commonest cause once reads are numbered: the caller pasted the `NNN\t` prefix along
       // with the line. Say so, because "not found" alone sends them looking at whitespace.
       const stripped = oldString.replace(/^\s*\d+\t/gm, "");
+      // NAME THE LIKELY CAUSE. "Not found" alone sent a live session hunting for a missing
+      // permission: the model had guessed the text instead of reading it, got this error, decided it
+      // was an access problem, and asked for a grant — which the human narrowed, breaking the read
+      // access it did have. An error that does not say what to do next gets diagnosed creatively.
       const hint = stripped !== oldString && text.includes(stripped)
         ? "; it matches once the line-number prefixes are removed, so send the file's own text"
-        : " (whitespace and indentation are significant)";
+        : ". Whitespace and indentation are significant, so read the file with read_workspace and " +
+          "copy the text out of it rather than recalling it. This is NOT a permissions problem: the " +
+          "file was read successfully and does not contain that text";
       problems.push(`${where}: oldString not found${hint}`);
       continue;
     }
@@ -647,12 +695,43 @@ export async function editWorkspace(
   }
 
   // ── write ────────────────────────────────────────────────────────────────────────────────────
+  // WHAT THE EDIT ACTUALLY DID, so the caller does not have to describe it from intent.
+  //
+  // The result used to carry only `changed` and a digest, deliberately: echoing content back would
+  // undo the saving the whole operation exists for. That was one step too frugal. A model announced
+  // "lines 8-14 are now ZZZZZ", described the outcome from what it MEANT rather than from what
+  // happened, and only found on a later read that the edit had also removed `</head>`, `<body>` and
+  // the opening of a `<script>`. A bounded window is a few dozen tokens and closes that gap in the
+  // same call.
+  //
+  // Located by a common-prefix / common-suffix walk rather than by tracking where each edit landed:
+  // ranges apply descending, so an edit's line number shifts as later ones are applied above it, and
+  // a diff of the final text against the original needs no bookkeeping to stay correct.
+  const CONTEXT = 2;
+  const SPAN_CAP = 20;
+  const preview: { path: string; text: string }[] = [];
+  const windowFor = (before: string, after: string): string => {
+    const a = before.split("\n");
+    const b = after.split("\n");
+    let head = 0;
+    while (head < a.length && head < b.length && a[head] === b[head]) head++;
+    let tail = 0;
+    while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+    const from = Math.max(0, head - CONTEXT);
+    const to = Math.min(b.length, b.length - tail + CONTEXT);
+    const shown = b.slice(from, Math.min(to, from + SPAN_CAP + CONTEXT * 2));
+    const clipped = to - from > shown.length;
+    return shown.map((l, i) => `${String(from + i + 1).padStart(6)}\t${l}`).join("\n") +
+      (clipped ? `\n  … ${to - from - shown.length} more changed lines` : "");
+  };
+
   const changed: string[] = [];
   for (const [path, text] of current) {
     const bytes = new TextEncoder().encode(text);
     if (await sha256Hex(bytes) === byPath.get(path)!.digest) continue; // an edit that restored the original
     rewritten.set(path, bytes);
     changed.push(path);
+    preview.push({ path, text: windowFor(original.get(path)!, text) });
   }
   const added: string[] = [];
   for (const [path, contents] of adds) {
@@ -703,6 +782,7 @@ export async function editWorkspace(
     changed,
     added,
     removed: removes,
+    preview,
     // REPORTED, never refused: consistent with every other writer here. Both heads survive, and an
     // edit inherits every file it did not mention, so the caller needs to know its base moved.
     forked: await isForked(client, input.name, input.conversationId),

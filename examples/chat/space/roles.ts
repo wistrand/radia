@@ -94,7 +94,12 @@ const TOOLS_GRANTS: Grant[] = [
   { kind: "interest", operations: ["put", "query"] }, // agentLoop declares what this worker listens for
   { kind: "tool_call", operations: ["take"] },
   { kind: "tool_result", operations: ["put"] },
-  { kind: "artifact", operations: ["put"] }, // save_content: WRITE only, it never reads one back
+  // `put` for save_content, `read_one` for read_workspace and edit_workspace. The comment here used
+  // to read "WRITE only, it never reads one back" and was true when written — until a reader was
+  // added to this worker and the grant list did not follow, so every read_workspace in a real chat
+  // answered `forbidden` while the contract suite stayed green. Same shape as the exec worker's
+  // missing `workspace: put`. When a worker gains a capability, its grants are part of the change.
+  { kind: "artifact", operations: ["put", "read_one"] },
   { kind: "capability", operations: ["put"] },
   { kind: "progress", operations: ["put"] }, // reports which tool it is running
   { kind: "workspace", operations: ["put", "query"] }, // save_workspace: authors a tree for a session

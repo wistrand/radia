@@ -4,7 +4,7 @@ Sequence and status. The reasoning lives in [design-workspaces.md](design-worksp
 working tree is, and the git relationship) and [design-execution.md](design-execution.md) (why the
 language question is an isolation question). Read those first; this file assumes them.
 
-> **Status: Phases 0-9 DONE; Phase 10 (editing in place) planned, not started.** Workspaces, write-back, `check`, fork detection, `sandbox` records,
+> **Status: Phases 0-10 DONE**, including 10.6 (what first real use found). Workspaces, write-back, `check`, fork detection, `sandbox` records,
 > a second backend (bubblewrap), and selection by capability name (`run_javascript`, `run_python`).
 > Phase 7 answered the selection question with neither of the two options it was written to choose
 > between; see there. Phases 8 and 9 were added after the fact, both from live use rather than from
@@ -662,22 +662,57 @@ did not. Both now strip the numbering and assert through it, with the numbering 
 separately. A test whose NAME states an intent and whose body states a representation will break on
 a presentation change and look like a regression.
 
+*First live use found two things, and neither was the edit mechanics.* Asked to change a page title,
+the model edited without reading, guessed `old_string`, and got `oldString not found` — accurate and
+useless. It concluded the failure was a permissions problem, asked for an artifact grant, and the
+human chose the conservative-looking `[own]`, which RETIRED the wider `artifact: read_one` the
+session had been reading workspace files with. Three steps from a bad error message to strictly less
+access than it started with. Fixed on both sides: the message names the likely cause, says to read
+the file, and states what it is not; the tool description says READ THE FILE FIRST; and the grant
+prompt now warns which access `[own]` would remove BEFORE the choice and stops recommending it when
+it would take something away. See [gotchas.md](gotchas.md).
+
 *And numbering has a cost paid by a different reader.* A model relaying a file to a person will show
 the numbers unless told they are not the file, so `read_workspace`'s description says so explicitly
 and a guard holds it there. Cheaper to say than to discover once, which is how the fabrication bug in
 Phase 9 arrived.
 
-#### 10.3 What this is NOT, and the bound it puts on the work
+#### 10.3 What this is NOT, and the bound it puts on the work — **MEASURED**
 
 `run_python {workspace, write: true}` can already edit a file today. So this is ERGONOMICS, not new
 capability, and it has to beat "write a Python script that does a string replace and round-trip it
 through a jail" — which it easily does for a small change, and which is the reason not to build a
 patch format, a merge strategy, or a diff grammar to go with it.
 
-The measured claim to make afterwards, since this phase is justified by a number nobody has taken:
-tokens emitted per iteration of a real debugging loop, before and after. The storage saving is zero
-and should be stated as zero — `writeWorkspace` already dedupes by content, so an unchanged file in a
-re-saved tree moves no bytes. The waste is entirely the model's output.
+**Measured** (`bench/edit-cost.ts`), on a six-file, 473-line project — the size an agent actually
+builds. Emitted characters are exact; tokens are estimated at four characters each, and the ratios
+do not depend on the estimate.
+
+| change | whole tree | edit (string) | edit (line range) |
+|--------------------------------|-----------:|--------------:|------------------:|
+| a one-line fix                 | ~5 669 tok |    ~33 tok (**173x**) | — |
+| replace a 40-line block        | ~5 669 tok |   ~549 tok (**10x**)  | ~56 tok (**102x**) |
+| add a module and wire it in    | ~5 669 tok |    ~64 tok (**89x**)  | — |
+
+*The middle row is the argument for having two addressing forms, and it is starker than the
+reasoning predicted.* String matching gives 10x on a 40-line replacement because it has to carry
+those forty lines verbatim as `old_string`; the range gives 102x for the same change. An edit-only-
+by-content tool would have solved the cheap case and left the expensive one costing an order of
+magnitude more than it needs to.
+
+*And the claim that the storage saving is zero was WRONG.* Blobs dedupe by content, so no bytes are
+duplicated either way — that much held. Artifact RECORDS do not: `writeWorkspace` calls `putArtifact`
+once per file regardless of how little changed, so the same one-line fix writes
+
+```
+save_workspace   6 artifact records   1 manifest
+edit_workspace   1 artifact record    1 manifest
+```
+
+one record per file, per save, forever. On a churning tree that is the registry-growth shape this
+project already has a rule about, arrived at from the opposite direction. The saving is real and was
+asserted to be zero from the blob layer's behaviour without checking the record layer's — the same
+mistake as citing a rule whose precondition does not hold.
 
 #### 10.4 Verification
 
@@ -706,6 +741,35 @@ The request was about token cost. The reason to do it is that the current instru
 model's economics: told to retype 500 lines to change three, a model under context pressure will
 eventually send only the file it changed. An edit tool removes the incentive rather than restating
 the rule, which is the same lesson as every other description fix in this example.
+
+#### 10.6 What first real use found — **DONE**
+
+Two gaps, both from one session, and neither was in the edit mechanics.
+
+*A range's precondition was the wrong one.* A model aimed at lines 7-15 believing they were a
+`<style>` block. `expectDigest` matched — correctly, nothing had changed — and the edit removed
+`</head>`, `<body>`, a `<canvas>` and the opening of a `<script>` as well. **The digest proves the
+file has not moved; it cannot prove the range points where the caller meant**, and that gap is
+inherent to O(1) addressing rather than a bug in it.
+
+Closed with `expectFirstLine` / `expectLastLine`: the caller quotes the boundary lines as it read
+them. `expectLastLine` is the one that catches this and is required whenever the range spans more
+than one line — a caller knows what it is STARTING at; where the region ends is what it miscounts.
+Two lines of output against the forty the content form would have carried, so the cheap addressing
+stays cheap. The invariant from 10.1 now actually holds for both forms: every edit carries a
+precondition, and the positional one is no longer weaker than the content one.
+
+*The result carried no evidence of what it did.* Returning `changed` plus a digest and no content
+was one step too frugal: the model announced "lines 8-14 are now ZZZZZ", describing the outcome from
+what it MEANT, and found the real damage only on a later read. `preview` is now a numbered window
+over what actually changed, located by a common-prefix/suffix walk against the original — no
+bookkeeping, correct however the ranges were ordered — bounded by context rather than echoing the
+file.
+
+*Both were found by using it, not by reading it,* which is the argument for 10.3's measurement being
+the last step rather than the finish. The version model is what made the session recoverable: the
+model restored from verbatim tool output and PROVED it, with the tree digest returning to its exact
+pre-damage value. "Nothing is lost" stopped being a design slogan for one turn.
 
 ## Open, and better decided with Phase 1 evidence
 

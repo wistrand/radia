@@ -660,7 +660,15 @@ Deno.test("workspace: a line range replaces a region without re-emitting it, and
     // matching cannot give, since it would have to carry L2 and L3 verbatim.
     const r = await editWorkspace(c, {
       name: "ranged",
-      edits: [{ path: "a.py", startLine: 2, endLine: 3, newString: "TWO\nTHREE\nEXTRA\n", expectDigest: digest }],
+      edits: [{
+        path: "a.py",
+        startLine: 2,
+        endLine: 3,
+        newString: "TWO\nTHREE\nEXTRA\n",
+        expectDigest: digest,
+        expectFirstLine: "L2",
+        expectLastLine: "L3",
+      }],
     });
     assertEquals(
       new TextDecoder().decode(await c.getArtifact(r.files[0].artifactId)),
@@ -679,8 +687,8 @@ Deno.test("workspace: ranges in one batch cannot overlap, and do not shift each 
     const r = await editWorkspace(c, {
       name: "multi",
       edits: [
-        { path: "a.py", startLine: 2, endLine: 2, newString: "TWO\n", expectDigest: digest },
-        { path: "a.py", startLine: 5, endLine: 5, newString: "FIVE\nFIVE-B\n", expectDigest: digest },
+        { path: "a.py", startLine: 2, endLine: 2, newString: "TWO\n", expectDigest: digest, expectFirstLine: "2" },
+        { path: "a.py", startLine: 5, endLine: 5, newString: "FIVE\nFIVE-B\n", expectDigest: digest, expectFirstLine: "5" },
       ],
     });
     assertEquals(
@@ -697,8 +705,11 @@ Deno.test("workspace: ranges in one batch cannot overlap, and do not shift each 
         editWorkspace(c, {
           name: "multi",
           edits: [
-            { path: "a.py", startLine: 1, endLine: 3, newString: "A\n", expectDigest: now },
-            { path: "a.py", startLine: 3, endLine: 4, newString: "B\n", expectDigest: now },
+            // Boundaries taken from the CURRENT file (1 / TWO / 3 / 4 / FIVE / FIVE-B / 6), so both
+            // edits pass their content checks and the overlap is what refuses them. Guessing these
+            // instead of reading them made the boundary check fire first and hid what was under test.
+            { path: "a.py", startLine: 1, endLine: 3, newString: "A\n", expectDigest: now, expectFirstLine: "1", expectLastLine: "3" },
+            { path: "a.py", startLine: 3, endLine: 4, newString: "B\n", expectDigest: now, expectFirstLine: "3", expectLastLine: "4" },
           ],
         }),
       Error,
@@ -707,12 +718,106 @@ Deno.test("workspace: ranges in one batch cannot overlap, and do not shift each 
   });
 });
 
+Deno.test("workspace: a range asserts WHAT it replaces, not only that the file is unchanged", async () => {
+  await withSpace(async (c) => {
+    // The failure this closes, from a live session: a model aimed at lines 7-15 believing they were
+    // a `<style>` block. The digest matched — correctly, nothing had changed — and the edit also
+    // removed `</head>`, `<body>`, a `<canvas>` and the opening of a `<script>`. `expectDigest`
+    // proves the file has not moved; it cannot prove the range points where the caller meant.
+    const v1 = await writeWorkspace(c, {
+      name: "aim",
+      owner: OWNER,
+      files: { "page.html": "<head>\n<style>\nbody{}\n</style>\n</head>\n<body>\n<script>\n" },
+    });
+    const digest = v1.files[0].digest;
+
+    // Aiming one line too far: the digest still matches, and the LAST-line assertion catches it.
+    // That is the one that matters — a caller knows what it is starting at and miscounts where the
+    // region ends.
+    const err = await assertRejects(
+      () =>
+        editWorkspace(c, {
+          name: "aim",
+          edits: [{
+            path: "page.html",
+            startLine: 2,
+            endLine: 5,
+            newString: "ZZZZZ\n",
+            expectDigest: digest,
+            expectFirstLine: "<style>",
+            expectLastLine: "</style>",
+          }],
+        }),
+      Error,
+    );
+    assert(/expectLastLine does not match line 5/.test(err.message), err.message);
+    assert(/found "<\/head>"/.test(err.message), err.message);
+
+    // Omitting the assertion entirely is refused rather than silently allowed.
+    const bare = await assertRejects(
+      () =>
+        editWorkspace(c, {
+          name: "aim",
+          edits: [{ path: "page.html", startLine: 2, endLine: 4, newString: "Z\n", expectDigest: digest }],
+        }),
+      Error,
+    );
+    assert(/needs expectFirstLine/.test(bare.message), bare.message);
+
+    // Correctly aimed, it applies.
+    const ok = await editWorkspace(c, {
+      name: "aim",
+      edits: [{
+        path: "page.html",
+        startLine: 2,
+        endLine: 4,
+        newString: "ZZZZZ\n",
+        expectDigest: digest,
+        expectFirstLine: "<style>",
+        expectLastLine: "</style>",
+      }],
+    });
+    assertEquals(
+      new TextDecoder().decode(await c.getArtifact(ok.files[0].artifactId)),
+      "<head>\nZZZZZ\n</head>\n<body>\n<script>\n",
+    );
+  });
+});
+
+Deno.test("workspace: the result SHOWS what changed, so it need not be described from intent", async () => {
+  await withSpace(async (c) => {
+    // A model announced "lines 8-14 are now ZZZZZ", describing the outcome from what it meant rather
+    // than from what happened, and found only on a later read that the edit had removed more. A
+    // bounded window costs a few dozen tokens and closes that in the same call.
+    // Long enough that the bounding is observable: a five-line file with two lines of context IS the
+    // whole file, so a shorter fixture would assert nothing.
+    await writeWorkspace(c, {
+      name: "shown",
+      owner: OWNER,
+      files: { "a.py": Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n") + "\n" },
+    });
+    const r = await editWorkspace(c, {
+      name: "shown",
+      edits: [{ path: "a.py", oldString: "line 15", newString: "CHANGED" }],
+    });
+    assertEquals(r.preview.length, 1);
+    assertEquals(r.preview[0].path, "a.py");
+    const text = r.preview[0].text;
+    // Numbered, so it feeds straight back into a follow-up range edit, and windowed rather than
+    // echoing the file — which would undo the saving the whole operation exists for.
+    assert(text.includes("CHANGED"), text);
+    assert(/^\s+13\tline 13/.test(text), `two lines of context above:\n${text}`);
+    assert(text.includes("line 17"), `and below:\n${text}`);
+    assert(!text.includes("line 1\n") && !text.includes("line 30"), `bounded, not the whole file:\n${text}`);
+  });
+});
+
 Deno.test("workspace: an edit names ONE form, and a pasted line-number prefix says so", async () => {
   await withSpace(async (c) => {
     const v1 = await writeWorkspace(c, { name: "forms", owner: OWNER, files: { "a.py": "alpha\nbeta\n" } });
     for (const [edit, fragment] of [
       [{ path: "a.py", newString: "x" }, "neither"],
-      [{ path: "a.py", oldString: "alpha", newString: "x", startLine: 1, endLine: 1, expectDigest: v1.files[0].digest }, "both"],
+      [{ path: "a.py", oldString: "alpha", newString: "x", startLine: 1, endLine: 1, expectDigest: v1.files[0].digest, expectFirstLine: "alpha" }, "both"],
     ] as const) {
       const err = await assertRejects(() => editWorkspace(c, { name: "forms", edits: [edit] }), Error);
       assert(err.message.includes(fragment), `expected ${fragment} in: ${err.message}`);
@@ -726,6 +831,15 @@ Deno.test("workspace: an edit names ONE form, and a pasted line-number prefix sa
       Error,
     );
     assert(/line-number prefixes/.test(err.message), err.message);
+
+    // A plain miss has to say what to DO. "Not found" alone sent a live session looking for a
+    // missing permission, and the grant it then asked for broke the access it already had.
+    const missed = await assertRejects(
+      () => editWorkspace(c, { name: "forms", edits: [{ path: "a.py", oldString: "gamma", newString: "x" }] }),
+      Error,
+    );
+    assert(/read the file with read_workspace/.test(missed.message), missed.message);
+    assert(/NOT a permissions problem/.test(missed.message), missed.message);
   });
 });
 

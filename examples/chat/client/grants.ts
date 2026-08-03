@@ -35,6 +35,21 @@ interface RequestBody {
   retired?: boolean;
 }
 
+/**
+ * The wider (non-self-scoped) grants a narrowing approval would retire, as operation names.
+ *
+ * Exactly the read the narrowing itself performs, run before the prompt so the cost arrives with the
+ * choice. Paged to exhaustion, because a grant missed here is a warning not shown.
+ */
+async function widerGrants(admin: RadiaClient, subject: string, kind: string, ops: string[]): Promise<string[]> {
+  const live = activeSet(
+    await admin.queryAll({ kind: "grant", match: { principal: subject, kind } }),
+    grantKey,
+  ).map((r) => r.body as { operations?: string[]; scope?: unknown; retired?: boolean })
+    .filter((g) => !g.retired && !g.scope);
+  return [...new Set(live.flatMap((g) => (g.operations ?? []).filter((op) => ops.includes(op))))].sort();
+}
+
 /** One key per (kind, operations, scope) ask, so a repeat of the same request is one entry and a
  *  handled one is retired by a successor (the shared registry projection, applied to requests).
  *  Scope is part of the identity: asking for the same reads UNSCOPED after a scoped grant proved
@@ -158,10 +173,38 @@ export async function reviewGrantRequests(
       write(dim(`    [own] will grant only ${reads.length > 0 ? reads.join(", ") : "nothing"}; [all] grants everything asked for.\n`));
     }
 
+    // WHAT [own] TAKES AWAY, said BEFORE the choice instead of reported after it.
+    //
+    // Narrowing withdraws any wider grant carrying the same operations, because grants UNION and
+    // leaving the wide one standing would make the narrowing theatre. Correct — and it means [own]
+    // can leave a session with LESS access than it had before it asked, which is the opposite of
+    // what "grant only its own" sounds like.
+    //
+    // Live session: a scoped user held `artifact: read_one` patterned to its owner and was reading
+    // workspace files with it. The assistant misdiagnosed an unrelated failure as a permissions
+    // problem and asked for artifact access; the human chose [own] to be careful; the narrowing
+    // retired the working grant in favour of a self-scoped one matching nothing, and reading files
+    // stopped working at all. The consequence line already existed — it printed AFTER the decision,
+    // as a receipt. A cost disclosed after the choice is not a disclosure.
+    const wouldWithdraw = reads.length > 0 ? await widerGrants(admin, subject, b.kind, reads) : [];
+    if (wouldWithdraw.length > 0) {
+      write(`\n  ⚠ [own] REMOVES access this session already has: ${wouldWithdraw.join(", ")} on ${b.kind}\n`);
+      write(dim(
+        `    Narrowing retires the wider grant, so [own] can leave it worse off than refusing.\n` +
+          `    [no] changes nothing; [own] revokes the above and replaces it with a self-scoped one.\n`,
+      ));
+    }
+
     // Never recommend an option for a kind that does not exist: neither answer can grant anything,
     // and "(recommended here)" beside a warning that the grant authorizes nothing reads as advice
     // to approve it.
-    const recommend = unknown ? "none" : (pointless || b.scope === "all") ? "all" : "own";
+    // …and do not recommend the option that takes access away. Recommending [own] beside a warning
+    // that [own] revokes a working grant is advice to break the session.
+    const recommend = unknown
+      ? "none"
+      : (pointless || b.scope === "all" || wouldWithdraw.length > 0)
+      ? "all"
+      : "own";
     // Named options rather than y/n. `y` read as plain "yes" and meant the NARROW one, so a person
     // answering "yes" to "can I see more of the space?" got the opposite and the assistant spent
     // its next turns discovering the grant did nothing. Nothing here means "yes" any more, and

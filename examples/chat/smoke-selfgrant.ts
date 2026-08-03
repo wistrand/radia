@@ -379,6 +379,81 @@ check(
 );
 check("…while the rest of the digest still answers", sessionDigest.kinds.length > 0, `${sessionDigest.kinds.length} kinds`);
 
+// ── 5. what [own] TAKES AWAY, disclosed before the choice ────────────────────────────────────────
+//
+// Narrowing retires the wider grant carrying the same operations — correct, since grants union and
+// leaving the broad one standing makes the narrowing theatre. It also means the conservative-sounding
+// answer is DESTRUCTIVE, and a live session lost its workspace-file reads that way: it held
+// `artifact: read_one` patterned to its owner, the assistant misdiagnosed an unrelated failure as a
+// permissions problem, the human chose [own] to be careful, and the working grant was retired for a
+// self-scoped one matching nothing. The consequence line existed and printed AFTER the decision.
+//
+// So this asserts three things: that the cost is REAL (the read stops working), that it is disclosed,
+// and that the disclosure arrives BEFORE the options rather than after the fact.
+await admin.put({
+  kind: "grant",
+  body: { principal: CHAT_USER, kind: "artifact", operations: ["read_one"], pattern: { owner: CHAT_USER } },
+});
+const theirs = await admin.putArtifact(new TextEncoder().encode("a file in a tree\n"), {
+  mediaType: "text/plain",
+  // Stamped the way a workspace file is (`writeWorkspace` sets the same fields), so the pattern on
+  // the wider grant matches it and the read below genuinely goes through that grant.
+  meta: { owner: CHAT_USER, conversationId: conv },
+});
+check("the session reads an artifact through its WIDER grant", (await session.getArtifact(theirs.id)).length > 0);
+
+await session.put({
+  kind: "grant_request",
+  body: { principal: CHAT_USER, kind: "artifact", operations: ["read_one"], why: "to read a file", conversationId: conv },
+});
+
+// `write` goes straight to Deno.stdout, so the prompt is captured at the descriptor. try/finally,
+// or a failure here would swallow the rest of this suite's output.
+const realWrite = Deno.stdout.writeSync.bind(Deno.stdout);
+let prompt = "";
+try {
+  Deno.stdout.writeSync = (b: Uint8Array) => {
+    prompt += new TextDecoder().decode(b);
+    return b.length;
+  };
+  await reviewGrantRequests(session, admin, CHAT_USER, conv, () => Promise.resolve("own"));
+} finally {
+  Deno.stdout.writeSync = realWrite;
+}
+
+const plain = prompt.replace(/\x1b\[[0-9;]*m/g, "");
+check("the prompt warns that [own] REMOVES existing access", /\[own\] REMOVES access this session already has/.test(plain));
+check("…naming the operation and kind that would go", /read_one on artifact/.test(plain), plain.split("\n").find((l) => l.includes("REMOVES")) ?? "(absent)");
+// THE ORDERING IS THE FIX. The receipt was always printed; a cost disclosed after the choice is not
+// a disclosure, so the warning has to precede the options it is about.
+const warnAt = plain.indexOf("REMOVES access");
+const optionAt = plain.indexOf("[own] its OWN records");
+check("…before the options, not after the decision", warnAt >= 0 && optionAt > warnAt, `warn@${warnAt} option@${optionAt}`);
+// And an option that takes access away must never be the recommended one.
+check(
+  "…and [own] is not recommended when it would take something away",
+  !/\[own\][^\n]*\(recommended\)/.test(plain),
+  plain.split("\n").find((l) => l.includes("[own] its OWN")) ?? "(absent)",
+);
+
+// The cost is real, which is what makes the warning load-bearing rather than decorative. If
+// narrowing is ever made non-destructive, this fails and the warning should go with it.
+//
+// And it fails as 404, not 403 — deliberately. A scoped principal must not be able to tell
+// "someone else's record" from "no such record", or a per-record endpoint becomes an existence
+// oracle. Asserting the CODE rather than just the failure keeps that property pinned here too: an
+// earlier draft of this check looked for "forbidden" and read the correct 404 as a regression.
+const after = await (async () => {
+  try {
+    await session.getArtifact(theirs.id);
+    return "readable";
+  } catch (e) {
+    return String(e);
+  }
+})();
+check("the wider read is genuinely gone afterwards", after !== "readable", after.slice(0, 60));
+check("…and answers 404, so it is not an existence oracle", /not_found/.test(after), after.slice(0, 60));
+
 try {
   worker.kill();
   space.kill();
