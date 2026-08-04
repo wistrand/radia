@@ -58,10 +58,11 @@ fails silently. Acceptance test met: `conformance/flows.test.ts` recovers the pi
 `job → task×4-7 → result×4-7 → summary` unprompted, and mines the stalled shape beside it.
 
 **The hub cut came from first real use, not from this plan.** A long-lived `conversation` made one
-component out of a whole multi-day chat, so every conversation mined as a unique shape. Hubs are now
-cut by a structural test (removal splits the component; a reconverging fan-out does not), which took
-conversation work from 11 shapes over 17 units to 27 over 290, 13 of them recurring. See
-[design-inspection.md](design-inspection.md); a successor chain is the known residue.
+component out of a whole multi-day chat, and a `workspace` version spine linked the turns a second
+way, so every conversation mined as a unique shape. Both are now cut by one structural test (what
+splits the component when removed; a reconverging fan-out does not), which took the largest mined
+shape from 930 records spanning 26 hours to 23 records spanning 5 minutes, and recurring shapes from
+4 to 24. See [design-inspection.md](design-inspection.md).
 
 **The `flow` RECORD is deliberately not written.** [research-self-modeling.md](research-self-modeling.md)
 specifies emitting one whose `parent_ids` are the exemplars, so the measurement gets provenance and

@@ -924,7 +924,7 @@ paths:
         - { name: counts, in: query, schema: { type: string, enum: [bucketed, exact], default: bucketed }, description: "bucketed fan-out is what makes a four-item and a five-item run the same flow" }
         - { name: max_records, in: query, schema: { type: integer }, description: "cap on the scan; reaching it reports complete:false" }
         - { name: min_occurrences, in: query, schema: { type: integer, default: 1 } }
-        - { name: hub_degree, in: query, schema: { type: integer, default: 8 }, description: "children a record needs before it is TESTED as a hub whose removal splits the flow; 0 leaves every component whole" }
+        - { name: hub_degree, in: query, schema: { type: integer, default: 8 }, description: "children a record needs before it is TESTED as a hub whose removal splits the flow; a same-kind version spine is tested the same way regardless; 0 leaves every component whole" }
         - { name: include_reserved, in: query, schema: { type: boolean, default: false }, description: "include the substrate's own kinds (declarations, grants, run records)" }
         - { name: include_singletons, in: query, schema: { type: boolean, default: false }, description: "include records linked to nothing; they are counted in `singletons` either way" }
       responses:

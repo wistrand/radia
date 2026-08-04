@@ -208,6 +208,96 @@ Deno.test("flows: a hub record is cut so the work hanging off it can be mined", 
   }
 });
 
+/** A space whose kinds are a long-lived thing (`doc`, versioned by successor) and work on it. */
+async function docSpace(): Promise<{ space: Space; close: () => Promise<void> }> {
+  const adapter = new SqliteAdapter(":memory:");
+  await adapter.init();
+  const space = new Space(adapter);
+  for (const kind of ["conversation", "message", "reply", "doc", "edit", "check", "note"]) {
+    space.registerKind({ kind, indexedPaths: [], claimable: false });
+  }
+  return { space, close: () => adapter.close() };
+}
+
+Deno.test("flows: a version SPINE is a hub stretched into a line, and gets the same test", async () => {
+  // The second shape found on the real corpus. A workspace writes each version with the previous as
+  // its parent, so ten saves are a ten-record spine with each turn's output hanging off its own
+  // version; the spine then links every turn to every other exactly as a conversation does.
+  const { space, close } = await docSpace();
+  try {
+    let prev: string | undefined;
+    for (let v = 0; v < 5; v++) {
+      const doc = await space.put({ kind: "doc", body: { v }, ...(prev ? { parentIds: [prev] } : {}) });
+      prev = doc.id;
+      const edit = await space.put({ kind: "edit", body: { v }, parentIds: [doc.id] });
+      await space.put({ kind: "check", body: { v }, parentIds: [edit.id] });
+      await space.put({ kind: "note", body: { v }, parentIds: [doc.id] }); // a sibling, linked to nothing else
+    }
+
+    const cut = await space.flows({ granularity: "kind" });
+    assertEquals(cut.hubs, 5, "the whole spine is the hub, not its widest record");
+    assertEquals(cut.flows.map((f) => f.signature), ["doc ⇒ edit → check"]);
+    assertEquals(cut.flows[0].occurrences, 5);
+    // Siblings do NOT survive the cut as a group: two records sharing only a parent that is gone
+    // have no edge between them, so each is its own piece. That is the same rule as everywhere else
+    // here (a record linked to nothing is not a flow), and it is why the work hanging off a version
+    // has to be causally chained to read as a unit.
+    assertEquals(cut.singletons, 5, "the notes hung off the spine and off nothing else");
+
+    const whole = await space.flows({ granularity: "kind", hubDegree: 0 });
+    assertEquals(whole.flows[0].occurrences, 1, "left whole it is one shape seen once, which says nothing");
+  } finally {
+    await close();
+  }
+});
+
+Deno.test("flows: ONE same-kind edge is a step, not a version", async () => {
+  // What protects real work from the spine rule. A router's `llm_call` producing an inference
+  // `llm_call` is same-kind and parent-child and is emphatically a step of work; three of a kind in
+  // a line is a thing being saved again. Two must survive, or the chat turn this feature just
+  // learned to mine would be shredded by the fix for the next thing.
+  const { space, close } = await docSpace();
+  try {
+    const conv = await space.put({ kind: "conversation", body: {} });
+    for (let i = 0; i < 10; i++) {
+      const first = await space.put({ kind: "doc", body: { i }, parentIds: [conv.id] });
+      await space.put({ kind: "doc", body: { i, second: true }, parentIds: [first.id] });
+    }
+    const r = await space.flows({ granularity: "kind" });
+    assertEquals(r.flows.map((f) => f.signature), ["conversation ⇒ doc → doc"]);
+    assertEquals(r.flows[0].occurrences, 10);
+  } finally {
+    await close();
+  }
+});
+
+Deno.test("flows: two hubs that each link everything are cut together, or neither ever is", async () => {
+  // The case that decided the search direction. A conversation links every turn AND a doc spine
+  // links every turn, so removing either one alone splits NOTHING: the other still holds the
+  // component together. A forward search that accepts a candidate only when it splits on its own
+  // therefore cuts neither and reports one shape seen once. Cutting everything and restoring what
+  // is not needed answers the question one candidate at a time and gets both.
+  const { space, close } = await docSpace();
+  try {
+    const conv = await space.put({ kind: "conversation", body: {} });
+    let prevDoc: string | undefined;
+    for (let i = 0; i < 10; i++) {
+      const doc = await space.put({ kind: "doc", body: { i }, ...(prevDoc ? { parentIds: [prevDoc] } : {}) });
+      prevDoc = doc.id;
+      const m = await space.put({ kind: "message", body: { i }, parentIds: [conv.id] });
+      // The turn's reply hangs off BOTH: this is what makes each hub sufficient on its own.
+      await space.put({ kind: "reply", body: { i }, parentIds: [m.id, doc.id] });
+    }
+
+    const r = await space.flows({ granularity: "kind" });
+    assertEquals(r.flows.map((f) => f.signature), ["conversation + doc ⇒ message → reply"]);
+    assertEquals(r.flows[0].occurrences, 10);
+    assertEquals(r.hubs, 11, "the conversation and all ten doc versions");
+  } finally {
+    await close();
+  }
+});
+
 Deno.test("flows: a wide fan-out that RECONVERGES is not a hub, however wide it is", async () => {
   // The discriminating case, and the reason the test is structural rather than a degree threshold:
   // a job with twelve tasks is exactly as high-degree as a hub. What separates them is that the

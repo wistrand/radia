@@ -287,6 +287,9 @@ const FLOW_EXEMPLARS = 3;
 const FLOW_HUB_DEGREE = 8;
 const FLOW_HUB_CANDIDATES = 8;
 const FLOW_HUB_PIECES = 3;
+/** Records of one kind in a line before the line is read as a VERSION SPINE rather than as work.
+ *  One same-kind edge is ambiguous and two is a coin flip; three is a thing being saved again. */
+const FLOW_CHAIN_MIN = 3;
 
 /** A recurring shape of work, mined from what happened. Never declared: the runtime has no
  *  topology to assert, which is the whole reason this has to be recovered rather than read. */
@@ -2033,34 +2036,98 @@ export class Space {
       }
       return [...out.values()];
     };
+    /** Maximal groups joined only by SAME-KIND parent edges: a version spine, or a same-kind star.
+     *  Kind, never `kind@agent`: a workspace saved by two agents is still one thing. */
+    const piecesOfSameKind = (members: string[]): string[][] => {
+      const set = new Set(members);
+      const up = new Map(members.map((id) => [id, id]));
+      const root = (x: string): string => {
+        while (up.get(x) !== x) {
+          up.set(x, up.get(up.get(x)!)!);
+          x = up.get(x)!;
+        }
+        return x;
+      };
+      for (const id of members) {
+        const kind = nodes.get(id)!.kind;
+        for (const p of nodes.get(id)!.parents) {
+          if (!set.has(p) || nodes.get(p)!.kind !== kind) continue;
+          const [a, b] = [root(id), root(p)];
+          if (a !== b) up.set(a, b);
+        }
+      }
+      const out = new Map<string, string[]>();
+      for (const id of members) {
+        const r = root(id);
+        const bucket = out.get(r);
+        if (bucket) bucket.push(id);
+        else out.set(r, [id]);
+      }
+      return [...out.values()];
+    };
     const units: { members: string[]; prefix: string; fragment: boolean }[] = [];
     let hubs = 0;
     for (const members of components.values()) {
       const cut = new Set<string>();
       if (hubDegree > 0 && members.length > hubDegree) {
+        // A hub is not always ONE record. A workspace writes each version with the previous as its
+        // parent, so ten saves are a ten-record SPINE with each turn's output hanging off its own
+        // version, and the spine links every turn to every other exactly as a conversation does. It
+        // is the same structure stretched into a line, so it gets the same test, applied to a
+        // same-kind connected GROUP instead of a node.
+        //
+        // Three members is the floor, and it is what protects real work: ONE same-kind edge is
+        // ambiguous (a router's `llm_call` producing an inference `llm_call` is a step, not a
+        // version), while three records of a kind in a line is a thing being saved repeatedly.
+        const spines = piecesOfSameKind(members).filter((p) => p.length >= FLOW_CHAIN_MIN);
         const childCount = new Map<string, number>();
         for (const id of members) {
           for (const p of nodes.get(id)!.parents) {
             if (nodes.has(p)) childCount.set(p, (childCount.get(p) ?? 0) + 1);
           }
         }
-        // Only the widest few are ever tested: the piece count is a graph pass, and a component with
-        // no hub must not pay for one per node.
-        const candidates = members
-          .filter((id) => (childCount.get(id) ?? 0) >= hubDegree)
-          .sort((a, b) => (childCount.get(b) ?? 0) - (childCount.get(a) ?? 0))
-          .slice(0, FLOW_HUB_CANDIDATES);
-        for (const c of candidates) {
-          cut.add(c);
-          if (piecesOf(members, cut).length < FLOW_HUB_PIECES) cut.delete(c); // no split: not a hub
+        // Only the widest few of either shape are ever tested: the piece count is a graph pass, and
+        // a component with no hub must not pay for one per node.
+        const candidates: string[][] = [
+          ...spines.sort((a, b) => b.length - a.length),
+          ...members
+            .filter((id) => (childCount.get(id) ?? 0) >= hubDegree)
+            .sort((a, b) => (childCount.get(b) ?? 0) - (childCount.get(a) ?? 0))
+            .map((id) => [id]),
+        ].slice(0, FLOW_HUB_CANDIDATES);
+        // Cut everything, then RESTORE what turns out not to be needed. Testing candidates one at a
+        // time cannot work, because they interact: a workspace spine splits nothing while the
+        // conversation still links every turn, and the conversation splits nothing while the spine
+        // does, so a forward pass rejects each on the strength of the other still being there. From
+        // the other end the question is answerable one candidate at a time — does putting this one
+        // back re-merge the pieces? — which is k tests rather than 2^k, and yields the smallest cut
+        // that still decomposes rather than the first one found.
+        for (const c of candidates) for (const id of c) cut.add(id);
+        if (piecesOf(members, cut).length < FLOW_HUB_PIECES) {
+          cut.clear(); // no decomposition available: leave the component whole, as before hubs existed
+        } else {
+          for (const c of candidates) {
+            for (const id of c) cut.delete(id);
+            if (piecesOf(members, cut).length < FLOW_HUB_PIECES) for (const id of c) cut.add(id); // needed
+          }
         }
         hubs += cut.size;
       }
-      // The hub's own kind stays in the signature. Without it the turns of a conversation and the
-      // steps of a job would merge into one shape on the strength of looking alike.
-      const prefix = cut.size === 0 ? "" : [...new Set([...cut].map(tokenOf))].sort().join(" + ");
+      // The hub's own kind stays in the signature, or the turns of a conversation and the steps of
+      // a job would merge on the strength of looking alike. PER PIECE, not per component: naming
+      // every hub that was cut anywhere gave two identical turns different keys depending on
+      // whether their conversation happened to also hold a workspace, which splits exactly what the
+      // signature exists to aggregate. A piece is prefixed by what it actually hung from.
       for (const piece of cut.size === 0 ? [members] : piecesOf(members, cut)) {
-        units.push({ members: piece, prefix, fragment: piece.some((id) => fragment.has(id)) });
+        const within = new Set(piece);
+        const touching = new Set<string>();
+        for (const id of piece) for (const p of nodes.get(id)!.parents) if (cut.has(p)) touching.add(p);
+        for (const c of cut) for (const p of nodes.get(c)!.parents) if (within.has(p)) touching.add(c);
+        units.push({
+          members: piece,
+          prefix: [...new Set([...touching].map(tokenOf))].sort().join(" + "),
+          fragment: piece.some((id) => fragment.has(id)),
+        });
       }
     }
 

@@ -184,21 +184,42 @@ perfect and this did not.
 **Fixed by cutting at hubs, and the test is REMOVAL, not degree.** Degree alone cannot tell a
 conversation from a wide fan-out, because a job with twelve tasks is just as high-degree. What
 separates them is that the tasks reconverge on a summary: delete the job and one piece remains,
-delete the conversation and every turn falls apart. So a hub is a node whose removal leaves
-`FLOW_HUB_PIECES` independent pieces, tested only on the widest few nodes of a component and only
-above `hubDegree` children (a query parameter; `0` leaves every component whole, which is the
-pre-fix behaviour and how the two are compared). The hub's own kind stays in the signature as
-`conversation ⇒ …`, or the turns of a chat and the steps of a job would merge on the strength of
-looking alike. **Never cap component size instead**: that hides a shape rather than decomposing it.
+delete the conversation and every turn falls apart. So a hub is whatever, removed, leaves
+`FLOW_HUB_PIECES` independent pieces. **Never cap component size instead**: that hides a shape
+rather than decomposing it.
 
-Measured on the same corpus, conversation-derived work: **11 shapes over 17 units, 1 recurring →
-27 shapes over 290 units, 13 recurring covering 276 of them**, largest shape 930 records → 61. The
-turn is now first-class: `conversation + llm_call ⇒ llm_call → llm_call + message + progress×2-3 →
-llm_result + progress` at 104 occurrences, and the tool-call turn at 73.
+Three things that shape has to get right, each found by running it:
 
-What remains is a **successor CHAIN**, not a star: a `workspace` records each version with the
-previous as parent, so consecutive turns stay linked through it. Three units out of 476, they are
-genuinely causally connected, and a degree test cannot see a chain. Left alone deliberately.
+- **A hub is not always one record.** A `workspace` writes each version with the previous as parent,
+  so ten saves are a ten-record SPINE with each turn's output on its own version, and the spine
+  links every turn exactly as a conversation does. It is the same structure stretched into a line,
+  so it gets the same test applied to a same-kind connected GROUP. Three members is the floor, and
+  that floor is what protects work: ONE same-kind edge is ambiguous (a router's `llm_call` producing
+  an inference `llm_call` is a step), three in a line is a thing being saved again.
+- **Candidates cannot be tested one at a time.** A spine splits nothing while the conversation still
+  links every turn, and the conversation splits nothing while the spine does, so a forward search
+  rejects each on the strength of the other still being there and cuts neither. The search runs the
+  other way: cut every candidate, then restore whatever turns out not to be needed. That is k tests
+  rather than 2^k and yields the smallest cut that still decomposes.
+- **The prefix is per PIECE, not per component.** Naming every hub cut anywhere gave two identical
+  turns different keys depending on whether their conversation also held a workspace, splitting
+  exactly what the signature exists to aggregate.
+
+Measured across the three stages on the same corpus:
+
+| | largest shape | longest signature | worst span | recurring shapes |
+|---|---|---|---|---|
+| components only    | 930 records | 467 chars | 26h | 4 |
+| hub records cut    | 61 records  | 362 chars | 26h | 16 |
+| + version spines   | 23 records  | 173 chars | 5m  | 24 |
+
+The turn is first-class: `conversation + llm_call + tool_call + workspace ⇒ llm_call → llm_call +
+message + progress×2-3 → llm_result + progress` at 70 occurrences, the tool-call turn at 42.
+
+Known and deliberate: siblings do not survive a cut as a group. Two records sharing only a parent
+that is now gone have no edge between them, so each becomes its own piece and is counted as a
+singleton. Work hanging off a version has to be causally chained to read as a unit, which is the
+same rule as everywhere else here.
 
 Three things the build settled that the spec left open:
 
