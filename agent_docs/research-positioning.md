@@ -94,14 +94,6 @@ outcomes are load-bearing here:
   adoption thesis, and it is the reason surface discipline belongs beside the invariants rather
   than in a style guide.
 
-*The OSGi half is first-hand.* Radia's author wrote the Knopflerfish OSGi service tutorial, which
-means the corrections above are second-system fixes rather than convergent evolution: the listener
-race that every service tutorial must teach ("register the listener, then enumerate what already
-exists, then reconcile") is not encapsulated here the way `ServiceTracker` encapsulates it, it is
-deleted — a watch has a cursor into a durable log, so "catch up, then stream, miss nothing" is the
-contract. Registries are projections over an append-only stream rather than mutable state, so there
-are no dangling references because there are no references. Record it as provenance, not as a
-citation.
 
 **The adoption risk this lineage actually names.** Both ancestries were technically sound and both
 lost to orchestration — Spring beat OSGi by offering the registry's benefits with the dynamism
