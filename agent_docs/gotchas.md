@@ -373,6 +373,13 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   a subset of what `leaseValid` checked), so a conformance case there would assert nothing;
   exercising the race is fault-matrix work against a live Postgres. See
   [plan-validation.md](plan-validation.md).
+- **A stream opened with a raw `fetch` inherits none of the client's headers, and the failure is
+  quiet.** The TS `watch()` built its SSE connect by hand, so it sent no `Authorization`: every
+  connect 401'd under `--auth required` and `agentLoop` fell back to polling — slow rather than
+  broken, which is why it survived. Anything that bypasses the client's own request helper has to
+  re-add what that helper was doing. Same file, same shape: a watch id is server MEMORY, so a
+  restart 404s it permanently and retrying is the one failure that never heals; both SDKs re-create
+  the watch on a 404 (`conformance/loop.test.ts`).
 - **A heartbeat that discards its result is a worker that never learns it was fenced.** `renew`
   reports fencing as a `{status: "lease_lost"}` BODY, so `renew(...).catch(() => {})` ignored exactly
   the case it existed to detect: a reclaimed worker renewed a dead lease for the life of the process

@@ -1,7 +1,7 @@
 # Plan: audit remediation
 
-> Status: I, N, P, Q and R are open; **E, K, L, M and O are closed** (2026-08-03), **H** (2026-08-04); everything else is closed and
-> its guards pass (`deno task conformance`: 446 passed, 0 failed). Each done package is a status line here; its
+> Status: N, P, Q and R are open; **E, K, L, M and O are closed** (2026-08-03), **H and I** (2026-08-04); everything else is closed and
+> its guards pass (`deno task conformance`: 448 passed, 0 failed). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
 > paths; items marked **reproduced** were verified empirically. Line numbers drift; trust the symbol,
@@ -29,7 +29,7 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~E~~ | ~~Pushdown soundness~~                | ~~P1~~   | **CLOSED 2026-08-03**                 |
 | ~~G~~ | ~~Blob write durability~~             | ~~P2~~   | **CLOSED 2026-08-03**                 |
 | ~~H~~ | ~~`lease_lost` unobservable in clients~~ | ~~P2~~ | **CLOSED 2026-08-04**                 |
-| I   | SDK parity + chat example               | P2       | Drift; example-specific data loss     |
+| ~~I~~ | ~~SDK parity + chat example~~         | ~~P2~~   | **CLOSED 2026-08-04**                 |
 | ~~K~~ | ~~Unrevocable definition tokens~~     | ~~P0~~   | **CLOSED 2026-08-03**                 |
 | ~~L~~ | ~~Watch streams cache authorization~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
 | ~~M~~ | ~~`kind_def` is not write-protected~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
@@ -39,7 +39,7 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | Q   | Designed features unreachable           | P2       | A built feature no caller can invoke   |
 | R   | Dead taint parameter; half-tested guard | P2       | Legibility, not leakage (see the entry) |
 
-Packages A, B, C, D, E, F, G, H, J, K, L, M and O are closed. Their lessons are rules in
+Packages A, B, C, D, E, F, G, H, I, J, K, L, M and O are closed. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -151,21 +151,39 @@ fail against the old discard-the-result heartbeat: both cases sat on the failsaf
 test in `conformance/` that binds a real port, because the SDK client and its SSE watchers are what
 is under test, and a stubbed `fetch` would only test a mock's idea of streaming and cancellation.
 
-## Package I: SDK drift and the chat example (P2)
+## Package I: SDK drift and the chat example (P2) — CLOSED 2026-08-04
 
 **Parity is no longer the goal.** Python is frozen to the core coordination surface and TS carries
-the full one; [sdk/README.md](../sdk/README.md) states the policy. What remains here are defects,
-not gaps:
+the full one; [sdk/README.md](../sdk/README.md) states the policy. What was here were defects, not
+gaps, and all five are closed:
 
-- The TS `watch()` omits `Authorization` on the SSE connect, so in a token-authenticated space
-  every connect 401s and silently retries; `agentLoop` degrades to poll-only. Python sends it.
-- Neither SDK re-creates a watch after a server restart: watches are in-memory, both treat the 404
-  as transient and hammer the dead id forever.
-- Python `get_children` takes no paging arguments despite the paged endpoint, and `query_page`
-  drops the `scope` field, so a scoped Python caller cannot tell a narrowed read from a complete
-  one. These are core-surface bugs, in scope despite the freeze.
-- Chat example: the escalation ladder reads `model` records without the registry projection and can
-  route to a gracefully stopped tier, hanging until the deadline.
+- **The TS `watch()` omitted `Authorization` on the SSE connect** (a raw `fetch`, so it inherited
+  nothing from `req`), so under `--auth required` every connect 401'd and `agentLoop` degraded to
+  poll-only — slow rather than broken, which is why it survived. Python always sent it.
+- **Neither SDK re-created a watch after a server restart.** Watches are in-memory, so a restart
+  404s every id permanently, and both treated it as transient and retried the dead id forever. Both
+  re-create on a 404 now; events during the gap are missed by construction, which is what the poll
+  fallback is for.
+- **Python `get_children` took no paging arguments** despite the endpoint being paged (so a caller
+  silently saw the first page of a fan-out), and **`query_page` dropped `scope`**, leaving a scoped
+  caller unable to tell its slice from the whole space. `get_children(limit, after)` plus
+  `get_children_page`, and `query_page` returns `(records, next_after, scope)`.
+- **Python `agent_loop` had no run-token renewal** (the round-two finding), so a Python worker
+  stopped claiming at ~15 minutes and said nothing. `RadiaClient.renew_run` + `keep_alive(stop,
+  on_lost)` renews at half-life in a daemon thread, mirroring TS `keepAlive`, and `agent_loop`
+  starts it.
+- **The chat's escalation ladder read `model` records raw**, so a gracefully stopped tier stayed a
+  valid escalation target and escalating to it hung until the deadline. The projection is now a
+  shared `liveModels` (`examples/chat/space/model.ts`) that the router, the ladder and the fleet
+  smoke all call — three copies of it existed, and the smoke's own copy meant that suite could only
+  ever prove its own loop right.
+
+Guards: two cases in `conformance/loop.test.ts` (a watch under `--auth required` delivers a wakeup;
+a 404'd watch is re-created under a NEW id rather than retried), both verified to fail against the
+old client — the first with the 401 problem document in the assertion message. Three cases in
+`examples/chat/smoke-fleet.ts` pin the ladder against a retired tier, and that file now drives the
+shared projection instead of a copy. Python has no harness in this repo; `renew_run`/`keep_alive`
+and the paging changes were exercised directly against a stub client.
 
 ---
 

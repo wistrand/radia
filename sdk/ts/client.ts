@@ -605,13 +605,19 @@ export class RadiaClient {
    * that looks exactly like an idle space.
    */
   async *watch(pattern: Pattern, signal?: AbortSignal): AsyncGenerator<Wakeup> {
-    const { watchId } = await this.req("POST", "/v0/watches", pattern) as { watchId: string };
+    let watchId = (await this.req("POST", "/v0/watches", pattern) as { watchId: string }).watchId;
     let cursor: string | undefined; // opaque resume token (Last-Event-ID), never parsed
     while (!signal?.aborted) {
       let res: Response;
       try {
         res = await fetch(`${this.base}/v0/watches/${watchId}/events`, {
-          headers: cursor !== undefined ? { "Last-Event-ID": cursor } : {},
+          // The SSE connect is a raw `fetch`, so it does NOT inherit `req`'s Authorization. Without
+          // this line every connect 401s in an authenticated space and the caller silently
+          // degrades to its poll fallback, which is slow rather than broken and so goes unnoticed.
+          headers: {
+            ...(this.auth.token ? { "Authorization": `Bearer ${this.auth.token}` } : {}),
+            ...(cursor !== undefined ? { "Last-Event-ID": cursor } : {}),
+          },
           signal,
         });
       } catch {
@@ -621,6 +627,21 @@ export class RadiaClient {
       }
       if (res.status === 410) {
         cursor = "0"; // cursor_expired: restart (a real client catches up via query first)
+        continue;
+      }
+      if (res.status === 404) {
+        // Watches live in the server's memory, so a restart makes this id gone for good; retrying
+        // it forever is the one failure that never heals. Re-create and start from the new watch's
+        // own cursor: events during the gap are missed by construction, which is what the caller's
+        // poll fallback is for.
+        await res.body?.cancel();
+        try {
+          watchId = (await this.req("POST", "/v0/watches", pattern) as { watchId: string }).watchId;
+          cursor = undefined;
+        } catch (e) {
+          if (e instanceof RadiaClientError && (e.status === 401 || e.status === 403)) throw e;
+          await sleep(300);
+        }
         continue;
       }
       if (res.status === 401 || res.status === 403) {

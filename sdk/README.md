@@ -16,12 +16,14 @@ imports.
 | Path        | [`ts/`](ts/): `wire.ts`, `registry.ts`, `client.ts`, `loop.ts` | [`py/radia.py`](py/radia.py) |
 | Client      | `RadiaClient`      | `RadiaClient` |
 | Worker loop | `agentLoop`        | `agent_loop` |
-| Paging      | `query` / `queryPage` (keyset: `{after, dir}`) | `query` / `query_page` (keyset: `after=`, `dir=`) |
+| Paging      | `query` / `queryPage` → `{records, nextAfter, scope}` | `query` / `query_page` → `(records, next_after, scope)` |
 | Watches     | `client.watch()` async generator | `client.watch()` generator |
 | Artifacts   | `putArtifact` / `getArtifact` / `artifactCapability` | `put_artifact` / `get_artifact` / `artifact_capability` |
 | Remediation | `admin(action, id)` / `remediate(action, selector)` | `admin(action, id)` / `remediate(action, state=…, expired=…)` |
 | Ops queries | `queryEnvelopes` / `diagnostics` / `erasures` / `getStats` / `getEvents` | `query_envelopes` / `diagnostics` / `erasures` / `get_stats` / `get_events` |
 | Bootstrap   | `grant` / `createAgentDefinition` / `createRun` / `stopRun` | `grant` / `create_agent_definition` / `create_run` / `stop_run` |
+| Credential  | `keepAlive(signal, onLost)` renews at half-life | `keep_alive(stop, on_lost)`, same, in a daemon thread |
+| Children    | `getChildren` / `getChildrenPage` (paged) | `get_children` / `get_children_page` (paged) |
 | Dependencies| none beyond the runtime | none, standard library only (3.9+) |
 
 **Beside the SDK: [extensions/](../extensions/README.md).** The SDK is one method per `/v0` verb,
@@ -73,6 +75,13 @@ that is still legitimately this worker's.
 A `403` on a watch is treated as permanent (the run has no grant for that kind): both loops log it
 loudly once and fall back to polling, rather than retrying forever. "Silently slow" would be a
 worse failure than "loudly wrong".
+
+**The watch stream authenticates, and re-creates itself when the server forgets it.** The SSE
+connect is a raw request, so it does not inherit the client's `Authorization` unless it is set
+there explicitly — TS did not, so under `--auth required` every connect 401'd and the loop
+degraded to polling, quietly. And watches live in server memory, so a restart 404s every existing
+id permanently; both SDKs re-create the watch on a 404 instead of retrying the dead one. Events
+during the gap are missed by construction, which is what the poll fallback is for.
 
 ## Usage
 

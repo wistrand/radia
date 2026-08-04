@@ -9,7 +9,7 @@ import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { progress } from "../space/progress.ts";
 import { arg, onStop } from "../util.ts";
 import { publishCapability } from "../space/capability.ts";
-import { publishModel, retireModel } from "../space/model.ts";
+import { liveModels, publishModel, retireModel } from "../space/model.ts";
 import { type ChatMessage, streamChat, type ToolCall, type ToolDef } from "../provider/openrouter.ts";
 
 const ME = "agent:chat-inference";
@@ -141,15 +141,13 @@ await agentLoop(client, {
         hidden = built.hidden;
       }
 
-      // Can this turn escalate? Find the next-higher-rank tier from the `model` records (the
-      // ordering is discovered, not hard-coded). Offer `escalate` only if a stronger tier exists;
-      // otherwise strip it so the top model just answers (and can't emit an unhandled escalate).
-      // Same filter as the router: an image tier is in the fleet but is not somewhere a text turn
-      // can escalate TO. Absent `modalities` means text (workers that predate the field).
-      const fleet = (await c.query({ kind: "model" }, 100))
-        .map((m) => m.body as { tier: string; rank: number; modalities?: string[] })
-        .filter((m) => !m.modalities || m.modalities.includes("text"));
-      const higher = fleet.filter((m) => (m.rank ?? 0) > rank).sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))[0];
+      // Can this turn escalate? The next-higher-rank tier that is actually on offer: `liveModels`
+      // is the same projection the router routes by, so the ladder cannot offer a tier the router
+      // considers gone. Reading the records raw here meant a gracefully stopped tier stayed a valid
+      // escalation target and escalating to it hung until the deadline. Offer `escalate` only if a
+      // stronger tier exists; otherwise strip it so the top model just answers (and cannot emit an
+      // unhandled escalate).
+      const higher = (await liveModels(c)).find((m) => (m.rank ?? 0) > rank);
       const tools = higher ? body.tools : (body.tools ?? []).filter((t) => t.function.name !== "escalate");
 
       const { message, finishReason, usage } = await streamChat(

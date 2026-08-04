@@ -13,6 +13,7 @@
 // retention GC that is still M2. Do not "fix" it with a periodic re-publish.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
+import { activeByKey } from "../../../sdk/ts/registry.ts";
 
 export interface ModelAd {
   tier: string;
@@ -20,6 +21,24 @@ export interface ModelAd {
   rank: number;
   modalities?: string[];
   retired?: boolean;
+}
+
+/**
+ * The tiers currently on offer, weakest first: the latest-wins projection over `model` records,
+ * minus retirements, minus anything that does not serve TEXT.
+ *
+ * Shared so the ROUTER (which tier gets this turn) and the escalation ladder (which tier is one
+ * step up) cannot disagree about what exists. The ladder read the records raw, so a gracefully
+ * stopped tier stayed a valid escalation target and escalating to it hung until the deadline —
+ * the same "a registry is a projection" rule the router already followed. Paged to exhaustion,
+ * newest-first, for the other half of that rule: a bounded page hides the newest advertisement.
+ */
+export async function liveModels(client: RadiaClient): Promise<ModelAd[]> {
+  const rows = await client.queryAll({ kind: "model" });
+  return [...activeByKey<{ tier?: string }>(rows, (b) => b?.tier).values()]
+    .map((r) => r.body as ModelAd)
+    .filter((m) => !m.modalities || m.modalities.includes("text"))
+    .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
 }
 
 /** The current advertisement record for a tier, newest-first. A retirement is the LATEST record,

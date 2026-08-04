@@ -13,8 +13,7 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
-import { publishModel, retireModel } from "./space/model.ts";
-import { activeByKey } from "../../src/core/registry.ts";
+import { liveModels, publishModel, retireModel } from "./space/model.ts";
 
 const PORT = 7801;
 const url = `http://127.0.0.1:${PORT}`;
@@ -43,14 +42,12 @@ function check(name: string, ok: boolean, detail = "") {
   if (!ok) failed++;
 }
 
-/** What the router sees: the same latest-wins projection it uses, filtered to text tiers. */
+/** What the fleet is offering, through the SHARED projection rather than a copy of it. This file
+ *  had its own re-implementation, so it could only ever prove that its own loop was right: a
+ *  divergence in the projection the router and the escalation ladder actually call would have gone
+ *  unnoticed here. Same reason `smoke-inspect.ts` drives the tools instead of the client. */
 async function liveTiers(): Promise<string[]> {
-  const rows = await client.query({ kind: "model" }, 100);
-  return [...activeByKey<{ tier?: string }>(rows, (b) => b?.tier).values()]
-    .map((m) => m.body as { tier: string; rank?: number; modalities?: string[] })
-    .filter((m) => !m.modalities || m.modalities.includes("text"))
-    .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))
-    .map((m) => m.tier);
+  return (await liveModels(client)).map((m) => m.tier);
 }
 
 const countModels = async () => (await client.query({ kind: "model" }, 500)).length;
@@ -94,6 +91,18 @@ check("restarting the worker revives its tier", (await liveTiers()).join(",") ==
 // ---- image models are not text tiers ----
 await publishModel(client, { tier: "image", model: "vendor/pix", rank: 0, modalities: ["image"] });
 check("an image model is not offered for text routing", !(await liveTiers()).includes("image"), (await liveTiers()).join(","));
+
+// ---- the escalation ladder asks the same question the router does ----
+// The ladder ("which tier is one step up from mine") read the `model` records RAW, so a gracefully
+// stopped tier stayed a valid escalation target and escalating to it hung until the deadline. It
+// is the same projection now, which is what this pins: retire the top tier and nothing above the
+// bottom one remains to escalate to.
+const nextUp = async (rank: number) => (await liveModels(client)).find((m) => (m.rank ?? 0) > rank)?.tier;
+check("the ladder offers the stronger tier", (await nextUp(0)) === "deep", String(await nextUp(0)));
+await retireModel(client, DEEP);
+check("…and offers nothing once that tier is withdrawn", (await nextUp(0)) === undefined, String(await nextUp(0)));
+await publishModel(client, DEEP);
+check("…and offers it again when the worker comes back", (await nextUp(0)) === "deep", String(await nextUp(0)));
 
 space.kill();
 await space.status;

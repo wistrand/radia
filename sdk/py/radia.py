@@ -99,6 +99,19 @@ def default_base() -> str:
     return os.environ.get("RADIA_URL") or DEFAULT_BASE
 
 
+def _iso_seconds_from_now(iso: Optional[str]) -> Optional[float]:
+    """Seconds until an ISO 8601 UTC instant, or None if it cannot be parsed. Never negative."""
+    if not iso:
+        return None
+    try:
+        from datetime import datetime, timezone
+
+        when = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+    except ValueError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
@@ -350,6 +363,43 @@ class RadiaClient:
         """Mint a short-lived run token from a definition token."""
         return self._req("POST", "/v0/agent-runs", {}, {"Authorization": f"Bearer {definition_token}"})
 
+    def renew_run(self, run: str) -> Dict[str, Any]:
+        """Extend this run's expiry, keeping the SAME token. Bounded by the run's max lifetime."""
+        return self._req("POST", f"/v0/agent-runs/{urllib.parse.quote(run, safe='')}/renew")
+
+    def keep_alive(self, stop: threading.Event, on_lost: Optional[Callable[[str], None]] = None) -> threading.Thread:
+        """Renew this client's run token at HALF-LIFE until ``stop`` is set, in a daemon thread.
+
+        Run tokens are short (~15 min) so a leaked one stops working, which means any long-running
+        process must renew or it simply stops claiming and says nothing. Renewing at half-life
+        rather than on a 401 is the point: by the time a call fails the session is already gone.
+        ``on_lost`` fires when the run cannot be renewed (stopped, or past its ceiling) — neither is
+        retryable, so a caller should stop working rather than spin.
+        """
+
+        def run_loop() -> None:
+            while not stop.is_set():
+                delay = 60.0
+                try:
+                    who = self.health()
+                    principal = str(who.get("principal", ""))
+                    if not principal.startswith("run:"):
+                        return  # an operator token does not expire
+                    expires = self.renew_run(principal).get("expiresAt")
+                    left = _iso_seconds_from_now(expires)
+                    delay = max(15.0, left / 2) if left else 60.0
+                except RadiaError as e:
+                    if e.status == 409:  # stopped, or past its maximum lifetime: not retryable
+                        if on_lost:
+                            on_lost(e.detail or "run cannot be renewed")
+                        return
+                    delay = 30.0
+                stop.wait(delay)
+
+        t = threading.Thread(target=run_loop, daemon=True)
+        t.start()
+        return t
+
     def revoke_definition(self, agent: str, reason: str = "") -> Dict[str, Any]:
         """Kill a definition token, permanently. Operator only.
 
@@ -389,8 +439,13 @@ class RadiaClient:
         limit: int = 100,
         after: Optional[str] = None,
         dir: str = "asc",
-    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-        """One page plus the cursor for the next, as ``(records, next_after)``.
+    ) -> Tuple[List[Dict[str, Any]], Optional[str], Optional[Dict[str, Any]]]:
+        """One page, the cursor for the next, and the read's scope: ``(records, next_after, scope)``.
+
+        ``scope`` is present only when a grant NARROWED this read (``{narrowedBy, ownRecordsOnly,
+        note}``) and is ``None`` otherwise. Dropping it, as this method used to, leaves a scoped
+        caller unable to tell its own slice from the whole space — the failure the server added the
+        field to prevent, since a narrowed answer is shaped exactly like a complete one.
 
         ``after``/``dir`` are KEYSET pagination over record id: a cursor, not an offset, so a
         page stays correct while records are being written. Records come back in ASCENDING id
@@ -406,7 +461,7 @@ class RadiaClient:
         if dir != "asc":
             payload["dir"] = dir
         r = self._req("POST", "/v0/records/query", payload)
-        return r["records"], r.get("nextAfter")
+        return r["records"], r.get("nextAfter"), r.get("scope")
 
     def get_record(self, record_id: str) -> Optional[Dict[str, Any]]:
         try:
@@ -419,8 +474,29 @@ class RadiaClient:
     def get_lineage(self, record_id: str) -> List[Dict[str, Any]]:
         return self._req("GET", f"/v0/ops/records/{record_id}/lineage")["lineage"]
 
-    def get_children(self, record_id: str) -> List[Dict[str, Any]]:
-        return self._req("GET", f"/v0/ops/records/{record_id}/children")["children"]
+    def get_children(self, record_id: str, limit: int = 100, after: Optional[str] = None) -> List[Dict[str, Any]]:
+        """One page of the records naming this one as a parent. BOUNDED: fan-out has no bound in
+        principle, so walk it with ``get_children_page`` rather than assuming this is all of them."""
+        return self.get_children_page(record_id, limit, after)[0]
+
+    def get_children_page(
+        self,
+        record_id: str,
+        limit: int = 100,
+        after: Optional[str] = None,
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """One page of children plus the cursor for the next; ``next_after`` is ``None`` at the end.
+
+        The endpoint has been paged since children became an indexed edge lookup; this method took
+        no arguments, so a Python caller silently saw the first page of a fan-out and had no way to
+        ask for the rest.
+        """
+        q = {"limit": str(limit)}
+        if after:
+            q["after"] = after
+        path = f"/v0/ops/records/{urllib.parse.quote(record_id, safe='')}/children?{urllib.parse.urlencode(q)}"
+        r = self._req("GET", path)
+        return r["children"], r.get("nextAfter")
 
     # -- claims --
 
@@ -575,6 +651,15 @@ class RadiaClient:
         watch_id = self._req("POST", "/v0/watches", pattern)["watchId"]
         cursor: Optional[str] = None
         while stop is None or not stop.is_set():
+            if watch_id is None:  # re-create after the server forgot this watch (see the 404 below)
+                try:
+                    watch_id = self._req("POST", "/v0/watches", pattern)["watchId"]
+                    cursor = None
+                except RadiaError as e:
+                    if e.status in (401, 403):
+                        raise
+                    time.sleep(0.3)
+                    continue
             headers = {"Last-Event-ID": cursor} if cursor is not None else {}
             if self.token:
                 headers["Authorization"] = f"Bearer {self.token}"
@@ -599,6 +684,13 @@ class RadiaClient:
                     continue
                 if e.code in (401, 403):
                     raise RadiaError(e.code, "forbidden", f"watch {watch_id} refused ({e.code})") from None
+                if e.code == 404:
+                    # Watches live in the server's memory, so a restart makes this id gone for good
+                    # and retrying it is the one failure that never heals. Re-created at the top of
+                    # the loop; events during the gap are missed by construction, which is what the
+                    # caller's poll fallback is for.
+                    watch_id = None
+                    continue
                 time.sleep(0.3)
             except urllib.error.URLError:
                 time.sleep(0.3)
@@ -659,6 +751,18 @@ def agent_loop(
     say = log or (lambda _m: None)
     stop = stop or threading.Event()
     wake = threading.Event()
+    # Keep this run's credential alive for as long as the loop runs. Without it a Python worker
+    # stopped claiming when its token lapsed (~15 minutes) and said nothing, so the failure looked
+    # like an idle worker rather than a dead credential. It belongs here rather than in each agent:
+    # any process running this loop is long-lived by definition.
+    credential_lost: List[str] = []
+
+    def credential_ended(reason: str) -> None:
+        say(f"[{name}] credential ended: {reason}")
+        credential_lost.append(reason)
+        stop.set()
+
+    client.keep_alive(stop, credential_ended)
     # A handler may take a third parameter, an Event set when this claim's lease stops being ours
     # (see _Heartbeat). Detected once, by signature, rather than by calling with three arguments
     # and catching TypeError: a TypeError raised INSIDE a two-argument handler is indistinguishable

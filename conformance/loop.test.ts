@@ -1,4 +1,5 @@
-// The SDK worker loop's response to losing a lease (audit package H).
+// The SDK client and worker loop against a real server: losing a lease (audit package H) and
+// keeping a watch stream alive across authentication and a server restart (package I).
 //
 // The contract in design-api.md is that physical execution may overlap after a lease lapses, and a
 // fenced worker runs "until it observes `lease_lost`". Before this, the SDKs made that observation
@@ -18,15 +19,18 @@ import { SqliteAdapter } from "../src/storage/sqlite.ts";
 import { RadiaClient } from "../sdk/ts/client.ts";
 import { agentLoop } from "../sdk/ts/loop.ts";
 
-/** A space behind a real port, plus a run credential holding the grants a worker needs. */
-async function newWorkerSpace() {
+/** A space behind a real port, plus a run credential holding the grants a worker needs.
+ *  `intercept` sees every request first and may answer it, which is how the watch cases below
+ *  simulate a server that has forgotten its (in-memory) watches. */
+async function newWorkerSpace(intercept?: (req: Request) => Response | undefined) {
   const adapter = new SqliteAdapter(":memory:");
   await adapter.init();
   const space = new Space(adapter);
   space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
+  const handler = makeHandler(space, "<html>console</html>", true);
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
-    makeHandler(space, "<html>console</html>", true),
+    (req) => intercept?.(req) ?? handler(req),
   );
   const base = `http://127.0.0.1:${(server.addr as Deno.NetAddr).port}`;
 
@@ -129,6 +133,79 @@ Deno.test("loop: a quarantined run cancels the handler and stops the loop claimi
   } finally {
     stop.abort();
     await finished.catch(() => {});
+    await close();
+  }
+});
+
+/** Read ONE wakeup off a watch, capturing any stream failure instead of letting it reject. */
+function readOne(client: RadiaClient, signal: AbortSignal) {
+  const wakeups: string[] = [];
+  const failure: unknown[] = [];
+  const reading = (async () => {
+    try {
+      for await (const w of client.watch({ kind: "task" }, signal)) {
+        wakeups.push(String((w as { recordId?: string }).recordId ?? ""));
+        return;
+      }
+    } catch (e) {
+      failure.push(e);
+    }
+  })();
+  return { wakeups, reading, failure };
+}
+
+Deno.test("watch: the SSE connect carries the credential, so an authenticated space still wakes", async () => {
+  // The stream is a raw `fetch`, so it did not inherit the client's Authorization: every connect
+  // 401'd under `--auth required` and `agentLoop` fell back to polling. Silent, and slow rather
+  // than broken, which is why it survived. The space here REQUIRES auth, so a missing header
+  // cannot pass.
+  const { space, client, close } = await newWorkerSpace();
+  const stop = new AbortController();
+  try {
+    // The stream's failure is CAPTURED, not left to reject: an escaping rejection is reported by the
+    // runner as an uncaught error on the module, which names no test and reads like a harness fault.
+    const { wakeups, reading, failure } = readOne(client, stop.signal);
+    await sleep(300); // let the stream attach before writing
+    const { id } = await space.put({ kind: "task", body: { tag: "x" } });
+    await withTimeout(reading, 10_000, "the watch delivered a wakeup rather than 401ing in a loop");
+    assertEquals(failure.at(0), undefined, `the watch stream failed: ${failure.at(0)}`);
+    assertEquals(wakeups, [id]);
+  } finally {
+    stop.abort();
+    await close();
+  }
+});
+
+Deno.test("watch: a forgotten watch id is re-created, not retried forever", async () => {
+  // Watches are in-memory, so a server restart 404s every existing id permanently — the one failure
+  // that never heals by retrying. `served` flips the events route to 404 for the first attempt,
+  // exactly as a restart would, and the client must come back with a NEW watch rather than
+  // hammering the dead one.
+  let refuse = true;
+  const seen: string[] = [];
+  const { space, client, close } = await newWorkerSpace((req) => {
+    const path = new URL(req.url).pathname;
+    if (!path.endsWith("/events")) return undefined;
+    seen.push(path);
+    if (!refuse) return undefined;
+    refuse = false; // only the first attach is refused
+    return new Response(JSON.stringify({ title: "not_found", detail: "no such watch" }), {
+      status: 404,
+      headers: { "content-type": "application/problem+json" },
+    });
+  });
+  const stop = new AbortController();
+  try {
+    const { wakeups, reading, failure } = readOne(client, stop.signal);
+    await sleep(500); // the refused attach, then the re-create
+    const { id } = await space.put({ kind: "task", body: { tag: "x" } });
+    await withTimeout(reading, 10_000, "the client re-created the watch and delivered the wakeup");
+    assertEquals(failure.at(0), undefined, `the watch stream failed: ${failure.at(0)}`);
+    assertEquals(wakeups, [id]);
+    assert(seen.length >= 2, "it attached again after the 404");
+    assert(seen[0] !== seen[1], "…under a NEW watch id, not the one the server no longer knows");
+  } finally {
+    stop.abort();
     await close();
   }
 });
