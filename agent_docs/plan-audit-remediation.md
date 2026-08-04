@@ -1,6 +1,7 @@
 # Plan: audit remediation
 
-> Status: R and S are open; **E, K, L, M and O are closed** (2026-08-03), **H, I, N, P and Q** (2026-08-04); everything else is closed and
+> Status: **only S is open** (four items, three of them needing a pooled Postgres); **E, K, L, M and
+> O closed** (2026-08-03), **H, I, N, P, Q and R** (2026-08-04); everything else is closed and
 > its guards pass (`deno task conformance`: 461 passed, 0 failed; 634+ with a live Postgres). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
@@ -39,10 +40,10 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~O~~ | ~~Multi-instance freshness + ordering~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
 | ~~P~~ | ~~Contracts nothing checks~~          | ~~P2~~   | **CLOSED 2026-08-04**                 |
 | ~~Q~~ | ~~Designed features unreachable~~     | ~~P2~~   | **CLOSED 2026-08-04**                 |
-| R   | Dead taint parameter; half-tested guard | P2       | Legibility, not leakage (see the entry) |
+| ~~R~~ | ~~Dead taint parameter; half-tested guard~~ | ~~P2~~ | **CLOSED 2026-08-04**                 |
 | S   | Round-two reports, re-derived           | P1/P2    | 11 of 12 reproduce; 7 **CLOSED 2026-08-04**; 4 open (3 need a pooled Postgres) |
 
-Packages A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P and Q are closed. Their lessons are rules in
+Every package except S is closed (A–R). Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -223,7 +224,26 @@ the token stops minting everywhere (revoked from a Space that never minted it, l
 case), running work is untouched and still separately stoppable, and a definition naming a
 privileged principal is refused while an ordinary `human:` one is not.
 
-## Package R: a dead taint parameter, and a guard that tests one leg (P2)
+## Package R: a dead taint parameter, and a guard that tests one leg (P2) — CLOSED 2026-08-04
+
+**Two of the three were already fixed when this was re-checked**, in `87e4077` on 2026-08-03 — the
+same day the entry was written — and the plan simply never caught up. Re-derived rather than
+assumed: the dead ternary is gone from `exec.ts`, `captureWorkspace` takes no `taint` option (its
+doc names the ternary as the reason), `commitWorkspace` keeps one narrowed to "A RAISE, never
+inheritance", and `extensions/conformance/` carries "labels survive the RETURN trip, which is the
+leg the name promised" — asserting the successor manifest inherits, a record naming it inherits, the
+written-back file artifacts are bare, and an untouched file still points at the raised original.
+Both label cases pass.
+
+**What was left is the third bullet**, the standing one: the carrier depends on every derived record
+naming the manifest, and `exec.ts` doing so was asserted nowhere — the round-trip case simulates the
+result record rather than driving the worker. Now guarded end to end in
+`examples/chat/smoke-runners.ts`: a workspace raised with `net`, run through the REAL exec worker via
+a `tool_call`, and the `tool_result` must carry `net`. The label matters — any workspace run also
+picks up `file` from its read roots, so asserting that would pass whether or not the edge exists,
+while `net` can only have arrived along the manifest edge. It sits in the js-only path, so it runs
+where `bwrap` does not. Verified by dropping `wsParent` from the result's `parentIds`:
+`FAIL … labels=["foreign"]`.
 
 **Downgraded twice while being written, which is the part worth recording.** It was filed as
 "write-back launders classification labels (P1)" on the strength of

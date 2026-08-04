@@ -162,6 +162,34 @@ check("…and says this space runs one language", /only language|no Python here/
 const js = await call(jsOnly.conv, "run_javascript", { code: "console.log(6 * 7)" });
 check("the JS runner still runs", (js.output.stdout as string ?? "").trim() === "42", JSON.stringify(js.output.stdout));
 
+// A run over a CLASSIFIED tree inherits the tree's labels, and it inherits them through the parent
+// EDGE: the result names the workspace manifest, and `computeTaint` unions along data parents. The
+// mechanism is pinned in `extensions/conformance/` against a simulated result record; this is the
+// leg that test cannot reach — that the real worker still threads `wsParent` into the result's
+// `parentIds`. A future edit dropping it loses classification silently, which is the documented
+// hole (agent_docs/plan-audit-remediation.md, package R) landing somewhere specific enough to fail.
+//
+// The label is `net`, deliberately. Any workspace run also gets `file` from its read roots, so
+// asserting that would pass whether or not the edge exists; `net` can only have come from the tree.
+await writeWorkspace(admin, {
+  name: "classified",
+  owner: "agent:chat-user",
+  conversationId: jsOnly.conv,
+  files: { "note.txt": "from a classified tree\n" },
+  taint: ["net"],
+});
+const classified = await call(jsOnly.conv, "run_javascript", {
+  workspace: "classified",
+  code: "console.log(Deno.readTextFileSync('note.txt').trim())",
+});
+const resultRecord = await admin.readOne({ kind: "tool_result", match: { callId: classified.id } });
+const labels = resultRecord?.runtimeMeta.taint ?? [];
+check(
+  "a run over a classified tree inherits the tree's labels",
+  labels.includes("net"),
+  `labels=${JSON.stringify(labels)} (a missing 'net' means the result stopped naming the manifest)`,
+);
+
 try {
   jsOnly.proc.kill();
   await jsOnly.proc.status;

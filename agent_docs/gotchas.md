@@ -1388,6 +1388,11 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   both read it as a laundering hole. It was neither — the parent edge already carried the labels. An
   expression whose branches are identical is worse than a missing argument, which at least reads as
   missing.
+- **Check whether a recorded defect is still there before fixing it.** Two thirds of one audit
+  package had been fixed the same day it was filed, and the plan doc never caught up, so acting on
+  the entry would have meant re-deriving a decision somebody had already made. Reading the code
+  first cost minutes; the entry now says what was already true and what genuinely remained. A
+  backlog is a record of what someone believed, not of what is.
 - **A defect that SHRINKS under checking deserves the same write-up as one that grows.** One finding
   went from "write-back carries no labels" to "artifacts only" to "correct by design" across two
   corrections. Recording only confirmed defects teaches that reviews find bugs; recording the
