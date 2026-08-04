@@ -30,6 +30,7 @@ const SUITES = [
   { name: "scope", file: "smoke-scope.ts", about: "what a scoped session may read: identity (all its own conversations) vs conversation (this thread only)" },
   { name: "runners", file: "smoke-runners.ts", about: "a second language as a capability: an unstartable jail is undiscoverable, and each name reaches its own runtime" },
   { name: "fleet", file: "smoke-fleet.ts", about: "model advertisements the router discovers: publish, restart, withdraw, revive" },
+  { name: "capability", file: "smoke-capability.ts", about: "tool advertisements: replicas of one worker versus two tools wearing one name, and withdrawal" },
 ];
 
 const wanted = Deno.args.filter((a) => !a.startsWith("-"));

@@ -7,10 +7,11 @@
 // per-turn decision belongs to a worker, which is what makes this loop short enough to read.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
-import { activeByKey, newestByKey, readRegistry } from "../../../sdk/ts/client.ts";
+import { activeByKey, awaitResult, newestByKey, readRegistry } from "../../../sdk/ts/client.ts";
 import type { ChatMessage, ToolDef } from "../provider/openrouter.ts";
 import type { Thread } from "./thread.ts";
 import { sessionOwner } from "../space/roles.ts";
+import { type CapabilityBody, capabilityKey, collapseByTool } from "../space/capability.ts";
 import { dim, endStatus, showArtifact, trunc, write } from "./terminal.ts";
 import { Waiter, waitWake } from "./waiting.ts";
 
@@ -254,27 +255,31 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
     }
   };
 
-  const deadline = Date.now() + INFERENCE_DEADLINE_MS;
-  while (Date.now() < deadline) {
-    await printNew();
-    const result = await client.readOne({ kind: "llm_result", match: { callId } });
-    if (result) {
-      await printNew(); // flush any stragglers
-      if (!printed) endStatus(waiter.prefix); // nothing streamed (tool-call turn, or an error)
-      const body = result.body as Omit<StreamedResult, "streamed" | "announced">;
-      return { ...body, streamed: printed, announced };
-    }
-    if (!printed) await waiter.pump(callId, stall); // status only until output takes the line
-    await waitWake();
-    // Checked AFTER the wait rather than before the read, so a result that arrived while the user
-    // was reaching for Escape is still delivered. Cancelling a turn that already finished would
-    // throw away an answer for nothing.
-    if (cancel?.signal.aborted) {
-      endStatus(waiter.prefix);
-      throw new TurnCancelled();
-    }
+  // The deadline loop, the read, the wake and the cancel check are `awaitResult` in the SDK: the
+  // same shape as the tool wait below, which is why it moved. What stays here is the part that is
+  // about a TERMINAL — flushing streamed tokens before each read, and holding the status line only
+  // until real output takes it.
+  const outcome = await awaitResult<Omit<StreamedResult, "streamed" | "announced">>(
+    client,
+    { kind: "llm_result", match: { callId } },
+    {
+      timeoutMs: INFERENCE_DEADLINE_MS,
+      wake: waitWake,
+      beforeRead: printNew,
+      onWait: () => (printed ? undefined : waiter.pump(callId, stall)),
+      signal: cancel?.signal,
+    },
+  );
+  if (outcome.status === "aborted") {
+    endStatus(waiter.prefix);
+    throw new TurnCancelled();
   }
-  throw waiter.timeout(stall, "timed out waiting for inference. Is OPENROUTER_API_KEY valid and the model available?");
+  if (outcome.status === "timeout") {
+    throw waiter.timeout(stall, "timed out waiting for inference. Is OPENROUTER_API_KEY valid and the model available?");
+  }
+  await printNew(); // flush any stragglers
+  if (!printed) endStatus(waiter.prefix); // nothing streamed (tool-call turn, or an error)
+  return { ...outcome.body, streamed: printed, announced };
 }
 
 async function awaitToolResult(
@@ -304,28 +309,33 @@ async function awaitToolResult(
     : advertised
     ? `no result yet from '${tool}'`
     : `nothing advertises '${tool}'`;
-  const deadline = Date.now() + (tool === "request_grant" ? HUMAN_DEADLINE_MS : TOOL_DEADLINE_MS);
-  while (Date.now() < deadline) {
-    const result = await client.readOne({ kind: "tool_result", match: { callId } });
-    if (result) {
-      endStatus(prefix);
-      return result.body as { ok: boolean; output: unknown };
-    }
-    // Before waiting again: whatever this turn needs from the human, ask for it now rather than
-    // after the turn ends.
-    if (onToolWait) await onToolWait(tool);
-    await waiter.pump(callId, stall);
-    await waitWake();
-    if (cancel?.signal.aborted) {
-      endStatus(prefix);
-      throw new TurnCancelled();
-    }
-  }
-  throw waiter.timeout(
-    stall,
-    `timed out waiting for '${tool}'` +
-      (advertised ? " — its worker may have stopped, or the call may just be slow" : ""),
+  const outcome = await awaitResult<{ ok: boolean; output: unknown }>(
+    client,
+    { kind: "tool_result", match: { callId } },
+    {
+      timeoutMs: tool === "request_grant" ? HUMAN_DEADLINE_MS : TOOL_DEADLINE_MS,
+      wake: waitWake,
+      onWait: async () => {
+        // Whatever this turn needs from the human, ask for it now rather than after the turn ends.
+        if (onToolWait) await onToolWait(tool);
+        await waiter.pump(callId, stall);
+      },
+      signal: cancel?.signal,
+    },
   );
+  if (outcome.status === "aborted") {
+    endStatus(prefix);
+    throw new TurnCancelled();
+  }
+  if (outcome.status === "timeout") {
+    throw waiter.timeout(
+      stall,
+      `timed out waiting for '${tool}'` +
+        (advertised ? " — its worker may have stopped, or the call may just be slow" : ""),
+    );
+  }
+  endStatus(prefix);
+  return outcome.body;
 }
 
 // ---- the tool set is discovered, never hard-coded ----
@@ -397,23 +407,32 @@ export class ToolSet {
     //
     // CLAUDE.md says registry state is read through `readRegistry`, never a hand-rolled
     // `query(kind, N)`. This was the hand-rolled one.
-    const view = await readRegistry<{ tool: string; def: ToolDef }>(
+    // Keyed by (provider, tool), so two workers advertising one name are two entries rather than
+    // one silently overwriting the other; `collapseByTool` folds them back into the single name a
+    // model can call, and says when the fold hid a disagreement.
+    const view = await readRegistry<CapabilityBody>(
       (limit, after) => this.client.query({ kind: "capability" }, limit, { dir: "desc", after }),
-      (b) => b.tool,
+      capabilityKey,
     );
-    const caps = view.entries;
     // A partial read means the tool list is a guess. Say so once rather than running a turn that
     // silently lacks something: "the assistant does not have that tool" is indistinguishable from
     // "the assistant did not think to use it", and the second is what everyone assumes.
     if (!view.complete) {
-      write(dim(`\n[tool list may be incomplete: stopped after ${view.entries.size} tools]\n`));
+      write(dim(`\n[tool list may be incomplete: stopped after ${view.entries.size} advertisements]\n`));
     }
-    // A capability whose `def` is not a tool definition is skipped rather than passed on. One
-    // malformed record would otherwise break EVERY turn (the whole list goes to the model), and
-    // publishing is only as trustworthy as the workers holding a `capability: put` grant.
-    const tools = [...caps.values()]
-      .map((r) => (r.body as { def?: ToolDef }).def)
-      .filter((d): d is ToolDef => typeof d?.function?.name === "string");
+    // A capability whose `def` is not a tool definition is skipped rather than passed on (inside
+    // `collapseByTool`). One malformed record would otherwise break EVERY turn, since the whole
+    // list goes to the model, and publishing is only as trustworthy as the workers holding a
+    // `capability: put` grant.
+    const caps = collapseByTool(view.entries);
+    // Replicas of one worker are silent; two DIFFERENT tools under one name are not. The model is
+    // handed one description and either worker may claim the call, so this is the case where what
+    // it was told and what runs can differ.
+    const conflicted = [...caps.entries()].filter(([, e]) => e.conflicted);
+    for (const [tool, e] of conflicted) {
+      write(dim(`\n[tool '${tool}' is advertised differently by ${e.providers.join(", ")}; using the newest]\n`));
+    }
+    const tools = [...caps.values()].map((e) => e.def);
 
     if (this.conversationId) {
       // `activeByKey`, not `newestByKey`: retirement is dropped by the shared projection, so this

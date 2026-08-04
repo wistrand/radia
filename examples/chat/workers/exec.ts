@@ -30,7 +30,7 @@ import { bwrapSandbox, denoSandbox, runBwrap } from "../../../extensions/ts/sand
 import { declareSandbox, verifySandbox } from "../../../extensions/ts/sandbox-registry.ts";
 import { progress } from "../space/progress.ts";
 import { arg, argAll } from "../util.ts";
-import { publishCapability } from "../space/capability.ts";
+import { type CapabilityBody, capabilityKey, publishCapability } from "../space/capability.ts";
 import { bytesFrom, mediaTypeFor } from "../util.ts";
 import type { ToolDef } from "../provider/openrouter.ts";
 
@@ -228,9 +228,9 @@ const RETIRE_PROCEDURE: ToolDef = {
   },
 };
 
-await publishCapability(client, SAVE_PROCEDURE);
-await publishCapability(client, READ_PROCEDURE);
-await publishCapability(client, RETIRE_PROCEDURE);
+await publishCapability(client, SAVE_PROCEDURE, ME);
+await publishCapability(client, READ_PROCEDURE, ME);
+await publishCapability(client, RETIRE_PROCEDURE, ME);
 
 // EVERYTHING the handler reads must be declared above `agentLoop`, which never returns: a `const`
 // placed after it is never evaluated, so it stays in the temporal dead zone for the life of the
@@ -310,7 +310,11 @@ function stated(a: unknown): Expectation | undefined {
 async function capabilityNames(c: RadiaClient): Promise<Set<string>> {
   try {
     const caps = await c.queryAll({ kind: "capability" });
-    return new Set([...activeByKey<{ tool?: string }>(caps, (b) => b?.tool).keys()]);
+    // Keyed by (provider, tool), not by tool: keyed by tool, one provider RETIRING a name would
+    // drop it from this set while another provider still served it, and a procedure could then be
+    // saved under a name a live worker answers.
+    const live = activeByKey<CapabilityBody>(caps, capabilityKey);
+    return new Set([...live.values()].map((r) => (r.body as CapabilityBody).tool));
   } catch {
     return RESERVED; // no grant to read capabilities: fall back to what this worker knows it serves
   }
@@ -460,11 +464,11 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
     .catch((e) => [{ claim: "backend", held: false, detail: String(e) }]);
   if (pyFailed.length === 0) {
     patterns.push({ kind: "tool_call", match: { tool: "run_python" } });
-    await publishCapability(client, RUN_PYTHON);
+    await publishCapability(client, RUN_PYTHON, ME);
     await declareSandbox(client, py);
-    await publishCapability(client, runJavascriptDef(true));
+    await publishCapability(client, runJavascriptDef(true), ME);
   } else {
-    await publishCapability(client, runJavascriptDef(false));
+    await publishCapability(client, runJavascriptDef(false), ME);
     // Two very different outcomes, and reporting them alike taught the wrong thing. A jail that
     // could not START (no `bwrap` installed, no permission to spawn it) is an ABSENT language: an
     // ordinary fact about this host, and the notice should read like one. A jail that ran and then
@@ -481,242 +485,305 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
   }
 }
 
+/** The `tool_call` body this worker claims. */
+interface Call {
+  tool?: string;
+  args?: { code?: string; workspace?: string; write?: boolean; save_as?: string; media_type?: string; encoding?: string; expect?: unknown };
+  conversationId?: string;
+  owner?: string;
+}
+
+/** What ran, and where the code came from. */
+interface Program {
+  code: string;
+  /** Set only for a saved procedure: for a builtin runner the program is in the call body. */
+  provenance?: { name: string; recordId: string; artifactId: string };
+}
+
+/** The materialised tree a run sees, or the absence of one. */
+interface Tree {
+  name?: string;
+  root?: string; // temp directory, removed after the run
+  parent?: string; // the manifest (or the version the run produced): the result's data parent
+  roots: string[]; // read roots handed to the jail
+  digest?: string;
+  manifest: Awaited<ReturnType<typeof readWorkspace>>;
+  write: boolean;
+}
+
+/**
+ * A step's refusal, carrying the sentence the model should read.
+ *
+ * ANSWERED, never thrown, and that is the whole reason this type exists. A handler that throws is
+ * nacked and the call becomes claimable again (`sdk/ts/loop.ts`), which is right for a transient
+ * fault and exactly wrong for a permanent one: an erased payload is not coming back, so retrying
+ * re-fails until the CLIENT's deadline and the user sees "timed out waiting for 'run_python'" with
+ * no reason. A shredded file in a tree did exactly that, turning a one-line explanation into a
+ * two-minute hang.
+ */
+interface Refused {
+  refused: string;
+}
+const refuse = (refused: string): Refused => ({ refused });
+const isRefused = (x: unknown): x is Refused => typeof x === "object" && x !== null && "refused" in x;
+
+/** Every refusal is the same record shape, and every copy of it has to remember `callId`: without
+ *  one the client waits out its deadline for a reply that already exists. */
+function refusal(b: Call, callId: string, output: string) {
+  return {
+    kind: "tool_result",
+    body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output },
+    taint: [] as string[],
+  };
+}
+
+/**
+ * RESOLVE: what program is this call, and where did it come from?
+ *
+ * A builtin runner carries its source in the call body. A named procedure carries only `{tool,
+ * args}`, so the code is fetched from the artifact it was saved as and the arguments are injected.
+ */
+async function resolveProgram(c: RadiaClient, b: Call): Promise<Program | Refused> {
+  if (!b.tool || BUILTIN_RUNNERS.has(b.tool)) return { code: String(b.args?.code ?? "") };
+
+  // Checked at execution too, not just at save: a worker may have started serving this name since.
+  // The real tool wins, and this worker refuses rather than answering for it.
+  if ((await capabilityNames(c)).has(b.tool)) {
+    return refuse(`'${b.tool}' is served by a worker, not by a saved procedure`);
+  }
+  const proc = await lookupProcedure(c, b.tool, b.conversationId);
+  if (!proc || proc.retired) {
+    // A retired name is still claimed on purpose, so this answers at once instead of leaving the
+    // caller to wait out the tool deadline. Saving the name again un-retires it.
+    return refuse(
+      proc?.retired
+        ? `procedure '${b.tool}' has been retired; save it again to bring it back`
+        : `no procedure '${b.tool}' saved in this conversation`,
+    );
+  }
+  const source = new TextDecoder().decode(await c.getArtifact(proc.artifactId));
+  return {
+    // `args` is injected as a literal rather than passed on argv: the sandbox takes its program on
+    // stdin and has no environment, and a JSON literal is the one channel that needs no permission.
+    // JSON.stringify also means the model's arguments arrive as DATA, never concatenated into an
+    // executable position.
+    code: `const args = ${JSON.stringify(b.args ?? {})};\n${source}`,
+    // PROVENANCE. The code lives elsewhere and can be re-saved, so without this the result could
+    // never be attributed to the version that produced it.
+    provenance: { name: proc.name, recordId: proc.id, artifactId: proc.artifactId },
+  };
+}
+
+/**
+ * MATERIALISE: turn a named workspace into a real directory the jail may read.
+ *
+ * The manifest becomes a data PARENT of the result, which is what stops a classified tree from
+ * laundering its labels through the filesystem: the substrate cannot see a disk, so the edge is the
+ * only thing that carries the classification.
+ */
+async function openTree(c: RadiaClient, b: Call, callId: string): Promise<Tree | Refused> {
+  const name = typeof b.args?.workspace === "string" ? b.args.workspace : undefined;
+  // WRITE is opt-in per call. Reading is the common case and must not carry the capability to
+  // change the tree: a run that only inspects should not be able to produce a version.
+  const write = b.args?.write === true;
+  if (!name) return { roots: readRoots, manifest: null, write };
+
+  const manifest = await readWorkspace(c, name, b.conversationId);
+  if (!manifest) return refuse(`no workspace '${name}' saved in this conversation; save_workspace first`);
+
+  const root = await Deno.makeTempDir({ dir: workspaceRoot, prefix: `${name}-` });
+  // `materialize` VERIFIES on the way in: every artifact is hashed against the entry that names it,
+  // and the tree digest is recomputed from the entries. A manifest that lies about either is
+  // refused here rather than silently attested to later.
+  let mat;
+  try {
+    mat = await materialize(c, manifest, root);
+  } catch (e) {
+    await Deno.remove(root, { recursive: true }).catch(() => {});
+    return refuse(e instanceof Error ? e.message : String(e));
+  }
+  await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "executing", by: ME, note: `workspace ${name} (${manifest.files.length} files)` }, [callId]);
+  return {
+    name,
+    root,
+    parent: manifest.id,
+    // The tree REPLACES the configured read roots rather than adding to them: a run against a
+    // workspace should see the workspace, not also whatever directories the operator opened for
+    // ad-hoc file reads.
+    roots: [root],
+    digest: mat.treeDigest,
+    manifest,
+    write,
+  };
+}
+
+/** RUN: in the tree when there is one, so relative paths resolve as they would in a checkout. */
+function runProgram(code: string, jail: "python" | "javascript", tree: Tree) {
+  // The tree, and ONLY the tree: a run that may write gets it for exactly the directory it was
+  // given, never the workspace root shared with other calls.
+  const writeRoots = tree.write && tree.root ? [tree.root] : [];
+  return jail === "python"
+    ? runBwrap(code, { command: ["python3", "-"], timeoutMs, readRoots: tree.roots, writeRoots, cwd: tree.root })
+    : runCode(code, { timeoutMs, readRoots: tree.roots, denyRead, cwd: tree.root, writeRoots });
+}
+
+type Run = Awaited<ReturnType<typeof runProgram>>;
+
+/**
+ * CAPTURE: hash after, store the difference, commit a successor, then discard the directory.
+ *
+ * An unchanged tree writes nothing, so a read-only attempt does not manufacture a version. Mutates
+ * `tree` because the result belongs to the version the run PRODUCED, not the one it started from.
+ */
+async function captureTree(c: RadiaClient, tree: Tree, r: Run): Promise<{
+  committed: { id: string; treeDigest: string; forked: boolean } | null;
+  changed?: { changed: string[]; removed: string[] };
+}> {
+  let committed: { id: string; treeDigest: string; forked: boolean } | null = null;
+  let changed: { changed: string[]; removed: string[] } | undefined;
+  if (tree.write && tree.root && tree.manifest) {
+    try {
+      const cap = await captureWorkspace(c, tree.manifest, tree.root);
+      changed = { changed: cap.changed, removed: cap.removed };
+      committed = await commitWorkspace(c, tree.manifest, cap);
+      if (committed) {
+        tree.digest = committed.treeDigest;
+        tree.parent = committed.id;
+      }
+    } catch (e) {
+      // A refused capture (a quota, an unsafe path a program invented) must not read as success.
+      r.stderr += `\n[workspace not captured: ${e}]`;
+    }
+  }
+  // Materialised bytes are scratch: the tree of record is the manifest. Discarding is the honest
+  // behaviour rather than leaving a directory that looks like state.
+  if (tree.root) await Deno.remove(tree.root, { recursive: true }).catch(() => {});
+  return { committed, changed };
+}
+
+/**
+ * STORE: stdout to an artifact, when asked or when it is too big for the thread.
+ *
+ * The bytes come from the SANDBOX, not from the model's tokens: content generated by code never
+ * round-trips through the context to be saved.
+ */
+async function storeStdout(c: RadiaClient, b: Call, callId: string, r: Run) {
+  const args = b.args;
+  if (r.stdout.length === 0 || !(args?.save_as || r.stdout.length > INLINE_MAX)) return undefined;
+  try {
+    const mediaType = args?.media_type ?? mediaTypeFor(args?.save_as);
+    const a = await c.putArtifact(bytesFrom(r.stdout, args?.encoding), {
+      mediaType,
+      filename: args?.save_as,
+      parentIds: [callId], // lineage: conversation -> tool_call -> artifact
+      taint: readRoots.length > 0 ? ["file"] : [],
+      meta: { conversationId: b.conversationId ?? "", owner: b.owner ?? "" }, // what a grant pattern can bind
+    });
+    return { artifactId: a.id, mediaType, size: a.size };
+  } catch (e) {
+    // Best-effort: a bad media type or an oversized payload must not swallow the output the model
+    // actually asked for.
+    r.stderr += `\n[artifact not stored: ${e}]`;
+    return undefined;
+  }
+}
+
+/**
+ * JUDGE: measure the run against what was claimed BEFORE it ran, and write the verdict as a record.
+ *
+ * The session has no grant to put a `check`, so a pass is something the runtime observed rather than
+ * something the model said about its own output. No expectation means no check: an unverified run
+ * must not look like a passing one.
+ */
+async function judgeRun(
+  c: RadiaClient,
+  b: Call,
+  callId: string,
+  jail: "python" | "javascript",
+  tree: Tree,
+  r: Run,
+): Promise<{ verdict: string; reasons: string[] } | undefined> {
+  const expectation = stated(b.args?.expect);
+  if (!expectation) return undefined;
+  const j = judge(expectation, r);
+  try {
+    await c.put({
+      kind: "check",
+      body: {
+        callId,
+        conversationId: b.conversationId,
+        owner: b.owner,
+        tool: b.tool ?? "run_javascript",
+        // WHAT was verified, not just that something was. A verdict against a tree digest is an
+        // attestation of a reproducible input; against a call id it is a note about an event.
+        ...(tree.digest ? { workspace: tree.name, treeDigest: tree.digest } : {}),
+        // WHERE it was verified. A verdict from a jail with a filesystem and one from a jail with
+        // none are not the same evidence, and nothing else in the record says which.
+        sandbox: jail === "python" ? "python" : "deno",
+        verdict: j.verdict,
+        expected: expectation,
+        reasons: j.reasons,
+        // The observed side, capped: enough to see WHY it failed without copying a payload into a
+        // record that has to stay queryable JSON.
+        exitCode: r.exitCode,
+        stdout: r.stdout.slice(0, 500),
+      },
+      // The call is the parent, so a check hangs off the attempt it judges and rides the same
+      // attempt chain the retry lineage builds.
+      parentIds: [callId],
+    });
+    return j;
+  } catch (e) {
+    // A worker that cannot record a verdict must not silently return a passing-looking result.
+    return { verdict: j.verdict, reasons: [...j.reasons, `(verdict not recorded: ${e})`] };
+  }
+}
+
 await agentLoop(client, {
   name: "exec",
   patterns,
   leaseSeconds: 60,
+  // Five named steps, each answerable on its own: resolve what to run, materialise what it runs
+  // over, run it, capture what it changed, judge what it claimed. This was one 265-line function,
+  // which is longer than most files in the runtime and was the hardest thing here to follow.
   handle: async (rec, c) => {
     const callId = rec.id;
-    const b = rec.body as { tool?: string; args?: { code?: string; workspace?: string; write?: boolean }; conversationId?: string; owner?: string };
+    const b = rec.body as Call;
 
     if (b.tool === "save_procedure") return await saveProcedure(rec, c);
     if (b.tool === "read_procedure") return await readProcedure(rec, c);
     if (b.tool === "retire_procedure") return await retireProcedure(rec, c);
 
-    // A named procedure: the code comes from the artifact it was saved as, and the call's own
-    // arguments are handed to it as `args`.
-    //
-    // PROVENANCE. For `run_javascript` the program is in the tool_call body, so "what exactly ran" is a
-    // query. A procedure call carries only {tool, args}, and the code lives elsewhere and can be
-    // re-saved, so without this the result could never be attributed to the version that produced
-    // it. `provenance` becomes a parent link plus a body field on the result below.
-    let provenance: { name: string; recordId: string; artifactId: string } | undefined;
-    let code = String(b.args?.code ?? "");
-    if (b.tool && !BUILTIN_RUNNERS.has(b.tool)) {
-      // Checked at execution too, not just at save: a worker may have started serving this name
-      // since. The real tool wins: this worker refuses rather than answering for it.
-      if ((await capabilityNames(c)).has(b.tool)) {
-        return {
-          kind: "tool_result",
-          body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: `'${b.tool}' is served by a worker, not by a saved procedure` },
-          taint: [],
-        };
-      }
-      const proc = await lookupProcedure(c, b.tool, b.conversationId);
-      if (!proc || proc.retired) {
-        // A retired name is still claimed on purpose, so this answers at once instead of leaving
-        // the caller to wait out the tool deadline. Saving the name again un-retires it.
-        const why = proc?.retired
-          ? `procedure '${b.tool}' has been retired; save it again to bring it back`
-          : `no procedure '${b.tool}' saved in this conversation`;
-        return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: why }, taint: [] };
-      }
-      provenance = { name: proc.name, recordId: proc.id, artifactId: proc.artifactId };
-      const source = new TextDecoder().decode(await c.getArtifact(proc.artifactId));
-      // `args` is injected as a literal rather than passed on argv: the sandbox takes its program
-      // on stdin and has no environment, and a JSON literal is the one channel that needs no
-      // permission. JSON.stringify also means the model's arguments arrive as DATA. They are
-      // never concatenated into executable positions.
-      code = `const args = ${JSON.stringify(b.args ?? {})};\n${source}`;
-    }
+    const program = await resolveProgram(c, b);
+    if (isRefused(program)) return refusal(b, callId, program.refused);
+
     // The source is already in the tool_call record, so every program the model ever ran is
     // auditable by query: `{kind: tool_call, tool: "run_javascript"}` is the execution log, with the
     // result and any artifact as its children.
-    await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "executing", by: ME, note: `${code.length} chars` }, [callId]);
-    if (!code.trim()) {
-      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: `${b.tool} needs a \`code\` argument` }, taint: [] };
-    }
-    // A WORKSPACE turns the run into one over a real tree: materialise it into a fresh directory,
-    // hand the sandbox read access to that and nothing else, and throw it away afterwards. The
-    // manifest becomes a data PARENT of the result, which is what stops a classified tree from
-    // laundering its labels through the filesystem: the substrate cannot see a disk, so the edge is
-    // the only thing that carries the classification.
-    let wsRoot: string | undefined;
-    let wsParent: string | undefined;
-    let wsRoots: string[] = readRoots;
-    let wsTree: string | undefined;
-    let wsManifest: (Awaited<ReturnType<typeof readWorkspace>>) = null;
-    const wsName = typeof b.args?.workspace === "string" ? b.args.workspace : undefined;
-    // WRITE is opt-in per call. Reading is the common case and must not carry the capability to
-    // change the tree: a run that only inspects should not be able to produce a version.
-    const wsWrite = b.args?.write === true;
-    if (wsName) {
-      const manifest = await readWorkspace(c, wsName, b.conversationId);
-      if (!manifest) {
-        return {
-          kind: "tool_result",
-          body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: `no workspace '${wsName}' saved in this conversation; save_workspace first` },
-          taint: [],
-        };
-      }
-      wsRoot = await Deno.makeTempDir({ dir: workspaceRoot, prefix: `${wsName}-` });
-      // `materialize` VERIFIES on the way in: every artifact is hashed against the entry that names
-      // it, and the tree digest is recomputed from the entries. A manifest that lies about either
-      // is refused here rather than silently attested to later.
-      //
-      // ANSWERED, never thrown. A handler that throws is nacked and the call becomes claimable
-      // again (`sdk/ts/loop.ts`), which is right for a transient fault and exactly wrong for a
-      // permanent one: an erased payload is not coming back, so retrying re-fails until the
-      // CLIENT's deadline and the user sees "timed out waiting for 'run_python'" with no reason.
-      // That is what a shredded file in a tree did — the retry loop turned a one-line explanation
-      // into a two-minute hang.
-      let mat;
-      try {
-        mat = await materialize(c, manifest, wsRoot);
-      } catch (e) {
-        return {
-          kind: "tool_result",
-          body: {
-            callId,
-            conversationId: b.conversationId,
-            owner: b.owner,
-            ok: false,
-            output: e instanceof Error ? e.message : String(e),
-          },
-          taint: [],
-        };
-      }
-      wsTree = mat.treeDigest;
-      wsManifest = manifest;
-      wsParent = manifest.id;
-      // The tree REPLACES the configured read roots rather than adding to them: a run against a
-      // workspace should see the workspace, not also whatever directories the operator opened for
-      // ad-hoc file reads.
-      wsRoots = [wsRoot];
-      await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "executing", by: ME, note: `workspace ${wsName} (${manifest.files.length} files)` }, [callId]);
-    }
-    // Run IN the tree when there is one, so relative paths resolve the way they would in a
-    // checkout. The alternative was telling the program its temp path, which it cannot otherwise
-    // know and which changes every call.
+    await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "executing", by: ME, note: `${program.code.length} chars` }, [callId]);
+    if (!program.code.trim()) return refusal(b, callId, `${b.tool} needs a \`code\` argument`);
+
+    const tree = await openTree(c, b, callId);
+    if (isRefused(tree)) return refusal(b, callId, tree.refused);
+
     const jail = b.tool === "run_python" ? "python" : "javascript";
-    const r = jail === "python"
-      ? await runBwrap(code, {
-        command: ["python3", "-"],
-        timeoutMs,
-        readRoots: wsRoots,
-        writeRoots: wsWrite && wsRoot ? [wsRoot] : [],
-        cwd: wsRoot,
-      })
-      : await runCode(code, {
-      timeoutMs,
-      readRoots: wsRoots,
-      denyRead,
-      cwd: wsRoot,
-        // The tree, and ONLY the tree: a run that may write gets it for exactly the directory it
-        // was given, never the workspace root shared with other calls.
-        writeRoots: wsWrite && wsRoot ? [wsRoot] : [],
-      });
+    const r = await runProgram(program.code, jail, tree);
 
-    // WRITE-BACK: hash after, store the difference, commit a successor. An unchanged tree writes
-    // nothing, so a read-only attempt does not manufacture a version.
-    let committed: { id: string; treeDigest: string; forked: boolean } | null = null;
-    let capture: { changed: string[]; removed: string[] } | undefined;
-    if (wsWrite && wsRoot && wsManifest) {
-      try {
-        const cap = await captureWorkspace(c, wsManifest, wsRoot);
-        capture = { changed: cap.changed, removed: cap.removed };
-        committed = await commitWorkspace(c, wsManifest, cap);
-        if (committed) {
-          wsTree = committed.treeDigest;
-          wsParent = committed.id; // the result belongs to the tree the run PRODUCED
-        }
-      } catch (e) {
-        // A refused capture (a quota, an unsafe path a program invented) must not read as success.
-        r.stderr += `\n[workspace not captured: ${e}]`;
-      }
-    }
-    // Materialised bytes are scratch: the tree of record is the manifest, and Phase 3 (write-back)
-    // is what will make anything the run produced durable. Until then, discarding is the honest
-    // behaviour rather than leaving a directory that looks like state.
-    if (wsRoot) await Deno.remove(wsRoot, { recursive: true }).catch(() => {});
-
-    // Store stdout when asked to, or when it is too big to belong in the thread. The bytes come
-    // from the SANDBOX, not from the model's tokens: content generated by code never round-trips
-    // through the context to be saved.
-    const args = b.args as { save_as?: string; media_type?: string; encoding?: string } | undefined;
-    const wantSave = Boolean(args?.save_as);
-    let stored: { artifactId: string; mediaType: string; size: number } | undefined;
-    if (r.stdout.length > 0 && (wantSave || r.stdout.length > INLINE_MAX)) {
-      try {
-        const mediaType = args?.media_type ?? mediaTypeFor(args?.save_as);
-        const a = await c.putArtifact(bytesFrom(r.stdout, args?.encoding), {
-          mediaType,
-          filename: args?.save_as,
-          parentIds: [callId], // lineage: conversation -> tool_call -> artifact
-          taint: readRoots.length > 0 ? ["file"] : [],
-          meta: { conversationId: b.conversationId ?? "", owner: b.owner ?? "" }, // what a grant pattern can bind
-        });
-        stored = { artifactId: a.id, mediaType, size: a.size };
-      } catch (e) {
-        // Storing is best-effort: a bad media type or an oversized payload must not swallow the
-        // output the model actually asked for.
-        stored = undefined;
-        r.stderr += `\n[artifact not stored: ${e}]`;
-      }
-    }
-
-    // Judge the run against what was claimed BEFORE it ran, and write the verdict as its own
-    // record. The session has no grant to put a `check`, so a pass is something the runtime
-    // observed rather than something the model said about its own output. No expectation means no
-    // check: an unverified run must not look like a passing one.
-    const expectation = stated((b.args as { expect?: unknown } | undefined)?.expect);
-    let checked: { verdict: string; reasons: string[] } | undefined;
-    if (expectation) {
-      const j = judge(expectation, r);
-      checked = j;
-      try {
-        await c.put({
-          kind: "check",
-          body: {
-            callId,
-            conversationId: b.conversationId,
-            owner: b.owner,
-            tool: b.tool ?? "run_javascript",
-            // WHAT was verified, not just that something was. A verdict against a tree digest is an
-            // attestation of a reproducible input; against a call id it is a note about an event.
-            ...(wsTree ? { workspace: wsName, treeDigest: wsTree } : {}),
-            // WHERE it was verified. A verdict from a jail with a filesystem and one from a jail
-            // with none are not the same evidence, and nothing else in the record says which.
-            sandbox: jail === "python" ? "python" : "deno",
-            verdict: j.verdict,
-            expected: expectation,
-            reasons: j.reasons,
-            // The observed side, capped: enough to see WHY it failed without copying a payload
-            // into a record that has to stay queryable JSON.
-            exitCode: r.exitCode,
-            stdout: r.stdout.slice(0, 500),
-          },
-          // The call is the parent, so a check hangs off the attempt it judges and rides the same
-          // attempt chain the retry lineage builds.
-          parentIds: [callId],
-        });
-      } catch (e) {
-        // A worker that cannot record a verdict must not silently return a passing-looking result:
-        // say so in the output the model reads.
-        checked = { verdict: j.verdict, reasons: [...j.reasons, `(verdict not recorded: ${e})`] };
-      }
-    }
+    const { committed, changed } = await captureTree(c, tree, r);
+    const stored = await storeStdout(c, b, callId, r);
+    const checked = await judgeRun(c, b, callId, jail, tree, r);
 
     return {
       kind: "tool_result",
       body: {
         callId,
-        conversationId: b.conversationId, owner: b.owner,
+        conversationId: b.conversationId,
+        owner: b.owner,
         ok: r.ok,
         // Recorded on the RECORD, deliberately not inside `output`: only `output` is serialized
         // back into the model's thread, so provenance is auditable by query without spending
         // context tokens on every call.
-        ...(provenance ? { procedure: provenance } : {}),
+        ...(program.provenance ? { procedure: program.provenance } : {}),
         output: {
           // When it was stored, send a preview rather than the payload: the artifact is the copy.
           stdout: stored ? r.stdout.slice(0, 400) + (r.stdout.length > 400 ? " …[stored as artifact]" : "") : r.stdout,
@@ -727,8 +794,8 @@ await agentLoop(client, {
           ms: r.ms,
           // Returned as well as recorded, so the model sees the verdict in the same round rather
           // than spending another one asking whether its own run passed.
-          ...(wsName ? { workspace: wsName, treeDigest: wsTree } : {}),
-          ...(capture ? { changed: capture.changed, removed: capture.removed } : {}),
+          ...(tree.name ? { workspace: tree.name, treeDigest: tree.digest } : {}),
+          ...(changed ?? {}),
           ...(committed ? { newVersion: committed.treeDigest } : {}),
           ...(committed?.forked ? { forked: true } : {}),
           ...(checked ? { check: checked } : {}),
@@ -741,13 +808,13 @@ await agentLoop(client, {
       //
       // A workspace manifest is a parent for a different reason: it carries the tree's
       // classification labels, so naming it is how a run over a classified tree inherits them.
-      ...(provenance || wsParent
-        ? { parentIds: [...(provenance ? [provenance.recordId] : []), ...(wsParent ? [wsParent] : [])] }
+      ...(program.provenance || tree.parent
+        ? { parentIds: [...(program.provenance ? [program.provenance.recordId] : []), ...(tree.parent ? [tree.parent] : [])] }
         : {}),
-      taint: readRoots.length > 0 ? ["file"] : [],
       // Classified by what the sandbox could REACH, not by the fact that code ran: "a program
       // produced this" is a graph fact the log already answers. With read roots the output may
       // carry file contents; with none there is nothing a barrier would test.
+      taint: readRoots.length > 0 ? ["file"] : [],
     };
   },
 });

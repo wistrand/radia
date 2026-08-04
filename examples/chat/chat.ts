@@ -38,7 +38,8 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { assignUserGrants, bootstrap, setSessionOwner } from "./space/roles.ts";
 import { apiKey, EXEC_TIMEOUT_MS, execRoots, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
-import { launchFleet, spawnSpace } from "./client/fleet.ts";
+import { FLEET_PROVIDERS, launchFleet, spawnSpace } from "./client/fleet.ts";
+import { retireProviderCapabilities } from "./space/capability.ts";
 import { denoSandbox } from "../../extensions/ts/sandbox.ts";
 import { declareSandbox } from "../../extensions/ts/sandbox-registry.ts";
 import { ToolSet } from "./client/turn.ts";
@@ -302,5 +303,12 @@ while (true) {
 }
 
 cleanup();
+// Withdraw the fleet's advertisements on the way out, so the next session's tool list is what is
+// actually being served rather than the union of every fleet that ever ran here. Awaited, which is
+// why it is here and not in `cleanup()`: that one is called from paths that exit immediately, and a
+// withdrawal nobody waits for is a withdrawal that usually does not land.
+try {
+  await retireProviderCapabilities(admin, FLEET_PROVIDERS);
+} catch { /* the space may already be gone; shutting down regardless */ }
 await sleep(100);
 Deno.exit(0);

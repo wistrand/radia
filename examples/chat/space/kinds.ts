@@ -13,7 +13,16 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // discovery: the "no preconfigured routing table" thesis applied to tools.
   // Reference kinds (claimable:false) are read by query/watch, never `take`n, so they don't
   // trip the starvation diagnostic. Only llm_call/tool_call are claimed as work (by the workers).
-  await client.registerKind({ kind: "capability", indexedPaths: [{ path: "tool", type: "keyword" }], claimable: false });
+  // `provider` is indexed as well as `tool`, because the registry is keyed by the PAIR: a
+  // publisher checks its own newest advertisement (`match: {tool, provider}`), and without the path
+  // declared that query throws `undeclared_path`, the publisher's catch swallows it, and every
+  // publish falls back to the unanchored key. The visible symptom is a retired tool that cannot be
+  // revived, which is two silent steps away from the missing declaration.
+  await client.registerKind({
+    kind: "capability",
+    indexedPaths: [{ path: "tool", type: "keyword" }, { path: "provider", type: "keyword" }],
+    claimable: false,
+  });
   // REDECLARING a reserved kind, on purpose. `artifact` is defined in code with {digest, mediaType}
   // indexed; the app adds `conversationId` so a grant pattern can bind an artifact to the
   // conversation that produced it. Artifacts were otherwise the one kind a session could not be

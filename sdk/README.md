@@ -13,7 +13,7 @@ imports.
 
 | | TypeScript | Python |
 |-|------------|--------|
-| Path        | [`ts/`](ts/): `wire.ts`, `registry.ts`, `client.ts`, `loop.ts` | [`py/radia.py`](py/radia.py) |
+| Path        | [`ts/`](ts/): `wire.ts`, `registry.ts`, `await.ts`, `client.ts`, `loop.ts` | [`py/radia.py`](py/radia.py) |
 | Client      | `RadiaClient`      | `RadiaClient` |
 | Worker loop | `agentLoop`        | `agent_loop` |
 | Paging      | `query` / `queryPage` → `{records, nextAfter, scope}` | `query` / `query_page` → `(records, next_after, scope)` |
@@ -25,6 +25,13 @@ imports.
 | Credential  | `keepAlive(signal, onLost)` renews at half-life | `keep_alive(stop, on_lost)`, same, in a daemon thread |
 | Children    | `getChildren` / `getChildrenPage` (paged) | `get_children` / `get_children_page` (paged) |
 | Dependencies| none beyond the runtime | none, standard library only (3.9+) |
+
+**Two helpers that are not verbs**, both extracted from a client that learned them the hard way.
+`readRegistry` reads a registry projection, paging to exhaustion and reporting `complete: false`
+rather than a plausible prefix. `awaitResult` waits for the record another agent will write: the
+deadline loop, the poll, an injected wake (pass a shared one, or take the default sleep) and a final
+read after the deadline, returning a DISCRIMINATED outcome, because "nobody answered in time" is an
+ordinary result of asking a fleet for something rather than an exception each caller re-invents.
 
 **Beside the SDK: [extensions/](../extensions/README.md).** The SDK is one method per `/v0` verb,
 with no policy, and carries the wire contract's stability promise. An extension is an opinionated

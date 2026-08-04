@@ -50,7 +50,7 @@ const ESCALATE: ToolDef = {
 if (tier) {
   const ad = { tier, model, rank };
   await publishModel(client, ad);
-  await publishCapability(client, ESCALATE);
+  await publishCapability(client, ESCALATE, ME);
   // A stopped worker must stop being routed to: the router reads `model` records as a latest-wins
   // registry, so a retirement takes the tier out of rotation and the next start revives it.
   onStop(() => retireModel(client, ad));

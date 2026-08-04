@@ -40,6 +40,16 @@ function spawn(args: string[]): Deno.ChildProcess {
  *  so the exec worker's write grant can name it exactly. */
 export const workspaceRoot = Deno.makeTempDirSync({ prefix: "radia-ws-" });
 
+/** The agents this launcher starts, and therefore the ones whose advertisements it withdraws on the
+ *  way out. Named here rather than derived from the processes, because a worker that died still has
+ *  a `capability` record standing and is exactly the one worth retiring. */
+export const FLEET_PROVIDERS = [
+  "agent:chat-tools",
+  "agent:chat-exec",
+  "agent:chat-images",
+  "agent:chat-inference",
+];
+
 export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.ChildProcess[] {
   const { inferenceToken, routerToken, toolsToken, imagesToken, execToken } = tokens;
   const procs: Deno.ChildProcess[] = [];

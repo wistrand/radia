@@ -58,7 +58,7 @@ const GENERATE_IMAGE: ToolDef = {
 // Advertise the tool (discovery, like any capability) and the model (fleet inventory). `modalities`
 // is what keeps this out of TEXT routing: the router and the escalation ladder select tiers that
 // serve text, and this one does not. It is the same array the request sends as `modalities: ["image"]`.
-await publishCapability(client, GENERATE_IMAGE);
+await publishCapability(client, GENERATE_IMAGE, ME);
 const AD = { tier: "image", model, rank: 0, modalities: ["image"] };
 await publishModel(client, AD);
 // Withdraw the advertisement on a graceful stop, so the tier leaves rotation instead of sitting

@@ -51,11 +51,21 @@ const tools = {
 // Publish this worker's capabilities as `capability` records so agents can DISCOVER the
 // available tools from the space (no hard-coded tool list). In a real system this
 // registration would be grant-gated: an untrusted worker publishing a tool is a threat.
+const ME = "agent:chat-tools";
 const schemas = [...TOOL_SCHEMAS, ...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS, ...SAVE_SCHEMAS, ...SHARE_SCHEMAS, ...WORKSPACE_SCHEMAS];
+const served: string[] = [];
 for (const name of Object.keys(tools)) {
   const def = schemas.find((s) => s.function.name === name);
-  if (def) await publishCapability(client, def);
+  if (def) {
+    await publishCapability(client, def, ME);
+    served.push(name);
+  }
 }
+// Withdrawal is the LAUNCHER's job, not this process's. A worker retiring its own advertisements in
+// a signal handler races its own death: the parent kills and exits without waiting, and a SIGKILL
+// or a crash runs nothing at all. The launcher outlives every worker it started and can await the
+// write, so `retireProviderCapabilities` in `client/fleet.ts` does it by provider.
+void served;
 
 // Credential renewal is `agentLoop`'s job, not each worker's: every process running that loop is
 // long-lived by definition, and copying the keep-alive into five workers is five places to forget.

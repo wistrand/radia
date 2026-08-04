@@ -30,6 +30,10 @@ export { RESERVED_KINDS };
 // copies of this loop existed before it was shared, and the failure mode is silent.
 export { activeByKey, activeSet, grantKey, isRetired, newestByKey, readRegistry, RETIRED } from "./registry.ts";
 export type { RegistryView } from "./registry.ts";
+// Waiting for another agent's answer: the other half every client re-implements, and the one where
+// a timeout is an ordinary outcome rather than an exception.
+export { awaitResult } from "./await.ts";
+export type { AwaitOptions, AwaitOutcome } from "./await.ts";
 
 export type { AckResult, KindDef, Lease, Page, PutRequest, RadiaRecord, SpaceEvent, Pattern };
 
