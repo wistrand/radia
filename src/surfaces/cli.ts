@@ -28,7 +28,7 @@ Inspect
   doctor                              diagnostics: dead-letters, stuck leases, stale work,
                                       erasures that no longer hold
   erasures [--undone]                 every shred, and whether its payload is still gone
-  flows [--granularity kind|kind+agent] [--counts bucketed|exact] [--min <n>]
+  flows [--granularity kind|kind+agent] [--counts bucketed|exact] [--min <n>] [--hub-degree <n>]
                                       recurring shapes of work, mined from lineage
   permissions <principal>             what that principal can actually do (the fold over its grants)
   login <principal> [--grant k:ops]… [--compact]  mint a session token for a person
@@ -274,10 +274,12 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       const granularity = flag(argv, "--granularity");
       const counts = flag(argv, "--counts");
       const min = flag(argv, "--min");
+      const hub = flag(argv, "--hub-degree");
       const r = await client.flows({
         ...(granularity ? { granularity: granularity as "kind" | "kind+agent" } : {}),
         ...(counts ? { counts: counts as "bucketed" | "exact" } : {}),
         ...(min ? { minOccurrences: Number(min) } : {}),
+        ...(hub !== undefined ? { hubDegree: Number(hub) } : {}),
       });
       return out(ctx, r, () => {
         if (r.flows.length === 0) return r.note ?? "no shapes mined";
@@ -291,6 +293,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         );
         lines.push(
           `\n${r.scanned.records} records over ${r.scanned.kinds.length} kinds, ${r.scanned.subgraphs} subgraphs` +
+            (r.hubs ? `, ${r.hubs} cut as hubs (--hub-degree 0 to leave them whole)` : "") +
             (r.singletons ? `, ${r.singletons} linked to nothing (--json for the whole shape)` : "") +
             (r.fragments ? `, ${r.fragments} fragment${r.fragments === 1 ? "" : "s"} (a parent was outside the scan)` : ""),
         );

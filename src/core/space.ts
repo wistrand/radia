@@ -279,6 +279,15 @@ const FLOW_PAGE = 500;
 const FLOW_MAX_SHAPES = 50;
 const FLOW_EXEMPLARS = 3;
 
+/** Hub detection. A record needs `DEGREE` children before it is even tested, which is what keeps an
+ *  ordinary fan-out (a job with five tasks) out of the test; only the widest `CANDIDATES` per
+ *  component are tested, since each test is a graph pass; and removing it must leave `PIECES`
+ *  independent pieces, which is the property that distinguishes a hub from a fan-out that
+ *  reconverges. */
+const FLOW_HUB_DEGREE = 8;
+const FLOW_HUB_CANDIDATES = 8;
+const FLOW_HUB_PIECES = 3;
+
 /** A recurring shape of work, mined from what happened. Never declared: the runtime has no
  *  topology to assert, which is the whole reason this has to be recovered rather than read. */
 export interface FlowShape {
@@ -306,6 +315,9 @@ export interface FlowReport {
   /** Records linked to nothing, excluded from `flows` unless asked for. Counted rather than
    *  dropped: a large number is a real finding (registry churn), just not a flow. */
   singletons: number;
+  /** Hub records cut out so the work hanging off them could be mined separately. A non-zero count
+   *  means the signatures below are the pieces, and the `X ⇒` prefix names what they hung from. */
+  hubs: number;
   complete: boolean;
   notes?: string[];
 }
@@ -1875,6 +1887,8 @@ export class Space {
     minOccurrences?: number;
     includeReserved?: boolean;
     includeSingletons?: boolean;
+    /** Children a record needs before it is TESTED as a hub; 0 leaves every component whole. */
+    hubDegree?: number;
     scope?: StatsScope;
   } = {}): Promise<FlowReport> {
     const granularity = opts.granularity ?? "kind+agent";
@@ -1976,7 +1990,79 @@ export class Space {
       members.push(id);
       components.set(root, members);
     }
-    const fragmentRoots = new Set([...fragment].map(find));
+    // --- the hub cut. A flow is a connected subgraph, which holds until ONE long-lived record ties
+    // everything to everything: the chat's `conversation` links every turn, so a whole multi-day
+    // chat mined as a single shape that occurred exactly once and said nothing. Measured on a real
+    // corpus, every conversation-rooted shape was unique.
+    //
+    // The cut is DERIVED, never a named kind, or an inspection feature would be declaring the
+    // topology it exists to discover. The test is structural: a hub is a node whose REMOVAL leaves
+    // many independent pieces. That is what separates a conversation from a wide fan-out, which is
+    // also high-degree — a job's tasks reconverge on a summary, so deleting the job still leaves one
+    // piece and the pipeline's shape survives the pass untouched.
+    const hubDegree = Math.max(opts.hubDegree ?? FLOW_HUB_DEGREE, 0);
+    const tokenOf = (id: string) => {
+      const n = nodes.get(id)!;
+      return granularity === "kind" ? n.kind : `${n.kind}@${n.agent}`;
+    };
+    /** Connected pieces of `members` with `cut` deleted. Local union-find; the outer one is spent. */
+    const piecesOf = (members: string[], cut: Set<string>): string[][] => {
+      const live = members.filter((id) => !cut.has(id));
+      const set = new Set(live);
+      const up = new Map(live.map((id) => [id, id]));
+      const root = (x: string): string => {
+        while (up.get(x) !== x) {
+          up.set(x, up.get(up.get(x)!)!);
+          x = up.get(x)!;
+        }
+        return x;
+      };
+      for (const id of live) {
+        for (const p of nodes.get(id)!.parents) {
+          if (!set.has(p)) continue;
+          const [a, b] = [root(id), root(p)];
+          if (a !== b) up.set(a, b);
+        }
+      }
+      const out = new Map<string, string[]>();
+      for (const id of live) {
+        const r = root(id);
+        const bucket = out.get(r);
+        if (bucket) bucket.push(id);
+        else out.set(r, [id]);
+      }
+      return [...out.values()];
+    };
+    const units: { members: string[]; prefix: string; fragment: boolean }[] = [];
+    let hubs = 0;
+    for (const members of components.values()) {
+      const cut = new Set<string>();
+      if (hubDegree > 0 && members.length > hubDegree) {
+        const childCount = new Map<string, number>();
+        for (const id of members) {
+          for (const p of nodes.get(id)!.parents) {
+            if (nodes.has(p)) childCount.set(p, (childCount.get(p) ?? 0) + 1);
+          }
+        }
+        // Only the widest few are ever tested: the piece count is a graph pass, and a component with
+        // no hub must not pay for one per node.
+        const candidates = members
+          .filter((id) => (childCount.get(id) ?? 0) >= hubDegree)
+          .sort((a, b) => (childCount.get(b) ?? 0) - (childCount.get(a) ?? 0))
+          .slice(0, FLOW_HUB_CANDIDATES);
+        for (const c of candidates) {
+          cut.add(c);
+          if (piecesOf(members, cut).length < FLOW_HUB_PIECES) cut.delete(c); // no split: not a hub
+        }
+        hubs += cut.size;
+      }
+      // The hub's own kind stays in the signature. Without it the turns of a conversation and the
+      // steps of a job would merge into one shape on the strength of looking alike.
+      const prefix = cut.size === 0 ? "" : [...new Set([...cut].map(tokenOf))].sort().join(" + ");
+      for (const piece of cut.size === 0 ? [members] : piecesOf(members, cut)) {
+        units.push({ members: piece, prefix, fragment: piece.some((id) => fragment.has(id)) });
+      }
+    }
 
     // --- abstraction. Ids are monotonic ULIDs minted by this process at commit, so ascending id IS
     // a topological order: a parent always exists before the child that names it. That is what lets
@@ -1984,15 +2070,17 @@ export class Space {
     const shapes = new Map<string, { occurrences: number; complete: number; open: number; failed: number; durations: number[]; sizes: number[]; exemplars: string[] }>();
     let unknownState = 0;
     let singletons = 0;
-    for (const [root, members] of components) {
+    for (const unit of units) {
+      const members = unit.members;
       // A record linked to nothing is not a flow of one. Left in, the registry writes outrank every
       // real shape: a live space put `capability`×861 and `model`×215 above `llm_call → llm_result`,
       // which answers "what does this space do" with its own bookkeeping.
-      if (members.length === 1 && !fragmentRoots.has(root)) {
+      if (members.length === 1 && !unit.fragment) {
         singletons++;
         if (!opts.includeSingletons) continue;
       }
       members.sort();
+      const within = new Set(members);
       const depth = new Map<string, number>();
       let failed = false;
       let open = false;
@@ -2000,7 +2088,9 @@ export class Space {
       let last = -Infinity;
       for (const id of members) {
         const n = nodes.get(id)!;
-        const inside = n.parents.filter((p) => nodes.has(p));
+        // Parents in THIS unit, not merely in the scan: a node whose only parent was the hub is a
+        // root of its own flow now, and counting the cut edge would push every depth down by one.
+        const inside = n.parents.filter((p) => within.has(p));
         depth.set(id, inside.length === 0 ? 0 : 1 + Math.max(...inside.map((p) => depth.get(p) ?? 0)));
         const state = stateOf.get(id);
         if (state === undefined) unknownState++;
@@ -2016,8 +2106,7 @@ export class Space {
       }
       const levels = new Map<number, Map<string, number>>();
       for (const id of members) {
-        const n = nodes.get(id)!;
-        const token = granularity === "kind" ? n.kind : `${n.kind}@${n.agent}`;
+        const token = tokenOf(id);
         const level = levels.get(depth.get(id)!) ?? new Map<string, number>();
         level.set(token, (level.get(token) ?? 0) + 1);
         levels.set(depth.get(id)!, level);
@@ -2031,7 +2120,7 @@ export class Space {
             .join(" + ")
         )
         .join(" → ");
-      const key = fragmentRoots.has(root) ? `… → ${signature}` : signature;
+      const key = (unit.prefix ? `${unit.prefix} ⇒ ` : "") + (unit.fragment ? `… → ${signature}` : signature);
       const s = shapes.get(key) ?? { occurrences: 0, complete: 0, open: 0, failed: 0, durations: [], sizes: [], exemplars: [] };
       s.occurrences++;
       if (failed) s.failed++;
@@ -2070,8 +2159,9 @@ export class Space {
       counts: counting,
       flows: flows.slice(0, FLOW_MAX_SHAPES),
       scanned: { records: nodes.size, kinds, subgraphs: components.size },
-      fragments: fragmentRoots.size,
+      fragments: units.filter((u) => u.fragment).length,
       singletons,
+      hubs,
       complete,
       ...(notes.length > 0 ? { notes } : {}),
     };

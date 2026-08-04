@@ -678,6 +678,7 @@ async function loadFlows() {
   if (!r.ok) { $("fl-list").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
   const d = r.data;
   const scanned = `${d.scanned.records} records over ${d.scanned.kinds.length} kinds, ${d.scanned.subgraphs} subgraphs` +
+    (d.hubs ? `, ${d.hubs} cut as hubs` : "") +
     (d.singletons ? `, ${d.singletons} linked to nothing (not a shape)` : "") +
     (d.fragments ? `, ${d.fragments} fragment(s)` : "");
   // A mined diagram looks equally complete whether or not the scan finished, which is exactly why

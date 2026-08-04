@@ -172,19 +172,33 @@ This is the emergent process documentation people keep asking for: the workflow 
 Its acceptance test is specified in that doc, which is that it recovers the pipeline example's shape
 unprompted; `conformance/flows.test.ts` is that test, and it passes.
 
-**A HUB RECORD defeats the flow unit, and that is the open problem.** First run against a real
-corpus (3905 records of accumulated chat history on Postgres): every one of the eleven
-conversation-rooted shapes occurred exactly once, with signatures up to 467 characters and a
-"duration" of 25.8 hours. The cause is not granularity in the sense the two knobs cover. A flow is a
+**A HUB RECORD defeats the flow unit, and the cut has to be structural.** First run against a real
+corpus (3905 records of accumulated chat history on Postgres) mined eleven conversation-rooted
+shapes occurring exactly once each, up to 467 characters long, one of them 930 records spanning 26
+hours. The cause is not granularity in the sense the two token knobs cover: a flow is a
 weakly-connected component, and a long-lived `conversation` links every turn to every other, so one
 component is a whole multi-day chat rather than a turn. [research-self-modeling.md](research-self-modeling.md)'s
-own worked example is a TURN (`message → llm_call → tool_call → tool_result → llm_call → llm_result`),
-which components cannot express while the hub exists. The pipeline example has no hub, which is
-exactly why it looked perfect and this did not. **Do not fix this by capping component size**: that
-hides the shape instead of decomposing it. The candidates are cutting at a hub (a node whose degree
-is orders above the median) or mining root-to-leaf PATHS instead of components, and which one is
-right is a question to measure on this corpus, not to guess. Until then the report is accurate about
-long-lived roots and unhelpful about them.
+own worked example is a TURN. The pipeline example has no hub, which is exactly why it looked
+perfect and this did not.
+
+**Fixed by cutting at hubs, and the test is REMOVAL, not degree.** Degree alone cannot tell a
+conversation from a wide fan-out, because a job with twelve tasks is just as high-degree. What
+separates them is that the tasks reconverge on a summary: delete the job and one piece remains,
+delete the conversation and every turn falls apart. So a hub is a node whose removal leaves
+`FLOW_HUB_PIECES` independent pieces, tested only on the widest few nodes of a component and only
+above `hubDegree` children (a query parameter; `0` leaves every component whole, which is the
+pre-fix behaviour and how the two are compared). The hub's own kind stays in the signature as
+`conversation ⇒ …`, or the turns of a chat and the steps of a job would merge on the strength of
+looking alike. **Never cap component size instead**: that hides a shape rather than decomposing it.
+
+Measured on the same corpus, conversation-derived work: **11 shapes over 17 units, 1 recurring →
+27 shapes over 290 units, 13 recurring covering 276 of them**, largest shape 930 records → 61. The
+turn is now first-class: `conversation + llm_call ⇒ llm_call → llm_call + message + progress×2-3 →
+llm_result + progress` at 104 occurrences, and the tool-call turn at 73.
+
+What remains is a **successor CHAIN**, not a star: a `workspace` records each version with the
+previous as parent, so consecutive turns stay linked through it. Three units out of 476, they are
+genuinely causally connected, and a degree test cannot see a chain. Left alone deliberately.
 
 Three things the build settled that the spec left open:
 

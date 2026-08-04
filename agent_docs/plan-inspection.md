@@ -57,10 +57,11 @@ and the console's **Flows** tab. Each causally connected subgraph is abstracted 
 fails silently. Acceptance test met: `conformance/flows.test.ts` recovers the pipeline's
 `job → task×4-7 → result×4-7 → summary` unprompted, and mines the stalled shape beside it.
 
-**Open, and the reason to keep this item's number alive:** a long-lived hub record (the chat's
-`conversation`) makes one weakly-connected component out of a whole multi-day chat, so every
-conversation mines as a unique shape. Decomposing at a hub, or mining paths instead of components,
-is the follow-on; see [design-inspection.md](design-inspection.md) for why it is not a size cap.
+**The hub cut came from first real use, not from this plan.** A long-lived `conversation` made one
+component out of a whole multi-day chat, so every conversation mined as a unique shape. Hubs are now
+cut by a structural test (removal splits the component; a reconverging fan-out does not), which took
+conversation work from 11 shapes over 17 units to 27 over 290, 13 of them recurring. See
+[design-inspection.md](design-inspection.md); a successor chain is the known residue.
 
 **The `flow` RECORD is deliberately not written.** [research-self-modeling.md](research-self-modeling.md)
 specifies emitting one whose `parent_ids` are the exemplars, so the measurement gets provenance and

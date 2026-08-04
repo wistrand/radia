@@ -210,6 +210,7 @@ export class RadiaClient {
     minOccurrences?: number;
     includeReserved?: boolean;
     includeSingletons?: boolean;
+    hubDegree?: number;
   } = {}): Promise<{
     granularity: string;
     counts: string;
@@ -225,6 +226,7 @@ export class RadiaClient {
     scanned: { records: number; kinds: string[]; subgraphs: number };
     fragments: number;
     singletons: number;
+    hubs: number;
     complete: boolean;
     notes?: string[];
     note?: string;
@@ -236,6 +238,7 @@ export class RadiaClient {
     if (opts.minOccurrences !== undefined) q.set("min_occurrences", String(opts.minOccurrences));
     if (opts.includeReserved) q.set("include_reserved", "true");
     if (opts.includeSingletons) q.set("include_singletons", "true");
+    if (opts.hubDegree !== undefined) q.set("hub_degree", String(opts.hubDegree));
     const qs = q.toString();
     return this.req("GET", `/v0/ops/flows${qs ? `?${qs}` : ""}`);
   }

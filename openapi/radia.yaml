@@ -924,6 +924,7 @@ paths:
         - { name: counts, in: query, schema: { type: string, enum: [bucketed, exact], default: bucketed }, description: "bucketed fan-out is what makes a four-item and a five-item run the same flow" }
         - { name: max_records, in: query, schema: { type: integer }, description: "cap on the scan; reaching it reports complete:false" }
         - { name: min_occurrences, in: query, schema: { type: integer, default: 1 } }
+        - { name: hub_degree, in: query, schema: { type: integer, default: 8 }, description: "children a record needs before it is TESTED as a hub whose removal splits the flow; 0 leaves every component whole" }
         - { name: include_reserved, in: query, schema: { type: boolean, default: false }, description: "include the substrate's own kinds (declarations, grants, run records)" }
         - { name: include_singletons, in: query, schema: { type: boolean, default: false }, description: "include records linked to nothing; they are counted in `singletons` either way" }
       responses:
@@ -961,6 +962,7 @@ paths:
                       subgraphs: { type: integer }
                   fragments: { type: integer, description: "subgraphs with a parent outside the scan, whose signature is a prefix of the truth" }
                   singletons: { type: integer, description: "records linked to nothing: counted always, listed only with include_singletons" }
+                  hubs: { type: integer, description: "hub records cut out so the work hanging off them could be mined separately; the `X ⇒` prefix on a signature names what it hung from" }
                   complete: { type: boolean }
                   notes: { type: array, items: { type: string } }
                   scope: { type: object, description: "present when the caller is self-scoped" }

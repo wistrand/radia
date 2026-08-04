@@ -172,6 +172,58 @@ Deno.test("flows: a record linked to nothing is counted, not ranked as a flow", 
   }
 });
 
+Deno.test("flows: a hub record is cut so the work hanging off it can be mined", async () => {
+  // Found on a real space: a long-lived `conversation` links every turn to every other, so a whole
+  // multi-day chat was ONE component that occurred exactly once and said nothing. Eleven
+  // conversation-rooted shapes, eleven occurrences of one each.
+  const adapter = new SqliteAdapter(":memory:");
+  await adapter.init();
+  const space = new Space(adapter);
+  space.registerKind({ kind: "conversation", indexedPaths: [], claimable: false });
+  space.registerKind({ kind: "message", indexedPaths: [], claimable: false });
+  space.registerKind({ kind: "reply", indexedPaths: [], claimable: false });
+  try {
+    const conv = await space.put({ kind: "conversation", body: { title: "t" } });
+    for (let i = 0; i < 10; i++) {
+      const m = await space.put({ kind: "message", body: { i }, parentIds: [conv.id] });
+      await space.put({ kind: "reply", body: { i }, parentIds: [m.id] });
+    }
+
+    const cut = await space.flows({ granularity: "kind" });
+    assertEquals(cut.hubs, 1);
+    assertEquals(cut.flows.length, 1);
+    // The turn, ten times over. The hub's kind stays in the signature: without it, the turns of a
+    // conversation and the steps of a job would merge on the strength of looking alike.
+    assertEquals(cut.flows[0].signature, "conversation ⇒ message → reply");
+    assertEquals(cut.flows[0].occurrences, 10);
+
+    // The knob is a knob, and 0 is the pre-fix behaviour: one shape, seen once, saying nothing.
+    const whole = await space.flows({ granularity: "kind", hubDegree: 0 });
+    assertEquals(whole.hubs, 0);
+    assertEquals(whole.flows.length, 1);
+    assertEquals(whole.flows[0].occurrences, 1);
+    assertEquals(whole.flows[0].signature, "conversation → message×8-15 → reply×8-15");
+  } finally {
+    await adapter.close();
+  }
+});
+
+Deno.test("flows: a wide fan-out that RECONVERGES is not a hub, however wide it is", async () => {
+  // The discriminating case, and the reason the test is structural rather than a degree threshold:
+  // a job with twelve tasks is exactly as high-degree as a hub. What separates them is that the
+  // tasks reconverge on a summary, so deleting the job still leaves ONE piece. Cut it and the
+  // pipeline's shape — the thing this feature was accepted against — would disintegrate.
+  const { space, close } = await pipelineSpace();
+  try {
+    await runJob(space, "a b c d e f g h i j k l".split(" "));
+    const r = await space.flows({ granularity: "kind" });
+    assertEquals(r.hubs, 0);
+    assertEquals(r.flows.map((f) => f.signature), ["job → task×8-15 → result×8-15 → summary"]);
+  } finally {
+    await close();
+  }
+});
+
 Deno.test("flows: the state scan is scoped to the kinds being mined", async () => {
   // A live space had 1135 `agent_run` and 1080 `interest` envelopes ahead of the work, so an
   // unscoped state read spent its budget on kinds this scan excludes and 278 mined records came

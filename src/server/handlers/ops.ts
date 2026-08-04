@@ -315,6 +315,7 @@ export async function handleFlows(space: Space, url: URL, scope?: StatsScope | n
     counts,
     maxRecords: num("max_records"),
     minOccurrences: num("min_occurrences"),
+    hubDegree: num("hub_degree"),
     includeReserved: p.get("include_reserved") === "true",
     includeSingletons: p.get("include_singletons") === "true",
     scope: scope ?? undefined,
