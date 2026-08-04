@@ -37,9 +37,9 @@ unexercised. The rest of M2/M3 is unbuilt.
 
 ### M0: semantic kernel prototype, embedded-first (DONE)
 
-**Status:** Phases 0–7 built and verified (190 conformance tests across the embedded
-adapters, 213 including a live Postgres); the web console (Feed, records browser, kinds, query,
-worker, relationship-**graph**, and an **Auth** view), runnable agent examples, and a CLI LLM
+**Status:** Phases 0–7 built and verified (190 conformance tests at the time; the suite has grown
+with M1, so take the current number from a run); the web console (Feed, records browser, kinds,
+query, worker, relationship-**graph**, **Flows**, and an **Auth** view), runnable agent examples, and a CLI LLM
 chatbot (runnable with real auth roles) ship too. Beyond the phases: M1 watches (below), the M1
 **authorization stack** (grants, run tokens, per-run leases, delegation, taint), optional on-disk
 persistence (`--db`, records + envelopes + events + idempotency + kind declarations), the

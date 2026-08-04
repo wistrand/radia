@@ -91,6 +91,13 @@ Explicit, deterministic, conformance-tested:
   ("patterns are data, not code", `FORBIDDEN` in `src/core/matching.ts`). An unknown `$` key at
   object level throws too, so the whitelist is closed rather than advisory.
 
+**Four limits beyond the depth cap**, all at compile, because a pattern is STORED (in a grant, in an
+interest) and then evaluated against every candidate record, so its cost is paid per record rather
+than once: serialized size (`pattern_too_large`, 8 KiB), compiled predicate count
+(`too_many_predicates`, 64), `$or` branches (`too_many_branches`, 16) and `$in` values
+(`too_many_values`, 256). Depth alone bounds none of it: a flat `$or` with forty branches is depth 1
+and forty comparisons per record, which is why the count is taken over the COMPILED tree.
+
 ## What patterns cannot express
 
 A pattern evaluates the record **body** and nothing else (`matchesRecord` → `evalNode(rec.body, …)`).

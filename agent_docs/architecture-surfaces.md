@@ -193,6 +193,12 @@ diagram looks equally complete however it is set, so the output prints the scan 
 incompleteness note rather than leaving the reader to infer either. See
 [design-inspection.md](design-inspection.md).
 
+`integrity` verifies the event chain and names the FIRST divergence rather than a verdict, because
+"the chain is invalid" is not something anyone can act on. It prints the caveat when the chain is
+unsigned, since an unsigned chain catches corruption and careless edits but not a rewrite. `doctor`
+carries the same finding, and names the chain even when it is healthy: an all-clear that omits a
+check it ran claims more than it checked.
+
 `runCli` returns an exit code and never terminates the process itself. One trap it works around:
 `GET /v0/health` is public, so a *rejected* token still returns 200 with `principal=anonymous`.
 Without the explicit warning in the `health` output that reads as "no credential" when it actually

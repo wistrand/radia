@@ -4,7 +4,8 @@
 > 2026-08-04. What remains is the deferred low-severity batch below. The two pooled-Postgres races
 > package S fixed without a failing test now have one each (`conformance/concurrency.test.ts`, both
 > validated against the pre-fix adapter planted back in). The guards pass: `deno task conformance`
-> is 467 passed, 0 failed, and 648 with a live Postgres. Each done package is a status line here; its
+> is 518 passed, 0 failed, and 734 with a live Postgres (counts move as suites are added; the
+> claim to check is 0 failed). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
 > paths; items marked **reproduced** were verified empirically. Line numbers drift; trust the symbol,

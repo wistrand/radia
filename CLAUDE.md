@@ -4,9 +4,10 @@ Guidance for agents working in this repo. Read this first, then the relevant fil
 ## What this is
 
 Radia is a content-routed coordination runtime for LLM agents. **All of M0 (Phases 0–7) plus a
-growing M1 slice are built.** That covers watches (SSE) and the **authorization stack**: kind- and
-pattern-scoped grants (as records), the bootstrap chain + run tokens, per-run lease ownership
-with stop/quarantine, `delegation_context`, and `taint` + declassify (Deno + TypeScript;
+growing M1 slice are built.** That covers watches (SSE), the **authorization stack** (kind- and
+pattern-scoped grants as records, the bootstrap chain + run tokens, per-run lease ownership
+with stop/quarantine, `delegation_context`, `taint` + declassify), the **tamper-evident event
+chain**, mined **flows**, and the resource limits (Deno + TypeScript;
 embedded PGlite and SQLite adapters; artifacts/blob storage; web console; TS + Python SDKs; a public-API CLI; a bundled
 MCP adapter; runnable agent examples incl. a CLI LLM chatbot that runs with real auth roles).
 The authoritative design lives in
@@ -172,7 +173,9 @@ a stopped run's token kept resolving after a restart. So:
   plausible prefix. A bounded read whose result is treated as a population is the single most
   repeated bug in this codebase.
 - Registry writes are CONTENT-KEYED, so restarting a fleet does not append a duplicate per entry.
-  Unbounded growth is what makes bounded reads dangerous in the first place.
+  Unbounded growth is what makes bounded reads dangerous in the first place. Content-keying only
+  bounds a fleet that republishes the SAME entry, so a registry whose size is somebody else's read
+  cost also needs a per-principal ceiling (`maxInterestsPerPrincipal`, `429 too_many_interests`).
 - Authorization has a canonical, inspectable form: `Space.effectivePermissions` /
   `GET /v0/ops/permissions` / `radia permissions <principal>` / the chat's `space_permissions`.
   Every grant bug so far was a promise that did not match the enforcement; this is how you check

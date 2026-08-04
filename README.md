@@ -107,9 +107,9 @@ deno task dev --db                                  # persist under ./.radia
 deno task dev --storage sqlite --db ./elsewhere.db  # or name the place yourself
 ```
 
-**Everything a space writes goes in one directory, `./.radia`.** The database, the artifact blobs
-and the space KEK, so that directory is the whole on-disk footprint and deleting it is a clean
-reset. `RADIA_DIR` moves it. (Not to be confused with `~/.radia/credentials.json`, which belongs to
+**Everything a space writes goes in one directory, `./.radia`.** The database, the artifact blobs,
+the space KEK and the event-chain signing key, so that directory is the whole on-disk footprint and
+deleting it is a clean reset. `RADIA_DIR` moves it. (Not to be confused with `~/.radia/credentials.json`, which belongs to
 you rather than to a project and is shared by every space you run.)
 
 Records, envelopes, events, idempotency, and kind declarations all persist and reload on
@@ -152,7 +152,9 @@ request to `human:local`, which authorizes every verb. Nothing radia ships depen
 Open the console and watch records and events stream through the **Feed** tab, use the
 **Graph** tab to see how records relate (`parent_ids` DAG: a conversation's messages, a
 job fanning out into tasks and back), the **Space** tab to see every record placed by what it
-*is* rather than what it links to, and open a record for its body + lineage. The **Auth** tab
+*is* rather than what it links to, the **Flows** tab for the recurring shapes of work mined out of
+that lineage (nothing declares them), and open a record for its body + lineage. The view lives in
+the URL, so any of it is a link you can send. The **Auth** tab
 shows the bootstrap chain and, as an operator, mints a session for a person; paste any session
 token into the principal pill to see the space as they see it. See
 [examples/README.md](examples/README.md) for the three examples (a keyless coordination
@@ -180,7 +182,9 @@ radia query job --match '{"tag":"a"}'         # read by pattern
 radia take job --lease 30 --json > claim.json # claim work
 radia ack - --result-kind job_result --result '{"ok":true}' < claim.json
 radia watch job                               # stream wakeups
-radia doctor                                  # dead-letters, stuck leases, stale work
+radia doctor                                  # dead-letters, stuck leases, stale work (orphaned vs starving)
+radia flows                                   # the recurring shapes of work, mined from lineage
+radia integrity                               # verify the event chain, naming the first divergence
 radia reclaim --all --drain                   # un-stick every expired lease
 radia login human:alice --grant job:query     # a scoped session for a person
 radia login human:alice --compact            # the token alone, for TOK=$(…)

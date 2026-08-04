@@ -1,7 +1,7 @@
 # Plan: M0 implementation
 
-> Status: Phases 0–7 DONE (190 conformance tests across the embedded adapters and the blob port, 213 including a
-> live Postgres), plus M1 watches, the M1 **authorization stack** (grants, run tokens,
+> Status: Phases 0–7 DONE (190 conformance tests at the time; the suite has grown well past that as
+> M1 landed, so read the current number from a run rather than from here), plus M1 watches, the M1 **authorization stack** (grants, run tokens,
 > delegation, taint; see below), and a range of enhancements (see "Current state" and
 > "Enhancements" below). This is the buildable, phase-by-phase plan for M0
 > (the semantic kernel prototype). Milestone scope and the M1–M3 outline live in
@@ -61,8 +61,9 @@ contract rather than with the milestone that set it.
 
 ## Current state
 
-**All M0 phases (0–7) are DONE**, verified (190 conformance tests across the embedded adapters and the blob port;
-213 including a live Postgres via `scripts/pg-conformance.sh`), plus M1
+**All M0 phases (0–7) are DONE**, verified (190 conformance tests at the time, across the embedded
+adapters and the blob port; the per-phase counts below are likewise a record of when each phase
+closed, not a current total), plus M1
 watches and the M1 **authorization stack** (grants, run-token bootstrap chain, per-run leases,
 delegation, taint; see the Enhancements note below), the dev console, examples, and several
 enhancements. Per-phase records with verify results are in the Phases section below.

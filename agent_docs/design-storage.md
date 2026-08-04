@@ -15,8 +15,8 @@ declarations are `kind_def` records (no separate table), reloaded into the in-me
 startup via `Space.loadKinds`). **M1 status (built):** the standalone **Postgres** adapter
 (`src/storage/postgres.ts`, deno-postgres pool) shares one Postgres-dialect body with PGlite
 (`src/storage/pgbase.ts`, `PgSqlAdapter`), so they can't drift; `--storage postgres` runs it,
-and it joins the conformance suite when `RADIA_PG_URL` is set (`scripts/pg-conformance.sh`). Its
-green-against-a-live-server CI run is pending (needs a Postgres). Perf: the adapter enables
+and it joins the conformance suite when `RADIA_PG_URL` is set (`scripts/pg-conformance.sh`), which
+runs against a live server in CI (`.github/workflows/ci.yml`, the `postgres` job). Perf: the adapter enables
 `TCP_NODELAY` (deno-postgres omits it, and otherwise every parameterized query eats a ~40ms
 delayed-ACK; see [gotchas.md](gotchas.md)) and the shared body folds the clock read into each
 settle transaction and checks parents in one query. **Not implemented:**

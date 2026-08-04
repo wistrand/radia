@@ -268,14 +268,18 @@ Note that the first item outranks the tamper-evident log, which is the intuitive
 4. **Clearance cannot lapse.** `GrantDef` has no TTL field and there is no sweeper; expiry is
    evaluated lazily at claim/resolve time. Time-based lapse waits on durable timers (M2). The
    workaround that works today is a `retired: true` successor.
-5. **Not tamper-evident against the operator.** The hash-chained log is unbuilt (an M1 item; the
-   anchored signed checkpoints are M2). Append-only and transactional is real, but nothing defends
-   against a DB admin.
+5. **Tamper-EVIDENT against database access, not against the host.** The hash chain is BUILT
+   (`src/core/seal.ts`, `GET /v0/ops/integrity`): each event is sealed once the log's finality
+   watermark passes it, the hash covers the record's `body_sha256` as well as the event, and each
+   link is HMAC'd under a key that lives beside the database rather than in it. So a DB admin who
+   edits a row is caught even after rebuilding the chain. Someone holding the KEY as well is not,
+   and that is what M2's externally anchored checkpoints are for.
 6. **Integrity is not re-verified on read.** `body_sha256` is never re-checked, and unencrypted blob
    `get` streams bytes without re-hashing. The encrypted path is fine; the digest is the AES-GCM
    AAD.
 
-Items 1–3 are ordinary work against built machinery. Only 4 and 5 are milestone-gated.
+Items 1–3 are ordinary work against built machinery. Only 4 is milestone-gated; 5 is now built for
+the threat that matters here and milestone-gated only for the stronger one.
 
 **Why this beats the incumbent shapes.** CI systems gate code on checks, but the gate is pipeline
 convention. Nothing prevents a path that skips it, which is why SLSA-style frameworks bolt

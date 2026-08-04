@@ -37,7 +37,7 @@ resequencing: shipping the top three serves agents and newcomers and does nothin
 |---|---------------------------------------------------------|-----------|--------------------------------------------------------------------------|
 | 1 | `explain` on query, evidence-linked narrative           | Agent     | **`explain` DONE.** Evidence-linked narrative is a console concern, still open |
 | 2 | Flows tab                                               | Newcomer  | **DONE** (2026-08-04). Mining + the tab; the `flow` RECORD is not written, see below |
-| 3 | Interest-as-records, dry-run matcher                    | All three | **DONE.** Unblocks the routing diagram and precise starvation diagnostics, neither of which is built |
+| 3 | Interest-as-records, dry-run matcher                    | All three | **DONE**, and it paid out: the orphaned/starving split is built on it (2026-08-04). The routing diagram is still not |
 | 4 | Thread grouping, `thread()`, shape-aware collapsing     | Agent     | **`thread()` DONE.** Feed grouping and collapsing are console work, still open |
 | 5 | Waterfall, OTLP export                                  | Newcomer  | Adoption work: meets engineers inside tools they already trust             |
 | 6 | Space digest                                            | Agent     | **DONE.** Pages to exhaustion and reports `complete: false`                |

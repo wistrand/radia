@@ -7,8 +7,9 @@ each mechanism has to take. Sequence and status live in
 > **M1 status: built so far** are the interest registry and dry-run matcher (`INTEREST` in
 > `src/core/kinds.ts`, `Space.matchingInterests`, `POST /v0/ops/dry-run`, published automatically by
 > `agentLoop`), and the three inspector affordances: `explain` on query, `GET /v0/ops/digest`, and
-> `GET /v0/ops/records/{id}/thread`. Everything else below is unbuilt. The console's Feed, Graph and Space views exist
-> and work; the rest is what they cannot answer. Claims about current behavior were verified against
+> `GET /v0/ops/records/{id}/thread`. **Flows** (mining + the tab) and the **orphaned/starving split**
+> landed 2026-08-04. Everything else below is unbuilt. The console's Feed, Graph, Flows and Space
+> views exist and work; the rest is what they cannot answer. Claims about current behavior were verified against
 > `src/` (see "Verified ground" at the end), which is how one prerequisite in an earlier draft was
 > found to be imaginary.
 
@@ -84,9 +85,10 @@ Three properties are what make it safe rather than merely convenient:
 That one change unlocks a cascade, which is the reason it ranks above features that look bigger:
 
 - **"Who would receive this record?" becomes a query**, answerable before the record is written.
-- **Starvation and orphan diagnostics become precise.** Today they use age and state heuristics
-  because the substrate does not know the pattern population. With a registry, "matches no
-  registered interest" and "interest that has not matched in an hour" are facts.
+- **Starvation and orphan diagnostics become precise.** BUILT: `diagnostics` runs the pattern match
+  against the live registry, so unclaimed work splits into ORPHANED (matches no live interest) and
+  STARVING (one matches and nothing claims), which age and state heuristics cannot tell apart. "An
+  interest that has not matched in an hour" is the remaining half and needs a time series.
 - **The routing diagram becomes possible**: kinds as nodes, interests as edges to agents, mined from
   evidence and continuously true, with dead edges dropping off as workers retire.
 
