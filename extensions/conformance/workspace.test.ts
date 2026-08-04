@@ -116,6 +116,32 @@ async function withProbeTarget<T>(fn: (networkTarget: string) => Promise<T>): Pr
   }
 }
 
+/**
+ * Can this machine ACTUALLY run the bubblewrap jail these cases need?
+ *
+ * Functional, not `bwrap --version`, and the difference is the whole point: the binary being
+ * installed says nothing about whether the kernel will let an unprivileged process create a user
+ * namespace. Ubuntu 23.10+ ships `kernel.apparmor_restrict_unprivileged_userns=1`, so `--version`
+ * succeeds and the first real jail dies with a permission error — the first version of this check
+ * asked the question that is easy to ask rather than the one that matters, which is the same
+ * mistake `probeSandbox` exists to prevent one layer down.
+ *
+ * So this runs a trivial program through the real thing: binary present, namespace permitted, and
+ * a `python3` inside the jail to run it. Bubblewrap is an OPTIONAL backend by design (a space
+ * advertises it only where its probe comes back clean), so a machine that cannot is a
+ * configuration, not a defect — the cases skip. CI installs bubblewrap AND asserts it works, so a
+ * runner that cannot fails loudly instead of skipping quietly, which would be a green run covering
+ * nothing.
+ */
+async function bwrapUsable(): Promise<boolean> {
+  try {
+    return (await runBwrap("print(1)", { command: ["python3", "-"], timeoutMs: 10_000 })).ok;
+  } catch {
+    return false; // not installed at all
+  }
+}
+const needsBwrap = { ignore: !(await bwrapUsable()) };
+
 // ── NORMATIVE: the tree digest ───────────────────────────────────────────────────────────────────
 
 Deno.test("workspace: the tree digest is a fixed function of the tree, and carries its version", async () => {
@@ -1260,7 +1286,7 @@ Deno.test("sandbox: a declaration is a record an operator can query and a policy
 
 // ── Phase 6: a second backend, and the reason the probe exists ───────────────────────────────────
 
-Deno.test("sandbox: bubblewrap runs another language, and describes what it ACTUALLY got", async () => {
+Deno.test({ name: "sandbox: bubblewrap runs another language, and describes what it ACTUALLY got", ...needsBwrap, fn: async () => {
   const spec = bwrapSandbox({ command: ["python3", "-"], language: "python", name: "py" });
   assertEquals(spec.isolation, "bubblewrap");
   assertEquals(spec.language, "python");
@@ -1287,9 +1313,9 @@ Deno.test("sandbox: bubblewrap runs another language, and describes what it ACTU
     [],
     "and every claim it DOES make holds",
   );
-});
+} });
 
-Deno.test("sandbox: the probe catches a jail that lies, which is why fail-open is survivable", async () => {
+Deno.test({ name: "sandbox: the probe catches a jail that lies, which is why fail-open is survivable", ...needsBwrap, fn: async () => {
   // THE Phase 6 question. Under Deno, "no network" is the ABSENCE of --allow-net: forget every flag
   // and you get the safe answer. Under bubblewrap it is the PRESENCE of --unshare-net: forget one
   // and the jail is silently open while the record still says otherwise. Verified directly, outside
@@ -1329,7 +1355,7 @@ Deno.test("sandbox: the probe catches a jail that lies, which is why fail-open i
   assertEquals(untargeted.map((f) => f.claim), ["network"]);
   assert(/no networkTarget/.test(untargeted[0].detail ?? ""), untargeted[0].detail ?? "");
   });
-});
+} });
 
 Deno.test("sandbox: two backends coexist as records a policy can tell apart", async () => {
   await withSpace(async (c) => {
@@ -1354,4 +1380,4 @@ Deno.test("sandbox: two backends coexist as records a policy can tell apart", as
     assertEquals(js!.processes, false);
     assertEquals(py!.processes, true, "a namespace jail does not stop fork/exec the way permissions do");
   });
-});
+});;

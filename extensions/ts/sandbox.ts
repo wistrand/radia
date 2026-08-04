@@ -120,7 +120,14 @@ export async function runCode(source: string, opts: RunOptions = {}): Promise<Ru
   const readRoots = opts.readRoots ?? [];
   const denyRead = opts.denyRead ?? [];
   const started = Date.now();
-  const child = new Deno.Command("deno", {
+  // The RUNNING runtime, by absolute path, not the name `deno` resolved against the PATH this
+  // command itself invents (`/usr/bin:/bin` below). Two reasons, and CI found the first: on a
+  // machine where Deno is installed anywhere else — a GitHub runner puts it in the tool cache —
+  // the lookup simply fails with "entity not found", and the jail is unreachable rather than
+  // insecure, which is the confusing way round. The second is the one to keep: a jail must not
+  // resolve its own interpreter through a search path, or the flags below are enforced by
+  // whichever binary that path happens to find.
+  const child = new Deno.Command(Deno.execPath(), {
     ...(opts.cwd ? { cwd: opts.cwd } : {}),
     args: [
       "run",

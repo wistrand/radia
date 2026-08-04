@@ -1071,6 +1071,25 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   tmpfs, so a program CAN write there. Nothing escapes and nothing persists, but the claim was
   false, and a record is only worth something if it says what the jail GOT rather than what was
   intended. Write the probe before believing the spec, even when you wrote both.
+- **A jail must not resolve its own interpreter through a search path, and a test must not assume
+  an OPTIONAL jailer is installed.** Both were environment assumptions every developer machine here
+  happened to satisfy, and the first CI run failed on both. `runCode` spawned `deno` BY NAME against
+  the `PATH=/usr/bin:/bin` it invents for the child, so on a machine where Deno lives anywhere else
+  (a GitHub runner's tool cache) the jail was unreachable — "entity not found", which reads like a
+  broken test rather than a missing binary. It spawns `Deno.execPath()` now: the running runtime, by
+  absolute path, so the flags it passes are enforced by the binary that passed them. Separately, the
+  bubblewrap cases FAILED rather than skipped where `bwrap` was absent, though the design treats it
+  as optional (a space advertises it only where its probe comes back clean). They skip now, and CI
+  installs it, because skipping is right on a laptop and wrong in the run that is meant to be
+  thorough. Two details that took a second pass. **The skip check must be FUNCTIONAL**: the first
+  version ran `bwrap --version`, which proves the binary exists and nothing about whether the kernel
+  permits an unprivileged user namespace — Ubuntu 23.10+ ships
+  `kernel.apparmor_restrict_unprivileged_userns=1`, under which `--version` succeeds and the first
+  real jail dies, so the cases would have failed anyway. It runs a trivial program through the jail
+  now, and CI ASSERTS the same capability in its own step, because "installed" and "allowed" differ
+  and a silent skip in CI is a green run covering nothing. And **gate only what actually spawns**:
+  the case that merely DECLARES two backend records was skipped too at first, and it had passed on
+  the runner.
 - **Prefer a guarantee that holds by ABSENCE over one that holds by presence.** Deno's sandbox is
   safe because nothing was granted: forget every flag, get the safe answer. A bwrap or container
   jail is safe because `--unshare-net` was passed: forget one, get the unsafe answer silently. That

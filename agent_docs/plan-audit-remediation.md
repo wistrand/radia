@@ -411,6 +411,15 @@ handler answers, and the switch labels carry the method inside the string (`"GET
 a naive `/v0/…` regex matched nine of twenty-five literals and would have passed while checking
 almost nothing. Both directions were verified to fail on a planted violation.
 
+**The first CI run paid for itself**, which is the argument for the whole package: `deno task
+extensions` passed on every machine here and failed on a runner, for two environment assumptions
+nobody had tested. `runCode` spawned `deno` BY NAME against the `PATH` the jail invents for its
+child, so it could not find the runtime wherever Deno is not in `/usr/bin` (it uses
+`Deno.execPath()` now, which is also the stronger rule: a jail must not resolve its interpreter
+through a search path). And the bubblewrap cases failed rather than skipped where `bwrap` is absent,
+though the design treats that backend as optional; they skip now, and CI installs it so the coverage
+is not quietly lost.
+
 **The live-Postgres run is in CI** (`.github/workflows/ci.yml`), in a `postgres` job with a service
 container, beside an `embedded` job that runs check + conformance + extensions. This is the invariant
 CLAUDE.md already asserted ("every implementation of every port … in CI from day one") while the pg

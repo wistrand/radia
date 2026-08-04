@@ -27,6 +27,21 @@ jobs:
           deno-version: v2.x
       - run: deno task check
       - run: deno task conformance
+      # bubblewrap is an OPTIONAL execution backend: a space advertises it only where its probe
+      # comes back clean, and the suite SKIPS its cases where the jail cannot run. Installed here on
+      # purpose — skipping is right on a developer machine and wrong in the run that is meant to be
+      # thorough.
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      # …and ASSERTED, because installing it is not the same as being allowed to use it. bwrap needs
+      # an unprivileged user namespace, and Ubuntu 23.10+ ships
+      # `kernel.apparmor_restrict_unprivileged_userns=1`, under which the binary installs, answers
+      # `--version`, and then fails to create the namespace. Without this step that combination is a
+      # GREEN run covering nothing, because the suite would skip. If this ever fails on a runner,
+      # the choice is explicit: relax the sysctl
+      # (`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`), or drop the install and
+      # accept that the bubblewrap cases run only where somebody has one.
+      - name: bubblewrap can actually create a namespace here
+        run: bwrap --unshare-all --ro-bind / / /bin/true
       - run: deno task extensions
 
   postgres:
