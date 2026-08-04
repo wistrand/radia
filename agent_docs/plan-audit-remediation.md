@@ -1,7 +1,7 @@
 # Plan: audit remediation
 
-> Status: N, P, Q and R are open; **E, K, L, M and O are closed** (2026-08-03), **H and I** (2026-08-04); everything else is closed and
-> its guards pass (`deno task conformance`: 448 passed, 0 failed). Each done package is a status line here; its
+> Status: P, Q and R are open; **E, K, L, M and O are closed** (2026-08-03), **H, I and N** (2026-08-04); everything else is closed and
+> its guards pass (`deno task conformance`: 450 passed, 0 failed). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
 > paths; items marked **reproduced** were verified empirically. Line numbers drift; trust the symbol,
@@ -33,13 +33,13 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~K~~ | ~~Unrevocable definition tokens~~     | ~~P0~~   | **CLOSED 2026-08-03**                 |
 | ~~L~~ | ~~Watch streams cache authorization~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
 | ~~M~~ | ~~`kind_def` is not write-protected~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
-| N   | `clientMeta` escapes the body guards    | P2       | Unbounded, unerasable data in a record |
+| ~~N~~ | ~~`clientMeta` escapes the body guards~~ | ~~P2~~ | **CLOSED 2026-08-04**                 |
 | ~~O~~ | ~~Multi-instance freshness + ordering~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
 | P   | Contracts nothing checks                | P2       | Drift in exactly the claims held loudest |
 | Q   | Designed features unreachable           | P2       | A built feature no caller can invoke   |
 | R   | Dead taint parameter; half-tested guard | P2       | Legibility, not leakage (see the entry) |
 
-Packages A, B, C, D, E, F, G, H, I, J, K, L, M and O are closed. Their lessons are rules in
+Packages A, B, C, D, E, F, G, H, I, J, K, L, M, N and O are closed. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -316,17 +316,31 @@ Guards in `conformance/suites/kinds.ts`: a `put: kind_def` grant that authorizes
 `grant`; the same body refused through `ack`, with a valid one adopted and surviving a restart; and
 a shrunken declaration planted directly through the adapter that startup declines to adopt.
 
-## Package N: `clientMeta` escapes the body guards (P2)
+## Package N: `clientMeta` escapes the body guards (P2) — CLOSED 2026-08-04
 
-**VERIFIED.** `src/core/record.ts` applies the NUL check and the `maxRecordBytes` limit to
-`bodyJson`/`bodyBytes` only; `clientMeta` is client-supplied, assigned unguarded, persisted, and
+**VERIFIED.** `src/core/record.ts` applied the NUL check and the `maxRecordBytes` limit to
+`bodyJson`/`bodyBytes` only; `clientMeta` was client-supplied, assigned unguarded, persisted, and
 returned on every read. The file's own argument for the size limit — an unbounded body is
-unerasable data entering the space, because a body has no erasure path — applies to it verbatim.
+unerasable data entering the space, because a body has no erasure path — applied to it verbatim, so
+the limit was walked past by moving the payload one field sideways.
 
-Fix: include `clientMeta` in both checks, counted against the same budget.
+Both checks now cover it, and the size one shares ONE budget (`bodyBytes + metaBytes`) rather than
+giving each field its own: two independent limits are a limit on neither, since the same payload
+passes by being split. What the erasure promise bounds is how much unerasable data a record carries,
+which is their sum, and the error names the split so a caller can see which half is the problem.
 
-Guard: extend the existing record-limit conformance case to assert a `clientMeta` over the limit is
-refused, and that a NUL in `clientMeta` is refused like one in a body.
+The NUL check is the honest half of the fix. A body's reason is storage — `body_jsonb` cannot hold
+U+0000 and the write fails from inside the driver — but `client_meta` is plain text in both
+dialects, so that argument is the body's, not its. It is refused for the boundary's own sake: a
+caller cannot see why the neighbouring JSON field would accept what this one rejects, the value
+lands in the same documents every reader parses, and the day `client_meta` becomes queryable it
+would already hold data the column cannot take. The comment says so rather than implying a storage
+failure that does not exist today.
+
+Guard: `conformance/suites/records.ts`, "clientMeta is guarded exactly like a body, and counts
+against the same budget" — an oversized `clientMeta`, a body and a `clientMeta` that each fit but
+together do not, a NUL in either, and the literal six-character text that SPELLS the escape still
+storable. Verified to fail against the body-only checks.
 
 ## Package O: multi-instance freshness and ordering (P1) — CLOSED 2026-08-03
 

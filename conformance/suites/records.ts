@@ -403,4 +403,50 @@ export const recordSuites: Suite[] = [
       assertEquals(viaArtifact, "invalid_artifact", "artifact metadata is capped earlier and tighter");
     },
   },
+  {
+    name: "clientMeta is guarded exactly like a body, and counts against the same budget",
+    run: async (adapter) => {
+      // `clientMeta` is client-supplied, persisted verbatim, returned on every read, and has no
+      // erasure path — the body's whole argument, verbatim. It was assigned unguarded, so both
+      // limits could be walked past by moving the payload one field sideways.
+      const space = new Space(adapter, { maxRecordBytes: 1024 });
+      space.registerKind({ kind: "t", indexedPaths: [] });
+
+      const ok = await space.put({ kind: "t", body: { s: "x" }, clientMeta: { note: "y".repeat(200) } });
+      assert(ok.id, "ordinary claims are unaffected");
+
+      assertEquals(
+        await denied(() => space.put({ kind: "t", body: { s: "x" }, clientMeta: { blob: "y".repeat(2000) } })),
+        "record_too_large",
+        "an oversized clientMeta is refused like an oversized body",
+      );
+
+      // ONE budget, not one each: halves that each fit but together do not must still be refused,
+      // or the limit is defeated by splitting the payload across the two fields.
+      assertEquals(
+        await denied(() =>
+          space.put({ kind: "t", body: { s: "x".repeat(600) }, clientMeta: { m: "y".repeat(600) } })
+        ),
+        "record_too_large",
+        "body and clientMeta share the budget",
+      );
+
+      // NUL, both fields. A body's reason is storage (jsonb cannot hold U+0000); clientMeta's is
+      // the boundary — a caller cannot see why the neighbouring JSON field would accept it.
+      assertEquals(
+        await denied(() => space.put({ kind: "t", body: { s: "a\u0000b" } })),
+        "invalid_body",
+        "a NUL in a body is refused",
+      );
+      assertEquals(
+        await denied(() => space.put({ kind: "t", body: { s: "ok" }, clientMeta: { s: "a\u0000b" } })),
+        "invalid_body",
+        "…and in clientMeta too",
+      );
+      // The literal six-character text that SPELLS the escape is ordinary data and stays storable:
+      // the check matches a genuine escape (an even number of preceding backslashes), not the text.
+      const spelled = await space.put({ kind: "t", body: { s: "\\u0000" }, clientMeta: { s: "\\u0000" } });
+      assert(spelled.id, "the escape written out as text is not a NUL");
+    },
+  },
 ];

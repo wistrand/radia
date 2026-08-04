@@ -52,17 +52,28 @@ export async function buildRecord(
 
   const id = newUlid();
   const bodyJson = JSON.stringify(req.body ?? null);
+  // `clientMeta` takes the SAME two checks as the body, and for the same reason: it is
+  // client-supplied, persisted verbatim, returned on every read, and has no erasure path either.
+  // It was assigned unguarded, so both limits below could be walked straight past by moving the
+  // payload one field sideways.
+  const metaJson = req.clientMeta === undefined ? undefined : JSON.stringify(req.clientMeta);
   // U+0000 is valid in a JSON string and CANNOT be represented in Postgres `jsonb`. Postgres and
   // PGlite parse bodies into `body_jsonb` for predicate pushdown, so such a body is unstorable
   // there (and fails as a 500 from deep inside the driver) while SQLite accepts it. Rejected
   // here, in core, so every adapter agrees and the caller gets an answer, not an internal error.
   //
+  // `clientMeta` is stored as plain text, so that argument is the BODY's; it is refused here for
+  // the boundary's own sake. A client cannot see why one JSON field accepts what the neighbouring
+  // one rejects, the value lands in the same documents every reader parses, and the day
+  // `client_meta` becomes queryable it would already hold data the column cannot take.
+  //
   // The pattern matches a genuine NUL ESCAPE: an even number of preceding backslashes. The literal
   // six-character text that spells the escape serializes with a doubled backslash and stays storable.
-  if (NUL_ESCAPE.test(bodyJson)) {
+  const nulIn = NUL_ESCAPE.test(bodyJson) ? "body" : metaJson !== undefined && NUL_ESCAPE.test(metaJson) ? "clientMeta" : undefined;
+  if (nulIn) {
     throw new RadiaError(
       "invalid_body",
-      "record bodies may not contain U+0000 (NUL): valid JSON, but it has no representation in the storage layer's JSON type",
+      `record ${nulIn} may not contain U+0000 (NUL): valid JSON, but it has no representation in the storage layer's JSON type`,
     );
   }
   // SIZE. A body must stay queryable JSON: it is matched against, returned in pages, and re-sent in
@@ -76,13 +87,20 @@ export async function buildRecord(
   //
   // Measured in BYTES of the serialized JSON, not characters: what storage holds and what travels
   // on the wire is the encoded form, and a body of astral-plane characters is twice its length.
-  const bodyBytes = new TextEncoder().encode(bodyJson).length;
-  if (bodyBytes > ctx.maxRecordBytes) {
+  //
+  // ONE budget across body and `clientMeta`, not one each: two independent limits are a limit on
+  // neither, since the same payload passes by being split. What the erasure promise bounds is how
+  // much unerasable data one record can carry, and that is their sum.
+  const enc = new TextEncoder();
+  const bodyBytes = enc.encode(bodyJson).length;
+  const metaBytes = metaJson === undefined ? 0 : enc.encode(metaJson).length;
+  if (bodyBytes + metaBytes > ctx.maxRecordBytes) {
     throw new RadiaError(
       "record_too_large",
-      `record body is ${bodyBytes} bytes, over the ${ctx.maxRecordBytes} limit. A body this size is ` +
-        `a payload in the wrong place: store the bytes as an ARTIFACT and let the record carry ` +
-        `{digest, mediaType, size}. A body cannot be erased, and an artifact can.`,
+      `record is ${bodyBytes + metaBytes} bytes (body ${bodyBytes}, clientMeta ${metaBytes}), over the ` +
+        `${ctx.maxRecordBytes} limit. A record this size is a payload in the wrong place: store the ` +
+        `bytes as an ARTIFACT and let the record carry {digest, mediaType, size}. A body cannot be ` +
+        `erased, and an artifact can.`,
     );
   }
   const bodySha256 = await sha256Hex(bodyJson);

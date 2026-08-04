@@ -955,6 +955,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   scrollback (the chat example did) produces a link that looks permanent, fails later, and leaves
   a token in the user's history. Print the stable `/v0/artifacts/{id}` URL instead and let the
   viewer authenticate.
+- **A guard on one field of a pair is a guard on neither, and the budget is their SUM.**
+  `buildRecord` checked the body's size and its NUL and left `clientMeta` — equally
+  client-supplied, equally persisted, equally unerasable — untouched, so both limits were walked
+  past by moving the payload one field sideways. Both are covered now, and the size check shares
+  ONE budget rather than giving each field its own: two independent limits are defeated by
+  splitting. Note which half of the fix rests on what: the body's NUL rule is a storage fact
+  (`body_jsonb` cannot hold U+0000), while `client_meta` is plain text and refuses it for the
+  boundary's sake instead. Saying so beats implying a failure that does not exist today.
 - **An unenforced record-size limit is an ERASURE hole, not a performance note.** Nothing rejects a
   large body (verified: 4 MiB accepted, while the same bytes as an artifact hit a 32 MiB cap), and
   the erasure boundary is precisely "payloads are out of line, so they can be destroyed; bodies are

@@ -179,11 +179,15 @@ limits are not optional, and they belong at commit/registration. Three are enfor
   `too_deep` at compile.
 - **artifact bytes**, default 32 MiB: `SpaceContext.maxArtifactBytes` (`src/core/space.ts`),
   returned as `413 artifact_too_large` by `src/server/handlers/artifacts.ts`.
-- **record body bytes**, default 1 MiB: `SpaceContext.maxRecordBytes`, checked in `buildRecord`
-  where the serialized body first exists (so every write path passes through it, not just the
-  client one), returned as `413 record_too_large`. Measured on the SERIALIZED bytes, not on
-  character count, or a body of astral-plane characters would pass at twice its encoded size. The
-  artifact path has its own tighter, earlier guard: metadata fields cap at 256 characters each.
+- **record bytes**, default 1 MiB: `SpaceContext.maxRecordBytes`, checked in `buildRecord` where the
+  serialized form first exists (so every write path passes through it, not just the client one),
+  returned as `413 record_too_large`. Measured on the SERIALIZED bytes, not on character count, or a
+  body of astral-plane characters would pass at twice its encoded size. The budget covers the body
+  AND `clientMeta` TOGETHER: `clientMeta` is client-supplied, persisted verbatim and equally
+  unerasable, and it escaped the check entirely until 2026-08-04, so the limit was walked past by
+  moving the payload one field sideways. Two independent limits would be a limit on neither, for
+  the same reason. Both fields also refuse a U+0000. The artifact path has its own tighter, earlier
+  guard: metadata fields cap at 256 characters each.
 
 The gap between the record limit and the artifact limit is deliberate and is the signal: a body
 approaching artifact size is a payload in the wrong place.
@@ -193,12 +197,11 @@ Still to build, tracked as the unchecked M1 item "resource limits enforced" in
 predicate count · `$or` branch count · array cardinality · registered patterns per agent ·
 watches per run · slow-lane time and row-scan budgets · SSE buffer/backpressure limits.
 
-The gap with a live consumer is **record body size**: nothing rejects a large body, so the
+The gap with a live consumer WAS **record body size**: nothing rejected a large body, so the
 cross-cutting invariant that artifact bytes never travel inside a record (see
-[CLAUDE.md](../CLAUDE.md)) is today a convention the runtime does not enforce. Verified: a 4 MiB
-string in a body is accepted, while the same bytes as an artifact are capped at 32 MiB and would be
-rejected past it. A base64 payload in a body defeats matching, windowing and every size assumption
-downstream.
+[CLAUDE.md](../CLAUDE.md)) was a convention the runtime did not enforce. Verified at the time: a
+4 MiB string in a body was accepted, while the same bytes as an artifact are capped at 32 MiB. A
+base64 payload in a body defeats matching, windowing and every size assumption downstream.
 
 **It was also an ERASURE hole, which is the consequence nobody drew and the reason it was closed
 first.** The erasure boundary below is exactly this invariant: a payload is out of line, so it can
