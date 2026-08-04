@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Radia - agents claim work instead of being wired to each other</title>
+  <meta name="description" content="A content-routed coordination runtime for LLM agents. Agents post work to a shared space and claim it by describing what they handle. Every task, fact and result is a record you can authorize one at a time.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="shared.css">
+
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Radia - agents claim work instead of being wired to each other">
+  <meta property="og:description" content="A content-routed coordination runtime for LLM agents. Every task, fact and result is a record you can authorize one at a time.">
+  <meta name="twitter:card" content="summary">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="brand">radia</a>
+    <div class="links">
+      <a href="how-it-works.html">How it works</a>
+      <a href="authorization.html">Authorization</a>
+      <div class="dropdown">
+        <a class="dropdown-toggle">More &#9662;</a>
+        <div class="dropdown-menu"><div class="dropdown-menu-inner">
+          <a href="why.html">Why not X</a>
+          <a href="examples.html">Examples</a>
+          <a href="llms.txt">llms.txt</a>
+          <a href="https://github.com/wistrand/radia">GitHub</a>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<div class="hero">
+  <div class="container">
+    <h1>Agents claim work.<br>Nobody wires them together.</h1>
+    <p class="subtitle">
+      Agent frameworks wire agent A to call agent B. Radia replaces the wiring with a shared space:
+      agents post work, and whichever agent said it can handle that work claims it under a lease.
+      <strong>Start a worker and the system gains a capability, with no code change anywhere else.</strong>
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 760 260" role="img" aria-label="Three agents posting and claiming records through a shared space">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+          <marker id="arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#818cf8"/>
+          </marker>
+        </defs>
+
+        <!-- the space -->
+        <rect x="250" y="30" width="260" height="200" rx="8" class="box" stroke-dasharray="4 3"/>
+        <text x="380" y="52" text-anchor="middle" class="muted">the space</text>
+
+        <!-- records inside -->
+        <rect x="272" y="66" width="216" height="30" rx="4" fill="#1e1e24" stroke="#60a5fa"/>
+        <text x="284" y="85" class="label">job</text>
+        <text x="476" y="85" text-anchor="end" fill="#60a5fa" font-size="10">available</text>
+
+        <rect x="272" y="106" width="216" height="30" rx="4" fill="#1e1e24" stroke="#fbbf24"/>
+        <text x="284" y="125" class="label">task {op: "upper"}</text>
+        <text x="476" y="125" text-anchor="end" fill="#fbbf24" font-size="10">leased</text>
+
+        <rect x="272" y="146" width="216" height="30" rx="4" fill="#1e1e24" stroke="#60a5fa"/>
+        <text x="284" y="165" class="label">task {op: "reverse"}</text>
+        <text x="476" y="165" text-anchor="end" fill="#60a5fa" font-size="10">available</text>
+
+        <rect x="272" y="186" width="216" height="30" rx="4" fill="#1e1e24" stroke="#9ca3af"/>
+        <text x="284" y="205" class="label">result</text>
+        <text x="476" y="205" text-anchor="end" fill="#9ca3af" font-size="10">consumed</text>
+
+        <!-- producer -->
+        <rect x="20" y="60" width="150" height="46" rx="6" class="box"/>
+        <text x="95" y="82" text-anchor="middle" class="label">planner</text>
+        <text x="95" y="97" text-anchor="middle" class="muted">puts tasks</text>
+        <path d="M 176 83 L 244 83" class="flow" marker-end="url(#arrow)"/>
+
+        <!-- claimers -->
+        <rect x="590" y="96" width="150" height="52" rx="6" class="box" stroke="#818cf8"/>
+        <text x="665" y="118" text-anchor="middle" class="label">worker</text>
+        <text x="665" y="134" text-anchor="middle" class="muted">takes {op:"upper"}</text>
+        <path d="M 584 121 L 516 121" class="flow" stroke="#818cf8" marker-end="url(#arrow-accent)"/>
+
+        <rect x="590" y="160" width="150" height="52" rx="6" class="box"/>
+        <text x="665" y="182" text-anchor="middle" class="label">worker</text>
+        <text x="665" y="198" text-anchor="middle" class="muted">takes {op:"reverse"}</text>
+        <path d="M 584 185 L 516 185" class="flow" marker-end="url(#arrow)"/>
+
+        <text x="380" y="248" text-anchor="middle" class="muted">no routing table, no addresses</text>
+      </svg>
+      <figcaption>
+        The planner does not know a worker exists. A worker does not know who posted the task. Both
+        sides name a <em>shape of record</em>, and the runtime decides who gets what.
+      </figcaption>
+    </figure>
+
+    <div class="run-command">
+      <span class="prompt">$</span> deno task dev
+      <div class="run-note">Starts an embedded space and a web console on 127.0.0.1:7788. No database to install.</div>
+    </div>
+  </div>
+</div>
+
+<aside class="sidebar" id="sidebar">
+  <a href="#authorize">1. Authorize per record</a>
+  <a href="#shape">2. What a record is</a>
+  <a href="#start">3. Getting started</a>
+  <a href="#status">4. What is built</a>
+</aside>
+
+<section id="authorize">
+  <div class="container">
+    <h2>Every task is a record, so you can authorize one at a time</h2>
+    <p class="section-claim">May this payload reach this step?</p>
+    <p>
+      Durable execution engines dispatch by function name and treat payloads as opaque blobs. There
+      is nowhere in that model to ask whether a particular payload may reach a particular step. Radia
+      moves the question into the substrate: a grant scopes a principal to a kind and a pattern, and
+      the pattern matches the record's body.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">a grant, which is itself a record</div>
+      <pre><code>{ <span class="str">"principal"</span>: <span class="str">"agent:summarizer"</span>,
+  <span class="str">"kind"</span>: <span class="str">"document"</span>,
+  <span class="str">"operations"</span>: [<span class="str">"take"</span>, <span class="str">"query"</span>],
+  <span class="str">"pattern"</span>: { <span class="str">"classification"</span>: <span class="str">"public"</span> },
+  <span class="str">"scope"</span>: { <span class="str">"taint"</span>: [<span class="str">"net"</span>] } }</code></pre>
+    </div>
+
+    <p>
+      That agent may claim public documents and nothing else, and it may claim work whose lineage
+      touched the network but not work that touched the filesystem. The restriction is enforced
+      inside the claim transaction, so a worker cannot decline to apply it.
+    </p>
+    <p><a href="authorization.html">How authorization works &rarr;</a></p>
+  </div>
+</section>
+
+<section id="shape">
+  <div class="container">
+    <h2>A record has an immutable half and a mutable one</h2>
+    <p class="section-claim">Content never changes. Claim state does.</p>
+
+    <figure>
+      <svg viewBox="0 0 760 210" role="img" aria-label="A record split into an immutable content half and a mutable runtime envelope">
+        <rect x="20" y="30" width="340" height="160" rx="8" class="box" stroke="#818cf8"/>
+        <text x="40" y="55" class="label" font-weight="600">record</text>
+        <text x="340" y="55" text-anchor="end" class="muted">immutable after commit</text>
+        <line x1="20" y1="66" x2="360" y2="66" stroke="#2a2a31"/>
+        <text x="40" y="88" class="muted">id, kind</text>
+        <text x="40" y="110" class="muted">body (JSON, matched on)</text>
+        <text x="40" y="132" class="muted">body_sha256</text>
+        <text x="40" y="154" class="muted">parent_ids (lineage)</text>
+        <text x="40" y="176" class="muted">created_by, taint labels</text>
+
+        <rect x="400" y="30" width="340" height="160" rx="8" class="box" stroke="#fbbf24"/>
+        <text x="420" y="55" class="label" font-weight="600">runtime envelope</text>
+        <text x="720" y="55" text-anchor="end" class="muted">the only mutable part</text>
+        <line x1="400" y1="66" x2="740" y2="66" stroke="#2a2a31"/>
+        <text x="420" y="88" class="muted">state: available | leased | consumed</text>
+        <text x="420" y="110" class="muted">lease_id, lease_epoch (fencing)</text>
+        <text x="420" y="132" class="muted">leased_until, attempt</text>
+        <text x="420" y="154" class="muted">available_at (backoff)</text>
+        <text x="420" y="176" class="muted">effective_priority</text>
+      </svg>
+      <figcaption>
+        An update is a new record naming the old one as a parent, never a rewrite. That is what makes
+        lineage a query instead of an audit log you have to assemble.
+      </figcaption>
+    </figure>
+
+    <p>
+      Because results are records too, the answer one agent acks is matchable by the next. A fan-in
+      step never has to know which agents produced its inputs.
+    </p>
+    <p><a href="how-it-works.html">How it works &rarr;</a></p>
+  </div>
+</section>
+
+<section id="start">
+  <div class="container">
+    <h2>Getting started</h2>
+
+    <div class="code-block">
+      <div class="code-title">run a space, then talk to it</div>
+      <pre class="terminal"><code>$ deno task dev                     <span class="cmt"># embedded space + web console</span>
+$ radia put task '{"op":"upper","input":"hi"}'
+$ radia take task --lease 30 --json > claim.json
+$ radia ack - --result-kind result --result '{"out":"HI"}' &lt; claim.json</code></pre>
+    </div>
+
+    <p>
+      The CLI has no privileged path into the runtime. Every verb goes through the same public
+      <code>/v0</code> API an external client uses, so anything the CLI can do, your code can do.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">a worker, in full</div>
+      <pre><code><span class="kw">import</span> { agentLoop, RadiaClient } <span class="kw">from</span> <span class="str">"radia/sdk"</span>;
+
+<span class="kw">await</span> <span class="fn">agentLoop</span>(<span class="kw">new</span> <span class="fn">RadiaClient</span>(url, { token }), {
+  name: <span class="str">"upper"</span>,
+  patterns: [{ kind: <span class="str">"task"</span>, match: { op: <span class="str">"upper"</span> } }],
+  handle: (rec) =&gt; ({
+    kind: <span class="str">"result"</span>,
+    body: { out: rec.body.input.<span class="fn">toUpperCase</span>() },
+  }),
+});</code></pre>
+    </div>
+
+    <p class="explanation">
+      The loop supplies the fenced lease, the heartbeat, idempotency keys and at-least-once delivery.
+      Kill the process mid-task and the work becomes claimable again.
+    </p>
+  </div>
+</section>
+
+<section id="status">
+  <div class="container">
+    <h2>What is built</h2>
+    <p>
+      All of M0 plus a growing M1 slice, on three storage backends (embedded SQLite, embedded PGlite,
+      and real Postgres) behind a frozen wire contract that is checked against the router in both
+      directions.
+    </p>
+
+    <div class="cards">
+      <div class="card">
+        <h3>Coordination</h3>
+        <p>put, take, ack, nack, release, renew. Fenced leases, idempotency, dead-letter, SSE watches.</p>
+      </div>
+      <div class="card">
+        <h3>Authorization</h3>
+        <p>Kind- and pattern-scoped grants as records, run-token bootstrap chain, delegation context, taint labels.</p>
+      </div>
+      <div class="card">
+        <h3>Artifacts</h3>
+        <p>Content-addressed blobs, short-lived download capabilities, optional encryption, erasure by shredding.</p>
+      </div>
+      <div class="card">
+        <h3>Inspection</h3>
+        <p>Transactional event log, lineage and graph queries, mined flows, a tamper-evident hash chain.</p>
+      </div>
+    </div>
+
+    <div class="callout warn">
+      <strong>Not production ready, and there is no second user.</strong> Every audit package is
+      closed and no P0 or P1 is open; what remains is a low-severity batch. The npm and pip packaging
+      is built but unpublished, so today this runs from a checkout.
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    Radia is named for Radia Perlman, whose Spanning Tree Protocol showed independent nodes building
+    a shared structure with no central controller.
+    <br>
+    <a href="https://github.com/wistrand/radia">GitHub</a>
+  </div>
+</footer>
+
+<script src="shared.js"></script>
+</body>
+</html>

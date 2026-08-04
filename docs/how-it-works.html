@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>How Radia works</title>
+  <meta name="description" content="Records, patterns, fenced leases, the event log, and what the runtime guarantees.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="shared.css">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="brand">radia</a>
+    <div class="links">
+      <a href="how-it-works.html">How it works</a>
+      <a href="authorization.html">Authorization</a>
+      <div class="dropdown">
+        <a class="dropdown-toggle">More &#9662;</a>
+        <div class="dropdown-menu"><div class="dropdown-menu-inner">
+          <a href="why.html">Why not X</a>
+          <a href="examples.html">Examples</a>
+          <a href="llms.txt">llms.txt</a>
+          <a href="https://github.com/wistrand/radia">GitHub</a>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<aside class="sidebar" id="sidebar">
+  <a href="#records">1. Records</a>
+  <a href="#patterns">2. Patterns</a>
+  <a href="#claim">3. Claiming work</a>
+  <a href="#fencing">4. Fencing</a>
+  <a href="#lineage">5. Lineage</a>
+  <a href="#events">6. The event log</a>
+  <a href="#artifacts">7. Artifacts</a>
+  <a href="#storage">8. Storage</a>
+</aside>
+
+<div class="hero">
+  <div class="container">
+    <h1>How Radia works</h1>
+    <p class="subtitle">
+      Six ideas, and the whole runtime falls out of them: records are immutable, claim state is not,
+      patterns are data, a claim is a fenced lease, results are records too, and every mutation is in
+      the log before the caller hears about it.
+    </p>
+  </div>
+</div>
+
+<section id="records">
+  <div class="container">
+    <h2>1. Records</h2>
+    <p class="section-claim">Tasks, facts, requests and results are the same thing.</p>
+    <p>
+      A record is JSON with a kind. Nothing distinguishes a unit of work from a piece of knowledge
+      except whether anybody claims it, which is decided by the kind's declaration rather than by the
+      writer.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">POST /v0/records</div>
+      <pre><code>{ <span class="str">"kind"</span>: <span class="str">"task"</span>,
+  <span class="str">"body"</span>: { <span class="str">"op"</span>: <span class="str">"upper"</span>, <span class="str">"input"</span>: <span class="str">"hello"</span> },
+  <span class="str">"parentIds"</span>: [<span class="str">"01KZ6X7QXBSV7PS9A9WS8VT6EJ"</span>] }</code></pre>
+    </div>
+
+    <p>
+      The server assigns everything that carries authority: who created it, when, the content hash,
+      the classification labels, the delegation chain. A client submits claims about its work; the
+      runtime decides what those claims are worth. Fields like <code>confidence</code> are the
+      client's opinion, and <code>created_by</code> is not.
+    </p>
+
+    <div class="callout">
+      <strong>Immutable after commit.</strong> There is no update. A correction is a new record
+      naming the old one as a parent, so the history of a fact is a walk rather than a diff.
+    </div>
+  </div>
+</section>
+
+<section id="patterns">
+  <div class="container">
+    <h2>2. Patterns are data, never code</h2>
+    <p class="section-claim">A stored pattern can be inspected, authorized and refused.</p>
+    <p>
+      A worker says what it handles with the same JSON language a query uses:
+      equality, <code>$gt</code>, <code>$in</code>, <code>$exists</code>, <code>$any</code>,
+      <code>$or</code>. There is no <code>$regex</code>, no <code>$where</code>, no expression
+      evaluation, and there never will be. The tuple-space systems this descends from shipped code to
+      the server for flexible search; a decade of security experience since sides against that,
+      especially in a space shared by agents that do not trust each other.
+    </p>
+    <p>
+      Because a pattern is data, it can be stored and asked about. Workers publish what they listen
+      for, so <code>POST /v0/ops/dry-run</code> answers <em>who would receive this record</em> before
+      the record is written.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">the same shape, three uses</div>
+      <pre><code><span class="cmt">// claim work</span>
+{ kind: <span class="str">"task"</span>, match: { op: <span class="str">"upper"</span> } }
+
+<span class="cmt">// read facts</span>
+{ kind: <span class="str">"result"</span>, match: { score: { <span class="str">$gt</span>: 0.8 } } }
+
+<span class="cmt">// scope a grant</span>
+{ kind: <span class="str">"document"</span>, match: { classification: <span class="str">"public"</span> } }</code></pre>
+    </div>
+  </div>
+</section>
+
+<section id="claim">
+  <div class="container">
+    <h2>3. Claiming work</h2>
+    <p class="section-claim">One winner, a renewable hold, and the work comes back if you die.</p>
+
+    <figure>
+      <svg viewBox="0 0 760 250" role="img" aria-label="Record state transitions between available, leased, consumed and dead letter">
+        <defs>
+          <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+
+        <rect x="40" y="90" width="150" height="52" rx="6" class="box" stroke="#60a5fa"/>
+        <text x="115" y="113" text-anchor="middle" class="label">available</text>
+        <text x="115" y="130" text-anchor="middle" class="muted">claimable</text>
+
+        <rect x="300" y="90" width="150" height="52" rx="6" class="box" stroke="#fbbf24"/>
+        <text x="375" y="113" text-anchor="middle" class="label">leased</text>
+        <text x="375" y="130" text-anchor="middle" class="muted">one owner, fenced</text>
+
+        <rect x="565" y="30" width="150" height="52" rx="6" class="box" stroke="#9ca3af"/>
+        <text x="640" y="53" text-anchor="middle" class="label">consumed</text>
+        <text x="640" y="70" text-anchor="middle" class="muted">ack</text>
+
+        <rect x="565" y="160" width="150" height="52" rx="6" class="box" stroke="#f87171"/>
+        <text x="640" y="183" text-anchor="middle" class="label">dead_letter</text>
+        <text x="640" y="200" text-anchor="middle" class="muted">attempts exhausted</text>
+
+        <path d="M 196 116 L 294 116" class="flow" marker-end="url(#a2)"/>
+        <text x="245" y="108" text-anchor="middle" class="muted">take</text>
+
+        <path d="M 456 108 L 559 62" class="flow" marker-end="url(#a2)"/>
+        <text x="512" y="76" text-anchor="middle" class="muted">ack</text>
+
+        <path d="M 456 128 L 559 180" class="flow" marker-end="url(#a2)"/>
+        <text x="512" y="168" text-anchor="middle" class="muted">expire</text>
+
+        <path d="M 375 148 C 375 205, 115 205, 115 148" class="flow" marker-end="url(#a2)"/>
+        <text x="245" y="200" text-anchor="middle" class="muted">nack, release, or lease expiry</text>
+
+        <path d="M 640 96 L 640 154" class="flow" stroke-dasharray="3 3" marker-end="url(#a2)"/>
+        <text x="652" y="128" class="muted">requeue</text>
+      </svg>
+      <figcaption>
+        A lease has a deadline. Miss it and the record becomes claimable again, which is what makes a
+        crashed worker a non-event. Delivery is at-least-once, so anything with an external side
+        effect needs its own idempotency at the effect boundary.
+      </figcaption>
+    </figure>
+
+    <p>
+      Claiming is competitive. Several workers may match the same record; exactly one gets it, and
+      the loser is told so rather than handed a duplicate. Ranking is by priority, then by how long
+      the record has been eligible, then by id, so the order is deterministic and the same on every
+      storage backend.
+    </p>
+  </div>
+</section>
+
+<section id="fencing">
+  <div class="container">
+    <h2>4. Fencing, so a slow worker cannot overwrite a fast one</h2>
+    <p class="section-claim">At-least-once delivery means two processes can run the same task.</p>
+    <p>
+      A lease carries an epoch. When a lease expires and another worker claims the record, the epoch
+      increases. The original worker may still be running: it has no way to know its lease lapsed
+      until it tries to settle, and at that point the epoch it holds is stale and its write is
+      refused.
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 760 200" role="img" aria-label="A stale lease being refused by the fencing epoch">
+        <line x1="40" y1="60" x2="720" y2="60" stroke="#2a2a31"/>
+        <line x1="40" y1="140" x2="720" y2="140" stroke="#2a2a31"/>
+        <text x="40" y="44" class="muted">worker A</text>
+        <text x="40" y="176" class="muted">worker B</text>
+
+        <rect x="90" y="46" width="300" height="28" rx="4" fill="#1e1e24" stroke="#fbbf24"/>
+        <text x="240" y="65" text-anchor="middle" class="label" font-size="11">lease epoch 1</text>
+
+        <line x1="390" y1="36" x2="390" y2="164" stroke="#f87171" stroke-dasharray="4 3"/>
+        <text x="398" y="34" fill="#f87171" font-size="11">lease expires</text>
+
+        <rect x="390" y="126" width="240" height="28" rx="4" fill="#1e1e24" stroke="#fbbf24"/>
+        <text x="510" y="145" text-anchor="middle" class="label" font-size="11">lease epoch 2</text>
+
+        <path d="M 630 140 L 690 140" class="flow" stroke="#4ade80"/>
+        <text x="694" y="144" fill="#4ade80" font-size="11">ack ok</text>
+
+        <path d="M 470 60 L 560 60" class="flow" stroke="#f87171"/>
+        <text x="566" y="64" fill="#f87171" font-size="11">ack &rarr; lease_lost</text>
+
+        <text x="380" y="192" text-anchor="middle" class="muted">A keeps running until it observes the loss; its write never lands</text>
+      </svg>
+      <figcaption>
+        Physical execution overlaps. What the runtime guarantees is that at most one lease is valid
+        at a time, and the fence is checked inside the settle transaction.
+      </figcaption>
+    </figure>
+
+    <div class="callout">
+      <strong>Idempotency is checked before the fence.</strong> A retry of an operation that already
+      succeeded replays the stored response instead of reporting a lost lease. Reversing those two
+      checks turns a successful ack into a false failure, which is the kind of bug that only appears
+      under a network that drops a response.
+    </div>
+  </div>
+</section>
+
+<section id="lineage">
+  <div class="container">
+    <h2>5. Lineage is data, not a log</h2>
+    <p class="section-claim">Provenance is not authority, and the two are kept apart on purpose.</p>
+    <p>
+      Every record can name parents. That edge is causality: this result came from that task, this
+      fix was written after reading that failure. It is queryable in both directions, up through
+      ancestors and down through children, and it is what classification labels travel along.
+    </p>
+    <p>
+      What lineage never does is grant anything. Deriving a record from a privileged one gives the
+      deriver no authority. Authority travels on a separate chain that the runtime builds from the
+      lease that was actually claimed, so an agent cannot promote itself by naming a powerful parent.
+    </p>
+  </div>
+</section>
+
+<section id="events">
+  <div class="container">
+    <h2>6. The event log, and the chain over it</h2>
+    <p class="section-claim">Every mutation is in the log in the same transaction that performed it.</p>
+    <p>
+      Watches are served from the log, so a worker is woken rather than polling. The cursor is
+      gap-free even when transactions commit out of order, which matters the moment more than one
+      runtime instance shares a database.
+    </p>
+    <p>
+      Once an event is final, it is sealed into a hash chain. The hash covers the event and the
+      record's content hash, so editing a body directly is caught rather than leaving a chain that
+      still verifies. Each link is signed under a key that lives beside the database rather than in
+      it.
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 760 150" role="img" aria-label="Events sealed into a hash chain, with a watermark separating final events from recent ones">
+        <g>
+          <rect x="30" y="46" width="120" height="46" rx="5" class="box" stroke="#818cf8"/>
+          <text x="90" y="66" text-anchor="middle" class="label" font-size="11">put</text>
+          <text x="90" y="82" text-anchor="middle" class="muted">seal 0</text>
+
+          <rect x="176" y="46" width="120" height="46" rx="5" class="box" stroke="#818cf8"/>
+          <text x="236" y="66" text-anchor="middle" class="label" font-size="11">take</text>
+          <text x="236" y="82" text-anchor="middle" class="muted">seal 1</text>
+
+          <rect x="322" y="46" width="120" height="46" rx="5" class="box" stroke="#818cf8"/>
+          <text x="382" y="66" text-anchor="middle" class="label" font-size="11">ack</text>
+          <text x="382" y="82" text-anchor="middle" class="muted">seal 2</text>
+
+          <path d="M 152 69 L 174 69" class="flow" stroke="#818cf8"/>
+          <path d="M 298 69 L 320 69" class="flow" stroke="#818cf8"/>
+        </g>
+
+        <line x1="470" y1="20" x2="470" y2="120" stroke="#fbbf24" stroke-dasharray="4 3"/>
+        <text x="478" y="32" fill="#fbbf24" font-size="11">finality watermark</text>
+
+        <rect x="500" y="46" width="120" height="46" rx="5" class="box" stroke-dasharray="3 3"/>
+        <text x="560" y="66" text-anchor="middle" class="label" font-size="11">put</text>
+        <text x="560" y="82" text-anchor="middle" class="muted">not yet sealed</text>
+
+        <rect x="640" y="46" width="100" height="46" rx="5" class="box" stroke-dasharray="3 3"/>
+        <text x="690" y="72" text-anchor="middle" class="muted">…</text>
+
+        <text x="380" y="136" text-anchor="middle" class="muted">sealing follows the log; the hot path pays nothing</text>
+      </svg>
+      <figcaption>
+        A chain cannot be built at append time, because transactions commit out of order and two
+        concurrent appends would fork it. Serializing appends would put every write behind one lock.
+        So the chain follows behind, and the report says how far.
+      </figcaption>
+    </figure>
+
+    <div class="callout warn">
+      <strong>What a chain in the same database buys.</strong> It detects corruption, partial
+      restores, and edits by somebody who did not know to recompute. It does not, by itself, detect
+      an adversary with write access, because they can recompute every hash. The signature is what
+      closes that, and only for as long as the key is somewhere the database is not.
+    </div>
+  </div>
+</section>
+
+<section id="artifacts">
+  <div class="container">
+    <h2>7. Artifacts, and the one thing that can be erased</h2>
+    <p class="section-claim">Bytes never travel inside a record.</p>
+    <p>
+      An image, an audio clip or a generated file is stored content-addressed in a blob store, and
+      the record carries <code>{digest, mediaType, size}</code>. That keeps matching, paging and
+      every size assumption intact.
+    </p>
+    <p>
+      It also creates the one place where deletion is possible. Records are immutable, so a body can
+      never be erased; a payload is out of line, so it can be destroyed while the record, its id, its
+      lineage and the event log survive. Anything that may need erasing has to be an artifact,
+      whatever its size.
+    </p>
+    <p class="explanation">
+      This protects high-entropy payloads only. The plaintext hash stays in the record, so anyone
+      holding a candidate can confirm the content was there. A destroyed document is gone in every
+      practical sense; a destroyed password is merely unreadable.
+    </p>
+  </div>
+</section>
+
+<section id="storage">
+  <div class="container">
+    <h2>8. One runtime, three storage backends</h2>
+    <p class="section-claim">Embedded is never a semantically weaker cousin of Postgres.</p>
+    <table>
+      <tr><th>Backend</th><th>For</th><th>Notes</th></tr>
+      <tr><td>SQLite</td><td>local dev, tests</td><td>Built into the runtime. Single writer.</td></tr>
+      <tr><td>PGlite</td><td>local dev</td><td>Postgres in WASM. Same SQL as the real thing.</td></tr>
+      <tr><td>Postgres</td><td>several instances</td><td>The only one that genuinely contends for claims.</td></tr>
+    </table>
+    <p>
+      The same conformance suite runs against every one of them, in CI, including a live Postgres.
+      That is the only thing keeping the embedded backends honest, and two claim-path races were
+      found by the tests that only a real server can run.
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <a href="index.html">Home</a> &middot;
+    <a href="authorization.html">Authorization</a> &middot;
+    <a href="why.html">Why not X</a> &middot;
+    <a href="https://github.com/wistrand/radia">GitHub</a>
+  </div>
+</footer>
+
+<script src="shared.js"></script>
+</body>
+</html>

@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Why not Temporal, a broker, or a framework</title>
+  <meta name="description" content="Where Radia does and does not overlap with durable execution engines, message brokers, agent frameworks and DBOS.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="shared.css">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="brand">radia</a>
+    <div class="links">
+      <a href="how-it-works.html">How it works</a>
+      <a href="authorization.html">Authorization</a>
+      <div class="dropdown">
+        <a class="dropdown-toggle">More &#9662;</a>
+        <div class="dropdown-menu"><div class="dropdown-menu-inner">
+          <a href="why.html">Why not X</a>
+          <a href="examples.html">Examples</a>
+          <a href="llms.txt">llms.txt</a>
+          <a href="https://github.com/wistrand/radia">GitHub</a>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<aside class="sidebar" id="sidebar">
+  <a href="#gap">1. The gap, as subtraction</a>
+  <a href="#broker">2. Why not a broker</a>
+  <a href="#temporal">3. Why not Temporal</a>
+  <a href="#framework">4. Why not a framework</a>
+  <a href="#dbos">5. DBOS</a>
+  <a href="#evidence">6. The evidence</a>
+  <a href="#wager">7. The wager</a>
+</aside>
+
+<div class="hero">
+  <div class="container">
+    <h1>Why not X</h1>
+    <p class="subtitle">
+      Take the nearest system in each family and remove two cells, trust and routing.
+      <strong>What is left over is this.</strong> Three different families, the same two things
+      missing: routing that is stored data a policy can refuse, and authorization at the granularity
+      of one record.
+    </p>
+  </div>
+</div>
+
+<section id="gap">
+  <div class="container">
+    <h2>1. The gap, stated as a subtraction</h2>
+    <p class="section-claim">A feature conjunction is defensible by construction. This is not.</p>
+    <table>
+      <tr><th></th><th>Routing</th><th>Authorization</th><th>Results are</th></tr>
+      <tr>
+        <td><strong>Radia</strong></td>
+        <td>stored pattern, queryable</td>
+        <td>per record, by body</td>
+        <td>records others match</td>
+      </tr>
+      <tr>
+        <td>Temporal</td>
+        <td>function name on a queue</td>
+        <td>per namespace</td>
+        <td>opaque payloads in a history</td>
+      </tr>
+      <tr>
+        <td>NATS, RabbitMQ, Kafka</td>
+        <td>key the publisher chose</td>
+        <td>per topic or subject</td>
+        <td>messages, gone on ack</td>
+      </tr>
+      <tr>
+        <td>DBOS</td>
+        <td>function name</td>
+        <td>one trust domain</td>
+        <td>durable steps</td>
+      </tr>
+      <tr>
+        <td>LangGraph, CrewAI</td>
+        <td>edges in your code</td>
+        <td>none</td>
+        <td>values in a process</td>
+      </tr>
+    </table>
+    <p>
+      This is falsifiable in a way a six-way feature list is not. Fill those two cells in any row and
+      the claim is gone.
+    </p>
+  </div>
+</section>
+
+<section id="broker">
+  <div class="container">
+    <h2>2. Why not a broker with a topic exchange</h2>
+    <p class="section-claim">The first question, and it arrives before the Temporal one.</p>
+    <p>
+      Subject wildcards, headers exchanges, JMS selectors and Kafka with a stream processor all route
+      by content in some sense, all are deployed everywhere, and none of them lost. Four differences,
+      in the order they matter.
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 760 210" role="img" aria-label="A broker consumes a message on ack; Radia emits a successor record">
+        <text x="180" y="26" text-anchor="middle" class="muted">broker</text>
+        <rect x="40" y="44" width="110" height="40" rx="5" class="box"/>
+        <text x="95" y="69" text-anchor="middle" class="label" font-size="11">message</text>
+        <path d="M 156 64 L 200 64" class="flow"/>
+        <rect x="206" y="44" width="110" height="40" rx="5" class="box"/>
+        <text x="261" y="69" text-anchor="middle" class="label" font-size="11">consumer</text>
+        <path d="M 322 64 L 360 64" class="flow" stroke="#f87171"/>
+        <text x="366" y="68" fill="#f87171" font-size="11">gone</text>
+
+        <line x1="20" y1="106" x2="740" y2="106" stroke="#2a2a31" stroke-dasharray="3 3"/>
+
+        <text x="180" y="130" text-anchor="middle" class="muted">radia</text>
+        <rect x="40" y="148" width="110" height="40" rx="5" class="box" stroke="#60a5fa"/>
+        <text x="95" y="173" text-anchor="middle" class="label" font-size="11">task</text>
+        <path d="M 156 168 L 200 168" class="flow"/>
+        <rect x="206" y="148" width="110" height="40" rx="5" class="box" stroke="#fbbf24"/>
+        <text x="261" y="173" text-anchor="middle" class="label" font-size="11">worker</text>
+        <path d="M 322 168 L 366 168" class="flow" stroke="#818cf8"/>
+        <rect x="372" y="148" width="110" height="40" rx="5" class="box" stroke="#60a5fa"/>
+        <text x="427" y="173" text-anchor="middle" class="label" font-size="11">result</text>
+        <path d="M 488 168 L 532 168" class="flow" stroke="#818cf8"/>
+        <rect x="538" y="148" width="180" height="40" rx="5" class="box"/>
+        <text x="628" y="173" text-anchor="middle" class="label" font-size="11">whoever matches it next</text>
+      </svg>
+      <figcaption>
+        Nobody anticipates this one. A broker's ack destroys the message; an ack here emits a
+        successor that is itself matchable, which is what lets fan-in work without the aggregator
+        knowing its inputs.
+      </figcaption>
+    </figure>
+
+    <ul>
+      <li><strong>A subscription is not data.</strong> Bindings live in broker configuration, so you
+        cannot ask a broker who would receive a message before publishing it. Interests are records
+        here, and there is an endpoint that answers exactly that against a draft.</li>
+      <li><strong>An ACL scopes a namespace; a grant scopes a record.</strong> A topic ACL cannot
+        express "this agent may claim this payload but not that one".</li>
+      <li><strong>Competitive claiming with fencing.</strong> A queue gives at-most-one consumer. A
+        lease gives one winner, a renewable hold, and a fenced epoch, so a slow worker's late write
+        is refused rather than accepted after somebody else redid the work.</li>
+    </ul>
+
+    <p>
+      None of that makes a broker the wrong tool for transporting messages. It makes it the wrong
+      tool for a shared knowledge store that also has to authorize per payload. A bridge writing
+      records from a subject or a topic is a normal thing to build.
+    </p>
+  </div>
+</section>
+
+<section id="temporal">
+  <div class="container">
+    <h2>3. Why not Temporal</h2>
+    <p class="section-claim">Radia does not compete on durability, and a pitch that leads with it loses.</p>
+    <p>
+      Temporal is the incumbent for durable execution, with a decade of production hardening, many
+      language SDKs and a managed cloud. Any pitch that opens with durable resumable workflows
+      invites "so why not just use Temporal, which my platform team already runs", and that is a
+      comparison to lose. The models do not overlap in three places.
+    </p>
+    <ul>
+      <li><strong>Content routing versus addressed dispatch.</strong> Temporal invokes an activity by
+        type name on a named queue, so adding a capability edits the calling workflow. Its agent
+        story puts the routing choice inside the model, where it cannot be inspected or denied.</li>
+      <li><strong>Record-scoped authority versus namespace-scoped.</strong> Within a namespace a
+        workflow may touch any activity on its queues, and payloads are opaque with no per-record
+        classification.</li>
+      <li><strong>A data plane versus an execution log.</strong> Temporal caps payload and history
+        size and tells you to keep large data out. The history is an execution log, not a knowledge
+        store; "what does the system currently know about X" needs an external store.</li>
+    </ul>
+
+    <div class="callout">
+      <strong>Compose, do not compete.</strong> Temporal workflows whose activities are Radia
+      participants, or Radia as the exchange between workflows owned by teams that cannot edit each
+      other's code. The defensible sentence is "the classification and containment layer that
+      durable-execution engines do not have", never "a better Temporal".
+    </div>
+  </div>
+</section>
+
+<section id="framework">
+  <div class="container">
+    <h2>4. Why not an agent framework</h2>
+    <p class="section-claim">In a framework, the tool list is the program.</p>
+    <p>
+      LangGraph, CrewAI and AutoGen bind tools and agents as objects at construction. The graph is
+      code, so adding a capability is a deploy, and the whole arrangement lives in one process with
+      one set of credentials.
+    </p>
+    <p>
+      Here a worker publishes what it serves as a record. The agent watches those records and builds
+      its tool list from them, so starting a worker adds a tool with no change to the agent, its
+      prompt, or anything else. The chat example does this literally: its REPL contains no tool
+      table, no model name and no routing.
+    </p>
+    <p class="explanation">
+      The cost is real and worth saying. A tool call here is a database write, a claim and an ack,
+      against a function call in a framework. That buys lineage, attempts, classification and audit.
+      For a fast local tool nobody will ever audit, it is the wrong trade.
+    </p>
+  </div>
+</section>
+
+<section id="dbos">
+  <div class="container">
+    <h2>5. DBOS, the closest living relative</h2>
+    <p class="section-claim">The same three bets, and two cells of difference.</p>
+    <p>
+      DBOS makes the same wagers: Postgres as the sole arbiter, stateless processes over it, durable
+      facts at operation granularity rather than an event-sourced history. Its published numbers are
+      the best available evidence for this architecture's ceiling, and the bottleneck it hits is lock
+      contention at the head of a queue, which is the same wall as a single-winner claim gate and as
+      contended <code>take</code> in JavaSpaces thirty years ago.
+    </p>
+    <p>
+      The divergence is trust topology rather than performance. In DBOS every app process is a direct
+      Postgres client, one trust domain holding database credentials, and routing is static. Radia
+      inserts exactly one server to create a boundary between many mutually untrusting principals,
+      and pays an HTTP hop plus authorization per operation for it.
+    </p>
+    <div class="callout warn">
+      <strong>Do not read those numbers as headroom here.</strong> They come from a saturation test
+      on a tuned Postgres with app processes writing directly, while every operation here also
+      compiles a pattern, ranks candidates, authorizes and appends an event behind an HTTP hop. Same
+      wall, same shape, unknown distance from it.
+    </div>
+  </div>
+</section>
+
+<section id="evidence">
+  <div class="container">
+    <h2>6. The evidence, and its limit</h2>
+    <p class="section-claim">Two papers, neither run on Radia.</p>
+    <p>
+      Salemi et al. 2025 built a system where a central agent posts requests to a shared blackboard
+      and subordinate agents volunteer according to their capabilities, which removes the need for
+      the coordinator to know each agent's expertise. That is content-routed claiming by advertised
+      capability, tested independently: 13 to 57 percent relative gains in end-to-end success on
+      three data-discovery benchmarks, and up to 9 percent on data-discovery F1.
+    </p>
+    <p>
+      Han and Zhang 2025 report competitive performance at lower token cost, beating chain-of-thought
+      and static multi-agent baselines while cutting tokens.
+    </p>
+    <p>
+      Both are encouraging and workload-specific. Neither was run on this system, and there is no
+      internal benchmark yet. Until one exists, the differentiator rests on other people's
+      experiments on other people's systems.
+    </p>
+  </div>
+</section>
+
+<section id="wager">
+  <div class="container">
+    <h2>7. The wager, and what would settle it</h2>
+    <p class="section-claim">Choreography keeps losing because people think in narratives.</p>
+    <p>
+      Both ancestries here were technically sound and both lost to orchestration. Spring beat OSGi by
+      offering the service registry's benefits with the dynamism removed. Declarative Services
+      succeeded by hiding it. Temporal and DBOS thrive today on writing coordination as ordinary
+      imperative code with a call stack.
+    </p>
+    <p>
+      So the bet is specific: <strong>LLM agents may be the first population that does not carry the
+      handicap.</strong> An agent reads the capabilities present now, matches on what is in front of
+      it, and tolerates topology changing between turns. That is what OSGi asked of humans and mostly
+      did not get.
+    </p>
+    <p>
+      Two observations would falsify it: a second implementer who builds a routing table anyway, and
+      an application that needs another entry on the list of things an agent hardcoded when it should
+      have discovered them. That list already has four entries, all from this project's own chat
+      example, and all caught in review rather than by the substrate. They are authoring failures by
+      a human rather than an agent failing at runtime, so they do not settle it. However, a project
+      that treats other people's failures as a mortality table has to carry its own.
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <a href="index.html">Home</a> &middot;
+    <a href="how-it-works.html">How it works</a> &middot;
+    <a href="authorization.html">Authorization</a> &middot;
+    <a href="https://github.com/wistrand/radia">GitHub</a>
+  </div>
+</footer>
+
+<script src="shared.js"></script>
+</body>
+</html>

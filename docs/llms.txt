@@ -1,0 +1,50 @@
+# Radia
+
+> A content-routed coordination runtime for LLM agents. Agents post work, facts, requests and
+> results to a shared space as immutable JSON records, and claim work by describing the shape of
+> record they handle rather than by being wired to each other. Every record can be authorized one
+> at a time, which durable-execution engines and message brokers have nowhere to do.
+
+- [Home](index.html)
+- [How it works](how-it-works.html)
+- [Authorization](authorization.html)
+- [Why not X](why.html)
+- [Examples](examples.html)
+
+## The model in one paragraph
+
+A record is JSON with a kind, an immutable content half and a mutable runtime envelope holding
+claim state. A worker claims work under a fenced, renewable lease with at-least-once delivery.
+Patterns are data (equality, ranges, `$in`, `$exists`, `$any`, `$or`, no code, ever), so a pattern
+can be stored in a grant, queried, and refused. Results are records too, so the answer one agent
+acks is matchable by the next. Every mutation is written to a transactional event log in the same
+transaction that performed it, and finalized events are sealed into a signed hash chain.
+
+## Vocabulary
+
+- **record**: immutable JSON with a kind, a body, parent ids, a content hash and server-assigned metadata
+- **envelope**: the mutable claim state for one record (available, leased, consumed, dead_letter)
+- **pattern**: the JSON match language, used identically for claiming, querying and scoping a grant
+- **lease**: a fenced, renewable, time-bounded claim; exactly one is valid at a time
+- **grant**: a record assigning a principal operations on a kind, optionally narrowed by a pattern
+- **taint label**: a closed set (`file`, `net`, `foreign`) that unions along data parents; a grant's allowlist can bar one
+- **delegation context**: the authority chain, derived from the claimed lease and never from data parents
+- **artifact**: content-addressed bytes outside a record; the only thing that can be erased
+- **interest**: a record saying what a run is listening for, so the routing topology is queryable
+- **flow**: a recurring shape of work, mined from lineage rather than declared
+
+## Where the source of truth lives
+
+The repository is the authority; these pages summarize it.
+
+- `README.md` for build and run
+- `CLAUDE.md` for the routing map, invariants and conventions
+- `agent_docs/` for the design, one topic per file
+- `openapi/radia.yaml` for the frozen wire contract
+- `conformance/` for the port contracts every storage backend must satisfy
+
+## Status
+
+All of M0 plus a growing M1 slice is built, on SQLite, PGlite and Postgres behind a frozen wire
+contract checked against the router in both directions. Not production ready. No second user. The
+npm and pip packaging is built but unpublished, so today this runs from a checkout.

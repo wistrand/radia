@@ -246,6 +246,11 @@ process that owns all concurrency guarantees.
 For the full architecture, start with [CLAUDE.md](CLAUDE.md) and the design docs it
 links.
 
+The illustrated version of this is in [docs/](docs/), which is a static site meant for
+GitHub Pages: [how it works](docs/how-it-works.html), [authorization](docs/authorization.html),
+[why not X](docs/why.html), and the [examples](docs/examples.html). It summarizes the
+repository and is not the source of truth for any of it.
+
 ## License
 
 TBD.

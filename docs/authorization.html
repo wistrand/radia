@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Authorization in Radia</title>
+  <meta name="description" content="Grants as records, pattern scoping, the bootstrap chain, delegation, and classification labels a grant can bar.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="shared.css">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="brand">radia</a>
+    <div class="links">
+      <a href="how-it-works.html">How it works</a>
+      <a href="authorization.html">Authorization</a>
+      <div class="dropdown">
+        <a class="dropdown-toggle">More &#9662;</a>
+        <div class="dropdown-menu"><div class="dropdown-menu-inner">
+          <a href="why.html">Why not X</a>
+          <a href="examples.html">Examples</a>
+          <a href="llms.txt">llms.txt</a>
+          <a href="https://github.com/wistrand/radia">GitHub</a>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<aside class="sidebar" id="sidebar">
+  <a href="#why">1. Why here</a>
+  <a href="#grants">2. Grants are records</a>
+  <a href="#pattern">3. Pattern scoping</a>
+  <a href="#chain">4. The bootstrap chain</a>
+  <a href="#delegation">5. Delegation</a>
+  <a href="#taint">6. Classification labels</a>
+  <a href="#check">7. Checking it</a>
+  <a href="#limits">8. Known limits</a>
+</aside>
+
+<div class="hero">
+  <div class="container">
+    <h1>Authorization</h1>
+    <p class="subtitle">
+      When an LLM writes the plan, the routing decision moves inside the model, where you cannot
+      inspect it or deny it. <strong>Grants move it back out.</strong> An agent claims work by
+      matching a stored pattern, a grant scopes what it may claim, and the check runs inside the
+      claim transaction rather than in the agent.
+    </p>
+  </div>
+</div>
+
+<section id="why">
+  <div class="container">
+    <h2>1. Why this belongs in the substrate</h2>
+    <p class="section-claim">Two of nine tuple-space systems ever had access control.</p>
+    <p>
+      The COORDINATION 2016 survey benchmarked nine implementations of this idea. Two had any access
+      control at all. The lineage treated security as an optional feature, which is most of why it
+      stayed a research paradigm.
+    </p>
+    <p>
+      A shared space between agents that do not trust each other is exactly where that gap bites. An
+      agent's plan is written by a model, so "which worker gets this" is a decision no reviewer sees.
+      Putting the decision in records makes it inspectable before the fact and refusable during it.
+    </p>
+  </div>
+</section>
+
+<section id="grants">
+  <div class="container">
+    <h2>2. A grant is a record, not a config table</h2>
+    <p class="section-claim">Assigned, never self-declared.</p>
+    <p>
+      An operator writes a <code>grant</code> record; the runtime discovers it by query. Authorization
+      state gets the same immutability, event-log visibility and watchability as everything else, and
+      revoking is a successor record carrying <code>retired: true</code>, so the audit trail survives
+      the revocation.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">grant</div>
+      <pre><code>{ <span class="str">"principal"</span>: <span class="str">"agent:summarizer"</span>,
+  <span class="str">"kind"</span>: <span class="str">"document"</span>,
+  <span class="str">"operations"</span>: [<span class="str">"take"</span>, <span class="str">"query"</span>, <span class="str">"read_one"</span>] }</code></pre>
+    </div>
+
+    <p>
+      Grants are kind-scoped and never wildcard. A capability a worker <em>claims</em> to have is
+      descriptive; it authorizes nothing. The two are deliberately different records, because the
+      failure mode of conflating them is an agent that grants itself what it says it can do.
+    </p>
+  </div>
+</section>
+
+<section id="pattern">
+  <div class="container">
+    <h2>3. Pattern scoping: the grant is ANDed into the request</h2>
+    <p class="section-claim">Not a filter applied afterwards.</p>
+
+    <figure>
+      <svg viewBox="0 0 760 220" role="img" aria-label="A grant pattern intersected with a request pattern, yielding the records actually served">
+        <circle cx="290" cy="110" r="88" fill="#818cf8" fill-opacity="0.10" stroke="#818cf8"/>
+        <circle cx="410" cy="110" r="88" fill="#60a5fa" fill-opacity="0.10" stroke="#60a5fa"/>
+
+        <text x="215" y="40" text-anchor="middle" class="label" font-size="12">grant</text>
+        <text x="215" y="56" text-anchor="middle" class="muted">classification: public</text>
+
+        <text x="500" y="40" text-anchor="middle" class="label" font-size="12">request</text>
+        <text x="500" y="56" text-anchor="middle" class="muted">topic: finance</text>
+
+        <text x="350" y="106" text-anchor="middle" class="label" font-size="12">served</text>
+        <text x="350" y="124" text-anchor="middle" class="muted">both, always</text>
+
+        <text x="230" y="120" text-anchor="middle" class="muted" fill="#f87171">refused</text>
+        <text x="472" y="120" text-anchor="middle" class="muted" fill="#f87171">refused</text>
+
+        <text x="380" y="208" text-anchor="middle" class="muted">a read that returns nothing is a narrowed answer, and says so</text>
+      </svg>
+      <figcaption>
+        The response carries a <code>scope</code> field when a grant narrowed it. An empty result
+        under a scope means "nothing you may see", never "nothing exists", and the difference has to
+        be stated or it gets reported as fact.
+      </figcaption>
+    </figure>
+
+    <p>
+      Scoping works on writes too: a pattern-scoped <code>put</code> grant requires the record's body
+      to satisfy the pattern. And <code>scope: {createdBy: "self"}</code> restricts a principal to
+      its own records, which is how one person's session on a shared space cannot read another's.
+    </p>
+  </div>
+</section>
+
+<section id="chain">
+  <div class="container">
+    <h2>4. The bootstrap chain</h2>
+    <p class="section-claim">Short-lived run tokens, from a definition an operator wrote.</p>
+
+    <figure>
+      <svg viewBox="0 0 760 170" role="img" aria-label="Operator creates an agent definition, which mints short-lived run tokens">
+        <defs>
+          <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+
+        <rect x="20" y="58" width="150" height="52" rx="6" class="box" stroke="#818cf8"/>
+        <text x="95" y="80" text-anchor="middle" class="label" font-size="12">operator</text>
+        <text x="95" y="97" text-anchor="middle" class="muted">names the agent</text>
+
+        <rect x="245" y="58" width="180" height="52" rx="6" class="box"/>
+        <text x="335" y="80" text-anchor="middle" class="label" font-size="12">agent_definition</text>
+        <text x="335" y="97" text-anchor="middle" class="muted">+ its grants</text>
+
+        <rect x="500" y="20" width="180" height="46" rx="6" class="box" stroke="#fbbf24"/>
+        <text x="590" y="40" text-anchor="middle" class="label" font-size="12">agent_run</text>
+        <text x="590" y="56" text-anchor="middle" class="muted">token, ~15 min</text>
+
+        <rect x="500" y="100" width="180" height="46" rx="6" class="box" stroke="#fbbf24"/>
+        <text x="590" y="120" text-anchor="middle" class="label" font-size="12">agent_run</text>
+        <text x="590" y="136" text-anchor="middle" class="muted">token, ~15 min</text>
+
+        <path d="M 176 84 L 239 84" class="flow" marker-end="url(#a3)"/>
+        <path d="M 431 78 L 494 48" class="flow" marker-end="url(#a3)"/>
+        <path d="M 431 90 L 494 118" class="flow" marker-end="url(#a3)"/>
+
+        <text x="700" y="48" class="muted" fill="#f87171">stop</text>
+        <text x="700" y="128" class="muted">renew</text>
+      </svg>
+      <figcaption>
+        A run inherits its definition's grants and owns its leases. Revoking the definition kills
+        every future mint; stopping a run kills that run. The token hash is what is stored, so a
+        credential is never readable back out of the space.
+      </figcaption>
+    </figure>
+
+    <p>
+      A person gets a session through the same chain. <code>human:</code> is a namespace, not a
+      privilege: a logged-in person is an ordinary principal unless the space names them an operator.
+    </p>
+  </div>
+</section>
+
+<section id="delegation">
+  <div class="container">
+    <h2>5. Delegation is derived from the lease, never from parents</h2>
+    <p class="section-claim">Provenance is not authority.</p>
+    <p>
+      When a worker acks a result, the runtime records the authority chain the work flowed under,
+      built from the lease it actually claimed. Data parents contribute nothing to it. That
+      separation is what stops an agent from deriving a record from a privileged one and inheriting
+      its reach.
+    </p>
+  </div>
+</section>
+
+<section id="taint">
+  <div class="container">
+    <h2>6. Classification labels a grant can bar</h2>
+    <p class="section-claim">Three labels, all barriers, and clearing one needs privilege.</p>
+    <p>
+      Records carry labels drawn from a closed set: <code>file</code>, <code>net</code>,
+      <code>foreign</code>. They union along data parents, so a result computed from a file read
+      carries <code>file</code>. Raising a label is monotone, which means a client can add one
+      without being trusted and can never subtract one.
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 760 190" role="img" aria-label="A tainted record refused by a worker whose grant allows no labels">
+        <rect x="30" y="30" width="170" height="46" rx="6" class="box" stroke="#818cf8"/>
+        <text x="115" y="50" text-anchor="middle" class="label" font-size="12">read_file</text>
+        <text x="115" y="66" text-anchor="middle" class="muted">tool result</text>
+
+        <rect x="250" y="30" width="200" height="46" rx="6" class="box" stroke="#fbbf24"/>
+        <text x="350" y="50" text-anchor="middle" class="label" font-size="12">record</text>
+        <text x="350" y="66" text-anchor="middle" fill="#fbbf24" font-size="11">taint: ["file"]</text>
+
+        <path d="M 206 53 L 244 53" class="flow"/>
+
+        <rect x="520" y="18" width="210" height="52" rx="6" class="box" stroke="#f87171"/>
+        <text x="625" y="40" text-anchor="middle" class="label" font-size="12">publisher</text>
+        <text x="625" y="57" text-anchor="middle" class="muted">scope.taint: []</text>
+        <path d="M 456 47 L 514 40" class="flow" stroke="#f87171"/>
+        <text x="470" y="88" fill="#f87171" font-size="11">cannot claim it</text>
+
+        <rect x="520" y="106" width="210" height="52" rx="6" class="box" stroke="#4ade80"/>
+        <text x="625" y="128" text-anchor="middle" class="label" font-size="12">summarizer</text>
+        <text x="625" y="145" text-anchor="middle" class="muted">scope.taint: ["file"]</text>
+        <path d="M 456 60 L 514 128" class="flow" stroke="#4ade80"/>
+        <text x="470" y="150" fill="#4ade80" font-size="11">may claim it</text>
+      </svg>
+      <figcaption>
+        A grant's taint scope is an allowlist, so a label added to the set later is barred by every
+        grant that already exists. Failing closed is the only direction that is safe to be wrong in.
+      </figcaption>
+    </figure>
+
+    <p>
+      The barrier is applied inside the claim, not by the worker asking for it. A worker cannot
+      decline to be restricted, which is the difference between a control and a convention.
+    </p>
+    <p class="explanation">
+      This started as a single boolean and had to be replaced. Measured on a real conversation, after
+      one tool call every record carried the bit, so it barred nothing. A label exists only where a
+      lineage walk would be too slow to run, since provenance is already in the log.
+    </p>
+  </div>
+</section>
+
+<section id="check">
+  <div class="container">
+    <h2>7. Checking what a principal can actually do</h2>
+    <p class="section-claim">Every grant bug so far was a promise that did not match the enforcement.</p>
+
+    <div class="code-block">
+      <div class="code-title">the fold over a principal's grants, from the enforcement itself</div>
+      <pre class="terminal"><code>$ radia permissions agent:summarizer
+KIND       OPERATIONS          SCOPE
+document   take, query         classification=public
+result     put                 own records only</code></pre>
+    </div>
+
+    <p>
+      The same answer is available at <code>GET /v0/ops/permissions</code> and as a tool the chat
+      example's agent can call on itself. Any principal may read its own permissions, including one
+      with no grants at all: that is the caller most likely to need the answer, and gating it left an
+      agent unable to tell an approved grant from a pending one.
+    </p>
+  </div>
+</section>
+
+<section id="limits">
+  <div class="container">
+    <h2>8. Known limits</h2>
+    <p class="section-claim">Stated here because the design centre is the wrong place to be vague.</p>
+    <ul>
+      <li>
+        <strong>The embedded path bypasses grants.</strong> Authorization is enforced at the HTTP
+        boundary. A host that embeds the runtime and calls <code>put</code> in-process writes past
+        every grant. Real deployments should talk to the server.
+      </li>
+      <li>
+        <strong>No OIDC yet.</strong> Identity is the bootstrap chain and nothing else. Federated
+        identity and a hardened single-node deployment mode are both open.
+      </li>
+      <li>
+        <strong>No budgets.</strong> Per-principal spend limits and trust classification are
+        designed and unbuilt.
+      </li>
+      <li>
+        <strong>Record bodies are plaintext.</strong> They have to be, because the routing language
+        matches on them. Encryption at rest covers artifact bytes.
+      </li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <a href="index.html">Home</a> &middot;
+    <a href="how-it-works.html">How it works</a> &middot;
+    <a href="why.html">Why not X</a> &middot;
+    <a href="https://github.com/wistrand/radia">GitHub</a>
+  </div>
+</footer>
+
+<script src="shared.js"></script>
+</body>
+</html>
