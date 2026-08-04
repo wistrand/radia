@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Authorization in Radia</title>
-  <meta name="description" content="Grants as records, pattern scoping, the bootstrap chain, delegation, and classification labels a grant can bar.">
+  <meta name="description" content="Keeping a confidential document away from an agent that would send it to an external model, and why that check belongs in the substrate rather than in the agent.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
@@ -32,117 +32,145 @@
 </nav>
 
 <aside class="sidebar" id="sidebar">
-  <a href="#why">1. Why here</a>
-  <a href="#grants">2. Grants are records</a>
-  <a href="#pattern">3. Pattern scoping</a>
-  <a href="#chain">4. The bootstrap chain</a>
-  <a href="#delegation">5. Delegation</a>
-  <a href="#taint">6. Classification labels</a>
-  <a href="#check">7. Checking it</a>
-  <a href="#limits">8. Known limits</a>
+  <a href="#problem">The awkward document</a>
+  <a href="#grants">Where permission lives</a>
+  <a href="#pattern">Narrowing by contents</a>
+  <a href="#identity">Who a worker is</a>
+  <a href="#taint">Following data around</a>
+  <a href="#delegation">Acting for someone</a>
+  <a href="#check">Checking it</a>
+  <a href="#limits">What this does not do</a>
 </aside>
 
 <div class="hero">
   <div class="container">
-    <h1>Authorization</h1>
+    <h1>Keeping the confidential one out</h1>
     <p class="subtitle">
-      When an LLM writes the plan, the routing decision moves inside the model, where you cannot
-      inspect it or deny it. <strong>Grants move it back out.</strong> An agent claims work by
-      matching a stored pattern, a grant scopes what it may claim, and the check runs inside the
-      claim transaction rather than in the agent.
+      Your summarizer sends text to a model hosted by someone else. Most of your documents are fine.
+      Some are not, and you would like that to hold even after somebody writes a careless agent next
+      week. <strong>This page is about where that rule lives.</strong>
     </p>
   </div>
 </div>
 
-<section id="why">
+<section id="problem">
   <div class="container">
-    <h2>1. Why this belongs in the substrate</h2>
-    <p class="section-claim">Two of nine tuple-space systems ever had access control.</p>
+    <h2>The obvious place to put the rule is the wrong one</h2>
     <p>
-      The COORDINATION 2016 survey benchmarked nine implementations of this idea. Two had any access
-      control at all. The lineage treated security as an optional feature, which is most of why it
-      stayed a research paradigm.
+      The natural instinct is to put the check in the summarizer. Read the classification, and skip
+      anything confidential. It works, and it lasts until the day someone writes a second worker and
+      forgets, or the model decides to be helpful and calls a tool you did not expect it to.
     </p>
     <p>
-      A shared space between agents that do not trust each other is exactly where that gap bites. An
-      agent's plan is written by a model, so "which worker gets this" is a decision no reviewer sees.
-      Putting the decision in records makes it inspectable before the fact and refusable during it.
+      This is worse with agents than it is with ordinary software, because the decision about what to
+      do next is made by a model at runtime. A code reviewer can read a workflow and see which
+      service gets called. Nobody can read a model and see which document it will reach for.
+    </p>
+    <p>
+      So the rule goes somewhere the agent cannot reach. The document is a record sitting in the
+      space, the worker has to ask for it, and the asking is where the answer is decided.
     </p>
   </div>
 </section>
 
 <section id="grants">
   <div class="container">
-    <h2>2. A grant is a record, not a config table</h2>
-    <p class="section-claim">Assigned, never self-declared.</p>
+    <h2>Permission is a record, like everything else</h2>
     <p>
-      An operator writes a <code>grant</code> record; the runtime discovers it by query. Authorization
-      state gets the same immutability, event-log visibility and watchability as everything else, and
-      revoking is a successor record carrying <code>retired: true</code>, so the audit trail survives
-      the revocation.
+      You give an agent access by writing a grant. It says which principal may do what to which kind
+      of record, and it is stored in the space alongside the documents themselves.
     </p>
 
     <div class="code-block">
-      <div class="code-title">grant</div>
+      <div class="code-title">the summarizer may read and claim documents</div>
       <pre><code>{ <span class="str">"principal"</span>: <span class="str">"agent:summarizer"</span>,
   <span class="str">"kind"</span>: <span class="str">"document"</span>,
-  <span class="str">"operations"</span>: [<span class="str">"take"</span>, <span class="str">"query"</span>, <span class="str">"read_one"</span>] }</code></pre>
+  <span class="str">"operations"</span>: [<span class="str">"take"</span>, <span class="str">"query"</span>] }</code></pre>
     </div>
 
     <p>
-      Grants are kind-scoped and never wildcard. A capability a worker <em>claims</em> to have is
-      descriptive; it authorizes nothing. The two are deliberately different records, because the
-      failure mode of conflating them is an agent that grants itself what it says it can do.
+      Keeping this as a record rather than a configuration file has a few consequences that turn out
+      to matter. You can watch permissions change as they happen. You can ask what somebody could do
+      last month. And taking access away is not a deletion, it is a newer record saying the old one
+      no longer applies, so the trail of who granted what and when survives the revocation.
+    </p>
+    <p>
+      Grants are always given, never taken. A worker can announce what it is able to do, and that
+      announcement is how other agents discover it, but it grants nothing at all. Those are two
+      different records on purpose, because the alternative is an agent that authorizes itself by
+      claiming to be trustworthy.
     </p>
   </div>
 </section>
 
 <section id="pattern">
   <div class="container">
-    <h2>3. Pattern scoping: the grant is ANDed into the request</h2>
-    <p class="section-claim">Not a filter applied afterwards.</p>
+    <h2>Narrowing it down to the contents of the document</h2>
+    <p>
+      The grant above is too broad for our problem: it covers every document. Add a pattern and it
+      covers only the ones whose contents match.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">now it is only the public ones</div>
+      <pre><code>{ <span class="str">"principal"</span>: <span class="str">"agent:summarizer"</span>,
+  <span class="str">"kind"</span>: <span class="str">"document"</span>,
+  <span class="str">"operations"</span>: [<span class="str">"take"</span>, <span class="str">"query"</span>],
+  <span class="str">"pattern"</span>: { <span class="str">"classification"</span>: <span class="str">"public"</span> } }</code></pre>
+    </div>
+
+    <p>
+      When the summarizer asks for work, its request and its grant are combined, and it is served the
+      overlap. Ask for finance documents and you get public finance documents. Ask for confidential
+      ones and you get nothing at all, in exactly the way you would get nothing if none existed.
+    </p>
 
     <figure>
-      <svg viewBox="0 0 760 220" role="img" aria-label="A grant pattern intersected with a request pattern, yielding the records actually served">
+      <svg viewBox="0 0 760 220" role="img" aria-label="The grant and the request overlapping, with only the overlap served">
         <circle cx="290" cy="110" r="88" fill="#818cf8" fill-opacity="0.10" stroke="#818cf8"/>
         <circle cx="410" cy="110" r="88" fill="#60a5fa" fill-opacity="0.10" stroke="#60a5fa"/>
 
-        <text x="215" y="40" text-anchor="middle" class="label" font-size="12">grant</text>
-        <text x="215" y="56" text-anchor="middle" class="muted">classification: public</text>
+        <text x="215" y="40" text-anchor="middle" class="label" font-size="12">what it may see</text>
+        <text x="215" y="56" text-anchor="middle" class="muted">public documents</text>
 
-        <text x="500" y="40" text-anchor="middle" class="label" font-size="12">request</text>
-        <text x="500" y="56" text-anchor="middle" class="muted">topic: finance</text>
+        <text x="505" y="40" text-anchor="middle" class="label" font-size="12">what it asked for</text>
+        <text x="505" y="56" text-anchor="middle" class="muted">finance documents</text>
 
         <text x="350" y="106" text-anchor="middle" class="label" font-size="12">served</text>
-        <text x="350" y="124" text-anchor="middle" class="muted">both, always</text>
+        <text x="350" y="124" text-anchor="middle" class="muted">public and finance</text>
 
-        <text x="230" y="120" text-anchor="middle" class="muted" fill="#f87171">refused</text>
-        <text x="472" y="120" text-anchor="middle" class="muted" fill="#f87171">refused</text>
+        <text x="228" y="120" text-anchor="middle" class="muted">not asked for</text>
+        <text x="474" y="120" text-anchor="middle" class="muted" fill="#f87171">not allowed</text>
 
-        <text x="380" y="208" text-anchor="middle" class="muted">a read that returns nothing is a narrowed answer, and says so</text>
+        <text x="380" y="208" text-anchor="middle" class="muted">the answer says when a grant narrowed it, so empty is never mistaken for none exist</text>
       </svg>
       <figcaption>
-        The response carries a <code>scope</code> field when a grant narrowed it. An empty result
-        under a scope means "nothing you may see", never "nothing exists", and the difference has to
-        be stated or it gets reported as fact.
+        That last part matters more than it sounds. An agent that gets an empty result and reports
+        "there are no confidential documents" has said something false. So the response carries a
+        note when a permission narrowed it, and the agent can tell the two situations apart.
       </figcaption>
     </figure>
 
     <p>
-      Scoping works on writes too: a pattern-scoped <code>put</code> grant requires the record's body
-      to satisfy the pattern. And <code>scope: {createdBy: "self"}</code> restricts a principal to
-      its own records, which is how one person's session on a shared space cannot read another's.
+      The same narrowing works on writing. If a worker may only write records tagged with a
+      particular customer, a record tagged with a different one is refused at the door. And a common
+      case has its own shorthand: restrict an agent to records it created itself, which is how two
+      people sharing a space cannot read each other's conversations.
     </p>
   </div>
 </section>
 
-<section id="chain">
+<section id="identity">
   <div class="container">
-    <h2>4. The bootstrap chain</h2>
-    <p class="section-claim">Short-lived run tokens, from a definition an operator wrote.</p>
+    <h2>Who a worker is, and for how long</h2>
+    <p>
+      All of this needs the space to know who is asking. Workers do not carry long-lived passwords.
+      An operator defines an agent once, saying what it is called and what it may do. That definition
+      can then mint short-lived tokens, one per running process.
+    </p>
 
     <figure>
-      <svg viewBox="0 0 760 170" role="img" aria-label="Operator creates an agent definition, which mints short-lived run tokens">
+      <svg viewBox="0 0 760 170" role="img" aria-label="An operator defines an agent, and the definition mints short-lived tokens for each running process">
         <defs>
           <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
@@ -150,151 +178,169 @@
         </defs>
 
         <rect x="20" y="58" width="150" height="52" rx="6" class="box" stroke="#818cf8"/>
-        <text x="95" y="80" text-anchor="middle" class="label" font-size="12">operator</text>
-        <text x="95" y="97" text-anchor="middle" class="muted">names the agent</text>
+        <text x="95" y="80" text-anchor="middle" class="label" font-size="12">you</text>
+        <text x="95" y="97" text-anchor="middle" class="muted">define the agent</text>
 
         <rect x="245" y="58" width="180" height="52" rx="6" class="box"/>
-        <text x="335" y="80" text-anchor="middle" class="label" font-size="12">agent_definition</text>
-        <text x="335" y="97" text-anchor="middle" class="muted">+ its grants</text>
+        <text x="335" y="80" text-anchor="middle" class="label" font-size="12">agent:summarizer</text>
+        <text x="335" y="97" text-anchor="middle" class="muted">and its grants</text>
 
         <rect x="500" y="20" width="180" height="46" rx="6" class="box" stroke="#fbbf24"/>
-        <text x="590" y="40" text-anchor="middle" class="label" font-size="12">agent_run</text>
-        <text x="590" y="56" text-anchor="middle" class="muted">token, ~15 min</text>
+        <text x="590" y="40" text-anchor="middle" class="label" font-size="12">running process</text>
+        <text x="590" y="56" text-anchor="middle" class="muted">token, ~15 minutes</text>
 
         <rect x="500" y="100" width="180" height="46" rx="6" class="box" stroke="#fbbf24"/>
-        <text x="590" y="120" text-anchor="middle" class="label" font-size="12">agent_run</text>
-        <text x="590" y="136" text-anchor="middle" class="muted">token, ~15 min</text>
+        <text x="590" y="120" text-anchor="middle" class="label" font-size="12">running process</text>
+        <text x="590" y="136" text-anchor="middle" class="muted">token, ~15 minutes</text>
 
         <path d="M 176 84 L 239 84" class="flow" marker-end="url(#a3)"/>
         <path d="M 431 78 L 494 48" class="flow" marker-end="url(#a3)"/>
         <path d="M 431 90 L 494 118" class="flow" marker-end="url(#a3)"/>
-
-        <text x="700" y="48" class="muted" fill="#f87171">stop</text>
-        <text x="700" y="128" class="muted">renew</text>
       </svg>
       <figcaption>
-        A run inherits its definition's grants and owns its leases. Revoking the definition kills
-        every future mint; stopping a run kills that run. The token hash is what is stored, so a
-        credential is never readable back out of the space.
+        Each process renews its own token while it runs. Stop one process and only that one loses
+        access. Revoke the definition and no new process can start under that name again.
       </figcaption>
     </figure>
 
     <p>
-      A person gets a session through the same chain. <code>human:</code> is a namespace, not a
-      privilege: a logged-in person is an ordinary principal unless the space names them an operator.
-    </p>
-  </div>
-</section>
-
-<section id="delegation">
-  <div class="container">
-    <h2>5. Delegation is derived from the lease, never from parents</h2>
-    <p class="section-claim">Provenance is not authority.</p>
-    <p>
-      When a worker acks a result, the runtime records the authority chain the work flowed under,
-      built from the lease it actually claimed. Data parents contribute nothing to it. That
-      separation is what stops an agent from deriving a record from a privileged one and inheriting
-      its reach.
+      People get credentials the same way. Being a human is not a privilege here: a person logging in
+      is an ordinary principal with ordinary grants, unless the space has specifically been told they
+      are an operator.
     </p>
   </div>
 </section>
 
 <section id="taint">
   <div class="container">
-    <h2>6. Classification labels a grant can bar</h2>
-    <p class="section-claim">Three labels, all barriers, and clearing one needs privilege.</p>
+    <h2>Following data after it has moved</h2>
     <p>
-      Records carry labels drawn from a closed set: <code>file</code>, <code>net</code>,
-      <code>foreign</code>. They union along data parents, so a result computed from a file read
-      carries <code>file</code>. Raising a label is monotone, which means a client can add one
-      without being trusted and can never subtract one.
+      Blocking access to the confidential document handles the direct case. It does not handle the
+      indirect one, which is where these systems usually leak.
+    </p>
+    <p>
+      Suppose an agent is allowed to read local files. It reads one, and writes a record with what it
+      found. That record is now new, it is not marked confidential, and nothing stops it going
+      anywhere. The sensitive content has escaped by being copied.
+    </p>
+    <p>
+      So records carry labels that follow the data. There are three of them, and they mean "this came
+      from a file", "this came from the network", and "this came from outside". When a record is
+      derived from another, it inherits the labels of everything it was derived from. A summary of a
+      file read carries the file label whether or not anybody remembered to add it.
     </p>
 
     <figure>
-      <svg viewBox="0 0 760 190" role="img" aria-label="A tainted record refused by a worker whose grant allows no labels">
+      <svg viewBox="0 0 760 190" role="img" aria-label="A record carrying a file label, refused by one worker and accepted by another">
         <rect x="30" y="30" width="170" height="46" rx="6" class="box" stroke="#818cf8"/>
-        <text x="115" y="50" text-anchor="middle" class="label" font-size="12">read_file</text>
-        <text x="115" y="66" text-anchor="middle" class="muted">tool result</text>
+        <text x="115" y="50" text-anchor="middle" class="label" font-size="12">reads a file</text>
+        <text x="115" y="66" text-anchor="middle" class="muted">a worker</text>
 
         <rect x="250" y="30" width="200" height="46" rx="6" class="box" stroke="#fbbf24"/>
-        <text x="350" y="50" text-anchor="middle" class="label" font-size="12">record</text>
-        <text x="350" y="66" text-anchor="middle" fill="#fbbf24" font-size="11">taint: ["file"]</text>
+        <text x="350" y="50" text-anchor="middle" class="label" font-size="12">what it found</text>
+        <text x="350" y="66" text-anchor="middle" fill="#fbbf24" font-size="11">labelled: from a file</text>
 
         <path d="M 206 53 L 244 53" class="flow"/>
 
         <rect x="520" y="18" width="210" height="52" rx="6" class="box" stroke="#f87171"/>
-        <text x="625" y="40" text-anchor="middle" class="label" font-size="12">publisher</text>
-        <text x="625" y="57" text-anchor="middle" class="muted">scope.taint: []</text>
+        <text x="625" y="40" text-anchor="middle" class="label" font-size="12">posts to the web</text>
+        <text x="625" y="57" text-anchor="middle" class="muted">allowed: nothing</text>
         <path d="M 456 47 L 514 40" class="flow" stroke="#f87171"/>
-        <text x="470" y="88" fill="#f87171" font-size="11">cannot claim it</text>
+        <text x="466" y="88" fill="#f87171" font-size="11">never sees it</text>
 
         <rect x="520" y="106" width="210" height="52" rx="6" class="box" stroke="#4ade80"/>
-        <text x="625" y="128" text-anchor="middle" class="label" font-size="12">summarizer</text>
-        <text x="625" y="145" text-anchor="middle" class="muted">scope.taint: ["file"]</text>
+        <text x="625" y="128" text-anchor="middle" class="label" font-size="12">writes to the log</text>
+        <text x="625" y="145" text-anchor="middle" class="muted">allowed: from a file</text>
         <path d="M 456 60 L 514 128" class="flow" stroke="#4ade80"/>
-        <text x="470" y="150" fill="#4ade80" font-size="11">may claim it</text>
+        <text x="466" y="150" fill="#4ade80" font-size="11">may take it</text>
       </svg>
       <figcaption>
-        A grant's taint scope is an allowlist, so a label added to the set later is barred by every
-        grant that already exists. Failing closed is the only direction that is safe to be wrong in.
+        A grant lists which labels an agent tolerates. Anything carrying a label that is not on the
+        list is invisible to it, so the worker that can reach the internet never sees data that came
+        off your disk.
       </figcaption>
     </figure>
 
     <p>
-      The barrier is applied inside the claim, not by the worker asking for it. A worker cannot
-      decline to be restricted, which is the difference between a control and a convention.
+      Labels only ever get added. Any process can mark its own output as sensitive without being
+      trusted to do so, and no process can remove a mark. Clearing one takes an explicit,
+      privileged action, and it leaves a record of who cleared what.
     </p>
     <p class="explanation">
-      This started as a single boolean and had to be replaced. Measured on a real conversation, after
-      one tool call every record carried the bit, so it barred nothing. A label exists only where a
-      lineage walk would be too slow to run, since provenance is already in the log.
+      This started out as a single yes-or-no flag, and had to be replaced. On a real conversation,
+      after one tool call every single record was flagged, so the flag stopped meaning anything and
+      nothing ever refused work because of it. Three specific labels turned out to be useful where
+      one general one was not.
+    </p>
+  </div>
+</section>
+
+<section id="delegation">
+  <div class="container">
+    <h2>When one agent works on behalf of another</h2>
+    <p>
+      Work usually arrives in chains. Your summarizer produces a summary, which triggers a filing
+      step, which triggers a notification. It would be reasonable to assume the filing step inherits
+      its authority from the summary it is working on.
+    </p>
+    <p>
+      It does not, and the distinction is deliberate. Authority comes from the job the agent actually
+      claimed, not from the data it happens to be holding. Otherwise an agent could reach for
+      something powerful, name it as an input, and inherit its reach. Reading a document tells you
+      where information came from. It never tells you what the reader is allowed to do.
     </p>
   </div>
 </section>
 
 <section id="check">
   <div class="container">
-    <h2>7. Checking what a principal can actually do</h2>
-    <p class="section-claim">Every grant bug so far was a promise that did not match the enforcement.</p>
+    <h2>Finding out what an agent can actually do</h2>
+    <p>
+      Every permission problem in this project so far has been the same shape: what somebody believed
+      they had granted was not what was being enforced. So there is one command that answers the
+      question from the enforcement side, rather than by reading back the grants you wrote.
+    </p>
 
     <div class="code-block">
-      <div class="code-title">the fold over a principal's grants, from the enforcement itself</div>
+      <div class="code-title">what this agent can really do, right now</div>
       <pre class="terminal"><code>$ radia permissions agent:summarizer
 KIND       OPERATIONS          SCOPE
 document   take, query         classification=public
-result     put                 own records only</code></pre>
+summary    put                 own records only</code></pre>
     </div>
 
     <p>
-      The same answer is available at <code>GET /v0/ops/permissions</code> and as a tool the chat
-      example's agent can call on itself. Any principal may read its own permissions, including one
-      with no grants at all: that is the caller most likely to need the answer, and gating it left an
-      agent unable to tell an approved grant from a pending one.
+      Agents can ask this about themselves, which is more useful than it sounds. An agent that has
+      just been refused something can find out whether it is waiting on a human to approve a request
+      or whether the approval already happened and it should try again. Asking about anyone else
+      needs operator access.
     </p>
   </div>
 </section>
 
 <section id="limits">
   <div class="container">
-    <h2>8. Known limits</h2>
-    <p class="section-claim">Stated here because the design centre is the wrong place to be vague.</p>
+    <h2>What this does not do</h2>
+    <p>
+      Being vague here would defeat the purpose, so plainly:
+    </p>
     <ul>
       <li>
-        <strong>The embedded path bypasses grants.</strong> Authorization is enforced at the HTTP
-        boundary. A host that embeds the runtime and calls <code>put</code> in-process writes past
-        every grant. Real deployments should talk to the server.
+        The checks live in the server. If you embed the runtime in your own process and call it
+        directly rather than over HTTP, you are inside the boundary and nothing is enforced. Run the
+        server.
       </li>
       <li>
-        <strong>No OIDC yet.</strong> Identity is the bootstrap chain and nothing else. Federated
-        identity and a hardened single-node deployment mode are both open.
+        There is no single sign-on. Identity is the token chain described above and nothing else,
+        so wiring this to your company directory is work you would have to do.
       </li>
       <li>
-        <strong>No budgets.</strong> Per-principal spend limits and trust classification are
-        designed and unbuilt.
+        There are no spending limits. You cannot yet say an agent may burn ten dollars an hour and
+        no more.
       </li>
       <li>
-        <strong>Record bodies are plaintext.</strong> They have to be, because the routing language
-        matches on them. Encryption at rest covers artifact bytes.
+        The contents of a record are stored in the clear. They have to be, because that is what the
+        routing matches on. Large payloads stored outside the record can be encrypted.
       </li>
     </ul>
   </div>
