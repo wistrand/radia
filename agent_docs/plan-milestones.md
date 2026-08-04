@@ -127,7 +127,25 @@ crypto-shredding deletes a body while the event chain still verifies.
 **Verify:** scheduler baselines in [plan-validation.md](plan-validation.md) isolate the
 agenda's contribution; semantic matching runs in shadow mode before enforcement.
 
-## Open questions
+## Decided
 
-- Whether the M0 TypeScript-on-PGlite server is rewritten before or after M1 (the wire
-  contract is frozen either way).
+- **The M0 Deno + TypeScript kernel stays through M1. Revisit only on evidence** (2026-08-04,
+  closing an open question that had been hedging every other decision). Nothing measured argues for
+  a rewrite: a `put`+`take`+`ack` round trip is ~30ms against a model round of 1–10s, and every
+  speedup this project has had was algorithmic or SQL (claim-order index 19.5→0.8ms, Postgres
+  expression statistics 9.75→3.37ms p50, TCP_NODELAY 42→0.18ms per query), none of which a new
+  language would inherit. Pausing to rewrite also delays the first user, which is what the M2/M3
+  gates wait for.
+
+  **The option does not expire, and stays cheap.** A rewrite touches `src/core`, `src/server` and
+  `src/storage` only: the CLI and MCP adapter reach the space through the SDK exactly as an external
+  client does (`conformance/layering.test.ts` holds that line), so the surfaces, SDKs, extensions and
+  examples are clients of a frozen protocol either way. The conformance suite is the replacement's
+  executable specification, and it gets more valuable the longer this runs, not less.
+
+  **What would reopen it**, in descending order of likelihood: a requirement for PUSH-based
+  cross-instance wakeup, since deno-postgres exposes no asynchronous notification API and the
+  250ms poll in `src/core/notifier.ts` is the one place the runtime choice shows up in the DESIGN
+  rather than in a workaround; a measurement showing the substrate rather than the model is a real
+  bottleneck; or an upstream break in `node:sqlite`, which ships unstable. Preference is not
+  evidence — reopen this with a number or a requirement, not with an opinion about TypeScript.

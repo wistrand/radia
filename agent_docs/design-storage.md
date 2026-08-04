@@ -210,6 +210,12 @@ implementation can be rewritten behind the stable OpenAPI protocol later. See
 [plan-m0-implementation.md](plan-m0-implementation.md) for the runtime rationale and build
 plan.
 
+**That "later" was settled on 2026-08-04: the kernel stays through M1, and the question reopens only
+on evidence** — see [plan-milestones.md](plan-milestones.md) "Decided" for what counts as evidence
+(the leading candidate is a requirement for push-based cross-instance wakeup, which this runtime's
+Postgres driver cannot serve). A rewrite would touch `src/core`, `src/server` and `src/storage`
+only; every surface is a client of this contract.
+
 The `dev` command bundles the MCP adapter and inspector: the sharpest onboarding path is
 `npx radia dev`, one line in an MCP-capable harness config (e.g. Claude Code), and a real
 agent participating before any SDK code is written.
