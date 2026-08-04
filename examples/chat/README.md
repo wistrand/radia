@@ -43,7 +43,7 @@ outside world).
 ## Testing it without a model
 
 ```bash
-deno task chat-test              # all fourteen suites, ~60s
+deno task chat-test              # all fifteen suites, ~60s
 deno task chat-test longthread   # one by name
 ```
 
@@ -85,6 +85,7 @@ real assembly, with no API key:
 | `fleet` | model advertisements: publish, restart without growing the space, withdraw on shutdown, revive |
 | `input` | the REPL's stdin, which has no space and no model in it: the keystroke that went missing between a turn ending and the next prompt (two readers on one exclusive stream), type-ahead during a turn, and Escape versus an arrow key |
 | `capability` | tool advertisements, keyed by `(provider, tool)`: replicas of one worker collapse to one tool silently, two DIFFERENT tools under one name are reported as conflicted rather than silently taking each other over, and a provider's withdrawal leaves its peers' tools standing |
+| `vision` | reading a file: the accepted media types announced and enforced from ONE value, a PDF sent as a document part rather than an image, the artifact's own bytes reaching the provider (which is what proves the worker's read grant is really there), and four refusals answered without spending a request |
 
 The long thread is the one that pays for itself: bugs here come from the SHAPE of accumulated
 state, which is cheap to construct as records and nearly impossible to hit reliably by chatting.
@@ -107,7 +108,7 @@ flowchart TB
     I -->|"llm_chunk · llm_result"| SP
     I -.->|"escalate → next tier by rank"| SP
     SP -->|"take {tool_call, tool}"| T["tools<br/>agent:chat-tools<br/>sandboxed reads, no env"]
-    SP -->|"take {tool_call, generate_image}"| G["images<br/>agent:chat-images<br/>API key, no files"]
+    SP -->|"take {tool_call, generate_image · analyze_image}"| G["images<br/>agent:chat-images<br/>API key, no files"]
     SP -->|"take {tool_call, run_javascript · run_python · save_procedure · &lt;saved name&gt;}"| X["exec<br/>agent:chat-exec<br/>--allow-run, no key, no files"]
     X -->|"program on stdin"| SB["deno run -<br/>NO permissions at all"]
     SB -->|"stdout / stderr"| X
@@ -224,7 +225,8 @@ tree, numbered, byte for byte), `edit_workspace` (change a tree in place: edits 
 line range, plus adds and removes, as one version), `run_javascript` and
 `run_python` (sandboxed execution, optionally against a workspace),
 `save_procedure`/`read_procedure`
-(name a program and keep it; see below), and `generate_image`.
+(name a program and keep it; see below), `generate_image`, and `analyze_image` (read an image or a
+PDF that is already in the space).
 
 **Inspection tools** (`tools/space.ts`) make the chatbot a conversational inspector of its own
 space: `space_stats`, `space_kinds`, `space_query`, `space_count`, `space_record`, `space_lineage` (ancestors,
@@ -607,6 +609,25 @@ Four things worth knowing, all of which the provider forces:
   the inference-worker). Putting a key and outbound network into the sandboxed tool-worker would
   collapse the containment the example exists to demonstrate.
 
+**Reading one goes the other way, through the same worker** (`analyze_image`, `provider/vision.ts`).
+It takes an artifact id and a question, never a path or a URL: an id is the only handle, so the
+runtime's read grant decides whether the call is allowed instead of a string the model composed.
+Four things fall out of that:
+
+- **The accepted formats are announced and enforced from one value.** `RADIA_CHAT_VISION_TYPES`
+  builds the tool's description, drives the refusal, and lands on the `model` record as
+  `inputMediaTypes`, so "what can this space read?" is a query. A description that lists a format
+  the worker rejects teaches the model something false, and it only finds out by being refused.
+- **A PDF is a document, not a picture.** Gemini Flash takes it as native input, so pages arrive
+  with their layout rather than as extracted text. It travels as a `file` part with a filename (the
+  provider parses by filename); sending it as `image_url` type-checks and 400s.
+- **The answer inherits the file's labels.** The artifact is a data PARENT of the `tool_result`, so
+  `net` rides lineage into it. That is the honest claim about a paragraph derived from pixels a
+  stranger drew, and it needs no assertion from the worker.
+- **The grant shipped with the capability**: `artifact: read_one`, added to `IMAGE_GRANTS` in the
+  same change. Two earlier workers gained a capability whose grant did not follow, and both times
+  the suites stayed green while every real call answered `forbidden`.
+
 **Turn progress is a record, not a spinner** (`space/progress.ts`). Between putting an `llm_call` and
 the first streamed token, several workers act: the router claims and dispatches it, and an
 inference-worker claims the re-dispatched tiered call. None of it is visible to the client, because
@@ -682,7 +703,9 @@ Config: `OPENROUTER_API_KEY`, `RADIA_CHAT_TOKEN` (required; a `radia login` sess
 `RADIA_CHAT_API_BASE` (any OpenAI-compatible endpoint: a local stub for offline testing, or a
 self-hosted gateway), `RADIA_CHAT_WINDOW` (newest messages sent per turn; 0 = whole thread),
 `RADIA_CHAT_IMAGE_MODEL`, `RADIA_CHAT_IMAGE_SAFETY` (provider moderation passthrough,
-`CATEGORY:THRESHOLD,…`), `RADIA_CHAT_IMAGE_DIR` (save generated images locally), `RADIA_CHAT_EXEC_TIMEOUT_MS` (code
+`CATEGORY:THRESHOLD,…`), `RADIA_CHAT_IMAGE_DIR` (save generated images locally),
+`RADIA_CHAT_VISION_MODEL`, `RADIA_CHAT_VISION_TYPES` (what that model accepts, announced and
+enforced from this one value) and `RADIA_CHAT_VISION_MAX_BYTES`, `RADIA_CHAT_EXEC_TIMEOUT_MS` (code
 execution budget, default 5000), `RADIA_CHAT_EXEC_DIRS` (read-only roots for executed code;
 unset = no filesystem, and separate from `RADIA_CHAT_DIRS` on purpose), `RADIA_CHAT_DB` and
 `RADIA_CHAT_SCOPE` (below), `RADIA_DIR` (the runtime directory everything else defaults into).
@@ -728,7 +751,7 @@ Five areas. `chat.ts` opens with the same map.
 | `inference.ts` | one per tier (`--tier`/`--model`/`--rank`): claims `{llm_call, tier}`, streams `llm_chunk` + `llm_result`, windows the thread, intercepts `escalate` |
 | `router.ts` | claims UNTIERED `llm_call`s, classifies the turn, re-dispatches to a tier (`replyTo` keeps the result correlated) |
 | `tools.ts` | claims `tool_call` for every tool it serves; sandboxed permissions, no env |
-| `images.ts` | claims `tool_call{generate_image}` → image model → artifact → a reference |
+| `images.ts` | claims `tool_call{generate_image}` → image model → artifact → a reference; and `{analyze_image}` → artifact → vision model → an answer |
 | `exec.ts` | claims `tool_call{run_javascript}` and, where the jail probes clean, `tool_call{run_python}` → sandboxed subprocess → tainted result, optionally an artifact |
 
 **`tools/`: what those workers actually do**
@@ -762,3 +785,4 @@ may do what in a chat.
 |------|------|
 | `openrouter.ts` | streaming OpenAI-compatible chat completions (the sole API-key dependency) |
 | `imagegen.ts` | image generation on the same endpoint (`modalities:["image"]`) + the seven-shape response normalizer |
+| `vision.ts` | the reverse: one image or PDF as a content part, non-streamed. A picture is an `image_url` part; a PDF is a `file` part whose filename picks the provider's parser |

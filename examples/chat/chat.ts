@@ -32,6 +32,7 @@
 //
 //   provider/     the outside world
 //     openrouter.ts (chat completions) · imagegen.ts (image generation)
+//     vision.ts (reading an image or a PDF)
 //     context.ts (thread records → provider payload; pure, and where the context bugs live)
 
 import { RadiaClient } from "../../sdk/ts/client.ts";

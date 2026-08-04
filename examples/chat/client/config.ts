@@ -85,6 +85,19 @@ export const CLASSIFY_MODEL = Deno.env.get("RADIA_CHAT_CLASSIFY_MODEL") ?? "goog
  *  routing never dispatches a conversation turn to it. */
 export const IMAGE_MODEL = Deno.env.get("RADIA_CHAT_IMAGE_MODEL") ?? "google/gemini-2.5-flash-image";
 
+/** Reads images rather than drawing them: serves `analyze_image`. Also not a text tier. */
+export const VISION_MODEL = Deno.env.get("RADIA_CHAT_VISION_MODEL") ?? "google/gemini-2.5-flash-lite";
+
+/** What that model accepts as input, which is a property OF THE MODEL and therefore setup, not
+ *  behaviour. The worker announces this set in the tool's description, refuses anything outside it,
+ *  and puts it on the `model` record, so a swap to a model with a different set is one edit here and
+ *  the advertisement, the refusal and the description all follow. The default is Gemini's list,
+ *  which includes PDF: the Flash models take a document as native input rather than as extracted
+ *  text, so pages arrive with their layout intact. */
+export const VISION_MEDIA_TYPES = (Deno.env.get("RADIA_CHAT_VISION_TYPES") ??
+  "image/png,image/jpeg,image/webp,image/heic,image/heif,application/pdf")
+  .split(",").map((t) => t.trim()).filter(Boolean);
+
 /** How long a model-written program may run. Short on purpose: it is also the bound on how long a
  *  runaway allocation can hold host memory (extensions/ts/sandbox.ts explains why the heap flag is not enough). */
 export const EXEC_TIMEOUT_MS = Deno.env.get("RADIA_CHAT_EXEC_TIMEOUT_MS") ?? "5000";

@@ -76,14 +76,18 @@ const ROUTER_GRANTS: Grant[] = [
   { kind: "progress", operations: ["put"] }, // reports classifying + the tier it picked
 ];
 
-// image-worker: claims `tool_call{tool:generate_image}`, calls an image model, stores the bytes as
-// an ARTIFACT and acks a reference to it. Holds the API key (its own process, no file access), so
-// it needs egress. On the space, though, it can only do these five things.
+// image-worker: claims `tool_call{generate_image}` and `{analyze_image}`, calls an image model or a
+// vision model, and acks a reference or an answer. Holds the API key (its own process, no file
+// access), so it needs egress. On the space, though, it can only do these five things.
 const IMAGE_GRANTS: Grant[] = [
   { kind: "interest", operations: ["put", "query"] }, // agentLoop declares what this worker listens for
   { kind: "tool_call", operations: ["take"] },
   { kind: "tool_result", operations: ["put"] },
-  { kind: "artifact", operations: ["put"] }, // the bytes; the record carries only a reference
+  // `put` for the bytes it draws; `read_one` for the ones it reads back. The read arrived with
+  // `analyze_image` and is in this list as part of that change, not after it: a worker shipped with
+  // a capability whose grant was missing twice already (read_workspace, and the exec worker's
+  // `workspace: put`), and both times the contract suite stayed green while every real call 403'd.
+  { kind: "artifact", operations: ["put", "read_one"] },
   { kind: "capability", operations: ["put"] },
   { kind: "model", operations: ["put"] }, // advertises itself as modalities:["image"]
   { kind: "progress", operations: ["put"] },

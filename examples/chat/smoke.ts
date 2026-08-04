@@ -32,6 +32,7 @@ const SUITES = [
   { name: "fleet", file: "smoke-fleet.ts", about: "model advertisements the router discovers: publish, restart, withdraw, revive" },
   { name: "capability", file: "smoke-capability.ts", about: "tool advertisements: replicas of one worker versus two tools wearing one name, and withdrawal" },
   { name: "input", file: "smoke-input.ts", about: "the REPL's stdin: the keystroke that went missing between a turn and the next prompt, type-ahead, and Escape" },
+  { name: "vision", file: "smoke-vision.ts", about: "reading an image: the accepted formats announced and enforced from one value, and what is refused before a request is spent" },
 ];
 
 const wanted = Deno.args.filter((a) => !a.startsWith("-"));

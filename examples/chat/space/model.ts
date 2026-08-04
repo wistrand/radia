@@ -20,6 +20,10 @@ export interface ModelAd {
   model: string;
   rank: number;
   modalities?: string[];
+  /** What this model accepts as INPUT, for a tier whose answer depends on the format it is handed
+   *  (the vision tier). Advertised so the question is answerable by query, not only by reading a
+   *  tool description. */
+  inputMediaTypes?: string[];
   retired?: boolean;
 }
 
@@ -54,7 +58,8 @@ async function current(client: RadiaClient, tier: string): Promise<{ id: string;
 
 function same(a: ModelAd | undefined, b: ModelAd): boolean {
   return a !== undefined && !a.retired && a.model === b.model && a.rank === b.rank &&
-    JSON.stringify(a.modalities ?? null) === JSON.stringify(b.modalities ?? null);
+    JSON.stringify(a.modalities ?? null) === JSON.stringify(b.modalities ?? null) &&
+    JSON.stringify(a.inputMediaTypes ?? null) === JSON.stringify(b.inputMediaTypes ?? null);
 }
 
 /**
@@ -69,7 +74,8 @@ function same(a: ModelAd | undefined, b: ModelAd): boolean {
 export async function publishModel(client: RadiaClient, ad: ModelAd): Promise<void> {
   const now = await current(client, ad.tier);
   if (same(now?.ad, ad)) return;
-  let key = `model:${ad.tier}:${ad.model}:${ad.rank}:${(ad.modalities ?? []).join("+")}`;
+  let key = `model:${ad.tier}:${ad.model}:${ad.rank}:${(ad.modalities ?? []).join("+")}` +
+    `:${(ad.inputMediaTypes ?? []).join("+")}`;
   // REVIVING a retired tier needs a key that differs from the advertisement being revived, or the
   // write is an idempotent replay of that older record and the retirement stays newest: the tier
   // is withdrawn forever and the worker has no way to say otherwise. Keying on the retirement it

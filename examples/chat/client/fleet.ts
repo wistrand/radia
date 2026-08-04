@@ -19,7 +19,19 @@
 // Tokens travel as argv, which `ps` can see. Fine for a local demo, wrong for a deployment: a
 // real one would use a secret channel.
 
-import { CLASSIFY_MODEL, EXEC_TIMEOUT_MS, execRoots, IMAGE_MODEL, port, spaceDb, TIERS, toolRoots, url } from "./config.ts";
+import {
+  CLASSIFY_MODEL,
+  EXEC_TIMEOUT_MS,
+  execRoots,
+  IMAGE_MODEL,
+  port,
+  spaceDb,
+  TIERS,
+  toolRoots,
+  url,
+  VISION_MEDIA_TYPES,
+  VISION_MODEL,
+} from "./config.ts";
 import type { Bootstrapped } from "../space/roles.ts";
 
 const local = `http://127.0.0.1:${port}`;
@@ -81,8 +93,9 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
     "--classify-model", CLASSIFY_MODEL,
   ]));
 
-  // Images: same privilege shape as inference (key + egress, no files). Stores its output as an
-  // artifact and returns a reference.
+  // Images: same privilege shape as inference (key + egress, no files). Draws (storing its output as
+  // an artifact and returning a reference) and reads (fetching an artifact and asking a vision
+  // model). One process, because both halves want exactly the API key and the network and nothing else.
   procs.push(spawn([
     "--allow-net",
     "--allow-env",
@@ -90,6 +103,8 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
     "--url", url,
     "--token", imagesToken,
     "--model", IMAGE_MODEL,
+    "--vision-model", VISION_MODEL,
+    "--vision-types", VISION_MEDIA_TYPES.join(","),
   ]));
 
   // Tools: reads only the sandbox dirs, reaches only the local space, and gets NO env. Its space_*
