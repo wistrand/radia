@@ -23,7 +23,7 @@ flowchart LR
 ```
 
 ```bash
-deno task conformance                     # sqlite + pglite + the blob port   (475 tests, ~25s)
+deno task conformance                     # sqlite + pglite + the blob port   (508 tests, ~24s)
 scripts/pg-conformance.sh                 # + a live Postgres
 RADIA_PG_URL=postgres://… scripts/pg-conformance.sh   # against your own server
 ```
@@ -34,7 +34,7 @@ ephemeral range; an unrelated outbound connection holding it, even in TIME_WAIT,
 fail with a docker "address already in use" that reads like a stale container and is not one).
 
 Each Postgres test runs in its own ephemeral schema, dropped on close, so it is safe to point at a
-database you care about. The live-server run adds its own storage tests to the embedded 475 (**656
+database you care about. The live-server run adds its own storage tests to the embedded 508 (**698
 total**), and it is the only run that actually *contends* for claims, which is why a claim-path
 change needs it (see "Writing a suite" below). The two cases in `concurrency.test.ts` are ignored
 entirely without it.
@@ -61,7 +61,7 @@ Postgres run was manual, while CLAUDE.md's invariant said the suite runs on ever
 | `run.test.ts` | entry point: enumerates implementations, registers every suite against each |
 | `adapters.ts` | the implementations under test, and how each is isolated per test: SQLite gets a fresh `:memory:` database, PGlite and Postgres get an ephemeral schema on ONE shared server (see below) |
 | `harness.ts`  | the `Suite` / `BlobSuite` / `BlobCryptoSuite` types and setup/teardown |
-| `suites/`     | one file per behavior area (records, matching, **pushdown soundness**, **graph: children + lineage**, leases + claim fairness, idempotency, events, watches, faults, auth, taint, admin + selector-driven remediation, blobs + encryption) |
+| `suites/`     | one file per behavior area (records, matching, **pushdown soundness**, **graph: children + lineage**, leases + claim fairness, idempotency, events, **the integrity chain incl. direct-SQL tamper cases**, watches, faults, auth, taint, admin + selector-driven remediation, blobs + encryption) |
 | `http.test.ts` | the HTTP boundary, driving `makeHandler` directly: authentication and run renewal, the artifact inline/download allowlist and capability URLs, erasure (410 vs 404, shared payloads, forged shred markers), and a table of wrong-typed fields per endpoint |
 | `backfill.test.ts` | the schema's one migration: rebuilding `record_edges` for a database written before that table existed |
 | `planner.test.ts`  | Postgres planner statistics for declared body paths (`prepareKind`) |

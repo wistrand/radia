@@ -50,6 +50,29 @@ export type {
   Ulid,
 };
 
+/**
+ * One link of the tamper-evident event chain, written AFTER the event it covers is final.
+ *
+ * Sealing cannot happen at append time: `seq` is assigned on insert but transactions commit out of
+ * order, so two concurrent appends would read the same head and fork the chain. Serializing appends
+ * would put every put/take/ack behind one lock. So the chain is built by a sealer walking events
+ * that are already final, which costs the hot path nothing and makes the chain eventually
+ * consistent: an audit answers about SEALED history, and the report says how far that reaches.
+ */
+export interface EventSeal {
+  idx: number; // chain position, dense from 0
+  eventId: Ulid;
+  /** Where the sealed event sat in the log, so the next batch resumes exactly after it. */
+  cursor: string;
+  seq: number;
+  hash: string;
+  prevHash: string;
+  /** HMAC over `hash` under a key that does not live in this database. Absent when no key is
+   *  configured, and that absence is reported rather than hidden: an unsigned chain detects
+   *  corruption and naive edits, not an adversary who can rewrite rows. */
+  sig?: string;
+}
+
 /** Mutable claim-state envelope. One row per record. */
 export interface Envelope {
   recordId: Ulid;
@@ -322,6 +345,34 @@ export interface StorageAdapter {
   /** The current high-water cursor: a fresh watch's starting point, so only future events are
    *  delivered. Opaque; pass it back to getEvents. (M1) */
   latestCursor(): Promise<string>;
+
+  /**
+   * Events that are FINAL and not yet sealed, in chain order, after `(cursor, seq)`.
+   *
+   * Separate from `getEvents` for two reasons the chain cannot tolerate. It resumes on the pair
+   * rather than the cursor alone, because one transaction appends several events under one cursor
+   * and `xid > cursor` would step over the siblings; a watcher losing one drops a wakeup, a sealer
+   * losing one breaks the chain. And it never returns an event that might still be joined by an
+   * older in-flight transaction, since a chain cannot accept a late arrival: `getEvents`' watermark
+   * is what makes the order final rather than merely current. (M1)
+   */
+  sealableEvents(after: { cursor: string; seq: number } | null, limit: number): Promise<SpaceEvent[]>;
+
+  /** The last sealed link, or null on a space that has never been sealed. (M1) */
+  sealHead(): Promise<EventSeal | null>;
+
+  /**
+   * Append seal rows, contiguously from `sealHead().idx + 1`. Returns how many were written.
+   *
+   * A conflicting index is skipped rather than overwritten: two runtimes over one database may seal
+   * the same events concurrently, and they compute identical rows from identical input, so first
+   * writer wins and the loser learns it wrote nothing. Overwriting would let a second sealer replace
+   * a link, which is the one thing this table exists to make impossible. (M1)
+   */
+  appendSeals(seals: EventSeal[]): Promise<number>;
+
+  /** Seal rows after `afterIdx`, ascending, for verification. (M1) */
+  getSeals(afterIdx: number, limit: number): Promise<EventSeal[]>;
 
   // Kind declarations are NOT a storage concern: they are kind_def records, written via put()
   // and read via query() like any record (see core/space.ts loadKinds). No kinds table.

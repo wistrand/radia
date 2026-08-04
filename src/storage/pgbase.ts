@@ -13,6 +13,7 @@ import {
   type CompiledMatch,
   type Envelope,
   type EventInput,
+  type EventSeal,
   type IdempotencyKey,
   type KindStateCount,
   type LeaseRef,
@@ -38,6 +39,7 @@ import {
   rowToEnvelope,
   rowToEvent,
   rowToRecord,
+  rowToSeal,
   runtimeInsertValues,
 } from "./row.ts";
 import { firstByOrder, matchesRecord, orderRecords, pageRecords } from "../core/matching.ts";
@@ -188,7 +190,21 @@ create table if not exists events (
   record_id text,
   kind text,
   state text,
-  detail text
+  detail text,
+  body_sha256 text
+);
+
+-- The tamper-evident chain, one row per sealed event. A separate table on purpose: hash columns
+-- on the events table would mean UPDATE-ing the very table whose immutability is the thing being
+-- proved. Deleting an event AND its seal still breaks the next seal's prev_hash.
+create table if not exists event_seal (
+  idx bigint primary key,
+  event_id text not null,
+  cursor text not null,
+  seq bigint not null,
+  hash text not null,
+  prev_hash text not null,
+  sig text
 );
 
 -- migrations: columns added after the initial schema. No-ops on a database the CREATEs above
@@ -199,6 +215,10 @@ create table if not exists events (
 -- they sort before every later event, keeping their relative seq order, which is the
 -- correct history.
 alter table events add column if not exists xid xid8 not null default pg_current_xact_id();
+-- The events.body_sha256 column ties the chain to record CONTENT. Pre-existing rows get NULL,
+-- which is honest: those events were written before anything captured it, so a chain over them
+-- proves their order and not the bodies they refer to.
+alter table events add column if not exists body_sha256 text;
 -- records.body_jsonb is the parsed form of body_json, for predicate pushdown. GENERATED, so it
 -- cannot drift from the text the record actually committed with, and no write path has to know it
 -- exists. Without it every pushed predicate would re-parse the body text once per row per
@@ -419,6 +439,7 @@ export class PgSqlAdapter implements StorageAdapter {
         recordId: input.record.id,
         kind: input.record.kind,
         state: "available",
+        bodySha256: input.record.bodySha256,
         ...(input.event?.detail ? { detail: input.event.detail } : {}),
       }, input.envelope.availableAt);
       return { id: input.record.id, deduped: false };
@@ -884,9 +905,53 @@ export class PgSqlAdapter implements StorageAdapter {
 
   private async appendEvent(tx: Sql, e: EventInput, ts: string): Promise<void> {
     await tx.query(
-      "insert into events (id, ts, run_id, operation, record_id, kind, state, detail) values ($1,$2,$3,$4,$5,$6,$7,$8)",
-      [newUlid(), ts, e.runId, e.operation, e.recordId ?? null, e.kind ?? null, e.state ?? null, e.detail ? JSON.stringify(e.detail) : null],
+      "insert into events (id, ts, run_id, operation, record_id, kind, state, detail, body_sha256) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+      [newUlid(), ts, e.runId, e.operation, e.recordId ?? null, e.kind ?? null, e.state ?? null, e.detail ? JSON.stringify(e.detail) : null, e.bodySha256 ?? null],
     );
+  }
+
+  async sealableEvents(after: { cursor: string; seq: number } | null, limit: number): Promise<SpaceEvent[]> {
+    // The tuple comparison, not `xid > cursor`: one transaction appends several events under one
+    // xid, and stepping to the next xid would skip its siblings. The watermark is the same one
+    // `getEvents` uses, and it is what makes this order FINAL rather than merely current.
+    const res = await this.sql.query<RawRow>(
+      `select seq, xid::text as cursor, id, ts, run_id, operation, record_id, kind, state, detail, body_sha256
+       from events
+       where (xid > $1::text::xid8 or (xid = $1::text::xid8 and seq > $2))
+         and xid < pg_snapshot_xmin(pg_current_snapshot())
+       order by xid, seq asc limit $3`,
+      [after?.cursor ?? "0", after?.seq ?? 0, limit],
+    );
+    return res.rows.map(rowToEvent);
+  }
+
+  async sealHead(): Promise<EventSeal | null> {
+    const res = await this.sql.query<Record<string, unknown>>(
+      "select idx, event_id, cursor, seq, hash, prev_hash, sig from event_seal order by idx desc limit 1",
+    );
+    return res.rows.length ? rowToSeal(res.rows[0]) : null;
+  }
+
+  async appendSeals(seals: EventSeal[]): Promise<number> {
+    let written = 0;
+    for (const s of seals) {
+      const r = await this.sql.query(
+        `insert into event_seal (idx, event_id, cursor, seq, hash, prev_hash, sig)
+         values ($1,$2,$3,$4,$5,$6,$7) on conflict (idx) do nothing`,
+        [s.idx, s.eventId, s.cursor, s.seq, s.hash, s.prevHash, s.sig ?? null],
+      );
+      if (r.affectedRows === 0) break; // another sealer got there first; its links stand
+      written++;
+    }
+    return written;
+  }
+
+  async getSeals(afterIdx: number, limit: number): Promise<EventSeal[]> {
+    const res = await this.sql.query<Record<string, unknown>>(
+      "select idx, event_id, cursor, seq, hash, prev_hash, sig from event_seal where idx > $1 order by idx asc limit $2",
+      [afterIdx, limit],
+    );
+    return res.rows.map(rowToSeal);
   }
 
   private async fetchCandidates(

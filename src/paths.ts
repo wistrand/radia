@@ -49,6 +49,17 @@ export function defaultKekPath(): string {
 }
 
 /**
+ * Default event-chain signing key, when `--seal-key` is passed with no path.
+ *
+ * Beside the database, never inside it. That is the entire mechanism: a copied or restored database
+ * does not carry the key, so a chain rebuilt from it cannot be signed and the forgery shows up as a
+ * bad signature rather than as a chain that verifies perfectly.
+ */
+export function defaultSealPath(): string {
+  return join(radiaDir(), "seal.json");
+}
+
+/**
  * Create the directory a path will be written into.
  *
  * SQLite will not create a missing parent, and neither will the KEK writer: pointing `--db` at

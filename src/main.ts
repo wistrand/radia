@@ -9,19 +9,21 @@ import { PostgresAdapter } from "./storage/postgres.ts";
 import type { StorageAdapter } from "./storage/adapter.ts";
 import { FileBlobStore, MemoryBlobStore } from "./storage/blobs.ts";
 import { BlobCipher, loadKek } from "./storage/crypto.ts";
+import { loadSealKey } from "./core/seal.ts";
 import { Space } from "./core/space.ts";
 import { startServer } from "./server/http.ts";
 import { clearCredential, saveCredential } from "./credentials.ts";
 import { runCli } from "./surfaces/cli.ts";
 import { runMcp } from "./surfaces/mcp/server.ts";
 import { flag, optionalFlag } from "./flags.ts";
-import { defaultBlobDir, defaultDbPath, defaultKekPath, ensureParent, radiaDir } from "./paths.ts";
+import { defaultBlobDir, defaultDbPath, defaultKekPath, defaultSealPath, ensureParent, radiaDir } from "./paths.ts";
 import { args as argv, env, exit, onShutdown, UsageError } from "./platform.ts";
 
 const USAGE = `radia <command>
 
   dev [--port <n>] [--host <addr>] [--storage pglite|sqlite|postgres] [--db [path|url]]
-      [--blobs <dir>] [--blob-kek [file]] [--auth required|open] [--artifact-port <n>]
+      [--blobs <dir>] [--blob-kek [file]] [--seal-key [file]] [--auth required|open]
+      [--artifact-port <n>]
       Run an embedded space + web console. Everything it writes goes under ./.radia
       (RADIA_DIR moves it); bare --db and --blob-kek take their defaults from there.
   mcp [--url <base>]
@@ -102,6 +104,15 @@ async function dev(args: string[]): Promise<void> {
   // One line naming the whole on-disk footprint, so "where did this write?" never needs archaeology.
   if (dbPath || blobDir || kek) console.log(`radia dev: runtime dir=${radiaDir()}`);
   const space = new Space(storage, {}, blobs);
+  // The event chain is signed under a key that does NOT live in the database, which is the whole
+  // difference between "detects corruption" and "detects a rewrite": an attacker who can edit rows
+  // can recompute every hash, and cannot forge the seals over them. Same shape as the blob KEK, and
+  // ON by default for a persisted space, because a chain nobody enabled protects nothing.
+  const sealFlag = optionalFlag(args, "--seal-key");
+  const sealPath = sealFlag === "" ? defaultSealPath() : (sealFlag ?? (dbPath ? defaultSealPath() : undefined));
+  if (sealPath) ensureParent(sealPath);
+  space.sealKey = await loadSealKey({ env: env("RADIA_SEAL_KEY"), file: sealPath });
+  if (space.sealKey) console.log(`radia dev: event chain signed (key from ${space.sealKey.source})`);
   await space.loadKinds(); // restore persisted kind declarations
   const operatorToken = await space.mintOperatorToken(); // for the CLI, the MCP adapter and curl
   // Auto-provision: write the token where the CLI and MCP adapter look, so local tools present a

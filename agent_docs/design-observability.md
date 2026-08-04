@@ -19,8 +19,9 @@ stale-available records), and **remediation** (`adminTransition`,
 `POST /v0/ops/records/{id}/{reclaim|dead-letter|requeue}`) can act on them. The taint-clearing
 **declassify** (`POST /v0/ops/records/{id}/declassify`, operator-gated; see
 [design-auth.md](design-auth.md)) is the other operator action on this plane. All `/v0/ops/*` is
-grant-gated to operator principals (enforced). **Not
-implemented:** the hash-chained/anchored tamper-evident log (§9.1, M1–M2), envelope
+grant-gated to operator principals (enforced). The **hash-chained log is built** (M1: `src/core/seal.ts`, `GET /v0/ops/integrity`); external
+anchoring of checkpoints stays M2. **Not
+implemented:** envelope
 repeated-shape livelock detection (M3),
 re-execution tooling (M3), and the full orphan/starving-pattern analysis (M1; the current
 diagnostics use age/state heuristics, not pattern-match analysis).
@@ -161,11 +162,33 @@ flowchart TB
 
 1. **Content hashes everywhere (M0):** `body_sha256` on every record, over plaintext,
    already needed for artifacts, dedup, and no-progress detection; nearly free.
-2. **Tamper-evident event log (M1–M2):** each event embeds its predecessor's hash; the
-   runtime signs periodic checkpoints; checkpoints are anchored externally (secondary
-   store, transparency log, or a git repo). "History cannot be silently rewritten" for
-   the whole space at O(1) per event. The chain covers content *hashes*, not content, so
-   crypto-shredding deletes a body while the chain stays verifiable.
+2. **Tamper-evident event log (M1 BUILT; anchoring M2):** each event embeds its predecessor's
+   hash. The chain covers content *hashes*, not content, so crypto-shredding deletes a body while
+   the chain stays verifiable. Five things the build settled:
+
+   - **Sealing cannot happen at append time.** `seq` is assigned on insert but transactions commit
+     out of order, so two concurrent appends read the same head and FORK the chain. Serializing
+     appends would put every put/take/ack behind one lock, and the contention bench already caps the
+     claim path at a few hundred to a few thousand per second on ONE queue. So a sealer walks events
+     that are already final, reusing the finality watermark `getEvents` has for gap-free watch
+     delivery, and the chain is eventually consistent: `unsealed` says how far behind it is.
+   - **It resumes on `(cursor, seq)`, not the cursor.** One transaction appends several events under
+     one cursor, and `xid > cursor` steps over the siblings. A watcher losing one drops a wakeup; a
+     sealer losing one breaks the chain.
+   - **The chain must cover record CONTENT.** Events carried no content hash, so a chain over them
+     proved the order and left record bodies unprotected: editing one directly left a perfect chain.
+     The put event now carries `body_sha256`, in its own column rather than in `detail`, which is
+     caller-influenced.
+   - **A chain in the database it protects is not detection.** Anyone who can edit a row can
+     recompute every hash after it. What closes that is the SIGNATURE: each link is HMAC'd under a
+     key beside the database, so a rewriter can rebuild the chain and cannot sign it. An unsigned
+     chain still catches corruption and careless edits, and the report says which guarantee is in
+     force rather than letting "verified" mean two things.
+   - **A missing index is a deleted link.** Delete an event and its seal together and what remains
+     recomputes perfectly; the dense-index check is what catches the cover-up.
+
+   Sealing runs ON DEMAND (verification seals first), never on a timer: an idle space holds no
+   background work, the same rule `Notifier` and `sweepWatches` follow.
 3. **Signatures at trust boundaries only (federation-time):** export bundles and
    cross-space transfers are runtime-signed together with the checkpoint proving chain
    position. Agent-held keys (via workload identity, no static key at rest) only when

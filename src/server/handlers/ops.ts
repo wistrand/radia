@@ -288,6 +288,29 @@ export async function handleDryRun(space: Space, req: Request): Promise<Response
 }
 
 /**
+ * Recompute the event chain and report the first divergence.
+ *
+ * OPERATOR-ONLY by living on this plane, and the answer is deliberately shaped so it cannot be
+ * quoted as more than it is: `signed:false` means the chain detects corruption and naive edits but
+ * not a rewrite, since anyone who can edit a row can recompute the hashes after it.
+ */
+export async function handleIntegrity(space: Space): Promise<Response> {
+  const r = await space.verifyIntegrity();
+  return Response.json({
+    ...r,
+    ...(r.signed ? {} : {
+      note: "this chain is NOT signed, so it detects corruption and careless edits but not a " +
+        "deliberate rewrite: anyone who can write to the database can recompute every hash. " +
+        "Set RADIA_SEAL_KEY (or run with --seal-key) to anchor it under a key the database does not hold.",
+    }),
+    ...(r.unsealed > 0 ? {
+      unsealedNote: `${r.unsealed}+ events are committed but not yet sealed; sealing follows the ` +
+        "log's finality watermark, so the most recent activity is always outside the chain",
+    } : {}),
+  });
+}
+
+/**
  * Recurring shapes of work, mined from lineage: the workflow diagram nobody wrote.
  *
  * Both granularity knobs are query parameters because neither setting is knowable in advance, and

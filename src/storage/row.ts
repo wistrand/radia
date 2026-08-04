@@ -2,7 +2,7 @@
 // column contract can't drift between backends. SQL dialect (placeholders, types,
 // transactions) stays in each adapter; the value ordering and reconstruction live here.
 
-import type { Envelope, PutInput, RadiaRecord, SpaceEvent } from "./adapter.ts";
+import type { Envelope, EventSeal, PutInput, RadiaRecord, SpaceEvent } from "./adapter.ts";
 import { TAINT_UNKNOWN } from "../core/kinds.ts";
 
 export type RawRow = Record<string, unknown>;
@@ -21,6 +21,20 @@ export function rowToEvent(row: RawRow): SpaceEvent {
     kind: row.kind != null ? String(row.kind) : undefined,
     state: row.state != null ? String(row.state) as SpaceEvent["state"] : undefined,
     detail: row.detail != null ? JSON.parse(String(row.detail)) : undefined,
+    bodySha256: row.body_sha256 != null ? String(row.body_sha256) : undefined,
+  };
+}
+
+/** Shared by both dialects: the seal table has the same columns in both. */
+export function rowToSeal(row: Record<string, unknown>): EventSeal {
+  return {
+    idx: Number(row.idx),
+    eventId: String(row.event_id),
+    cursor: String(row.cursor),
+    seq: Number(row.seq),
+    hash: String(row.hash),
+    prevHash: String(row.prev_hash),
+    ...(row.sig != null ? { sig: String(row.sig) } : {}),
   };
 }
 

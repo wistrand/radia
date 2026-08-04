@@ -200,6 +200,21 @@ export class RadiaClient {
     return this.req("GET", "/v0/ops/digest");
   }
 
+  /** Recompute the event chain. `signed:false` means the chain detects corruption and careless
+   *  edits but not a deliberate rewrite, since whoever can write rows can recompute the hashes. */
+  integrity(): Promise<{
+    ok: boolean;
+    checked: number;
+    sealed: number;
+    unsealed: number;
+    signed: boolean;
+    head?: { idx: number; hash: string };
+    failure?: { idx: number; eventId: string; reason: string; detail: string };
+    note?: string;
+  }> {
+    return this.req("GET", "/v0/ops/integrity");
+  }
+
   /** Recurring shapes of work, mined from lineage. Nothing declares a topology here, so the shape
    *  is recovered from what happened; partial shapes are reported beside complete ones, since
    *  "starts often, rarely finishes" is the signal. */

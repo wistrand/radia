@@ -24,6 +24,7 @@ import {
   type PutInput,
   type PutResult,
   type EventInput,
+  type EventSeal,
   type RadiaRecord,
   type RenewResult,
   type SettleResult,
@@ -42,6 +43,7 @@ import {
   rowToEnvelope,
   rowToEvent,
   rowToRecord,
+  rowToSeal,
   runtimeInsertValues,
 } from "./row.ts";
 import { firstByOrder, matchesRecord, orderRecords, pageRecords } from "../core/matching.ts";
@@ -219,7 +221,19 @@ create table if not exists events (
   record_id text,
   kind text,
   state text,
-  detail text
+  detail text,
+  body_sha256 text
+);
+-- The tamper-evident chain, one row per sealed event. A separate table on purpose: hash columns
+-- on the events table would mean UPDATE-ing the very table whose immutability is the thing proved.
+create table if not exists event_seal (
+  idx integer primary key,
+  event_id text not null,
+  cursor text not null,
+  seq integer not null,
+  hash text not null,
+  prev_hash text not null,
+  sig text
 );
 -- One-time backfill of the reverse edge index for a database written by an older build. The
 -- guard makes this free on every later startup: on a populated table the NOT EXISTS short-circuits
@@ -276,6 +290,14 @@ export class SqliteAdapter implements StorageAdapter {
         .map((c) => c.name),
     );
     if (!cols.has("taint_labels")) this.#db!.exec("alter table records add column taint_labels text");
+    // The chain's tie to record CONTENT. A pre-existing row gets null, which is honest: it was
+    // written before anything captured the hash, so a chain over it proves its order and not the
+    // body it refers to.
+    const eventCols = new Set(
+      (this.#db!.prepare("select name from pragma_table_info('events')").all() as { name: string }[])
+        .map((c) => c.name),
+    );
+    if (!eventCols.has("body_sha256")) this.#db!.exec("alter table events add column body_sha256 text");
   }
 
   close(): Promise<void> {
@@ -303,6 +325,7 @@ export class SqliteAdapter implements StorageAdapter {
           recordId: input.record.id,
           kind: input.record.kind,
           state: "available",
+          bodySha256: input.record.bodySha256,
           ...(input.event?.detail ? { detail: input.event.detail } : {}),
         }, input.envelope.availableAt);
         return { id: input.record.id, deduped: false };
@@ -662,8 +685,58 @@ export class SqliteAdapter implements StorageAdapter {
 
   private appendEvent(e: EventInput, ts: string): void {
     this.db.prepare(
-      "insert into events (id, ts, run_id, operation, record_id, kind, state, detail) values (?,?,?,?,?,?,?,?)",
-    ).run(newUlid(), ts, e.runId, e.operation, e.recordId ?? null, e.kind ?? null, e.state ?? null, e.detail ? JSON.stringify(e.detail) : null);
+      "insert into events (id, ts, run_id, operation, record_id, kind, state, detail, body_sha256) values (?,?,?,?,?,?,?,?,?)",
+    ).run(
+      newUlid(),
+      ts,
+      e.runId,
+      e.operation,
+      e.recordId ?? null,
+      e.kind ?? null,
+      e.state ?? null,
+      e.detail ? JSON.stringify(e.detail) : null,
+      e.bodySha256 ?? null,
+    );
+  }
+
+  // ---- integrity chain (M1) ----
+  // One writer and one connection, so seq order IS commit order: no watermark, and the cursor is
+  // the seq. The tuple comparison degenerates to `seq > s`, which is why the same core sealer runs
+  // unchanged on both dialects.
+  sealableEvents(after: { cursor: string; seq: number } | null, limit: number): Promise<SpaceEvent[]> {
+    const rows = this.db.prepare(
+      `select seq, id, ts, run_id, operation, record_id, kind, state, detail, body_sha256
+         from events where seq > ? order by seq asc limit ?`,
+    ).all(after?.seq ?? 0, limit) as RawRow[];
+    return Promise.resolve(rows.map(rowToEvent));
+  }
+
+  sealHead(): Promise<EventSeal | null> {
+    const row = this.db.prepare(
+      "select idx, event_id, cursor, seq, hash, prev_hash, sig from event_seal order by idx desc limit 1",
+    ).get() as RawRow | undefined;
+    return Promise.resolve(row ? rowToSeal(row) : null);
+  }
+
+  appendSeals(seals: EventSeal[]): Promise<number> {
+    const stmt = this.db.prepare(
+      `insert into event_seal (idx, event_id, cursor, seq, hash, prev_hash, sig)
+       values (?,?,?,?,?,?,?) on conflict (idx) do nothing`,
+    );
+    let written = 0;
+    for (const s of seals) {
+      const r = stmt.run(s.idx, s.eventId, s.cursor, s.seq, s.hash, s.prevHash, s.sig ?? null);
+      if (Number(r.changes) === 0) break; // another sealer got there first; its links stand
+      written++;
+    }
+    return Promise.resolve(written);
+  }
+
+  getSeals(afterIdx: number, limit: number): Promise<EventSeal[]> {
+    const rows = this.db.prepare(
+      "select idx, event_id, cursor, seq, hash, prev_hash, sig from event_seal where idx > ? order by idx asc limit ?",
+    ).all(afterIdx, limit) as RawRow[];
+    return Promise.resolve(rows.map(rowToSeal));
   }
 
   /**

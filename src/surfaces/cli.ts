@@ -30,6 +30,7 @@ Inspect
   erasures [--undone]                 every shred, and whether its payload is still gone
   flows [--granularity kind|kind+agent] [--counts bucketed|exact] [--min <n>] [--hub-degree <n>]
                                       recurring shapes of work, mined from lineage
+  integrity                           verify the event chain; reports the FIRST divergence
   permissions <principal>             what that principal can actually do (the fold over its grants)
   login <principal> [--grant k:ops]… [--compact]  mint a session token for a person
                                       (--compact prints the token alone, for $(…) capture)
@@ -270,6 +271,23 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       });
     }
 
+    case "integrity": {
+      const r = await client.integrity();
+      return out(ctx, r, () => {
+        const lines = [
+          r.ok
+            ? `chain OK: ${r.checked} of ${r.sealed} links verified${r.signed ? ", signed" : ""}`
+            : `chain BROKEN at link ${r.failure?.idx}: ${r.failure?.reason} (${r.failure?.detail})`,
+        ];
+        if (r.head) lines.push(`head ${r.head.idx} ${r.head.hash.slice(0, 16)}…`);
+        if (r.unsealed > 0) lines.push(`${r.unsealed}+ events not yet sealed (sealing follows the finality watermark)`);
+        // Never let an unsigned chain be quoted as tamper-detection. It is not, and the difference
+        // is the entire value of the feature.
+        if (!r.signed) lines.push("UNSIGNED: detects corruption and careless edits, NOT a rewrite. Set RADIA_SEAL_KEY.");
+        return lines.join("\n");
+      });
+    }
+
     case "flows": {
       const granularity = flag(argv, "--granularity");
       const counts = flag(argv, "--counts");
@@ -315,6 +333,18 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         // FIRST among the findings when there is one, and worded as the security event it is. An
         // erasure that stopped holding outranks a stuck lease: somebody destroyed a payload and it
         // is readable again, and until this existed nothing in the system would ever have said so.
+        // Ahead of the operational findings, for the same reason the erasure line is: a broken
+        // chain means the history this report is computed FROM cannot be trusted, so a clean bill
+        // of health below it would be worse than no report.
+        const chain = d.integrity;
+        if (chain && !chain.ok) {
+          lines.push(
+            `EVENT CHAIN BROKEN at link ${chain.failure?.idx}: ${chain.failure?.reason} — ${chain.failure?.detail}`,
+          );
+          lines.push(`  radia integrity for the full report; the log below link ${chain.failure?.idx} is unverified`);
+        } else if (chain && !chain.signed && chain.sealed > 0) {
+          lines.push(`event chain: ${chain.sealed} links, UNSIGNED (detects corruption, not a rewrite; set RADIA_SEAL_KEY)`);
+        }
         const undone = d.undoneErasures;
         if (undone?.count) {
           lines.push(
@@ -340,6 +370,12 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           );
         }
         if (undone && !undone.complete) lines.push(`erasure scan INCOMPLETE after ${undone.checked} records: more may not hold`);
+        // Name the chain even when it is fine. An all-clear that silently omits a check it ran
+        // reads as a broader guarantee than it is, and this is the check whose absence nobody
+        // notices until it matters.
+        if (chain?.ok && chain.signed && chain.sealed > 0) {
+          lines.push(`event chain: ${chain.sealed} links verified, signed`);
+        }
         if (lines.length === 1) lines.push("no dead-letters, stuck leases, stale work, or undone erasures");
         return lines.join("\n");
       });
@@ -673,4 +709,5 @@ interface Diagnostics {
   stuckLeases?: { count: number };
   staleAvailable?: { count: number };
   undoneErasures?: { count: number; checked: number; complete: boolean; sample: unknown[] };
+  integrity?: { ok: boolean; sealed: number; signed: boolean; failure?: { idx: number; reason: string; detail: string } };
 }

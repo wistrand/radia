@@ -17,7 +17,7 @@ import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
 import { handleCreateDefinition, handleCreateRun, handleRenewRun, handleRevokeDefinition, handleStopRun } from "./handlers/agents.ts";
 import { handleGetArtifact, handleMintCapability, handleMintPathCapability, handlePutArtifact, handleShredArtifact } from "./handlers/artifacts.ts";
-import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleErasures, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleFlows, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
+import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleErasures, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleFlows, handleIntegrity, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem, statusFor } from "./problem.ts";
 import { RadiaError } from "../core/errors.ts";
@@ -365,6 +365,9 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     // Mined shapes. Self-scoped for the same reason `stats` is: the scan runs over the records the
     // caller may read, so a narrowed caller mines its own work rather than being refused.
     if (route === "GET /v0/ops/flows") return await handleFlows(space, url, opsScope);
+    // Integrity is NOT in READ_ONLY_OPS: the chain covers every principal's activity, so it is an
+    // operator answer even though it is a read, exactly like the dry-run matcher.
+    if (route === "GET /v0/ops/integrity") return await handleIntegrity(space);
 
     // --- observability + control plane: /v0/ops/records/{id}[/{envelope|lineage|graph}|/{reclaim|dead-letter|requeue}] ---
     if (url.pathname.startsWith("/v0/ops/records/")) {

@@ -59,6 +59,8 @@ import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
 import { activeSet, grantKey, isRetired, readRegistry, type RegistryView } from "./registry.ts";
 import { Notifier } from "./notifier.ts";
+import { chainedEvent, type IntegrityReport, linkEvents, SEAL_BATCH, type SealKey } from "./seal.ts";
+import { CHAIN_GENESIS, eventHash } from "../../sdk/ts/wire.ts";
 
 export interface SpaceContext {
   principal: string;
@@ -221,6 +223,10 @@ export interface Diagnostics {
    *  scoped caller rather than zero, because a confident `0` about something the caller cannot see
    *  is the "empty scoped answer reads as empty space" failure this file already guards elsewhere. */
   undoneErasures?: { count: number; checked: number; complete: boolean; sample: unknown[] };
+  /** The event chain's verdict. ABSENT for a scoped caller, like `undoneErasures` and for the same
+   *  reason: the chain covers everyone's activity, so a scoped `ok:true` would be reassurance
+   *  about records the caller cannot see. */
+  integrity?: IntegrityReport;
 }
 
 /** One shred, and whether it still means anything. */
@@ -2234,6 +2240,10 @@ export class Space {
     };
   }
 
+  /** Signs each chain link under a key held OUTSIDE the database. Absent means the chain detects
+   *  corruption and naive edits but not a rewrite, and `verifyIntegrity` reports which it is. */
+  sealKey?: SealKey;
+
   /** Public base URL of the isolated artifact origin, when one is running. Capability URLs are
    *  built against it so a browser opens artifact bytes somewhere that shares no origin with the
    *  console. Empty means artifacts are served only from the main origin, as downloads. */
@@ -2871,6 +2881,10 @@ export class Space {
       // In the health report because a reversed erasure is the most consequential thing this can
       // find, and nothing else was ever going to surface it.
       ...(undone ? { undoneErasures: undone } : {}),
+      // Same reasoning: a broken chain is not something anyone thinks to ask about until it
+      // matters, and a health report that omits it says the space is fine when it cannot know.
+      // Operator-only, because the chain covers every principal's activity.
+      ...(scope ? {} : { integrity: await this.verifyIntegrity() }),
     };
   }
 
@@ -2895,6 +2909,105 @@ export class Space {
    * misleading one ("this record is erased"), and to put it where an operator asks rather than on
    * the read path, which costs one `stat` per shred instead of a query per artifact read.
    *
+   * Extend the event chain over everything that has become final since the last pass.
+   *
+   * ON DEMAND, never on a timer: an idle space should hold no background work, the same lesson
+   * `Notifier` and `sweepWatches` learned. Verification seals first, so the answer covers
+   * everything sealable at the moment it is asked rather than whatever a timer last got to.
+   *
+   * Idempotent and safe to run concurrently with another instance: seals are content-derived, so
+   * two sealers over one database compute identical rows, and the loser's insert is skipped rather
+   * than overwriting a link.
+   */
+  async sealEvents(limit = SEAL_BATCH): Promise<{ sealed: number; head?: { idx: number; hash: string } }> {
+    let head = await this.storage.sealHead();
+    let sealed = 0;
+    for (;;) {
+      const after = head ? { cursor: head.cursor, seq: head.seq } : null;
+      const events = await this.storage.sealableEvents(after, Math.min(limit - sealed, SEAL_BATCH));
+      if (events.length === 0) break;
+      const links = await linkEvents(head, events, this.sealKey);
+      const written = await this.storage.appendSeals(links);
+      sealed += written;
+      // A short write means another sealer claimed those positions. Re-read the head and continue
+      // from wherever the chain actually reached, rather than assuming this process's view.
+      head = await this.storage.sealHead();
+      if (written < links.length || sealed >= limit) break;
+    }
+    return { sealed, ...(head ? { head: { idx: head.idx, hash: head.hash } } : {}) };
+  }
+
+  /**
+   * Recompute the chain and report the FIRST divergence.
+   *
+   * "The chain is invalid" is not an answer anyone can act on. The position, the event it covers,
+   * and which of the four ways it failed are, and they are what distinguishes a truncated restore
+   * from an edited row.
+   */
+  async verifyIntegrity(opts: { seal?: boolean; limit?: number } = {}): Promise<IntegrityReport> {
+    if (opts.seal !== false) await this.sealEvents();
+    const head = await this.storage.sealHead();
+    const signed = !!this.sealKey;
+    const report: IntegrityReport = {
+      ok: true,
+      checked: 0,
+      sealed: head ? head.idx + 1 : 0,
+      unsealed: (await this.storage.sealableEvents(head ? { cursor: head.cursor, seq: head.seq } : null, 1)).length,
+      signed,
+      ...(head ? { head: { idx: head.idx, hash: head.hash } } : {}),
+    };
+    type Reason = NonNullable<IntegrityReport["failure"]>["reason"];
+    const fail = (idx: number, eventId: string, reason: Reason, detail: string) => {
+      report.ok = false;
+      report.failure = { idx, eventId, reason, detail };
+      return report;
+    };
+
+    let prev = CHAIN_GENESIS;
+    let expectIdx = 0;
+    let afterIdx = -1;
+    for (;;) {
+      const seals = await this.storage.getSeals(afterIdx, Math.min(opts.limit ?? SEAL_BATCH, SEAL_BATCH));
+      if (seals.length === 0) break;
+      for (const seal of seals) {
+        // A missing position is a DELETED link. Without this check a truncated chain verifies
+        // perfectly, which is the failure an audit most needs to catch.
+        if (seal.idx !== expectIdx) {
+          return fail(expectIdx, seal.eventId, "gap", `chain jumps from ${expectIdx - 1} to ${seal.idx}`);
+        }
+        if (seal.prevHash !== prev) {
+          return fail(seal.idx, seal.eventId, "broken_link", `prev_hash does not match the hash at ${seal.idx - 1}`);
+        }
+        const event = await this.eventById(seal.eventId, seal.cursor, seal.seq);
+        if (!event) return fail(seal.idx, seal.eventId, "missing_event", "the sealed event is no longer in the log");
+        const hash = await eventHash(seal.prevHash, chainedEvent(seal.idx, event));
+        if (hash !== seal.hash) {
+          return fail(seal.idx, seal.eventId, "hash_mismatch", "the event does not hash to its seal; it was altered after sealing");
+        }
+        if (this.sealKey) {
+          if (!seal.sig) return fail(seal.idx, seal.eventId, "bad_signature", "the link carries no signature on a signed chain");
+          if (!await this.sealKey.verify(seal.hash, seal.sig)) {
+            return fail(seal.idx, seal.eventId, "bad_signature", "the signature does not verify; the chain was rebuilt without the key");
+          }
+        }
+        prev = seal.hash;
+        expectIdx++;
+        afterIdx = seal.idx;
+        report.checked++;
+      }
+    }
+    return report;
+  }
+
+  /** The sealed event, read back for verification. Positioned by its cursor rather than scanned:
+   *  a verify must not become a full log scan per link. */
+  private async eventById(id: string, cursor: string, seq: number): Promise<SpaceEvent | undefined> {
+    const before = seq > 0 ? { cursor, seq: seq - 1 } : null;
+    const window = await this.storage.sealableEvents(before, 4);
+    return window.find((e) => e.id === id);
+  }
+
+  /**
    * Pages to exhaustion and reports `complete`, because a partial list of erasures read as a
    * population would say "all erasures hold" about a space nobody finished scanning.
    */

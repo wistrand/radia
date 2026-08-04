@@ -156,6 +156,10 @@ export interface EventInput {
   kind?: string;
   state?: RecordState; // resulting state
   detail?: Record<string, unknown>;
+  /** The record's content hash, captured on the event that commits it. Server-assigned, and
+   *  deliberately NOT folded into `detail`: that field is caller-influenced, and this is what the
+   *  integrity chain hashes to cover record content. */
+  bodySha256?: string;
 }
 
 export interface SpaceEvent extends EventInput {
@@ -221,4 +225,84 @@ export function kindDefKey(def: KindDef): string {
   const ip = [...(def.indexedPaths ?? [])].map((p) => `${p.path}:${p.type}`).sort().join(",");
   const sp = [...(def.sortablePaths ?? [])].sort().join(",");
   return `kind_def:${def.kind}:${ip}:${sp}:${def.claimable === false ? "ref" : "work"}`;
+}
+
+// ---------------------------------------------------------------------------
+// Event chain (tamper evidence)
+// ---------------------------------------------------------------------------
+
+/** The predecessor of the first sealed event. */
+export const CHAIN_GENESIS = "0".repeat(64);
+
+/** One event's link in the chain. `bodySha256` is what ties the chain to record CONTENT: without
+ *  it the chain proves the events happened in this order and says nothing about whether a record
+ *  body is still what it was, which is the wrong half of the guarantee. */
+export interface ChainedEvent {
+  index: number;
+  id: Ulid;
+  ts: string;
+  runId: string;
+  operation: string;
+  recordId?: string;
+  kind?: string;
+  state?: string;
+  bodySha256?: string;
+  detail?: Record<string, unknown>;
+}
+
+/**
+ * Canonical JSON: sorted keys, recursive, no whitespace.
+ *
+ * `detail` is free-form JSON from callers, so it is the field that finds every hole in a naive
+ * encoder. Key ORDER in particular is insertion order in JS, which means the same logical event
+ * hashes two ways depending on how the object was built.
+ */
+function canonicalJson(v: unknown): string {
+  if (v === null || v === undefined) return "null";
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(",")}]`;
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(o[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v);
+}
+
+/** Length-delimited so no value can impersonate a field boundary, and `-` for ABSENT so a missing
+ *  field and an empty string are different bytes. */
+function frame(v: string | undefined): string {
+  if (v === undefined || v === null) return "-";
+  return `${new TextEncoder().encode(v).length}:${v}`;
+}
+
+/**
+ * NORMATIVE. The exact bytes an event contributes to the chain.
+ *
+ * In the wire vocabulary rather than the runtime for the same reason as `kindDefKey`: a chain only
+ * one implementation can compute is a chain nobody can verify, and the whole point of the artifact
+ * is that someone other than the writer can check it. Any implementation must produce these bytes.
+ */
+export function canonicalEvent(e: ChainedEvent): string {
+  return [
+    frame(String(e.index)),
+    frame(e.id),
+    frame(e.ts),
+    frame(e.runId),
+    frame(e.operation),
+    frame(e.recordId),
+    frame(e.kind),
+    frame(e.state),
+    frame(e.bodySha256),
+    frame(e.detail === undefined ? undefined : canonicalJson(e.detail)),
+  ].join("|");
+}
+
+async function sha256Hex(s: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** NORMATIVE. `H(prev || canonical(event))`. The index is inside the canonical form, so reordering
+ *  two seals breaks both links rather than silently producing a valid-looking chain. */
+export function eventHash(prevHash: string, e: ChainedEvent): Promise<string> {
+  return sha256Hex(`${prevHash}|${canonicalEvent(e)}`);
 }

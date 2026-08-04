@@ -904,6 +904,49 @@ paths:
                   complete: { type: boolean, description: "absent unless the registry read was truncated" }
                   note: { type: string, description: "present when nothing matched, distinguishing 'nobody listens' from 'nobody is running'" }
         "400": { $ref: "#/components/responses/Problem" }
+  /ops/integrity:
+    get:
+      operationId: integrity
+      summary: Recompute the event chain and report the first divergence
+      description: >-
+        Each event is sealed into a hash chain once the log's finality watermark passes it, so the
+        hot path pays nothing and the most recent activity is always outside the chain (`unsealed`).
+        Sealing runs on demand as part of this call. **A chain stored in the database it protects
+        detects corruption and careless edits, not a deliberate rewrite**, because anyone who can
+        write rows can recompute every hash. `signed: true` means each link carries an HMAC under a
+        key that does not live in the database, which is what makes a rewrite detectable; `false`
+        says the weaker guarantee is the one in force. Externally anchored checkpoints (M2) are what
+        cover an attacker holding the key as well.
+      x-stability: experimental
+      responses:
+        "200":
+          description: integrity report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, description: "the only field to branch on" }
+                  checked: { type: integer }
+                  sealed: { type: integer, description: "chain length, so `checked: 0` cannot read as verified" }
+                  unsealed: { type: integer, description: "committed but not yet final; not a fault" }
+                  signed: { type: boolean }
+                  head:
+                    type: object
+                    properties:
+                      idx: { type: integer }
+                      hash: { type: string }
+                  failure:
+                    type: object
+                    description: "the FIRST divergence; absent when ok"
+                    properties:
+                      idx: { type: integer }
+                      eventId: { type: string }
+                      reason: { type: string, enum: [hash_mismatch, broken_link, missing_event, bad_signature, gap] }
+                      detail: { type: string }
+                  note: { type: string, description: "present when the chain is unsigned" }
+                  unsealedNote: { type: string }
+
   /ops/flows:
     get:
       operationId: flows
@@ -993,6 +1036,12 @@ paths:
                       Erasures whose payload is readable again. ABSENT for a scoped caller rather
                       than zero: shred records are operator-visible, so a `0` would be reassurance
                       on no evidence.
+                  integrity:
+                    type: object
+                    description: >-
+                      The event chain's verdict, same shape as `GET /ops/integrity`. ABSENT for a
+                      scoped caller, for the same reason as `undoneErasures`: the chain covers every
+                      principal's activity.
 
   /ops/erasures:
     get:
