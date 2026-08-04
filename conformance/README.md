@@ -23,7 +23,7 @@ flowchart LR
 ```
 
 ```bash
-deno task conformance                     # sqlite + pglite + the blob port   (444 tests, ~19s)
+deno task conformance                     # sqlite + pglite + the blob port   (446 tests, ~23s)
 scripts/pg-conformance.sh                 # + a live Postgres
 RADIA_PG_URL=postgres://… scripts/pg-conformance.sh   # against your own server
 ```
@@ -34,7 +34,7 @@ ephemeral range; an unrelated outbound connection holding it, even in TIME_WAIT,
 fail with a docker "address already in use" that reads like a stale container and is not one).
 
 Each Postgres test runs in its own ephemeral schema, dropped on close, so it is safe to point at a
-database you care about. The live-server run adds its own storage tests to the embedded 444, and it
+database you care about. The live-server run adds its own storage tests to the embedded 446, and it
 is the only run that actually *contends* for claims, which is why a claim-path change needs it (see
 "Writing a suite" below).
 
@@ -59,7 +59,9 @@ is the only run that actually *contends* for claims, which is why a claim-path c
 | `http.test.ts` | the HTTP boundary, driving `makeHandler` directly: authentication and run renewal, the artifact inline/download allowlist and capability URLs, erasure (410 vs 404, shared payloads, forged shred markers), and a table of wrong-typed fields per endpoint |
 | `backfill.test.ts` | the schema's one migration: rebuilding `record_edges` for a database written before that table existed |
 | `planner.test.ts`  | Postgres planner statistics for declared body paths (`prepareKind`) |
-| `registry.test.ts` | latest-wins projections over hand-made ids |
+| `registry.test.ts` | latest-wins projections over hand-made ids and timestamps |
+| `notifier.test.ts` | the watch wakeup state machine: who wakes, when the cross-instance poll runs |
+| `loop.test.ts`     | the SDK worker loop losing a lease: the handler's cancellation channel (the one test here that binds a real port, since the SDK client and its SSE watchers are what is under test) |
 | `console.test.ts`  | the dev console, lifted out of the page source: HTML escaping, no credential in the page or in an event handler, and the sign-in gate |
 | `defaults.test.ts` | the posture an unconfigured space lands in: `--auth`, the runtime directory, optional-value flags |
 
@@ -103,8 +105,9 @@ Six conventions worth copying rather than reinventing:
   sleeps, and no test-only code paths in production. See `suites/faults.ts`.
 - **Never assert on wall-clock timing.** All time comparisons use the database clock; a test that
   sleeps is a test that flakes in CI. The one exception is where LATENCY IS THE CONTRACT: the
-  cross-instance wakeup (`suites/watches.ts`, `notifier.test.ts`) has nothing else to assert, since
-  the pre-fix build produced the same records, just ~15s later. Those bounds are set an order of
+  cross-instance wakeup (`suites/watches.ts`, `notifier.test.ts`) and the fenced handler
+  (`loop.test.ts`) have nothing else to assert, since the pre-fix build produced the same records,
+  just later or not at all. Those bounds are set an order of
   magnitude above the mechanism (a 250ms poll asserted under 10s) so the margin, not the scheduler,
   decides the outcome.
 - **Keep crypto deterministic.** The blob-crypto suites use a fixed KEK, so a failure means a

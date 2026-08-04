@@ -44,6 +44,15 @@ can send an email and crash before `ack`. Side-effecting agents require idempote
 the effect boundary, an outbox, or a transactional tool gateway (a candidate second
 product surface; see [gotchas.md](gotchas.md)).
 
+"Until it observes `lease_lost`" is a real observation point, not a figure of speech: both SDK
+loops hand the handler a cancellation channel (TS `AbortSignal`, Python `threading.Event`) that
+fires as soon as the renewal heartbeat is answered `lease_lost` — or 401/403, where a stopped or
+quarantined run lands, since revoking the run kills its token before anything can answer
+`lease_lost`. Until 2026-08-04 the heartbeats discarded that answer, which made the sentence above
+unmeetable through the SDKs: the first observable sign of a fence was the final ack, after every
+side effect had already happened. See [sdk/README.md](../sdk/README.md) and
+[plan-audit-remediation.md](plan-audit-remediation.md), package H.
+
 ## Leases with fencing
 
 The envelope state machine, with the operation driving each transition:

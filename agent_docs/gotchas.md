@@ -921,6 +921,20 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
 - **Credential keep-alive belongs in `agentLoop`, not in each agent.** Every process running that
   loop is long-lived by definition, and the five chat workers each needed it. One place, and an
   external agent author gets it without knowing it exists.
+- **A heartbeat that discards its result is a worker that never learns it was fenced.** `renew`
+  reports fencing as a `{status: "lease_lost"}` BODY, not an error, so `renew(...).catch(() => {})`
+  ignored exactly the case it existed to detect: a reclaimed or quarantined worker renewed a dead
+  lease for the life of the process while its handler kept making side effects, and the first
+  observable sign was the ack, after the work was done. All three heartbeats (`sdk/ts/loop.ts`,
+  `sdk/py/radia.py`, `src/surfaces/mcp/server.ts`) now act on it and cancel the handler. Three
+  things about the shape are worth keeping: **the fence has two faces**, `lease_lost` AND 401/403,
+  because quarantining a run kills its token first so its heartbeat never gets a `lease_lost` at
+  all; **everything else stays ignored**, since a network blip is not a fence and the lease has
+  until its expiry; and **a claim known to be lost is not settled**, because the ack would only be
+  answered `lease_lost` and a nack risks bumping the attempt count of whoever holds the record now.
+  The same investigation found that only `403` was permanent for a watcher, so a stopped run's
+  watchers retried a `401` connect every second forever — and since `agentLoop` awaits its watchers
+  on the way out, the loop could not finish. Watchers run on the credential's signal now.
 - **A public endpoint still rejects a BAD credential, so `401` never means "the space is down".**
   `/v0/health` and `GET /` skip the auth requirement, but `resolveAuth` rejects a presented token
   that does not resolve, on every path. So an expired run token `401`s on the one endpoint a client

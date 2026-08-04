@@ -14,7 +14,18 @@ export interface LoopOptions {
   leaseSeconds?: number;
   pollMs?: number; // fallback tick when no wakeup arrives
   signal?: AbortSignal;
-  handle: (record: RadiaRecord, client: RadiaClient) => Promise<PutRequest | void>;
+  /**
+   * Run one claimed record.
+   *
+   * `signal` aborts when this claim's lease STOPS BEING THIS WORKER'S: the heartbeat saw
+   * `lease_lost` (reclaimed, reassigned, force-transitioned) or lost the credential itself. It also
+   * aborts when the loop's own `signal` does. A handler with side effects should thread it into
+   * whatever it calls — the design contract is that a fenced worker runs until it OBSERVES
+   * `lease_lost`, and before this parameter existed the only observation point was the final ack,
+   * i.e. after all the work was already done. Ignoring it is safe but keeps the old behaviour:
+   * delivery is at-least-once either way, so effects still need idempotency at their boundary.
+   */
+  handle: (record: RadiaRecord, client: RadiaClient, signal: AbortSignal) => Promise<PutRequest | void>;
   log?: (msg: string) => void;
 }
 
@@ -70,10 +81,14 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
     wake = null;
     w?.();
   };
+  // Watchers stop on the CREDENTIAL's signal, not the caller's. It aborts on both: the caller's
+  // signal is forwarded to it above, and a credential that ended aborts it directly. Watching
+  // `o.signal` alone meant a stopped run's watchers retried a 401 connect every second forever,
+  // and since the loop awaits them on the way out, it could never finish.
   const watchers = kinds.map(async (kind) => {
-    while (!o.signal?.aborted) {
+    while (!credential.signal.aborted) {
       try {
-        for await (const _ of client.watch({ kind }, o.signal)) doWake();
+        for await (const _ of client.watch({ kind }, credential.signal)) doWake();
         return; // generator ended (signal aborted): clean stop
       } catch (e) {
         // A 403 on watch is PERMANENT: this run has no grant to watch this kind, and retrying
@@ -119,21 +134,50 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
       continue;
     }
 
-    const hb = startHeartbeat(client, claimed, leaseSeconds);
+    // This claim's cancellation channel: the loop's own signal, plus the heartbeat's verdict.
+    const claim = new AbortController();
+    const cancelClaim = () => claim.abort();
+    o.signal?.addEventListener("abort", cancelClaim, { once: true });
+    let fenced = false;
+    const hb = startHeartbeat(client, claimed, leaseSeconds, (reason) => {
+      fenced = true;
+      if (reason === "credential") {
+        // The run is stopped or aged out: nothing it holds can be settled, so stop claiming too.
+        // `keepAlive` would reach the same conclusion at its own cadence, which is half of a
+        // 15-minute token: minutes of a handler running against a credential that is already dead.
+        credentialLost = true;
+        credential.abort();
+      }
+      log(`[${o.name}] lease lost on ${short(claimed!.record.id)} (${reason}): cancelling the handler`);
+      claim.abort(new Error(`lease_lost: ${reason}`));
+    });
     try {
-      const result = await o.handle(claimed.record, client);
-      const key = `ack:${claimed.record.id}:${claimed.lease.epoch}`;
-      const res = await client.ack(claimed.lease, result ?? undefined, key);
-      if (res.status === "lease_lost") {
-        log(`[${o.name}] fenced on ${short(claimed.record.id)}: duplicate work possible (at-least-once)`);
+      const result = await o.handle(claimed.record, client, claim.signal);
+      if (fenced) {
+        // Settling is pointless and the log line has to say which of the two happened: the work
+        // ran to completion but somebody else owns the record now.
+        log(`[${o.name}] ${short(claimed.record.id)} finished after being fenced: not settled, duplicate work possible`);
       } else {
-        log(`[${o.name}] ${claimed.record.kind} ${short(claimed.record.id)} -> ok`);
+        const key = `ack:${claimed.record.id}:${claimed.lease.epoch}`;
+        const res = await client.ack(claimed.lease, result ?? undefined, key);
+        if (res.status === "lease_lost") {
+          log(`[${o.name}] fenced on ${short(claimed.record.id)}: duplicate work possible (at-least-once)`);
+        } else {
+          log(`[${o.name}] ${claimed.record.kind} ${short(claimed.record.id)} -> ok`);
+        }
       }
     } catch (e) {
-      await client.nack(claimed.lease).catch(() => {});
-      log(`[${o.name}] ${short(claimed.record.id)} -> nack: ${e}`);
+      // A handler that threw BECAUSE it was cancelled must not be nacked: the lease is not ours, so
+      // the nack fences out anyway, and calling it invites a stray attempt bump on the next owner.
+      if (fenced) {
+        log(`[${o.name}] ${short(claimed.record.id)} stopped on the fence: ${e}`);
+      } else {
+        await client.nack(claimed.lease).catch(() => {});
+        log(`[${o.name}] ${short(claimed.record.id)} -> nack: ${e}`);
+      }
     } finally {
       hb.stop();
+      o.signal?.removeEventListener("abort", cancelClaim);
     }
   }
 
@@ -141,11 +185,56 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
   await Promise.allSettled(watchers);
 }
 
-function startHeartbeat(client: RadiaClient, claimed: { lease: Parameters<RadiaClient["renew"]>[0] }, leaseSeconds: number) {
-  const iv = setInterval(() => {
-    client.renew(claimed.lease, { leaseSeconds }).catch(() => {});
+/** Why a heartbeat gave up on a claim. Both mean "you no longer hold this"; they differ in what
+ *  the loop should do next, so they are not collapsed into one. */
+type LostReason = "lease_lost" | "credential";
+
+/**
+ * Renew the lease at lease/3 until stopped, and REPORT the verdict rather than discarding it.
+ *
+ * The renew result was thrown away here (`.catch(() => {})` over a call whose success value was
+ * ignored), so a reclaimed or quarantined worker went on renewing a dead lease for the life of the
+ * process while its handler kept producing side effects. Two outcomes are authoritative and stop
+ * the heartbeat:
+ *
+ *   - `{status: "lease_lost"}` — the fence. Somebody else owns the record.
+ *   - 401/403 — this credential cannot renew anything, so it cannot settle this work either. A
+ *     quarantined run arrives here rather than at `lease_lost`, because stopping the run kills the
+ *     token first.
+ *
+ * Everything else (a network blip, a 5xx, a slow proxy) is transient and ignored: the lease has
+ * until its expiry, and guessing "lost" on a hiccup would cancel work that is still legitimately
+ * this worker's.
+ */
+function startHeartbeat(
+  client: RadiaClient,
+  claimed: { lease: Parameters<RadiaClient["renew"]>[0] },
+  leaseSeconds: number,
+  onLost: (reason: LostReason) => void,
+) {
+  let stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(iv);
+  };
+  const iv = setInterval(async () => {
+    try {
+      const res = await client.renew(claimed.lease, { leaseSeconds });
+      if (stopped) return;
+      if (res.status === "lease_lost") {
+        stop();
+        onLost("lease_lost");
+      }
+    } catch (e) {
+      if (stopped) return;
+      if (e instanceof RadiaClientError && (e.status === 401 || e.status === 403)) {
+        stop();
+        onLost("credential");
+      }
+    }
   }, Math.max(1000, (leaseSeconds / 3) * 1000));
-  return { stop: () => clearInterval(iv) };
+  return { stop };
 }
 
 const short = (id: string) => id.slice(-6);

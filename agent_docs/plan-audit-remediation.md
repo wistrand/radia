@@ -1,7 +1,7 @@
 # Plan: audit remediation
 
-> Status: H, I, N, P, Q and R are open; **E, K, L, M and O are closed** (2026-08-03); everything else is closed and
-> its guards pass (`deno task conformance`: 444 passed, 0 failed). Each done package is a status line here; its
+> Status: I, N, P, Q and R are open; **E, K, L, M and O are closed** (2026-08-03), **H** (2026-08-04); everything else is closed and
+> its guards pass (`deno task conformance`: 446 passed, 0 failed). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
 > paths; items marked **reproduced** were verified empirically. Line numbers drift; trust the symbol,
@@ -28,7 +28,7 @@ with no revocation path); it was closed the same day, and no P0 is open.
 |-----|-----------------------------------------|----------|---------------------------------------|
 | ~~E~~ | ~~Pushdown soundness~~                | ~~P1~~   | **CLOSED 2026-08-03**                 |
 | ~~G~~ | ~~Blob write durability~~             | ~~P2~~   | **CLOSED 2026-08-03**                 |
-| H   | `lease_lost` unobservable in clients    | P2       | Side effects continue after fencing   |
+| ~~H~~ | ~~`lease_lost` unobservable in clients~~ | ~~P2~~ | **CLOSED 2026-08-04**                 |
 | I   | SDK parity + chat example               | P2       | Drift; example-specific data loss     |
 | ~~K~~ | ~~Unrevocable definition tokens~~     | ~~P0~~   | **CLOSED 2026-08-03**                 |
 | ~~L~~ | ~~Watch streams cache authorization~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
@@ -39,7 +39,7 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | Q   | Designed features unreachable           | P2       | A built feature no caller can invoke   |
 | R   | Dead taint parameter; half-tested guard | P2       | Legibility, not leakage (see the entry) |
 
-Packages A, B, C, D, E, F, G, J, K, L, M and O are closed. Their lessons are rules in
+Packages A, B, C, D, E, F, G, H, J, K, L, M and O are closed. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -115,21 +115,41 @@ against same-length corruption that no longer has a path in from a crash. The ov
 Guard: `conformance/suites/blobs.ts`, "a truncated payload heals on re-put", over both the sealed
 and plaintext regimes. Verified to fail against the old existence-only dedup.
 
-## Package H: `lease_lost` is unobservable in clients (P2)
+## Package H: `lease_lost` is unobservable in clients (P2) — CLOSED 2026-08-04
 
-`renew` reports fencing as a **200 body**, not an error, and every heartbeat discards the
-result: `src/surfaces/mcp/server.ts` (`.catch(() => {})` on an interval that only `takeClaim` clears),
-`sdk/ts/loop.ts`, `sdk/py/radia.py`. So a quarantined or reclaimed run keeps renewing a dead
-lease for the process lifetime and its handler keeps producing side effects. The design contract
-"a fenced worker runs until it observes `lease_lost`" is currently unmeetable through the SDKs:
-the only observation point is the final ack, after the work is done.
+`renew` reports fencing as a **200 body**, not an error, and every heartbeat discarded the
+result: `src/surfaces/mcp/server.ts` (`.catch(() => {})` on an interval that only `takeClaim` cleared),
+`sdk/ts/loop.ts`, `sdk/py/radia.py`. So a quarantined or reclaimed run kept renewing a dead
+lease for the process lifetime and its handler kept producing side effects. The design contract
+"a fenced worker runs until it observes `lease_lost`" was unmeetable through the SDKs: the only
+observation point was the final ack, after the work was done.
 
-Fix: inspect the renew result; on `lease_lost` stop the heartbeat and signal the handler. That
-needs an abort channel the handler can observe (an `AbortSignal` passed into the handler is the
-obvious shape). This is an SDK surface addition, so land it in both SDKs together.
+All three heartbeats now act on the verdict, and the cancellation channel is part of the handler
+contract: TS passes an `AbortSignal` as a third argument, Python a `threading.Event` as a third
+parameter (given only to a handler whose signature declares it, checked once with `inspect`, so
+existing two-parameter handlers are untouched). Neither loop settles a claim it knows it lost:
+an ack would only be answered `lease_lost`, and a nack risks bumping the attempt count of whoever
+holds the record now. The MCP adapter keeps the lost claim in its map so settling by `claimId`
+explains what happened instead of answering "unknown claimId", which reads like the model's own
+mistake rather than the space taking the work back.
 
-Guard: conformance case asserting a quarantined run's heartbeat stops and its handler observes
-cancellation.
+**Two outcomes are authoritative, not one.** `{status: "lease_lost"}` is the fence, and 401/403 is
+the other half: quarantining a run kills its TOKEN first, so its heartbeat never reaches
+`lease_lost` at all. Handling only the documented case would have left the package's own guard
+("a quarantined run's heartbeat stops") failing. Everything else stays ignored — a network blip or
+a 5xx is not a fence, and the lease has until its expiry.
+
+Fixed alongside, because the guard found it: a stopped run's watchers retried a 401 connect every
+second forever (only 403 was treated as permanent), and `agentLoop` awaits its watchers on the way
+out, so the loop could never finish. They now run on the credential's signal rather than the
+caller's.
+
+Guard: `conformance/loop.test.ts`, two cases (a reclaimed lease, and a quarantined run) asserting
+the handler observes cancellation rather than waiting out a 20s failsafe, that nothing is settled
+on a lease that was lost, and that the loop stops claiming once its credential is dead. Verified to
+fail against the old discard-the-result heartbeat: both cases sat on the failsafe. This is the one
+test in `conformance/` that binds a real port, because the SDK client and its SSE watchers are what
+is under test, and a stubbed `fetch` would only test a mock's idea of streaming and cancellation.
 
 ## Package I: SDK drift and the chat example (P2)
 

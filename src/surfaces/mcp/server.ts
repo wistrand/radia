@@ -37,6 +37,11 @@ interface Claim {
   lease: Lease;
   record: RadiaRecord;
   timer: ReturnType<typeof setInterval>;
+  /** Set when the heartbeat learned this lease is no longer ours: the record was reclaimed or
+   *  force-transitioned (`lease_lost`), or the credential stopped working (401/403). The claim
+   *  stays in the map so a settle can SAY so; dropping it would tell the model "unknown claimId",
+   *  which reads like its own mistake rather than the space taking the work back. */
+  lost?: "lease_lost" | "credential";
 }
 
 export async function runMcp(argv: string[]): Promise<void> {
@@ -193,15 +198,29 @@ async function call(
       if (!claimed) return "nothing available for that pattern";
       // The model gets a handle; the fenced lease never leaves this process.
       const claimId = `claim-${claimed.record.id}-${claimed.lease.epoch}`;
-      const timer = setInterval(() => {
-        client.renew(claimed.lease, { leaseSeconds }).catch(() => {});
+      // The heartbeat's VERDICT matters, not just that it ran: renewing a lease somebody else now
+      // holds, forever, is how a model kept working on a record that had been taken back from it.
+      // A transient error is still ignored (the lease has until its expiry); the two authoritative
+      // outcomes stop the timer and mark the claim.
+      const timer = setInterval(async () => {
+        const c = claims.get(claimId);
+        if (!c) return;
+        try {
+          const res = await client.renew(claimed.lease, { leaseSeconds });
+          if (res.status === "lease_lost") lose(claims, claimId, "lease_lost");
+        } catch (e) {
+          if (e instanceof RadiaClientError && (e.status === 401 || e.status === 403)) {
+            lose(claims, claimId, "credential");
+          }
+        }
       }, Math.max(1000, (leaseSeconds / 3) * 1000));
       claims.set(claimId, { lease: claimed.lease, record: claimed.record, timer });
       return pretty({
         claimId,
         record: claimed.record,
         note: "Lease held and renewed for you. Settle with space_ack (done), space_nack (retry) " +
-          "or space_release (give it back).",
+          "or space_release (give it back). If the space takes the record back while you work " +
+          "(reclaimed or reassigned), settling says so rather than pretending it landed.",
       });
     }
 
@@ -231,12 +250,33 @@ async function call(
 }
 
 /** Resolve a claimId to its lease and stop its heartbeat. Settling ends the claim either way. */
+/** Stop renewing a claim we no longer hold, and remember why so the settle can explain it. */
+function lose(claims: Map<string, Claim>, claimId: string, reason: "lease_lost" | "credential"): void {
+  const c = claims.get(claimId);
+  if (!c) return;
+  clearInterval(c.timer);
+  c.lost = reason;
+  log(
+    `radia mcp: claim ${claimId} lost (${reason}); the work may already be running elsewhere`,
+  );
+}
+
 function takeClaim(claims: Map<string, Claim>, a: Record<string, unknown>): Claim {
   const id = str(a, "claimId");
   const c = claims.get(id);
   if (!c) throw new Error(`unknown claimId '${id}': it was already settled, or this adapter never held it`);
   clearInterval(c.timer);
   claims.delete(id);
+  if (c.lost) {
+    // Told here rather than at the server, which would answer `lease_lost` to the same effect one
+    // round trip later. The distinction the model needs is that this is not its error: the record
+    // went back to the space and somebody else may hold it now.
+    throw new Error(
+      c.lost === "credential"
+        ? `claim '${id}' was lost: this adapter's credential stopped working (the run was stopped or expired), so nothing it holds can be settled. Nothing was written.`
+        : `claim '${id}' was FENCED: the lease was reclaimed or reassigned while you worked on it, so another worker may hold this record now. Nothing was written; take the work again if you still want it.`,
+    );
+  }
   return c;
 }
 

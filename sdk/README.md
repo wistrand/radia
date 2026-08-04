@@ -58,6 +58,18 @@ Delivery is **at-least-once**. A handler with side effects must be idempotent at
 boundary. A fenced worker keeps running until it observes `lease_lost`, so physical execution can
 overlap.
 
+**The handler is told when it stops holding the lease**, which is what makes that last sentence
+actionable: TS gets a third argument, an `AbortSignal`; Python gets a third parameter, a
+`threading.Event` (passed only to a handler that declares it, so two-parameter handlers are
+unaffected). Both fire the moment the heartbeat's renew comes back `lease_lost` — reclaimed,
+reassigned, force-transitioned — or 401/403, which is where a stopped or quarantined run lands,
+since revoking the run kills its token before anything answers `lease_lost`. A handler with side
+effects should thread it into whatever it calls and check it between steps. Neither loop settles a
+claim it knows it lost: acking would only be told `lease_lost`, and nacking risks bumping the
+attempt count of whoever holds the record now. The heartbeat ignores everything else (a network
+blip, a 5xx): the lease has until its expiry, and treating a hiccup as a fence would cancel work
+that is still legitimately this worker's.
+
 A `403` on a watch is treated as permanent (the run has no grant for that kind): both loops log it
 loudly once and fall back to polling, rather than retrying forever. "Silently slow" would be a
 worse failure than "loudly wrong".

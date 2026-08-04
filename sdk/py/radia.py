@@ -21,6 +21,7 @@ Typical use::
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import threading
@@ -636,7 +637,7 @@ def agent_loop(
     client: RadiaClient,
     name: str,
     patterns: Sequence[Dict[str, Any]],
-    handle: Callable[[Dict[str, Any], RadiaClient], Optional[Dict[str, Any]]],
+    handle: Callable[..., Optional[Dict[str, Any]]],
     lease_seconds: int = 30,
     poll_seconds: float = 1.0,
     stop: Optional[threading.Event] = None,
@@ -648,10 +649,24 @@ def agent_loop(
     per-attempt idempotency key (so a retried ack after a dropped response is not double work),
     and nacks on error. Delivery is at-least-once: a handler with side effects must be
     idempotent at the effect boundary.
+
+    ``handle`` may take a THIRD parameter, ``fenced``: a ``threading.Event`` set the moment this
+    claim's lease stops being ours (reclaimed, reassigned, or the run stopped). A handler with side
+    effects should check it between steps and stop -- the design contract is that a fenced worker
+    runs until it observes ``lease_lost``, and without this the only observation point was the
+    final ack, i.e. after the work was already done. A two-parameter handler still works unchanged.
     """
     say = log or (lambda _m: None)
     stop = stop or threading.Event()
     wake = threading.Event()
+    # A handler may take a third parameter, an Event set when this claim's lease stops being ours
+    # (see _Heartbeat). Detected once, by signature, rather than by calling with three arguments
+    # and catching TypeError: a TypeError raised INSIDE a two-argument handler is indistinguishable
+    # from the arity mismatch, and would silently downgrade every later call.
+    try:
+        wants_fence = len(inspect.signature(handle).parameters) >= 3
+    except (TypeError, ValueError):  # builtins and C callables have no introspectable signature
+        wants_fence = False
 
     def watcher(kind: str) -> None:
         while not stop.is_set():
@@ -694,25 +709,54 @@ def agent_loop(
         beat = _Heartbeat(client, lease, lease_seconds)
         beat.start()
         try:
-            result = handle(record, client)
-            key = f"ack:{record['id']}:{lease['epoch']}"
-            res = client.ack(lease, result, idempotency_key=key)
-            if res.get("status") == "lease_lost":
-                say(f"[{name}] fenced on {record['id'][-6:]}: duplicate work possible (at-least-once)")
+            result = handle(record, client, beat.lost) if wants_fence else handle(record, client)
+            if beat.lost.is_set():
+                # The work finished, but somebody else owns the record now: settling is pointless
+                # and the log has to say which of the two happened.
+                say(f"[{name}] {record['id'][-6:]} finished after being fenced ({beat.reason}): not settled")
             else:
-                say(f"[{name}] {record['kind']} {record['id'][-6:]} -> ok")
+                key = f"ack:{record['id']}:{lease['epoch']}"
+                res = client.ack(lease, result, idempotency_key=key)
+                if res.get("status") == "lease_lost":
+                    say(f"[{name}] fenced on {record['id'][-6:]}: duplicate work possible (at-least-once)")
+                else:
+                    say(f"[{name}] {record['kind']} {record['id'][-6:]} -> ok")
         except Exception as e:  # noqa: BLE001. Any handler failure is a nack, never a loop crash
-            try:
-                client.nack(lease)
-            except RadiaError:
-                pass
-            say(f"[{name}] {record['id'][-6:]} -> nack: {e}")
+            # A handler that stopped BECAUSE it was fenced must not be nacked: the lease is not
+            # ours, so the nack fences out anyway and would only risk an attempt bump on the next
+            # owner.
+            if beat.lost.is_set():
+                say(f"[{name}] {record['id'][-6:]} stopped on the fence ({beat.reason}): {e}")
+            else:
+                try:
+                    client.nack(lease)
+                except RadiaError:
+                    pass
+                say(f"[{name}] {record['id'][-6:]} -> nack: {e}")
         finally:
             beat.stop()
+        if beat.reason == "credential":
+            # Stopped or aged out: nothing this run holds can be settled, so stop claiming rather
+            # than spin against a door that will not open.
+            say(f"[{name}] credential ended: the run can no longer renew")
+            break
 
 
 class _Heartbeat:
-    """Renew a lease at lease/3 until stopped. Failures are ignored: the fence is authoritative."""
+    """Renew a lease at lease/3 until stopped, and REPORT the verdict instead of discarding it.
+
+    The renew result used to be thrown away, so a reclaimed or quarantined worker went on renewing
+    a dead lease for the life of the process while its handler kept producing side effects. Two
+    outcomes are authoritative and stop the heartbeat:
+
+    * ``{"status": "lease_lost"}`` -- the fence: somebody else owns the record now.
+    * HTTP 401/403 -- this credential cannot renew, so it cannot settle the work either. A
+      quarantined run arrives here rather than at ``lease_lost``, because stopping the run kills
+      the token first.
+
+    Anything else (a network blip, a 5xx) is transient and ignored: the lease has until its expiry,
+    and guessing "lost" on a hiccup would cancel work that is still legitimately this worker's.
+    """
 
     def __init__(self, client: RadiaClient, lease: Dict[str, Any], lease_seconds: int):
         self._client = client
@@ -720,6 +764,10 @@ class _Heartbeat:
         self._interval = max(1.0, lease_seconds / 3.0)
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        #: Set when the lease stops being ours. Handed to the handler as its cancellation channel.
+        self.lost = threading.Event()
+        #: ``"lease_lost"`` or ``"credential"``, once ``lost`` is set.
+        self.reason: Optional[str] = None
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -728,9 +776,20 @@ class _Heartbeat:
     def _run(self) -> None:
         while not self._stop.wait(self._interval):
             try:
-                self._client.renew(self._lease, lease_seconds=int(self._interval * 3))
-            except RadiaError:
-                pass
+                res = self._client.renew(self._lease, lease_seconds=int(self._interval * 3))
+            except RadiaError as e:
+                if e.status in (401, 403):
+                    self._lose("credential")
+                    return
+                continue
+            if (res or {}).get("status") == "lease_lost":
+                self._lose("lease_lost")
+                return
+
+    def _lose(self, reason: str) -> None:
+        self.reason = reason
+        self.lost.set()
+        self._stop.set()
 
     def stop(self) -> None:
         self._stop.set()
