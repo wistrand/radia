@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Workspaces: where an agent's work meets the world</title>
+  <meta name="description" content="A multi-file tree an agent can write, run, serve and hand to git, built entirely on records and artifacts. None of it is in the runtime, and that is the point.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="shared.css">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://wistrand.github.io/radia/workspaces.html">
+  <meta property="og:title" content="Workspaces: where an agent's work meets the world">
+  <meta property="og:description" content="A multi-file tree an agent can write, run, serve and hand to git, built entirely on records and artifacts. None of it is in the runtime.">
+  <meta property="og:image" content="https://wistrand.github.io/radia/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="brand">radia</a>
+    <div class="links">
+      <a href="how-it-works.html">How it works</a>
+      <a href="authorization.html">Authorization</a>
+      <div class="dropdown">
+        <a class="dropdown-toggle">More &#9662;</a>
+        <div class="dropdown-menu"><div class="dropdown-menu-inner">
+          <a href="workspaces.html">Workspaces</a>
+          <a href="inspection.html">Inspection</a>
+          <a href="why.html">Why not X</a>
+          <a href="examples.html">Examples</a>
+          <a href="llms.txt">llms.txt</a>
+          <a href="https://github.com/wistrand/radia">GitHub</a>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<aside class="sidebar" id="sidebar">
+  <a href="#gap">The gap</a>
+  <a href="#tier">Not part of the runtime</a>
+  <a href="#tree">What a tree is</a>
+  <a href="#run">Running it</a>
+  <a href="#out">Getting it out</a>
+  <a href="#worth">What this buys</a>
+</aside>
+
+<div class="hero">
+  <div class="container">
+    <h1>Where the work meets the world</h1>
+    <p class="subtitle">
+      Records are a fine way for agents to talk to each other. They are a poor way to hand a
+      three-file website to a person, or to run a program that expects a directory. A workspace is
+      the seam: a multi-file tree an agent can write, run, look at and export as a real git
+      repository. <strong>None of it is in the runtime.</strong>
+    </p>
+  </div>
+</div>
+
+<section id="gap">
+  <div class="container">
+    <h2>An agent that writes code needs somewhere to put it</h2>
+    <p>
+      A single-file evaluator gets you further than you would expect and then stops dead. Real work
+      is a project: write a few files, run the thing, read the error, fix one line, run it again. The
+      loop is not the hard part. The missing part is somewhere for the program to live between
+      iterations.
+    </p>
+    <p>
+      That is a gap in what agents can reach, not in the coordination model underneath. A round trip
+      through the space costs about thirty milliseconds and a sandbox start about twenty-seven,
+      against a model turn of one to ten seconds. Routing this loop through records costs roughly one
+      percent of an iteration, so the medium was never the constraint.
+    </p>
+  </div>
+</section>
+
+<section id="tier">
+  <div class="container">
+    <h2>It is a convention, not a feature of the runtime</h2>
+    <p>
+      This is the part worth being pedantic about, because it is the whole reason the design stays
+      small. Radia has no idea what a file is. It has no idea what a path, a file mode or a directory
+      is. Nothing in the runtime knows the word workspace.
+    </p>
+    <p>
+      A workspace is a record whose body happens to list files, plus one artifact per file, plus a
+      projection that says which version is current. Every one of those is a primitive that already
+      existed for other reasons. The convention lives one tier out, in a library that talks to the
+      space through the same public API your own code would use.
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 760 220" role="img" aria-label="Three tiers: the runtime knows records and artifacts, extensions add conventions, applications use them">
+        <rect x="20" y="24" width="720" height="52" rx="6" class="box"/>
+        <text x="40" y="46" class="label">application</text>
+        <text x="40" y="64" class="muted">a chat agent, a code reviewer, your own worker</text>
+        <text x="720" y="56" text-anchor="end" class="muted">examples/</text>
+
+        <path d="M 380 76 L 380 96" class="flow" stroke="#818cf8"/>
+
+        <rect x="20" y="96" width="720" height="52" rx="6" class="box" stroke="#818cf8"/>
+        <text x="40" y="118" class="label">extension: workspace, sandbox, git export</text>
+        <text x="40" y="136" class="muted">imports the SDK only. Never the runtime</text>
+        <text x="720" y="128" text-anchor="end" class="muted">extensions/</text>
+
+        <path d="M 380 148 L 380 168" class="flow" stroke="#818cf8"/>
+
+        <rect x="20" y="168" width="720" height="52" rx="6" class="box" stroke="#60a5fa"/>
+        <text x="40" y="190" class="label">runtime: records, artifacts, leases, grants, taint</text>
+        <text x="40" y="208" class="muted">knows nothing about files</text>
+        <text x="720" y="200" text-anchor="end" class="muted">src/</text>
+      </svg>
+      <figcaption>
+        The test for each tier is a question. Does the runtime have to know? Would two different
+        applications want the same convention? If the answer to both is no, it belongs to the app.
+      </figcaption>
+    </figure>
+
+    <p>
+      The dependency rule is enforced rather than encouraged: a test greps for it, and an extension
+      that reached into the runtime would fail the build. That direction is what keeps the runtime
+      from slowly growing opinions about filesystems, and it is why exporting a workspace to git is
+      an ordinary client command instead of a feature of the server.
+    </p>
+
+    <div class="callout">
+      <strong>Two things here are specified, not merely implemented.</strong> The tree digest and the
+      path validator cross a trust boundary: a verdict about a tree is comparable across languages
+      only if every implementation hashes it identically, and a path rule that differs between
+      implementations is a hole rather than an inconsistency. Both ship with a conformance suite that
+      any implementation in any language has to pass.
+    </div>
+  </div>
+</section>
+
+<section id="tree">
+  <div class="container">
+    <h2>What a tree actually is</h2>
+    <p>
+      One record holds the manifest: a name, a tree digest, the version it was based on, and a list
+      of files. Each entry is a path, a mode, a content hash and the artifact holding the bytes.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">a workspace record</div>
+      <pre><code>{ <span class="str">"name"</span>: <span class="str">"landing-page"</span>,
+  <span class="str">"treeDigest"</span>: <span class="str">"t1:9f2c...ade1"</span>,
+  <span class="str">"basedOn"</span>: <span class="str">"01JB2Q7X4KJ8ZN0R5V3M9WPHTC"</span>,
+  <span class="str">"files"</span>: [
+    { <span class="str">"path"</span>: <span class="str">"index.html"</span>, <span class="str">"mode"</span>: <span class="str">"100644"</span>, <span class="str">"digest"</span>: <span class="str">"sha256:4b1e..."</span>, <span class="str">"artifactId"</span>: <span class="str">"01JB2..."</span> },
+    { <span class="str">"path"</span>: <span class="str">"style.css"</span>,  <span class="str">"mode"</span>: <span class="str">"100644"</span>, <span class="str">"digest"</span>: <span class="str">"sha256:c70a..."</span>, <span class="str">"artifactId"</span>: <span class="str">"01JB2..."</span> },
+    { <span class="str">"path"</span>: <span class="str">"cat.png"</span>,    <span class="str">"mode"</span>: <span class="str">"100644"</span>, <span class="str">"digest"</span>: <span class="str">"sha256:8ee3..."</span>, <span class="str">"artifactId"</span>: <span class="str">"01JB2..."</span> }
+  ] }</code></pre>
+    </div>
+
+    <p>
+      Editing the tree writes a new manifest that points at the version before it, so history is a
+      chain of records rather than a mutable directory. Bytes are shared by content, so changing one
+      character in one file stores one file, not a tree. Two agents editing the same base produce two
+      successors and you can see that they diverged, which beats one of them quietly winning.
+    </p>
+    <p>
+      A file does not have to be written to be added. An image the agent generated earlier is already
+      an artifact, so attaching it to a tree moves no bytes at all: the manifest points at what is
+      already there, and the artifact becomes a data parent of the tree, so whatever labels it
+      carries follow it in.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">radia workspaces</div>
+      <pre class="terminal"><code>NAME          FILES  VERSIONS  TREE            OWNER
+landing-page      3         7  t1:9f2cade1a4&#8230;  human:alice
+scraper           9        22  t1:07b3e5c918&#8230;  human:alice</code></pre>
+    </div>
+
+    <p>
+      Paths are validated on the way in rather than on the way out, which is the part that sounds
+      boring and is not. There is no filesystem inside the space, so a path is just a string in a
+      record until something materialises it, and every rule about what a path may contain gets
+      applied at the moment it is written. Materialising the tree revalidates anyway, and checks that
+      each resolved file really landed inside the directory it was supposed to.
+    </p>
+  </div>
+</section>
+
+<section id="run">
+  <div class="container">
+    <h2>Running what is in it</h2>
+    <p>
+      A tree is only interesting if something can execute it, and executing model-written code is a
+      question about isolation rather than about languages. Two jails ship. One runs JavaScript in a
+      subprocess with no permissions at all, safe by the absence of every flag. The other runs any
+      interpreter inside bubblewrap, safe by the presence of the right ones.
+    </p>
+    <p>
+      Those are not equivalent, and the difference is not something to paper over in a sentence on a
+      web page. So a jail is a record: it states what it actually guarantees, an operator declares it,
+      and the worker probes it before serving anything. A bubblewrap jail missing one flag can reach
+      the network while its record claims it cannot, so nothing is advertised on the strength of a
+      claim. Only on a passed probe.
+    </p>
+    <p>
+      Which means the answer to "what can this space run" is discovered rather than configured. A
+      runner publishes <code>run_javascript</code> or <code>run_python</code> only where its backend
+      probed clean, so a language the host cannot isolate is simply absent from the tool list instead
+      of failing after a turn has already committed to it.
+    </p>
+
+    <div class="callout warn">
+      <strong>The process that runs the code holds no credential.</strong> The worker that spawns
+      jails can start two specific binaries and reach the space, and nothing else. The child it
+      spawns gets no permissions and no token, so compromising the dangerous half yields a process
+      that can print bytes to its parent.
+    </div>
+  </div>
+</section>
+
+<section id="out">
+  <div class="container">
+    <h2>Getting it out</h2>
+    <p>
+      Eventually a person has to see the thing. Two exits exist, and they answer different questions.
+    </p>
+
+    <h3>Look at it</h3>
+    <p>
+      A multi-file page cannot be viewed one file at a time, because the browser will go looking for
+      the stylesheet. So a short-lived link is minted over the whole tree at once, as a
+      <code>path</code> to artifact index, and served from an isolated origin. The runtime never
+      learns what a workspace is: it was taught to serve an index somebody hands it, and the
+      extension computes that index from a manifest.
+    </p>
+    <p>
+      Path traversal is structurally absent here, which is a nicer property than a careful check. The
+      requested path is matched against a fixed index, so there is no filesystem to escape and the
+      index is the allowlist. Every artifact is authorized once when the link is minted, so the
+      served URL needs no credential and a link cannot outlive the permission that created it.
+    </p>
+
+    <h3>Hand it to git</h3>
+    <div class="code-block">
+      <div class="code-title">radia workspace-git</div>
+      <pre class="terminal"><code>$ radia workspace-git landing-page --dir /tmp/landing.git
+landing-page: 7 versions, 34 objects -> /tmp/landing.git
+$ git clone /tmp/landing.git &amp;&amp; cd landing &amp;&amp; git log --oneline
+9c1e4a2 attempt 7: fix the header overlap
+04b7f30 attempt 6: add the illustration
+&#8230;</code></pre>
+    </div>
+
+    <p>
+      A real repository, with real objects, that a real <code>git clone</code> reads. No git binary is
+      involved in making it and no dependency was added: hashing and compression are both already in
+      the platform. Each manifest version becomes a commit, the chain of versions becomes the parent
+      chain, and every commit carries trailers leading back to the record it came from.
+    </p>
+    <p>
+      Export only. There is no import, and that is a decision rather than a gap. Git hashes with
+      SHA-1, and chosen-prefix collisions have been practical since 2017, so adopting its object
+      identity would put SHA-1 into the chain that attestations rest on. Git history is also
+      rewritable by design, and records are not. Borrow the shape, emit the format, refuse the
+      storage.
+    </p>
+  </div>
+</section>
+
+<section id="worth">
+  <div class="container">
+    <h2>What this buys that git does not</h2>
+    <p>
+      Start with the one that is a genuine operational win. Anyone who has purged a leaked credential
+      from a repository knows what it costs: every downstream hash changes, every fork force-pushes,
+      every clone is invalidated, signed tags die. Here a file is an artifact, so one payload can be
+      destroyed while the tree digest still verifies and the history still reads. The blast radius is
+      gone.
+    </p>
+
+    <div class="callout warn">
+      <strong>And the guarantee is narrower than it sounds, so here it is in full.</strong> The
+      manifest keeps the path and the hash of the erased file, in a record body that has no erasure
+      path of its own. So <code>credentials/prod-db.txt</code> outlives its own contents, and anyone
+      holding a candidate secret can hash it and confirm that exact value was in that tree. A
+      destroyed build output or document is gone in every practical sense. A destroyed credential is
+      unreadable and still confirmable, and its filename is plaintext forever. What this removes is
+      the blast radius, not the disclosure.
+    </div>
+
+    <p>
+      Past that: every file version is attributable to a specific run, the dependency set is inside
+      the record rather than claimed by a lockfile, a grant can scope which workspace an agent may
+      touch at all, and labels track whether a file descends from something untrusted. Branch
+      protection has been approximating that last set for years, and a git hook dies to
+      <code>--no-verify</code>.
+    </p>
+    <p>
+      What it does not buy: incremental builds, editor feedback, merge, blame. Git does the storage
+      model better and has thirty years of tooling around it. This is not a better git. It is a
+      working tree whose every state is a record the runtime can authorize, attest and erase.
+    </p>
+    <p>
+      <a href="inspection.html">What the system can tell you about all this &#8594;</a>
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <a href="index.html">Home</a> &middot;
+    <a href="how-it-works.html">How it works</a> &middot;
+    <a href="inspection.html">Inspection</a> &middot;
+    <a href="examples.html">Examples</a> &middot;
+    <a href="https://github.com/wistrand/radia">GitHub</a>
+  </div>
+</footer>
+
+<script src="shared.js"></script>
+</body>
+</html>

@@ -9,11 +9,14 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="shared.css">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
 
   <meta property="og:type" content="website">
+  <meta property="og:url" content="https://wistrand.github.io/radia/">
   <meta property="og:title" content="Radia - agents claim work instead of being wired to each other">
   <meta property="og:description" content="A coordination runtime for LLM agents. Adding a worker adds a capability, with no code change anywhere else.">
-  <meta name="twitter:card" content="summary">
+  <meta property="og:image" content="https://wistrand.github.io/radia/og.png">
+  <meta name="twitter:card" content="summary_large_image">
 </head>
 <body>
 
@@ -26,6 +29,8 @@
       <div class="dropdown">
         <a class="dropdown-toggle">More &#9662;</a>
         <div class="dropdown-menu"><div class="dropdown-menu-inner">
+          <a href="workspaces.html">Workspaces</a>
+          <a href="inspection.html">Inspection</a>
           <a href="why.html">Why not X</a>
           <a href="examples.html">Examples</a>
           <a href="llms.txt">llms.txt</a>
@@ -231,10 +236,17 @@
     <div class="code-block">
       <div class="code-title">post some work, claim it, answer it</div>
       <pre class="terminal"><code>$ deno task dev                     <span class="cmt"># space + console, in one process</span>
+$ deno task compile                 <span class="cmt"># -&gt; ./radia; put it on your PATH</span>
 $ radia put document '{"type":"pdf","classification":"public"}'
 $ radia take document --lease 30 --json > claim.json
 $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</code></pre>
     </div>
+
+    <p>
+      Nothing installs <code>radia</code> for you yet. Either compile it as above, or run
+      <code>deno run -A src/main.ts &lt;verb&gt;</code> straight from the checkout. The npm and pip
+      packaging is built but unpublished, so <code>npx radia</code> does not work today.
+    </p>
 
     <p>
       The CLI has no private door into the runtime. Every one of those commands goes through the same
@@ -246,7 +258,8 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
 
     <div class="code-block">
       <div class="code-title">summarizer.ts</div>
-      <pre><code><span class="kw">import</span> { agentLoop, RadiaClient } <span class="kw">from</span> <span class="str">"radia/sdk"</span>;
+      <pre><code><span class="kw">import</span> { RadiaClient } <span class="kw">from</span> <span class="str">"radia"</span>;
+<span class="kw">import</span> { agentLoop } <span class="kw">from</span> <span class="str">"radia/loop"</span>;
 
 <span class="kw">await</span> <span class="fn">agentLoop</span>(<span class="kw">new</span> <span class="fn">RadiaClient</span>(url, { token }), {
   name: <span class="str">"summarizer"</span>,
@@ -290,7 +303,14 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
       </div>
       <div class="card">
         <h3>Seeing what happened</h3>
-        <p>An event log, lineage queries, a web console, and a tamper-evident chain over the log.</p>
+        <p>An event log, lineage queries, a web console, and a tamper-evident chain over the log.
+        <a href="inspection.html">What it can tell you &#8594;</a></p>
+      </div>
+      <div class="card">
+        <h3>Meeting the world</h3>
+        <p>Multi-file trees an agent can write, run in a jail, serve to a browser and export as a real
+        git repository. Built on the above, outside the runtime.
+        <a href="workspaces.html">Workspaces &#8594;</a></p>
       </div>
     </div>
 

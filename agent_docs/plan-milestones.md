@@ -107,8 +107,14 @@ event-log retention lands (M2).
 - [~] runtime envelope encryption + crypto-shredding: **built for artifact blobs** (`src/storage/crypto.ts`: per-blob DEK, wrapped under a space KEK from env/keyring, destroyable sidecar so deleting the key destroys the payload while the record and its digest stay verifiable). Record *bodies* are plaintext; KMS wrapping + rotation are open.
 - [ ] signed, externally-anchored log checkpoints
 - [ ] lineage viewer
-- [ ] run-scoped short-lived credentials
-- [ ] revocation paths
+- [x] run-scoped short-lived credentials: built in M1 with the bootstrap chain above. A run token
+  carries `expiresAt`, renews at half-life (`keepAlive` in both SDKs) and is capped by
+  `runMaxLifetimeSeconds`; `src/core/auth.ts` mints and hashes, `Space.createRun` issues. Listed as
+  open here long after it shipped, which put this file in contradiction with `docs/`.
+- [x] revocation paths: `Space.revokeDefinition` / `radia revoke <principal>` kills every run of an
+  agent, `Space.stopRun` retires one (`quarantine: true` also force-releases its leases), and a
+  grant is withdrawn by a `retired: true` successor. Credentials resolve from records per request,
+  uncached, which is what makes a revocation take effect on the next call rather than at expiry.
 - [ ] fault-injection suite
 
 **Verify:** fault-injection matrix (see [plan-validation.md](plan-validation.md)) passes;

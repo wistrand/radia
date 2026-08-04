@@ -50,7 +50,7 @@ export async function streamChat(opts: StreamOpts, onChunk: (text: string) => Pr
     headers: {
       "Authorization": `Bearer ${opts.apiKey}`,
       "Content-Type": "application/json",
-      "HTTP-Referer": "https://github.com/radia",
+      "HTTP-Referer": "https://github.com/wistrand/radia",
       "X-Title": "Radia chat",
     },
     body: JSON.stringify({

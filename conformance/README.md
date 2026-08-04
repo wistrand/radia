@@ -74,6 +74,7 @@ Postgres run was manual, while CLAUDE.md's invariant said the suite runs on ever
 | `loop.test.ts`     | the SDK worker loop losing a lease: the handler's cancellation channel (the one test here that binds a real port, since the SDK client and its SSE watchers are what is under test) |
 | `console.test.ts`  | the dev console, lifted out of the page source: HTML escaping, no credential in the page, in an event handler or in the URL, the sign-in gate, and the hash router (run against a stub DOM, since source text cannot show whether a route wires the tab, the selection and the knobs in the right order) |
 | `defaults.test.ts` | the posture an unconfigured space lands in: `--auth`, the runtime directory, optional-value flags |
+| `docs.test.ts`     | the published site (`docs/`), structurally and never by wording: the CLI verbs it shows exist in `cli.ts`, its `radia` imports resolve through the npm exports map AND name something that file exports, links and anchors resolve, no undeclared external host. Written after the landing page's first copyable command named a binary no checkout has, with the SDK snippet under it importing a path the package does not contain |
 
 **One PGlite for the process, one schema per test.** Booting a WASM Postgres per test cost ~350ms
 around single-digit ms of work, so `adapters.ts` boots one instance at module load and gives each

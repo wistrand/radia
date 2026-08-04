@@ -9,6 +9,14 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="shared.css">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://wistrand.github.io/radia/why.html">
+  <meta property="og:title" content="Why not Temporal, a queue, or a framework?">
+  <meta property="og:description" content="Honest comparisons with message brokers, durable execution engines, agent frameworks and DBOS, including where each of them is the better answer.">
+  <meta property="og:image" content="https://wistrand.github.io/radia/og.png">
+  <meta name="twitter:card" content="summary_large_image">
 </head>
 <body>
 
@@ -21,6 +29,8 @@
       <div class="dropdown">
         <a class="dropdown-toggle">More &#9662;</a>
         <div class="dropdown-menu"><div class="dropdown-menu-inner">
+          <a href="workspaces.html">Workspaces</a>
+          <a href="inspection.html">Inspection</a>
           <a href="why.html">Why not X</a>
           <a href="examples.html">Examples</a>
           <a href="llms.txt">llms.txt</a>
@@ -250,14 +260,16 @@
       Some, and it is worth being precise about how much.
     </p>
     <p>
-      A 2025 paper by Salemi and colleagues built a system where a coordinating agent posts requests
-      to a shared board and other agents volunteer for the ones they can handle, so the coordinator
-      never needs to know what any of them are good at. That is the same idea as claiming by
-      description. On three data-discovery benchmarks it improved end-to-end success by 13 to 57
-      percent over strong baselines.
+      Salemi and colleagues
+      (<a href="https://arxiv.org/abs/2510.01285">arXiv:2510.01285</a>, 2025) built a system where a
+      coordinating agent posts requests to a shared board and other agents volunteer for the ones
+      they can handle, so the coordinator never needs to know what any of them are good at. That is
+      the same idea as claiming by description. On three data-discovery benchmarks (KramaBench, plus
+      modified DSBench and DA-Code) it improved end-to-end success by 13 to 57 percent over strong
+      baselines.
     </p>
     <p>
-      A second paper the same year reports competitive results at lower token cost, beating both
+      Han and Zhang the same year (bMAS) report competitive results at lower token cost, beating both
       single-agent prompting and fixed multi-agent setups.
     </p>
     <p>
@@ -305,6 +317,7 @@
     <a href="index.html">Home</a> &middot;
     <a href="how-it-works.html">How it works</a> &middot;
     <a href="authorization.html">Authorization</a> &middot;
+    <a href="inspection.html">Inspection</a> &middot;
     <a href="https://github.com/wistrand/radia">GitHub</a>
   </div>
 </footer>

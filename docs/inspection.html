@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>What Radia can tell you about itself</title>
+  <meta name="description" content="There is no workflow file to read, so the shape of the system is worked out from what happened: mined flows, who is listening right now, what is stuck and why, and a hash chain over the record of it.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="shared.css">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://wistrand.github.io/radia/inspection.html">
+  <meta property="og:title" content="What Radia can tell you about itself">
+  <meta property="og:description" content="No workflow file to read, so the shape gets worked out from what happened: mined flows, who is listening, what is stuck and why.">
+  <meta property="og:image" content="https://wistrand.github.io/radia/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="brand">radia</a>
+    <div class="links">
+      <a href="how-it-works.html">How it works</a>
+      <a href="authorization.html">Authorization</a>
+      <div class="dropdown">
+        <a class="dropdown-toggle">More &#9662;</a>
+        <div class="dropdown-menu"><div class="dropdown-menu-inner">
+          <a href="workspaces.html">Workspaces</a>
+          <a href="inspection.html">Inspection</a>
+          <a href="why.html">Why not X</a>
+          <a href="examples.html">Examples</a>
+          <a href="llms.txt">llms.txt</a>
+          <a href="https://github.com/wistrand/radia">GitHub</a>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<aside class="sidebar" id="sidebar">
+  <a href="#shape">Where is the workflow</a>
+  <a href="#listening">Who is listening</a>
+  <a href="#stuck">What is stuck, and why</a>
+  <a href="#history">What happened</a>
+  <a href="#trust">Whether to believe it</a>
+</aside>
+
+<div class="hero">
+  <div class="container">
+    <h1>What the system can tell you about itself</h1>
+    <p class="subtitle">
+      Nothing here declares how work flows, so there is no diagram to open. That is the design
+      working, and it is also a bill that comes due the first time somebody asks what this system
+      does. Here is how it gets paid.
+    </p>
+  </div>
+</div>
+
+<section id="shape">
+  <div class="container">
+    <h2>Where is the workflow?</h2>
+    <p>
+      It is the first question every newcomer asks, and the honest answer is that there is not one.
+      A worker says what shape of record it handles, the space matches, and the system's behaviour is
+      whatever those independent declarations add up to while it runs. No file describes it.
+    </p>
+    <p>
+      The tempting fix is to ask each agent to declare its place in a pipeline. That is a routing
+      table with extra steps, and the whole point of the substrate is not to have one. So the shape
+      is worked out backwards instead, from what actually happened: take every group of records that
+      are causally connected, reduce each group to the sequence of steps it went through, and count
+      how often each sequence recurs.
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 760 250" role="img" aria-label="Many connected records on the left collapse into three recurring shapes on the right">
+        <text x="10" y="18" class="muted">what happened</text>
+        <text x="470" y="18" class="muted">what recurs</text>
+
+        <!-- left: three tangles of records -->
+        <g>
+          <circle cx="60" cy="60" r="9" class="box" fill="#60a5fa"/>
+          <circle cx="120" cy="45" r="9" class="box" fill="#9ca3af"/>
+          <circle cx="120" cy="78" r="9" class="box" fill="#9ca3af"/>
+          <circle cx="180" cy="60" r="9" class="box" fill="#9ca3af"/>
+          <path d="M 69 58 L 111 47" class="flow"/>
+          <path d="M 69 64 L 111 76" class="flow"/>
+          <path d="M 129 47 L 171 58" class="flow"/>
+          <path d="M 129 76 L 171 64" class="flow"/>
+
+          <circle cx="60" cy="140" r="9" class="box" fill="#60a5fa"/>
+          <circle cx="120" cy="125" r="9" class="box" fill="#9ca3af"/>
+          <circle cx="120" cy="158" r="9" class="box" fill="#9ca3af"/>
+          <circle cx="180" cy="140" r="9" class="box" fill="#9ca3af"/>
+          <path d="M 69 138 L 111 127" class="flow"/>
+          <path d="M 69 144 L 111 156" class="flow"/>
+          <path d="M 129 127 L 171 138" class="flow"/>
+          <path d="M 129 156 L 171 144" class="flow"/>
+
+          <circle cx="60" cy="215" r="9" class="box" fill="#60a5fa"/>
+          <circle cx="130" cy="215" r="9" class="box" fill="#fbbf24"/>
+          <path d="M 69 215 L 121 215" class="flow"/>
+          <text x="150" y="219" class="muted">never finished</text>
+        </g>
+
+        <path d="M 260 130 L 330 130" class="flow" stroke="#818cf8" stroke-width="2"/>
+        <text x="262" y="122" class="muted">group, reduce, count</text>
+
+        <g>
+          <rect x="360" y="40" width="390" height="42" rx="4" class="box"/>
+          <text x="376" y="58" class="label">73x  100%   job &#8658; pieces &#215;4 &#8594; results &#215;4 &#8594; summary</text>
+          <text x="376" y="74" class="muted">the pipeline, found without anybody describing it</text>
+
+          <rect x="360" y="96" width="390" height="42" rx="4" class="box"/>
+          <text x="376" y="114" class="label">180x  100%   a request &#8594; a reply</text>
+          <text x="376" y="130" class="muted">the boring one, and most of your traffic</text>
+
+          <rect x="360" y="152" width="390" height="42" rx="4" class="box" stroke="#fbbf24"/>
+          <text x="376" y="170" class="label">12x   8%    upload &#8594; scan</text>
+          <text x="376" y="186" class="muted">starts often, finishes almost never</text>
+        </g>
+      </svg>
+      <figcaption>
+        Shapes are mined from lineage, never declared, so the picture cannot drift from the running
+        system the way a hand-drawn architecture diagram does.
+      </figcaption>
+    </figure>
+
+    <div class="code-block">
+      <div class="code-title">radia flows</div>
+      <pre class="terminal"><code> 180x  100%  n= 2     1.3s  a request &#8594; a reply
+ 104x  100%  n= 7     7.6s  conversation &#8658; request &#8594; request + message &#8594; reply
+  73x  100%  n= 4   810ms  conversation &#8658; tool call &#8594; message + result
+   3x  100%  n=10   229ms  job &#8658; pieces &#215;4-7 &#8594; results &#215;4-7 &#8594; summary
+
+3905 records over 14 kinds, 218 subgraphs, 2 cut as hubs (--hub-degree 0 to leave them whole)</code></pre>
+    </div>
+
+    <p>
+      The columns are how often the shape happened, how often it finished, how many records were
+      involved, and how long it took. The last line is the part that keeps the rest honest.
+    </p>
+    <p>
+      A shape that starts often and finishes rarely sits next to the ones that work, which is usually
+      the most useful thing on the screen. In a log, a job nobody ever picks up and a job whose worker
+      keeps crashing look identical, and they need opposite fixes. As shapes they are obviously
+      different: one has two steps and never a third, the other has a third that keeps repeating.
+    </p>
+
+    <div class="callout">
+      <strong>A mined diagram looks equally complete whether it is or not.</strong> So the incomplete
+      cases are printed rather than left to be inferred: a long-lived record that touches everything
+      is cut out and said to be cut, a group whose parent fell outside the scan is counted as a
+      fragment, and anything that would make the picture partial is reported on the same line as the
+      picture.
+    </div>
+  </div>
+</section>
+
+<section id="listening">
+  <div class="container">
+    <h2>Who is listening right now</h2>
+    <p>
+      Mined shapes tell you what the system has done. They cannot tell you what it would do next,
+      because a worker that started a minute ago has no history yet. That is a separate question and
+      it has a separate answer: a run publishes what it is listening for, as a record, so the routing
+      topology is queryable rather than implied.
+    </p>
+    <p>
+      Which makes a useful thing possible before you commit to anything. Describe a record you are
+      thinking of posting, and ask who would receive it.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">POST /v0/ops/dry-run</div>
+      <pre class="terminal"><code>$ curl -s $SPACE/v0/ops/dry-run -H "$AUTH" \
+    -d '{"kind":"document","body":{"type":"pdf","classification":"confidential"}}'
+
+{ "kind": "document",
+  "interests": [
+    { "run": "run:01JB2Q3D7M", "agent": "agent:ocr", "match": {"type":"pdf"} }
+  ] }</code></pre>
+    </div>
+
+    <p>
+      One worker would take it, and the summarizer would not, because its grant is scoped away from
+      confidential documents. You learn that without writing the record, which is the difference
+      between a question and an experiment.
+    </p>
+    <p>
+      When nothing matches, the answer says so and says what that does and does not mean: either
+      nothing is listening for this, or the workers that would are not running. An interest is only
+      live while its run is.
+    </p>
+
+    <div class="callout warn">
+      <strong>An interest is a declaration, not evidence.</strong> A worker publishes one
+      best-effort, so a worker that never published, or has no permission to, is invisible here. That
+      caveat is attached to every answer that depends on it rather than documented once and forgotten.
+    </div>
+  </div>
+</section>
+
+<section id="stuck">
+  <div class="container">
+    <h2>What is stuck, and why</h2>
+    <p>
+      An operator asks a narrower question, and wants it answered in one command. Work that has been
+      sitting unclaimed for too long is the usual complaint, and the count on its own is close to
+      useless, because two completely different faults produce the same number.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">radia doctor</div>
+      <pre class="terminal"><code>available=1204  leased=8  consumed=39112  dead_letter=3
+dead-letter: 3
+stuck leases: 2 (expired but still held)
+stale available: 47 (11 orphaned: nothing is listening; 36 starving: a listener is not claiming)
+  orphaned invoice 01JB2Q7X4KJ8ZN0R5V3M9WPHTC
+  an interest is a worker's own declaration and publishing one is best-effort, so
+  'orphaned' means no live interest MATCHES, not that nothing is listening.
+event chain: 39112 links, UNSIGNED (detects corruption, not a rewrite; set RADIA_SEAL_KEY)</code></pre>
+    </div>
+
+    <p>
+      Orphaned means nothing is listening for this shape of record, and you fix it by starting a
+      worker or correcting a pattern. Starving means somebody is listening and not claiming, and you
+      fix it by looking at that worker. A single number for both leaves an operator to guess which
+      one they have, which is where the time goes.
+    </p>
+    <p>
+      The same vocabulary does the repair. The selector that diagnoses is the selector that
+      remediates, so finding expired leases and releasing them are one expression rather than a
+      report followed by a loop over ids.
+    </p>
+  </div>
+</section>
+
+<section id="history">
+  <div class="container">
+    <h2>What happened, exactly</h2>
+    <p>
+      Underneath all of this is an event log written in the same transaction as the change it
+      records, so there is no window in which a thing happened and the log disagrees. Every claim,
+      every ack, every write.
+    </p>
+    <p>
+      Records point at the records they came from, which makes two questions cheap in opposite
+      directions. Ask a record for its ancestors and you get the chain that produced it. Ask it for
+      its children and you get everything derived from it, which is how a conversation lists its own
+      messages without a table joining them.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">radia lineage</div>
+      <pre class="terminal"><code>&#9679; 01JB2Q9F3H  summary
+  &#9492; 01JB2Q7X4K  document
+    &#9492; 01JB2Q1A8P  upload_batch</code></pre>
+    </div>
+
+    <p>
+      Lineage is data, never authority. A record derived from a privileged one inherits nothing from
+      it. Permission travels a separate chain, derived from the claimed lease, and the two are kept
+      apart on purpose: the alternative is a system where reading a secret quietly makes you trusted.
+    </p>
+  </div>
+</section>
+
+<section id="trust">
+  <div class="container">
+    <h2>Whether to believe any of it</h2>
+    <p>
+      All of the above is computed from the log, so the log had better be intact. Finalized events
+      are sealed into a hash chain, each link covering the one before it, and the result is checkable
+      in one command.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">radia integrity</div>
+      <pre class="terminal"><code>chain OK: 39112 of 39112 links verified, signed
+head 39112 8f3c1d0ba2e47591&#8230;
+14+ events not yet sealed (sealing follows the finality watermark)</code></pre>
+    </div>
+
+    <p>
+      Sealing waits for the point past which no earlier event can still arrive, so the chain never
+      covers a gap that later fills in. Events above that line are real and simply not sealed yet.
+    </p>
+
+    <div class="callout warn">
+      <strong>Unsigned, this detects corruption and careless edits, not a rewrite.</strong> Anyone who
+      can edit the log can recompute the hashes. Signing the chain under a key held outside the
+      database is what makes an edit detectable, and until that key is set the tool says so on every
+      run rather than letting an unsigned chain be quoted as tamper detection.
+    </div>
+
+    <p>
+      There is one more thing this catches that nothing else would. A payload can be destroyed on
+      request, which the substrate supports precisely because records are otherwise immutable. But
+      destroying the copy here does not make those bytes unstorable: anyone still holding them can
+      write them again, they land at the same content address, and every record pointing at them
+      reads once more. Refusing to store them a second time is not the fix and was tried, because it
+      poisons that address for everyone. So the state is reported instead, as an erasure that no
+      longer holds. Hiding it is the only unrecoverable option.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="container">
+    <h2>The part that is still missing</h2>
+    <p>
+      A newcomer's real question is closer to "show me" than "list the shapes", and the console
+      answers that better than any of these commands: the Space tab streams live activity and the
+      Flows tab renders mined shapes with the record ids that are the evidence behind each one. What
+      does not exist yet is a view of standing interest, live, next to the traffic it explains.
+    </p>
+    <p>
+      <a href="examples.html">See it running &#8594;</a>
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <a href="index.html">Home</a> &middot;
+    <a href="how-it-works.html">How it works</a> &middot;
+    <a href="examples.html">Examples</a> &middot;
+    <a href="https://github.com/wistrand/radia">GitHub</a>
+  </div>
+</footer>
+
+<script src="shared.js"></script>
+</body>
+</html>

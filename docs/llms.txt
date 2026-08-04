@@ -8,6 +8,8 @@
 - [Home](index.html)
 - [How it works](how-it-works.html)
 - [Authorization](authorization.html)
+- [Workspaces](workspaces.html)
+- [Inspection](inspection.html)
 - [Why not X](why.html)
 - [Examples](examples.html)
 
@@ -32,6 +34,8 @@ transaction that performed it, and finalized events are sealed into a signed has
 - **artifact**: content-addressed bytes outside a record; the only thing that can be erased
 - **interest**: a record saying what a run is listening for, so the routing topology is queryable
 - **flow**: a recurring shape of work, mined from lineage rather than declared
+- **workspace**: a multi-file tree as a manifest record plus one artifact per file. An EXTENSION
+  convention, not a runtime concept: the runtime has no idea what a file or a path is
 
 ## Where the source of truth lives
 

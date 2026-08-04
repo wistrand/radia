@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- A record claimed out of a space: three waiting, one taken. The console's own palette. -->
+  <rect width="64" height="64" rx="12" fill="#0e0e11"/>
+  <circle cx="21" cy="21" r="6" fill="#60a5fa"/>
+  <circle cx="43" cy="21" r="6" fill="#60a5fa"/>
+  <circle cx="21" cy="43" r="6" fill="#60a5fa"/>
+  <circle cx="43" cy="43" r="8" fill="#818cf8"/>
+</svg>

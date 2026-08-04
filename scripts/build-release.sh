@@ -81,6 +81,11 @@ done
 # Note the versioning asymmetry, which is deliberate: `sdk/` mirrors the FROZEN /v0 contract, while
 # `extensions/` are conventions that evolve. Anything normative inside an extension (the tree digest)
 # carries its own version tag so a change is detectable rather than silent. See extensions/README.md.
+#
+# The exports map names EVERY module a consumer needs, not only the client. It listed `.` alone, so
+# `agentLoop` (the worker loop, the thing every example is built on) was unreachable from the
+# published package while the docs and the SDK README both advertised it. `conformance/docs.test.ts`
+# resolves the site's import lines against this map.
 mkdir -p "$OUT/npm/radia/sdk" "$OUT/npm/radia/extensions"
 cp sdk/ts/*.ts "$OUT/npm/radia/sdk/"
 cp -r extensions/ts/*.ts "$OUT/npm/radia/extensions/"
@@ -98,6 +103,10 @@ cat > "$OUT/npm/radia/package.json" <<JSON
   "files": ["bin", "sdk", "extensions"],
   "exports": {
     ".": "./sdk/client.ts",
+    "./loop": "./sdk/loop.ts",
+    "./wire": "./sdk/wire.ts",
+    "./registry": "./sdk/registry.ts",
+    "./await": "./sdk/await.ts",
     "./extensions/*": "./extensions/*.ts"
   },
   "optionalDependencies": {$(printf "%b" "$OPTIONAL_DEPS" | sed '$ s/,$//')
