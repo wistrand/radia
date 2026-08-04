@@ -27,21 +27,32 @@ jobs:
           deno-version: v2.x
       - run: deno task check
       - run: deno task conformance
-      # bubblewrap is an OPTIONAL execution backend: a space advertises it only where its probe
-      # comes back clean, and the suite SKIPS its cases where the jail cannot run. Installed here on
-      # purpose — skipping is right on a developer machine and wrong in the run that is meant to be
-      # thorough.
+      # bubblewrap is an OPTIONAL execution backend (a space advertises it only where its probe comes
+      # back clean), and the suite skips its cases where the jail cannot run. BEST EFFORT here, never
+      # fatal, and MEASURED: a hosted runner turned out not to support it.
+      #
+      # What happens on ubuntu-latest, verified: the binary installs, `--version` answers, the user
+      # namespace is created — and `--unshare-all` then dies with
+      # `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`, because Ubuntu's AppArmor
+      # profile permits the namespace while withholding the capability to configure `lo` inside it.
+      # So "installed" and "allowed" differ by more than one sysctl, and asserting the capability
+      # only turned a skip into a red build.
+      #
+      # The sysctl below is the documented relaxation and may be enough on some images; if it is
+      # not, the verdict step says so and the run continues. That is deliberately not a silent skip:
+      # the log states whether bubblewrap coverage is ON or OFF, so a green build never implies
+      # coverage it does not have. Real coverage for this backend comes from a machine (or
+      # self-hosted runner) with unprivileged user namespaces.
       - run: sudo apt-get update && sudo apt-get install -y bubblewrap
-      # …and ASSERTED, because installing it is not the same as being allowed to use it. bwrap needs
-      # an unprivileged user namespace, and Ubuntu 23.10+ ships
-      # `kernel.apparmor_restrict_unprivileged_userns=1`, under which the binary installs, answers
-      # `--version`, and then fails to create the namespace. Without this step that combination is a
-      # GREEN run covering nothing, because the suite would skip. If this ever fails on a runner,
-      # the choice is explicit: relax the sysctl
-      # (`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`), or drop the install and
-      # accept that the bubblewrap cases run only where somebody has one.
-      - name: bubblewrap can actually create a namespace here
-        run: bwrap --unshare-all --ro-bind / / /bin/true
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: bubblewrap coverage verdict (never fatal)
+        run: |
+          if bwrap --unshare-all --ro-bind / / /bin/true 2>/tmp/bwrap.err; then
+            echo "bubblewrap: ON — the sandbox cases will RUN"
+          else
+            echo "bubblewrap: OFF — the sandbox cases will SKIP. Reason:"
+            cat /tmp/bwrap.err
+          fi
       - run: deno task extensions
 
   postgres:

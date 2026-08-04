@@ -1086,10 +1086,18 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   permits an unprivileged user namespace — Ubuntu 23.10+ ships
   `kernel.apparmor_restrict_unprivileged_userns=1`, under which `--version` succeeds and the first
   real jail dies, so the cases would have failed anyway. It runs a trivial program through the jail
-  now, and CI ASSERTS the same capability in its own step, because "installed" and "allowed" differ
-  and a silent skip in CI is a green run covering nothing. And **gate only what actually spawns**:
-  the case that merely DECLARES two backend records was skipped too at first, and it had passed on
-  the runner.
+  now. And **gate only what actually spawns**: the case that merely DECLARES two backend records was
+  skipped too at first, and it had passed on the runner.
+- **A hosted runner cannot run this bubblewrap jail at all, and asserting the capability only turned
+  a skip into a red build.** Measured on `ubuntu-latest`: the package installs, `--version` answers,
+  the user namespace is created, and `--unshare-all` then dies with `bwrap: loopback: Failed
+  RTM_NEWADDR: Operation not permitted` — Ubuntu's AppArmor profile grants the namespace and
+  withholds the capability to configure `lo` inside it, so "installed", "allowed to unshare" and
+  "able to build the jail" are three different questions and `kernel.apparmor_restrict_
+  unprivileged_userns=0` answers only the second. CI attempts the relaxation, never fails on it, and
+  PRINTS whether bubblewrap coverage is ON or OFF. That is the rule worth keeping: the fix for a
+  silent skip is to make the skip loud, not to fail the build over an environment nobody chose.
+  Real coverage for this backend needs a machine with unprivileged user namespaces.
 - **Prefer a guarantee that holds by ABSENCE over one that holds by presence.** Deno's sandbox is
   safe because nothing was granted: forget every flag, get the safe answer. A bwrap or container
   jail is safe because `--unshare-net` was passed: forget one, get the unsafe answer silently. That

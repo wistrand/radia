@@ -417,8 +417,17 @@ nobody had tested. `runCode` spawned `deno` BY NAME against the `PATH` the jail 
 child, so it could not find the runtime wherever Deno is not in `/usr/bin` (it uses
 `Deno.execPath()` now, which is also the stronger rule: a jail must not resolve its interpreter
 through a search path). And the bubblewrap cases failed rather than skipped where `bwrap` is absent,
-though the design treats that backend as optional; they skip now, and CI installs it so the coverage
-is not quietly lost.
+though the design treats that backend as optional; they skip now, on a FUNCTIONAL check (running a
+trivial program through the real jail — `bwrap --version` proves only that a binary exists).
+
+Measured after that: **a hosted runner cannot run this jail at all.** On `ubuntu-latest` the package
+installs, the user namespace is created, and `--unshare-all` dies with `loopback: Failed RTM_NEWADDR:
+Operation not permitted`, because Ubuntu's AppArmor profile grants the namespace and withholds the
+capability to configure `lo` inside it. Asserting the capability, as this workflow first did, turned
+a skip into a red build over an environment nobody chose. CI now attempts the documented sysctl
+relaxation, never fails on it, and PRINTS whether bubblewrap coverage is ON or OFF — the fix for a
+silent skip is a loud skip. Real coverage for that backend needs a machine with unprivileged user
+namespaces.
 
 **The live-Postgres run is in CI** (`.github/workflows/ci.yml`), in a `postgres` job with a service
 container, beside an `embedded` job that runs check + conformance + extensions. This is the invariant
