@@ -43,7 +43,7 @@ outside world).
 ## Testing it without a model
 
 ```bash
-deno task chat-test              # all thirteen suites, ~60s
+deno task chat-test              # all fourteen suites, ~60s
 deno task chat-test longthread   # one by name
 ```
 
@@ -83,6 +83,7 @@ real assembly, with no API key:
 | `login` | a person's own credential: who the session is, and that two people on one space cannot read each other |
 | `runners` | a second language as a capability: a jail the host cannot start is UNDISCOVERABLE rather than a runtime error, and each tool name reaches its own runtime. The Python half skips itself where `bwrap` is absent |
 | `fleet` | model advertisements: publish, restart without growing the space, withdraw on shutdown, revive |
+| `input` | the REPL's stdin, which has no space and no model in it: the keystroke that went missing between a turn ending and the next prompt (two readers on one exclusive stream), type-ahead during a turn, and Escape versus an arrow key |
 | `capability` | tool advertisements, keyed by `(provider, tool)`: replicas of one worker collapse to one tool silently, two DIFFERENT tools under one name are reported as conflicted rather than silently taking each other over, and a provider's withdrawal leaves its peers' tools standing |
 
 The long thread is the one that pays for itself: bugs here come from the SHAPE of accumulated

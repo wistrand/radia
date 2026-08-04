@@ -51,44 +51,93 @@ export async function showArtifact(client: RadiaClient, output: unknown): Promis
   }
 }
 
-// ONE reader for the whole process, shared by the line reader and the cancel watcher.
+// ONE consumer of stdin for the whole process, and everything else reads what it buffered.
 //
-// `Deno.stdin.readable.getReader()` is exclusive, so two of them cannot coexist — and the watcher
-// has to read the same stream, because that is where Escape arrives. They never overlap in practice:
-// the REPL is strictly sequential (read a line, run a turn, read a line), so exactly one of them is
-// reading at any moment. What they do share is `pushback`, below.
+// The line reader and the cancel watcher both need the same stream (Escape arrives where the typing
+// does), and `Deno.stdin.readable.getReader()` is exclusive. Sharing the READER was not enough,
+// because a `read()` already in flight cannot be cancelled: when a turn ended, the watcher's read
+// was still pending, the next `nextLine()` queued a SECOND read behind it, and the user's line
+// resolved the watcher's — which stashed it for later while the line reader went on blocking for
+// input that had already arrived. The visible bug was an Enter that did nothing and a second one
+// that produced a blank line before the command finally ran.
+//
+// So there is exactly one reader, running forever, and consumers wait on the BUFFER. Type-ahead
+// during a turn survives by construction rather than by being handed back, and no byte can be
+// delivered to the wrong consumer, because bytes are not delivered to anyone: they accumulate.
 let sharedReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-function stdinReader(): ReadableStreamDefaultReader<Uint8Array> {
-  return sharedReader ??= Deno.stdin.readable.getReader();
+/**
+ * TEST SEAM, and it earns its keep: this file's bug class is INVISIBLE to piped input, because the
+ * cancel watcher is a no-op off a terminal, so the interleaving that loses a keystroke can only be
+ * reproduced with a stand-in stream. Set by `smoke-input.ts` and by nothing else.
+ */
+let testInput: ReadableStream<Uint8Array> | null = null;
+export function __useTestInput(stream: ReadableStream<Uint8Array>): void {
+  testInput = stream;
+  sharedReader = null;
+  pumping = false;
+  buffered = "";
+  lastChunk = "";
+  inputSeq = 0;
+  inputEnded = false;
+  waiters.clear();
 }
-/** Bytes read by one consumer that belong to the other. A `read()` already in flight cannot be
- *  cancelled, so when the watcher stops it hands back whatever arrived — which is also what makes
- *  type-ahead during a turn survive into the next prompt instead of vanishing. */
-let pushback = "";
+/** Input that has arrived and nobody has consumed. */
+let buffered = "";
+/** The most recent chunk, verbatim. The cancel watcher needs the CHUNK BOUNDARY, not just the
+ *  bytes: ESC alone is a cancel, ESC as the first byte of a longer chunk is an arrow key. */
+let lastChunk = "";
+/** Bumped per chunk, so a waiter can ask for "something new" rather than "buffer non-empty" —
+ *  otherwise the watcher spins on type-ahead it is deliberately not consuming. */
+let inputSeq = 0;
+let inputEnded = false;
+let pumping = false;
+const waiters = new Set<() => void>();
+
+function pumpStdin(): void {
+  if (pumping) return;
+  pumping = true;
+  (async () => {
+    const decoder = new TextDecoder();
+    sharedReader ??= (testInput ?? Deno.stdin.readable).getReader();
+    for (;;) {
+      const { value, done } = await sharedReader.read();
+      if (done) break;
+      lastChunk = decoder.decode(value, { stream: true });
+      buffered += lastChunk;
+      inputSeq++;
+      for (const wake of [...waiters]) wake();
+      waiters.clear();
+    }
+  })().catch(() => {}).finally(() => {
+    inputEnded = true;
+    for (const wake of [...waiters]) wake();
+    waiters.clear();
+  });
+}
+
+/** Resolve once a chunk newer than `after` has arrived, or stdin has ended. */
+function inputChanged(after: number): Promise<void> {
+  pumpStdin();
+  if (inputSeq > after || inputEnded) return Promise.resolve();
+  return new Promise<void>((resolve) => waiters.add(resolve));
+}
 
 /** Read stdin a line at a time. Works for an interactive TTY and for piped input, unlike prompt(). */
 export function lineReader(): () => Promise<string | null> {
-  const decoder = new TextDecoder();
-  let buf = "";
   return async function nextLine(): Promise<string | null> {
-    while (true) {
-      if (pushback) {
-        buf += pushback;
-        pushback = "";
-      }
-      const nl = buf.indexOf("\n");
+    for (;;) {
+      const nl = buffered.indexOf("\n");
       if (nl >= 0) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
+        const line = buffered.slice(0, nl);
+        buffered = buffered.slice(nl + 1);
         return line;
       }
-      const { value, done } = await stdinReader().read();
-      if (done) {
-        const rest = buf;
-        buf = "";
+      if (inputEnded) {
+        const rest = buffered;
+        buffered = "";
         return rest || null;
       }
-      buf += decoder.decode(value, { stream: true });
+      await inputChanged(inputSeq);
     }
   };
 }
@@ -104,25 +153,27 @@ export function lineReader(): () => Promise<string | null> {
  * A no-op when stdin is not a terminal, so piped input and the smoke suites are unaffected.
  */
 export function watchCancel(onCancel: () => void): () => void {
-  if (!Deno.stdin.isTerminal()) return () => {};
-  Deno.stdin.setRaw(true);
+  if (!testInput && !Deno.stdin.isTerminal()) return () => {};
+  if (!testInput) Deno.stdin.setRaw(true);
   let stopped = false;
   (async () => {
-    const decoder = new TextDecoder();
+    let seen = inputSeq;
     while (!stopped) {
-      const { value, done } = await stdinReader().read();
-      if (done) return;
-      const text = decoder.decode(value, { stream: true });
-      if (stopped) {
-        // The read was already in flight when the turn ended: these bytes are the next prompt's.
-        pushback += text;
-        return;
-      }
+      await inputChanged(seen);
+      if (inputEnded) return;
+      seen = inputSeq;
+      // Checked AFTER the wait: the turn may have ended while this was parked, and the bytes that
+      // woke it belong to the next prompt. It consumes nothing, so they are already where the line
+      // reader will find them.
+      if (stopped) return;
       // ESC alone. An arrow key or any other escape SEQUENCE also starts with 0x1b, so requiring
-      // the byte to arrive on its own is what separates "the user pressed Escape" from "the user
-      // pressed Up". Not perfect — a fast terminal can coalesce — but wrong in the safe direction:
-      // a missed cancel is a wait, a false one would discard work nobody asked to discard.
-      if (text === "\x1b") {
+      // the byte to arrive as its own chunk is what separates "the user pressed Escape" from "the
+      // user pressed Up". Not perfect — a fast terminal can coalesce — but wrong in the safe
+      // direction: a missed cancel is a wait, a false one would discard work nobody asked to.
+      if (lastChunk === "\x1b") {
+        // Taken out of the buffer: Escape is a command, not text for the next prompt. Everything
+        // else the user typed during the turn stays, which is what makes type-ahead survive.
+        if (buffered.endsWith("\x1b")) buffered = buffered.slice(0, -1);
         onCancel();
         return;
       }
@@ -131,7 +182,7 @@ export function watchCancel(onCancel: () => void): () => void {
   return () => {
     stopped = true;
     try {
-      Deno.stdin.setRaw(false);
+      if (!testInput) Deno.stdin.setRaw(false);
     } catch { /* not a terminal any more, or already restored */ }
   };
 }
