@@ -4,8 +4,12 @@ Sequence and status. The reasoning lives in [design-workspaces.md](design-worksp
 working tree is, and the git relationship) and [design-execution.md](design-execution.md) (why the
 language question is an isolation question). Read those first; this file assumes them.
 
-> **Status: Phases 0-10 DONE**, including 10.6 (what first real use found). Phase 11 (serving a
-> tree) is planned and UNBLOCKED: its gate, 11.0, was decided (single-process capabilities). Workspaces, write-back, `check`, fork detection, `sandbox` records,
+> **Status: Phases 0-11 DONE.** Phase 11 (serving a tree) was built earlier and VERIFIED on
+> 2026-08-04: 11.0 decided (single-process capabilities), 11.1 and 11.2 shipped
+> (`Space.mintPathCapability`, `POST /v0/capabilities`, `GET /v0/w/<cap>/<path>` on the isolated
+> origin, media types), 11.3 is deliberately SNAPSHOT-only (the name-following half is the one that
+> could serve content authorized later), and 11.4's list is now `conformance/tree.test.ts`, whose
+> three security cases were each validated against a planted regression. Workspaces, write-back, `check`, fork detection, `sandbox` records,
 > a second backend (bubblewrap), and selection by capability name (`run_javascript`, `run_python`).
 > Phase 7 answered the selection question with neither of the two options it was written to choose
 > between; see there. Phases 8 and 9 were added after the fact, both from live use rather than from
@@ -888,7 +892,11 @@ Derive from the path extension at write time. `mediaTypeFor` exists but lives in
 `examples/chat/util.ts`, and an extension may not import an example, so it moves to `extensions/`.
 The type stays a client CLAIM, validated and not verified, which is already true of `save_content`.
 
-#### 11.3 Snapshot or live
+#### 11.3 Snapshot or live — **SNAPSHOT built; live not**
+
+The mint takes explicit `{path, artifactId}` entries, and an artifact id is immutable, so every
+capability today is version-pinned by construction. The name-following half is unbuilt, which is the
+right half to be missing: it is the one that can serve content authorized later.
 
 A capability over a manifest VERSION is immutable and matches the posture everywhere else. One over a
 workspace NAME follows edits, which is what someone iterating actually wants — save, refresh, look.
@@ -898,10 +906,29 @@ capability can serve content authorized LATER**, possibly written by someone els
 authorization was decided at mint. That is the one way this feature could hand out something nobody
 approved.
 
-#### 11.4 Verification
+#### 11.4 Verification — **DONE** (`conformance/tree.test.ts`)
 
-- a tree with `index.html`, `style.css` and a script renders as a page, with relative links resolving
-- `/v0/w/<cap>/` serves `index.html`; a path not in the index is 404 and never touches a filesystem
+Seven cases, one per line below, and the three security properties (traversal, the mint-time read
+check, the isolated origin) were each validated by planting the regression they exist to catch: a
+resolver that helpfully strips leading `../`, a mint with the author check dropped, and a
+"convenience" tree route on the console's own origin. All three were caught.
+
+Two things the list got wrong, corrected here rather than in the code:
+
+- **A missing path is 403, not 404.** One answer for an unknown capability, an expired one and a
+  path that is not in the tree, so a prober cannot map a tree's contents by reading status codes.
+  The test pins that the two responses are byte-identical.
+- **Traversal has two layers, and only the second is this design's claim.** An UNENCODED `..` never
+  reaches the tree route at all, because the URL parser removes the dot segment first; that is a
+  gift from the parser, and a different client could decline to give it. The property being claimed
+  is what happens to an ENCODED one, which arrives as literal text and misses the index. The test
+  separates them, and also pins that an ordinary `./style.css` still serves, since a guard that
+  refuses relative addressing would break the feature rather than secure it.
+
+- a tree with `index.html`, `style.css` and a script renders as a page, with relative links
+  resolving (checked by resolving the page's own hrefs with the URL algorithm a browser uses, then
+  fetching what comes out; no browser is launched)
+- `/v0/w/<cap>/` serves `index.html`; a path not in the index is refused and never touches a filesystem
 - a path with `..`, an absolute path and a URL-encoded traversal all miss the index rather than being
   normalised into it
 - the capability is refused at mint when the caller cannot read every artifact in the tree
