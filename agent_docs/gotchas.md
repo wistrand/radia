@@ -5,6 +5,12 @@ spec alone doesn't carry. Skim before proposing a change to signing, encryption,
 idempotency ordering, storage backends, or the delivery guarantee. Origin: outline §9.1,
 §9.2, §13, and rationale scattered through §2–§8.
 
+**Writing an entry: a bold rule, then at most a short paragraph.** Name the mechanism, the
+consequence, the measurement if there is one, and the symbol or guard to look at. Cut the
+narrative of how it was found, what was believed first, and anything a reader can infer. An entry
+past ~8 lines is one that needs cutting, not a second paragraph: this file is read by someone
+skimming for a rule, and a page of prose per entry means the rule is not found.
+
 ## Contents
 - Findings (diagnosed during implementation)
 - Traps and critical decisions
@@ -37,495 +43,331 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
 
 
 - **"Public route" means no credential is REQUIRED, not that a bad one is ignored.** `GET /` and
-  `GET /v0/health` skip authentication so the console can bootstrap in `--auth required` mode. The
-  skip covered every credential error, so a request presenting an expired, stopped, or garbage
-  bearer token got `200 {principal: "anonymous"}` from health, the one endpoint a client calls to
-  ask whether its token still works. Not a privilege escalation (the caller is anonymous, not the
-  operator), but it makes a dead credential indistinguishable from an open space. Only
-  `auth_required`, the error meaning nothing was presented, is exempt now; every other resolution
-  failure is a 401 on public routes too. Note a malformed `Authorization` header that is not a
-  Bearer at all still reads as "no credential" in open mode, because header normalization has
-  already eaten it by the time the server looks.
-- **A cast is still a promise, not a check. `match` was the one that got away.** The boundary
-  validation added after the fuzzing covered `parentIds`, `deadlineAt`, `orderBy` and the rest, but
-  `pattern.match` was cast (`j.match as Record<string, unknown>`) all the way into the compiler.
-  `Object.keys(3)` is empty, so `match: 3` compiled to NO PREDICATE and the query returned every
-  record of the kind: a malformed filter that WIDENS, answering a question the caller never asked
-  with a plausible-looking result. Validated in `compilePattern` rather than in the handlers, for
-  the same reason `compileOrderBy` is: the SDK, MCP and in-process callers never pass through a
-  handler. Found by writing the HTTP boundary tests, not by reading the code. The fuzzing that
-  found the original class was a one-off that was never checked in, so every endpoint added since
-  had no such check. It is a table in `conformance/http.test.ts` now.
+  `GET /v0/health` skip authentication so the console can bootstrap under `--auth required`. The
+  skip covered every credential error, so an expired or garbage token got
+  `200 {principal: "anonymous"}` from the one endpoint a client uses to ask whether its token still
+  works. Only `auth_required` (nothing presented) is exempt now; every other resolution failure is a
+  401 on public routes too.
+- **A cast is still a promise, not a check; `match` was the one that got away.** `pattern.match` was
+  cast straight into the compiler, and `Object.keys(3)` is empty, so `match: 3` compiled to NO
+  PREDICATE and returned every record of the kind: a malformed filter that WIDENS. Validated in
+  `compilePattern`, not in the handlers, because SDK/MCP/in-process callers never pass through one.
+  Found by writing `conformance/http.test.ts`, which is a table now: add a row per field.
 - **A wrong-typed field that changes WHICH records are involved is a 400; one that only sizes the
-  answer falls back to its default.** `limit: "ten"`, `leaseSeconds: "60"` and `backoffSeconds: []`
-  are ignored in favour of the default; `match`, `pattern`, `orderBy`, `after` and `dir` are
-  rejected. The asymmetry is deliberate and easy to "fix" into inconsistency: a bad bound cannot
-  answer a different question, and a bad selector can. Pinned in both directions so neither drifts.
+  answer falls back to its default.** `limit: "ten"`, `leaseSeconds: "60"`, `backoffSeconds: []` fall
+  back; `match`, `pattern`, `orderBy`, `after`, `dir` are rejected. A bad bound cannot answer a
+  different question; a bad selector can. Pinned in both directions so neither drifts.
 - **Cache what cannot change; never cache what can be revoked.** Credentials looked like a registry
-  (records projected into a lookup, rebuilt at startup) and were built as one. That was wrong,
-  because the thing a registry cache trades away is *freshness*, and freshness is the entire content
-  of a credential. The bill came due twice, both fail-open and both silent: the startup rebuild read a
-  bounded page of an unbounded log, so on a busy space a STOPPED run's token still resolved after a
-  restart; and `stopRun` consulted the cache first, so stopping a run the cache had not seen
-  returned `applied: false` and did nothing. `Space.resolveToken` now reads the records on every
-  authenticated request; `CredentialStore` (`src/core/auth.ts`) keeps only operator tokens and a
-  memo of which agent a run instantiates, an immutable fact. A stop is a successor carrying the
-  SAME `tokenHash`, so one indexed lookup sees it, and a token minted on one instance authenticates
-  on another with no replay. The same test applies to anything else you are tempted to cache: if it
-  can be withdrawn, it must be discovered.
+  and were built as one, but a registry cache trades away freshness, which is the whole content of a
+  credential. Two silent fail-opens followed: a bounded startup rebuild left a STOPPED run's token
+  resolving after a restart, and `stopRun` consulted the cache first, so stopping a run it had not
+  seen returned `applied: false` and did nothing. `Space.resolveToken` reads records per request;
+  `CredentialStore` (`src/core/auth.ts`) keeps only operator tokens and the immutable run→agent memo.
+  If it can be withdrawn, it must be discovered.
 - **An ORDER BY can defeat the index that would have served the filter, and a partial index is
   unusable when its predicate column is a bound parameter.** Both bit the credential lookup, and
-  both are invisible without `explain query plan`. Newest-first over a selective equality
-  (`where kind=? and <expr>=? order by id desc limit 1`) makes SQLite walk the whole kind in id
-  order, evaluating the filter per row, because it reasons the limit will be satisfied early, so
-  a token whose record is OLD costs a full scan, and an index on the hash alone changes nothing.
-  Then the obvious fix, a partial index restricted to the credential kinds, is never chosen either:
-  SQLite cannot prove at plan time that a bound `kind` parameter satisfies the index predicate. The
-  shape that works puts kind in the index KEY: `(kind, json_extract(body_json,'$.tokenHash'))`, and
-  the expression must match what `SqliteJson.at` emits character for character. Measured at 3000
-  credential records: 1.23ms → 0.05ms, and flat to 12k instead of growing. Postgres needs none of
-  this: the GIN index over `body_jsonb` already serves every path, which is why this is the only
-  physical per-path index in the schema.
-- **`record_edges` is a DERIVED index; `parent_ids` stays the source of truth.** `childrenOf` was
-  a `LIKE` scan over the `parent_ids` JSON text (safe, because ids are ULIDs and carry no `%`/`_`,
-  but O(space) to find a handful of children: 87µs at 1k records → 662µs at 20k for the *same
-  five children*). It is now an indexed lookup through a `(parent_id, child_id)` table: 31µs →
-  32µs, flat. Three things keep the derivation honest, and all three matter: the edge is
-  written **in the same transaction as the record**, so it cannot lag what it indexes; **every**
-  insert path writes it, including ack-with-result, which is the path that creates a task's result
-  and therefore exactly the edges most worth having (pinned by a conformance case, because a
-  reverse index that only `put` maintained would look correct in every hand test); and the schema
-  carries a **one-time backfill** from `parent_ids`, guarded by `where not exists (select 1 from
-  record_edges)`, so a database written by an older build rebuilds its edges on next startup.
-  That backfill is now covered by `conformance/backfill.test.ts`, which empties the table and
-  reopens. The earlier claim that conformance "cannot reach it, every harness database is created
-  fresh" was true of the harness and false of the problem. Two things the test had to get right, and
-  both were wrong first: the database must be PERSISTENT, because `init()` on `:memory:` opens a new
-  empty database and the first draft "survived a restart" by finding nothing in it; and
-  `SqliteAdapter.init` now closes any existing handle first, since re-initializing otherwise leaked
-  the previous connection and silently swapped in that empty database.
+  neither is visible without `explain query plan`. `where kind=? and <expr>=? order by id desc
+  limit 1` walks the whole kind in id order; a partial index over the credential kinds is never
+  chosen either, because SQLite cannot prove a bound `kind` satisfies the predicate. What works puts
+  kind in the index KEY: `(kind, json_extract(body_json,'$.tokenHash'))`, matching `SqliteJson.at`
+  character for character. 3000 credential records: 1.23ms → 0.05ms, flat to 12k. Postgres needs
+  none of it (GIN over `body_jsonb` serves every path), so this is the schema's only per-path index.
+- **`record_edges` is a DERIVED index; `parent_ids` stays the source of truth.** `childrenOf` was a
+  `LIKE` scan over the JSON text: 87µs at 1k records → 662µs at 20k for the same five children. It
+  is a `(parent_id, child_id)` lookup now, flat at ~32µs. Three things keep the derivation honest:
+  the edge is written in the record's OWN transaction; EVERY insert path writes it, ack-with-result
+  included (pinned by a conformance case, since a reverse index only `put` maintained looks correct
+  in every hand test); and a one-time backfill rebuilds it for databases written by older builds.
+  Covered by `conformance/backfill.test.ts`, which needs a PERSISTENT database: `init()` on
+  `:memory:` opens a new empty one, so the first draft "survived a restart" by finding nothing.
 - **A graph walk should batch by LEVEL, but the reason it got faster may not be the batching.**
-  `getLineage` now fetches a whole depth level with one `getRecords` call instead of one
-  `getRecord` per node. Measured head to head at depth 64 in a 20k-record space: 0.224ms vs
-  0.651ms. But note *where* that came from: the benchmark's lineage is a plain chain, one node
-  per level, so batching saves no round trips there at all. The first version of the batched walk
-  was **slower** than the per-node one (1.247ms vs 0.780ms), because SQLite's `getRecords` builds
-  its SQL text from the id count and so re-parsed an identical statement every level. Caching the
-  prepared statement by placeholder count is what actually won; the batching pays on a DAG that
-  fans out and on a networked Postgres, where a round trip is latency rather than work. Worth
-  remembering before attributing a speedup to the change you meant to make.
-
-- **Fan-out needs a bound even when the caller has one.** `childrenOf` returned EVERY child, which
-  was fine as a `LIKE` scan nobody used at scale and became a materialize-the-subtree once it was an
-  indexed edge lookup people walk. Two separate limits were needed: the endpoint pages by keyset over
-  child id (same contract as `query`, `nextAfter` and all), and the graph walk bounds children PER
-  NODE. Its `maxNodes` cap bounds what the picture SHOWS, not what the walk reads, so a single hub
-  record could still drag in an arbitrary number of rows to enqueue them. A client-side `.slice()`
-  is not a bound: the rows were already fetched by then, which is what the chat's `space_children`
-  was doing.
+  `getLineage` fetches a depth level per `getRecords` call: 0.224ms vs 0.651ms at depth 64 in a 20k
+  space. The benchmark's lineage is a chain, one node per level, so batching saved no round trips
+  there at all — the first batched version was SLOWER (1.247ms vs 0.780ms) because SQLite rebuilt
+  its SQL text per id count and re-parsed every level. Caching the prepared statement by placeholder
+  count is what won. Check what a speedup actually came from before attributing it.
+- **Fan-out needs a bound even when the caller has one.** `childrenOf` returned every child: fine as
+  an unused `LIKE` scan, a materialize-the-subtree once it became an indexed lookup people walk. Two
+  limits, because they bound different things: the endpoint keyset-pages over child id, and the
+  graph walk bounds children PER NODE (`maxNodes` bounds what the picture SHOWS, not what the walk
+  reads). A client-side `.slice()` is not a bound — the rows are already fetched.
 - **The credential index was rebuilt from a bounded page too, and the fix was to delete the index,
-  not to widen the page.** `loadCredentials` read the oldest 5000 `agent_definition`/`agent_run`
-  records. Both accumulate (one definition per re-definition, one run per mint, and a live run
-  re-mints on a timer), so on a busy space the window held only ancient history. Measured on 5202
-  run records: after a restart a STOPPED run's token still resolved. Reading newest-first patched
-  that instance; the cache itself was the defect, and it is now gone (see "cache what cannot change"
-  above). Kept as history because the reasoning that justified the cache, "credentials are a
-  registry like kinds", is exactly the reasoning to distrust next time.
-  One consequence had to be handled separately, and it survives the removal. `runsForAgent` read the
-  cache to answer "which principals count as me" for a self scope, but that question wants HISTORY,
-  not live credentials, so it would have shrunk as the space aged and quietly narrowed "what did I
-  create". It is now `Space.runPrincipalsOf`, querying `agent_run` by `agent` (a declared indexed
-  path).
+  not widen the page.** `loadCredentials` read the OLDEST 5000 `agent_definition`/`agent_run`
+  records, both of which accumulate, so a busy space held only ancient history: at 5202 run records,
+  a STOPPED run's token still resolved after a restart. The cache is gone (see "cache what cannot
+  change"). Kept as history because its justification, "credentials are a registry like kinds", is
+  the reasoning to distrust next time. One consequence outlived it: `runsForAgent` answered "which
+  principals count as me" from the cache, but that question wants HISTORY, not live credentials. It
+  is `Space.runPrincipalsOf` now, querying `agent_run` by `agent`.
 - **A bounded read that decides a SCOPE is not a performance question, it is an authorization one.**
-  `runPrincipalsOf` (`src/core/space.ts`) answered "which principals count as me" from 1000 rows of
-  `agent_run`, so a long-lived agent's OLDEST records dropped out of its own self-scoped reads, the
-  exact failure its doc comment claimed to prevent. That list is the allowlist for `take`, lineage,
-  graph, artifact bytes and watch wakeups, so a truncated one makes an agent's own older records
-  unclaimable and `rankClaimable` skips them indistinguishably from an empty queue: it fails
-  silently, and it looks like a drained queue. It pages to exhaustion through `readRegistry` now and
-  throws `registry_incomplete` rather than narrowing. The client side had the same shape in five
-  places (`listKinds`, Python's `list_kinds`, the chat's grant and `agent_run` reads, and the exec
-  worker's capability and procedure reads, where a miss re-opens the tool-name hijack that check
-  exists to block), all routed through `RadiaClient.queryAll` / `query_all`, which keyset-pages
-  newest-first and THROWS instead of returning a plausible prefix. Python's `list_kinds` was
-  additionally reading OLDEST-first and ignoring `retired`, so withdrawn kinds reappeared. Guarded
-  by `conformance/suites/auth.ts`, which seeds 1201 `agent_run` records for one agent and asserts
-  its oldest run is still in the self scope on both adapters. Where a bound is genuinely right,
-  bound it by RELEVANCE (only what can still be presented) rather than by page size, and say so at
-  the call site.
+  `runPrincipalsOf` answered "which principals count as me" from 1000 rows, so a long-lived agent's
+  OLDEST records fell out of its own self-scoped reads. That list is the allowlist for `take`,
+  lineage, graph, artifact bytes and watch wakeups, so truncation makes an agent's own records
+  unclaimable and `rankClaimable` skips them indistinguishably from an empty queue. It pages to
+  exhaustion via `readRegistry` and throws `registry_incomplete` rather than narrowing. Five client
+  reads had the same shape and now route through `RadiaClient.queryAll` / `query_all`, which pages
+  newest-first and THROWS instead of returning a prefix. Guarded in `conformance/suites/auth.ts`
+  (1201 runs for one agent; its oldest must stay in scope). Where a bound is right, bound by
+  RELEVANCE, not page size, and say so at the call site.
 - **Every grant read is a bounded page over records that ACCUMULATE, and truncation misauthorizes
-  silently.** Re-defining an agent used to append a fresh record per grant on every boot, so a
-  long-lived principal crossed the page cap in ordinary use, and `authorize`/`authorizeWatch`/
-  `authorScope`/`opsScope` all read a capped page. Measured both directions: at 101 records a
-  legitimately granted principal was DENIED, and at 122 a REVOCATION written as the newest record
-  was invisible, so the revoked grant kept working. Fail-open on revocation is the one that matters.
-  Three parts to the fix, and the first is the only structural one: grant writes are now
-  CONTENT-KEYED, so re-defining an agent with unchanged grants writes nothing (this key does dedup
-  across restarts, unlike a worker republishing a capability, because agent definitions are an
-  operator action and an idempotency key is scoped to the acting principal); reads take the NEWEST
-  page; and the bound is generous, because the cost of truncating is silent misauthorization. Note
-  what does NOT work: reading newest-first alone. An old-but-live grant then falls off the other end;
-  no single page direction is correct over a set larger than the page.
-- **A NUL is invisible in source and lethal in Postgres.** `grantKey` joined its parts with `\0`,
-  which was fine while it was only an in-memory Map key and became `invalid byte sequence for
-  encoding "UTF8": 0x00` the moment that key was used as an idempotency key. Two lessons: build
-  composite keys by ENCODING the parts (`JSON.stringify([...])`) rather than joining with a
-  separator no value can contain, since the encoded form is both unambiguous and printable; and
-  `grep -P "\x00"` will NOT find these, because grep suppresses binary matches, so scan with something
-  that reads bytes.
+  silently.** Re-defining an agent appended a record per grant per boot, and `authorize`/
+  `authorizeWatch`/`authorScope`/`opsScope` all read a capped page: at 101 records a granted
+  principal was DENIED, at 122 a REVOCATION was invisible and the revoked grant kept working. Grant
+  writes are CONTENT-KEYED now (re-defining with unchanged grants writes nothing), reads take the
+  NEWEST page, and the bound is generous. Reading newest-first ALONE does not work either: an
+  old-but-live grant falls off the other end. No single page direction is correct over a set larger
+  than the page.
+- **A NUL is invisible in source and lethal in Postgres.** `grantKey` joined parts with `\0`, fine
+  as an in-memory Map key, `invalid byte sequence for encoding "UTF8": 0x00` once that key became an
+  idempotency key. Encode composite keys (`JSON.stringify([...])`) rather than joining on a
+  separator no value can contain. Note `grep -P "\x00"` will not find these: grep suppresses binary
+  matches.
 - **Scoping by AUTHOR does not mean what "my records" means to a user.** The chat's session writes
-  `message`/`llm_call`/`tool_call`; the RESULTS, chunks and artifacts are written by WORKERS under
-  their own principals. So `createdBy: self` would show a session its messages and hide its own tool
-  output, and the chat would hang waiting for results it could no longer read. Conversation scoping
-  covers both but hides the user's OWN earlier threads, which is not what they meant either. What
-  works is an application field: the session stamps `owner`, workers copy it onto everything they
-  produce for that call, and the grant binds `{owner}`, enforced on writes too, so a session
-  cannot stamp another identity. `RADIA_CHAT_SCOPE` picks between that and `{conversationId}`,
-  because the right answer depends on the space: identity scoping separates a session from workers
-  and operator sessions, and separates two PEOPLE only if they are two principals. They were not:
-  `agent:chat-user` is one constant, so every person running the chat was the same principal and the
-  scope bound to the same value for all of them. `RADIA_CHAT_TOKEN` (a `radia login` session) fixes
-  the identity rather than the scope, which is the level the defect was at. Without one, only
-  `{conversationId}` keeps two people apart.
+  `message`/`llm_call`/`tool_call`, but the RESULTS, chunks and artifacts are written by WORKERS
+  under their own principals, so `createdBy: self` would hide a session's own tool output and hang
+  it waiting for results it cannot read. What works is an application field: the session stamps
+  `owner`, workers copy it, the grant binds `{owner}` and enforces it on writes so a session cannot
+  stamp another identity. `RADIA_CHAT_SCOPE` picks that or `{conversationId}`. Identity scoping
+  separates two PEOPLE only if they are two principals, and `agent:chat-user` is one constant, so
+  without `RADIA_CHAT_TOKEN` (a `radia login` session) only `{conversationId}` keeps them apart.
 - **Tightening a grant by adding a PATTERN is inert on any space that already had the loose one.**
   Scope and pattern are part of a grant's identity, so declaring `{message, [put,query],
-  pattern:{conversationId}}` beside an existing `{message, [put,query]}` creates a SECOND grant,
-  and grants union, so the narrower one changes nothing. Every test passed, because tests start on a
-  fresh space; a live session on a two-day-old space kept reading every conversation after its
-  grants were scoped to one. `createAgentDefinition` now retires the unpatterned twin of each grant
-  it declares, and, since testing that fix exposed the same hole one level up, every live grant on
-  the same (principal, kind, operations) whose pattern DIFFERS. Swapping one pattern for another
-  is not adding a grant: the two union and the wider view wins, so changing a session's scope
-  silently widened it instead. Two boundaries worth keeping: `scope` is excluded on purpose, because
-  `grantKey` excludes it (a self-scoped grant already replaces its unscoped twin in place) and
-  including it made the rule retire the grant it had just written, since the two share a key; and it is
-  bounded to the exact triple declared, so a grant a human assigned out of band survives restarts. The general shape: when identity includes the thing you are changing, a
-  change is an ADD, and the old value stays in force until something withdraws it.
+  pattern:{conversationId}}` beside an existing `{message, [put,query]}` creates a SECOND grant, and
+  grants union, so the narrower one changes nothing. Tests passed because they start on a fresh
+  space; a live session on a two-day-old space kept reading every conversation. `createAgentDefinition`
+  now retires the unpatterned twin of each grant it declares, and every live grant on the same
+  (principal, kind, operations) whose pattern DIFFERS — swapping one pattern for another had the
+  same widening effect. Two boundaries: `scope` is excluded (`grantKey` excludes it, and including
+  it made the rule retire the grant it had just written), and it is bounded to the declared triple,
+  so a grant assigned out of band survives restarts. General shape: **when identity includes the
+  thing you are changing, a change is an ADD**, and the old value stays in force until withdrawn.
 - **A content-keyed registry write cannot revive what it retired, and a supersede that runs per
   entry retires its own siblings.** Grants are written under a content-derived idempotency key and
-  idempotency rows never expire, so re-declaring a previously-used grant pattern wrote NOTHING while
-  `supersedeGrantsFor` still retired the live one. Net: zero active grants, and
-  `createAgentDefinition` returning success. Reproduced as identity scope, then conversation scope,
-  then identity scope again, where the third step ends in `forbidden: no 'query' grant`, reachable
-  from an ordinary chat resume. Three changes in `src/core/space.ts`. The grant write suffixes its
-  idempotency key with `:after:<recordId>` when the newest record for that grant identity is a
-  retirement, which needed `RegistryView.newest` (`src/core/registry.ts`) because `entries` drops
-  retirements, so a writer could not see the record it had to supersede. `supersedeGrantsFor` takes
-  the WHOLE declared set and skips any grant whose key is in it, so two patterns on one (principal,
-  kind, operations) survive together, which `authorize` is built to union. And retirements are keyed
-  on the RECORD being retired rather than on the grant identity alone, so an identity can be retired
-  more than once: keyed the old way, a re-granted wide grant survived the next supersede silently,
-  misauthorization in the widening direction. Always anchor the revival on the newest RETIREMENT,
-  never on "is the newest record retired": that test was tried, and after one revival it falls back
-  to the plain key the original record already consumed, so the next repeat replays and returns the
-  RETIRED record. Both SDK `grant()` helpers had the same defect on the public path and anchor the
-  same way. `createAgentDefinition` reads the grant registry once per principal and throws
-  `registry_incomplete` rather than superseding on a partial view, because a truncated read leaves
-  stale grants live. Guarded by `conformance/suites/retire.ts` on both adapters (round trip, two
-  patterns on one triple, re-narrowing a retired-then-re-granted grant) and by
-  `examples/chat/smoke-selfgrant.ts` (assign, retire, revive, repeat). Same class as "the
-  retire/republish trap" under Rejected approaches.
+  idempotency rows never expire, so re-declaring a previously-used grant wrote NOTHING while
+  `supersedeGrantsFor` retired the live one: zero active grants, and `createAgentDefinition`
+  reporting success. Reachable from an ordinary chat resume (identity scope → conversation scope →
+  identity scope ends in `forbidden`). Three changes in `src/core/space.ts`: the write suffixes its
+  key with `:after:<recordId>` when the newest record for that identity is a retirement (which is
+  why `RegistryView.newest` exists — `entries` drops retirements, so a writer could not see what it
+  had to supersede); `supersedeGrantsFor` takes the WHOLE declared set and skips keys in it, so two
+  patterns on one triple survive together; and retirements are keyed on the RECORD retired, so an
+  identity can be retired more than once. Anchor revival on the newest RETIREMENT, never on "is the
+  newest record retired": that was tried, and after one revival it falls back to a key the original
+  record already consumed, so the next repeat replays the RETIRED record. Both SDK `grant()` helpers
+  anchor the same way. Guards: `conformance/suites/retire.ts`, `examples/chat/smoke-selfgrant.ts`.
 - **A withheld count with no reason sends every agent hunting for a grant that cannot exist.**
-  `/v0/ops/events` filters by which principal PERFORMED the operation, so no grant on any record
-  kind widens it, but the response only said `withheld: 65923`, which reads as "you are missing a
-  grant". Four sessions in a row spent their turns requesting kind grants to close that gap, two of
-  them inventing a kind (`space_event`) to request, and none could have succeeded. The response now
-  carries `withheldNote` saying the filter is on the actor and that seeing another principal's
-  activity needs an operator session. Cheaper to say once than to have every caller learn it by
-  exhaustion. Note the failure was not wrong behaviour anywhere, just an unexplained number.
+  `/v0/ops/events` filters by which principal PERFORMED the operation, so no record-kind grant
+  widens it, but the response said only `withheld: 65923`, which reads as "you are missing a grant".
+  Four sessions running spent their turns requesting grants that could not have helped, two of them
+  inventing a kind to ask for. The response carries `withheldNote` now. Cheaper to say once than to
+  have every caller learn it by exhaustion.
 - **An approval prompt whose label does not match what it grants, and whose keys read as "yes".**
-  Two failures in one exchange, both from a live session. The narrow option said "only its OWN
-  records, reads only" and then granted the request VERBATIM, including `take`, on `llm_call`,
-  which would let a chat session claim work the inference fleet is waiting for. Self-scoping is a
-  read filter (claiming a record and then rejecting it is not filtering), so the narrow answer now
-  grants the reads ONLY, names what it withheld, and the prompt says up front which requested
-  operations are not reads. Separately, the keys were `y`/`a`/`n`: `y` reads as plain "yes" and
-  meant the NARROW grant, so a person answering "yes" to "shall I look wider?" got the opposite.
-  Observed twice, each time costing the assistant its following turns. The options are words now
-  (`own`/`all`/`no`), nothing means "yes", and an unrecognised answer is re-asked instead of
-  silently becoming a refusal, which is what the old code did with "yes".
-- **An escalation that costs two turns and two human inputs per grant does not converge.** The loop
-  was: assistant hits `forbidden`, calls `request_grant`, the tool returns "asked them, retry
-  later", the turn ends; the human approves at the prompt; the human types "retry"; the assistant
-  tries again, and every miss (wrong kind, wrong scope) costs another two. Sessions ran out of tool
-  rounds mid-loop and gave up. Nothing was broken; it just could not finish. `request_grant` now
-  BLOCKS on the decision and the REPL reviews pending requests WHILE the call is in flight
-  (`onToolWait` in `turn.ts`), so the person is asked immediately and the answer lands in the same
-  turn with rounds left to act on it. Three details that make it work: the decision travels as a
-  successor `grant_request` record carrying what was ACTUALLY granted (scope included, since the
-  asker may have been given something narrower than it asked for, and discovering that by retrying
-  and failing is the loop being removed), because the session can read its own requests and holds no
-  grant on `grant`; the tool's deadline is a human one (240s) and the REPL's is longer still, or the
-  REPL would abandon a decision still being made; and the between-turns review stays as the backstop
-  for a request whose turn died. Watch for this shape generally: a protocol whose round trip crosses
-  a turn boundary pays for the boundary every iteration.
+  The narrow option said "only its OWN records, reads only" and then granted the request VERBATIM,
+  `take` on `llm_call` included, which would let a chat session claim work the inference fleet waits
+  for: self-scoping is a read filter, not a claim filter. The narrow answer grants the reads ONLY
+  and names what it withheld. Separately the keys were `y`/`a`/`n`, where `y` meant the NARROW
+  grant, so answering "yes" to "shall I look wider?" got the opposite. Options are words now
+  (`own`/`all`/`no`), nothing means "yes", and an unrecognised answer is re-asked rather than read
+  as a refusal.
+- **An escalation that costs two turns and two human inputs per grant does not converge.** Hit
+  `forbidden` → `request_grant` → "asked them, retry later" → turn ends → human approves → human
+  types "retry" → try again, and every miss costs another two. Sessions ran out of tool rounds and
+  gave up with nothing broken. `request_grant` BLOCKS on the decision and the REPL reviews pending
+  requests while the call is in flight (`onToolWait` in `turn.ts`), so the answer lands in the same
+  turn. Details that make it work: the decision travels as a successor `grant_request` record
+  carrying what was ACTUALLY granted (the asker may have got something narrower, and learning that
+  by retrying is the loop being removed); the tool's deadline is a human one (240s) and the REPL's
+  is longer; and the between-turns review stays as the backstop for a request whose turn died.
+  General shape: **a protocol whose round trip crosses a turn boundary pays for that boundary every
+  iteration.**
 - **Kind-scoped is not conversation-scoped: every chat session ran as one agent, so each could read
   every other session's messages.** `USER_GRANTS` said `message: {put, query}` with a comment
   promising "may drive a conversation and read its own results, nothing more", and nothing enforced
-  the "its own". A ten-minute session reconstructed two days of unrelated conversations, correctly.
-  Six chat kinds index `conversationId`, so the fix is the runtime's own content scoping: the
-  session's grants are PATTERN-scoped to its conversation, which binds reads and writes alike.
-  Consequences worth keeping: the conversation record is created by the OPERATOR before the session
-  token is minted (a grant is minted with the token, so the conversation has to exist first), and a
-  user session therefore no longer holds `conversation: put` at all. Growth is per distinct
-  CONVERSATION, not per session: the pattern is part of a grant's identity, so resuming re-mints
-  the same content key and writes nothing. The result kinds needed the same
-  treatment and lacked the field to do it with: `llm_chunk`, `llm_result` and `tool_result` are
-  keyed by `callId`, so a session holding a callId from elsewhere could read another conversation's
-  streamed tokens, model output and tool results whatever the conversation scoping said. They now
-  carry `conversationId`, written by the worker that produces them and indexed so a pattern can
-  bind it. The failure mode of getting THAT wrong is not a leak but a hang: a writer that forgets
-  the field produces a result its own session cannot read, so the test pins both directions.
-  Artifacts were the last kind and needed a RUNTIME change, because their body is computed from the
-  bytes: `Space.putArtifact` now takes application fields to merge alongside it (`x-radia-meta`, an
-  ASCII JSON header; a header is a ByteString, so non-ASCII is refused rather than mangled). The
-  runtime's own fields are applied last and supplying one is refused outright, so nothing an app
-  sends can forge a digest, size or media type. The chat stamps `conversationId` on every artifact
-  it writes and REDECLARES the reserved `artifact` kind to index it (legal: a reserved kind may be
-  extended, only not shrunk), repeating `digest`/`mediaType` because a redeclaration replaces rather
-  than merges. That repetition is now also what keeps the redeclaration accepted.
-  **And the narrowing had to learn about it.** Grant patterns UNION, so approving an unpatterned
-  self-scoped grant beside a patterned one replaces "this conversation" with "everything this agent
-  ever wrote", a widening performed by the act of narrowing. The approval flow now inherits the
-  pattern of the grants it replaces. Guarded in `smoke-inspect.ts`, both directions.
-- **A self scope must narrow the plane the agent actually READS through, and grants UNION.** Two
-  mistakes, one live incident. First, `scope: {createdBy: "self"}` narrowed only the ops plane while
-  ordinary `query`/`read_one` returned every record of the kind, so an approval promising "only its
-  own records" handed over all of them, and a session reported 98 records from `ops/stats` and 308
-  from `space_count` in the same breath. `Space.authorScope` now applies the restriction to the
-  coordination plane too (reads only; `take` is excluded, because claiming a record and then
-  rejecting it is not a filter). Second, and subtler: grants union, so a narrow grant added BESIDE a
-  broad one changes nothing. The chat's session starts with an unscoped `message: query` grant, so
-  approving the self-scoped version was powerless until the approval also RETIRED the wider grant.
-  The union rule is why `authorScope` only restricts when EVERY applicable grant is self-scoped:
-  filtering by author while an unscoped grant applies would deny something that grant permits.
-  "Applicable" here means PERMITTING THAT OPERATION, since a `put`-only grant says nothing about reads and
-  counting it lifted the restriction the moment narrowing reads left the write grant behind.
-  Narrowing must also be per-OPERATION. The first version retired the whole overlapping grant, so
-  narrowing `query` on `message` took the bootstrap `{put, query}` grant with it and the session
-  could no longer write its own messages: the chat died on the next turn with "no 'put' grant for
-  kind 'message'". A grant carrying operations that were not being narrowed is now replaced by one
-  that keeps them.
+  the "its own": a ten-minute session correctly reconstructed two days of unrelated conversations.
+  The fix is the runtime's own content scoping — the session's grants are PATTERN-scoped to its
+  conversation, binding reads and writes alike. Consequences: the conversation record is created by
+  the OPERATOR before the session token is minted (a grant is minted with the token, so it must
+  exist first), so a user session holds no `conversation: put`; and growth is per CONVERSATION, not
+  per session, since the pattern is part of the grant's identity. `llm_chunk`, `llm_result` and
+  `tool_result` are keyed by `callId` and needed a `conversationId` of their own, or a session
+  holding a callId from elsewhere could read another conversation's output. Getting THAT wrong
+  fails as a hang, not a leak (a writer that forgets the field produces a result its own session
+  cannot read), so the test pins both directions. Artifacts needed a runtime change, since their
+  body is computed from the bytes: `Space.putArtifact` merges application fields (`x-radia-meta`,
+  an ASCII JSON header) with the runtime's own applied LAST, so nothing an app sends can forge a
+  digest, size or media type. **And the narrowing had to learn about it**: patterns UNION, so
+  approving an unpatterned self-scoped grant beside a patterned one replaces "this conversation"
+  with "everything this agent ever wrote" — a widening performed by the act of narrowing. The
+  approval flow inherits the pattern of the grants it replaces (`smoke-inspect.ts`, both directions).
+- **A self scope must narrow the plane the agent actually READS through, and grants UNION.**
+  `scope: {createdBy: "self"}` narrowed only the ops plane while ordinary `query`/`read_one`
+  returned every record of the kind, so an approval promising "only its own records" handed over all
+  of them (a session reported 98 records from `ops/stats` and 308 from `space_count` in one breath).
+  `Space.authorScope` applies to the coordination plane too, reads only: `take` is excluded, because
+  claiming a record and then rejecting it is not a filter. Grants UNION, so a narrow grant added
+  beside a broad one changes nothing — the approval has to RETIRE the wider grant, and `authorScope`
+  restricts only when EVERY grant permitting that operation is self-scoped. Per-OPERATION on both
+  sides: counting a `put`-only grant as applicable lifted the restriction, and retiring the whole
+  overlapping grant took the bootstrap `{put, query}` with it, so the chat died on "no 'put' grant".
 - **Every read verb must resolve its scope through ONE path, or the verbs that forget serve
-  everything.** `scope.createdBy: "self"` used to be applied by each handler calling
-  `space.authorScope` by hand, and five sites did not: `handleTake` returned full foreign bodies and
-  drained the kind, `handleLineage` returned an entire ancestor DAG (and `put` never checks parent
-  readability, so a scoped run could name any foreign id in `parentIds` and read its whole
-  upstream), `handleGraph` leaked foreign node ids and labels, artifact reads served foreign bytes
-  and minted a bearer capability over them, and `authorizeWatch` ignored the scope, so wakeups
-  arrived for every author. `Space.readAccess(principal, op, kind)` now returns `{constraint,
-  createdBy}` TOGETHER, so the author scope cannot be fetched separately and then forgotten. Five
-  details worth keeping. `take` carries the scope into the CLAIM (`LeaseSpec.createdBy` →
-  `rankClaimable`) and it cannot ride in the pattern, because `created_by` is envelope metadata that
-  patterns never see. `getLineage`/`getGraph` treat a foreign record as a WALL and stop there rather
-  than skipping it, since continuing still exposes the shape. Artifact reads apply the scope before
-  the bytes AND before minting a download capability, because a bearer URL outlives the check, and a
-  foreign artifact answers 404 rather than 403. A `Watch` carries its `owner` and its author scope,
-  `getWatch` requires the creating principal and `matchesEvent` filters wakeups, because watch ids
-  come from the same monotonic ULID generator as record ids and are enumerable, so the id was never
-  a secret. And `effectivePermissions` computes ops-reachability per GRANT (one grant carrying both
-  `query` and the self scope), the rule `opsScope` actually enforces, instead of ORing `scoped` and
-  `query` across different grants: a believed view that drifts from enforcement is worse than no
-  view. The guard is a table in `conformance/http.test.ts` with one row per read verb, plus the
-  watch-attach check. **A read verb with no row is a verb nobody checked.** Add a row when you add a
-  verb. This is a convention, not a type: a new handler can still call `authorize` alone, and making
-  that a compile error needs a read-context type threaded through every handler signature.
+  everything.** Each handler called `space.authorScope` by hand and five did not: `take` drained the
+  kind with full foreign bodies, `lineage` returned a whole ancestor DAG (and `put` never checks
+  parent readability, so a scoped run could name any foreign id in `parentIds`), `graph` leaked
+  foreign ids and labels, artifact reads served foreign bytes and minted a bearer capability over
+  them, and `authorizeWatch` woke for every author. `Space.readAccess(principal, op, kind)` returns
+  `{constraint, createdBy}` TOGETHER, so the author scope cannot be fetched separately and
+  forgotten. Details worth keeping: `take` carries the scope into the CLAIM (`LeaseSpec.createdBy`),
+  since `created_by` is envelope metadata a pattern never sees; lineage/graph treat a foreign record
+  as a WALL rather than skipping it, because continuing still exposes the shape; artifact reads
+  apply the scope before the bytes AND before minting a capability, since a bearer URL outlives the
+  check; a `Watch` carries its owner and scope, because watch ids are enumerable ULIDs and were
+  never secret; and `effectivePermissions` computes reachability per GRANT, the rule `opsScope`
+  enforces, because a believed view that drifts from enforcement is worse than no view. Guard: a
+  table in `conformance/http.test.ts`, one row per read verb. **A read verb with no row is a verb
+  nobody checked** — add a row when you add a verb. It is a convention, not a type: a new handler
+  can still call `authorize` alone.
 - **`listKinds()` does not list every kind.** It reads `kind_def` RECORDS, and six kinds are defined
   in code instead (`kind_def`, `grant`, `signal`, `agent_definition`, `agent_run`, `artifact`; see
   `RESERVED_KINDS`). Anything answering "does this kind exist" must add them, or it will report that
   `artifact` is not a kind while the caller is successfully counting artifacts.
 - **The ops aggregate is self-scoped even where READS are not, so it must say which kinds it
-  under-counts.** A principal can hold an unscoped `{put, query}` grant beside a self-scoped
-  `{query}` on the same kind (different operation sets, so different grant identities, so both
-  live), and then it can LIST every record while `ops/stats` counts only its own. Observed: 187 messages
-  reported as the space's total by a session whose own `space_count` said 578. The self-scoping is
-  deliberate and stays; the answer now carries `alsoReadableInFull` and says a query on those kinds
-  returns more. Widening the aggregate to match was tried and reverted: it turns every unscoped
-  bootstrap grant into full ops visibility, which is the opposite of what the plane is for.
-  Guarded by "an aggregate that covers less than the caller can read says so" in `suites/selfscope.ts`.
-- **The scoped-answer rule was only ever applied to the OPS plane; the plane records are actually
-  read through said nothing.** `/v0/ops/*` has carried a `scope` for a while. `POST
-  /v0/records/query` returned `{records, nextAfter}`, so a caller whose grant limits `message` to
-  one conversation queried `message`, got its own conversation, and had no way to distinguish that
-  from "this is every message there is". Four sessions in a row reported their own slice as the
-  space's history, and each then went hunting for a grant to close a gap they could not see. The
-  response now carries `scope: {narrowedBy, ownRecordsOnly, note}` when, and only when, a grant
-  narrowed the read, so an unrestricted read is byte-identical to before (additive to the frozen
-  contract). `read_one` is deliberately left alone: it returns the record itself, and a null answer
-  to "give me this one thing" does not invite the same mistake. General form: the thing that makes a
-  narrowed answer dangerous is that it is SHAPED exactly like a complete one.
-- **A scoped answer must SAY it is scoped, or an empty one reads as an empty space.** A session
-  granted ops access on one kind read `stats: []`, `events: []` and an all-zero diagnostics, and
-  told its user "the space is empty and healthy". Every number was correct; the claim was wrong, and
-  nothing in the response contradicted it. Scoped responses now carry
-  `scope: {self, kinds, note}` (`describeScope` in `handlers/ops.ts`), and the chat's tools pass it
-  through rather than projecting it away, which they were doing, so even a fixed server would not
-  have reached the model. The general form: a narrowed result is only safe to publish alongside a
-  statement of the narrowing, because the consumer cannot infer it from the data and an aggregate
-  gives it no other clue.
+  under-counts.** An unscoped `{put, query}` grant can live beside a self-scoped `{query}` on one
+  kind (different operations, different grant identities), so a principal can LIST every record
+  while `ops/stats` counts only its own: 187 messages reported as the space's total by a session
+  whose `space_count` said 578. The scoping stays; the answer carries `alsoReadableInFull`. Widening
+  the aggregate to match was tried and reverted — it turns every unscoped bootstrap grant into full
+  ops visibility. Guard: `suites/selfscope.ts`.
+- **A narrowed answer is dangerous because it is SHAPED exactly like a complete one.** Two
+  instances. `POST /v0/records/query` returned `{records, nextAfter}`, so a caller scoped to one
+  conversation could not tell its slice from the whole space; four sessions running reported their
+  own slice as the space's history and then hunted for a grant to close a gap they could not see. It
+  carries `scope: {narrowedBy, ownRecordsOnly, note}` now, only when a grant narrowed the read, so
+  an unrestricted read is byte-identical (additive to the frozen contract). Ops responses had the
+  same hole in aggregate form: a session with ops access on one kind read `stats: []`, `events: []`
+  and an all-zero diagnostics and told its user "the space is empty and healthy" — every number
+  correct, the claim wrong. They carry `scope: {self, kinds, note}` (`describeScope` in
+  `handlers/ops.ts`), and the chat's tools pass it through rather than projecting it away, which
+  they were doing, so a fixed server alone would not have reached the model. `read_one` is left
+  alone: a null answer to "give me this one thing" does not invite the mistake.
 - **A grant on a kind that does not exist authorizes nothing, and everything downstream reads it as
-  access.** An agent that cannot list kinds guesses one, and a plausible guess is a TOOL name: a
-  session asked for `space_event` (there is a `space_events` tool; there is no such kind), a human
-  approved it past the prompt's warning, and from then on the phantom kind appeared in every
-  `scope.kinds` line the ops plane returned, so the agent had documentary evidence of access it
-  did not have. The grant is still honoured as written, because a grant may legitimately precede its
-  kind (an operator bootstraps an agent before the fleet declares anything), but
-  `effectivePermissions` now marks the row `kindNotDeclared: true`. That is the one answer an agent
-  is told to trust about its own authority, so it is where the discrepancy has to surface.
+  access.** An agent that cannot list kinds guesses, and a plausible guess is a TOOL name: a session
+  asked for `space_event` (the tool is `space_events`; the kind does not exist), a human approved it
+  past the prompt's warning, and the phantom kind then appeared in every `scope.kinds` line the ops
+  plane returned — documentary evidence of access it did not have. The grant is still honoured as
+  written, because a grant may legitimately precede its kind, but `effectivePermissions` marks the
+  row `kindNotDeclared: true`. That is the one answer an agent is told to trust about its own
+  authority, so it is where the discrepancy has to surface.
 - **A scoped agent must be able to ask what it may do, and the ops plane refused exactly the
-  principal that needed to.** `GET /v0/ops/permissions` was operator-only on the reasoning that
-  reading a principal's authorization is an operator question. Reading YOUR OWN is not, and the
-  refusal was worse than useless: `opsScope` throws for a principal with no self-scoped grants, so
-  the caller with the least authority, the one that has just asked for some, got a 403 from the
-  one endpoint that would tell it whether the ask succeeded. Observed end to end: a session was
-  granted precisely what it requested, retried a DIFFERENT call that was failing for an unrelated
-  reason, saw no change, and told its user the request must still be awaiting approval. It had no
-  way to check, so it guessed, and the guess wasted a person's time. The self-read is now checked
-  BEFORE the plane's gate (`asksAboutSelf` in `http.ts`, matching the principal or its grant
-  subject, since a run token asking about its agent is asking about itself); every other
-  principal's authorization stays operator-only. CLAUDE.md already said `effectivePermissions` is
-  how you check before believing; an agent could not reach it.
+  principal that needed to.** `GET /v0/ops/permissions` was operator-only, and `opsScope` throws for
+  a principal with no self-scoped grants, so the caller with the least authority — the one that has
+  just asked for some — got a 403 from the one endpoint that says whether the ask succeeded.
+  Observed: a session granted precisely what it requested retried an unrelated failing call, saw no
+  change, and told its user the request must still be pending. The self-read is checked BEFORE the
+  plane's gate (`asksAboutSelf` in `http.ts`, matching the principal or its grant subject, since a
+  run token asking about its agent asks about itself); anyone else's stays operator-only.
 - **Testing the client is not testing the TOOL the model calls.** `smoke-selfgrant.ts` proved the
-  scoped-events contract by paging the log itself, and passed. The chat does not call the server;
-  it calls `tools/space.ts`, and `space_events` there fetched exactly one page from cursor `0`. On
-  a busy space the server's bounded forward scan covers only the first few hundred raw events, all
-  of them somebody else's, so the tool returned `{events: [], withheld: 500}`, with the SAME
-  cursor on every retry, while the session's own activity sat at the far end of an 11,588-event
-  log. Every layer underneath was correct. The tool now pages to the end (large raw pages, keeping
-  the newest `limit`) and reports `complete` so "the end of the log" is distinguishable from "I ran
-  out of budget". General rule: a wrapper that adds a bound is a place a bug can hide from every
-  test of the thing it wraps. `smoke-inspect.ts` drives the tools for this reason.
-- **An escalation protocol that cannot express WHOSE records are needed will keep producing grants
-  that authorize nothing.** `request_grant` carried kind and operations, and the approval prompt
-  offered "own records only" (recommended) or "all". An assistant that needed to read a registry
-  written by others had no field to say so. It said it in prose instead ("both need to be
-  un-scoped"), the human answered the narrower prompt, and the two halves of the exchange were
-  talking about different things. Observed three times in one session: request, approve, "the grant
-  landed", every read still empty. The request now carries `scope: "own" | "all"` (a REQUEST, not a
-  decision, still assigned by the operator to the subject this process controls), and the prompt
-  relays it. Two supporting details, both essential: `scope` is part of the request's identity
-  key, or re-asking un-scoped after a scoped grant disappointed dedups into the handled request and
-  vanishes; and choosing the narrow option against a measured-empty exposure now PRINTS that the
-  grant authorizes nothing, because the human's answer being allowed is not the same as it looking
-  like it worked. The whole loop (warning, recommendation flip, the note, the empty reads that
-  follow, and the wider approval actually answering the question) is pinned in `smoke-inspect.ts`.
-- **Self-scoping a REGISTRY kind grants a view of nothing, not a narrowed one.** `scope:
-  {createdBy: "self"}` is the right default for a kind the principal WRITES (its messages, its
-  llm_calls) and useless for one it only reads: `kind_def`, `capability`, `model` and `procedure`
-  records are written by whoever declares them, so a session self-scoped on `kind_def` sees zero of
-  them and `space_kinds` answers `[]` on a space with twelve. Nothing is broken, and that is what
-  makes it expensive: the session was told the grant existed, saw an empty list, and concluded the
-  approval had not gone through. The approval prompt (`client/grants.ts`) now MEASURES the exposure
-  before offering the choice (how many of a sampled page of that kind the principal actually
-  authored) and recommends against self-scope when the answer is none. Measured, not a hardcoded
-  list of registry-ish kind names, which would be wrong the moment an app adds one.
-- **Filtering a cursor-paged endpoint breaks paging unless the cursor is reported separately.** The
-  self-scoped `/v0/ops/events` withholds events the caller may not see, and an empty page is how
-  every caller detects the end of a log, so a page whose events were all withheld reads as "nothing
-  further". A scoped caller could never page PAST a run of foreign events to reach its own: measured
-  as 0 visible events on a space whose first 500 were someone else's. Two things were needed, and
-  the second is the one that is easy to skip: scan forward across raw pages instead of filtering
-  one, and report `nextAfter` from the last RAW event examined (`getEventsPage` in the SDK) so a
-  caller can advance past what it cannot see. The same shape applies to any future filtered feed.
+  scoped-events contract by paging the log itself and passed, but the chat calls `tools/space.ts`,
+  where `space_events` fetched one page from cursor `0`. On a busy space that page is all foreign
+  events, so the tool returned `{events: [], withheld: 500}` with the same cursor on every retry
+  while the session's own activity sat at the far end of an 11,588-event log. Every layer underneath
+  was correct. **A wrapper that adds a bound is a place a bug can hide from every test of the thing
+  it wraps**; `smoke-inspect.ts` drives the tools for that reason.
+- **An escalation protocol that cannot express WHOSE records are needed keeps producing grants that
+  authorize nothing.** `request_grant` carried kind and operations only, so an assistant needing to
+  read a registry written by others said it in prose while the human answered a narrower prompt:
+  request, approve, "the grant landed", every read still empty, three times in one session. The
+  request carries `scope: "own" | "all"` now (a request, not a decision). Two supporting details:
+  `scope` is part of the request's identity key, or re-asking un-scoped dedups into the handled
+  request and vanishes; and choosing narrow against a measured-empty exposure PRINTS that the grant
+  authorizes nothing, because an answer being allowed is not the same as it working. Pinned in
+  `smoke-inspect.ts`.
+- **Self-scoping a REGISTRY kind grants a view of nothing, not a narrowed one.** `createdBy: "self"`
+  is right for a kind the principal WRITES and useless for one it only reads: `kind_def`,
+  `capability`, `model` and `procedure` are written by whoever declares them, so a self-scoped
+  session sees zero and `space_kinds` answers `[]` on a space with twelve. Nothing breaks, which is
+  what makes it expensive. The approval prompt (`client/grants.ts`) MEASURES the exposure first (how
+  much of a sampled page the principal actually authored) and recommends against self-scope when the
+  answer is none — measured, not a hardcoded list of registry-ish names, which would be wrong the
+  moment an app adds one.
+- **Filtering a cursor-paged endpoint breaks paging unless the cursor is reported separately.** An
+  empty page is how every caller detects the end of a log, so a page whose events were all withheld
+  reads as "nothing further", and a scoped caller could never page PAST foreign events to reach its
+  own (0 visible on a space whose first 500 were someone else's). Two parts, the second easy to
+  skip: scan forward across raw pages rather than filtering one, and report `nextAfter` from the
+  last RAW event examined (`getEventsPage`), so a caller can advance past what it cannot see.
 - **A bounded page over a registry must be read NEWEST-first, or a busy space hides the newest
-  entry.** Discovery reads a capped page (`query {kind: capability}` limit 500), and a limited query
-  returns the OLDEST matches, so a space holding more capability records than that cap shows every
-  tool EXCEPT the ones published most recently. That is not hypothetical: a live session reported
-  "I don't have a request_grant tool" for a tool that was published, granted and working, because
-  the chat's discovery page never reached it. Every registry projection over a capped page now
-  passes `{dir: "desc"}` (`ToolSet.refresh`, `Space.loadKinds`).
-  Two contributing causes worth separating. The page cap is only reached because **capability
-  publication was not idempotent across restarts**: the content key makes the put idempotent, but an
-  idempotency key is scoped `(principal, operation, key)` and a worker's principal is a fresh
-  `run:<ulid>` every launch, so an unchanged definition wrote a NEW record on every start, and a
-  long-lived space grew by the whole fleet's tool count per restart (measured: 24 records per chat
-  restart, so ~21 restarts to cross 500). `publishCapability` now reads the current advertisement
-  first and writes only on a real change. And the chat's startup wait was "until any tool appears",
-  which returns as soon as the FIRST worker publishes: fine on an empty space, meaningless on one
-  where records already exist.
-- **A registry is a projection, and `retired: true` is how you withdraw from one.** Declared kinds,
-  assigned grants, advertised capabilities, live models and saved procedures are all mutable-looking
-  tables derived from an append-only record stream, so "remove" cannot be a delete. It is a
-  successor carrying `retired: true`, honoured in ONE place (`src/core/registry.ts`) rather than by
-  each consumer. Two shapes, and picking the wrong one is a correctness bug: **latest-wins**
-  (`activeByKey`: kind_def by kind, capability by tool, model by tier, procedure by name) where a
-  re-declaration replaces, and **additive** (`activeSet`: grants) where entries coexist and each is
-  independently withdrawable. Revoking a grant keyed on `(principal, kind)` would silently take
-  every other grant that principal holds on that kind with it, which is why `grantKey` is the whole
-  content, operations and pattern included. Two rules that are easy to get wrong: retirement must
-  be applied AFTER the newest-per-key pass, never as a filter over the input (filter first and an
-  older non-retired record becomes "newest" and resurrects the entry); and the projection must
-  compare ids rather than trust arrival order, for the same reason. Nothing is deleted, so the audit
-  trail survives a revocation, and re-declaring a retired key revives it because that record is
-  newer still; there is no un-retire path to implement.
-- **Record ids are MONOTONIC ULIDs, and latest-wins depends on it.** A plain `ulid()` encodes the
-  millisecond and randomizes the rest, so two ids minted in the same millisecond sort arbitrarily.
-  Every latest-wins registry asks "which record is newer" by comparing ids, and declaring
-  something then retiring it is exactly a same-millisecond pair, so with plain ULIDs a retirement
-  could be outranked by the record it retired. This was latent in `loadKinds` and the capability
-  projection long before retirement existed; it surfaced as a conformance test that passed alone
-  and failed in a full run, which is the signature of same-millisecond id collisions. `newUlid()`
-  now uses `monotonicUlid()`. The honest limit: monotonicity is PER PROCESS.
+  entry.** A limited query returns the OLDEST matches, so a space holding more `capability` records
+  than the cap shows every tool EXCEPT the ones published most recently: a live session reported "I
+  don't have a request_grant tool" for a tool that was published, granted and working. Registry
+  projections over a capped page pass `{dir: "desc"}` (`ToolSet.refresh`, `Space.loadKinds`). Two
+  contributing causes: **capability publication was not idempotent across restarts** (an idempotency
+  key is scoped `(principal, operation, key)` and a worker's principal is a fresh `run:<ulid>` each
+  launch, so an unchanged definition wrote a new record per start — 24 per chat restart, ~21
+  restarts to cross 500; `publishCapability` reads the current advertisement and writes only on a
+  real change), and the startup wait was "until ANY tool appears", which returns as soon as the
+  first worker publishes.
+- **A registry is a projection, and `retired: true` is how you withdraw from one.** Kinds, grants,
+  capabilities, models and procedures are mutable-looking tables over an append-only stream, so
+  "remove" is a successor carrying `retired: true`, honoured in ONE place (`src/core/registry.ts`).
+  Two shapes, and the wrong one is a correctness bug: **latest-wins** (`activeByKey`: kind_def by
+  kind, capability by tool, model by tier, procedure by name) and **additive** (`activeSet`:
+  grants), where entries coexist and each is independently withdrawable — a grant keyed on
+  `(principal, kind)` would take every other grant on that kind with it, which is why `grantKey` is
+  the whole content. Two easy mistakes: retirement is applied AFTER the newest-per-key pass, never
+  as a filter over the input (filter first and an older non-retired record becomes "newest" and
+  resurrects the entry), and the projection compares timestamps/ids rather than arrival order.
+  Nothing is deleted, so the audit trail survives a revocation and re-declaring revives.
+- **Record ids are MONOTONIC ULIDs, and latest-wins depends on it.** A plain `ulid()` randomizes
+  everything below the millisecond, so declare-then-retire (a same-millisecond pair) could leave the
+  retirement outranked by the record it retired. Latent in `loadKinds` and the capability projection
+  long before retirement existed; it surfaced as a conformance test that passed alone and failed in
+  a full run, the signature of same-millisecond collisions. `newUlid()` uses `monotonicUlid()`, and
+  monotonicity is PER PROCESS.
 - **Across instances the id is the TIE-BREAK, not the clock: registries order by `created_at`
-  first.** A ULID's timestamp half is the WRITING PROCESS's clock, so ordering a registry by id
-  alone imports every instance's clock skew into an authorization decision — two instances a second
-  apart ordered a second's worth of writes backwards, and a revocation could lose to the grant it
-  revoked. `created_at` is stamped from the DB clock (`storage.now()`), so it is the one ordering
-  everybody agrees on; `newer` in `sdk/ts/registry.ts` uses it, with the id deciding inside one
-  millisecond, where it carries real per-process order (retire-then-revive lands there routinely,
-  and the "prefer the retirement on a tie" rule was tried and reverted for breaking revival). What
-  this is still NOT is commit order: `created_at` is read before the transaction commits, so a
-  same-DB-millisecond race between instances remains undefined. Closing that means the `xid8` +
-  watermark machinery from the event cursor, carried on the record and so through the frozen wire
-  contract. The window went from clock-skew-wide to one millisecond, not to zero.
-- **A watch wakeup crosses instances by POLLING THE EVENT LOG, and the poll only runs while
-  somebody waits.** `Notifier.notify()` knows about this Space's own mutations and nothing else, so
-  a watch on instance A slept through B's write until its caller's keepalive (15s in the SSE loop):
-  self-healing, never a lost event, but every cross-instance hop of an interactive turn paid it.
-  `LISTEN`/`NOTIFY` is not the fix available here — deno-postgres 0.19 exposes no asynchronous
-  notification API at all (checked: `QueryClient` has `queryArray`/`queryObject`/transactions and
-  no notification hook) — so a waiter drives `Space.pollForForeignChanges` every `CHANGE_POLL_MS`
-  instead. Two properties are what keep it from being a background job: it runs ONLY while a waiter
-  is parked (an idle space holds no timer and issues no queries), and it is one query per interval
-  per SPACE regardless of how many streams are open. The first poll of a space's life always
-  reports a change, because a record written before it took its baseline cursor would otherwise be
-  exactly the wakeup this exists to deliver. Errors are swallowed: the poll is a hint, the log is
-  the truth, and a database hiccup must not take down an SSE connection.
+  first.** A ULID's timestamp half is the WRITING PROCESS's clock, so ordering by id alone imports
+  clock skew into an authorization decision: two instances a second apart order a second of writes
+  backwards, and a revocation can lose to the grant it revokes. `created_at` comes from the DB clock,
+  so `newer` (`sdk/ts/registry.ts`) uses it, with the id deciding inside one millisecond, where it
+  carries real per-process order ("prefer the retirement on a tie" was tried and reverted: it broke
+  revival). Still NOT commit order — `created_at` is read before commit, so a same-DB-millisecond
+  cross-instance race stays undefined; closing it needs the event cursor's `xid8` machinery carried
+  on the record, i.e. through the frozen wire contract.
+- **A watch wakeup crosses instances by POLLING THE EVENT LOG, and the poll runs only while somebody
+  waits.** `notify()` knows this Space's own mutations and nothing else, so a watch on A slept
+  through B's write until the caller's keepalive (15s in the SSE loop). `LISTEN`/`NOTIFY` is not
+  available: deno-postgres 0.19 exposes no asynchronous notification API (checked — `QueryClient`
+  has queries and transactions, no notification hook). So a parked waiter drives
+  `Space.pollForForeignChanges` every `CHANGE_POLL_MS`: one query per interval per SPACE however
+  many streams are open, and none at all when nobody waits. The first poll of a space's life always
+  reports a change, since a record written before it took its baseline would otherwise be the one
+  wakeup this exists to deliver. Errors are swallowed — the poll is a hint, the log is the truth.
 - **Predicate pushdown is a SOUND pre-filter, never a second opinion.** `src/storage/pushdown.ts`
   renders part of a compiled pattern into SQL, but the oracle in `core/matching.ts` still decides
   every match. The asymmetry is the whole safety argument: over-returning is free (the oracle
   rejects the extras), under-returning is a silent lost record, and for `take`, an empty space
   reported while work sits in it. So anything not expressible EXACTLY renders as `TRUE`: object
   and array equality (the oracle compares serialized text, so key order matters; jsonb normalizes
-  it), `$any`/`$each`, a range against a non-ASCII bound, any path segment outside
-  `[A-Za-z0-9_]` (segments are inlined into a JSON path literal so the planner can match an index,
-  and restricting the alphabet is what makes inlining injection-proof), and any ALL-DIGIT segment
-  (the next entry). Three traps that are not
-  obvious until they bite: rendering a node BINDS PARAMETERS as a side effect, so a caller that
-  discards the SQL must roll the parameters back too (`mark`/`rollback`), since an `$or` that discards
-  one branch used to leave orphan bindings and fail the statement; `json_extract` returns SQL NULL
-  for *both* an absent key and a JSON `null`, so presence is always asked via `json_type`; and an
-  unguarded jsonb `>` will happily compare a string to a number, because jsonb has a total order
-  across types. Every comparison is therefore type-guarded first.
+  it), `$any`/`$each`, a range against a non-ASCII bound, any path segment outside `[A-Za-z0-9_]`
+  (segments are inlined into a JSON path literal so the planner can match an index, and restricting
+  the alphabet is what makes that injection-proof), and any ALL-DIGIT segment (next entry). Three
+  traps: rendering a node BINDS PARAMETERS as a side effect, so a caller discarding the SQL must
+  roll them back too (`mark`/`rollback`); `json_extract` returns SQL NULL for both an absent key and
+  a JSON `null`, so presence is asked via `json_type`; and an unguarded jsonb `>` compares a string
+  to a number happily, since jsonb totally orders across types. Every comparison is type-guarded.
 - **A path segment means three different things to the oracle, Postgres and SQLite, and the
-  disagreement is in the unsound direction.** Two shapes, both closed at their root rather than per
-  dialect (audit package E). **All-digit segments** (`items.0`, `a.00`): the oracle indexes an array
-  element through property access, Postgres' `#>` takes it as a subscript (`00` too, parsed as 0),
-  SQLite's `$.items.0` is a KEY lookup that is NULL over an array, and the `@>` containment term
-  asks whether an array contains `{"0": v}`, which it does not. So a record the oracle accepts got
-  EXCLUDED on both dialects, and the leading-zero case over-included while still marked `exact`,
-  which drags the caller's LIMIT along with it. `pushablePath` (`src/storage/pushdown.ts`) now
-  declines them; the oracle handles every path, so the cost is a lost pre-filter on a shape no kind
-  in this repo declares. **Prototype-shaped names** (`arr.length`, `obj.constructor`): the fix is
-  the opposite direction, in the ORACLE. `getPath` used bare property access, so those resolved for
-  every record while SQL correctly saw nothing there. Teaching SQL about JavaScript's prototype
-  chain would be absurd, so `getPath` resolves own properties only, and an array only by a
-  canonical index. A body that really holds a key named `length` is still data and still routes.
-  The reusable rule: when the oracle and SQL disagree, ask which one is describing STORED DATA;
-  usually it is SQL, and the oracle is the thing to narrow. Pinned by the differential case in
-  `conformance/suites/pushdown.ts`, which runs each pattern through the adapter and through the
-  bare oracle over one corpus and demands identical result sets, because under-return is invisible
-  to any test that only checks the adapter against itself.
+  disagreement is in the unsound direction.** Two shapes, both closed at their root (package E).
+  **All-digit segments** (`items.0`, `a.00`): the oracle indexes an array element by property
+  access, Postgres' `#>` takes a subscript (`00` too, parsed as 0), SQLite's `$.items.0` is a KEY
+  lookup that is NULL over an array, and `@>` asks whether the array contains `{"0": v}`. So both
+  dialects EXCLUDED records the oracle accepts, and the leading-zero case over-included while marked
+  `exact`, dragging the caller's LIMIT with it. `pushablePath` declines them. **Prototype-shaped
+  names** (`arr.length`, `obj.constructor`) run the other way: `getPath` used bare property access,
+  so they resolved for every record while SQL correctly saw nothing. It resolves own properties
+  only, and an array only by canonical index; a body really holding a key named `length` still
+  routes. **When the oracle and SQL disagree, ask which is describing STORED DATA** — usually SQL,
+  and the oracle is what to narrow. Pinned by the differential case in `suites/pushdown.ts`, which
+  runs each pattern through the adapter AND the bare oracle, since under-return is invisible to any
+  test that checks the adapter against itself.
 - **The claim index must be ordered like the claim, and `state` must not lead it.** The candidate
   window sorts by `effective_priority desc, available_at asc, record_id asc`; an index only serves
   that if its columns are in that order. `idx_runtime_claim` is not (it leads with `available_at`)
@@ -537,31 +379,26 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   never the problem". `idx_runtime_claim_order`, with the sort columns immediately after `kind` and
   no `state`, took a claim at 40k records from **19.5ms to 0.8ms** on SQLite by turning a full scan
   of the envelope table into an ordered seek that stops when the window is full.
-- **A claim on Postgres is planned on a guess, and the guess is wrong by 200×.** The estimate that
-  fixes it has two halves. The same query SQLite answers with an ordered seek, Postgres answered
-  by collecting EVERY matching record through the body index (5,715 of 40,000), joining each to its
-  envelope, and sorting, because it estimates the jsonb predicate at 26 rows and concludes the sort
-  is free. Not fixable by rewriting the query: `join` vs `exists`, with and without the `@>` term,
-  all plan the same way, and forcing the planner with `enable_seqscan`/`enable_bitmapscan` off makes
-  it *worse* (28.6ms) because it picks a different wrong plan. The fix is a real ESTIMATE:
-  `PgSqlAdapter.prepareKind` creates `create statistics … on ((body_jsonb #> '{path}')) from
-  records` for each declared indexed path, via the optional `StorageAdapter.prepareKind` hook that
-  `Space` calls when a kind is declared or loaded. Statistics cost ANALYZE time, not write time.
-  Measured end to end on a real `take` over 20k records: **9.75ms → 3.37ms p50**, with the plan
-  changing from sorting 9,168 buffers to an ordered walk of `idx_runtime_claim_order` over 1,364.
-  Three things are easy to get wrong, and the first two cost an afternoon each:
+- **A claim on Postgres is planned on a guess, and the guess is wrong by 200×.** Where SQLite does
+  an ordered seek, Postgres collected EVERY matching record through the body index (5,715 of
+  40,000), joined each to its envelope and sorted, because it estimates the jsonb predicate at 26
+  rows and concludes the sort is free. No query rewrite fixes it (`join` vs `exists`, with or
+  without `@>`, all plan the same; `enable_seqscan`/`enable_bitmapscan` off makes it *worse* at
+  28.6ms). The fix is a real ESTIMATE: `PgSqlAdapter.prepareKind` creates
+  `create statistics … on ((body_jsonb #> '{path}')) from records` per declared path, via the
+  optional `StorageAdapter.prepareKind` hook. Cost is ANALYZE time, not write time. Measured on a
+  real `take` over 20k records: **9.75ms → 3.37ms p50**, the plan changing from sorting 9,168
+  buffers to an ordered walk over 1,364. Four things are easy to get wrong:
   * **ANALYZE `record_runtime` as well as `records`.** A claim JOINS the two, and with no statistics
     on the envelope table the join estimate collapses however good the body estimate is. The
     isolated window query measured 48ms with neither analyzed, 11ms with the envelope table
     analyzed, 1.0ms with the expression statistics on top.
   * **The two pushed terms are redundant AND correlated, and the planner multiplies them.**
-    Pushdown emits `body_jsonb @> '{...}'` (what the GIN index answers) AND `body_jsonb #> '{path}'
-    = '...'` (what makes the filter exact). Measured selectivity for a value matching 2,858 of
-    20,000 rows: `@>` alone estimates 2,858, exactly right; `#>` alone estimates 100 without
-    statistics and 2,858 with them; the two ANDed estimate **14 without and 408 with**, because the
-    planner assumes independence. So the statistics help, but the residual 7× underestimate is
-    structural, and dropping either term is not an option (one is the index, the other is the
-    exactness that lets a LIMIT be pushed).
+    Pushdown emits `@>` (what GIN answers) AND `#> = ` (what makes the filter exact). For a value
+    matching 2,858 of 20,000 rows: `@>` alone estimates 2,858, `#>` alone 100 without statistics and
+    2,858 with, the two ANDed **14 without and 408 with**, because the planner assumes independence.
+    The residual 7× underestimate is structural, and neither term can be dropped: one is the index,
+    the other is the exactness that lets a LIMIT be pushed.
   * **The statistics expression must match `PgJson.at` character for character**, and the path is
     inlined into DDL, so `prepareKind` skips any path pushdown declines rather than escaping it. It
     calls `pushablePath` outright now: it carried its own copy of the alphabet rule, and the two
@@ -572,14 +409,11 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
     permanently. It is scoped by `stxnamespace = current_schema()::regnamespace` now. Pinned in
     `planner.test.ts`; the conformance harness hits this on every run, since it shares one PGlite
     across per-test schemas.
-  A fresh space declares its kinds before it has rows, so the ANALYZE at declaration time measures
-  an empty table; the estimate becomes real at the next autoanalyze. Nothing is wrong when a brand
-  new space plans a claim badly for a while.
-  Also worth knowing before optimizing a claim: an unfiltered first window (try the head of the
-  queue cheaply, fall back to the filtered query) was built and **reverted**; no measurement
-  supported it. It only wins when the head happens to hold a match, and in a queue where workers
-  have consumed the nearby matches it just adds a round trip: every measured cell got worse
-  (sqlite 1.0 → 1.3ms, Postgres 22.7 → 28.6ms).
+  A fresh space declares its kinds before it has rows, so that ANALYZE measures an empty table and
+  the estimate becomes real at the next autoanalyze: a brand new space planning a claim badly for a
+  while is not a bug. Also: an unfiltered first window (try the head of the queue, fall back to the
+  filtered query) was built and **reverted** — it only wins when the head holds a match, and every
+  measured cell got worse (sqlite 1.0 → 1.3ms, Postgres 22.7 → 28.6ms).
 - **A LIMIT may only be pushed under an EXACT filter, not merely a sound one.** `Pushed.exact`
   distinguishes them, and it is the difference between an optimization and a correctness bug: with
   an inexact filter SQL returns its first N rows, the oracle rejects some, and the matching rows
@@ -589,76 +423,54 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   Pinned by "a limit is never pushed under a filter the database cannot decide" in
   `conformance/suites/pushdown.ts`.
 - **Postgres orders text by the database's collation; the oracle orders by JS string comparison.**
-  Those disagree under a linguistic collation, so the pushed limit sorts `id collate "C"` (byte
-  order, what JS means) against a dedicated `idx_records_id_c`. Keep it, but keep the severity
-  straight too, because this entry used to claim `read_one` "could return a different record on
-  Postgres than on SQLite", and for the ids the runtime actually mints it cannot. Checked directly
-  (`sort` under both locales): `C` and `en_US.UTF-8` order Crockford base32 (digits and uppercase
-  letters, which is all a ULID contains) IDENTICALLY. They diverge on punctuation and case, which
-  is precisely what a ULID has none of. So the collation is a guard against ids ever ceasing to be
-  ULIDs, not a live divergence, and no test can currently be written that fails without it. Related
-  and also worth stating plainly: `scripts/pg-conformance.sh` pins no locale, so the old claim that
-  "the conformance Docker image runs in C locale" was never verified by anything either.
-- **`indexedPaths` are a validation contract, not per-path physical indexes.** One GIN index (`jsonb_path_ops` over the generated `body_jsonb` column) answers
-  pushed equality on every path, so declaring a path costs no DDL and no migration, which is what
-  keeps kinds-as-records from dragging a schema change behind it. Measured on 40k records: a
-  genuinely selective `read_one` is **7.98ms without the index, 1.42ms with it**, for about 5% on
-  `put`. Do not confuse that with the *headline* pushdown win: against an unselective predicate
-  (the benchmark's 1-in-7 "rare") GIN is not used at all, and the speedup comes entirely from the
-  pushed LIMIT letting the scan stop at the first match.
+  They disagree under a linguistic collation, so the pushed limit sorts `id collate "C"` against a
+  dedicated `idx_records_id_c`. Keep it, but keep the severity straight: for the ids the runtime
+  actually mints there is no divergence. Checked with `sort` under both locales, `C` and
+  `en_US.UTF-8` order Crockford base32 (digits and uppercase letters, all a ULID contains)
+  IDENTICALLY; they differ on punctuation and case, which a ULID has none of. So this guards
+  against ids ceasing to be ULIDs, and no test can be written that fails without it.
+- **`indexedPaths` are a validation contract, not per-path physical indexes.** One GIN index
+  (`jsonb_path_ops` over the generated `body_jsonb`) answers pushed equality on every path, so
+  declaring a path costs no DDL and no migration — that is what keeps kinds-as-records from
+  dragging a schema change behind it. At 40k records a selective `read_one` is **7.98ms without the
+  index, 1.42ms with**, for ~5% on `put`. Not to be confused with the headline pushdown win:
+  against an unselective predicate GIN is not used at all, and the speedup is the pushed LIMIT
+  letting the scan stop at the first match.
 
-- **A claim must not lock, or even read, what it does not claim.** `take` originally selected
-  *every* available-or-leased record of the kind `for update ... skip locked`, then filtered in
-  the runtime. Two distinct bugs, one line. (1) **Starvation:** on a real Postgres, one claimer's
-  open transaction held row locks on the entire queue, so a peer's `skip locked` found nothing
-  and was told *empty* while work remained: 67 wasted takes at 4 claimers, 166 at 16. sqlite and
-  PGlite hid it completely, being single-connection: the fault was invisible to `deno task
-  conformance` and only appeared against a live server. (2) **Cost:** ordering the *join*
-  materialized every record body of the kind before `limit` applied, making a claim O(kind size)
-  in bytes, not rows. The fix is in `pgbase.ts`/`sqlite.ts` `fetchCandidates`/`take`: a bounded
-  `CANDIDATE_WINDOW` (64) chosen from the narrow `record_runtime` table first, bodies fetched only
-  for that window, no row locks, and single-winner resting on a **checked** compare-and-set
-  (`affectedRows === 0` → try the next candidate) instead of on holding locks. Two consequences
-  worth keeping straight: bounding the window is only safe because the SQL `order by` is the same
-  key `rankClaimable` sorts by (`effective_priority desc, available_at asc, id asc`); change one
-  and you must change the other, or a claim silently prefers the wrong record; and a *selective*
-  pattern pages to the next window rather than truncating, so a rare match deep in a large kind
-  is still found. `take` at 40k went 183ms → 18.4ms, and empty takes 67/166 → 2/4 (the genuine
-  tail as the queue drains). Pinned by `claimFairnessSuites` in `conformance/suites/leases.ts`,
-  which fails on Postgres without the fix, so run `scripts/pg-conformance.sh` rather than only the
-  embedded suite before trusting a change to the claim path.
-  A loose end noted while fixing it was later RESOLVED THE OTHER WAY, and the sequence is worth
-  keeping because the first measurement was misleading. `idx_runtime_claim` is
-  `(kind, available_at, effective_priority desc, record_id) where state = 'available'`, the wrong
-  column order for the claim sort (priority leads), and partial on a predicate the candidate query
-  widens (`state in ('available','leased')`, needed to reclaim expired leases), so it cannot serve
-  the window's `order by`. Adding a correctly-ordered index was measured at the time and changed
-  nothing (58.8ms vs 60.2ms at 40k), and this entry concluded "don't add it". That conclusion was
-  wrong: the measurement was taken against a claim whose cost was dominated elsewhere. The index
-  was later added as `idx_runtime_claim_order` and took a claim from **19.5ms to 0.8ms** (see the
-  entry above). If you are reading this to decide whether to remove one of them: keep BOTH.
-  `idx_runtime_claim_order` serves the claim window; `idx_runtime_claim` is still chosen for
-  `envelopesInState`/diagnostics, where it narrows the scan to available rows (verified with
-  `explain query plan`, not assumed). Also note `effective_priority` is uniformly 0 until the
-  scheduler lands (M3), which is why the two orderings are indistinguishable today; the mismatch
-  becomes real the day priorities differ.
+- **A claim must not lock, or even read, what it does not claim.** `take` selected every
+  available-or-leased record of the kind `for update … skip locked`, then filtered in the runtime.
+  Two bugs in one line. **Starvation:** one claimer's open transaction held row locks on the whole
+  queue, so a peer's `skip locked` found nothing and was told EMPTY while work remained (67 wasted
+  takes at 4 claimers, 166 at 16). Invisible to `deno task conformance`, since the embedded adapters
+  are single-connection. **Cost:** ordering the JOIN materialized every body of the kind before
+  `limit`, making a claim O(kind size) in bytes. The fix (`fetchCandidates`/`take`): a bounded
+  `CANDIDATE_WINDOW` (64) chosen from the narrow `record_runtime` table, bodies fetched only for
+  that window, no row locks, single-winner resting on a CHECKED compare-and-set. Two consequences:
+  bounding the window is only safe because the SQL `order by` is the key `rankClaimable` sorts by
+  (change one, change the other, or a claim silently prefers the wrong record), and a selective
+  pattern pages to the next window rather than truncating. `take` at 40k: 183ms → 18.4ms; empty
+  takes 67/166 → 2/4. Pinned by `claimFairnessSuites`, which fails on Postgres without the fix — run
+  `scripts/pg-conformance.sh` before trusting a change to the claim path.
+  A loose end here was later RESOLVED THE OTHER WAY, and the sequence matters because the first
+  measurement misled. `idx_runtime_claim` has the wrong column order for the claim sort and is
+  partial on a predicate the candidate query widens, so it cannot serve the window's `order by`. A
+  correctly-ordered index measured as no change at the time (58.8 vs 60.2ms at 40k) and this entry
+  said "don't add it" — wrong, because that claim's cost was dominated elsewhere. Added later as
+  `idx_runtime_claim_order`: **19.5ms → 0.8ms**. Keep BOTH: the new one serves the claim window, the
+  old one is still chosen for `envelopesInState`/diagnostics (verified with `explain query plan`).
+  Note `effective_priority` is uniformly 0 until the scheduler lands (M3), which is why the two
+  orderings look identical today.
 - **An idempotency key travels as an HTTP header (a ByteString), so hash content into it, never
-  embed it.** `Idempotency-Key` (and any header) must be Latin1; a key built from free-form content
-  can carry Unicode (a tool description with `…`/`→`, a body with an em-dash) and `fetch` throws
-  `Failed to construct 'Request': 'headers' … not a valid ByteString`. Content-keying a record (so a
-  changed def is a successor, not a 409) is right, but the key must be a **hash** of the content, not
-  the content itself. `kindDefKey`/`grant` keys are ASCII by construction (paths, types, principals);
-  the capability publish content-hashes the tool def (`examples/chat/space/capability.ts`). Bit both the 409 fix and then
-  this.
-- **Lineage goes UP; to follow links DOWN you need children, not lineage.** `parent_ids` points
-  from a record to what it was derived from, so `getLineage`/`space_lineage` returns *ancestors*;
-  a **root** record (a `conversation`, a `job`) has none. To find records that *reference* a record
-  (a conversation's messages, an llm_call's chunks/result, a task's results) use `getChildren` /
-  `GET /v0/ops/records/{id}/children` / `space_children` (backed by `childrenOf`). This bit the
-  chatbot: asked to summarize a conversation it called `space_lineage`, got just the conversation
-  back, and wrongly concluded it was empty. The messages are its *children*. The two directions
-  are why the console has both a lineage view and a graph view. (Guidance for the assistant lives
-  in the discovered tool *descriptions*, not the chat's system prompt.)
+  embed it.** A key built from free-form content can carry Unicode (a tool description with `…`, a
+  body with an em-dash) and `fetch` throws `not a valid ByteString`. Content-keying a record is
+  right; the key must be a HASH of the content. `kindDefKey`/grant keys are ASCII by construction;
+  the capability publish content-hashes the tool def (`examples/chat/space/capability.ts`).
+- **Lineage goes UP; to follow links DOWN you need children.** `parent_ids` points at what a record
+  was derived from, so `getLineage` returns ANCESTORS and a root record (a `conversation`, a `job`)
+  has none. Use `getChildren` / `space_children` (backed by `childrenOf`) for records that
+  REFERENCE one. This bit the chatbot: asked to summarize a conversation it called `space_lineage`,
+  got the conversation back, and concluded it was empty — the messages are its children. The two
+  directions are why the console has both a lineage and a graph view.
 - **SSE watch streams detect client disconnect via the response stream's `cancel()`, not
   `req.signal`.** Under `Deno.serve`'s legacy semantics, `request.signal` aborts on a *fully
   delivered response*, not only on client disconnect. Using it to gate a long-lived SSE loop
@@ -675,15 +487,12 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   This is correct behaviour (reclaiming lapsed work is what take is for), but it makes "claim
   several, let them expire" a trap when building fixtures.
 
-- **A cast is a promise to the type checker, not a check.** Handlers used to build a `PutRequest`
-  by casting wire JSON (`j.parentIds as string[]`), so `parentIds: 42`, `deadlineAt: {}`, an
-  `orderBy` string, a `pattern: []`, or a JSON `null` body sailed past the boundary and failed
-  deep inside matching or the adapter, so a malformed request was answered with a 500 instead of a
-  400.
-  Found by fuzzing every field of every endpoint with wrong types; fixed by validating shapes at
-  the boundary (`pickPut`/`pickResult` in `handlers/records.ts`, pattern and numeric query-param
-  checks in `handlers/leases.ts` and `handlers/ops.ts`) and, for `order_by`, in `compileOrderBy`
-  itself so in-process callers are covered too. Keep the rule: if it came off the wire, check it.
+- **A cast is a promise to the type checker, not a check.** Handlers built a `PutRequest` by casting
+  wire JSON, so `parentIds: 42`, `deadlineAt: {}`, an `orderBy` string or a null body failed deep
+  inside matching and answered 500 instead of 400. Found by fuzzing every field of every endpoint;
+  fixed at the boundary (`pickPut`/`pickResult`, plus the numeric query-param checks) and, for
+  `order_by`, in `compileOrderBy` so in-process callers are covered. **If it came off the wire,
+  check it.**
 
 - **Writing a payload and its key is two operations, so order them for the crash.** The encrypted
   blob store wrote ciphertext first and the wrapped DEK second. A crash between them left
@@ -694,80 +503,55 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   is damage, never legacy plaintext. Only the plaintext-digest name may be read as plaintext.
 
 - **`esc()` must escape quotes, because record data reaches HTML attributes.** The console escaped
-  `& < >` only. A grant's `pattern` is rendered as JSON inside `title="…"`, and JSON always
-  contains `"`, so every pattern-scoped grant broke out of the attribute, and a crafted pattern
-  or kind name (validated only as "a non-empty string") could inject an event handler into the
-  page that carries an operator token. Escaping now covers `"` and `'`; the fix belongs in `esc`
-  rather than at each call site, since new call sites keep appearing.
-  The follow-up is the part that generalizes: `esc` being correct was never the problem, ONE call
-  site interpolating raw was. `conformance/console.test.ts` now checks the property structurally:
-  every `${…}` inside an HTML attribute in the page must route through `esc` or be a ternary whose
-  branches are string literals, and it immediately found two more (`note`'s CSS class and
-  `stateBadge`'s state, both server-supplied). The console is one file with no build step, so the
-  test lifts `esc` out of the page source by brace balance rather than the page being split into
-  modules; the extraction fails loudly if the function is renamed, which is what keeps the test
-  from quietly testing nothing.
-
-- **A selector on `state: available` must exclude reference kinds.** `claimable:false` records
-  (the `kind_def` registry, `grant`s, `agent_run`s, plain facts) sit available forever by design.
-  The first version of selector-driven remediation did not filter them, so
-  `dead-letter --all --stale 0` swept the kind registry and the grants into `dead_letter`: the
-  space's own control records, remediated as if they were stuck work. Caught by running the CLI
-  verb against a real space, not by reading it. The starvation check had excluded them all along
-  for the same reason; in remediation it is a guard, not a heuristic. `dead_letter` stays
-  unfiltered so a reference record that lands there is still requeueable.
-
-- **There is no `expired` record STATE, and the union no longer pretends otherwise.** A lapsed
-  lease leaves the record `leased`; a later take reclaims it. `RecordState` used to carry an
-  `expired` member nothing ever wrote, and `GET /v0/ops/records?state=expired` accepted it and
-  answered zero rows: a confident nothing beside hundreds of demonstrably lapsed leases, which is
-  exactly how a reader (or a model) concludes the report is broken. The member is gone from the
-  union and from both OpenAPI enums, and the endpoint now answers `400` naming the query that does
-  work: expiry is a PREDICATE over leased records (`state=leased&expired=1`). Diagnostics reports
-  the real number as `stuckLeases`, which carries `atLeast` when its scan hit the sample cap,
-  because a bounded scan must not present itself as a census. Note `take.ts` has its own
-  `how: "available" | "expired"`, a different thing that happens to share the word, describing how
-  a candidate was reached rather than what state it is in.
-
-- **Client-supplied headers must win over the SDK's own credential.** The Python `_req` set
-  `Authorization` from the client's token *after* merging caller headers, silently clobbering
-  them. It surfaced only when `create_run` landed, the one call that authenticates with a
-  DIFFERENT credential (the agent-definition token, not the client's run token). The TS client
-  spreads caller headers last, so it was always correct; the two now agree. Any future
-  "authenticate this one call differently" API depends on that precedence.
-
-- **A bounded newest-first read of a thread must expand until the turn's start is in view.** Bit
-  twice, in two files, within one change. A tool-heavy round is a dozen messages (one assistant
-  `tool_calls` message plus a reply per call), so "read the newest N messages" can land entirely
-  inside the tool replies and miss the `user` message that began the turn. In the inference-worker
-  that produced a context window with no question in it (the model summarizes tool output it can no
-  longer attribute); in the router it produced an EMPTY question, which the length heuristic scored
-  as small talk and routed to the CHEAPEST tier, so the synthesis round, the one that most needs
-  capability, systematically got the weakest model. Both now expand the descending read until a
-  `user` message is included (`inference.ts` windowing, `router.ts` `currentTurn`), and the router's
-  heuristic never scores an empty string as small talk. General rule: when a bounded read feeds a
-  DECISION, the absence of the thing you are looking for is not a neutral default. Decide what
-  "not found" means explicitly.
+  `& < >` only, but a grant's `pattern` renders as JSON inside `title="…"` and JSON always contains
+  `"`, so every pattern-scoped grant broke out of the attribute and a crafted pattern could inject
+  an event handler into a page carrying an operator token. What generalizes is the follow-up: `esc`
+  being correct was never the problem, ONE call site interpolating raw was.
+  `conformance/console.test.ts` checks the property structurally — every `${…}` inside an attribute
+  must route through `esc` or be a ternary of literals — and immediately found two more. It lifts
+  `esc` out of the page source by brace balance and fails loudly if the function is renamed, which
+  is what keeps it from quietly testing nothing.
+- **A selector on `state: available` must exclude reference kinds.** `claimable:false` records (the
+  kind registry, grants, `agent_run`s, plain facts) sit available forever by design, so the first
+  selector-driven remediation swept the space's own control records into `dead_letter` with
+  `dead-letter --all --stale 0`. Caught by running the CLI verb against a real space, not by reading
+  it. `dead_letter` stays unfiltered, so a reference record that lands there is still requeueable.
+- **There is no `expired` record STATE.** A lapsed lease leaves the record `leased`; a later take
+  reclaims it. `RecordState` carried an `expired` member nothing ever wrote, and
+  `?state=expired` answered zero rows — a confident nothing beside hundreds of lapsed leases, which
+  is how a reader concludes the report is broken. It is gone from the union and both OpenAPI enums,
+  and the endpoint 400s naming the query that works: expiry is a PREDICATE
+  (`state=leased&expired=1`). Diagnostics reports `stuckLeases` with `atLeast` when its scan hit the
+  cap, because a bounded scan must not present itself as a census. (`take.ts` has its own
+  `how: "available" | "expired"`, describing how a candidate was reached, not a state.)
+- **Client-supplied headers must win over the SDK's own credential.** Python's `_req` set
+  `Authorization` after merging caller headers, clobbering them. It surfaced only with `create_run`,
+  the one call authenticating with a DIFFERENT credential (the definition token). TS spreads caller
+  headers last and was always right; any future "authenticate this call differently" API depends on
+  that precedence.
+- **A bounded newest-first read of a thread must expand until the turn's start is in view.** A
+  tool-heavy round is a dozen messages, so "the newest N" can land entirely inside tool replies and
+  miss the `user` message that began the turn. The inference worker then built a context window with
+  no question in it; the router got an EMPTY question, scored it as small talk by length, and routed
+  the synthesis round — the one that most needs capability — to the cheapest tier. Both expand the
+  descending read until a `user` message is included, and the router never scores an empty string.
+  **When a bounded read feeds a DECISION, "not found" is not a neutral default** — decide what it
+  means explicitly.
 
 - **A process that executes model-written code must hold nothing; the process that holds a token
-  must not execute.** Executing inside a worker that has a run token hands hostile code the space
-  itself (`put`/`take` as that agent), which is a better target than the internet. Hence three
-  processes in the chat example: `workers/exec.ts` (token, space access, `--allow-run`) spawns
-  `deno run -` with NO permissions and talks to it over pipes only. Two consequences to preserve:
-  the sandbox never gets a credential "so code can query" (the worker fetches and pipes data in
-  instead, which is the confused-deputy rule again), and its emptiness is what makes lease RETRY
-  sound,
-  since a permissionless child has no side effect to double.
-
+  must not execute.** Executing inside a worker with a run token hands hostile code the space itself
+  (`put`/`take` as that agent), a better target than the internet. Hence three processes in the chat
+  example: `workers/exec.ts` (token, space access, `--allow-run`) spawns `deno run -` with NO
+  permissions and talks over pipes. The sandbox never gets a credential "so code can query" (the
+  worker fetches and pipes data in), and that emptiness is what makes lease RETRY sound: a
+  permissionless child has no side effect to double.
 - **Read access for executed code is granted separately from the file tools' roots.** Both bound
-  "which files", but the exposure differs: a tool returns one file per call, visibly, while a
-  program can walk a whole tree and fold it into one line of output. So `RADIA_CHAT_EXEC_DIRS` is
-  its own setting rather than reusing `RADIA_CHAT_DIRS`: widening the tools must not silently
-  widen the sandbox. Two properties to keep if this is touched: roots are realpath'd before being
-  granted (a symlink must not smuggle the grant elsewhere), and the blob KEK plus the operator
-  credential are passed as `--deny-read`, which beats `--allow-read` in Deno, so pointing a root at
-  a directory containing them still does not expose them. Write, net, env and run stay denied
-  whatever is configured.
+  "which files", but a tool returns one file per call, visibly, while a program can fold a whole
+  tree into one line of output — so widening the tools (`RADIA_CHAT_DIRS`) must not widen the
+  sandbox (`RADIA_CHAT_EXEC_DIRS`). Two properties to keep: roots are realpath'd before being
+  granted, so a symlink cannot smuggle the grant elsewhere; and the blob KEK and operator credential
+  are passed as `--deny-read`, which beats `--allow-read` in Deno, so a root containing them still
+  does not expose them. Write, net, env and run stay denied whatever is configured.
 
 - **Deno's `--max-old-space-size` does not bound TypedArrays.** Measured: an object-allocation loop
   dies in ~0.3s ("Reached heap limit", exit 133), while `while(true) a.push(new Uint8Array(1e7))`
@@ -807,23 +591,19 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   `kindDefKey`), so restarts don't grow records. Don't reintroduce a `kinds` table or a
   `/v0/kinds` endpoint; that's the side-table-beside-the-substrate this replaced.
 
-- **A reserved kind may be EXTENDED by a redeclaration, never SHRUNK, and that is enforced on
-  every path a declaration enters by.** `authorize` compiles against `grant.principal`/`grant.kind`
-  and credential resolution against `agent_definition.tokenHash`, so a successor `kind_def` dropping
-  one of those paths made every authorization in the space fail `undeclared_path` (fail-closed, but
-  space-wide), and reinstated on every restart by `loadKinds`. It needed no operator: `kind_def` is
-  deliberately NOT write-protected (an app declares its own kinds), so an ordinary `put: kind_def`
-  grant was the whole vector. The fix is `assertReservedCompatible` (`src/core/kinds.ts`), which
-  refuses dropping a code-defined path of a `META_RESERVED` kind or changing its `claimable`, and is
-  principal-independent. Adding an index to a reserved kind stays legal, which the chat relies on
-  (`conversationId` on `artifact`); note a redeclaration REPLACES rather than merges, so an
-  extension must repeat the runtime's own paths. Two subtler halves are the reusable lesson:
-  **the check belongs on every write path, not the one you thought of** (`ack` results skipped
-  `Space.put`'s `kind_def` validation entirely, so a lease was a way around a rule the direct write
-  obeyed; both go through `validateReservedBody` now), and **a startup that CASTS what a live write
-  validates cannot recover from anything already in the log** (`loadKinds` adopted the stored body
-  unchecked, so a pre-rule declaration outlived the fix; it validates now and skips what it would
-  refuse).
+- **A reserved kind may be EXTENDED by a redeclaration, never SHRUNK, on every path a declaration
+  enters by.** `authorize` compiles against `grant.principal`/`grant.kind` and credential resolution
+  against `agent_definition.tokenHash`, so a successor `kind_def` dropping one of those paths failed
+  every authorization in the space with `undeclared_path` — fail-closed, space-wide, and reinstated
+  on each restart by `loadKinds`. No operator needed: `kind_def` is deliberately not write-protected,
+  so an ordinary `put: kind_def` grant was the whole vector. `assertReservedCompatible`
+  (`src/core/kinds.ts`) refuses dropping a code-defined path of a `META_RESERVED` kind or changing
+  its `claimable`, principal-independently. Extending stays legal (the chat adds `conversationId` to
+  `artifact`), and a redeclaration REPLACES rather than merges, so it must repeat the runtime's own
+  paths. Two reusable halves: **the check belongs on every write path, not the one you thought of**
+  (`ack` results skipped it entirely, so a lease was a way around a rule the direct write obeyed),
+  and **a startup that CASTS what a live write validates cannot recover from what is already in the
+  log** (`loadKinds` adopted stored bodies unchecked, so a pre-rule declaration outlived the fix).
 
 - **`created_by` and idempotency scope are the RESOLVED caller, threaded from the handler, not
   `ctx.principal`.** `put`/`ack`/settle take an optional trailing `principal`; the handlers pass the
@@ -839,22 +619,17 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   with `lease_lost`, on top of the `leaseId`+`epoch` fencing. This closes lease-leak impersonation, which
   matters because an ack-emitted result is authorized as, and carries the delegation chain of, the
   lease owner. In-process/operator callers (no principal / privileged) skip the check.
-- **The guarded UPDATE is the fence, so always check its affected-row count, and always fence
-  BEFORE writing.** `ack`, `renew`, `nack` and `release` (`src/storage/pgbase.ts`, same shape in
-  `src/storage/sqlite.ts`) selected the envelope without `FOR UPDATE`, validated the lease in
-  application code, then ran `update … and lease_id = $ and lease_epoch = $` without ever inspecting
-  how many rows it touched. Under pooled Postgres at READ COMMITTED another connection can reclaim
-  the lease or bump the epoch in that gap, so the guard matched nothing and the transaction still
-  committed and returned `{status: "ok"}`: a quarantined run landing one final result despite the
-  epoch bump that exists to fence it out. All four settle verbs in both adapters check the count now
-  and return `lease_lost` on zero, and `ack` was REORDERED so the guarded update runs before the
-  result insert and its event. That makes the fence a plain early return instead of a rollback, so
-  no path lets a fenced-out worker commit a result and be told `ok`. Keep the guard's limits
-  straight: the new branch is unreachable on the embedded adapters, which serialize in-process and
-  whose update `WHERE` is a subset of what `leaseValid` already checked, so a conformance case there
-  would assert nothing. The observable contract stays covered by the fencing case in
-  `conformance/suites/leases.ts`; exercising the race itself is fault-matrix work against a live
-  Postgres ("stale ack after reassignment", "ack after quarantine", driven concurrently). See
+- **The guarded UPDATE is the fence, so check its affected-row count, and fence BEFORE writing.**
+  The settle verbs selected the envelope without `FOR UPDATE`, validated the lease in application
+  code, then ran `update … and lease_id = $ and lease_epoch = $` without inspecting how many rows it
+  touched. Under pooled Postgres at READ COMMITTED another connection can reclaim the lease in that
+  gap, so the guard matched nothing and the transaction still committed `{status: "ok"}`: a
+  quarantined run landing one final result despite the epoch bump meant to fence it out. All four
+  verbs in both adapters check the count and return `lease_lost` on zero, and `ack` was REORDERED so
+  the guarded update precedes the result insert — the fence is an early return, not a rollback. The
+  new branch is unreachable on the embedded adapters (single connection, and the update's `WHERE` is
+  a subset of what `leaseValid` checked), so a conformance case there would assert nothing;
+  exercising the race is fault-matrix work against a live Postgres. See
   [plan-validation.md](plan-validation.md).
 - **Default principal is the operator, so dev stays open; enforcement only bites a real token.**
   An unauthenticated request resolves to `human:local` (privileged), so the UI, demo, and examples
@@ -869,38 +644,26 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   stay public in both modes so the console can bootstrap and a client can tell "no space here" from
   "not allowed"; neither carries a credential, and neither may (see the operator-token bullet).
 - **The operator token is a server-lifetime in-memory credential, not a record, and it never
-  travels in the served page.** `Space.mintOperatorToken` (startup) registers a hash in `CredentialStore`
-  that resolves to the privileged `human:local`, never expires, and is NOT persisted (like the
-  in-code meta-kinds). It is the one credential that legitimately lives in memory: it cannot be
-  revoked because it cannot outlive the process. **Never bake it into `index.html`.** `GET /` is
-  public so the console can bootstrap under `--auth required`, so an embedded token is readable by
-  anyone who can reach the port, and it authorizes every verb. The console prompts for a token and
-  keeps it in `sessionStorage`; `conformance/console.test.ts` fails if a credential-shaped literal
-  or a substitution placeholder reappears in the page. The substitution machinery is gone rather
-  than disabled: `loadUi` interpolates nothing and `ServerOptions.operatorToken` no longer exists,
-  so there is no path to reinstate it by passing an option.
-- **The operator token resolves as `kind: "operator"`, never `"def"`.** It authorizes coordination
-  directly, as the space's own principal. The CLI, the MCP adapter and `curl` all present it, so
-  resolving it to anything that 401s breaks every local tool. Resolving it as a DEFINITION token
-  breaks the other way: definition tokens mint runs, so a leaked operator credential would convert
-  into a long-lived run token, and a credential that cannot be revoked would become one that
-  outlives the process. It authorizes everything and mints nothing. Encoded once as a distinct
-  `ResolvedToken` variant (`src/core/auth.ts`): `Space.resolveCredential` returns
-  `kind: "operator"`, `resolveAuth` (`src/server/http.ts`) accepts it beside `run`, and `mintRun`
-  refuses it, so the escalation is closed at the source rather than at each caller. Guarded by
-  `conformance/http.test.ts`, which asserts the provisioned operator token reaches health, the ops
-  plane and a `put` under `--auth required`, and that it cannot mint a run.
-- **The open-mode no-header shortcut is for `curl`, and nothing radia ships may rely on it.** A
-  request with no credential resolves to `human:local`, the operator, which is the largest authority
-  a space has and the least visible way to acquire it: a client gets it by nobody having typed
-  anything. The CLI and MCP adapter always presented a token; the console and the chat did not, and
-  both silently ran privileged. Both now refuse to start without one (`api()` in `src/ui/index.html`
-  short-circuits any non-public path; `examples/chat/chat.ts` exits before touching the space), and
-  the chat's two credentials are separate on purpose, since the person at the keyboard is not the
-  operator that bootstraps the fleet. The shortcut is now behind an explicit `--auth open`, so a
-  space nobody configured is closed. The examples were the last holdouts and now read the
-  provisioned operator credential (`examples/operator.ts`) instead of sending no header, which also
-  means they exercise the authenticated path they exist to demonstrate.
+  travels in the served page.** `Space.mintOperatorToken` registers a hash resolving to the
+  privileged `human:local`; it never expires and is not persisted. It is the one credential that
+  legitimately lives in memory: it cannot be revoked because it cannot outlive the process. **Never
+  bake it into `index.html`** — `GET /` is public so the console can bootstrap, so an embedded token
+  is readable by anyone who can reach the port. The console prompts and keeps it in `sessionStorage`;
+  `conformance/console.test.ts` fails if a credential-shaped literal or a substitution placeholder
+  reappears. The substitution machinery is gone rather than disabled, so there is no option to pass
+  that reinstates it.
+- **The operator token resolves as `kind: "operator"`, never `"def"`.** Resolving it to something
+  that 401s breaks the CLI, MCP and `curl`; resolving it as a DEFINITION token breaks the other way,
+  since definition tokens mint runs, so a leaked unrevocable credential would convert into a
+  long-lived run token. It authorizes everything and mints nothing: a distinct `ResolvedToken`
+  variant (`src/core/auth.ts`), accepted by `resolveAuth` beside `run` and refused by `mintRun`, so
+  the escalation is closed at the source rather than at each caller (`conformance/http.test.ts`).
+- **The open-mode no-header shortcut is for `curl`, and nothing radia ships may rely on it.** No
+  credential resolves to `human:local`, the operator: the largest authority a space has, acquired by
+  nobody having typed anything. The console and the chat both silently ran privileged; both refuse
+  to start without a token now, the shortcut sits behind an explicit `--auth open`, and the examples
+  read the provisioned operator credential (`examples/operator.ts`) so they exercise the
+  authenticated path they exist to demonstrate.
 - **Never let a launch flag pick between "scoped" and "operator": the privileged posture becomes the
   default.** The chat once took a role setting that defaulted to operator, so it ran privileged
   unless you knew to say otherwise, and the flag described how the process was started rather than
@@ -922,19 +685,17 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   loop is long-lived by definition, and the five chat workers each needed it. One place, and an
   external agent author gets it without knowing it exists.
 - **A heartbeat that discards its result is a worker that never learns it was fenced.** `renew`
-  reports fencing as a `{status: "lease_lost"}` BODY, not an error, so `renew(...).catch(() => {})`
-  ignored exactly the case it existed to detect: a reclaimed or quarantined worker renewed a dead
-  lease for the life of the process while its handler kept making side effects, and the first
-  observable sign was the ack, after the work was done. All three heartbeats (`sdk/ts/loop.ts`,
-  `sdk/py/radia.py`, `src/surfaces/mcp/server.ts`) now act on it and cancel the handler. Three
-  things about the shape are worth keeping: **the fence has two faces**, `lease_lost` AND 401/403,
-  because quarantining a run kills its token first so its heartbeat never gets a `lease_lost` at
-  all; **everything else stays ignored**, since a network blip is not a fence and the lease has
-  until its expiry; and **a claim known to be lost is not settled**, because the ack would only be
-  answered `lease_lost` and a nack risks bumping the attempt count of whoever holds the record now.
-  The same investigation found that only `403` was permanent for a watcher, so a stopped run's
-  watchers retried a `401` connect every second forever — and since `agentLoop` awaits its watchers
-  on the way out, the loop could not finish. Watchers run on the credential's signal now.
+  reports fencing as a `{status: "lease_lost"}` BODY, so `renew(...).catch(() => {})` ignored exactly
+  the case it existed to detect: a reclaimed worker renewed a dead lease for the life of the process
+  while its handler kept making side effects. All three heartbeats (`sdk/ts/loop.ts`,
+  `sdk/py/radia.py`, `src/surfaces/mcp/server.ts`) act on it and cancel the handler. Three rules:
+  **the fence has two faces**, `lease_lost` AND 401/403, since quarantining a run kills its token
+  first so its heartbeat never sees `lease_lost`; **everything else stays ignored**, because a
+  network blip is not a fence; and **a claim known to be lost is not settled**, since the ack would
+  only be answered `lease_lost` and a nack risks bumping the next owner's attempt count. The same
+  investigation found only `403` was permanent for a watcher, so a stopped run's watchers retried a
+  `401` connect forever and `agentLoop`, which awaits them, could never finish. Watchers run on the
+  credential's signal now.
 - **A public endpoint still rejects a BAD credential, so `401` never means "the space is down".**
   `/v0/health` and `GET /` skip the auth requirement, but `resolveAuth` rejects a presented token
   that does not resolve, on every path. So an expired run token `401`s on the one endpoint a client
@@ -947,17 +708,14 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   The console's `api()` returns `{ok, status}` and every caller reads it, so an uncaught rejection
   froze the page on its last good render. It now maps a network failure to `status: 0`, distinct
   from any HTTP status.
-- **Runtime paths belong in `src/paths.ts`, never at a call site.** A space writes a database,
-  artifact blobs and (optionally) the space KEK, and each was named where it was needed:
-  `.radia-blobs/`, `.radia-kek.json`, `.radia-chat-space.db` and `.radia-chat-space.db-blobs/`, four
-  top-level entries nobody chose as a set. They now default under one `./.radia` (`RADIA_DIR` moves
-  it), which makes `rm -rf .radia` a complete reset and lets the chat's sandbox deny ONE directory
-  instead of a list that drifts as paths are added. Two properties to preserve when adding one: the
-  KEK stays a SIBLING of the blob directory rather than inside it (copying blobs must not carry the
-  key), and blobs stay `<db>-blobs` when `--db` names a place outside the runtime dir (a space's
-  bytes and its records belong together). Also note SQLite will not create a missing parent
-  directory, so a new path needs `ensureParent`; the error otherwise names the file and reads like
-  corruption.
+- **Runtime paths belong in `src/paths.ts`, never at a call site.** Naming each where it was needed
+  grew four top-level entries nobody chose as a set (`.radia-blobs/`, `.radia-kek.json`,
+  `.radia-chat-space.db`, `.radia-chat-space.db-blobs/`). They default under one `./.radia`
+  (`RADIA_DIR` moves it), so `rm -rf .radia` is a complete reset and the chat's sandbox denies ONE
+  directory. Two properties to preserve: the KEK stays a SIBLING of the blob directory (copying
+  blobs must not carry the key), and blobs stay `<db>-blobs` when `--db` points outside the runtime
+  dir. SQLite will not create a missing parent, so a new path needs `ensureParent` — the error
+  otherwise names the file and reads like corruption.
 - **The provisioned credential is keyed by HOST, so `localhost` and `127.0.0.1` are two spaces.**
   `baseKey` (`src/credentials.ts`) keys on `protocol//host`, and `radia dev` binds `127.0.0.1`, so
   anything defaulting to `http://localhost:7788` finds no credential for a space it can otherwise
@@ -966,16 +724,14 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   `baseKey`: two names for one host is exactly the kind of helpful normalization that surprises
   someone later, and the error message names the trap instead.
 - **Mutable module state is per-PROCESS, and the chat's workers are separate processes.**
-  `sessionOwner()` (`examples/chat/space/roles.ts`) is set by the REPL after it resolves the login
-  token. The tools-worker imports the same module in its own process, where nothing sets it, so
-  `request_grant` stamped `owner: agent:chat-user` on a space whose session grant was
-  `{owner: human:alice}` and the write was refused. That killed the ONE escalation path the system
-  prompt tells the model to use, and the model reported it as its own request being restricted, so
-  the symptom pointed at authorization rather than at a stale global. Worker-side code takes
-  identity from `ToolContext.owner`, the value the session stamped on the tool_call and the runtime
-  already checked against that session's write pattern. Guarded structurally in `smoke-login.ts`
-  (no worker-side module may IMPORT `sessionOwner`), because the bug is invisible at the call site:
-  the function reads correctly and is wrong only because of which process is running it.
+  `sessionOwner()` is set by the REPL; the tools-worker imports the same module in its own process
+  where nothing sets it, so `request_grant` stamped the wrong owner and the write was refused —
+  killing the ONE escalation path the prompt tells the model to use, and reported by the model as
+  its request being restricted, so the symptom pointed at authorization rather than a stale global.
+  Worker-side code takes identity from `ToolContext.owner`, which the session stamped on the
+  tool_call and the runtime already checked. Guarded structurally in `smoke-login.ts` (no
+  worker-side module may IMPORT `sessionOwner`), because the call site reads correctly and is wrong
+  only because of which process runs it.
 - **A read grant without `query` is a session that cannot find its own work.** The chat gave itself
   `artifact: read_one` and no `query`, so "which artifacts do I have?" was unanswerable: it could
   fetch an id it already knew and could not discover one. The assistant diagnosed it correctly and
@@ -986,14 +742,12 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   `smoke-selfgrant.ts` covers the escalation loop under `{conversationId}`, which is not the default;
   both bugs above reproduce only under `{owner}`. A suite that exercises one posture of a documented
   either/or is not covering the feature. `smoke-login.ts` now carries the identity-scope half.
-- **A verdict the subject can write is not a verdict.** `check` records say whether a run did what
-  was claimed of it, and the exec-worker is the only principal with `check: put`; the chat session
-  holds `query` alone. If the session could write one, "the code works" would be the model grading
-  its own output, which is exactly what the prose it already produces does. The same shape applies
-  to any evidence kind: the party being judged must not hold the pen. Two boundaries that look like
-  details and are not: an ABSENT expectation records no verdict rather than a passing one (an
-  unverified run must not read as successful), and a TIMEOUT fails `exit_zero` (a killed process has
-  a null exit code, and treating that as zero turns the worst outcome into a pass).
+- **A verdict the subject can write is not a verdict.** The exec-worker is the only principal with
+  `check: put`; the chat session holds `query`. If the session could write one, "the code works"
+  would be the model grading its own output. **The party being judged must not hold the pen**, for
+  any evidence kind. Two boundaries that look like details: an ABSENT expectation records no verdict
+  rather than a passing one, and a TIMEOUT fails `exit_zero` (a killed process has a null exit code,
+  and reading that as zero turns the worst outcome into a pass).
 - **A CLI verb must read its positional through `positional()`, never `argv[0]`.** A flag written
   before the argument is otherwise taken AS the argument, and for a verb whose argument is a bare
   string the failure is silent: `radia permissions --json alice` reported on a principal named
@@ -1021,14 +775,13 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   this true of the record" but "is this tested where walking the log is too expensive". A first draft
   of the taint labels carried `model` and `exec` on that mistake; both are graph facts, neither is
   ever tested at claim time, and both were cut. See [design-taint.md](design-taint.md).
-- **A column that exists is not a behaviour that happens.** `record_runtime` carries `claim_until`
-  and `effective_priority`; both are written as `undefined`/`0` at every call site and neither is
-  consulted, so "no new claims after this time" and "aged by sweeper" described nothing. Same shape
-  as `retention_until`, and `schema_version` is a constant. The schema, the indexes and the ranking
-  code are all real, which is what makes this convincing: `Space.take` genuinely orders by
-  `effective_priority` and therefore always falls through to the next tiebreak. Before planning
-  against a documented field, grep for a WRITE of a non-default value and for a read that filters on
-  it; scaffolding for a later milestone looks identical to a live feature from the schema alone.
+- **A column that exists is not a behaviour that happens.** `claim_until` and `effective_priority`
+  are written as `undefined`/`0` everywhere and consulted nowhere, so "no new claims after this
+  time" and "aged by sweeper" described nothing (same for `retention_until`; `schema_version` is a
+  constant). The schema, indexes and ranking code are all real, which is what makes it convincing:
+  `take` genuinely orders by `effective_priority` and therefore always falls through to the next
+  tiebreak. Before planning against a documented field, grep for a WRITE of a non-default value —
+  scaffolding for a later milestone looks identical to a live feature from the schema alone.
 - **An unenforced record-size limit is an ERASURE hole, not a performance note.** Nothing rejects a
   large body (verified: 4 MiB accepted, while the same bytes as an artifact hit a 32 MiB cap), and
   the erasure boundary is precisely "payloads are out of line, so they can be destroyed; bodies are
@@ -1041,13 +794,11 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   false, and a record is only worth something if it says what the jail GOT rather than what was
   intended. Write the probe before believing the spec, even when you wrote both.
 - **Prefer a guarantee that holds by ABSENCE over one that holds by presence.** Deno's sandbox is
-  safe because nothing was granted: forget every flag and you get the safe answer. A bubblewrap or
-  container jail is safe because `--unshare-net` / `--network=none` was passed: forget one and you
-  get the unsafe answer, silently. That is not "property versus configuration", it is fail-closed
-  versus fail-open, and it is the thing to check first when a second isolation backend is proposed.
-  The mitigation is a boot-time PROBE (try to connect, try to write, try to read a path that should
-  not be there) and refusing to advertise a jail that fails it, because a structured claim nobody
-  tested is more convincing and no more true than a sentence in a description.
+  safe because nothing was granted: forget every flag, get the safe answer. A bwrap or container
+  jail is safe because `--unshare-net` was passed: forget one, get the unsafe answer silently. That
+  is fail-closed versus fail-open, and it is the first thing to check when a second isolation
+  backend is proposed. Mitigation is a boot-time PROBE (try to connect, to write, to read what
+  should not be there) and refusing to advertise a jail that fails it.
 - **Measure the isolation you are comparing, not the latency.** Making `python3` reachable under
   bubblewrap means binding the host's `/usr`, and the resulting jail sees 4223 binaries and 289
   site-packages entries where the Deno jail beside it sees NOTHING; a purpose-built container image
@@ -1071,21 +822,17 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   through a substrate (true for a compiler) does not transfer to one gated by inference. What DOES
   pay is reducing model rounds and making each one more informative.
 - **An agent that discovers its abilities from records cannot discover one nothing publishes.**
-  Both SDKs have had `artifactCapability` since artifacts shipped, and the chat had no tool for it,
-  so the assistant could store a file and not hand it over. Asked for a link it quoted the id-based
-  URL (a `401` in a browser) or invented a capability URL, because inventing was the only move left:
-  `run_javascript` has no network, and `request_grant` asks for a permission when what was missing is a
-  VERB. Before concluding a model "does not understand" something, check that a tool for it exists
-  and that a description says when to reach for it. See `share_artifact` in
-  `examples/chat/tools/save.ts`.
-- **The capability URL is the one URL a PERSON handles, so its length is a real property.** It was
-  122 characters: origin, `/v0/artifacts/`, a 26-character ULID, `?capability=`, and 64 hex. The
-  capability already names one record, so the id and the query string were redundant; `GET
-  /v0/a/{capability}` is 46. The token is now 16 bytes as base64url (22 chars) rather than 32 as
-  hex, which is not a weakening: it opens one object for a few minutes, is not an identity, and the
-  short form carries no id to substitute. Two boundaries kept: it stays under `/v0` (a root path
-  saves three characters and buys an unversioned public surface), and the long form still works,
-  since that is the one OpenAPI marks `stable`.
+  Both SDKs had `artifactCapability` since artifacts shipped and the chat had no tool for it, so the
+  assistant could store a file and not hand it over: asked for a link it quoted the id-based URL (a
+  401 in a browser) or invented one, because inventing was the only move left. **Before concluding a
+  model "does not understand" something, check that a tool for it exists** and that a description
+  says when to reach for it (`share_artifact` in `examples/chat/tools/save.ts`).
+- **The capability URL is the one URL a PERSON handles, so its length is a real property.** 122
+  characters became 46: the capability already names one record, so `GET /v0/a/{capability}` drops
+  the redundant id and query string, and the token is 16 bytes base64url rather than 32 hex — not a
+  weakening, since it opens one object for minutes, is not an identity, and carries no id to
+  substitute. It stays under `/v0` (a root path buys an unversioned public surface), and the long
+  form still works, since that is the one OpenAPI marks `stable`.
 - **A capability URL must come back ABSOLUTE to anything that is not the console.**
   `POST /v0/artifacts/{id}/capability` returns a RELATIVE url when no isolated artifact origin is
   running (`--artifact-port 0`). The console resolves that against its own origin; an agent hands it
@@ -1098,12 +845,12 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   procedure named run_python" — with the capability published and the jail working, which is why it
   read as an execution bug. It is now a `BUILTIN_RUNNERS` set. Grep for the OLD name's remaining
   comparisons before adding a sibling, not after.
-- **"Refuse or fabricate" is usually a false pair.** The git export refused an erased payload
-  because the obvious repair (a placeholder blob) would make the tree hash to something the manifest
-  never described. OMITTING the entry is a third option and an honest one: a tree that does not
-  contain the file makes no claim about it. What made it honest was closing the remaining gap,
-  silence — the subject line, the commit trailers and the repository `description` each say what is
-  missing, the last because it is the only channel that survives the directory being passed on.
+- **"Refuse or fabricate" is usually a false pair.** The git export refused an erased payload,
+  because a placeholder blob would make the tree hash to something the manifest never described.
+  OMITTING the entry is a third, honest option: a tree that does not contain the file makes no claim
+  about it. What made it honest was closing the remaining gap, silence — the subject line, the commit
+  trailers and the repository `description` each say what is missing, the last because it is the only
+  channel that survives the directory being passed on.
 - **Discriminate a skippable failure by its STATUS, never by how its message reads.** `--partial`
   skips a 410 (bytes deliberately destroyed) and nothing else. A 404 is a manifest pointing at
   something that never existed; a digest mismatch is content disagreeing with its claim. Both look
@@ -1117,55 +864,42 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   deadline and the user saw `timed out waiting for 'run_python'` with no reason given. Returning a
   `tool_result` turned a two-minute hang into a one-line explanation in about a second. Ask of every
   throw in a handler: can a retry possibly help? If not, it is a result.
-- **A status hint is a DIAGNOSIS and must be evidence-based, not timer-based.** The chat showed
-  "no worker serves 'x'" after 2.5 seconds without a `progress` record — but most tools emit no
-  progress records at all, so it accused a worker that was about to answer, then vanished under the
-  reply. What a client can actually prove is what is ADVERTISED (that set is what it handed the
-  model); LIVENESS it cannot, since a `capability` record is an advertisement and a stopped worker's
-  record lingers, and a scoped session cannot read the envelope. So the hint now claims only the
-  provable half and the timeout names both possibilities.
-- **Anything that abandons a turn mid-flight must answer the tool call it interrupted.** Escape-to-
-  cancel lands in precisely the window that bricks a conversation, so it appends a `tool` reply
-  exactly as a timeout does. The general rule: every early exit from a turn is a candidate for the
-  unanswered-`tool_calls` bug, and the place to fix it is the one exit path all of them share, not
-  each new feature. Cancelling also stops only the WAITING — a claimed `llm_call` or `tool_call`
-  still completes and still writes its result, so a message that implies the work was undone is
-  wrong about an at-least-once substrate.
+- **A status hint is a DIAGNOSIS and must be evidence-based, not timer-based.** The chat showed "no
+  worker serves 'x'" after 2.5 seconds without a `progress` record, but most tools emit none, so it
+  accused a worker that was about to answer. A client can prove what is ADVERTISED; LIVENESS it
+  cannot, since a `capability` record outlives the worker and a scoped session cannot read the
+  envelope. The hint claims only the provable half and the timeout names both possibilities.
+- **Anything that abandons a turn mid-flight must answer the tool call it interrupted.**
+  Escape-to-cancel lands in exactly the window that bricks a conversation, so it appends a `tool`
+  reply as a timeout does. **Every early exit from a turn is a candidate for the
+  unanswered-`tool_calls` bug**, and the fix belongs in the exit path they share. Cancelling stops
+  only the WAITING: a claimed `llm_call` still completes and writes its result, so a message
+  implying the work was undone is wrong about an at-least-once substrate.
 - **An assistant `tool_calls` with no reply BRICKS a conversation, permanently.** OpenAI rejects the
-  whole payload ("must be followed by tool messages responding to each tool_call_id"), and the thread
-  is durable, so every later turn reassembles the same rejected history: 59 messages, none of them
-  sendable. Produced by any throw between writing the assistant message and writing the reply —
-  `awaitToolResult` throwing on the tool deadline was the live one. Two fixes, and BOTH are needed:
-  `runToolCall` appends a reply on every exit path including failure (prevention, and the model gets
-  to see "timed out"), and `assembleContext` pairs calls to replies in both directions (repair,
-  which is the only thing that helps a conversation already holding one). A partially answered
-  message keeps the calls that WERE answered — dropping it whole orphans the surviving replies and
-  trades one protocol violation for the other.
-- **A tool scoped more narrowly than the GRANT contradicts the tools that are not.** `list_workspaces`
-  filtered to the current conversation while `space_count` was owner-scoped by the grant: one
-  answered 8, the other none, both correctly, and the model spent eight tool rounds failing to
-  reconcile them before giving up. The narrowing was doing no security work either, since the query
-  is bounded by the grant regardless. Where relevance really does differ from permission, MARK the
-  rows (`thisConversation: true`) rather than hiding them, and say in the description what to do
-  about the difference — a name the model cannot use, with no way to know why, is worse than a
-  longer list.
-- **When a model cannot READ something, it reconstructs it, and says so while presenting it as
-  real.** Workspaces had save, list and run, and no read. Asked to show a file in a tree, the model
-  tried `read_file` (sandbox paths only, denied), rebuilt the contents from earlier in the
-  conversation, stored the reconstruction with `save_content`, and answered with it — noting that it
-  was a reconstruction, which no user reads as "this is not the file". Fabrication is what fills a
-  missing read path, so the absence of a reader is not a convenience gap, it is a correctness one.
-  Two fixes: `read_workspace` exists, and `list_workspaces` reports the PATHS rather than a count,
-  because "what files are in X" had no data source either and was already being answered from memory
-  one question earlier.
-- **"Deduped" at one layer is not deduped at the next.** Phase 10 asserted the storage saving from an
-  edit was ZERO, reasoning from the blob store: identical bytes share a blob, so re-saving a tree
-  moves no bytes. True, and the wrong layer. `putArtifact` is called once per file per save and
-  creates an artifact RECORD each time, so a six-file tree re-saved for a one-line change appends six
-  records where an edit appends one. The claim was made from a real property of a neighbouring
-  component instead of from a measurement, which is the same shape as citing a rule whose
-  precondition does not hold — and it survived until someone measured it on the way to measuring
-  something else.
+  whole payload, and the thread is durable, so every later turn reassembles the same rejected
+  history: 59 messages, none sendable. Produced by any throw between writing the assistant message
+  and the reply. BOTH fixes are needed: `runToolCall` appends a reply on every exit path
+  (prevention), and `assembleContext` pairs calls to replies in both directions (repair, the only
+  thing that helps a conversation already holding one). A partially answered message keeps the calls
+  that WERE answered — dropping it whole orphans the survivors and trades one violation for another.
+- **A tool scoped more narrowly than the GRANT contradicts the tools that are not.**
+  `list_workspaces` filtered to the current conversation while `space_count` was owner-scoped: one
+  answered 8, the other none, both correctly, and the model spent eight rounds failing to reconcile
+  them. The narrowing did no security work either, since the query is bounded by the grant anyway.
+  Where relevance genuinely differs from permission, MARK the rows (`thisConversation: true`) rather
+  than hiding them: a name the model cannot use, with no way to know why, is worse than a long list.
+- **When a model cannot READ something, it reconstructs it and presents that as real.** Workspaces
+  had save, list and run, no read. Asked to show a file, the model rebuilt the contents from earlier
+  in the conversation, stored the reconstruction, and answered with it — noting it was a
+  reconstruction, which no user reads as "this is not the file". **Fabrication is what fills a
+  missing read path**, so a missing reader is a correctness gap, not a convenience one.
+  `read_workspace` exists now, and `list_workspaces` reports PATHS rather than a count, because
+  "what files are in X" was being answered from memory too.
+- **"Deduped" at one layer is not deduped at the next.** A phase claimed the storage saving from an
+  edit was ZERO, reasoning from the blob store: identical bytes share a blob. True, and the wrong
+  layer — `putArtifact` creates an artifact RECORD per file per save, so a six-file tree re-saved
+  for a one-line change appends six records where an edit appends one. The claim came from a real
+  property of a neighbouring component instead of a measurement.
 - **Narrowing a grant can leave a session with LESS than it had, and the prompt said so too late.**
   Approving `[own]` retires any wider grant carrying the same operations — correct, because grants
   union and leaving the wide one standing would make the narrowing theatre. But it means the
@@ -1225,57 +959,47 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   same move as `forked` and `incomplete`. Where a capability only becomes relevant because of what
   just happened, announce it in the thing that just happened.
 - **A tool tested with an operator client does not test the WORKER's authority.** `read_workspace`
-  and `edit_workspace` were driven in `smoke-save.ts` through `makeWorkspaceTools(admin)`, which is
-  right for testing descriptions and edit semantics and cannot catch what shipped: the tools worker
-  held `artifact: put` and no `read_one`, so every read and every edit in a real chat answered
-  `forbidden` while the suite stayed green. The comment beside the grant said "WRITE only, it never
-  reads one back" — true when written, false the moment a reader was added and the grant list did
-  not follow. Third instance of this exact shape (the exec worker's missing `workspace: put`, then
-  its missing `sandbox: put`). **When a worker gains a capability, its grants are part of the
-  change**, and at least one assertion has to run through a live worker over a real `tool_call`,
-  because that is the only thing that exercises the identity rather than the code.
+  and `edit_workspace` were driven through an admin client, so the suite stayed green while the
+  tools worker, holding `artifact: put` and no `read_one`, answered `forbidden` to every read in a
+  real chat. The comment beside the grant said "WRITE only, it never reads one back": true when
+  written, false the moment a reader was added. Third instance of this shape. **When a worker gains
+  a capability, its grants are part of the change**, and at least one assertion must run through a
+  live worker over a real `tool_call` — the only thing that exercises the identity, not the code.
 - **An error that does not say what to do next gets diagnosed creatively.** `oldString not found`
   was accurate and useless: the model had guessed the text instead of reading it, concluded the
   failure was a permissions problem, and asked for a grant — which the human then narrowed, breaking
   the read access it did have. One bad message produced a three-step cascade ending in less access
   than it started with. The message now names the likely cause, says to read the file, and states
   what it is NOT. Whenever a tool can fail for a reason the caller could fix, say which reason.
-- **A RAISE and an INHERITANCE look alike and need opposite rules.** Asking "should file artifacts
-  carry labels at all" admitted no answer that was right for both: a caller asserting what the graph
-  does not know ("this tree came off a filesystem") may label whatever it likes, because raising is
-  monotone and needs no trust; a derived tree carrying what its predecessor carried must travel on
-  the record graph and nowhere else, or the copy can drift from the fact. `writeWorkspace` does the
-  first, a write-back and an edit do the second. The question that produced a decision was the wrong
-  question, and taking its answer literally would have deleted a tested feature.
+- **A RAISE and an INHERITANCE look alike and need opposite rules.** A caller asserting what the
+  graph does not know ("this tree came off a filesystem") may label whatever it likes, since raising
+  is monotone and needs no trust; a derived tree carrying what its predecessor carried must travel
+  on the record graph and nowhere else, or the copy drifts from the fact. `writeWorkspace` does the
+  first; a write-back and an edit do the second. "Should file artifacts carry labels at all" was the
+  wrong question, and taking its answer literally would have deleted a tested feature.
 - **Check a cited rule's PRECONDITION before leaning on it.** "A label exists only where a lineage
-  walk is too slow" was cited to justify leaving workspace file artifacts unlabelled — but there is
-  no lineage walk from an artifact to its manifest (the reference is a body field, not a parent
-  edge), so the rule does not reach the case it was used to decide. The decision survived on two
-  different arguments (recovery by query, and additivity making it reversible), which is lucky
-  rather than sound. A rule invoked outside its precondition is worse than no rule: it ends the
-  discussion while leaving the reasoning wrong, and the next reader inherits the citation, not the
-  check.
+  walk is too slow" was cited to leave workspace artifacts unlabelled — but there is no lineage walk
+  from an artifact to its manifest (the reference is a body field, not a parent edge), so the rule
+  never reached the case. The decision survived on two other arguments, which is luck. **A rule
+  invoked outside its precondition is worse than no rule**: it ends the discussion while leaving the
+  reasoning wrong, and the next reader inherits the citation rather than the check.
 - **A dead ternary reads as a decision, which is why it survives review.**
-  `{ taint: b.owner ? undefined : undefined }` sat in the exec worker's write-back call and looked
-  deliberate enough that a reviewer and an audit both read it as a laundering hole. It was neither:
-  the parent edge already carried the labels, so the parameter was redundant rather than unfilled.
-  A leftover expression whose branches are identical is worse than a missing argument, because a
-  missing argument reads as missing.
-- **A defect that SHRINKS under checking deserves the same write-up as one that grows.** The same
-  finding went from "write-back carries no labels at all" to "artifacts only" to "correct by design",
-  across two corrections, because each check narrowed it. Recording only the confirmed defects
-  teaches the reader that reviews find bugs; recording the walk-backs teaches them to check first,
-  which is the more useful habit and the one that produced the right answer here.
-- **Two branches of one function, one of which checked its credential's status and one of which did
-  not.** `resolveCredential` checked `agent_run` for `status === "stopped"` AND `expiresAt`, then
-  returned `{ok: true}` for `agent_definition` on the mere EXISTENCE of a record — no status, no
-  expiry, and no revocation path existed to check for. So the credential design's whole argument
-  ("credentials resolve from records per request, so revocation is immediate") held for every
-  credential except the one that never expires, and a leaked definition token minted fresh runs
-  forever. The fix is the run's own shape: a successor carrying the SAME `tokenHash`, so revocation
-  lands in the single indexed lookup authentication already performs. When two things in one
-  function are the same KIND of thing, read them side by side and ask what one does that the other
-  does not; the asymmetry was two lines apart for a milestone.
+  `{ taint: b.owner ? undefined : undefined }` looked deliberate enough that a reviewer and an audit
+  both read it as a laundering hole. It was neither — the parent edge already carried the labels. An
+  expression whose branches are identical is worse than a missing argument, which at least reads as
+  missing.
+- **A defect that SHRINKS under checking deserves the same write-up as one that grows.** One finding
+  went from "write-back carries no labels" to "artifacts only" to "correct by design" across two
+  corrections. Recording only confirmed defects teaches that reviews find bugs; recording the
+  walk-backs teaches checking first, which is the habit that produced the right answer.
+- **Two branches of one function, one checking its credential's status and one not.**
+  `resolveCredential` checked `agent_run` for `status`/`expiresAt`, then returned `{ok: true}` for
+  `agent_definition` on the mere EXISTENCE of a record. So "credentials resolve from records per
+  request, so revocation is immediate" held for every credential except the one that never expires,
+  and a leaked definition token minted runs forever. Fixed with the run's own shape: a successor
+  carrying the SAME `tokenHash`, so revocation lands in the indexed lookup authentication already
+  does. **When two things in one function are the same KIND of thing, read them side by side** — the
+  asymmetry sat two lines apart for a milestone.
 - **A credential that mints authority must not be able to name a privileged subject.** A definition
   mints runs for its subject, so `createAgentDefinition("human:root")` on a space whose operators
   include it was a permanent way to mint privileged runs — and until revocation existed, a permanent
@@ -1299,17 +1023,15 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   time, so the package runs and then fails to type-check, which is a later and more confusing
   failure than a missing value. When adding a tier rule, enumerate every directory the rule is
   ABOUT, not the ones the violation was expected in.
-- **A registry rebuilt only at startup is single-instance by accident.** `loadKinds` ran once, and
-  `put` of a `kind_def` registers the declaration in the WRITING process's registry only, so with
-  N instances over one database a kind declared on A was unknown to B until B restarted, and a kind
-  REDECLARED on A left B compiling against the old contract. Reads failed; writes were always fine,
-  because one GIN index serves every path, so the declaration governs COMPILATION and not physical
-  storage. Fixed by driving the refresh from the SYMPTOM (`unknown_kind` / `undeclared_path` →
-  re-read that one kind → retry once) rather than from a timer: a periodic refresh has a staleness
-  window by construction and polls forever to close a gap that is usually not open, and refresh-on-
-  MISS alone would have fixed only the first half, since a stale declaration is not a missing one.
-  The old conformance test asserted `unknown_kind` before `loadKinds()` — the bug written down as
-  expected behaviour, which is the form these live longest in.
+- **A registry rebuilt only at startup is single-instance by accident.** `loadKinds` ran once and a
+  `kind_def` put registers in the WRITING process only, so with N instances a kind declared on A was
+  unknown to B until restart, and one REDECLARED on A left B compiling the old contract. Reads
+  failed; writes were fine, because one GIN index serves every path, so a declaration governs
+  COMPILATION rather than storage. The refresh is driven by the SYMPTOM (`unknown_kind` /
+  `undeclared_path` → re-read that kind → retry once), not a timer: a periodic refresh has a
+  staleness window by construction, and refresh-on-MISS alone fixes only half, since a stale
+  declaration is not a missing one. The old conformance test asserted `unknown_kind` before
+  `loadKinds()` — **the bug written down as expected behaviour**, which is how these live longest.
 - **An undone erasure was not just a no-op, it was INVISIBLE.** `shredOf` had exactly one caller,
   inside the branch that runs after a read has already failed, so once the bytes returned nothing in
   the system ever consulted the shred record again. The fix is detection, not enforcement: a marker
@@ -1324,27 +1046,24 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   did NOT decide, or the confidence leaks sideways.
 - **Erasure leaves a confirmation oracle, and the argument against it was already in the repo,
   pointed at the neighbouring case.** The plaintext sha256 lives in the artifact record's body,
-  which has no erasure path, so a shredded payload stays confirmable to anyone with a candidate —
+  which has no erasure path, so a shredded payload stays confirmable to anyone holding a candidate —
   while `BlobCipher.storageName` HMACs the same value precisely because a storage name must reveal
-  nothing about its content. Two layers, opposite postures, one documented. And
-  `design-data-model.md` already reasoned that a retained `body_sha256` leaves a low-entropy body
-  brute-forceable, concluding "the digest that makes artifact erasure safe is the thing that makes
-  body erasure unsafe" — its own counter-example, carried one case short. When a doc states a
-  hazard, check the sentence next to it for the case it was not applied to.
+  nothing. Two layers, opposite postures. `design-data-model.md` had already reasoned that a
+  retained `body_sha256` leaves a low-entropy body brute-forceable, one case short of its own
+  counter-example. **When a doc states a hazard, check the sentence next to it for the case it was
+  not applied to.**
 - **Erasure by content cannot mean "these bytes may never exist here again".** A pre-write check
   refusing any payload whose digest was ever shredded was written and reverted the same hour: it
-  poisons a content address for the whole space, so shredding an empty file or `"hello\n"` blocks
-  every later write of it, and it breaks any program that legitimately recomputes the same output.
-  Erasure destroys the runtime's copy; someone re-uploading bytes they already hold learned nothing
-  from it. What IS worth fixing is that the erasure must be legible where it bites — the runner and
-  the reader now say "ERASED, permanently, save a successor without this path" instead of hanging or
-  returning nothing.
+  poisons a content address space-wide (shred an empty file and nothing can store one) and breaks
+  any program that legitimately recomputes the same output. Erasure destroys the runtime's copy;
+  someone re-uploading bytes they already hold learns nothing. What IS worth fixing is legibility
+  where it bites: the runner and reader say "ERASED, permanently, save a successor without this
+  path" rather than hanging.
 - **A write-only tool is half a tool, and the missing half is the one that saves tokens.**
-  `save_workspace` shipped without a way to LIST, so an assistant told to "fix the bug" re-created
-  the project from memory and lost every file it was not currently thinking about: "what did I
-  already build" had no answer. Whenever a tool creates named state, ask what reads the names back
-  before shipping it. The listing also has to distinguish "no workspace called X" from "I could not
-  see all of them", since only the first is safe to act on by re-creating X.
+  `save_workspace` shipped with no LIST, so an assistant told to "fix the bug" re-created the
+  project from memory and lost every file it was not currently thinking about. Whenever a tool
+  creates named state, ask what reads the names back. The listing must also distinguish "no
+  workspace called X" from "I could not see all of them" — only the first is safe to act on.
 - **`query <kind>` is not a listing when versions are records.** Three saves of one workspace are
   three `workspace` records, so a raw query answers a question nobody asked and counting its rows is
   wrong twice over. Anything registry-shaped needs the latest-wins-minus-retired projection, and it
@@ -1372,16 +1091,12 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   authority. `owner` is a body field a client submits, so taking the author line from it would let a
   record name whoever it liked as its writer. It travels as a trailer instead, where it reads as the
   claim it is.
-- **Two runners are two overlapping tools, so the SAME description rule applies, and only one half
-  of it was written.** `run_python` named `run_javascript`; `run_javascript` did not name
-  `run_python`, and it opened with "Run JavaScript" as one word ahead of four hundred about
-  `save_as`. Asked for "python code finding the first 10 primes", the model called
-  `run_javascript` with a Python program, twice, read back a `SyntaxError`, and then tried
-  `os.system('python3 …')` to get out of it. Nothing was broken. The fix is the rule that already
-  existed for `save_content`/`run_javascript`: each names the other AND states the condition that
-  selects it (here: the language written), in the OPENING clause where a model comparing tools
-  reads. The shelling-out attempt needed its own sentence, because "cannot start processes" was
-  true and buried.
+- **Two runners are two overlapping tools, so the same description rule applies — and only half of
+  it was written.** `run_python` named `run_javascript`; `run_javascript` did not name `run_python`
+  and opened with "Run JavaScript" one word ahead of four hundred about `save_as`. Asked for "python
+  code finding the first 10 primes", the model called `run_javascript` with a Python program twice,
+  read back a `SyntaxError`, then tried `os.system('python3 …')`. Each tool must name the other AND
+  state the condition that selects it, in the OPENING clause where a model comparing tools reads.
 - **A description may only name a tool that EXISTS, so a cross-reference between optional tools has
   to be built per boot.** `run_python` is published only where its jail probes clean, so a static
   `run_javascript` description naming it is unreachable advice on every host without bubblewrap:
@@ -1399,27 +1114,21 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   a name. See [design-execution.md](design-execution.md).
 - **Adding a THIRD overlapping tool reopens a boundary two tools had already settled.** Fixing
   `run_javascript` vs `save_content` did not survive `save_workspace` arriving: `save_content` still
-  listed "code" among what it stores and still claimed to be "the DEFAULT way to give the user a
-  file", so for a program it competed with a tool strictly better at it (a workspace can be RUN,
-  keeps every version, and is what a verdict attaches to; an artifact is bytes). The rule now stated
-  in all three: a document goes to `save_content`, code of ANY size goes to `save_workspace`, a
-  throwaway calculation goes to `run_javascript {code}`. Whenever a tool lands in a space another already
-  occupies, re-read the incumbent's description rather than only writing the newcomer's.
-  Rebalancing also has a trap: cutting the incumbent's claim too far reintroduces the ORIGINAL bug,
-  and the suite caught exactly that here (removing "DEFAULT" from `save_content` un-fixed the
-  reason it was added). Scope the claim instead of dropping it.
+  listed "code" and still claimed to be "the DEFAULT way to give the user a file", competing with a
+  tool strictly better at it. All three now state the rule: a document goes to `save_content`, code
+  of ANY size to `save_workspace`, a throwaway calculation to `run_javascript {code}`. **When a tool
+  lands in a space another occupies, re-read the incumbent's description**, and scope its claim
+  rather than dropping it — removing "DEFAULT" from `save_content` un-fixed the reason it was added,
+  which the suite caught.
 - **Two tools that reach the same outcome are chosen by their DESCRIPTIONS, so an unconditional
-  claim beats a conditional one.** `save_content` (authored text) and `run_javascript` + `save_as`
-  (computed bytes) both produce an artifact, so nothing fails when the wrong one is picked. The
-  model consistently picked `run_javascript` because its description said "that is how you save a file"
-  with no condition and never named `save_content`, while `save_content` deferred to `run_javascript`,
-  gated its trigger on the user saying "save", and did not list HTML. Asked to "create a web page",
-  the assistant wrapped the HTML in a `console.log` and stored stdout, sending the content twice.
-  When two tools overlap, each must name the other AND state the condition that selects it; a
-  one-way cross-reference is what produces the silent-but-wasteful path. Guarded by
-  `examples/chat/smoke-save.ts`, which reads the descriptions back from the `capability` records the
-  running fleet publishes rather than importing them, since a fix that is never republished changes
-  nothing for the model.
+  claim beats a conditional one.** `save_content` and `run_javascript` + `save_as` both produce an
+  artifact, so nothing FAILS when the wrong one is picked. The model always picked `run_javascript`,
+  whose description said "that is how you save a file" with no condition and never named
+  `save_content`, while `save_content` deferred to it and gated its trigger on the user saying
+  "save". Asked to "create a web page", the assistant wrapped the HTML in `console.log` and stored
+  stdout, sending the content twice. Each overlapping tool must name the other AND state the
+  selecting condition. Guarded by `smoke-save.ts`, which reads descriptions back from the
+  `capability` records the running fleet publishes — a fix never republished changes nothing.
 - **Privilege is a NAMED SET, not a name prefix, and `human:` is a namespace.** `isPrivileged`
   (`src/core/space.ts`) checks `ctx.operators` (default `["human:local"]`), the supervisor, and the
   space's own identity. It used to treat every `human:*` as an operator, which meant a space could
@@ -1484,20 +1193,15 @@ idempotency ordering, storage backends, or the delivery guarantee. Origin: outli
   declassify** (`Space.declassify`), which, because records are immutable, emits a **clean successor**
   (same body, `taint:false`, tainted original as its data parent) rather than mutating anything.
   Don't add a way for an ordinary agent to write `taint:false`.
-- **The one operation whose purpose is accountability must name its actor, and must be its own event
+- **The one operation whose purpose is accountability must name its actor and be its own event
   operation.** `Space.declassify` called `putRaw` with NO principal, so the clean successor's
-  `created_by` (and therefore the emitted event's `runId`) was the space's own `ctx.principal`, not
-  the operator who approved the clearance, and the event carried `operation: "put"` because there
-  was no `declassify` operation in the log at all. The entire audit trail for a clearance was the
-  successor's `parentIds` plus an anonymous put. That outranks the hash-chained log (M1–M2): a
-  tamper-evident chain over a record that omits the approver protects the wrong fact.
-  `Space.declassify(recordId, principal)` threads the approver, and the commit records a distinct
-  `declassify` operation carrying `{declassifiedFrom}`, via an optional `event` override on
-  `PutInput` that both adapters honour, so a clearance is greppable instead of hiding among ordinary
-  puts. Guarded by `conformance/suites/taint.ts`: the successor is authored by the approver, exactly
-  one `declassify` event names them, and ordinary puts are unchanged. The general shape: if an
-  operation exists to be audited, it needs its own verb in the log, because an entry that looks like
-  every other write is not findable after the fact.
+  `created_by` (and the event's `runId`) was the space's own identity rather than the approving
+  operator, and the event said `operation: "put"` because no `declassify` operation existed in the
+  log. The whole audit trail for a clearance was `parentIds` plus an anonymous put — which outranks
+  the hash-chained log: a tamper-evident chain over a record that omits the approver protects the
+  wrong fact. It threads the approver now and commits a distinct `declassify` operation carrying
+  `{declassifiedFrom}` (`conformance/suites/taint.ts`). **If an operation exists to be audited, it
+  needs its own verb in the log** — an entry that looks like every other write is not findable.
 - **The taint barrier filters candidates in core, not SQL.** It lives in `rankClaimable` (skips a
   candidate carrying any label outside the allowlist), threaded via `LeaseSpec.allowTaint`, so
   both adapters get it for free and it stays backend-neutral. It's a claim-time skip, not a query
@@ -1638,68 +1342,47 @@ rejected for stated reasons.
   `effective_priority` is mutable under aging, so it can't be a cursor key.
 - **Eager (records × agents) candidate materialization in the scheduler.** Rejected for
   cost; candidates are incremental and capped. See [design-scheduler.md](design-scheduler.md).
-- **Artifact keys derived from the caller's token.** Rejected. The runtime stores only
-  `sha256(token)` (`core/auth.ts`) precisely so a leaked DB yields no usable credential, so it
-  cannot re-derive such a key without keeping the token at rest, trading the strongest part of
-  the auth model for the weakest kind of encryption. Three more, any one fatal: run tokens expire
-  while records are permanent (the blob would die with the run); an artifact exists to be consumed
-  by a *different* principal, so a producer-keyed blob needs per-recipient rewrapping, which is the
-  federation-gated recipient-keyed scheme; and since the runtime must decrypt for any grant-holder,
-  the key must live where the runtime reaches it anyway, which is exactly what a space KEK gives,
-  without the other three problems. A token authorizes the *ask* (that is what download capabilities
-  are); it is not key material. The planned scheme is per-artifact random DEK + AES-GCM, DEK wrapped
-  by a space KEK from env/keyring, behind the `BlobStore` port. Token-keyed encryption only makes
-  sense client-side (confidentiality layer 3), where it is incompatible with the point of the
-  feature: an image the runtime cannot read is one it cannot validate, taint, or route.
+- **Artifact keys derived from the caller's token.** Rejected, on four counts, any one fatal. The
+  runtime stores only `sha256(token)` so a leaked DB yields no usable credential, so it cannot
+  re-derive such a key without keeping the token at rest. Run tokens expire while records are
+  permanent, so the blob would die with the run. An artifact is consumed by a DIFFERENT principal,
+  so a producer-keyed blob needs per-recipient rewrapping (the federation-gated scheme). And since
+  the runtime must decrypt for any grant-holder, the key must live where the runtime reaches it
+  anyway — which is what a space KEK gives. A token authorizes the ASK (that is what download
+  capabilities are); it is not key material. The built scheme is per-artifact DEK + AES-GCM wrapped
+  by a space KEK, behind the `BlobStore` port.
 - **Embedded mode as a weaker cousin.** Rejected: the conformance + fault suite runs on
   every adapter in CI from day one, or the backends drift.
-- **Escalation-only tier routing, with no classifier (chat example).** Tried, then reverted on
-  evidence. This is the interesting one, because the argument for it was sound and the assumption
-  under it was false. The router's pre-classifier (a cheap `llm_call` served by the fleet, answering
-  with a tier word) was removed in favour of: dispatch every turn to the cheapest advertised tier
-  and let a worker `escalate` when it finds itself out of depth. Rationale: a classifier taxes
-  every turn, in front of the first token, to answer a question that is only in doubt on a
-  minority of them, while escalation pays only on the turns actually misrouted. Cost belongs where
-  the uncertainty is.
-  **What happened:** across a tool-heavy analytical session every turn routed to the cheap tier
-  and *nothing* escalated: the model answered an aggregation question from invented numbers
-  instead. Escalation depends on the cheap model recognizing its own inadequacy, which is the
-  weakest available judge; a model confident enough to confabulate is exactly the one that will
-  not reach for `escalate`. Restored, with the judgment made by a different model than the one
-  being judged. Escalation is kept as the catch for under-routing: two mechanisms for one decision
-  is deliberate here.
-  **Keep from the removal:** no tier name appears in `router.ts` any more. Live tiers come from
-  `model` records by `rank`, the classifier answers with one of those words, and the fallback
-  heuristic picks by *position* in that list, not by name. The original fallback hardcoded
-  `"fast"|"balanced"|"deep"` in the file whose thesis is that tiers are discovered.
-  **Related limit, now partly closed.** A `model` record advertises a TIER, not a live worker.
-  Two of the three problems are fixed (`examples/chat/space/model.ts`): the publish reads before
-  writing, so restarting the fleet does not append a record per worker per launch, the same
-  unbounded growth `publishCapability` was fixed for; and a worker
-  retires its advertisement on SIGINT/SIGTERM (`onStop`), so a stopped tier leaves rotation instead
-  of remaining an offer nobody serves. What is NOT fixed: a worker that crashes or is `kill -9`ed
-  leaves its advertisement behind, and the router will dispatch into silence: the call sits
-  `available` and the chat reports a stall rather than failing over. Closing that needs liveness the
-  substrate does not have: a heartbeat record reintroduces exactly the growth above, and
-  advertisements that expire need the retention GC that is still M2. Do not "fix" it with a periodic
-  re-publish.
-  **The retire/republish trap, which bit immediately and is general to content-keyed registries.**
-  Withdrawing an entry and later re-publishing it looks symmetric and is not: the republish reuses
-  the publish key, an idempotency key is scoped `(principal, operation, key)`, and within one
-  principal that write is a REPLAY of the record being revived, so nothing is written, the
-  retirement stays newest, and the entry is withdrawn permanently. It happens to work across a real
-  restart, because the worker's principal is a fresh `run:<ulid>` each launch, which is precisely
-  what makes it a trap: correctness would depend on who is calling. A revival must therefore key on
-  the retirement it supersedes (`…:after:<retirement id>`). Caught by `smoke-fleet.ts` on the first
-  run; it would not have been caught by any test that used a fresh principal per step.
+- **Escalation-only tier routing, with no classifier (chat example).** Tried and reverted on
+  evidence, and interesting because the argument was sound and its assumption false. Removing the
+  pre-classifier in favour of "dispatch to the cheapest tier, let a worker `escalate`" puts the cost
+  where the uncertainty is. What happened: across a tool-heavy session every turn routed cheap and
+  NOTHING escalated — the model answered an aggregation question from invented numbers. **Escalation
+  depends on the cheap model recognising its own inadequacy, the weakest available judge**; one
+  confident enough to confabulate will not reach for `escalate`. Restored, judged by a different
+  model than the one being judged, with escalation kept as the catch for under-routing.
+  **Keep from the removal:** no tier name appears in `router.ts`. Tiers come from `model` records by
+  `rank`, and the fallback heuristic picks by POSITION in that list, not by name.
+  **Related limit, partly closed.** A `model` record advertises a TIER, not a live worker. The
+  publish reads before writing (no record per worker per launch) and a worker retires its
+  advertisement on SIGINT/SIGTERM. NOT fixed: a `kill -9`ed worker leaves its advertisement behind
+  and the router dispatches into silence. Closing that needs liveness the substrate lacks — a
+  heartbeat record reintroduces the growth, expiring advertisements need the M2 retention GC. Do not
+  "fix" it with a periodic re-publish.
+  **The retire/republish trap, general to content-keyed registries.** Withdrawing an entry and
+  re-publishing it is not symmetric: the republish reuses the publish key, an idempotency key is
+  scoped `(principal, operation, key)`, so within one principal the write REPLAYS the record being
+  revived — nothing is written, the retirement stays newest, the entry is withdrawn permanently. It
+  works across a real restart only because the worker's principal is a fresh `run:<ulid>` each
+  launch, which is what makes it a trap: correctness would depend on who is calling. A revival keys
+  on the retirement it supersedes (`…:after:<id>`). Caught by `smoke-fleet.ts`; no test using a
+  fresh principal per step would have found it.
 
-- **The matching construct is a `pattern`, and never a `selector`.** It was called a `template`
-  until the whole surface was renamed (wire contract, code, both SDKs, CLI, MCP tool definitions,
-  docs; the inner field stayed `match`). The reason: to most engineers a template is a GENERATOR,
-  something filled in to produce instances, and Radia's is the opposite, a recognizer. The
-  misreading had somewhere to land because `kind_def` genuinely is blueprint-shaped. The word had
-  also drifted from what justified it: once `$in`, `$gt` and `$or` existed it was no longer a
-  partial instance but a small query expression.
+- **The matching construct is a `pattern`, and never a `selector`.** It was `template` until the
+  whole surface was renamed (wire contract, code, both SDKs, CLI, MCP, docs; the inner field stayed
+  `match`), because a template reads as a GENERATOR and Radia's is a recognizer — a misreading with
+  somewhere to land, since `kind_def` genuinely is blueprint-shaped. The word had also drifted:
+  once `$in`, `$gt` and `$or` existed it was a small query expression, not a partial instance.
   - **Never rename it to `selector`.** That word is already taken by the ENVELOPE selector on the
     ops plane (`{state:"leased", expired:true}`), and the body/envelope split is the distinction
     these docs work hardest to keep sharp. One word across both planes would blur it.

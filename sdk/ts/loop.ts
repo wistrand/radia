@@ -192,19 +192,10 @@ type LostReason = "lease_lost" | "credential";
 /**
  * Renew the lease at lease/3 until stopped, and REPORT the verdict rather than discarding it.
  *
- * The renew result was thrown away here (`.catch(() => {})` over a call whose success value was
- * ignored), so a reclaimed or quarantined worker went on renewing a dead lease for the life of the
- * process while its handler kept producing side effects. Two outcomes are authoritative and stop
- * the heartbeat:
- *
- *   - `{status: "lease_lost"}` — the fence. Somebody else owns the record.
- *   - 401/403 — this credential cannot renew anything, so it cannot settle this work either. A
- *     quarantined run arrives here rather than at `lease_lost`, because stopping the run kills the
- *     token first.
- *
- * Everything else (a network blip, a 5xx, a slow proxy) is transient and ignored: the lease has
- * until its expiry, and guessing "lost" on a hiccup would cancel work that is still legitimately
- * this worker's.
+ * Two outcomes are authoritative and stop the heartbeat: `{status: "lease_lost"}`, the fence; and
+ * 401/403, where a stopped or quarantined run lands, since revoking it kills the token before
+ * anything answers `lease_lost`. Everything else (a blip, a 5xx) is transient and ignored — the
+ * lease has until its expiry, and guessing "lost" would cancel work that is still ours.
  */
 function startHeartbeat(
   client: RadiaClient,

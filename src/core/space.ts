@@ -2134,19 +2134,12 @@ export class Space {
   /**
    * Has anything been committed to the event log that this process did not do?
    *
-   * The in-process `Notifier` only knows about mutations THIS Space performed, so with two
-   * instances over one database (or two Space objects in one process) a watch used to sleep until
-   * its caller's keepalive, ~15s per cross-instance hop, which an interactive agent turn feels
-   * directly. `src/core/notifier.ts` calls this while a stream is waiting, and the shared log is
-   * what both sides can see. Deliberately not LISTEN/NOTIFY: the Postgres driver this build uses
-   * (deno-postgres 0.19) exposes no asynchronous notification API at all, so a poll of the log is
-   * the only cross-instance signal available, and it is one query per interval per SPACE no matter
-   * how many streams are open.
-   *
-   * Reads ONE event, because the answer is a boolean; the streams re-read the log from their own
-   * cursors. It does not distinguish this instance's own writes, so a local mutation can cost one
-   * extra loop iteration (wake, find nothing new, wait again) before the cursor catches up. That
-   * is the cheap direction of the trade: the expensive one would be missing a wakeup.
+   * `Notifier` knows only this Space's own mutations, so with two instances over one database a
+   * watch slept until its caller's keepalive (~15s per cross-instance hop). Not LISTEN/NOTIFY:
+   * deno-postgres 0.19 exposes no asynchronous notification API, so polling the shared log is the
+   * only cross-instance signal available. Reads ONE event, because the answer is a boolean; the
+   * streams re-read from their own cursors. It does not distinguish this instance's own writes, so
+   * a local mutation can cost one extra loop iteration — the cheap direction of the trade.
    */
   private async pollForForeignChanges(): Promise<boolean> {
     if (this.changeCursor === undefined) {

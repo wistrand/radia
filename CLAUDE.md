@@ -336,6 +336,11 @@ track milestone progress; `plan-m0-implementation.md` is the phase-by-phase reco
   point directly.
 - Concise; assume a competent agent. Add only what it can't infer: names, rules,
   constraints, and the why. Cut explanations of general concepts.
+- **Length is a budget, in docs and in code comments.** A doc entry or a comment block past ~8
+  lines needs cutting, not a second paragraph. Keep the rule, the mechanism, the measurement and
+  the symbol to look at; cut the story of how it was found, what was believed first, and the
+  restatement at the end. The same applies to a function's doc comment: if it runs longer than the
+  function, the surplus is narrative.
 - State each rule on its own line as always/never; a rule buried mid-paragraph gets
   skipped.
 - Mark inferred claims and open questions; don't present a guess as a fact.

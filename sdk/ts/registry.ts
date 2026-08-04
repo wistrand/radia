@@ -40,23 +40,14 @@ export function isRetired(body: unknown): boolean {
 /**
  * Which of two records for one key is NEWER: `created_at` first, the id only as a tie-break.
  *
- * `created_at` is stamped by the DATABASE (`Space.putRaw` reads `storage.now()`; all time
- * comparisons use the DB clock), so it is the one ordering every instance agrees on. The id alone
- * is not: a ULID's timestamp comes from the writing PROCESS's clock, so two instances whose clocks
- * differ by a second order a second's worth of writes backwards, and a revocation could lose to
- * the grant it revokes. Skew is the dangerous part, and this removes it.
- *
- * Within one DB millisecond the ids decide, and that is deliberate rather than leftover: ULIDs are
- * monotonic per process, a retire-then-revive pair lands inside one millisecond routinely, and
- * resolving that tie any other way (toward retirement, say) discards real ordering information.
- * That exact "fail-closed" rule was tried and reverted for breaking revival.
- *
- * WHAT THIS STILL IS NOT: commit order. `created_at` is read before the transaction commits, so
- * two instances writing the same key inside one DB millisecond remain a tie broken by id. Closing
- * that needs a comparator the database assigns AT COMMIT — the `xid8` + snapshot-watermark
- * machinery the event cursor already uses (design-storage.md, "Watch delivery under
- * concurrency") — which means carrying that token on the record, i.e. through the frozen wire
- * contract. Not done. The residual race is one millisecond wide instead of one clock-skew wide.
+ * `created_at` is stamped by the DATABASE, so it is the one ordering every instance agrees on. A
+ * ULID's timestamp is the writing PROCESS's clock, so ordering by id alone lets two skewed
+ * instances sort a second of writes backwards and a revocation lose to the grant it revokes.
+ * Inside one DB millisecond the ids decide, deliberately: they are monotonic per process, and
+ * retire-then-revive lands there routinely (resolving that tie toward retirement was tried and
+ * reverted for breaking revival). NOT commit order — `created_at` is read before commit, so a
+ * same-millisecond cross-instance race stays undefined; closing it needs the event cursor's `xid8`
+ * machinery carried on the record, i.e. through the frozen wire contract.
  */
 function newer(a: RadiaRecord, b: RadiaRecord): boolean {
   const at = a.runtimeMeta?.createdAt, bt = b.runtimeMeta?.createdAt;

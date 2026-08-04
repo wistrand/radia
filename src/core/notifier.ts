@@ -1,23 +1,14 @@
-// Wakeup for watch streams. A mutation calls notify(); SSE loops await wait() so they react
-// near-instantly instead of polling.
+// Wakeup for watch streams. A mutation calls notify(); SSE loops await wait().
 //
-// TWO SOURCES OF WAKEUP, because one process is not the whole space. `notify()` covers mutations
-// this instance performed. Anything committed by ANOTHER instance (or another Space object over
-// the same database) is invisible here, and the event log is the only thing both sides share, so
-// a waiter also drives a periodic `poll` of it. That poll runs ONLY while somebody is waiting: an
-// idle space issues no queries and holds no timer, which is what keeps this from being a
-// background job with a lifecycle to manage.
-//
-// The poll is a HINT, exactly like the local notify: it says "look again", never what changed.
-// The event log remains the source of truth, so a poll that fails, lags or fires spuriously costs
-// a wasted loop iteration and nothing else.
+// TWO SOURCES, because one process is not the whole space: `notify()` covers this instance's own
+// mutations, and a waiter drives a periodic `poll` of the event log for everyone else's. The poll
+// runs only while somebody is waiting, so an idle space holds no timer and issues no queries.
+// Both are HINTS ("look again"), never what changed; the log stays the source of truth, so a poll
+// that fails or fires spuriously costs one wasted loop iteration.
 
-/** How often a waiting stream asks the log whether another instance wrote something.
- *
- *  The number is a latency floor for every cross-instance hop, so it is set by what an interactive
- *  agent turn can absorb rather than by what is cheap: before this, a wakeup that crossed
- *  instances waited for the caller's keepalive (15s in the SSE loop). One query per interval per
- *  SPACE, not per stream, however many watchers are open. */
+/** How often a waiting stream asks the log whether another instance wrote something. A latency
+ *  floor for every cross-instance hop (it was the caller's 15s keepalive before), and one query
+ *  per interval per SPACE however many watchers are open. */
 export const CHANGE_POLL_MS = 250;
 
 export class Notifier {
