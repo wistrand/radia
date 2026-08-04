@@ -303,6 +303,9 @@ export interface FlowReport {
   /** Subgraphs with a parent outside the scan, whose signature is therefore a FRAGMENT: the flow
    *  started somewhere this caller could not see, or before the record cap. */
   fragments: number;
+  /** Records linked to nothing, excluded from `flows` unless asked for. Counted rather than
+   *  dropped: a large number is a real finding (registry churn), just not a flow. */
+  singletons: number;
   complete: boolean;
   notes?: string[];
 }
@@ -1871,6 +1874,7 @@ export class Space {
     maxRecords?: number;
     minOccurrences?: number;
     includeReserved?: boolean;
+    includeSingletons?: boolean;
     scope?: StatsScope;
   } = {}): Promise<FlowReport> {
     const granularity = opts.granularity ?? "kind+agent";
@@ -1926,9 +1930,16 @@ export class Space {
     // --- outcomes. One bulk read per state instead of an envelope fetch per record: mining is a
     // whole-space read already, and N round trips on top of it is what makes such a feature
     // unusable on a real space.
+    //
+    // Scoped to the kinds actually mined, which is not cosmetic: an unscoped state scan spends its
+    // budget on the kinds this scan EXCLUDED (a real space had 1135 `agent_run` and 1080 `interest`
+    // envelopes ahead of the work), so records fell out of the map and an unknown state reads as
+    // "nothing wrong". That is the wrong direction to be wrong in.
+    const mined = new Set(kinds);
+    const notMined = this.kinds.list().map((d) => d.kind).filter((k) => !mined.has(k));
     const stateOf = new Map<string, RecordState>();
     for (const state of ["available", "leased", "consumed", "dead_letter"] as RecordState[]) {
-      const envs = await this.storage.envelopesInState(state, cap, undefined, opts.scope);
+      const envs = await this.storage.envelopesInState(state, cap, notMined, opts.scope);
       if (envs.length >= cap) complete = false;
       for (const e of envs) stateOf.set(e.recordId, state);
     }
@@ -1972,7 +1983,15 @@ export class Space {
     // depth be one pass instead of a walk per node.
     const shapes = new Map<string, { occurrences: number; complete: number; open: number; failed: number; durations: number[]; sizes: number[]; exemplars: string[] }>();
     let unknownState = 0;
+    let singletons = 0;
     for (const [root, members] of components) {
+      // A record linked to nothing is not a flow of one. Left in, the registry writes outrank every
+      // real shape: a live space put `capability`×861 and `model`×215 above `llm_call → llm_result`,
+      // which answers "what does this space do" with its own bookkeeping.
+      if (members.length === 1 && !fragmentRoots.has(root)) {
+        singletons++;
+        if (!opts.includeSingletons) continue;
+      }
       members.sort();
       const depth = new Map<string, number>();
       let failed = false;
@@ -2052,6 +2071,7 @@ export class Space {
       flows: flows.slice(0, FLOW_MAX_SHAPES),
       scanned: { records: nodes.size, kinds, subgraphs: components.size },
       fragments: fragmentRoots.size,
+      singletons,
       complete,
       ...(notes.length > 0 ? { notes } : {}),
     };

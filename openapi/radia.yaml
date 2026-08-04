@@ -925,6 +925,7 @@ paths:
         - { name: max_records, in: query, schema: { type: integer }, description: "cap on the scan; reaching it reports complete:false" }
         - { name: min_occurrences, in: query, schema: { type: integer, default: 1 } }
         - { name: include_reserved, in: query, schema: { type: boolean, default: false }, description: "include the substrate's own kinds (declarations, grants, run records)" }
+        - { name: include_singletons, in: query, schema: { type: boolean, default: false }, description: "include records linked to nothing; they are counted in `singletons` either way" }
       responses:
         "200":
           description: mined flows
@@ -959,6 +960,7 @@ paths:
                       kinds: { type: array, items: { type: string } }
                       subgraphs: { type: integer }
                   fragments: { type: integer, description: "subgraphs with a parent outside the scan, whose signature is a prefix of the truth" }
+                  singletons: { type: integer, description: "records linked to nothing: counted always, listed only with include_singletons" }
                   complete: { type: boolean }
                   notes: { type: array, items: { type: string } }
                   scope: { type: object, description: "present when the caller is self-scoped" }

@@ -149,16 +149,45 @@ Deno.test("flows: a dead-lettered record makes its whole subgraph a failure, mec
   }
 });
 
-Deno.test("flows: work with no lineage has no shape, and says so instead of inventing one", async () => {
+Deno.test("flows: a record linked to nothing is counted, not ranked as a flow", async () => {
+  // Found on a real space, not this one: parentless registry writes (`capability`×861, `model`×215)
+  // outranked every actual shape, so "what does this space do" was answered with its own
+  // bookkeeping. A one-node subgraph has no shape. Counting it keeps that visible, since a large
+  // number IS a finding, just not a flow.
   const { space, close } = await pipelineSpace();
   try {
+    await runJob(space, ["a", "b"]);
     for (let i = 0; i < 5; i++) await space.put({ kind: "task", body: { op: "upper", input: "x" } });
+
     const r = await space.flows({ granularity: "kind" });
-    // Five unrelated records are five subgraphs of one node, not one flow of five.
-    assertEquals(r.scanned.subgraphs, 5);
-    assertEquals(r.flows.length, 1);
-    assertEquals(r.flows[0].signature, "task");
-    assertEquals(r.flows[0].occurrences, 5);
+    assertEquals(r.scanned.subgraphs, 6, "five unrelated records are five subgraphs, not one flow of five");
+    assertEquals(r.singletons, 5);
+    assertEquals(r.flows.map((f) => f.signature), ["job → task×2-3 → result×2-3 → summary"]);
+
+    const withThem = await space.flows({ granularity: "kind", includeSingletons: true });
+    const lone = withThem.flows.find((f) => f.signature === "task");
+    assertEquals(lone?.occurrences, 5, "they stay reachable; the default is a ranking choice, not a filter");
+  } finally {
+    await close();
+  }
+});
+
+Deno.test("flows: the state scan is scoped to the kinds being mined", async () => {
+  // A live space had 1135 `agent_run` and 1080 `interest` envelopes ahead of the work, so an
+  // unscoped state read spent its budget on kinds this scan excludes and 278 mined records came
+  // back with no state at all. An unknown state then reads as "nothing wrong", which is the
+  // reassuring direction to be wrong in.
+  const { space, close } = await pipelineSpace();
+  try {
+    for (let i = 0; i < 40; i++) await space.persistKind({ kind: `filler${i}`, indexedPaths: [] });
+    await runJob(space, ["a", "b"]);
+    // Small enough that an unscoped state read would be consumed by the kind_def records above.
+    const r = await space.flows({ granularity: "kind", maxRecords: 12 });
+    assertEquals(r.flows[0].outcomes, { complete: 1, open: 0, failed: 0 });
+    assert(
+      !(r.notes ?? []).some((n) => n.includes("no envelope")),
+      `the outcome must be READ, not guessed: ${JSON.stringify(r.notes)}`,
+    );
   } finally {
     await close();
   }

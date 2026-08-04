@@ -172,6 +172,20 @@ This is the emergent process documentation people keep asking for: the workflow 
 Its acceptance test is specified in that doc, which is that it recovers the pipeline example's shape
 unprompted; `conformance/flows.test.ts` is that test, and it passes.
 
+**A HUB RECORD defeats the flow unit, and that is the open problem.** First run against a real
+corpus (3905 records of accumulated chat history on Postgres): every one of the eleven
+conversation-rooted shapes occurred exactly once, with signatures up to 467 characters and a
+"duration" of 25.8 hours. The cause is not granularity in the sense the two knobs cover. A flow is a
+weakly-connected component, and a long-lived `conversation` links every turn to every other, so one
+component is a whole multi-day chat rather than a turn. [research-self-modeling.md](research-self-modeling.md)'s
+own worked example is a TURN (`message → llm_call → tool_call → tool_result → llm_call → llm_result`),
+which components cannot express while the hub exists. The pipeline example has no hub, which is
+exactly why it looked perfect and this did not. **Do not fix this by capping component size**: that
+hides the shape instead of decomposing it. The candidates are cutting at a hub (a node whose degree
+is orders above the median) or mining root-to-leaf PATHS instead of components, and which one is
+right is a question to measure on this corpus, not to guess. Until then the report is accurate about
+long-lived roots and unhelpful about them.
+
 Three things the build settled that the spec left open:
 
 - **Fan-out is bucketed, and that IS the aggregation.** A four-word job and a five-word one are one
@@ -183,6 +197,11 @@ Three things the build settled that the spec left open:
 - **"Available" is not "unfinished".** A `claimable:false` kind (facts, summaries, the registries)
   sits available forever by design, so the outcome rule keys on the kind's claimability. Without
   that, every terminated pipeline in the space reports as still running.
+- **A record linked to nothing is not a flow of one, and the real corpus is mostly those.** 1131 of
+  1334 subgraphs were parentless registry writes, and listing them put `capability`×861 and
+  `model`×215 above every actual shape. They are counted (`singletons`) rather than dropped, because
+  that number is itself a finding about registry churn; they are just not an answer to "what does
+  this space do".
 
 ### "Who can see this record" is the inverse nobody asks for and everybody needs
 

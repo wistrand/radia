@@ -281,12 +281,17 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       });
       return out(ctx, r, () => {
         if (r.flows.length === 0) return r.note ?? "no shapes mined";
+        // Display only. The signature is the GROUP KEY, so truncating it upstream would merge
+        // shapes that differ past the cut and report a count for a thing that does not exist;
+        // `--json` carries every one in full.
         const lines = r.flows.map((f) =>
           `${String(f.occurrences).padStart(4)}x  ${String(Math.round(f.successRate * 100)).padStart(3)}%  ` +
-          `n=${String(f.medianRecords).padStart(3)}  ${humanMs(f.medianDurationMs).padStart(7)}  ${f.signature}`
+          `n=${String(f.medianRecords).padStart(3)}  ${humanMs(f.medianDurationMs).padStart(7)}  ` +
+          truncate(f.signature, 140)
         );
         lines.push(
           `\n${r.scanned.records} records over ${r.scanned.kinds.length} kinds, ${r.scanned.subgraphs} subgraphs` +
+            (r.singletons ? `, ${r.singletons} linked to nothing (--json for the whole shape)` : "") +
             (r.fragments ? `, ${r.fragments} fragment${r.fragments === 1 ? "" : "s"} (a parent was outside the scan)` : ""),
         );
         // Never let a mined diagram read as the whole story. It looks equally complete either way,

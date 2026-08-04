@@ -209,6 +209,7 @@ export class RadiaClient {
     maxRecords?: number;
     minOccurrences?: number;
     includeReserved?: boolean;
+    includeSingletons?: boolean;
   } = {}): Promise<{
     granularity: string;
     counts: string;
@@ -223,6 +224,7 @@ export class RadiaClient {
     }[];
     scanned: { records: number; kinds: string[]; subgraphs: number };
     fragments: number;
+    singletons: number;
     complete: boolean;
     notes?: string[];
     note?: string;
@@ -233,6 +235,7 @@ export class RadiaClient {
     if (opts.maxRecords !== undefined) q.set("max_records", String(opts.maxRecords));
     if (opts.minOccurrences !== undefined) q.set("min_occurrences", String(opts.minOccurrences));
     if (opts.includeReserved) q.set("include_reserved", "true");
+    if (opts.includeSingletons) q.set("include_singletons", "true");
     const qs = q.toString();
     return this.req("GET", `/v0/ops/flows${qs ? `?${qs}` : ""}`);
   }
