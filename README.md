@@ -1,12 +1,17 @@
 # Radia
 
-A durable, policy-aware, content-routed work and knowledge exchange for independently
-implemented LLM agents, with optional cost-aware admission control.
+Agent frameworks wire agent A to call agent B. Radia replaces the wiring with a shared
+space: agents post work, and whichever agent said it can handle that work claims it under
+a lease. Start a worker and the system gains a capability, with no code change anywhere
+else.
 
-Radia is a coordination substrate, not an agent framework. Agents post work and facts
-to a shared space and claim work by describing what they can handle, rather than by
-being wired to each other. Model calls and agent logic stay outside the runtime; Radia
-owns durability, matching, leasing, authorization, lineage, and scheduling.
+Every task, fact and result is a record rather than a function call, so you can authorize
+one at a time: may this payload reach this step. Durable execution engines dispatch by
+function name and treat payloads as opaque, so they have nowhere to ask that question.
+
+Radia is a coordination substrate, not an agent framework. Model calls and agent logic
+stay outside the runtime; Radia owns durability, matching, leasing, authorization and
+lineage.
 
 The name honors Radia Perlman, whose Spanning Tree Protocol showed independent nodes
 building a shared structure with no central controller. In the tradition of Linda, it
@@ -22,7 +27,11 @@ is a lineage homage.
 > KEK). Running on three storage adapters (embedded PGlite and SQLite, plus real Postgres)
 > behind the frozen wire contract, with a web console, TS and Python SDKs, a CLI, a bundled
 > MCP adapter, and runnable agent examples (including a CLI chatbot with real auth roles,
-> image generation, and code execution in a permissionless sandbox). Not production-ready.
+> image generation, and code execution in a permissionless sandbox). Also built since: the
+> tamper-evident event chain, mined **flows**, and the resource limits.
+> **Not production-ready, and there is no second user.** Every audit package is closed and no
+> P0 or P1 is open; what remains is a low-severity batch
+> ([agent_docs/plan-audit-remediation.md](agent_docs/plan-audit-remediation.md)).
 > See `agent_docs/` for the structured design and
 > [notes/radia-runtime-outline-v0.3.md](notes/radia-runtime-outline-v0.3.md) for the origin
 > outline (v0.3).
@@ -60,9 +69,9 @@ are encouraging and workload-specific, not proof of general superiority. See
   language with its own strict semantics), not by explicit addressing.
 - **Durable and leased:** work is claimed under a fenced, renewable lease with
   at-least-once execution; crashed agents don't lose work.
-- **Policy-aware:** agent-scoped grants, provenance lineage, classification labels a grant can
-  bar (`file`/`net`/`foreign`), and an
-  optional cost-aware scheduler decide what runs and what it may touch.
+- **Policy-aware:** agent-scoped grants, provenance lineage, and classification labels a grant can
+  bar (`file`/`net`/`foreign`) decide what runs and what it may touch. (A cost-aware admission
+  scheduler is designed and unbuilt; see [agent_docs/design-scheduler.md](agent_docs/design-scheduler.md).)
 - **Payload-aware:** anything too large for a JSON body (an image, an audio clip) is an
   **artifact**: a small record that routes, plus content-addressed bytes in a blob store,
   optionally encrypted at rest under a destroyable per-blob key.
