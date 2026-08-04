@@ -192,10 +192,15 @@ limits are not optional, and they belong at commit/registration. Three are enfor
 The gap between the record limit and the artifact limit is deliberate and is the signal: a body
 approaching artifact size is a payload in the wrong place.
 
-Still to build, tracked as the unchecked M1 item "resource limits enforced" in
-[plan-milestones.md](plan-milestones.md): max record and pattern size · body field depth ·
-predicate count · `$or` branch count · array cardinality · registered patterns per agent ·
-watches per run · slow-lane time and row-scan budgets · SSE buffer/backpressure limits.
+**Built** (see the enforced list in `openapi/radia.yaml`'s preamble): record and pattern size, body
+field depth, predicate count, `$or` branch count, array cardinality, registered patterns per agent,
+watches per run. Each bounds a cost that bytes do not, which is the whole reason there is a list
+rather than one number: a pattern is STORED and then evaluated against every candidate record, so
+its cost is paid per record rather than once; a body's depth and fan-out are walked by the matcher,
+the event chain and every reader.
+
+Two remain, and both need a MECHANISM rather than a validator, which is why they are not here yet:
+slow-lane time and row-scan budgets (a scheduler concept, M3) and SSE buffer/backpressure limits.
 
 The gap with a live consumer WAS **record body size**: nothing rejected a large body, so the
 cross-cutting invariant that artifact bytes never travel inside a record (see

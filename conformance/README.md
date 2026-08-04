@@ -61,7 +61,7 @@ Postgres run was manual, while CLAUDE.md's invariant said the suite runs on ever
 | `run.test.ts` | entry point: enumerates implementations, registers every suite against each |
 | `adapters.ts` | the implementations under test, and how each is isolated per test: SQLite gets a fresh `:memory:` database, PGlite and Postgres get an ephemeral schema on ONE shared server (see below) |
 | `harness.ts`  | the `Suite` / `BlobSuite` / `BlobCryptoSuite` types and setup/teardown |
-| `suites/`     | one file per behavior area (records, matching, **pushdown soundness**, **graph: children + lineage**, leases + claim fairness, idempotency, events, **the integrity chain incl. direct-SQL tamper cases**, watches, faults, auth, taint, admin + selector-driven remediation, blobs + encryption) |
+| `suites/`     | one file per behavior area (records, matching, **pushdown soundness**, **graph: children + lineage**, leases + claim fairness, idempotency, events, **the integrity chain incl. direct-SQL tamper cases**, **resource limits**, **the orphaned/starving split**, watches, faults, auth, taint, admin + selector-driven remediation, blobs + encryption) |
 | `http.test.ts` | the HTTP boundary, driving `makeHandler` directly: authentication and run renewal, the artifact inline/download allowlist and capability URLs, erasure (410 vs 404, shared payloads, forged shred markers), and a table of wrong-typed fields per endpoint |
 | `backfill.test.ts` | the schema's one migration: rebuilding `record_edges` for a database written before that table existed |
 | `planner.test.ts`  | Postgres planner statistics for declared body paths (`prepareKind`) |

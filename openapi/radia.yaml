@@ -13,11 +13,18 @@ info:
     `x-stability`. SemVer 0.x means the surface may still move; the additive-only rule is
     what makes the stable subset dependable.
 
-    Limits enforced at commit: pattern `$and`/`$or` nesting depth <= 3 (`too_deep`), artifact bytes
-    (`413 artifact_too_large`, default 32 MiB), and record body bytes (`413 record_too_large`,
-    default 1 MiB, measured on the serialized JSON). The gap between the last two is the signal: a
-    body approaching artifact size is a payload in the wrong place, and unlike an artifact a body
-    can never be erased.
+    Limits enforced at commit, each bounding a cost that BYTES do not. Records: body bytes
+    (`413 record_too_large`, default 1 MiB, over the serialized JSON), nesting depth
+    (`413 body_too_deep`, default 32) and array length (`413 array_too_long`, default 4096), because
+    the matcher, the event chain and every reader walk the whole shape. Patterns: `$and`/`$or`
+    nesting depth <= 3 (`too_deep`), serialized size (`413 pattern_too_large`, 8 KiB), compiled
+    predicate count (`too_many_predicates`, 64), `$or` branches (`too_many_branches`, 16) and `$in`
+    values (`too_many_values`, 256) — a pattern is STORED and then evaluated against every candidate
+    record, so its cost is paid per record rather than once. Per principal: watches
+    (`429 too_many_watches`, 64) and registered interests per kind (`429 too_many_interests`, 32).
+    Artifacts: `413 artifact_too_large`, default 32 MiB. The gap between the artifact and body byte
+    limits is the signal: a body approaching artifact size is a payload in the wrong place, and
+    unlike an artifact a body can never be erased.
 
     Authorization (M1): kind-scoped grants are reserved `grant` records (assigned by an operator
     or the supervisor; discovered by query). Requests authenticate with `Authorization: Bearer
@@ -1029,7 +1036,14 @@ paths:
                   counts: { type: object, additionalProperties: { type: integer } }
                   deadLetter: { type: object }
                   stuckLeases: { type: object }
-                  staleAvailable: { type: object }
+                  staleAvailable:
+                    type: object
+                    description: >-
+                      Unclaimed work older than the threshold. `split` separates the two causes age
+                      alone conflates: `orphaned` (no live interest matches, so waiting never helps)
+                      and `starving` (a listener matches and is not claiming). ABSENT when the space
+                      publishes no live interests at all, because then every record would look
+                      orphaned and that describes the fleet's instrumentation rather than its work.
                   undoneErasures:
                     type: object
                     description: >-

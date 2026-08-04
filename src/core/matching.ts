@@ -52,6 +52,21 @@ export function combineMatch(
 }
 
 const MAX_DEPTH = 3;
+
+/**
+ * Pattern resource limits (design-data-model §2).
+ *
+ * A pattern is not a one-off request: it is STORED (in a grant, in an interest) and then evaluated
+ * against every candidate record, so its cost is paid per record forever rather than once. These
+ * bound the evaluation, not the parse.
+ *
+ * `MAX_PREDICATES` counts compiled NODES, which is the thing the oracle walks. Depth alone does not
+ * bound it: a flat object with ten thousand fields is depth 1.
+ */
+const MAX_PATTERN_BYTES = 8 * 1024;
+const MAX_PREDICATES = 64;
+const MAX_OR_BRANCHES = 16;
+const MAX_IN_VALUES = 256;
 const CMP_OPS: Record<string, CmpOp> = {
   $eq: "eq",
   $gt: "gt",
@@ -92,13 +107,41 @@ export function compilePattern(t: Pattern, def: KindDef | undefined): CompiledMa
       throw new RadiaError("invalid_pattern", "pattern.match must be an object of path → condition");
     }
   }
+  // Size before parse: a pattern this large is a denial of service on the matcher, and refusing it
+  // by BYTES is the one check that cannot itself be expensive.
+  if (t.match) {
+    const bytes = new TextEncoder().encode(JSON.stringify(t.match)).length;
+    if (bytes > MAX_PATTERN_BYTES) {
+      throw new RadiaError(
+        "pattern_too_large",
+        `pattern is ${bytes} bytes, over the ${MAX_PATTERN_BYTES} limit. A pattern is evaluated ` +
+          `against every candidate record, so its cost is paid per record rather than once`,
+      );
+    }
+  }
   const where = t.match && Object.keys(t.match).length > 0
     ? compileObject(t.match, ctx, 1)
     : undefined;
+  // Counted on the COMPILED form, which is what the oracle walks. Depth alone does not bound it:
+  // a flat object with ten thousand fields is depth 1 and ten thousand comparisons per record.
+  const predicates = countNodes(where);
+  if (predicates > MAX_PREDICATES) {
+    throw new RadiaError(
+      "too_many_predicates",
+      `pattern has ${predicates} predicates, over the ${MAX_PREDICATES} limit`,
+    );
+  }
 
   const orderBy = compileOrderBy(t.orderBy, ctx);
 
   return { kind: t.kind, where, orderBy };
+}
+
+/** Nodes in the compiled tree: what the oracle evaluates per candidate record. */
+function countNodes(n: MatchNode | undefined): number {
+  if (!n) return 0;
+  if (n.t === "and" || n.t === "or") return 1 + n.nodes.reduce((a, x) => a + countNodes(x), 0);
+  return 1;
 }
 
 function requireIndexed(ctx: Ctx, path: string): void {
@@ -123,6 +166,13 @@ function compileObject(obj: Record<string, unknown>, ctx: Ctx, depth: number): M
       if (!Array.isArray(spec)) {
         throw new RadiaError("invalid_predicate", `${key} expects an array`);
       }
+      if (spec.length > MAX_OR_BRANCHES) {
+        // Branches MULTIPLY the work, and unlike depth they are cheap to add by the thousand.
+        throw new RadiaError(
+          "too_many_branches",
+          `${key} has ${spec.length} branches, over the ${MAX_OR_BRANCHES} limit`,
+        );
+      }
       const subs = spec.map((s) => compileObject(asObject(s, key), ctx, depth + 1));
       nodes.push({ t: key === "$or" ? "or" : "and", nodes: subs });
     } else if (key.startsWith("$")) {
@@ -146,6 +196,12 @@ function compileField(path: string, spec: unknown): MatchNode {
     } else if (op === "$in") {
       if (!Array.isArray(val)) {
         throw new RadiaError("invalid_predicate", `$in expects an array at '${path}'`);
+      }
+      if (val.length > MAX_IN_VALUES) {
+        throw new RadiaError(
+          "too_many_values",
+          `$in at '${path}' has ${val.length} values, over the ${MAX_IN_VALUES} limit`,
+        );
       }
       nodes.push({ t: "in", path, values: val });
     } else if (op === "$exists") {

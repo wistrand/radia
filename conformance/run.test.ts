@@ -17,6 +17,8 @@ import { claimFairnessSuites, leaseSuites } from "./suites/leases.ts";
 import { idempotencySuites } from "./suites/idempotency.ts";
 import { eventSuites } from "./suites/events.ts";
 import { integritySuites } from "./suites/integrity.ts";
+import { starvationSuites } from "./suites/starvation.ts";
+import { limitSuites } from "./suites/limits.ts";
 import { faultSuites } from "./suites/faults.ts";
 import { watchSuites } from "./suites/watches.ts";
 import { adminSuites, remediateSuites } from "./suites/admin.ts";
@@ -42,6 +44,8 @@ conformance(adapters, [
   ...idempotencySuites,
   ...eventSuites,
   ...integritySuites,
+  ...starvationSuites,
+  ...limitSuites,
   ...faultSuites,
   ...watchSuites,
   ...adminSuites,

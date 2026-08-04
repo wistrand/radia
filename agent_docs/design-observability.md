@@ -23,8 +23,10 @@ grant-gated to operator principals (enforced). The **hash-chained log is built**
 anchoring of checkpoints stays M2. **Not
 implemented:** envelope
 repeated-shape livelock detection (M3),
-re-execution tooling (M3), and the full orphan/starving-pattern analysis (M1; the current
-diagnostics use age/state heuristics, not pattern-match analysis).
+re-execution tooling (M3). The orphan/starving split IS built (M1): `diagnostics` runs the pattern
+match against the live interest registry, so unclaimed work is reported as ORPHANED (no live
+interest matches) or STARVING (one does and nothing claims), which are the two causes an age
+heuristic conflates and whose remedies point in opposite directions.
 
 ## Contents
 - Invariants

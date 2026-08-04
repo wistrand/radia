@@ -100,6 +100,9 @@ export interface SpaceContext {
    *  keepalive is 15s), because dropping one early costs a client its cursor and the events in the
    *  gap; the point is to bound abandoned watches, not to be prompt. */
   watchIdleSeconds: number;
+  /** Distinct interests one principal may register per kind. The registry is read per candidate by
+   *  the dry-run matcher and per kind by the starvation split, so its size is somebody else's cost. */
+  maxInterestsPerPrincipal: number;
   /** Live watches one principal may hold. A watch is an authenticated call that allocates memory,
    *  so it needs a ceiling like any other resource; an agent loop opens one per KIND it claims, and
    *  an inspection console a handful, so this is far above ordinary use and only stops a leak. */
@@ -130,6 +133,7 @@ const DEFAULT_CONTEXT: SpaceContext = {
   downloadCapabilitySeconds: 300,
   watchIdleSeconds: 300,
   maxWatchesPerPrincipal: 64,
+  maxInterestsPerPrincipal: 32,
 };
 
 /** How a caller selects work to take. */
@@ -218,7 +222,15 @@ export interface Diagnostics {
   /** Unclaimed *claimable* (work) records older than the threshold: a starvation signal.
    *  Reference kinds (`claimable:false`: facts, config, grants, history) are excluded: they sit
    *  available forever by design and are not stale. */
-  staleAvailable: { count: number; thresholdSeconds: number; sample: unknown[] };
+  staleAvailable: {
+    count: number;
+    thresholdSeconds: number;
+    sample: unknown[];
+    /** The two failures age alone cannot tell apart. ABSENT when the space publishes no live
+     *  interests at all: with an empty registry every record looks orphaned, and that is a fact
+     *  about the fleet's instrumentation rather than about the work. */
+    split?: StaleSplit;
+  };
   /** Erasures that no longer hold: the bytes are back at the same content address. ABSENT for a
    *  scoped caller rather than zero, because a confident `0` about something the caller cannot see
    *  is the "empty scoped answer reads as empty space" failure this file already guards elsewhere. */
@@ -227,6 +239,33 @@ export interface Diagnostics {
    *  reason: the chain covers everyone's activity, so a scoped `ok:true` would be reassurance
    *  about records the caller cannot see. */
   integrity?: IntegrityReport;
+}
+
+/** A registered interest whose run is still able to claim. */
+export interface LiveInterest {
+  run: string;
+  agent?: string;
+  match?: Record<string, unknown>;
+}
+
+/**
+ * Why unclaimed work is unclaimed, which age alone cannot say.
+ *
+ * ORPHANED and STARVING call for opposite actions. Nothing is listening for an orphan, so waiting
+ * never helps and the fix is to start a worker or fix a pattern; a starving record has a listener
+ * that is not claiming, so the worker is down, wedged, or barred, and the fix is over there. The
+ * old report called both "stale available" and left an operator to guess.
+ */
+export interface StaleSplit {
+  /** No live interest matches. See `caveat`: this is evidence, not proof. */
+  orphaned: { count: number; sample: unknown[] };
+  /** A live interest matches and nothing has claimed it anyway. */
+  starving: { count: number; sample: unknown[] };
+  /** False when an interest registry read was truncated, so `orphaned` may be overstated. */
+  complete: boolean;
+  /** Always present, because both counts rest on the interest registry being a faithful picture of
+   *  who is listening, and it is only ever best-effort. */
+  caveat: string;
 }
 
 /** One shred, and whether it still means anything. */
@@ -1274,6 +1313,7 @@ export class Space {
    *  defaults to the space's own identity for in-process/operator callers. */
   async put(req: PutRequest, idempotencyKey?: string, principal?: string): Promise<{ id: string }> {
     const declared = this.validateReservedBody(req); // throws RadiaError before anything commits
+    if (req.kind === INTEREST) await this.checkInterestBudget(req, principal);
     const id = await this.putRaw(req, idempotencyKey, { principal });
     if (declared) await this.adoptKind(declared); // also on idempotent replay
     return id;
@@ -1301,6 +1341,36 @@ export class Space {
       this.checkGrantPattern(def);
     }
     return undefined;
+  }
+
+  /**
+   * Cap how many DISTINCT interests one principal may register.
+   *
+   * The interest registry is read per candidate in the dry-run matcher and per kind in the
+   * orphan/starving split, so an unbounded one turns two inspection reads into a scan of somebody
+   * else's mistake. Content-keyed, so a worker republishing the same pattern on every restart costs
+   * nothing; what this bounds is a worker generating a NEW pattern each time, which is the shape
+   * that grows without limit.
+   *
+   * Counted per kind, since that is the granularity the registry is read at.
+   */
+  private async checkInterestBudget(req: PutRequest, principal?: string): Promise<void> {
+    const b = (req.body ?? {}) as { kind?: unknown; match?: unknown; retired?: unknown };
+    if (typeof b.kind !== "string" || b.retired === true) return; // withdrawal always allowed
+    const who = principal ?? this.ctx.principal;
+    const live = await this.liveInterests(b.kind);
+    const mine = live.interests.filter((i) => i.run === who);
+    if (mine.length < this.ctx.maxInterestsPerPrincipal) return;
+    // Already registered? Re-publishing is a no-op at the registry, so it must not be refused: a
+    // worker at the ceiling would otherwise fail to restart.
+    const wanted = JSON.stringify(b.match ?? null);
+    if (mine.some((i) => JSON.stringify(i.match ?? null) === wanted)) return;
+    throw new RadiaError(
+      "too_many_interests",
+      `principal '${who}' already registers ${mine.length} interests on kind '${b.kind}' (limit ` +
+        `${this.ctx.maxInterestsPerPrincipal}). Retire the ones it no longer listens for; a worker ` +
+        `that needs a new pattern per record is describing a query, not an interest`,
+    );
   }
 
   /** Reflect a committed declaration in THIS process's registry (other instances re-read it
@@ -2663,7 +2733,31 @@ export class Space {
   async matchingInterests(
     kind: string,
     body?: unknown,
-  ): Promise<{ interests: { run: string; agent?: string; match?: Record<string, unknown> }[]; complete: boolean }> {
+  ): Promise<{ interests: LiveInterest[]; complete: boolean }> {
+    const live = await this.liveInterests(kind);
+    if (body === undefined) return { interests: live.interests, complete: live.complete };
+    return { interests: live.interests.filter((i) => this.interestMatches(i, kind, body)), complete: live.complete };
+  }
+
+  /** Does this interest's pattern accept that body? An interest whose pattern no longer compiles
+   *  matches nothing, which is the safe direction: it cannot claim to be listening. */
+  private interestMatches(i: LiveInterest, kind: string, body: unknown): boolean {
+    if (!i.match || Object.keys(i.match).length === 0) return true; // the whole kind
+    try {
+      return matchesRecord({ kind, body } as RadiaRecord, this.compile({ kind, match: i.match }));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Every LIVE interest on a kind, read once.
+   *
+   * Split out because the caller that needs it most reads it per RECORD: classifying a hundred
+   * stale records used to mean a hundred registry reads paged to exhaustion. The registry read is
+   * the expensive half and the pattern test is the cheap one, so the two are separable.
+   */
+  private async liveInterests(kind: string): Promise<{ interests: LiveInterest[]; complete: boolean; published: number }> {
     const view = await this.registry<{ kind?: unknown; match?: unknown }>(
       INTEREST,
       // One entry per (author, target kind, pattern): a run re-publishing the same interest is the
@@ -2671,26 +2765,22 @@ export class Space {
       (b, rec) => (typeof b?.kind === "string" ? `${rec.runtimeMeta.createdBy}|${b.kind}|${JSON.stringify(b.match ?? null)}` : undefined),
       { kind },
     );
-    const out: { run: string; agent?: string; match?: Record<string, unknown> }[] = [];
-    const candidate = { kind, body } as RadiaRecord;
+    const out: LiveInterest[] = [];
     for (const rec of view.entries.values()) {
       const b = rec.body as { kind?: string; match?: Record<string, unknown> };
       if (b.kind !== kind) continue;
       const run = rec.runtimeMeta.createdBy;
       if (!(await this.runIsLive(run))) continue;
-      // `body === undefined` LISTS rather than matches: the digest wants every live interest on the
-      // kind, not the ones a particular candidate would reach. Evaluating a pattern against an
-      // absent body would answer a question nobody asked.
-      if (body !== undefined && b.match && Object.keys(b.match).length > 0) {
-        try {
-          if (!matchesRecord(candidate, this.compile({ kind, match: b.match }))) continue;
-        } catch {
-          continue; // an interest whose pattern no longer compiles matches nothing
-        }
-      }
       out.push({ run, agent: await this.agentForRun(run), ...(b.match ? { match: b.match } : {}) });
     }
-    return { interests: out, complete: view.complete };
+    // `published` counts what was DECLARED, before liveness. The difference between it and
+    // `interests` is the difference between "nobody ever said what they listen for" and "the
+    // workers that did have all stopped", and only the second is a finding.
+    let published = 0;
+    for (const rec of view.entries.values()) {
+      if ((rec.body as { kind?: string }).kind === kind) published++;
+    }
+    return { interests: out, complete: view.complete, published };
   }
 
   /** Is this run still able to claim work? Interests outlive the process that published them when
@@ -2846,6 +2936,7 @@ export class Space {
     // would get a confident `0` about something it cannot see — the same trap `describeScope` exists
     // for, and worse here, because "no erasure was undone" is exactly the reassurance nobody should
     // receive on no evidence.
+    const split = await this.splitStale(stale);
     const erasures = scope ? null : await this.erasures({ onlyUndone: true });
     const undone = erasures
       ? {
@@ -2877,7 +2968,12 @@ export class Space {
         sampledFrom: Math.min(total("leased"), SAMPLE),
         sample: stuck.slice(0, 10).map((r) => ({ recordId: env(r).recordId, kind: env(r).kind, leaseId: env(r).leaseId, leasedUntil: env(r).leasedUntil, attempt: env(r).attempt })),
       },
-      staleAvailable: { count: stale.length, thresholdSeconds: STALE_S, sample: stale.slice(0, 10).map((r) => ({ recordId: env(r).recordId, kind: env(r).kind, availableAt: env(r).availableAt })) },
+      staleAvailable: {
+        count: stale.length,
+        thresholdSeconds: STALE_S,
+        sample: stale.slice(0, 10).map((r) => ({ recordId: env(r).recordId, kind: env(r).kind, availableAt: env(r).availableAt })),
+        ...(split ? { split } : {}),
+      },
       // In the health report because a reversed erasure is the most consequential thing this can
       // find, and nothing else was ever going to surface it.
       ...(undone ? { undoneErasures: undone } : {}),
@@ -2885,6 +2981,55 @@ export class Space {
       // matters, and a health report that omits it says the space is fine when it cannot know.
       // Operator-only, because the chain covers every principal's activity.
       ...(scope ? {} : { integrity: await this.verifyIntegrity() }),
+    };
+  }
+
+  /**
+   * Split unclaimed work into "nobody is listening" and "somebody is listening and not claiming".
+   *
+   * The interest registry is read ONCE PER KIND, not once per record: the registry read pages to
+   * exhaustion and the pattern test is a function call, so doing it the other way round turns a
+   * hundred stale records into a hundred full registry scans.
+   *
+   * Returns undefined when the space holds no live interests at all. Every record would classify as
+   * orphaned, and that answer describes the fleet's instrumentation rather than its work: publishing
+   * an interest is best-effort in `agentLoop` (a worker without the grant is invisible), so an empty
+   * registry means "nobody said" and not "nobody is listening".
+   */
+  private async splitStale(rows: { record: RadiaRecord | null; envelope: Envelope }[]): Promise<StaleSplit | undefined> {
+    if (rows.length === 0) return undefined;
+    const byKind = new Map<string, { interests: LiveInterest[]; complete: boolean; published: number }>();
+    for (const kind of new Set(rows.map((r) => r.envelope.kind))) {
+      byKind.set(kind, await this.liveInterests(kind));
+    }
+    // Nothing DECLARED, so there is nothing to reason from. A fleet whose interests are all dead is
+    // a different matter and does get split: everything comes back orphaned, which is the true
+    // answer and an actionable one.
+    if ([...byKind.values()].every((v) => v.published === 0)) return undefined;
+
+    const orphaned: unknown[] = [];
+    const starving: unknown[] = [];
+    let complete = true;
+    for (const row of rows) {
+      const kind = row.envelope.kind;
+      const live = byKind.get(kind)!;
+      if (!live.complete) complete = false;
+      // A record whose body could not be read is counted as STARVING, the conservative side: it
+      // claims no fleet is missing, so it cannot send anyone chasing a worker that exists.
+      const listeners = row.record
+        ? live.interests.filter((i) => this.interestMatches(i, kind, row.record!.body))
+        : live.interests;
+      const entry = { recordId: row.envelope.recordId, kind, availableAt: row.envelope.availableAt };
+      if (listeners.length === 0) orphaned.push(entry);
+      else starving.push({ ...entry, listeners: listeners.length, agents: [...new Set(listeners.map((l) => l.agent ?? l.run))] });
+    }
+    return {
+      orphaned: { count: orphaned.length, sample: orphaned.slice(0, 10) },
+      starving: { count: starving.length, sample: starving.slice(0, 10) },
+      complete,
+      caveat: "an interest is a worker's own declaration and publishing one is best-effort, so " +
+        "'orphaned' means no live interest MATCHES, not that nothing is listening. A worker without " +
+        "the grant to publish, or one that never did, is invisible here.",
     };
   }
 

@@ -5,7 +5,7 @@ working tree is, and the git relationship) and [design-execution.md](design-exec
 language question is an isolation question). Read those first; this file assumes them.
 
 > **Status: Phases 0-10 DONE**, including 10.6 (what first real use found). Phase 11 (serving a
-> tree) is planned and gated on one decision, 11.0. Workspaces, write-back, `check`, fork detection, `sandbox` records,
+> tree) is planned and UNBLOCKED: its gate, 11.0, was decided (single-process capabilities). Workspaces, write-back, `check`, fork detection, `sandbox` records,
 > a second backend (bubblewrap), and selection by capability name (`run_javascript`, `run_python`).
 > Phase 7 answered the selection question with neither of the two options it was written to choose
 > between; see there. Phases 8 and 9 were added after the fact, both from live use rather than from

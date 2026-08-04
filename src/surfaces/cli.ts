@@ -329,7 +329,21 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         const lines = [Object.entries(c).map(([k, v]) => `${k}=${v}`).join("  ")];
         if (d.deadLetter?.count) lines.push(`dead-letter: ${d.deadLetter.count}`);
         if (d.stuckLeases?.count) lines.push(`stuck leases: ${d.stuckLeases.count} (expired but still held)`);
-        if (d.staleAvailable?.count) lines.push(`stale available: ${d.staleAvailable.count}`);
+        if (d.staleAvailable?.count) {
+          const sp = d.staleAvailable.split;
+          // The split is the actionable half: the two causes call for opposite responses, and the
+          // old single number left an operator to guess which one they had.
+          lines.push(
+            `stale available: ${d.staleAvailable.count}` +
+              (sp ? ` (${sp.orphaned.count} orphaned: nothing is listening; ${sp.starving.count} starving: a listener is not claiming)` : ""),
+          );
+          for (const o of (sp?.orphaned.sample ?? []).slice(0, 3)) {
+            const x = o as { recordId?: string; kind?: string };
+            lines.push(`  orphaned ${x.kind} ${x.recordId}`);
+          }
+          if (sp && !sp.complete) lines.push("  interest scan INCOMPLETE: 'orphaned' may be overstated");
+          if (sp) lines.push(`  ${sp.caveat}`);
+        }
         // FIRST among the findings when there is one, and worded as the security event it is. An
         // erasure that stopped holding outranks a stuck lease: somebody destroyed a payload and it
         // is readable again, and until this existed nothing in the system would ever have said so.
@@ -707,7 +721,15 @@ interface Diagnostics {
   counts?: Record<string, number>;
   deadLetter?: { count: number };
   stuckLeases?: { count: number };
-  staleAvailable?: { count: number };
+  staleAvailable?: {
+    count: number;
+    split?: {
+      orphaned: { count: number; sample: unknown[] };
+      starving: { count: number };
+      complete: boolean;
+      caveat: string;
+    };
+  };
   undoneErasures?: { count: number; checked: number; complete: boolean; sample: unknown[] };
   integrity?: { ok: boolean; sealed: number; signed: boolean; failure?: { idx: number; reason: string; detail: string } };
 }

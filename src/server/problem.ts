@@ -33,5 +33,12 @@ export function statusFor(code: string, fallback: number): number {
   // A ceiling on a per-principal resource, not a malformed request: the same call succeeds once
   // the caller's idle watches lapse or it closes the streams it is done with.
   if (code === "too_many_watches") return 429;
+  // Same shape: a budget the caller can get back under by retiring what it no longer listens for.
+  if (code === "too_many_interests") return 429;
+  // 413 with `record_too_large`, because these are the same rule read on a different axis: the
+  // record is too expensive to accept. Bytes bound one dimension; depth and fan-out bound the
+  // others, and a caller told 400 would look for a syntax error that is not there.
+  if (code === "body_too_deep" || code === "array_too_long") return 413;
+  if (code === "pattern_too_large") return 413;
   return fallback;
 }

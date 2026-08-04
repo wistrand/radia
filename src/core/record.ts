@@ -34,6 +34,48 @@ export interface BuildContext {
   taint?: string[];
   /** Largest serialized body accepted, in bytes. See the check in `buildRecord`. */
   maxRecordBytes: number;
+  /** Deepest nesting accepted in a body. Bytes do not bound this, and several readers recurse. */
+  maxBodyDepth?: number;
+  /** Longest array accepted anywhere in a body. `$any`/`$each` walk it per candidate record. */
+  maxArrayLength?: number;
+}
+
+const DEFAULT_BODY_DEPTH = 32;
+const DEFAULT_ARRAY_LENGTH = 4096;
+
+/**
+ * Reject a body whose SHAPE is expensive, as distinct from one whose size is.
+ *
+ * Iterative rather than recursive on purpose: a checker that blows the stack on the input it exists
+ * to reject is the bug, not the guard.
+ */
+function checkShape(body: unknown, ctx: BuildContext): void {
+  const maxDepth = ctx.maxBodyDepth ?? DEFAULT_BODY_DEPTH;
+  const maxArray = ctx.maxArrayLength ?? DEFAULT_ARRAY_LENGTH;
+  const stack: { v: unknown; d: number }[] = [{ v: body, d: 1 }];
+  while (stack.length > 0) {
+    const { v, d } = stack.pop()!;
+    if (v === null || typeof v !== "object") continue;
+    if (d > maxDepth) {
+      throw new RadiaError(
+        "body_too_deep",
+        `record body nests deeper than ${maxDepth}. Depth is unbounded by the byte limit, and the ` +
+          `matcher, the event chain and every reader walk the whole shape`,
+      );
+    }
+    if (Array.isArray(v)) {
+      if (v.length > maxArray) {
+        throw new RadiaError(
+          "array_too_long",
+          `record body holds an array of ${v.length}, over the ${maxArray} limit. An array is walked ` +
+            `per candidate record by $any/$each`,
+        );
+      }
+      for (const item of v) stack.push({ v: item, d: d + 1 });
+    } else {
+      for (const item of Object.values(v as Record<string, unknown>)) stack.push({ v: item, d: d + 1 });
+    }
+  }
 }
 
 export interface BuiltRecord {
@@ -103,6 +145,12 @@ export async function buildRecord(
         `erased, and an artifact can.`,
     );
   }
+  // Depth and fan-out, which bytes do not bound: 1 KiB of `[[[[…]]]]` is small and unbounded to
+  // anything that walks it RECURSIVELY, and several things now do. The event chain canonicalizes
+  // `detail` recursively to hash it, the matcher walks a body per candidate record, and every
+  // JSON.parse on the read side rebuilds the whole shape. A stack overflow inside the sealer is a
+  // worse failure than a rejected write, and it happens later, somewhere else.
+  checkShape(req.body, ctx);
   const bodySha256 = await sha256Hex(bodyJson);
 
   const parentIds = req.parentIds ?? [];
