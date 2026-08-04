@@ -25,11 +25,21 @@ export interface DescribeOpts {
   mediaType: string;
   /** Names the document for the provider's parser. Ignored for images. */
   filename?: string;
+  /** Answer budget. Unset lets the provider pick, and providers pick small. */
+  maxTokens?: number;
   signal?: AbortSignal;
 }
 
-/** Ask a multimodal model about one image or document and return its answer as text. */
-export async function describeMedia(opts: DescribeOpts): Promise<{ text: string; usage?: unknown }> {
+/**
+ * Ask a multimodal model about one image or document.
+ *
+ * `finishReason` is returned rather than dropped, and that is the point of it being here: a truncated
+ * answer is well-formed text that simply stops, so a caller that discards the reason cannot tell a
+ * complete description from a sentence cut in half, and neither can the model reading it.
+ */
+export async function describeMedia(
+  opts: DescribeOpts,
+): Promise<{ text: string; finishReason: string; usage?: unknown }> {
   const dataUrl = `data:${opts.mediaType};base64,${toBase64(opts.bytes)}`;
   const media = opts.mediaType === "application/pdf"
     ? { type: "file", file: { filename: opts.filename ?? "document.pdf", file_data: dataUrl } }
@@ -45,17 +55,18 @@ export async function describeMedia(opts: DescribeOpts): Promise<{ text: string;
     body: JSON.stringify({
       model: opts.model,
       messages: [{ role: "user", content: [{ type: "text", text: opts.prompt }, media] }],
+      ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
     }),
     signal: opts.signal,
   });
   if (!res.ok) throw new Error(`vision ${res.status}: ${errorMessage(await res.text())}`);
   const json = await res.json() as {
-    choices?: { message?: { content?: unknown } }[];
+    choices?: { message?: { content?: unknown }; finish_reason?: string }[];
     usage?: unknown;
   };
   const text = flatten(json.choices?.[0]?.message?.content);
   if (!text) throw new Error("the model returned no text for this file");
-  return { text, usage: json.usage };
+  return { text, finishReason: json.choices?.[0]?.finish_reason ?? "", usage: json.usage };
 }
 
 /** A multimodal model may answer with a plain string or with content parts, depending on the provider. */

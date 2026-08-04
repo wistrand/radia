@@ -34,6 +34,7 @@ const url = `http://127.0.0.1:${PORT}`;
 const VISION_MODEL = "vendor/eyes";
 const TYPES = ["image/png", "image/jpeg", "application/pdf"];
 const MAX_BYTES = 512;
+const ANSWER_TOKENS = 777;
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -51,11 +52,15 @@ interface Seen {
   partType: string;
   dataUrl: string;
   filename: string;
+  maxTokens?: number;
 }
 const seen: Seen[] = [];
+/** Set to make the stub answer as a model that ran out of budget: well-formed text that stops. */
+let truncateNext = false;
 const stub = Deno.serve({ port: STUB_PORT, onListen: () => {} }, async (req) => {
   const body = await req.json() as {
     model: string;
+    max_tokens?: number;
     messages: {
       content: {
         type: string;
@@ -73,11 +78,19 @@ const stub = Deno.serve({ port: STUB_PORT, onListen: () => {} }, async (req) => 
     partType: media?.type ?? "",
     dataUrl: media?.image_url?.url ?? media?.file?.file_data ?? "",
     filename: media?.file?.filename ?? "",
+    maxTokens: body.max_tokens,
   });
-  return Response.json({
-    choices: [{ message: { role: "assistant", content: "a tabby cat on a windowsill" } }],
-    usage: { total_tokens: 12 },
-  });
+  return Response.json(
+    truncateNext
+      ? {
+        choices: [{ message: { role: "assistant", content: "a tabby cat on a windowsill, its fur" }, finish_reason: "length" }],
+        usage: { total_tokens: 64 },
+      }
+      : {
+        choices: [{ message: { role: "assistant", content: "a tabby cat on a windowsill" }, finish_reason: "stop" }],
+        usage: { total_tokens: 12 },
+      },
+  );
 });
 
 const space = new Deno.Command(Deno.execPath(), {
@@ -116,6 +129,8 @@ const worker = new Deno.Command(Deno.execPath(), {
     TYPES.join(","),
     "--max-image-bytes",
     String(MAX_BYTES),
+    "--answer-tokens",
+    String(ANSWER_TOKENS),
   ],
   env: { ...Deno.env.toObject(), RADIA_CHAT_API_BASE: `http://127.0.0.1:${STUB_PORT}`, OPENROUTER_API_KEY: "stub" },
   stdout: "null",
@@ -200,6 +215,26 @@ check(
   (seen.at(-1)?.dataUrl ?? "").slice(0, 40),
 );
 check("…in an image part", seen.at(-1)?.partType === "image_url", String(seen.at(-1)?.partType));
+// An unset budget is the provider's to pick, and providers pick small: a description of one image
+// came back cut off mid-sentence, with nothing in the result saying so.
+check("…under an answer budget the worker set", seen.at(-1)?.maxTokens === ANSWER_TOKENS, String(seen.at(-1)?.maxTokens));
+check("a complete answer says it finished", (analyzed.body.output as { finishReason?: string }).finishReason === "stop");
+check("…and is not flagged as truncated", (analyzed.body.output as { truncated?: boolean }).truncated === undefined);
+
+// ---- an answer that ran out of budget ----
+// The property is that TRUNCATION IS VISIBLE. A cut-off answer is well-formed text that stops, so a
+// result carrying only the text reads as complete, and the assistant reported half an account of an
+// image as the whole picture. It cost a second call to notice, and only because the sentence ended
+// oddly; a description that happened to stop at a full stop would not have been noticed at all.
+truncateNext = true;
+const cut = await call("analyze_image", { artifactId: image.id, question: "describe everything" });
+const cutOut = cut.body.output as { answer?: string; truncated?: boolean; finishReason?: string; note?: string };
+truncateNext = false;
+check("a truncated answer still succeeds", cut.body.ok === true);
+check("…and says it was truncated", cutOut.truncated === true, JSON.stringify(cutOut).slice(0, 80));
+check("…naming the reason the provider gave", cutOut.finishReason === "length", String(cutOut.finishReason));
+check("…and what to do instead", (cutOut.note ?? "").includes("narrower"), String(cutOut.note));
+check("…while keeping the partial text", (cutOut.answer ?? "").endsWith("its fur"), String(cutOut.answer));
 
 // Lineage, not assertion: the image is a data parent of the answer, so its labels are the answer's.
 // An image is a prompt-injection vector, and a paragraph derived from one inherits that.

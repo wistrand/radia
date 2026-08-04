@@ -85,7 +85,7 @@ real assembly, with no API key:
 | `fleet` | model advertisements: publish, restart without growing the space, withdraw on shutdown, revive |
 | `input` | the REPL's stdin, which has no space and no model in it: the keystroke that went missing between a turn ending and the next prompt (two readers on one exclusive stream), type-ahead during a turn, and Escape versus an arrow key |
 | `capability` | tool advertisements, keyed by `(provider, tool)`: replicas of one worker collapse to one tool silently, two DIFFERENT tools under one name are reported as conflicted rather than silently taking each other over, and a provider's withdrawal leaves its peers' tools standing |
-| `vision` | reading a file: the accepted media types announced and enforced from ONE value, a PDF sent as a document part rather than an image, the artifact's own bytes reaching the provider (which is what proves the worker's read grant is really there), and four refusals answered without spending a request |
+| `vision` | reading a file: the accepted media types announced and enforced from ONE value, a PDF sent as a document part rather than an image, the artifact's own bytes reaching the provider (which is what proves the worker's read grant is really there), an answer that ran out of budget reported as truncated instead of passing for complete, and four refusals answered without spending a request |
 
 The long thread is the one that pays for itself: bugs here come from the SHAPE of accumulated
 state, which is cheap to construct as records and nearly impossible to hit reliably by chatting.
@@ -627,6 +627,10 @@ Four things fall out of that:
 - **The grant shipped with the capability**: `artifact: read_one`, added to `IMAGE_GRANTS` in the
   same change. Two earlier workers gained a capability whose grant did not follow, and both times
   the suites stayed green while every real call answered `forbidden`.
+- **Truncation is reported, not silently returned.** An unset answer budget lets the provider pick,
+  and providers pick small: a description came back cut off mid-sentence and the assistant read half
+  an account as the whole picture. The worker sends `max_tokens` and passes `finish_reason` through,
+  so `finish_reason: "length"` becomes `{truncated: true}` plus what to do about it.
 
 **Turn progress is a record, not a spinner** (`space/progress.ts`). Between putting an `llm_call` and
 the first streamed token, several workers act: the router claims and dispatches it, and an
@@ -705,7 +709,8 @@ self-hosted gateway), `RADIA_CHAT_WINDOW` (newest messages sent per turn; 0 = wh
 `RADIA_CHAT_IMAGE_MODEL`, `RADIA_CHAT_IMAGE_SAFETY` (provider moderation passthrough,
 `CATEGORY:THRESHOLD,…`), `RADIA_CHAT_IMAGE_DIR` (save generated images locally),
 `RADIA_CHAT_VISION_MODEL`, `RADIA_CHAT_VISION_TYPES` (what that model accepts, announced and
-enforced from this one value) and `RADIA_CHAT_VISION_MAX_BYTES`, `RADIA_CHAT_EXEC_TIMEOUT_MS` (code
+enforced from this one value), `RADIA_CHAT_VISION_MAX_BYTES` and `RADIA_CHAT_VISION_MAX_TOKENS`
+(answer budget, default 4096), `RADIA_CHAT_EXEC_TIMEOUT_MS` (code
 execution budget, default 5000), `RADIA_CHAT_EXEC_DIRS` (read-only roots for executed code;
 unset = no filesystem, and separate from `RADIA_CHAT_DIRS` on purpose), `RADIA_CHAT_DB` and
 `RADIA_CHAT_SCOPE` (below), `RADIA_DIR` (the runtime directory everything else defaults into).
