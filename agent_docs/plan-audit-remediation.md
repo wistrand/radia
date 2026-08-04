@@ -1,16 +1,18 @@
 # Plan: audit remediation
 
-> Status: P, Q and R are open; **E, K, L, M and O are closed** (2026-08-03), **H, I and N** (2026-08-04); everything else is closed and
+> Status: P, Q, R and S are open; **E, K, L, M and O are closed** (2026-08-03), **H, I and N** (2026-08-04); everything else is closed and
 > its guards pass (`deno task conformance`: 450 passed, 0 failed). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
 > paths; items marked **reproduced** were verified empirically. Line numbers drift; trust the symbol,
 > not the number.
 >
-> **Two rounds.** A–J are the 2026-07-27 audit. K–Q come from a second review on 2026-08-03 and are
-> marked VERIFIED (checked against source while recording them) or REPORTED (recorded on the
-> reviewer's evidence, not re-derived). Do not treat a REPORTED item as confirmed without checking
-> it; that distinction is the reason this file is worth trusting.
+> **Two rounds, and a re-derivation.** A–J are the 2026-07-27 audit. K–Q come from a second review
+> on 2026-08-03, marked VERIFIED (checked against source while recording them) or REPORTED (recorded
+> on the reviewer's evidence). **No REPORTED item is left**: package S re-derived all twelve on
+> 2026-08-04 and eleven reproduce, so the distinction now separates what was checked WHEN, not what
+> can be trusted. Keep marking new findings this way; the pass that turned one report into a live
+> 500 and shrank another to a narrow race is why.
 
 ## Goal
 
@@ -38,6 +40,7 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | P   | Contracts nothing checks                | P2       | Drift in exactly the claims held loudest |
 | Q   | Designed features unreachable           | P2       | A built feature no caller can invoke   |
 | R   | Dead taint parameter; half-tested guard | P2       | Legibility, not leakage (see the entry) |
+| S   | Round-two reports, re-derived           | P1/P2    | 11 of 12 reproduce; 2 reachable from the wire |
 
 Packages A, B, C, D, E, F, G, H, I, J, K, L, M, N and O are closed. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
@@ -412,22 +415,72 @@ correct and the path to it is missing, so tests of the unit pass while nothing e
 Guard for all three: a reachability test per feature that drives it through the OUTERMOST surface
 (HTTP or CLI), not through `Space`. The unit tests for these pass today.
 
-## Also reported, not re-derived here
+## Package S: the round-two reports, re-derived (2026-08-04)
 
-Recorded so a later reader does not mistake absence for clearance. **REPORTED**, unverified:
-`readAccess` performs three or four paged registry reads per coordination verb where one threaded
-`RegistryView` would do; `authorize` silently discards `complete` (fail-closed, but silent at
-scale); the `available`-state claim CAS is not guarded on `available_at`, so a record inside its
-nack backoff can be reclaimed early; offset-based candidate-window paging can report a spurious
-empty under Postgres contention (a keyset window fixes cost and correctness together); `stopRun`
-quarantines before writing the stop record, leaving a window where the stopped run can still claim;
-`parseTaintAllowlist` admits the reserved `unknown` label that three comments claim no allowlist may
-contain; and `{"$or": []}` may compile and render `()`, a SQL syntax error reachable from the wire.
+All twelve were checked against source, and eleven reproduce; nothing was cleared. They are
+UNFIXED — this pass established severity, not a fix. Ranked by whether a caller can reach them
+today.
 
-Plus a doc/comment reconciliation batch: the take barrier described as OR where the code correctly
-intersects; `design-auth.md` still describing the one-bit taint model; the `ownerGuard` docstring
-asserting an invariant the deferred list already contradicts; the operator token resolving to
-`local:dev` where two docs say `human:local`; "six kinds defined in code" (it is eight).
+**Reachable from the wire, now:**
+
+- **`{"$or": []}` is a 500.** VERIFIED empirically on both adapters: `near ")": syntax error`, from
+  a well-formed request any caller with a `query` grant can send. `compileObject` builds
+  `{t:"or", nodes:[]}` and pushdown renders `()`. `{"$and": []}` is fine (it matches everything).
+  One line, either at compile (`$or: []` matches nothing) or in the renderer.
+- **`ownerGuard` turns a SUCCEEDED settle's retry into `lease_lost`,** and its own docstring claims
+  the opposite ("No succeeded op can be turned into a false `lease_lost`"). VERIFIED empirically:
+  A nacks with an idempotency key and the response is lost; B claims the record; A retries the same
+  key and is told `lease_lost` rather than replaying `ok`. The docstring's argument covers only
+  "`lease_owner` is not cleared on settle" and misses REASSIGNMENT. It is also a breach of the
+  named CLAUDE.md invariant, since `ownerGuard` runs ahead of storage's idempotency check —
+  the exact ordering that invariant exists to forbid.
+
+**Pooled Postgres only, invisible to the embedded suites:**
+
+- **The available-branch claim CAS guards neither `available_at` nor `lease_epoch`**
+  (`where record_id=? and state='available'`; the expired branch does check the epoch). VERIFIED by
+  inspection; does NOT reproduce single-connection (a nack with a 3600s backoff is respected by
+  pattern-take and take-by-id on both embedded adapters, so the report's flat wording overstates
+  it). The race: a concurrent take+nack-with-backoff between the candidate read and the CAS, which
+  claims inside the backoff AND writes a stale epoch over a live fence. Fix is one clause.
+- **Offset-based candidate paging can report a spurious empty.** VERIFIED by inspection. Rows
+  leaving the ordered set between pages shift later rows into the already-passed offset, so a
+  claimable record is skipped and `take` answers null. Same defect as the deferred-list entry
+  "pattern-take OFFSET pagination transiently skips claimable rows" — it is listed twice. A keyset
+  window fixes cost and correctness together.
+- **`stopRun` quarantines BEFORE writing the stop record.** VERIFIED by inspection: the token keeps
+  resolving until the successor commits, so a quarantined run can still claim in that window. The
+  sharper case is a throw between the two, which leaves leases quarantined and the run working.
+
+**Real but quiet:**
+
+- **`readAccess` costs four storage reads per coordination verb.** VERIFIED by instrumenting the
+  adapter: `grant` read three times (`authorize`, `authorScope`, `taintBarrier`) plus one
+  `agent_run` for the self scope; `authorize` alone is one. One threaded `RegistryView` makes it
+  two.
+- **`authorize` discards `complete`.** VERIFIED: five of the eight grant-registry call sites take
+  `.entries` and never look. Truncation needs >20,000 grant records for one (principal, kind), and
+  is fail-CLOSED in both directions (newest-first, so a retirement is inside the window while what
+  it retires may not be), so the cost is silence rather than misauthorization. Content-keyed grant
+  writes make the threshold implausible; surfacing it is still cheap.
+- **`parseTaintAllowlist` admits the reserved `unknown` label.** VERIFIED: `parseTaintAllowlist(
+  "unknown")` returns `["unknown"]`, so a grant can allow exactly the label that
+  `TAINT_UNKNOWN`'s own comment says "no allowlist may contain" — the barrier for records written
+  before labels existed. An explicit opt-in rather than an escalation, but it contradicts a stated
+  invariant that a conformance case is written against.
+
+**Doc/comment batch, all confirmed:**
+
+- `handleTake` says the grant barrier is "ORed with the caller's own flag" eight lines above the
+  comment that correctly says the two INTERSECT. The code intersects.
+- `design-auth.md`'s taint section carries a corrected blockquote and then describes the OLD model
+  underneath it: `taint:false`, a "clean successor (same body, `taint:false`)", and a "known limit"
+  that taint is "one bit with no provenance". The blockquote contradicts its own section body.
+- `Space.mintOperatorToken` and `CredentialStore.addOperator` both say the operator token "resolves
+  to the privileged `human:local`". It resolves to `ctx.principal`, default **`local:dev`**, which
+  is privileged as the space's own identity. `human:local` is the named operator, a different thing.
+- `gotchas.md` says six kinds are defined in code; `RESERVED_KINDS` has **eight** (`interest` and
+  `shred` were added since).
 
 ## Extends Package E: the array-index hole is in the SHARED path — CLOSED 2026-08-03
 
@@ -449,18 +502,20 @@ shared root and covers both dialects at once, which is why it belongs in E rathe
 
 ## Deferred: low severity
 
-Batch these; none warrant individual attention. Watches map never pruned (the `Notifier`
-half of that item closed with package O); credentials file
-created at umask then chmod'd, leaving a world-readable window (`src/credentials.ts`);
-`parent_ids` existence documented as checked at commit but
-never is; `valueEq` compares objects by `JSON.stringify` and is key-order-sensitive;
-`PutResult.deduped` is never true; pattern-take OFFSET pagination transiently skips claimable
-rows; `lease_epoch` is not monotonic per record; `ownerGuard` can turn a succeeded settle's
-retry into a false `lease_lost`; the chat router omits `owner` from progress records; Python SSE
-lacks backoff on clean close; TS `req`/`putArtifact` call `JSON.parse` before checking
-`res.ok`. Separately, the artifact write-side grant check matches a body omitting `appFields`
-(`src/server/handlers/artifacts.ts`), so pattern-scoped put grants on an app field can never be
-satisfied. It is fail-closed, so legitimate writes just 403.
+Batch these; none warrant individual attention. Watches map never pruned (the `Notifier` half
+closed with package O); credentials file created at umask then chmod'd, leaving a world-readable
+window (`src/credentials.ts`); `parent_ids` existence documented as checked at commit but never is;
+`valueEq` compares objects by `JSON.stringify` and is key-order-sensitive; `PutResult.deduped` is
+never true; `lease_epoch` is not monotonic per record; the chat router omits `owner` from progress
+records; Python SSE lacks backoff on clean close; TS `req`/`putArtifact` call `JSON.parse` before
+checking `res.ok`. Separately, the artifact write-side grant check matches a body omitting
+`appFields` (`src/server/handlers/artifacts.ts`), so pattern-scoped put grants on an app field can
+never be satisfied. It is fail-closed, so legitimate writes just 403.
+
+Two entries LEFT this batch on 2026-08-04, both re-derived under package S: pattern-take OFFSET
+paging (the same defect as the spurious-empty report) and `ownerGuard` turning a succeeded settle's
+retry into a false `lease_lost`, which reproduces and breaches the
+idempotency-before-lease-validation invariant, so it is not low severity.
 
 ## Verified clean
 
