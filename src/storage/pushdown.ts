@@ -35,6 +35,8 @@ import type { CmpOp, MatchNode } from "./adapter.ts";
 
 /** SQL that is always true. Not `TRUE`: portable across both dialects' older syntax. */
 export const SQL_TRUE = "(1=1)";
+/** SQL that is always false. Only an empty `$or` renders this: see the `or` case. */
+export const SQL_FALSE = "(1=0)";
 
 /**
  * A rendered filter, and whether it is EQUIVALENT to the oracle rather than merely implied by it.
@@ -145,6 +147,13 @@ export function pushdown(node: MatchNode | undefined, d: JsonDialect): Pushed {
       return { sql: parts.length === 0 ? SQL_TRUE : `(${parts.join(" and ")})`, exact };
     }
     case "or": {
+      // An EMPTY disjunction matches nothing, and rendering it by joining zero branches produced
+      // `()`, a syntax error the caller met as a 500 from a well-formed `{"$or": []}`. The oracle
+      // has always been right here (`[].some()` is false), so the renderer follows it rather than
+      // the pattern being refused at compile: exact, because "matches nothing" is what both sides
+      // say. (The `and` case below returns TRUE for the empty case, the same identity read the
+      // other way.)
+      if (node.nodes.length === 0) return { sql: SQL_FALSE, exact: true };
       // A disjunct that cannot be pushed makes the WHOLE disjunction unusable: the unpushed
       // branch might be the one that matches, and dropping it would exclude those rows. When that
       // happens the branches already rendered are abandoned, parameters included.

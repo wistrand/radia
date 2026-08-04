@@ -292,6 +292,36 @@ export const authSuites: Suite[] = [
     },
   },
   {
+    name: "the owner check runs BEHIND idempotency: a succeeded settle replays after reassignment",
+    run: async (adapter) => {
+      // The invariant is "idempotency is checked before lease validation", and the owner check is
+      // lease validation. Checked ahead of storage, as it used to be, this sequence answered
+      // `lease_lost` for an operation that had already SUCCEEDED: A settles, the response is lost,
+      // B claims the record, A retries its key and is told it lost a lease it no longer holds —
+      // which is true and is not the answer to the question it asked.
+      const space = newSpace(adapter);
+      await space.put({ kind: "task", body: { tag: "t" } });
+      const first = await space.take({ pattern: { kind: "task" } }, {}, "run:a");
+      assert(first);
+      assertEquals((await space.nack(first!.lease, { backoffSeconds: 0 }, "k1", "run:a")).status, "ok");
+
+      const second = await space.take({ pattern: { kind: "task" } }, {}, "run:b");
+      assert(second, "run:b now owns the record");
+      assertEquals(
+        (await space.nack(first!.lease, { backoffSeconds: 0 }, "k1", "run:a")).status,
+        "ok",
+        "the stored response replays; the retry is not fenced by the NEW owner",
+      );
+      // …and the replay changed nothing: run:b still holds its lease.
+      assertEquals((await space.getEnvelope(second!.record.id))!.leaseOwner, "run:b");
+
+      // A stranger with no stored response is still fenced, which is the property the check exists
+      // for. Both halves are needed: a guard that replays for everyone would authorize nothing.
+      assertEquals((await space.nack(second!.lease, {}, "other-key", "run:c")).status, "lease_lost");
+      assertEquals((await space.getEnvelope(second!.record.id))!.state, "leased");
+    },
+  },
+  {
     name: "an expired run token stops resolving (short-lived tokens)",
     run: async (adapter) => {
       const space = new Space(adapter, { runTokenSeconds: -1 }); // mint already-expired tokens

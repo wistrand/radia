@@ -420,6 +420,16 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   `task` is never crowded out by hundreds of `message`/`capability` records). Reserved control kinds
   default `claimable:false`; user reference kinds must declare it. Don't "fix" a large
   stale-available count by raising the threshold; check the kinds are marked reference.
+- **A guard placed "before storage" is placed before IDEMPOTENCY, and that is the invariant it
+  breaks.** The owner-match check for settle verbs sat in `Space`, ahead of the adapter call, on the
+  argument that `lease_owner` is never cleared on settle so an owner's retry still matches. True,
+  and it misses REASSIGNMENT: A nacks, the response is lost, B claims the record, A retries its
+  idempotency key and is told `lease_lost` for an operation that already succeeded. The check rides
+  on `LeaseRef.expectOwner` now, so the adapter applies it inside the settle's transaction after
+  `withIdem` has replayed. Two things fell out worth keeping: `renew`/`nack`/`release` stopped
+  pre-reading the envelope entirely, and `ack` (which genuinely needs the owner, to authorize the
+  result it emits) skips that authorization on a mismatch, because authorizing a stranger's ack as
+  the OWNER would tell them what that principal may write.
 - **Idempotency is checked before lease validation, and the order matters.**
   `ack` commits, the HTTP response is lost, the agent retries; the task is now consumed
   and the lease invalid. Validating the lease first would falsely return `lease_lost` for

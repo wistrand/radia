@@ -163,6 +163,22 @@ export const pushdownSuites: Suite[] = [
     },
   },
   {
+    name: "an empty $or matches nothing instead of rendering a SQL syntax error",
+    run: async (adapter) => {
+      // `{"$or": []}` is well formed and reachable from the wire (a caller building the array from
+      // an empty list sends it), and it rendered as `()` — `near ")": syntax error`, a 500. The
+      // oracle was always right (`[].some()` is false), so the renderer follows it: matches
+      // nothing. `$and: []` is the same identity read the other way and matches everything.
+      const space = newSpace(adapter);
+      const { id } = await space.put({ kind: "doc", body: { s: "x" } });
+
+      await finds(space, { $or: [] }, [], "an empty disjunction matches nothing");
+      await finds(space, { $and: [] }, [id], "an empty conjunction matches everything");
+      await finds(space, { s: "x", $or: [] }, [], "and it still matches nothing beside a predicate");
+      await finds(space, { $or: [{ s: "x" }, { $or: [] }] }, [id], "nested, the live branch still matches");
+    },
+  },
+  {
     name: "a JSON null is present, a missing key is not (SQL conflates them; the oracle must not)",
     run: async (adapter) => {
       const space = newSpace(adapter);

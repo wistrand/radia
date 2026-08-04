@@ -195,6 +195,17 @@ export interface LeaseRef {
   recordId: Ulid;
   leaseId: Ulid;
   epoch: number;
+  /**
+   * The RESOLVED caller, when a settle must be owner-bound. Set, the adapter treats a lease owned
+   * by anyone else as invalid (an opaque `lease_lost`, never a distinguishable error).
+   *
+   * It rides on the ref rather than being checked by the caller BECAUSE of the ordering invariant:
+   * the check has to happen inside the settle's transaction, after the stored idempotent response
+   * is consulted. Checked first, in `Space`, a legitimate owner's retry of an op that already
+   * succeeded was answered `lease_lost` once the record had been reclaimed by somebody else —
+   * exactly what "idempotency is checked before lease validation" exists to forbid.
+   */
+  expectOwner?: string;
 }
 
 export type TakeSelector =

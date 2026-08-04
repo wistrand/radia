@@ -1745,18 +1745,34 @@ export class Space {
   }
 
   async renew(lease: Lease, opts: TakeOptions = {}, idempotencyKey?: string, principal?: string): Promise<RenewResult> {
-    if (!(await this.ownerGuard(lease.recordId, principal, "renew")).ok) return { status: "lease_lost" };
+    const ref = this.ref(lease, principal);
     const idem = await this.idem("renew", idempotencyKey, this.ref(lease), principal);
-    return this.storage.renew(this.ref(lease), opts.leaseSeconds ?? this.ctx.defaultLeaseSeconds, idem);
+    const r = await this.storage.renew(ref, opts.leaseSeconds ?? this.ctx.defaultLeaseSeconds, idem);
+    if (r.status === "lease_lost") await this.explainLeaseLost(ref, "renew");
+    return r;
   }
 
   /** Consume the leased record, optionally emitting a result record linked to it. `principal` is
    *  the RESOLVED caller (server-assigned `created_by` on the result + idempotency scope + lease
    *  ownership check). */
   async ack(lease: Lease, result?: PutRequest, idempotencyKey?: string, principal?: string): Promise<AckResult> {
-    const guard = await this.ownerGuard(lease.recordId, principal, "ack");
-    if (!guard.ok) return { status: "lease_lost" };
-    const owner = guard.owner; // authoritative lease owner (envelope), used for authority derivation
+    // The authoritative lease owner, from the envelope: `ack` needs it to authorize the emitted
+    // result and to derive the delegation chain, so this read is not the owner CHECK. That check
+    // travels to the adapter on the ref (see `Space.ref`), which is what keeps it behind the
+    // idempotency replay.
+    const owner = (await this.storage.getEnvelope(lease.recordId))?.leaseOwner;
+    const foreign = !!principal && !this.isPrivileged(principal) && !!owner && principal !== owner;
+    if (foreign) {
+      // Settling somebody else's lease. Do NOT build or authorize the result: the work would be
+      // authorized as the OWNER, so a stranger could learn what that principal may write. Storage
+      // still decides, so a stored response for this key replays instead of being fenced.
+      this.warnOwnerMismatch(lease.recordId, principal!, owner!, "ack");
+      const key = await this.idem("ack", idempotencyKey, {
+        ...this.ref(lease),
+        result: result ? { kind: result.kind, body: result.body } : null,
+      }, principal);
+      return await this.storage.ack(this.ref(lease, principal), undefined, key);
+    }
     let resultInput: PutInput | undefined;
     let declared: KindDef | undefined;
     if (result) {
@@ -1811,64 +1827,62 @@ export class Space {
       ...this.ref(lease),
       result: result ? { kind: result.kind, body: result.body } : null,
     }, principal);
-    const r = await this.storage.ack(this.ref(lease), resultInput, idem);
+    const r = await this.storage.ack(this.ref(lease, principal), resultInput, idem);
     if (declared && r.status === "ok") await this.adoptKind(declared);
     this.notifier.notify(); // an emitted result is a new available record to wake on
     return r;
   }
 
   async nack(lease: Lease, opts: { backoffSeconds?: number } = {}, idempotencyKey?: string, principal?: string): Promise<SettleResult> {
-    if (!(await this.ownerGuard(lease.recordId, principal, "nack")).ok) return { status: "lease_lost" };
+    const ref = this.ref(lease, principal);
     const idem = await this.idem("nack", idempotencyKey, this.ref(lease), principal);
     const r = await this.storage.nack(
-      this.ref(lease),
+      ref,
       opts.backoffSeconds ?? this.ctx.defaultBackoffSeconds,
       this.ctx.maxAttempts,
       idem,
     );
+    if (r.status === "lease_lost") await this.explainLeaseLost(ref, "nack");
     this.notifier.notify(); // record back to available
     return r;
   }
 
   async release(lease: Lease, idempotencyKey?: string, principal?: string): Promise<SettleResult> {
-    if (!(await this.ownerGuard(lease.recordId, principal, "release")).ok) return { status: "lease_lost" };
+    const ref = this.ref(lease, principal);
     const idem = await this.idem("release", idempotencyKey, this.ref(lease), principal);
-    const r = await this.storage.release(this.ref(lease), idem);
+    const r = await this.storage.release(ref, idem);
+    if (r.status === "lease_lost") await this.explainLeaseLost(ref, "release");
     this.notifier.notify(); // record back to available
     return r;
   }
 
   /**
-   * Owner-match guard for lease settlement (ack/nack/release/renew). A non-operator principal may
-   * settle only a lease it OWNS: defense-in-depth on top of fencing. It closes lease-leak
-   * IMPERSONATION (ack, whose emitted result carries the owner's authority + delegation chain) and
-   * lease-leak DoS (nack/release/renew driving someone else's task to available/dead-letter). A
-   * stranger presenting a leaked lease gets the SAME opaque `lease_lost` fencing returns, never a
-   * distinguishable error, which would leak lease existence. In-process/operator callers (no
-   * principal / privileged) skip the check. Returns the authoritative `lease_owner` on success (ack
-   * needs it to derive authority).
+   * Lease settlement is OWNER-BOUND: a non-operator principal may settle only a lease it owns,
+   * which is defense-in-depth on top of fencing. It closes lease-leak IMPERSONATION (an ack whose
+   * emitted result would carry the owner's authority and delegation chain) and lease-leak DoS
+   * (nack/release/renew driving someone else's task to available/dead-letter). A stranger gets the
+   * same opaque `lease_lost` fencing returns, never a distinguishable error.
    *
-   * The mismatch is logged: the caller only ever sees `lease_lost`, which the SDK's agentLoop treats
-   * as ordinary fencing ("duplicate work possible") and retries forever, so a misconfigured agent
-   * presenting the wrong identity would spin silently. The server-side warn makes that diagnosable.
+   * The check itself lives in the ADAPTER, reached through `LeaseRef.expectOwner`, so that it runs
+   * inside the settle's transaction after any stored idempotent response has replayed. It used to
+   * run here, ahead of storage, and that turned a legitimate owner's retry of an op that ALREADY
+   * SUCCEEDED into `lease_lost` as soon as the record had been reclaimed by somebody else —
+   * reproduced with a nack whose response was lost. The old comment argued it was safe because
+   * `lease_owner` is not cleared on settle; that covers the record staying put and misses
+   * REASSIGNMENT.
    *
-   * Ordering: this reads `lease_owner`, NOT the `lease_id`/epoch fencing check, and runs before the
-   * idempotency check inside storage. It does NOT violate the "idempotency is checked before lease
-   * validation" invariant: `lease_owner` is not cleared on settle, so a legitimate owner's retry of
-   * an already-succeeded op still matches here and replays via idempotency; a non-owner never had a
-   * stored response to replay. No succeeded op can be turned into a false `lease_lost`.
+   * These two are what remains here: the reason a settle failed is only visible from the envelope,
+   * and the caller is told nothing (by design), so a misconfigured agent presenting the wrong
+   * identity would otherwise retry forever in silence. Read on the FAILURE path only.
    */
-  private async ownerGuard(
-    recordId: string,
-    principal: string | undefined,
-    op: string,
-  ): Promise<{ ok: true; owner?: string } | { ok: false }> {
-    const owner = (await this.storage.getEnvelope(recordId))?.leaseOwner;
-    if (principal && !this.isPrivileged(principal) && owner && principal !== owner) {
-      console.warn(`[radia] owner-match: ${op} on ${recordId} by '${principal}' rejected (lease owned by '${owner}') -> lease_lost`);
-      return { ok: false };
-    }
-    return { ok: true, owner };
+  private async explainLeaseLost(ref: LeaseRef, op: string): Promise<void> {
+    if (!ref.expectOwner) return;
+    const owner = (await this.storage.getEnvelope(ref.recordId))?.leaseOwner;
+    if (owner && owner !== ref.expectOwner) this.warnOwnerMismatch(ref.recordId, ref.expectOwner, owner, op);
+  }
+
+  private warnOwnerMismatch(recordId: string, principal: string, owner: string, op: string): void {
+    console.warn(`[radia] owner-match: ${op} on ${recordId} by '${principal}' rejected (lease owned by '${owner}') -> lease_lost`);
   }
 
   /** The mutable envelope for a record (diagnostics / inspector / tests). */
@@ -2483,8 +2497,13 @@ export class Space {
     return true;
   }
 
-  private ref(lease: Lease): LeaseRef {
-    return { recordId: lease.recordId, leaseId: lease.leaseId, epoch: lease.epoch };
+  private ref(lease: Lease, principal?: string): LeaseRef {
+    // `expectOwner` travels to the adapter rather than being checked here, so the comparison
+    // happens inside the settle's transaction, AFTER the stored idempotent response is consulted.
+    // Checked here it turned a legitimate owner's retry of a succeeded op into `lease_lost` once
+    // the record had been reclaimed. Privileged/in-process callers own everything and set nothing.
+    const expectOwner = principal && !this.isPrivileged(principal) ? principal : undefined;
+    return { recordId: lease.recordId, leaseId: lease.leaseId, epoch: lease.epoch, expectOwner };
   }
 
   /** Build an idempotency key with a request hash, or undefined when no key was supplied. The

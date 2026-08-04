@@ -866,8 +866,14 @@ export class SqliteAdapter implements StorageAdapter {
 }
 
 function leaseValid(row: RawRow | null, ref: LeaseRef): boolean {
-  return row !== null &&
-    row.state === "leased" &&
+  if (row === null) return false;
+  // Owner-bound settle, checked HERE and not by the caller: this runs inside the transaction,
+  // after `withIdem` has replayed any stored response, which is the ordering the
+  // idempotency-before-lease-validation invariant requires. See `LeaseRef.expectOwner`.
+  if (ref.expectOwner !== undefined && row.lease_owner != null && String(row.lease_owner) !== ref.expectOwner) {
+    return false;
+  }
+  return row.state === "leased" &&
     String(row.lease_id) === ref.leaseId &&
     Number(row.lease_epoch) === ref.epoch;
 }

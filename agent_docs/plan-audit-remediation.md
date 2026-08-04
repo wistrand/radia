@@ -1,7 +1,7 @@
 # Plan: audit remediation
 
 > Status: P, Q, R and S are open; **E, K, L, M and O are closed** (2026-08-03), **H, I and N** (2026-08-04); everything else is closed and
-> its guards pass (`deno task conformance`: 450 passed, 0 failed). Each done package is a status line here; its
+> its guards pass (`deno task conformance`: 454 passed, 0 failed). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
 > paths; items marked **reproduced** were verified empirically. Line numbers drift; trust the symbol,
@@ -40,7 +40,7 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | P   | Contracts nothing checks                | P2       | Drift in exactly the claims held loudest |
 | Q   | Designed features unreachable           | P2       | A built feature no caller can invoke   |
 | R   | Dead taint parameter; half-tested guard | P2       | Legibility, not leakage (see the entry) |
-| S   | Round-two reports, re-derived           | P1/P2    | 11 of 12 reproduce; 2 reachable from the wire |
+| S   | Round-two reports, re-derived           | P1/P2    | 11 of 12 reproduce; the 2 wire-reachable ones **CLOSED 2026-08-04** |
 
 Packages A, B, C, D, E, F, G, H, I, J, K, L, M, N and O are closed. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
@@ -417,23 +417,35 @@ Guard for all three: a reachability test per feature that drives it through the 
 
 ## Package S: the round-two reports, re-derived (2026-08-04)
 
-All twelve were checked against source, and eleven reproduce; nothing was cleared. They are
-UNFIXED — this pass established severity, not a fix. Ranked by whether a caller can reach them
-today.
+All twelve were checked against source, and eleven reproduce; nothing was cleared. The two
+reachable from the wire are **FIXED**; the rest are recorded with a severity and are open. Ranked
+by whether a caller can reach them today.
 
-**Reachable from the wire, now:**
+**Reachable from the wire — CLOSED 2026-08-04:**
 
 - **`{"$or": []}` is a 500.** VERIFIED empirically on both adapters: `near ")": syntax error`, from
   a well-formed request any caller with a `query` grant can send. `compileObject` builds
   `{t:"or", nodes:[]}` and pushdown renders `()`. `{"$and": []}` is fine (it matches everything).
-  One line, either at compile (`$or: []` matches nothing) or in the renderer.
+  **Fixed in the RENDERER, not at compile**: the oracle was always right (`[].some()` is false), so
+  an empty disjunction renders `SQL_FALSE` and stays `exact` — both sides now say "matches
+  nothing". Refusing the pattern instead would have been a new error class for a query whose
+  meaning was never in doubt. Guard: `suites/pushdown.ts`, including the nested case.
 - **`ownerGuard` turns a SUCCEEDED settle's retry into `lease_lost`,** and its own docstring claims
   the opposite ("No succeeded op can be turned into a false `lease_lost`"). VERIFIED empirically:
   A nacks with an idempotency key and the response is lost; B claims the record; A retries the same
   key and is told `lease_lost` rather than replaying `ok`. The docstring's argument covers only
   "`lease_owner` is not cleared on settle" and misses REASSIGNMENT. It is also a breach of the
   named CLAUDE.md invariant, since `ownerGuard` runs ahead of storage's idempotency check —
-  the exact ordering that invariant exists to forbid.
+  the exact ordering that invariant exists to forbid. **Fixed by moving the check into the
+  adapter**, on `LeaseRef.expectOwner`: it now runs inside the settle's transaction, after
+  `withIdem` has replayed any stored response, so a legitimate retry replays and a stranger still
+  meets an opaque `lease_lost`. `renew`/`nack`/`release` no longer pre-read the envelope at all
+  (one read saved on each); `ack` still reads it, because it needs the authoritative owner to
+  authorize the emitted result — but on a mismatch it now skips building and authorizing that
+  result, which would otherwise have been authorized as the OWNER and could tell a stranger what
+  that principal may write. The diagnostic warn survives on the failure path (`explainLeaseLost`).
+  Guard: `suites/auth.ts`, "the owner check runs BEHIND idempotency", asserting both halves — the
+  replay, and that a stranger with no stored response is still fenced.
 
 **Pooled Postgres only, invisible to the embedded suites:**
 
