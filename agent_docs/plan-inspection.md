@@ -1,6 +1,6 @@
 # Plan: inspecting emergent flows
 
-> Status: backlog. Items 1, 3 and part of 4 are built (see design-inspection.md); the rest is not.
+> Status: backlog. Items 1, 2, 3 and part of 4 are built (see design-inspection.md); the rest is not.
 
 Sequence, status and dependencies. The reasoning lives in
 [design-inspection.md](design-inspection.md): why inspection is a distinct problem in a
@@ -36,7 +36,7 @@ resequencing: shipping the top three serves agents and newcomers and does nothin
 | # | Item                                                    | For       | Why here                                                                 |
 |---|---------------------------------------------------------|-----------|--------------------------------------------------------------------------|
 | 1 | `explain` on query, evidence-linked narrative           | Agent     | **`explain` DONE.** Evidence-linked narrative is a console concern, still open |
-| 2 | Flows tab                                               | Newcomer  | Deepest payoff, and its blocker turned out to be imaginary                 |
+| 2 | Flows tab                                               | Newcomer  | **DONE** (2026-08-04). Mining + the tab; the `flow` RECORD is not written, see below |
 | 3 | Interest-as-records, dry-run matcher                    | All three | **DONE.** Unblocks the routing diagram and precise starvation diagnostics, neither of which is built |
 | 4 | Thread grouping, `thread()`, shape-aware collapsing     | Agent     | **`thread()` DONE.** Feed grouping and collapsing are console work, still open |
 | 5 | Waterfall, OTLP export                                  | Newcomer  | Adoption work: meets engineers inside tools they already trust             |
@@ -46,9 +46,22 @@ resequencing: shipping the top three serves agents and newcomers and does nothin
 | 9 | Taint overlay (colour by label), then provenance         | Operator  | The substrate change LANDED (labels, not one bit), so the overlay is rendering; provenance is a pruned lineage walk |
 | — | Erasures that no longer hold                             | Operator  | **DONE, unplanned.** Arrived from a live incident rather than this list; see below |
 
-Items 1 and 2 are independent of everything else and of each other. Item 3 is the one whose absence
-explains why the newcomer's question has no answer today, so treat a slip there as a slip in adoption
-rather than in tooling.
+Item 1 is independent of everything else. Item 3 was the one whose absence explained why the
+newcomer's question had no answer, and with it and item 2 built, that question is answerable.
+
+### What item 2 shipped, and the half it did not
+
+`Space.flows` (`src/core/space.ts`), `GET /v0/ops/flows`, `radia flows`, the chat's `space_flows`,
+and the console's **Flows** tab. Each causally connected subgraph is abstracted to the sequence of
+`(kind, agent)` per depth and grouped; both granularity knobs are parameters because a mis-set one
+fails silently. Acceptance test met: `conformance/flows.test.ts` recovers the pipeline's
+`job → task×4-7 → result×4-7 → summary` unprompted, and mines the stalled shape beside it.
+
+**The `flow` RECORD is deliberately not written.** [research-self-modeling.md](research-self-modeling.md)
+specifies emitting one whose `parent_ids` are the exemplars, so the measurement gets provenance and
+successors give drift over time. That is the consolidation step, it belongs to a research track
+nothing has scheduled, and it needs a reserved kind, which is a wire-contract change. The read is
+useful without it; the record is not useful without a consumer.
 
 ### The one that arrived from an incident
 

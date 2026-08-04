@@ -200,6 +200,43 @@ export class RadiaClient {
     return this.req("GET", "/v0/ops/digest");
   }
 
+  /** Recurring shapes of work, mined from lineage. Nothing declares a topology here, so the shape
+   *  is recovered from what happened; partial shapes are reported beside complete ones, since
+   *  "starts often, rarely finishes" is the signal. */
+  flows(opts: {
+    granularity?: "kind" | "kind+agent";
+    counts?: "bucketed" | "exact";
+    maxRecords?: number;
+    minOccurrences?: number;
+    includeReserved?: boolean;
+  } = {}): Promise<{
+    granularity: string;
+    counts: string;
+    flows: {
+      signature: string;
+      occurrences: number;
+      outcomes: { complete: number; open: number; failed: number };
+      successRate: number;
+      medianDurationMs: number;
+      medianRecords: number;
+      exemplars: string[];
+    }[];
+    scanned: { records: number; kinds: string[]; subgraphs: number };
+    fragments: number;
+    complete: boolean;
+    notes?: string[];
+    note?: string;
+  }> {
+    const q = new URLSearchParams();
+    if (opts.granularity) q.set("granularity", opts.granularity);
+    if (opts.counts) q.set("counts", opts.counts);
+    if (opts.maxRecords !== undefined) q.set("max_records", String(opts.maxRecords));
+    if (opts.minOccurrences !== undefined) q.set("min_occurrences", String(opts.minOccurrences));
+    if (opts.includeReserved) q.set("include_reserved", "true");
+    const qs = q.toString();
+    return this.req("GET", `/v0/ops/flows${qs ? `?${qs}` : ""}`);
+  }
+
   /** The causally ordered story around a record: its lineage root, then everything descended from
    *  it. A composition of lineage and children, so no caller re-implements the walk or its paging. */
   thread(recordId: string): Promise<{ root: string; records: RadiaRecord[]; truncated: boolean; note?: string }> {

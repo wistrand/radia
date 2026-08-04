@@ -904,6 +904,67 @@ paths:
                   complete: { type: boolean, description: "absent unless the registry read was truncated" }
                   note: { type: string, description: "present when nothing matched, distinguishing 'nobody listens' from 'nobody is running'" }
         "400": { $ref: "#/components/responses/Problem" }
+  /ops/flows:
+    get:
+      operationId: flows
+      summary: "Recurring shapes of work, mined from lineage: the workflow diagram nobody wrote"
+      description: >-
+        A content-routed space has no declared topology, so the shape of the work has to be
+        RECOVERED rather than read: each causally connected subgraph is abstracted to the sequence
+        of `(kind, agent)` along its depth, ids and payloads dropped, and the results grouped.
+        Partial subgraphs are input rather than noise, because a shape that reliably starts and
+        rarely finishes is the failure signal. Outcomes are mechanical (a `dead_letter` in the
+        subgraph, work still claimable, everything settled), never a model's verdict. The two
+        granularity parameters exist because neither setting is knowable in advance and a
+        mis-set one fails silently: too fine and every run is unique, too coarse and everything is
+        one flow.
+      x-stability: experimental
+      parameters:
+        - { name: granularity, in: query, schema: { type: string, enum: [kind, "kind+agent"], default: "kind+agent" }, description: "whether the acting agent is part of a signature token" }
+        - { name: counts, in: query, schema: { type: string, enum: [bucketed, exact], default: bucketed }, description: "bucketed fan-out is what makes a four-item and a five-item run the same flow" }
+        - { name: max_records, in: query, schema: { type: integer }, description: "cap on the scan; reaching it reports complete:false" }
+        - { name: min_occurrences, in: query, schema: { type: integer, default: 1 } }
+        - { name: include_reserved, in: query, schema: { type: boolean, default: false }, description: "include the substrate's own kinds (declarations, grants, run records)" }
+      responses:
+        "200":
+          description: mined flows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  granularity: { type: string }
+                  counts: { type: string }
+                  flows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        signature: { type: string, description: "e.g. `job → task×4-7 → result×4-7 → summary`; a leading `…` marks a fragment" }
+                        occurrences: { type: integer }
+                        outcomes:
+                          type: object
+                          properties:
+                            complete: { type: integer }
+                            open: { type: integer }
+                            failed: { type: integer }
+                        successRate: { type: number }
+                        medianDurationMs: { type: integer }
+                        medianRecords: { type: integer }
+                        exemplars: { type: array, items: { type: string }, description: "roots of the newest occurrences, for a thread read" }
+                  scanned:
+                    type: object
+                    properties:
+                      records: { type: integer }
+                      kinds: { type: array, items: { type: string } }
+                      subgraphs: { type: integer }
+                  fragments: { type: integer, description: "subgraphs with a parent outside the scan, whose signature is a prefix of the truth" }
+                  complete: { type: boolean }
+                  notes: { type: array, items: { type: string } }
+                  scope: { type: object, description: "present when the caller is self-scoped" }
+                  note: { type: string, description: "present when nothing was mined, distinguishing an idle space from unlinked work" }
+        "400": { $ref: "#/components/responses/Problem" }
+
   /ops/diagnostics:
     get:
       operationId: diagnostics

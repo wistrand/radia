@@ -28,6 +28,8 @@ Inspect
   doctor                              diagnostics: dead-letters, stuck leases, stale work,
                                       erasures that no longer hold
   erasures [--undone]                 every shred, and whether its payload is still gone
+  flows [--granularity kind|kind+agent] [--counts bucketed|exact] [--min <n>]
+                                      recurring shapes of work, mined from lineage
   permissions <principal>             what that principal can actually do (the fold over its grants)
   login <principal> [--grant k:ops]… [--compact]  mint a session token for a person
                                       (--compact prints the token alone, for $(…) capture)
@@ -264,6 +266,32 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           `${e.holds ? "held " : "UNDONE"}  ${e.artifactId}  ${e.digest.slice(0, 12)}…  ${e.method}  ${e.at}${e.reason ? `  ${e.reason}` : ""}`
         );
         if (!r.complete) lines.push(`(INCOMPLETE after ${r.checked} records; more may exist)`);
+        return lines.join("\n");
+      });
+    }
+
+    case "flows": {
+      const granularity = flag(argv, "--granularity");
+      const counts = flag(argv, "--counts");
+      const min = flag(argv, "--min");
+      const r = await client.flows({
+        ...(granularity ? { granularity: granularity as "kind" | "kind+agent" } : {}),
+        ...(counts ? { counts: counts as "bucketed" | "exact" } : {}),
+        ...(min ? { minOccurrences: Number(min) } : {}),
+      });
+      return out(ctx, r, () => {
+        if (r.flows.length === 0) return r.note ?? "no shapes mined";
+        const lines = r.flows.map((f) =>
+          `${String(f.occurrences).padStart(4)}x  ${String(Math.round(f.successRate * 100)).padStart(3)}%  ` +
+          `n=${String(f.medianRecords).padStart(3)}  ${humanMs(f.medianDurationMs).padStart(7)}  ${f.signature}`
+        );
+        lines.push(
+          `\n${r.scanned.records} records over ${r.scanned.kinds.length} kinds, ${r.scanned.subgraphs} subgraphs` +
+            (r.fragments ? `, ${r.fragments} fragment${r.fragments === 1 ? "" : "s"} (a parent was outside the scan)` : ""),
+        );
+        // Never let a mined diagram read as the whole story. It looks equally complete either way,
+        // which is exactly why the caveat has to be printed rather than inferable.
+        for (const n of r.notes ?? []) lines.push(`INCOMPLETE: ${n}`);
         return lines.join("\n");
       });
     }
@@ -615,6 +643,14 @@ function recordTable(recs: { id: string; kind: string; body: unknown }[]): strin
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+/** A duration a reader can compare at a glance. Flow durations span milliseconds to days. */
+function humanMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+  return `${(ms / 3_600_000).toFixed(1)}h`;
 }
 
 function table(headers: string[], rows: string[][]): string {

@@ -187,6 +187,12 @@ carries the same finding with the remedy attached. Both exist because shredding 
 runtime's copy rather than the ability to store those bytes, so an erasure can silently stop
 holding; see [design-observability.md](design-observability.md).
 
+`flows` prints the shapes of work MINED from lineage, which is the only verb that answers "what does
+this space do" rather than "what is in it". Its two granularity flags are not cosmetic: a mined
+diagram looks equally complete however it is set, so the output prints the scan size and every
+incompleteness note rather than leaving the reader to infer either. See
+[design-inspection.md](design-inspection.md).
+
 `runCli` returns an exit code and never terminates the process itself. One trap it works around:
 `GET /v0/health` is public, so a *rejected* token still returns 200 with `principal=anonymous`.
 Without the explicit warning in the `health` output that reads as "no credential" when it actually

@@ -286,6 +286,17 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
       };
     },
 
+    space_flows: async (a) => {
+      const f = await client.flows({
+        ...(a.granularity ? { granularity: String(a.granularity) as "kind" | "kind+agent" } : {}),
+        ...(a.counts ? { counts: String(a.counts) as "bucketed" | "exact" } : {}),
+      });
+      return {
+        ...f,
+        ...(f.complete ? {} : { warning: "the scan did not finish; these shapes are mined from a PREFIX of the space" }),
+      };
+    },
+
     space_doctor: () => client.diagnostics(),
   };
 }
@@ -303,6 +314,7 @@ export const INSPECT_SCHEMAS: ToolDef[] = [
   { type: "function", function: { name: "space_permissions", description: "What THIS session is actually allowed to do: the fold over its grants, per kind, with whether reads are narrowed to its own records. Use it whenever authority is in question: before claiming a grant is missing or still pending, and after a human approves a request, since the answer here is the enforcement itself rather than an inference from some other call's scope line. A grant on a kind that does not exist authorizes nothing, and will show up here as exactly that.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "space_digest", description: "Orient yourself in one call: every kind with its indexed/sortable paths and whether it is claimable, record counts by state, which workers are LISTENING for what (live interests), and what this session may do. Use it FIRST when asked what this space is or does, instead of stitching together space_kinds + space_stats + space_permissions. An `interestsNote` means other principals' interests were withheld from you: an empty or short interest list then says nothing about whether workers are running, so never report the fleet as idle on that basis.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "space_thread", description: "The WHOLE story around one record, in the order it happened: walks up to the root it descends from, then down through everything derived from it. Use for 'what led to this and what came of it' instead of chaining space_lineage + space_children yourself. A `warning` means the story was cut off at a cap; say so rather than presenting it as complete.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
+  { type: "function", function: { name: "space_flows", description: "The recurring SHAPES of work in this space, mined from what actually happened: signatures like `job → task×4-7 → result×4-7 → summary`, each with how often it occurred, how often it completed, median size and duration, and exemplar record ids. Use it for 'what does this space DO / what are the workflows here', which no other call answers: nothing declares a topology, so the shape only exists as a pattern across lineage. Shapes that start and rarely finish appear beside the ones that complete, and a low successRate on a frequent shape is the finding, not a gap in the data. `granularity` 'kind' merges agents together and 'kind+agent' (default) keeps them apart; `counts` 'bucketed' (default) makes a four-item and a five-item run the same flow while 'exact' splits them, so switch when everything looks unique. A signature starting `…` is a fragment whose parent was outside the scan. A `warning` means the scan was a prefix; say so rather than presenting the diagram as the whole space.", parameters: { type: "object", properties: { granularity: { type: "string", enum: ["kind", "kind+agent"] }, counts: { type: "string", enum: ["bucketed", "exact"] } } } } },
   { type: "function", function: { name: "space_doctor", description: "A derived health report: counts by state, dead-lettered records, expired-but-stuck leases, and records that have sat available/unclaimed. Use to answer 'is the space healthy / what's stuck?'. If the reply carries `undoneErasures` with a non-zero count, LEAD with it: a payload somebody destroyed is readable again, which matters more than anything else in the report. That field is absent for a scoped session, and its absence means you were not told, NOT that every erasure holds.", parameters: { type: "object", properties: {} } } },
 ];
 

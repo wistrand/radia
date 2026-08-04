@@ -229,8 +229,10 @@ space: `space_stats`, `space_kinds`, `space_query`, `space_count`, `space_record
 UP), `space_children` (records that reference this one, DOWN, e.g. a conversation's messages),
 `space_events` (which PAGES to the end of the log, so a scoped session still reaches its own
 activity past events it may not see), `space_permissions` (what this session may actually do: the
-fold over its grants, straight from the enforcement), and `space_doctor` (a derived health report of
-stuck leases, dead-letters, stale-available). Tool guidance lives in each tool's description (published as a `capability`
+fold over its grants, straight from the enforcement), `space_flows` (the recurring SHAPES of work,
+mined from lineage rather than declared anywhere, which is the only way to answer "what does this
+space do"), and `space_doctor` (a derived health report of stuck leases, dead-letters,
+stale-available). Tool guidance lives in each tool's description (published as a `capability`
 record), not in the chatbot's prompt. Because everything is a record, it can inspect *itself*. Ask it "how many
 records are in the space?", "show the lineage of the last summary", "is the space healthy?",
 or "query my conversation thread" (the conversation is `kind:message` with your
@@ -732,7 +734,7 @@ Five areas. `chat.ts` opens with the same map.
 | File | Role |
 |------|------|
 | `files.ts` | sandboxed file + compute tools (`read_file`, `list_files`, `search_files`, `stat`, `time`, `calc`) |
-| `space.ts` | space inspection (`space_stats`/`query`/`count`/`lineage`/`children`/`events`/`doctor`) and remediation (`reclaim`/`dead_letter`/`requeue`) |
+| `space.ts` | space inspection (`space_stats`/`query`/`count`/`lineage`/`children`/`events`/`flows`/`doctor`) and remediation (`reclaim`/`dead_letter`/`requeue`) |
 | `save.ts` | `save_content`: store text the assistant wrote as an artifact |
 | (the sandbox itself moved to [`extensions/ts/sandbox.ts`](../../extensions/ts/sandbox.ts): `deno run -` with zero permissions, output cap, kill timer) |
 

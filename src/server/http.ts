@@ -17,7 +17,7 @@ import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
 import { handleCreateDefinition, handleCreateRun, handleRenewRun, handleRevokeDefinition, handleStopRun } from "./handlers/agents.ts";
 import { handleGetArtifact, handleMintCapability, handleMintPathCapability, handlePutArtifact, handleShredArtifact } from "./handlers/artifacts.ts";
-import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleErasures, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
+import { handleRemediate, handleAdmin, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleErasures, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleFlows, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem, statusFor } from "./problem.ts";
 import { RadiaError } from "../core/errors.ts";
@@ -62,7 +62,7 @@ function loadVendor(name: string): string {
  *  the plane (remediate, reclaim/dead-letter/requeue, declassify) is the interrupt half and stays
  *  operator-only. */
 const READ_ONLY_OPS =
-  /^\/v0\/ops\/(stats|events|diagnostics|digest|records(\/[^/]+(\/(envelope|lineage|children|graph|thread))?)?)$/;
+  /^\/v0\/ops\/(stats|events|diagnostics|digest|flows|records(\/[^/]+(\/(envelope|lineage|children|graph|thread))?)?)$/;
 
 export function startServer(opts: ServerOptions): { finished: Promise<void> } {
   const hostname = opts.host ?? "127.0.0.1"; // loopback by default; --host 0.0.0.0 to expose
@@ -362,6 +362,9 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     // permissions, and the kind list is not a secret (a scoped principal already learns kinds by
     // being refused). Interests are the one cross-principal part, so they follow the same scope.
     if (route === "GET /v0/ops/digest") return await handleDigest(space, principal, opsScope);
+    // Mined shapes. Self-scoped for the same reason `stats` is: the scan runs over the records the
+    // caller may read, so a narrowed caller mines its own work rather than being refused.
+    if (route === "GET /v0/ops/flows") return await handleFlows(space, url, opsScope);
 
     // --- observability + control plane: /v0/ops/records/{id}[/{envelope|lineage|graph}|/{reclaim|dead-letter|requeue}] ---
     if (url.pathname.startsWith("/v0/ops/records/")) {

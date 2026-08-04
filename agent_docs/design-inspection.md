@@ -160,6 +160,9 @@ so it is cheaper than it was.
 
 ### Flows is mining, and its acceptance test already exists
 
+**BUILT (2026-08-04):** `Space.flows` in `src/core/space.ts`, `GET /v0/ops/flows`, `radia flows`,
+the chat's `space_flows`, and the console's Flows tab.
+
 [research-self-modeling.md](research-self-modeling.md) specifies signature mining: abstract completed
 subgraphs to `(kind, agent)` sequences, group, count, score. Recurring shapes with occurrence counts,
 success rates, durations and exemplars, with partial shapes ("starts often, rarely finishes") ranked
@@ -167,7 +170,19 @@ beside complete ones.
 
 This is the emergent process documentation people keep asking for: the workflow diagram nobody wrote.
 Its acceptance test is specified in that doc, which is that it recovers the pipeline example's shape
-unprompted.
+unprompted; `conformance/flows.test.ts` is that test, and it passes.
+
+Three things the build settled that the spec left open:
+
+- **Fan-out is bucketed, and that IS the aggregation.** A four-word job and a five-word one are one
+  flow only because `×4-7` covers both; exact counts file them apart and report every run as unique.
+  Both stay reachable, because the bucket is a guess about which differences matter.
+- **Depth comes free from the ids.** ULIDs are monotonic and minted by the space at commit, so a
+  parent always sorts before its child and ascending id is a topological order. Signature depth is
+  one pass over the sorted component, not a walk per node.
+- **"Available" is not "unfinished".** A `claimable:false` kind (facts, summaries, the registries)
+  sits available forever by design, so the outcome rule keys on the kind's claimability. Without
+  that, every terminated pipeline in the space reports as still running.
 
 ### "Who can see this record" is the inverse nobody asks for and everybody needs
 

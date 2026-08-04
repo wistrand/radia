@@ -119,6 +119,7 @@
   <button data-tab="worker">Worker</button>
   <button data-tab="feed">Feed</button>
   <button data-tab="graph">Graph</button>
+  <button data-tab="flows">Flows</button>
   <button data-tab="space">Space</button>
   <button data-tab="auth">Auth</button>
 </nav>
@@ -265,6 +266,34 @@
     <div class="panel"><h2>Detail</h2><div id="g-detail"><div class="empty">Click a node.</div></div></div>
   </section>
 
+  <!-- FLOWS -->
+  <section id="flows">
+    <div class="panel">
+      <h2>Flows <button class="btn ghost" style="float:right" onclick="loadFlows()">Refresh</button></h2>
+      <p class="muted" style="margin-top:0">The workflow diagram nobody wrote. Nothing here is configured: each shape is
+      <b>mined</b> from what actually happened, by abstracting a subgraph of <code>parent_ids</code> to the sequence of
+      kinds (and the agents that wrote them) at each causal depth. Shapes that start and never finish are listed beside
+      the ones that complete, because that comparison is the signal.</p>
+      <div class="row">
+        <div style="max-width:200px"><label>Granularity</label>
+          <select id="fl-gran" onchange="loadFlows()">
+            <option value="kind+agent">kind + agent</option>
+            <option value="kind">kind only</option>
+          </select>
+        </div>
+        <div style="max-width:200px"><label>Fan-out counts</label>
+          <select id="fl-counts" onchange="loadFlows()">
+            <option value="bucketed">bucketed (aggregates)</option>
+            <option value="exact">exact (splits)</option>
+          </select>
+        </div>
+        <div style="max-width:160px"><label>Min occurrences</label><input id="fl-min" type="number" value="1" onchange="loadFlows()"></div>
+      </div>
+      <div id="fl-msg"></div>
+    </div>
+    <div class="panel"><div id="fl-list"><div class="empty">Loading…</div></div></div>
+  </section>
+
   <!-- SPACE -->
   <section id="space">
     <div class="panel">
@@ -398,6 +427,7 @@ function selectTab(b) {
   if (b.dataset.tab === "kinds") loadKinds();
   if (b.dataset.tab === "feed") startFeed();
   if (b.dataset.tab === "graph") loadGraphRoots();
+  if (b.dataset.tab === "flows") loadFlows();
   if (b.dataset.tab === "space") startSpace();
   if (b.dataset.tab === "auth") loadAuth();
 }
@@ -636,6 +666,58 @@ async function refreshGraph() {
 function startGraphLive() { if (!graphTimer) graphTimer = setInterval(refreshGraph, 1500); }
 function stopGraphLive() { if (graphTimer) { clearInterval(graphTimer); graphTimer = null; } }
 function toggleGraphLive() { if ($("g-live").checked && currentRoot) startGraphLive(); else stopGraphLive(); }
+
+// ---- flows: mined shapes, never declared ----
+async function loadFlows() {
+  const q = new URLSearchParams({
+    granularity: $("fl-gran").value,
+    counts: $("fl-counts").value,
+    min_occurrences: String(Math.max(1, Number($("fl-min").value) || 1)),
+  });
+  const r = await api("GET", `/v0/ops/flows?${q}`);
+  if (!r.ok) { $("fl-list").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
+  const d = r.data;
+  const scanned = `${d.scanned.records} records over ${d.scanned.kinds.length} kinds, ${d.scanned.subgraphs} subgraphs` +
+    (d.fragments ? `, ${d.fragments} fragment(s)` : "");
+  // A mined diagram looks equally complete whether or not the scan finished, which is exactly why
+  // the caveat is rendered rather than left for the reader to infer from a round number.
+  const notes = (d.notes || []).map((n) => `<div class="note err">${esc(n)}</div>`).join("");
+  $("fl-msg").innerHTML = `<div class="muted" style="margin-top:8px">${esc(scanned)}</div>${notes}`;
+  if (!d.flows.length) { $("fl-list").innerHTML = `<div class="empty">${esc(d.note || "no shapes mined")}</div>`; return; }
+  const top = d.flows[0].occurrences;
+  $("fl-list").innerHTML = d.flows.map((f) => {
+    const pct = Math.round(f.successRate * 100);
+    const bar = Math.max(2, Math.round((f.occurrences / top) * 100));
+    const segs = f.signature.split(" → ").map((s) => `<span class="tag mono">${esc(s)}</span>`).join(
+      `<span class="muted" style="margin:0 4px">→</span>`,
+    );
+    const ex = f.exemplars.map((id) =>
+      `<button class="btn ghost" style="padding:1px 6px;font-size:11px" onclick="openFromFlow('${esc(id)}')">${esc(id.slice(-8))}</button>`
+    ).join(" ");
+    return `<div class="panel" style="background:var(--bg);margin-bottom:8px">
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+        <b>${f.occurrences}×</b>
+        <span class="badge ${pct === 100 ? "st-consumed" : pct === 0 ? "st-dead_letter" : "st-leased"}">${pct}% complete</span>
+        <span class="muted">${f.outcomes.complete} done · ${f.outcomes.open} open · ${f.outcomes.failed} failed</span>
+        <span class="muted">median ${f.medianRecords} records, ${fmtMs(f.medianDurationMs)}</span>
+      </div>
+      <div style="height:3px;background:var(--accent);width:${bar}%;margin:6px 0 8px;border-radius:2px"></div>
+      <div style="line-height:2">${segs}</div>
+      <div class="muted" style="margin-top:6px;font-size:12px">exemplars: ${ex}</div>
+    </div>`;
+  }).join("");
+}
+function fmtMs(ms) {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 3600000) return `${Math.round(ms / 60000)}m`;
+  return `${(ms / 3600000).toFixed(1)}h`;
+}
+/** A mined shape is a claim; its exemplars are the evidence. One click gets from one to the other. */
+function openFromFlow(id) {
+  selectTab(document.querySelector('#nav button[data-tab="graph"]'));
+  showGraph(id);
+}
 
 function renderGraph(el, data) {
   const { nodes, edges } = data;

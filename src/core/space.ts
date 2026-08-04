@@ -247,6 +247,66 @@ function labelFor(rec: RadiaRecord): string {
  *  this bounds the reading, so a record with a huge fan-out cannot dominate a single step. */
 const GRAPH_FANOUT = 200;
 
+/** How a repeated token renders in a signature. Bucketing is what makes a shape AGGREGATE: a
+ *  four-word job and a five-word one are the same flow, and exact counts would file them apart and
+ *  report every run as unique. Exact stays available because the bucket is a guess about which
+ *  differences matter. */
+function flowCount(n: number, mode: "bucketed" | "exact"): string {
+  if (n === 1) return "";
+  if (mode === "exact") return `×${n}`;
+  if (n <= 3) return "×2-3";
+  if (n <= 7) return "×4-7";
+  if (n <= 15) return "×8-15";
+  if (n <= 31) return "×16-31";
+  if (n <= 63) return "×32-63";
+  return "×64+";
+}
+
+/** Median, rounded. A mean over durations is dominated by the one occurrence that sat overnight. */
+function median(xs: number[]): number {
+  if (xs.length === 0) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = s.length >> 1;
+  return Math.round(s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2);
+}
+
+/** Flow mining bounds. The scan is a whole-space read, so every one of these exists to keep it from
+ *  becoming an unbounded one; hitting any of them reports `complete: false` rather than truncating
+ *  quietly, because a mined shape read as the population is this feature's version of the
+ *  bounded-read bug. */
+const FLOW_MAX_RECORDS = 5000;
+const FLOW_PAGE = 500;
+const FLOW_MAX_SHAPES = 50;
+const FLOW_EXEMPLARS = 3;
+
+/** A recurring shape of work, mined from what happened. Never declared: the runtime has no
+ *  topology to assert, which is the whole reason this has to be recovered rather than read. */
+export interface FlowShape {
+  /** `job → task×4-7 → result×4-7 → summary`: one segment per causal depth, tokens sorted. */
+  signature: string;
+  occurrences: number;
+  /** Mechanical, never a model's verdict: `failed` = a `dead_letter` in the subgraph, `open` = work
+   *  still claimable or claimed, `complete` = everything settled or terminal by design. */
+  outcomes: { complete: number; open: number; failed: number };
+  successRate: number;
+  medianDurationMs: number;
+  medianRecords: number;
+  /** Roots of the newest occurrences, so a reader can go look at the thing itself. */
+  exemplars: string[];
+}
+
+export interface FlowReport {
+  granularity: "kind" | "kind+agent";
+  counts: "bucketed" | "exact";
+  flows: FlowShape[];
+  scanned: { records: number; kinds: string[]; subgraphs: number };
+  /** Subgraphs with a parent outside the scan, whose signature is therefore a FRAGMENT: the flow
+   *  started somewhere this caller could not see, or before the record cap. */
+  fragments: number;
+  complete: boolean;
+  notes?: string[];
+}
+
 export class Space {
   private readonly kinds = new KindRegistry();
   private readonly creds = new CredentialStore();
@@ -1785,6 +1845,216 @@ export class Space {
     if (queue.length > 0) truncated = true;
     const records = [...seen.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     return { root, records, truncated };
+  }
+
+  /**
+   * The workflow diagram nobody wrote: recurring shapes of work, mined from lineage.
+   *
+   * A content-routed space cannot render its own process, because there is no process to render.
+   * What exists is what happened, so the shape has to be RECOVERED: abstract each causally
+   * connected subgraph to the sequence of `(kind, agent)` along its depth, drop ids and payloads,
+   * then group. Success mining and livelock detection are one primitive read two ways (repetition
+   * with progress versus without), which is why the signature is over ancestry rather than a
+   * per-record score.
+   *
+   * Partial subgraphs are INPUT, not noise. A shape that reliably starts and rarely finishes is the
+   * failure signal recovered from success mining, and it only exists if the incomplete ones are
+   * mined beside the complete ones.
+   *
+   * Both granularity knobs exist because granularity is the whole design (too specific and every
+   * flow is unique; too coarse and everything is one flow) and neither setting is knowable in
+   * advance. They are parameters to measure, not constants to guess.
+   */
+  async flows(opts: {
+    granularity?: "kind" | "kind+agent";
+    counts?: "bucketed" | "exact";
+    maxRecords?: number;
+    minOccurrences?: number;
+    includeReserved?: boolean;
+    scope?: StatsScope;
+  } = {}): Promise<FlowReport> {
+    const granularity = opts.granularity ?? "kind+agent";
+    const counting = opts.counts ?? "bucketed";
+    const cap = Math.min(Math.max(opts.maxRecords ?? FLOW_MAX_RECORDS, 1), FLOW_MAX_RECORDS);
+    const minOccurrences = Math.max(opts.minOccurrences ?? 1, 1);
+    const notes: string[] = [];
+    let complete = true;
+
+    // Reserved kinds are the substrate's own bookkeeping (declarations, grants, run records). They
+    // are the highest-volume kinds in a quiet space, so including them by default would make every
+    // space's top flow a registry write and bury the work.
+    const reserved = new Set(RESERVED_KINDS);
+    const claimable = new Map(this.kinds.list().map((d) => [d.kind, isClaimable(d)]));
+    let kinds = this.kinds.list().map((d) => d.kind).filter((k) => opts.includeReserved || !reserved.has(k));
+    if (opts.scope?.kinds) kinds = kinds.filter((k) => opts.scope!.kinds!.includes(k));
+    kinds.sort();
+
+    // --- the scan. One keyset walk per kind, stopping at the cap rather than at a page boundary.
+    const nodes = new Map<string, { kind: string; agent: string; createdAt: string; parents: string[] }>();
+    const agentCache = new Map<string, string>();
+    const agentOf = async (createdBy: string): Promise<string> => {
+      const memo = agentCache.get(createdBy);
+      if (memo) return memo;
+      const resolved = createdBy.startsWith("run:") ? (await this.agentForRun(createdBy)) ?? createdBy : createdBy;
+      agentCache.set(createdBy, resolved);
+      return resolved;
+    };
+    for (const kind of kinds) {
+      const compiled = await this.compileFresh({ kind });
+      let after: string | undefined;
+      for (;;) {
+        if (nodes.size >= cap) {
+          complete = false;
+          notes.push(`the scan stopped at ${cap} records; these shapes are mined from a PREFIX of the space`);
+          break;
+        }
+        const page = await this.storage.query(compiled, Math.min(FLOW_PAGE, cap - nodes.size), { after }, opts.scope);
+        for (const rec of page) {
+          nodes.set(rec.id, {
+            kind: rec.kind,
+            agent: await agentOf(rec.runtimeMeta.createdBy),
+            createdAt: rec.runtimeMeta.createdAt,
+            parents: rec.runtimeMeta.parentIds,
+          });
+        }
+        if (page.length === 0) break;
+        after = page[page.length - 1].id;
+      }
+      if (!complete) break;
+    }
+
+    // --- outcomes. One bulk read per state instead of an envelope fetch per record: mining is a
+    // whole-space read already, and N round trips on top of it is what makes such a feature
+    // unusable on a real space.
+    const stateOf = new Map<string, RecordState>();
+    for (const state of ["available", "leased", "consumed", "dead_letter"] as RecordState[]) {
+      const envs = await this.storage.envelopesInState(state, cap, undefined, opts.scope);
+      if (envs.length >= cap) complete = false;
+      for (const e of envs) stateOf.set(e.recordId, state);
+    }
+
+    // --- components. Union-find over parent edges INSIDE the scanned set; a parent outside it is
+    // what makes a subgraph a fragment, and that has to be said rather than shown as a short shape.
+    const parent = new Map<string, string>();
+    const find = (x: string): string => {
+      let r = x;
+      while (parent.get(r) !== r) r = parent.get(r) ?? r;
+      while (parent.get(x) !== r) {
+        const next = parent.get(x) ?? r;
+        parent.set(x, r);
+        x = next;
+      }
+      return r;
+    };
+    const union = (a: string, b: string) => {
+      const [ra, rb] = [find(a), find(b)];
+      if (ra !== rb) parent.set(ra, rb);
+    };
+    for (const id of nodes.keys()) parent.set(id, id);
+    const fragment = new Set<string>();
+    for (const [id, n] of nodes) {
+      for (const p of n.parents) {
+        if (nodes.has(p)) union(p, id);
+        else fragment.add(id); // resolved to a component root below, once the unions are settled
+      }
+    }
+    const components = new Map<string, string[]>();
+    for (const id of nodes.keys()) {
+      const root = find(id);
+      const members = components.get(root) ?? [];
+      members.push(id);
+      components.set(root, members);
+    }
+    const fragmentRoots = new Set([...fragment].map(find));
+
+    // --- abstraction. Ids are monotonic ULIDs minted by this process at commit, so ascending id IS
+    // a topological order: a parent always exists before the child that names it. That is what lets
+    // depth be one pass instead of a walk per node.
+    const shapes = new Map<string, { occurrences: number; complete: number; open: number; failed: number; durations: number[]; sizes: number[]; exemplars: string[] }>();
+    let unknownState = 0;
+    for (const [root, members] of components) {
+      members.sort();
+      const depth = new Map<string, number>();
+      let failed = false;
+      let open = false;
+      let first = Infinity;
+      let last = -Infinity;
+      for (const id of members) {
+        const n = nodes.get(id)!;
+        const inside = n.parents.filter((p) => nodes.has(p));
+        depth.set(id, inside.length === 0 ? 0 : 1 + Math.max(...inside.map((p) => depth.get(p) ?? 0)));
+        const state = stateOf.get(id);
+        if (state === undefined) unknownState++;
+        if (state === "dead_letter") failed = true;
+        // A `claimable:false` kind sits `available` forever BY DESIGN (facts, summaries, the
+        // registries). Reading that as unfinished work would mark every terminated pipeline open.
+        if (state === "leased" || (state === "available" && claimable.get(n.kind) !== false)) open = true;
+        const t = Date.parse(n.createdAt);
+        if (Number.isFinite(t)) {
+          first = Math.min(first, t);
+          last = Math.max(last, t);
+        }
+      }
+      const levels = new Map<number, Map<string, number>>();
+      for (const id of members) {
+        const n = nodes.get(id)!;
+        const token = granularity === "kind" ? n.kind : `${n.kind}@${n.agent}`;
+        const level = levels.get(depth.get(id)!) ?? new Map<string, number>();
+        level.set(token, (level.get(token) ?? 0) + 1);
+        levels.set(depth.get(id)!, level);
+      }
+      const signature = [...levels.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([, tokens]) =>
+          [...tokens.entries()]
+            .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+            .map(([token, n]) => token + flowCount(n, counting))
+            .join(" + ")
+        )
+        .join(" → ");
+      const key = fragmentRoots.has(root) ? `… → ${signature}` : signature;
+      const s = shapes.get(key) ?? { occurrences: 0, complete: 0, open: 0, failed: 0, durations: [], sizes: [], exemplars: [] };
+      s.occurrences++;
+      if (failed) s.failed++;
+      else if (open) s.open++;
+      else s.complete++;
+      s.durations.push(Number.isFinite(first) && Number.isFinite(last) ? last - first : 0);
+      s.sizes.push(members.length);
+      s.exemplars.push(members[0]);
+      shapes.set(key, s);
+    }
+    if (unknownState > 0) {
+      complete = false;
+      notes.push(`${unknownState} records had no envelope in the state scan, so their outcome is a guess, not a reading`);
+    }
+
+    const flows = [...shapes.entries()]
+      .filter(([, s]) => s.occurrences >= minOccurrences)
+      .map(([signature, s]) => ({
+        signature,
+        occurrences: s.occurrences,
+        outcomes: { complete: s.complete, open: s.open, failed: s.failed },
+        successRate: s.complete / s.occurrences,
+        medianDurationMs: median(s.durations),
+        medianRecords: median(s.sizes),
+        exemplars: s.exemplars.sort().slice(-FLOW_EXEMPLARS).reverse(),
+      }))
+      .sort((a, b) =>
+        b.occurrences - a.occurrences || b.successRate - a.successRate || (a.signature < b.signature ? -1 : 1)
+      );
+    if (flows.length > FLOW_MAX_SHAPES) {
+      complete = false;
+      notes.push(`${flows.length} distinct shapes were mined and ${FLOW_MAX_SHAPES} are shown; a long tail of near-unique shapes usually means the granularity is too fine`);
+    }
+    return {
+      granularity,
+      counts: counting,
+      flows: flows.slice(0, FLOW_MAX_SHAPES),
+      scanned: { records: nodes.size, kinds, subgraphs: components.size },
+      fragments: fragmentRoots.size,
+      complete,
+      ...(notes.length > 0 ? { notes } : {}),
+    };
   }
 
   /** Public base URL of the isolated artifact origin, when one is running. Capability URLs are

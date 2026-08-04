@@ -153,6 +153,11 @@ problem it is measuring.
 
 ## Recognizing success: flow mining is the livelock detector, read the other way
 
+> **The READ half is built** (2026-08-04): `Space.flows`, `GET /v0/ops/flows`, `radia flows`, the
+> console's Flows tab. The acceptance test below is met by `conformance/flows.test.ts`. What is NOT
+> built is the `flow` RECORD, so there is no provenance for the measurement and no successor giving
+> drift over time; that is the abstraction step, and it is what the rest of this section is about.
+
 A worker that reports error rates, retry depth and stall signals is **`space_doctor` in the
 first person**. That plane is built; re-emitting it from inside adds a pronoun, not
 knowledge. The interesting act is the opposite one, and it is harder: recognizing **which

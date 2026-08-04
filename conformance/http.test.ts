@@ -355,6 +355,9 @@ Deno.test("http: a self-scoped grant narrows EVERY read verb, not just query", a
       { verb: "children", run: () => handler(get(`/v0/ops/records/${secret.id}/children`, auth)) },
       { verb: "graph", run: () => handler(get(`/v0/ops/records/${own.id}/graph`, auth)) },
       { verb: "get record", run: () => handler(get(`/v0/ops/records/${secret.id}`, auth)) },
+      // Mining scans the whole space by kind, so it is the read verb with the widest reach: a
+      // signature is an abstraction, but the exemplar ids it hands back are not.
+      { verb: "flows", run: () => handler(get("/v0/ops/flows", auth)) },
     ];
     for (const { verb, run } of verbs) {
       const res = await run();
@@ -374,6 +377,35 @@ Deno.test("http: a self-scoped grant narrows EVERY read verb, not just query", a
     const stolen = await handler(get(`/v0/watches/${watchId}/events`, { authorization: `Bearer ${otherToken}` }));
     assertEquals(stolen.status, 404, "a watch must not be attachable by a principal that did not create it");
     await drain(stolen);
+  } finally {
+    await close();
+  }
+});
+
+Deno.test("http: mined flows are mined over the caller's OWN records, ids included", async () => {
+  // The guard table above cannot catch a leak here, because a flow report carries no bodies: the
+  // thing that escapes is the EXEMPLAR ID, which is a pointer to a record and reads as harmless.
+  // Mining also scans by kind rather than by request, which makes it the widest read on the plane.
+  const { space, handler, close } = await newHandler();
+  try {
+    const foreign = await space.put({ kind: "task", body: { tag: "operator-owned" } });
+    await space.put({ kind: "task", body: { tag: "second" }, parentIds: [foreign.id] });
+
+    const { definitionToken } = await space.createAgentDefinition("agent:w", [
+      { principal: "agent:w", kind: "task", operations: ["put", "query"], scope: { createdBy: "self" } },
+    ]);
+    const { runToken } = await space.mintRun(definitionToken);
+    const auth = { authorization: `Bearer ${runToken}` };
+    const own = await (await handler(post("/v0/records", { kind: "task", body: { mine: true } }, auth))).json();
+    await (await handler(post("/v0/records", { kind: "task", body: { mine: 2 }, parentIds: [own.id] }, auth))).json();
+
+    const scoped = await (await handler(get("/v0/ops/flows", auth))).json();
+    const ids = scoped.flows.flatMap((f: { exemplars: string[] }) => f.exemplars);
+    assertEquals(ids, [own.id], "a scoped miner may only ever point at its own records");
+    assertEquals(scoped.scanned.records, 2, "and may only ever have READ its own");
+
+    const operator = await (await handler(get("/v0/ops/flows"))).json();
+    assertEquals(operator.scanned.records, 4, "the operator mines the whole space");
   } finally {
     await close();
   }

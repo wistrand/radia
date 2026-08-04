@@ -34,8 +34,8 @@ making decisions rather than making requests, it belongs one directory over.
 
 **TypeScript is the full surface; Python is frozen to the core.** The table above is the frozen
 core: coordination verbs, watches, artifacts, remediation, the basic ops reads, and bootstrap.
-Python tracks that set and nothing more. The inspection surface (`digest`, `thread`, `dryRun`,
-`queryExplained` / `explain`, `publishInterest`, `queryAll`) is TS-only, because the one consumer
+Python tracks that set and nothing more. The inspection surface (`digest`, `thread`, `flows`,
+`dryRun`, `queryExplained` / `explain`, `publishInterest`, `queryAll`) is TS-only, because the one consumer
 that drives it (the chat example) is TS. Never add a Python method for parity's own sake; extend
 Python when a Python consumer needs the call.
 

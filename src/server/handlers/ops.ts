@@ -287,6 +287,51 @@ export async function handleDryRun(space: Space, req: Request): Promise<Response
   });
 }
 
+/**
+ * Recurring shapes of work, mined from lineage: the workflow diagram nobody wrote.
+ *
+ * Both granularity knobs are query parameters because neither setting is knowable in advance, and
+ * the failure of a mined shape is silent: too fine and every run is unique, too coarse and
+ * everything is one flow. A caller that cannot vary them cannot tell which it is looking at.
+ */
+export async function handleFlows(space: Space, url: URL, scope?: StatsScope | null): Promise<Response> {
+  const p = url.searchParams;
+  const granularity = p.get("granularity") ?? "kind+agent";
+  const counts = p.get("counts") ?? "bucketed";
+  if (granularity !== "kind" && granularity !== "kind+agent") {
+    return problem(400, "invalid_query", `granularity must be 'kind' or 'kind+agent', got '${granularity}'`);
+  }
+  if (counts !== "bucketed" && counts !== "exact") {
+    return problem(400, "invalid_query", `counts must be 'bucketed' or 'exact', got '${counts}'`);
+  }
+  const num = (name: string): number | undefined => {
+    const raw = p.get(name);
+    if (raw === null) return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const r = await space.flows({
+    granularity,
+    counts,
+    maxRecords: num("max_records"),
+    minOccurrences: num("min_occurrences"),
+    includeReserved: p.get("include_reserved") === "true",
+    scope: scope ?? undefined,
+  });
+  return Response.json({
+    ...r,
+    scope: describeScope(scope),
+    // A mined shape read as the population is this feature's version of the bounded-read bug, and
+    // it is worse here than elsewhere: the answer LOOKS like a complete diagram either way.
+    ...(r.flows.length === 0
+      ? {
+        note: "no shapes were mined. Either nothing has run yet, or every record here is unrelated " +
+          "to every other: a flow needs parent_ids, and work that never links is work with no shape.",
+      }
+      : {}),
+  });
+}
+
 /** One read that orients an investigator: what kinds exist, what is in them, who is listening,
  *  and what the caller may do. Generated from records so it cannot drift. */
 export async function handleDigest(space: Space, principal: string, scope?: StatsScope | null): Promise<Response> {
