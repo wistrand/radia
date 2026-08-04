@@ -161,6 +161,20 @@ export interface WriteInput {
   conversationId?: string;
   /** path -> contents. Bytes go to artifacts; only the references land in the manifest. */
   files: Record<string, string | Uint8Array>;
+  /**
+   * path -> an artifact that ALREADY EXISTS, placed in the tree without moving its bytes.
+   *
+   * A workspace file is an artifact reference, so a payload produced elsewhere (an image a model
+   * generated, an upload, the output of an earlier run) belongs in a tree by naming it. The
+   * alternative was reading the bytes back out and writing them again, which for a 1.2 MB PNG means
+   * carrying it through whatever called this, and for a sandboxed caller means it cannot be done at
+   * all: the jail has no network and the artifact is not on disk.
+   *
+   * The classification labels of every attached artifact are unioned into the tree's, because the
+   * manifest is the single parent edge a run inherits from. Attaching a tainted payload and getting
+   * a clean tree would launder the label, which is the same hole as omitting a parent.
+   */
+  attach?: Record<string, string>;
   modes?: Record<string, "100644" | "100755">;
   ignore?: string[];
   /** The manifest being superseded. Omit for a new workspace. */
@@ -191,7 +205,14 @@ export async function writeWorkspace(
   // Validate EVERY path before writing ANY bytes. A tree with one bad path must not leave half its
   // artifacts behind: the manifest is what makes them reachable, and there will be no manifest.
   const entries = Object.entries(input.files);
+  const attached = Object.entries(input.attach ?? {});
   for (const [path] of entries) validatePath(path);
+  for (const [path] of attached) validatePath(path);
+  for (const [path] of attached) {
+    if (path in input.files) {
+      throw new Error(`'${path}' is given both contents and an artifact to attach; pick one`);
+    }
+  }
 
   // Bounded concurrency. Measured, a sequential write is ~1.8 ms per file, so a 6 000-file tree
   // took eleven seconds and the cost was entirely round trips rather than bytes. The bound exists
@@ -212,6 +233,17 @@ export async function writeWorkspace(
     }));
     files.push(...batch);
   }
+  // Attached artifacts: no bytes move, so this is one read per artifact to learn its content
+  // address. An artifact that is not readable, or is not an artifact, fails the whole write rather
+  // than landing a manifest entry that points at nothing.
+  for (const [path, artifactId] of attached) {
+    const rec = await client.getRecord(artifactId);
+    if (!rec || rec.kind !== "artifact") throw new Error(`no artifact ${artifactId} (for '${path}')`);
+    const def = rec.body as { digest?: string };
+    if (typeof def.digest !== "string") throw new Error(`artifact ${artifactId} has no digest`);
+    files.push({ path, mode: input.modes?.[path] ?? "100644", digest: def.digest, artifactId });
+  }
+
   files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const treeDigest = await treeDigestOf(files);
 
@@ -244,7 +276,13 @@ export async function writeWorkspace(
       // The predecessor is a data PARENT, not only a body field. `basedOn` alone makes the chain
       // queryable; the edge makes it a graph, so `lineage` walks a project's history and a fork is
       // a shape somebody can SEE rather than a coincidence of two body values.
-      ...(input.basedOn ? { parentIds: [input.basedOn] } : {}),
+      // An ATTACHED artifact is a data parent of the manifest, which is not bookkeeping: the tree
+      // is genuinely derived from a payload somebody else produced, so the runtime unions that
+      // payload's labels into the manifest for free. Computing the union here by hand would work
+      // today and drift the moment the label rules change.
+      ...(input.basedOn || attached.length > 0
+        ? { parentIds: [...(input.basedOn ? [input.basedOn] : []), ...attached.map(([, id]) => id)] }
+        : {}),
       ...(input.taint?.length ? { taint: input.taint } : {}),
     },
     key,
@@ -487,6 +525,9 @@ export interface EditInput {
   edits?: WorkspaceEdit[];
   /** New files, path -> contents. A path that already exists is a refusal, not an overwrite. */
   add?: Record<string, string | Uint8Array>;
+  /** New files that ALREADY EXIST as artifacts, path -> artifact id. See `WriteInput.attach`: the
+   *  bytes stay where they are, and the artifact becomes a data parent of the new manifest. */
+  attach?: Record<string, string>;
   modes?: Record<string, "100644" | "100755">;
   /** Paths to drop. A path that is not there is a refusal, not a no-op. */
   remove?: string[];
@@ -537,9 +578,10 @@ export async function editWorkspace(
 
   const edits = input.edits ?? [];
   const adds = Object.entries(input.add ?? {});
+  const attached = Object.entries(input.attach ?? {});
   const removes = input.remove ?? [];
-  if (edits.length === 0 && adds.length === 0 && removes.length === 0) {
-    throw new Error("editWorkspace needs at least one of `edits`, `add` or `remove`");
+  if (edits.length === 0 && adds.length === 0 && attached.length === 0 && removes.length === 0) {
+    throw new Error("editWorkspace needs at least one of `edits`, `add`, `attach` or `remove`");
   }
 
   const byPath = new Map(head.files.map((f) => [f.path, f]));
@@ -729,6 +771,36 @@ export async function editWorkspace(
     // contents of" are different intentions and the caller knows which one it meant.
     if (byPath.has(path) && !removeSet.has(path)) problems.push(`add ${path}: already exists; edit it, or remove it first`);
   }
+  // Attached artifacts are resolved during validation, so an unreadable id fails the whole call
+  // alongside every other problem rather than after the first artifact was already written.
+  const attachedFiles = new Map<string, WorkspaceFile>();
+  for (const [path, artifactId] of attached) {
+    try {
+      validatePath(path);
+    } catch (e) {
+      problems.push(`attach ${path}: ${(e as Error).message}`);
+      continue;
+    }
+    if (path in (input.add ?? {})) {
+      problems.push(`attach ${path}: also given contents by \`add\`; pick one`);
+      continue;
+    }
+    if (byPath.has(path) && !removeSet.has(path)) {
+      problems.push(`attach ${path}: already exists; remove it first`);
+      continue;
+    }
+    const rec = await client.getRecord(artifactId).catch(() => null);
+    if (!rec || rec.kind !== "artifact") {
+      problems.push(`attach ${path}: no artifact ${artifactId}`);
+      continue;
+    }
+    const digest = (rec.body as { digest?: string }).digest;
+    if (typeof digest !== "string") {
+      problems.push(`attach ${path}: artifact ${artifactId} has no digest`);
+      continue;
+    }
+    attachedFiles.set(path, { path, mode: input.modes?.[path] ?? "100644", digest, artifactId });
+  }
 
   if (problems.length > 0) {
     throw new Error(
@@ -798,7 +870,9 @@ export async function editWorkspace(
   }
 
   // Untouched files keep their EXISTING artifact, which is the whole saving: the cost of a change is
-  // the size of the change, not the size of the tree.
+  // the size of the change, not the size of the tree. An attached artifact costs the same as an
+  // untouched one, because it is one.
+  for (const [path, file] of attachedFiles) written.set(path, file);
   const files = head.files
     .filter((f) => !removeSet.has(f.path))
     .map((f) => written.get(f.path) ?? f)
@@ -813,8 +887,9 @@ export async function editWorkspace(
       kind: "workspace",
       body: body as unknown as Record<string, unknown>,
       // Inheritance rides this edge and nothing else: the successor carries the predecessor's label
-      // union through `Space.computeTaint`. See §10.0.
-      parentIds: [head.id],
+      // union through `Space.computeTaint`. See §10.0. An attached artifact joins it as a parent,
+      // so a tree that takes in a classified payload inherits its labels the same way.
+      parentIds: [head.id, ...attached.map(([, id]) => id)],
     },
     `workspace:${input.name}:${treeDigest}:after:${head.id}`,
   );
@@ -823,7 +898,7 @@ export async function editWorkspace(
     treeDigest,
     files,
     changed,
-    added,
+    added: [...added, ...attachedFiles.keys()],
     removed: removes,
     preview,
     // REPORTED, never refused: consistent with every other writer here. Both heads survive, and an

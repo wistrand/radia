@@ -71,11 +71,29 @@ const READ_FILE = def("read_file", "read a file from disk");
 const A = "agent:alpha";
 const B = "agent:beta";
 
+// ---- an upgrade is not a disagreement ----
+// The bug this exists for was live and loud. Records written before providers existed carry no
+// provider, so they key under `?`; treating that as a rival meant every upgraded worker was reported
+// as disagreeing with its own past self, on every turn, forever. An anonymous advertisement is an
+// OLDER one, not somebody else's.
+await publishCapability(client, def("legacy_tool", "the old description"));
+await publishCapability(client, def("legacy_tool", "the new description"), A);
+let tools = await toolList();
+check("a pre-namespacing record is superseded, not treated as a rival", tools.get("legacy_tool")?.conflicted === false);
+check("…and the named provider's newer description wins", tools.get("legacy_tool")?.def.function.description === "the new description", tools.get("legacy_tool")?.def.function.description);
+check("…and only the real provider is listed", tools.get("legacy_tool")?.providers.join(",") === "agent:alpha", tools.get("legacy_tool")?.providers.join(","));
+
+// With nobody claiming it, the anonymous record is still the tool: an old space keeps working.
+await publishCapability(client, def("orphan_tool", "nobody claimed this"));
+tools = await toolList();
+check("an unclaimed legacy tool still appears", tools.get("orphan_tool")?.def.function.description === "nobody claimed this");
+check("…and is not reported as conflicted", tools.get("orphan_tool")?.conflicted === false);
+
 // ---- replicas: the same tool from two workers is ONE tool ----
 await publishCapability(client, READ_FILE, A);
 await publishCapability(client, READ_FILE, B);
-let tools = await toolList();
-check("two workers serving the same tool advertise one name", tools.size === 1, `${tools.size} tools`);
+tools = await toolList();
+check("two workers serving the same tool advertise one name", tools.size === 3, `${tools.size} tools`);
 check("…and both are recorded as providers", tools.get("read_file")?.providers.join(",") === "agent:alpha,agent:beta", tools.get("read_file")?.providers.join(","));
 check("…and identical definitions are not a conflict", tools.get("read_file")?.conflicted === false);
 
@@ -84,7 +102,7 @@ check("…and identical definitions are not a conflict", tools.get("read_file")?
 // calling a name whose description no longer matched what might claim it.
 await publishCapability(client, def("read_file", "read a row from the database"), B);
 tools = await toolList();
-check("one name with two meanings is still one tool", tools.size === 1, `${tools.size} tools`);
+check("one name with two meanings is still one entry", tools.get("read_file")?.providers.length === 2, tools.get("read_file")?.providers.join(","));
 check("…but it is reported as CONFLICTED", tools.get("read_file")?.conflicted === true);
 check(
   "…and the newest definition is the one the model gets",
@@ -108,7 +126,7 @@ check("a second provider's identical advertisement is not suppressed", (await co
 // ---- withdrawal ----
 await retireProviderCapabilities(client, [B]);
 tools = await toolList();
-check("retiring a provider leaves the tools its peers still serve", tools.size === 2, [...tools.keys()].join(","));
+check("retiring a provider leaves the tools its peers still serve", tools.has("read_file") && tools.has("write_file"), [...tools.keys()].join(","));
 check(
   "…and read_file falls back to the remaining provider's definition",
   tools.get("read_file")?.def.function.description === "read a file from disk",
@@ -119,7 +137,7 @@ check("…and only that provider remains", tools.get("read_file")?.providers.joi
 
 await retireProviderCapabilities(client, [A]);
 tools = await toolList();
-check("retiring the last provider withdraws the tool entirely", tools.size === 0, `${tools.size} tools`);
+check("retiring the last provider withdraws the tool entirely", !tools.has("read_file") && !tools.has("write_file"), [...tools.keys()].join(","));
 check("…and the history is still there", (await countCaps()) > 0, `${await countCaps()} records`);
 
 // Reviving is the trap retire-then-republish sets everywhere in this codebase: if the publish key

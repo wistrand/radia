@@ -273,9 +273,12 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
       const add = a.add && typeof a.add === "object" && !Array.isArray(a.add)
         ? Object.fromEntries(Object.entries(a.add as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
         : undefined;
+      const attach = a.attach && typeof a.attach === "object" && !Array.isArray(a.attach)
+        ? Object.fromEntries(Object.entries(a.attach as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
+        : undefined;
       const remove = Array.isArray(a.remove) ? (a.remove as unknown[]).map(String) : undefined;
       try {
-        const r = await editWorkspace(client, { name, conversationId: ctx?.conversationId, edits, add, remove });
+        const r = await editWorkspace(client, { name, conversationId: ctx?.conversationId, edits, add, attach, remove });
         const touched = new Set([...r.changed, ...r.added]);
         return {
           workspace: name,
@@ -464,6 +467,18 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
           add: {
             type: "object",
             description: "New files, as path -> contents. A path that already exists is refused: edit it instead.",
+          },
+          attach: {
+            type: "object",
+            description:
+              "Put an artifact that ALREADY EXISTS into the tree, as path -> artifact_id. This is " +
+              "how an image you generated, a file the user uploaded, or output an earlier run " +
+              "stored becomes a real file in the project: {\"cat.png\": \"01KZ78BH…\"}. Nothing is " +
+              "copied and you never handle the bytes, so size does not matter and it works for " +
+              "binaries you cannot read. Use this instead of referencing a shared URL from your " +
+              "HTML: a share link expires within the hour and the page breaks when it does, while " +
+              "an attached file is part of the tree, is served with it, and is still there next " +
+              "week. A path that already exists is refused; remove it first.",
           },
           remove: { type: "array", items: { type: "string" }, description: "Paths to delete from the tree." },
         },

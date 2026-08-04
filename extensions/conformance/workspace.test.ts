@@ -1381,3 +1381,132 @@ Deno.test("sandbox: two backends coexist as records a policy can tell apart", as
     assertEquals(py!.processes, true, "a namespace jail does not stop fork/exec the way permissions do");
   });
 });;
+
+// ── attaching an artifact that already exists ──────────────────────────────────────────────────
+//
+// From a live session: the assistant generated an image, wanted it as the background of a page in a
+// workspace, and could not get it in. The bytes were an artifact in the space, the sandbox has no
+// network and the file was not on disk, so the only route it found was a share URL pasted into the
+// HTML. That link expires within the hour, so the page it built was broken by design and it said so.
+//
+// The capability was one manifest entry away the whole time. A workspace file IS an artifact
+// reference, so putting an existing payload in a tree moves no bytes at all.
+
+Deno.test("workspace: an existing artifact can be attached, and no bytes move", async () => {
+  await withSpace(async (c) => {
+    // Stand-in for a generated image: bytes that exist as an artifact and nowhere else.
+    const png = await c.putArtifact(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]), {
+      mediaType: "image/png",
+      filename: "cat.png",
+    });
+
+    const v1 = await writeWorkspace(c, {
+      name: "site",
+      owner: OWNER,
+      files: { "index.html": "<img src='cat.png'>\n" },
+    });
+
+    const v2 = await editWorkspace(c, {
+      name: "site",
+      attach: { "cat.png": png.id },
+    });
+    assertEquals(v2.added, ["cat.png"]);
+
+    const tree = await readWorkspace(c, "site");
+    const cat = tree!.files.find((f) => f.path === "cat.png");
+    assert(cat, "the attached file is not in the tree");
+    // The SAME artifact, not a copy. That is the whole point: a 1.2 MB image never passes through
+    // the caller, so this works for payloads nothing in the loop could hold or even read.
+    assertEquals(cat.artifactId, png.id);
+    assertEquals(cat.digest, png.digest);
+    assert(v1.treeDigest !== tree!.treeDigest, "attaching a file must produce a new version");
+
+    // And it is a real file: it materialises and it serves.
+    const dir = await Deno.makeTempDir();
+    try {
+      const mat = await materialize(c, tree!, dir);
+      assertEquals(mat.treeDigest, tree!.treeDigest);
+      assertEquals((await Deno.readFile(`${dir}/cat.png`)).length, 7);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
+});
+
+Deno.test("workspace: an attached artifact carries its labels into the tree", async () => {
+  await withSpace(async (c) => {
+    // A payload that came off the filesystem, so it is classified. Attaching it must not launder
+    // that: the manifest is the one parent edge a run over this tree inherits from, so a clean tree
+    // holding a classified file would be exactly the hole the manifest exists to close.
+    const secret = await c.putArtifact(new TextEncoder().encode("from disk"), {
+      mediaType: "text/plain",
+      taint: ["file"],
+    });
+
+    await writeWorkspace(c, { name: "mixed", owner: OWNER, files: { "readme.md": "hi\n" } });
+    const v2 = await editWorkspace(c, { name: "mixed", attach: { "notes.txt": secret.id } });
+
+    const manifest = await c.getRecord(v2.id);
+    assert(manifest, "no manifest record");
+    assert(
+      (manifest.runtimeMeta.taint ?? []).includes("file"),
+      `the tree did not inherit the payload's labels: ${JSON.stringify(manifest.runtimeMeta.taint)}`,
+    );
+  });
+});
+
+Deno.test("workspace: attaching refuses what it cannot resolve, and changes nothing", async () => {
+  await withSpace(async (c) => {
+    const before = await writeWorkspace(c, {
+      name: "strict",
+      owner: OWNER,
+      files: { "keep.txt": "unchanged\n" },
+    });
+    const ordinary = await c.put({ kind: "note", body: { text: "not an artifact" } });
+
+    for (const [why, attach] of [
+      ["an id that is not an artifact", { "x.png": ordinary.id }],
+      ["an id that does not exist", { "x.png": "01KZ0000000000000000000000" }],
+      ["a path that escapes the tree", { "../x.png": "01KZ0000000000000000000000" }],
+    ] as const) {
+      await assertRejects(
+        () => editWorkspace(c, { name: "strict", attach }),
+        Error,
+        undefined,
+        `attaching ${why} should refuse`,
+      );
+    }
+
+    // Refused means nothing happened, which is the same all-or-nothing rule every other edit obeys.
+    const after = await readWorkspace(c, "strict");
+    assertEquals(after!.treeDigest, before.treeDigest);
+    assertEquals(after!.files.length, 1);
+
+    // A path already in the tree is a refusal rather than a silent overwrite, matching `add`.
+    await assertRejects(() => editWorkspace(c, { name: "strict", attach: { "keep.txt": "01KZ0" } }));
+  });
+});
+
+Deno.test("workspace: a tree can be created with an attachment already in it", async () => {
+  await withSpace(async (c) => {
+    const png = await c.putArtifact(new Uint8Array([1, 2, 3]), { mediaType: "image/png" });
+    const w = await writeWorkspace(c, {
+      name: "fresh",
+      owner: OWNER,
+      files: { "index.html": "<img src='logo.png'>\n" },
+      attach: { "logo.png": png.id },
+    });
+    assertEquals(w.files.length, 2);
+    assertEquals(w.files.find((f) => f.path === "logo.png")?.artifactId, png.id);
+
+    // Contents and an attachment for one path is a contradiction, not a precedence rule.
+    await assertRejects(() =>
+      writeWorkspace(c, {
+        name: "clash",
+        owner: OWNER,
+        files: { "a.png": "text" },
+        attach: { "a.png": png.id },
+      })
+    );
+  });
+});

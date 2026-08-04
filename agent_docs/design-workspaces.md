@@ -70,6 +70,16 @@ writes or the record count grows per attempt. That is the registry stopping rule
 to a TREE rather than to a call id, which is what turns a verdict into an attestation of a specific
 reproducible input.
 
+**A file entry is an artifact REFERENCE, which means a payload produced elsewhere already belongs in
+a tree.** `writeWorkspace({attach})` and `editWorkspace({attach})` take `path → artifactId` and move
+no bytes at all. This was found from a live session rather than designed: the assistant generated an
+image, wanted it as a page background, and concluded it could not be done, because the bytes were an
+artifact, the sandbox has no network, and the file was not on disk. So it pasted a share URL into the
+HTML and correctly reported that the page would break within the hour. The capability was one
+manifest entry away the whole time; only a tool exposing it was missing. **An attached artifact is a
+data PARENT of the manifest**, so the runtime unions its labels into the tree rather than the
+extension recomputing them, and a classified payload cannot be laundered by being attached.
+
 **BUILT: the worker recomputes, and refuses on disagreement.** What follows is why.
 
 **Who computes `treeDigest` decides whether any of that is worth anything.** An artifact's `digest`

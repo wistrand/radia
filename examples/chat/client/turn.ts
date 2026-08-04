@@ -364,6 +364,9 @@ interface ProcedureBody {
 export class ToolSet {
   private tools: ToolDef[] = [];
   private conversationId?: string;
+  /** Conflicts already reported, tool -> the providers it was reported for, so a standing
+   *  disagreement is mentioned once and a NEW one still gets through. */
+  private readonly warned = new Map<string, string>();
 
   constructor(private readonly client: RadiaClient) {}
 
@@ -428,8 +431,17 @@ export class ToolSet {
     // Replicas of one worker are silent; two DIFFERENT tools under one name are not. The model is
     // handed one description and either worker may claim the call, so this is the case where what
     // it was told and what runs can differ.
-    const conflicted = [...caps.entries()].filter(([, e]) => e.conflicted);
-    for (const [tool, e] of conflicted) {
+    // ONCE per distinct conflict, not once per refresh. The set is rebuilt on every turn and on
+    // every `capability` wakeup, so a standing disagreement printed on every one of them, which
+    // buried the conversation it was warning about.
+    for (const [tool, e] of caps) {
+      if (!e.conflicted) {
+        this.warned.delete(tool);
+        continue;
+      }
+      const seen = `${tool}:${e.providers.join(",")}`;
+      if (this.warned.get(tool) === seen) continue;
+      this.warned.set(tool, seen);
       write(dim(`\n[tool '${tool}' is advertised differently by ${e.providers.join(", ")}; using the newest]\n`));
     }
     const tools = [...caps.values()].map((e) => e.def);

@@ -15,7 +15,9 @@ language question is an isolation question). Read those first; this file assumes
 > between; see there. Phases 8 and 9 were added after the fact, both from live use rather than from
 > this plan: git export (from a request for git READ access, split so the object builder shipped
 > first) and the read side of a workspace (from watching a model fabricate a file's contents because
-> nothing could read one).
+> nothing could read one). **Attachment** (2026-08-04) is the third of that kind: a model generated
+> an image, could not get it into the tree it was building, and shipped a page referencing a share
+> URL that expires within the hour. See "Attaching an artifact" below.
 
 ## What this is for
 
@@ -776,6 +778,38 @@ file.
 the last step rather than the finish. The version model is what made the session recoverable: the
 model restored from verbatim tool output and PROVED it, with the tree digest returning to its exact
 pre-damage value. "Nothing is lost" stopped being a design slogan for one turn.
+
+### Attaching an artifact — **DONE** (2026-08-04, from live use)
+
+**What happened.** A model was asked to generate an image and use it as the faded background of a
+page in a workspace. It generated the image, then reasoned its way to a dead end: the PNG is an
+artifact in the space, `share_workspace` only serves files that are IN the tree, the sandbox has no
+network, and the file is not on disk. So it minted a share URL, referenced that from the HTML, added
+a gradient fallback, and told the user the background would stop loading in an hour. Every step of
+that was correct given the tools it had.
+
+**The capability was already there.** A `WorkspaceFile` is `{path, mode, digest, artifactId}`: a
+file in a tree IS an artifact reference. Putting an existing payload into a tree is a manifest entry
+and nothing else, so no bytes move and size stops mattering. `writeWorkspace({attach})` and
+`editWorkspace({attach})` take `path → artifactId`.
+
+Three things worth keeping:
+
+- **The gap was in the TOOL surface, not the model.** Nothing exposed a capability the data model
+  already had, so the assistant did the best available thing and correctly reported that the result
+  was temporary. A tool list is the agent's map of what is possible; a missing entry is not a gap
+  the model can reason around.
+- **The attached artifact is a data PARENT of the manifest.** The first draft computed the label
+  union by reading each artifact's taint and merging it by hand. Naming the artifact as a parent
+  gets the same answer from the runtime, and keeps getting it if the label rules change. A tree that
+  takes in a classified payload inherits its classification without the extension knowing the rule.
+- **Resolution happens during validation.** An unreadable id, a wrong kind, a path that escapes the
+  tree and a path already in use are all collected before anything is written, so a refusal changes
+  nothing. That is the same all-or-nothing rule the rest of `editWorkspace` already had.
+
+Guarded by four cases in `extensions/conformance/workspace.test.ts`, including that the attached
+entry keeps the ORIGINAL artifact id (a copy would defeat the point) and that a `file`-labelled
+payload carries its label into the manifest.
 
 ### Phase 11: serving a tree
 

@@ -55,7 +55,7 @@ meet, in any language.
 
 | Path | Role |
 |--------------------------|--------------------------------------------------------------|
-| `ts/workspace.ts` | multi-file working trees: manifest, tree digest, path safety, materialisation |
+| `ts/workspace.ts` | multi-file working trees: manifest, tree digest, path safety, materialisation, and `attach` (an artifact that already exists becomes a file in a tree, moving no bytes and becoming a data parent so its labels follow) |
 | `ts/sandbox.ts` | running untrusted code in a permissionless subprocess, plus the spec describing that jail and the probe that tries to escape it. Imports nothing |
 | `ts/sandbox-registry.ts` | a sandbox as a RECORD: the operator declares, the worker verifies before serving |
 | `ts/git.ts` | a workspace's version history projected into a real git repository. Export only, no dependency, no `git` binary |

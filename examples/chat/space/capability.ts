@@ -148,14 +148,22 @@ export function collapseByTool(entries: Map<string, RadiaRecord>): Map<string, T
     else byTool.set(body.tool, [{ rec, body }]);
   }
   const out = new Map<string, ToolEntry>();
-  for (const [tool, group] of byTool) {
+  for (const [tool, all] of byTool) {
+    // A record with NO provider predates namespacing, so it is an older advertisement of this same
+    // tool rather than a rival one. Treating it as a peer was wrong and it was loud: on a space with
+    // any history, every upgraded worker was reported as disagreeing with its own past self, once
+    // per turn, forever. If anyone has claimed this name properly, the anonymous ones are superseded.
+    const named = all.filter((g) => g.body.provider);
+    const group = named.length > 0 ? named : all;
     // Newest first: record ids are monotonic, so this is the same latest-wins rule as everywhere.
     group.sort((a, b) => (a.rec.id < b.rec.id ? 1 : -1));
     const shapes = new Set(group.map((g) => JSON.stringify(g.body.def)));
     out.set(tool, {
       def: group[0].body.def!,
       providers: [...new Set(group.map((g) => g.body.provider ?? "?"))].sort(),
-      conflicted: shapes.size > 1,
+      // Only a disagreement between NAMED providers counts. One provider superseding its own older
+      // definition is an upgrade, which is the ordinary case and must stay silent.
+      conflicted: shapes.size > 1 && new Set(group.map((g) => g.body.provider)).size > 1,
     });
   }
   return out;

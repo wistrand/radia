@@ -43,7 +43,9 @@ const GENERATE_IMAGE: ToolDef = {
       "self-contained. Returns a reference {artifactId, mediaType, size}, not image data: the picture " +
       "is stored in the space and the user is shown it automatically. Refer to the result in words " +
       "('the image above'). Never invent a link, path or URL to it, and do not ask for or expect " +
-      "base64. Takes 5-20s.",
+      "base64. TO USE IT IN A PAGE, pass the artifactId to edit_workspace's `attach` and reference " +
+      "it by that filename. Do not reach for share_artifact and paste the URL into your HTML: that " +
+      "link expires within the hour and the page breaks when it does. Takes 5-20s.",
     parameters: {
       type: "object",
       properties: {
