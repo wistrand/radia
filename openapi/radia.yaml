@@ -394,6 +394,85 @@ paths:
             application/octet-stream:
               schema: { type: string, format: binary }
         "403": { $ref: "#/components/responses/Problem" }
+  /capabilities:
+    post:
+      operationId: mintPathCapability
+      summary: Mint a short-lived capability over a SET of artifacts, addressed by path
+      description: |
+        The many-artifact form of `POST /artifacts/{id}/capability`. The caller supplies
+        `{path, artifactId}` pairs and the runtime indexes them behind one capability, so a set of
+        files can be served as a browsable tree at `GET /w/{capability}/{path}` without the runtime
+        learning what the set IS: a workspace is one caller of this, not a concept in the server.
+
+        Every entry is authorized as a `read_one` on that artifact before the capability is minted,
+        including the caller's pattern scope; an artifact outside the caller's scope answers 404
+        rather than 403, so a mint cannot become an existence oracle. Capabilities are in-memory and
+        short-lived, so a URL carrying one does not survive a restart and belongs in an `<img>`
+        rather than in a transcript. At most 5000 entries.
+      x-stability: experimental
+      x-phase: "M1"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entries]
+              properties:
+                entries:
+                  type: array
+                  minItems: 1
+                  maxItems: 5000
+                  items:
+                    type: object
+                    required: [path, artifactId]
+                    properties:
+                      path: { type: string, description: "The path this artifact answers to inside the tree." }
+                      artifactId: { $ref: "#/components/schemas/Ulid" }
+      responses:
+        "201":
+          description: the capability, when it lapses, and an absolute URL for the tree root
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  capability: { type: string }
+                  expiresAt: { type: string, format: date-time }
+                  entries: { type: integer, description: "How many paths the capability indexes." }
+                  url: { type: string, description: "Absolute; a relative one is unopenable by anything but the console." }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /w/{capability}/{path}:
+    get:
+      operationId: getTreeFileByCapability
+      summary: One file from a path-addressed capability (the browsable form)
+      description: |
+        Serves the artifact registered under `path` in the capability minted by `POST
+        /capabilities`. `w` is for the shape a caller sees (a working tree), not for anything the
+        runtime knows about one. A bare directory serves `index.html`, the one convention a site
+        needs and the only one; `favicon.ico` answers 204 rather than 404, because a browser asks
+        for it on every navigation and a 404 fills the console with a warning that reads like a
+        real fault.
+
+        No Authorization header: the capability IS the authorization, and none is accepted. Path
+        lookup is an exact match in a fixed index, so traversal is not defended against because it
+        cannot happen — `..`, an absolute path and an encoded separator all simply miss.
+      x-stability: experimental
+      x-phase: "M1"
+      parameters:
+        - { name: capability, in: path, required: true, schema: { type: string }, description: "The capability returned by POST /capabilities." }
+        - { name: path, in: path, required: true, schema: { type: string }, description: "A path inside the tree; a trailing slash resolves index.html." }
+      responses:
+        "200":
+          description: the bytes, with the artifact's media type
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "204": { description: "favicon.ico, which no tree contains" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
   /artifacts/{id}/capability:
     post:
       operationId: artifactCapability

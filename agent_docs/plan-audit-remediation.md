@@ -1,7 +1,7 @@
 # Plan: audit remediation
 
-> Status: P, Q, R and S are open; **E, K, L, M and O are closed** (2026-08-03), **H, I and N** (2026-08-04); everything else is closed and
-> its guards pass (`deno task conformance`: 456 passed, 0 failed). Each done package is a status line here; its
+> Status: Q, R and S are open; **E, K, L, M and O are closed** (2026-08-03), **H, I, N and P** (2026-08-04); everything else is closed and
+> its guards pass (`deno task conformance`: 458 passed, 0 failed; 634 with a live Postgres). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
 > paths; items marked **reproduced** were verified empirically. Line numbers drift; trust the symbol,
@@ -37,12 +37,12 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~M~~ | ~~`kind_def` is not write-protected~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
 | ~~N~~ | ~~`clientMeta` escapes the body guards~~ | ~~P2~~ | **CLOSED 2026-08-04**                 |
 | ~~O~~ | ~~Multi-instance freshness + ordering~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
-| P   | Contracts nothing checks                | P2       | Drift in exactly the claims held loudest |
+| ~~P~~ | ~~Contracts nothing checks~~          | ~~P2~~   | **CLOSED 2026-08-04**                 |
 | Q   | Designed features unreachable           | P2       | A built feature no caller can invoke   |
 | R   | Dead taint parameter; half-tested guard | P2       | Legibility, not leakage (see the entry) |
 | S   | Round-two reports, re-derived           | P1/P2    | 11 of 12 reproduce; 7 **CLOSED 2026-08-04**; 4 open (3 need a pooled Postgres) |
 
-Packages A, B, C, D, E, F, G, H, I, J, K, L, M, N and O are closed. Their lessons are rules in
+Packages A, B, C, D, E, F, G, H, I, J, K, L, M, N, O and P are closed. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -388,16 +388,35 @@ wakeup without a change, a failing poll never reaching the stream, waiters not a
 `registry.test.ts` pins the skewed-clock revocation, in both arrival orders and in the revive
 direction, plus the same-millisecond tie still following the ids.
 
-## Package P: contracts nothing checks (P2)
+## Package P: contracts nothing checks (P2) — CLOSED 2026-08-04
 
-- **`openapi/radia.yaml` is not verified against the implementation.** The frozen wire contract has
-  exactly the enforcement status the layering rules had before `conformance/layering.test.ts`
-  existed, and this project's own thesis says that is temporary. A route-table-vs-spec-paths test is
-  roughly thirty lines.
-- **The live-Postgres conformance run is still not in CI.** The invariant in CLAUDE.md asserts the
-  full suite runs against every adapter "from day one", and the claim-fairness bug that motivated it
-  was invisible on both embedded adapters. An invariant that names a guard which is not running is
-  the loudest kind of drift.
+Both halves closed, and the first one immediately earned its place.
+
+**`openapi/radia.yaml` is verified against the implementation** by `conformance/openapi.test.ts`,
+in both directions, because they fail differently: a documented path that is not routed is a
+promise to a client that 404s, and a routed path that is not documented is surface nobody agreed to
+freeze. The estimate in this entry ("a route-table-vs-spec-paths test is roughly thirty lines") was
+wrong about the shape, though not the size: the router has no TABLE to diff — 21 literal `case`
+labels plus ten `startsWith` families — so direction 1 is BEHAVIOURAL, driving every documented
+operation through the handler and asserting the answer is not "no route for …". A 400 or a
+not-found for the id passes; the question is whether the path is recognised. Direction 2 is
+structural over the `/v0` literals in `http.ts`.
+
+**It found two undocumented endpoints on the first run:** `POST /v0/capabilities` (mint a
+capability over a SET of artifacts by path) and `GET /v0/w/{capability}/{path}` (serve one file
+from it) — the machinery workspaces are served through, public, unmentioned by the contract. Both
+are now in the spec, marked `x-stability: experimental`. Two smaller lessons are in the test:
+capability URLs are served by the ARTIFACT origin, so an operation counts as routed if either
+handler answers, and the switch labels carry the method inside the string (`"GET /v0/health"`), so
+a naive `/v0/…` regex matched nine of twenty-five literals and would have passed while checking
+almost nothing. Both directions were verified to fail on a planted violation.
+
+**The live-Postgres run is in CI** (`.github/workflows/ci.yml`), in a `postgres` job with a service
+container, beside an `embedded` job that runs check + conformance + extensions. This is the invariant
+CLAUDE.md already asserted ("every implementation of every port … in CI from day one") while the pg
+run was manual — an invariant that names a guard which is not running, which is the loudest kind of
+drift. The repo had no CI at all, so this is the first workflow. Verified locally with the exact
+command the job runs: **634 passed, 0 failed** (458 embedded + 176 postgres).
 
 ## Package Q: designed features unreachable (P2)
 

@@ -1377,6 +1377,15 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   question — whether the materialisation cache that decision requires is cheap or even buildable —
   was never measured and is still unbuilt. When a measurement decides something, write down what it
   did NOT decide, or the confidence leaks sideways.
+- **An invariant that names a guard which is not running is the loudest kind of drift.** CLAUDE.md
+  said the conformance suite runs against every implementation of every port "in CI from day one";
+  the live-Postgres run was manual and the repo had no CI at all. The embedded adapters are
+  single-connection, so the claim-fairness bug that motivated the invariant was invisible to them —
+  a green embedded run is not evidence about the adapter people deploy. `.github/workflows/ci.yml`
+  runs both. Same shape as the frozen wire contract, which nothing checked until
+  `conformance/openapi.test.ts`: it found two live endpoints (`POST /v0/capabilities`,
+  `GET /v0/w/{capability}/{path}`) that the spec did not mention. **Before trusting a claim about a
+  guard, check the guard runs.**
 - **A structural test nobody has seen FAIL is a structural test nobody has tested.** The layering
   guard destructured `matchAll` as `[full, spec]`, which binds group 1 (the import clause) rather
   than group 2 (the path), so every comparison ran against `{ Space } ` instead of

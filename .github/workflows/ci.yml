@@ -1,0 +1,60 @@
+# CI. The reason this file exists is one line in CLAUDE.md: the conformance suite runs against
+# EVERY implementation of every port "in CI from day one", and that was the only guard named by an
+# invariant while not actually running anywhere. The claim-fairness bug that motivated the invariant
+# was invisible on both embedded adapters and appeared only against a live server, so a green
+# embedded run is not evidence about the adapter people deploy.
+#
+# Two jobs on purpose. `embedded` is the fast answer (no services, ~30s); `postgres` is the one the
+# invariant is about, and a failure there names the adapter rather than "the tests".
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  embedded:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          # Not pinned to a patch: the SQLite adapter rides Deno's built-in `node:sqlite`, which is
+          # still marked unstable upstream (see agent_docs/gotchas.md), so an upgrade breaking it is
+          # something to learn here rather than on someone's machine.
+          deno-version: v2.x
+      - run: deno task check
+      - run: deno task conformance
+      - run: deno task extensions
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: radia
+          POSTGRES_PASSWORD: radia
+          POSTGRES_DB: radia
+        ports: ["5432:5432"]
+        # The runner starts the container before the steps, but Postgres accepts connections a
+        # moment after the container exists; without this the first DDL races an unready server.
+        options: >-
+          --health-cmd "pg_isready -U radia -d radia"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      # The suite adds the `postgres` adapter when RADIA_PG_URL is set, each test in an ephemeral
+      # schema dropped on close, so this is the same command with one more column. It is also the
+      # ONLY cover for the pool-only paths: `SKIP LOCKED` claims racing across connections, and the
+      # `xid8` watermark that keeps watch cursors gap-free when transactions commit out of seq order.
+      - run: deno task conformance
+        env:
+          RADIA_PG_URL: postgres://radia:radia@localhost:5432/radia

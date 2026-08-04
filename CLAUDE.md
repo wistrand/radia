@@ -282,11 +282,15 @@ live at the top of the relevant `agent_docs/` file, not here.
   survive crypto-shredding), and the wrapped DEK lives beside the blob, never in the immutable
   record, because shredding means deleting it.
 - **Embedded mode is never a semantically weaker cousin of Postgres.** The full
-  conformance + fault-injection suite runs against every implementation of every port
-  (storage adapters AND the blob store, encrypted or not) in CI from day one. This is the only
-  guard against drift.
+  conformance suite runs against every implementation of every port (storage adapters AND the blob
+  store, encrypted or not), embedded AND a live Postgres, in CI (`.github/workflows/ci.yml`). This
+  is the only guard against drift, and it is only a guard while it runs: the pg half was manual
+  until 2026-08-04 while this sentence already claimed otherwise. The fault-injection matrix
+  (plan-validation.md) is still to come.
 - **The wire contract is what's frozen, not the implementation.** OpenAPI-first;
-  implementation language and storage backend can change behind the stable protocol. Its vocabulary
+  implementation language and storage backend can change behind the stable protocol, and
+  `conformance/openapi.test.ts` checks the spec against the router in both directions, so a new
+  endpoint is documented or the suite fails. Its vocabulary
   lives in `sdk/ts/wire.ts` as a leaf both sides depend on: a contract the client cannot ship is not
   one, and that is exactly how the npm package came to import paths it does not contain.
 - **Minimal dependencies, maximal platform independence, zero or near-zero build steps.**

@@ -23,7 +23,7 @@ flowchart LR
 ```
 
 ```bash
-deno task conformance                     # sqlite + pglite + the blob port   (456 tests, ~23s)
+deno task conformance                     # sqlite + pglite + the blob port   (458 tests, ~23s)
 scripts/pg-conformance.sh                 # + a live Postgres
 RADIA_PG_URL=postgres://… scripts/pg-conformance.sh   # against your own server
 ```
@@ -34,9 +34,14 @@ ephemeral range; an unrelated outbound connection holding it, even in TIME_WAIT,
 fail with a docker "address already in use" that reads like a stale container and is not one).
 
 Each Postgres test runs in its own ephemeral schema, dropped on close, so it is safe to point at a
-database you care about. The live-server run adds its own storage tests to the embedded 456, and it
-is the only run that actually *contends* for claims, which is why a claim-path change needs it (see
-"Writing a suite" below).
+database you care about. The live-server run adds its own storage tests to the embedded 458 (**634
+total**), and it is the only run that actually *contends* for claims, which is why a claim-path
+change needs it (see "Writing a suite" below).
+
+**Both run in CI** (`.github/workflows/ci.yml`), in two jobs: `embedded` (check + conformance +
+extensions) and `postgres` (the same suite against a service container). Until 2026-08-04 the
+Postgres run was manual, while CLAUDE.md's invariant said the suite runs on every implementation
+"in CI from day one" — an invariant naming a guard that was not running.
 
 ## What "done" means
 
@@ -60,6 +65,7 @@ is the only run that actually *contends* for claims, which is why a claim-path c
 | `backfill.test.ts` | the schema's one migration: rebuilding `record_edges` for a database written before that table existed |
 | `planner.test.ts`  | Postgres planner statistics for declared body paths (`prepareKind`) |
 | `registry.test.ts` | latest-wins projections over hand-made ids and timestamps |
+| `openapi.test.ts`  | the frozen contract against the router, both directions: every documented operation is routed, and every `/v0` path the router names is documented |
 | `notifier.test.ts` | the watch wakeup state machine: who wakes, when the cross-instance poll runs |
 | `loop.test.ts`     | the SDK worker loop losing a lease: the handler's cancellation channel (the one test here that binds a real port, since the SDK client and its SSE watchers are what is under test) |
 | `console.test.ts`  | the dev console, lifted out of the page source: HTML escaping, no credential in the page or in an event handler, and the sign-in gate |
