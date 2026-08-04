@@ -298,6 +298,16 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Leases, claims, events and watches
 
+- **A watch is dropped when it is IDLE, never when it disconnects.** The map was never pruned at
+  all: every `POST /v0/watches` allocated an entry that outlived any interest in it, from a cheap
+  authenticated call, and the workload that makes it bite is an inspection console opening many
+  short-lived watches — which is why `plan-inspection.md` named this its one prerequisite. The
+  tempting fix is wrong: deleting on stream close breaks RESUMPTION, and the cursor exists precisely
+  so a dropped client can reconnect to the same id with `Last-Event-ID`. So the rule is "nothing
+  attached for `watchIdleSeconds`", a live stream keeps its watch alive by touching it every lap (at
+  most a 15s keepalive apart), and the sweep runs on CREATE so an idle space holds no timer. The
+  ceiling (`maxWatchesPerPrincipal`) REFUSES with a 429 rather than evicting the oldest, because
+  evicting kills somebody's live stream to serve a new one and tells them nothing.
 - **A watch wakeup crosses instances by POLLING THE EVENT LOG, and the poll runs only while somebody
   waits.** `notify()` knows this Space's own mutations and nothing else, so a watch on A slept
   through B's write until the caller's keepalive (15s in the SSE loop). `LISTEN`/`NOTIFY` is not

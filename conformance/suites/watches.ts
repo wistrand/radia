@@ -62,7 +62,10 @@ export const watchSuites: Suite[] = [
 
       // a different kind's event never matches
       assertEquals(
-        await space.matchesEvent({ request: { kind: "other" }, match: { kind: "other" }, cursor0: "0", owner: OWNER }, putEvent),
+        await space.matchesEvent(
+          { request: { kind: "other" }, match: { kind: "other" }, cursor0: "0", owner: OWNER, lastSeenAt: Date.now() },
+          putEvent,
+        ),
         false,
       );
 
@@ -155,6 +158,66 @@ export const watchSuites: Suite[] = [
       // And the wakeup is real: A can see B's record, which is what the stream would deliver.
       const seen = await a.query({ kind: "task", match: { tag: "from-b" } });
       assertEquals(seen.length, 1, "the instance that woke can read what the other wrote");
+    },
+  },
+  {
+    name: "an abandoned watch is dropped; one somebody is still reading is not",
+    run: async (adapter) => {
+      // The map was never pruned: every `POST /v0/watches` allocated an entry that outlived the
+      // process's interest in it, from a cheap authenticated call. The inspection backlog named
+      // this its one prerequisite, because an inspection console is exactly the workload that opens
+      // many short-lived watches.
+      const space = new Space(adapter, { watchIdleSeconds: 0.05 }); // 50ms, so the window is testable
+      space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
+
+      const live = (await space.createWatch({ kind: "task" }, OWNER)).watchId;
+      const abandoned = (await space.createWatch({ kind: "task" }, OWNER)).watchId;
+      assertEquals(space.liveWatches(), 2);
+
+      await new Promise((r) => setTimeout(r, 80)); // both are now past the idle window
+      // Reading one is what a live stream does every lap (at most a keepalive apart), and that is
+      // what keeps it: "idle" means nobody is asking, not "disconnected". Deleting on DISCONNECT
+      // would have been the wrong rule — a client that drops reconnects to the same id with
+      // Last-Event-ID, and the cursor is the whole point of that.
+      assert(space.getWatch(live, OWNER), "the attached one is still readable");
+
+      // The next create sweeps. The touched watch survives; the one nobody ever attached to does
+      // not, which is the growth this closes.
+      await space.createWatch({ kind: "task" }, OWNER);
+      assert(space.getWatch(live, OWNER), "a watch somebody is reading survives its own idle window");
+      assertEquals(space.getWatch(abandoned, OWNER), undefined, "the untouched one is gone");
+      assertEquals(space.liveWatches(), 2, "the map holds the live one and the new one, not three");
+    },
+  },
+  {
+    name: "a principal cannot hold watches without limit, and is told how to get one back",
+    run: async (adapter) => {
+      // A ceiling, not an eviction: dropping somebody's oldest watch to make room kills a live
+      // stream to serve a new one, and the loser is told nothing.
+      // Two operators, so the second principal can watch without a grant of its own: the subject
+      // here is the ceiling, not authorization.
+      const space = new Space(adapter, {
+        maxWatchesPerPrincipal: 2,
+        watchIdleSeconds: 3600,
+        operators: [OWNER, "human:other"],
+      });
+      space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
+      await space.createWatch({ kind: "task" }, OWNER);
+      await space.createWatch({ kind: "task" }, OWNER);
+
+      let code: string | undefined;
+      let message = "";
+      try {
+        await space.createWatch({ kind: "task" }, OWNER);
+      } catch (e) {
+        code = (e as RadiaError).code;
+        message = (e as Error).message;
+      }
+      assertEquals(code, "too_many_watches");
+      assert(/Last-Event-ID|close streams/.test(message), `the refusal says what to do: ${message}`);
+
+      // The limit is PER PRINCIPAL: another one is unaffected by this one's leak.
+      assert(await space.createWatch({ kind: "task" }, "human:other"), "another principal is unaffected");
     },
   },
   {

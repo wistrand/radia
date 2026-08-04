@@ -94,6 +94,14 @@ export interface SpaceContext {
   /** Lifetime of a download capability: the short-lived, single-artifact grant that lets a
    *  browser fetch bytes it cannot attach an Authorization header to. */
   downloadCapabilitySeconds: number;
+  /** How long a watch survives with nothing attached. Generous relative to a reconnect (the SSE
+   *  keepalive is 15s), because dropping one early costs a client its cursor and the events in the
+   *  gap; the point is to bound abandoned watches, not to be prompt. */
+  watchIdleSeconds: number;
+  /** Live watches one principal may hold. A watch is an authenticated call that allocates memory,
+   *  so it needs a ceiling like any other resource; an agent loop opens one per KIND it claims, and
+   *  an inspection console a handful, so this is far above ordinary use and only stops a leak. */
+  maxWatchesPerPrincipal: number;
 }
 
 const DEFAULT_CONTEXT: SpaceContext = {
@@ -118,6 +126,8 @@ const DEFAULT_CONTEXT: SpaceContext = {
   // so the gap between them is the signal that a payload belongs out of line.
   maxRecordBytes: 1024 * 1024,
   downloadCapabilitySeconds: 300,
+  watchIdleSeconds: 300,
+  maxWatchesPerPrincipal: 64,
 };
 
 /** How a caller selects work to take. */
@@ -149,6 +159,12 @@ export interface Watch {
   owner: string;
   /** Author restriction from a self-scoped grant, applied to wakeups as well as to reads. */
   createdBy?: string[];
+  /** Wall clock (ms) of the last time a client touched this watch: created it, attached to it, or
+   *  ran a lap of its stream. What makes an ABANDONED watch distinguishable from a live one, which
+   *  is the whole difference between an idle sweep and breaking open connections. Process-local
+   *  ephemeral state, so wall clock rather than the DB clock — the same call the download
+   *  capabilities make. */
+  lastSeenAt: number;
 }
 
 /** What a read verb is allowed to see: pattern constraint plus author restriction. */
@@ -2070,10 +2086,49 @@ export class Space {
   /** Create an ephemeral watch. The stream starts from the current high-water cursor. Throws
    *  `forbidden` if the owner holds no grant on the kind. */
   async createWatch(request: Pattern, owner: string): Promise<{ watchId: string }> {
+    // Swept HERE rather than on a timer: an idle space should hold no background work, the lesson
+    // `Notifier` learned the same week. Creation is the only operation that grows the map, so it is
+    // also the only one that has to pay for it.
+    this.sweepWatches();
+    const mine = [...this.watches.values()].filter((w) => w.owner === owner).length;
+    if (mine >= this.ctx.maxWatchesPerPrincipal) {
+      // Refused, never evicted. Dropping somebody's oldest watch to make room would kill a live
+      // stream to serve a new one, and the caller who loses it is told nothing.
+      throw new RadiaError(
+        "too_many_watches",
+        `principal '${owner}' already holds ${mine} watches (limit ${this.ctx.maxWatchesPerPrincipal}). ` +
+          `A watch is dropped after ${this.ctx.watchIdleSeconds}s with nothing attached; close streams ` +
+          `you are done with, or reuse one watch across reconnects with Last-Event-ID.`,
+      );
+    }
     const cursor0 = await this.storage.latestCursor();
     const watchId = newUlid();
     this.watches.set(watchId, await this.scopeWatch(request, owner, cursor0));
     return { watchId };
+  }
+
+  /**
+   * Drop watches nobody has touched for `watchIdleSeconds`.
+   *
+   * The map was never pruned: a watch is created by an authenticated call, lives in memory, and
+   * stayed for the process's lifetime whether or not anyone ever attached — unbounded growth from a
+   * cheap request, and the reason the inspection backlog (whose console opens many short-lived
+   * watches) named watch lifecycle as its one prerequisite.
+   *
+   * Idle, not disconnected. Deleting on stream close would break RESUMPTION, which is the point of
+   * the cursor: a client that drops reconnects to the same id with `Last-Event-ID` and continues.
+   * So the window is "nothing attached for a while", and a live stream keeps its watch alive by
+   * touching it every lap (at most one keepalive apart).
+   */
+  private sweepWatches(): void {
+    const deadline = Date.now() - this.ctx.watchIdleSeconds * 1000;
+    for (const [id, w] of this.watches) if (w.lastSeenAt < deadline) this.watches.delete(id);
+  }
+
+  /** Watches currently held, after a sweep. Diagnostic, and what the guard asserts against. */
+  liveWatches(): number {
+    this.sweepWatches();
+    return this.watches.size;
   }
 
   /**
@@ -2089,7 +2144,7 @@ export class Space {
     const { constraint, createdBy } = await this.authorizeWatch(owner, request.kind);
     const scoped: Pattern = { ...request, match: constraint ? combineMatch(request.match, constraint) : request.match };
     const match = await this.compileFresh(scoped); // validates the pattern, refreshing a stale kind
-    return { request, match, cursor0, owner, createdBy };
+    return { request, match, cursor0, owner, createdBy, lastSeenAt: Date.now() };
   }
 
   /**
@@ -2126,6 +2181,10 @@ export class Space {
     const watch = this.watches.get(watchId);
     if (!watch) return undefined;
     if (watch.owner !== principal && !this.isPrivileged(principal)) return undefined;
+    // TOUCHED on every successful read, which is what keeps a live stream out of the sweep: the SSE
+    // loop calls this on attach and revalidates each lap, at most one keepalive (15s) apart. An
+    // idle watch is one no client is asking about, and only that.
+    watch.lastSeenAt = Date.now();
     return watch;
   }
 

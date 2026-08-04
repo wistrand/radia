@@ -19,9 +19,14 @@ Two remediation packages gated this work and are now closed
 - **D (registry revive)** made a churning registry safe to write. The interest registry and saved
   lenses both need the `:after:<recordId>` idempotency suffix.
 
-One prerequisite is still open and is not tracked in the remediation plan: **watch lifecycle**. The
-watches map is never pruned and `Notifier` waiters accumulate, and an inspection console is the
-workload that opens many short-lived watches. Fix it before shipping anything watch-driven.
+The last prerequisite, **watch lifecycle**, closed on 2026-08-04. Both halves: `Notifier` waiters
+remove themselves on timeout (package O), and the watches map is swept of anything untouched for
+`watchIdleSeconds` (default 300s), with `maxWatchesPerPrincipal` (64) as a ceiling. The sweep runs
+on CREATE, so an idle space does no background work, and the window is idle-based rather than
+disconnect-based because a dropped client reconnects to the same id with `Last-Event-ID` — deleting
+on disconnect would have cost it the cursor. **Nothing gates this backlog now.** A console that
+opens many short-lived watches is the workload it was measured against; one that holds more than 64
+at once per principal is a leak, and gets a 429 saying so.
 
 ## Order
 

@@ -629,8 +629,7 @@ shared root and covers both dialects at once, which is why it belongs in E rathe
 
 ## Deferred: low severity
 
-Batch these; none warrant individual attention. Watches map never pruned (the `Notifier` half
-closed with package O); credentials file created at umask then chmod'd, leaving a world-readable
+Batch these; none warrant individual attention. Credentials file created at umask then chmod'd, leaving a world-readable
 window (`src/credentials.ts`); `parent_ids` existence documented as checked at commit but never is;
 `valueEq` compares objects by `JSON.stringify` and is key-order-sensitive; `PutResult.deduped` is
 never true; `lease_epoch` is not monotonic per record; the chat router omits `owner` from progress
@@ -639,10 +638,13 @@ checking `res.ok`. Separately, the artifact write-side grant check matches a bod
 `appFields` (`src/server/handlers/artifacts.ts`), so pattern-scoped put grants on an app field can
 never be satisfied. It is fail-closed, so legitimate writes just 403.
 
-Two entries LEFT this batch on 2026-08-04, both re-derived under package S: pattern-take OFFSET
-paging (the same defect as the spurious-empty report) and `ownerGuard` turning a succeeded settle's
-retry into a false `lease_lost`, which reproduces and breaches the
-idempotency-before-lease-validation invariant, so it is not low severity.
+Three entries LEFT this batch on 2026-08-04. Two were re-derived under package S: pattern-take
+OFFSET paging (the same defect as the spurious-empty report) and `ownerGuard` turning a succeeded
+settle's retry into a false `lease_lost`, which reproduces and breaches the
+idempotency-before-lease-validation invariant, so it is not low severity. The third, the unpruned
+WATCHES MAP, was promoted for a different reason: it is the one prerequisite
+[plan-inspection.md](plan-inspection.md) names for its whole backlog. Closed with an idle sweep plus
+a per-principal ceiling; the `Notifier` half had gone with package O.
 
 ## Verified clean
 

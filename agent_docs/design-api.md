@@ -30,7 +30,10 @@ here is authoritative.
 - Idempotency is checked **before** lease validation, for every state-changing operation.
 - `take(record_id=...)` is a selector, never a bypass: the server re-verifies pattern,
   grants, admission, availability, and `claim_until`.
-- Client disconnect releases nothing. Only leases hold state.
+- Client disconnect releases nothing. Only leases hold state. A WATCH is the same rule seen from the
+  other side: it survives a disconnect so the client can resume from its cursor, and is dropped only
+  after an idle window with nothing attached (`watchIdleSeconds`), with `maxWatchesPerPrincipal` as
+  the ceiling.
 - Pagination is keyset over immutable sort keys, not snapshot.
 
 ## The guarantee

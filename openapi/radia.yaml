@@ -566,6 +566,17 @@ paths:
                 type: object
                 properties: { watchId: { type: string } }
         "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "429":
+          description: >
+            `too_many_watches`: this principal already holds the maximum. A watch is dropped after
+            its idle window with nothing attached, so the usual fix is to close streams you are done
+            with — or to reuse ONE watch across reconnects with `Last-Event-ID`, which is what the
+            cursor is for. Refused rather than evicting somebody's oldest watch, which would kill a
+            live stream to serve a new one.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
 
   /watches/{watchId}/events:
     get:
