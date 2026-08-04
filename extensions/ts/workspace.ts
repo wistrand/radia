@@ -237,11 +237,16 @@ export async function writeWorkspace(
   // address. An artifact that is not readable, or is not an artifact, fails the whole write rather
   // than landing a manifest entry that points at nothing.
   for (const [path, artifactId] of attached) {
-    const rec = await client.getRecord(artifactId);
-    if (!rec || rec.kind !== "artifact") throw new Error(`no artifact ${artifactId} (for '${path}')`);
-    const def = rec.body as { digest?: string };
-    if (typeof def.digest !== "string") throw new Error(`artifact ${artifactId} has no digest`);
-    files.push({ path, mode: input.modes?.[path] ?? "100644", digest: def.digest, artifactId });
+    // Coordination plane, for the reason spelled out in `editWorkspace`: the ops plane is the
+    // operator's, and this runs in workers.
+    const meta = await client.artifactMeta(artifactId);
+    if (!meta?.digest) {
+      throw new Error(
+        `no artifact ${artifactId} is readable by this principal (for '${path}'); if it exists, ` +
+          `this is a missing read grant rather than a wrong id`,
+      );
+    }
+    files.push({ path, mode: input.modes?.[path] ?? "100644", digest: meta.digest, artifactId });
   }
 
   files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
@@ -789,17 +794,37 @@ export async function editWorkspace(
       problems.push(`attach ${path}: already exists; remove it first`);
       continue;
     }
-    const rec = await client.getRecord(artifactId).catch(() => null);
-    if (!rec || rec.kind !== "artifact") {
-      problems.push(`attach ${path}: no artifact ${artifactId}`);
+    // The COORDINATION plane, deliberately. The first version asked `getRecord`, which is
+    // `/v0/ops/records/{id}`: operator-only, so this worked under an operator client in the tests
+    // and failed for every worker that actually calls it. The reported symptom was "no artifact",
+    // and a live session spent eight rounds hunting a missing record that was there all along.
+    let meta;
+    try {
+      meta = await client.artifactMeta(artifactId);
+    } catch (e) {
+      // NAME THE LIKELY CAUSE. A refusal and an absence look identical from here, and "not found"
+      // alone is what sent that session looking in the wrong place.
+      const status = (e as { status?: number }).status;
+      problems.push(
+        `attach ${path}: cannot read artifact ${artifactId}` +
+          (status === 403
+            ? "; it is outside your read grant, so this is a permission problem rather than a missing record"
+            : `; the space answered ${status ?? "an error"}`),
+      );
       continue;
     }
-    const digest = (rec.body as { digest?: string }).digest;
-    if (typeof digest !== "string") {
-      problems.push(`attach ${path}: artifact ${artifactId} has no digest`);
+    if (!meta) {
+      problems.push(
+        `attach ${path}: no artifact ${artifactId} is readable by this principal. If you know it ` +
+          `exists, you may lack a read grant on artifacts rather than have the wrong id`,
+      );
       continue;
     }
-    attachedFiles.set(path, { path, mode: input.modes?.[path] ?? "100644", digest, artifactId });
+    if (!meta.digest) {
+      problems.push(`attach ${path}: artifact ${artifactId} reported no digest`);
+      continue;
+    }
+    attachedFiles.set(path, { path, mode: input.modes?.[path] ?? "100644", digest: meta.digest, artifactId });
   }
 
   if (problems.length > 0) {

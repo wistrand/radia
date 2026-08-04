@@ -378,6 +378,26 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Problem" }
+    head:
+      operationId: headArtifact
+      summary: An artifact's digest, media type and size, without its bytes
+      description: |
+        The same authorization and the same headers as `GET`, with no body: `ETag` carries the
+        content digest, `Content-Type` the media type, `Content-Length` the size. This is the
+        metadata read of the coordination plane. Reading a record by id is otherwise only possible
+        through `GET /ops/records/{id}`, which is operator-only, so any worker needing an artifact's
+        digest had to either download it or reach for a plane it cannot use. An erased artifact
+        answers 410 here exactly as it does for GET, so metadata is never reported for bytes that
+        are gone.
+      x-stability: stable
+      x-phase: "M1"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "headers only: ETag is the digest" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "410": { description: the content was deliberately erased }
   /a/{capability}:
     get:
       operationId: getArtifactByCapability

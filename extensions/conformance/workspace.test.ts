@@ -1510,3 +1510,59 @@ Deno.test("workspace: a tree can be created with an attachment already in it", a
     );
   });
 });
+
+Deno.test("workspace: a WORKER can attach, not just an operator", async () => {
+  // The bug this exists for reached a live session. `attach` resolved the artifact through
+  // `getRecord`, which is `/v0/ops/records/{id}` — the operator plane. Every test above uses an
+  // operator client, so all of them passed while the feature could not work for any worker: the
+  // tools worker got "no artifact" for an artifact that was sitting right there, and the assistant
+  // spent eight rounds hunting a missing record before giving up.
+  //
+  // The chat README already names this shape ("a tool tested with an operator client does not test
+  // the WORKER's authority"). So this case drives the real path: a principal with ordinary
+  // coordination grants and NO ops access at all.
+  await withSpace(async (c) => {
+    const png = await c.putArtifact(new Uint8Array([9, 9, 9]), { mediaType: "image/png" });
+    await writeWorkspace(c, { name: "byworker", owner: OWNER, files: { "index.html": "<img src='x.png'>\n" } });
+
+    const { definitionToken } = await c.createAgentDefinition("agent:tools", [
+      { principal: "agent:tools", kind: "artifact", operations: ["put", "read_one", "query"] },
+      { principal: "agent:tools", kind: "workspace", operations: ["put", "query", "read_one"] },
+    ]);
+    const { runToken } = await c.createRun(definitionToken);
+    const worker = c.withToken(runToken);
+
+    // Proof the fixture is honest: this principal genuinely cannot reach the operator plane, which
+    // is what the old implementation depended on.
+    await assertRejects(() => worker.diagnostics());
+
+    const v2 = await editWorkspace(worker, { name: "byworker", attach: { "x.png": png.id } });
+    assertEquals(v2.added, ["x.png"]);
+    const tree = await readWorkspace(worker, "byworker");
+    assertEquals(tree!.files.find((f) => f.path === "x.png")?.artifactId, png.id);
+  });
+});
+
+Deno.test("workspace: attaching says PERMISSION when that is the problem, not 'not found'", async () => {
+  // "No artifact X" for an artifact that exists is the error that sent a live session looking for a
+  // missing record instead of a missing grant. An absence and a refusal are different problems with
+  // different fixes, and the message has to distinguish them.
+  await withSpace(async (c) => {
+    const png = await c.putArtifact(new Uint8Array([1]), { mediaType: "image/png" });
+    await writeWorkspace(c, { name: "scoped", owner: OWNER, files: { "a.txt": "x\n" } });
+
+    // A worker that may write workspaces and may NOT read artifacts at all.
+    const { definitionToken } = await c.createAgentDefinition("agent:blind", [
+      { principal: "agent:blind", kind: "workspace", operations: ["put", "query", "read_one"] },
+    ]);
+    const { runToken } = await c.createRun(definitionToken);
+    const blind = c.withToken(runToken);
+
+    const err = await assertRejects(() => editWorkspace(blind, { name: "scoped", attach: { "b.png": png.id } }));
+    const message = (err as Error).message;
+    assert(
+      /grant|permission/i.test(message),
+      `the failure must point at the grant rather than at the id: ${message}`,
+    );
+  });
+});

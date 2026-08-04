@@ -18,7 +18,7 @@ imports.
 | Worker loop | `agentLoop`        | `agent_loop` |
 | Paging      | `query` / `queryPage` → `{records, nextAfter, scope}` | `query` / `query_page` → `(records, next_after, scope)` |
 | Watches     | `client.watch()` async generator | `client.watch()` generator |
-| Artifacts   | `putArtifact` / `getArtifact` / `artifactCapability` | `put_artifact` / `get_artifact` / `artifact_capability` |
+| Artifacts   | `putArtifact` / `getArtifact` / `artifactMeta` (HEAD: digest and size, no bytes) / `artifactCapability` | `put_artifact` / `get_artifact` / `artifact_capability` |
 | Remediation | `admin(action, id)` / `remediate(action, selector)` | `admin(action, id)` / `remediate(action, state=…, expired=…)` |
 | Ops queries | `queryEnvelopes` / `diagnostics` / `erasures` / `getStats` / `getEvents` | `query_envelopes` / `diagnostics` / `erasures` / `get_stats` / `get_events` |
 | Bootstrap   | `grant` / `createAgentDefinition` / `createRun` / `stopRun` | `grant` / `create_agent_definition` / `create_run` / `stop_run` |

@@ -799,6 +799,18 @@ Three things worth keeping:
   already had, so the assistant did the best available thing and correctly reported that the result
   was temporary. A tool list is the agent's map of what is possible; a missing entry is not a gap
   the model can reason around.
+- **The first implementation resolved the artifact on the OPERATOR plane, and every test passed.**
+  `client.getRecord` is `GET /v0/ops/records/{id}`, which no worker can reach, so `attach` failed
+  for the only caller that would ever use it while four conformance cases went green under an
+  operator client. The chat README already names this exact shape, and it still happened. Reading
+  an artifact's digest now goes through `HEAD /v0/artifacts/{id}` (added for this: same grant as
+  GET, `ETag` carries the digest, no bytes), and the guard drives a principal with ordinary
+  coordination grants and no ops access at all. **A test for a worker's capability that uses an
+  operator client tests nothing.**
+- **"No artifact X" for an artifact that exists is the wrong error.** The live session spent eight
+  rounds hunting a missing record, tried `share_artifact`, checked its own permissions, then gave
+  up. A refusal and an absence need different fixes, so the message names the grant as the likely
+  cause when the read was refused.
 - **The attached artifact is a data PARENT of the manifest.** The first draft computed the label
   union by reading each artifact's taint and merging it by hand. Naming the artifact as a parent
   gets the same answer from the runtime, and keeps getting it if the label rules change. A tree that

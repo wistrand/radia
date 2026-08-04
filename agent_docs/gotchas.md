@@ -1405,6 +1405,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   written, false the moment a reader was added. Third instance of this shape. **When a worker gains
   a capability, its grants are part of the change**, and at least one assertion must run through a
   live worker over a real `tool_call` — the only thing that exercises the identity, not the code.
+  **Fourth instance, 2026-08-04, with this rule already written down.** Workspace `attach` resolved
+  an artifact with `client.getRecord`, which is `/v0/ops/records/{id}`: the OPERATOR plane. Four
+  conformance cases passed under an operator client while the feature could not work for any worker,
+  and a live session got "no artifact" for an artifact it had just created. The shape is more
+  specific than "use the worker's grants": **an SDK method that looks like an ordinary read may sit
+  on the ops plane**, so check which URL a helper calls before using it in something a worker runs.
+  The fix added `HEAD /v0/artifacts/{id}`, because reading a record by id had no coordination-plane
+  form at all.
 - **Check a cited rule's PRECONDITION before leaning on it.** "A label exists only where a lineage
   walk is too slow" was cited to leave workspace artifacts unlabelled — but there is no lineage walk
   from an artifact to its manifest (the reference is a body field, not a parent edge), so the rule

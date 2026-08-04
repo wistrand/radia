@@ -338,6 +338,12 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
       const id = decodeURIComponent(parts[0] ?? "");
       if (id) {
         if (req.method === "GET" && !parts[1]) return await handleGetArtifact(space, id, principal);
+        // HEAD is the METADATA read this plane was missing. An artifact's digest, media type and
+        // size live in a record, and the only way to reach a record by id was `/v0/ops/records/{id}`
+        // — the operator plane. So an ordinary worker could not learn an artifact's digest without
+        // downloading it, which is how attaching one to a workspace shipped broken: it worked under
+        // an operator client and failed for every worker. Same grant as GET, no body.
+        if (req.method === "HEAD" && !parts[1]) return await handleGetArtifact(space, id, principal, false, null, true);
         if (req.method === "POST" && parts[1] === "capability") return await handleMintCapability(space, id, principal);
       }
     }

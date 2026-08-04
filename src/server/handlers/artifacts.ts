@@ -159,6 +159,10 @@ export async function handleGetArtifact(
    *  files and gains nothing else: `connect-src` stays absent under `default-src 'none'`, so fetch,
    *  XHR and WebSocket are still denied, which was always the property doing the real work. */
   treeOrigin?: string | null,
+  /** HEAD: the same authorization and the same headers, without reading a byte of the payload.
+   *  What a caller needs to reference an artifact (its digest, media type and size) is metadata,
+   *  and making that cost a download is what pushed callers onto the operator plane instead. */
+  headOnly = false,
 ): Promise<Response> {
   try {
     if (principal !== null) {
@@ -242,6 +246,13 @@ export async function handleGetArtifact(
           : "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:"
         : "default-src 'none'; sandbox",
     };
+    if (headOnly) {
+      // The stream was opened to learn the payload exists, which is the same check GET makes, so an
+      // erased artifact still answers 410 above rather than reporting metadata for bytes that are
+      // gone. Cancel it: nothing here reads a byte.
+      await found.stream.cancel().catch(() => {});
+      return new Response(null, { status: 200, headers });
+    }
     return new Response(found.stream, { status: 200, headers });
   } catch (e) {
     if (e instanceof RadiaError) return problem(statusFor(e.code, 403), e.code, e.message);

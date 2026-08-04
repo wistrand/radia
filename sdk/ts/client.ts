@@ -636,6 +636,31 @@ export class RadiaClient {
   }
 
   /** An artifact's bytes by record id. */
+  /**
+   * An artifact's digest, media type and size, WITHOUT downloading it.
+   *
+   * On the coordination plane, so an ordinary worker holding `artifact: read_one` can reference an
+   * artifact it is allowed to read. `getRecord` answers the same question from `/v0/ops/records`,
+   * which is the operator plane: code that reached for it worked under an operator client and
+   * failed for every worker, which is exactly how attaching an artifact to a workspace shipped
+   * broken.
+   */
+  async artifactMeta(recordId: string): Promise<{ digest: string; mediaType: string; size: number } | null> {
+    const headers: Record<string, string> = {};
+    if (this.auth.token) headers["Authorization"] = `Bearer ${this.auth.token}`;
+    const res = await fetch(`${this.base}/v0/artifacts/${encodeURIComponent(recordId)}`, { method: "HEAD", headers });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new RadiaClientError(res.status, "error", `HEAD /v0/artifacts/${recordId} failed`);
+    // The digest rides the ETag, which is what it already was: content-addressed bytes never change,
+    // so the content address is a perfect validator.
+    const digest = (res.headers.get("etag") ?? "").replace(/"/g, "");
+    return {
+      digest,
+      mediaType: res.headers.get("content-type") ?? "application/octet-stream",
+      size: Number(res.headers.get("content-length") ?? 0),
+    };
+  }
+
   async getArtifact(recordId: string): Promise<Uint8Array> {
     const headers: Record<string, string> = {};
     if (this.auth.token) headers["Authorization"] = `Bearer ${this.auth.token}`;
