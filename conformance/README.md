@@ -34,9 +34,10 @@ ephemeral range; an unrelated outbound connection holding it, even in TIME_WAIT,
 fail with a docker "address already in use" that reads like a stale container and is not one).
 
 Each Postgres test runs in its own ephemeral schema, dropped on close, so it is safe to point at a
-database you care about. The live-server run adds its own storage tests to the embedded 467 (**640+
+database you care about. The live-server run adds its own storage tests to the embedded 467 (**648
 total**), and it is the only run that actually *contends* for claims, which is why a claim-path
-change needs it (see "Writing a suite" below).
+change needs it (see "Writing a suite" below). The two cases in `concurrency.test.ts` are ignored
+entirely without it.
 
 **Both run in CI** (`.github/workflows/ci.yml`), in two jobs: `embedded` (check + conformance +
 extensions) and `postgres` (the same suite against a service container). Until 2026-08-04 the
@@ -67,6 +68,7 @@ Postgres run was manual, while CLAUDE.md's invariant said the suite runs on ever
 | `registry.test.ts` | latest-wins projections over hand-made ids and timestamps |
 | `openapi.test.ts`  | the frozen contract against the router, both directions: every documented operation is routed, and every `/v0` path the router names is documented |
 | `notifier.test.ts` | the watch wakeup state machine: who wakes, when the cross-instance poll runs |
+| `concurrency.test.ts` | the fault matrix's CONTENDED half: the two claim-path races that need real parallel connections, so they skip without `RADIA_PG_URL` |
 | `loop.test.ts`     | the SDK worker loop losing a lease: the handler's cancellation channel (the one test here that binds a real port, since the SDK client and its SSE watchers are what is under test) |
 | `console.test.ts`  | the dev console, lifted out of the page source: HTML escaping, no credential in the page or in an event handler, and the sign-in gate |
 | `defaults.test.ts` | the posture an unconfigured space lands in: `--auth`, the runtime directory, optional-value flags |
@@ -104,7 +106,14 @@ A suite is a name plus a `run(...)` function; the harness runs it once per imple
 observable behavior, never on a specific backend's SQL or on-disk layout. A test that only passes
 on one implementation is testing the implementation, not the contract.
 
-Six conventions worth copying rather than reinventing:
+Seven conventions worth copying rather than reinventing:
+
+- **A race guard is not a guard until the pre-fix code fails it.** Both cases in
+  `concurrency.test.ts` passed against the very defect they were written for on the first draft:
+  one because a pushable pattern is filtered in SQL, so the take saw a window of pure matches and
+  never paged at all, and one because matches parked at the tail of a queue shift *toward* a paging
+  claimer instead of past it. Plant the old code back in, watch it fail, and record which detector
+  fired and how often.
 
 - **Simulate faults by composition, not test hooks.** A crashed worker is one that took a lease
   and never acked, with the lease forced expired via a negative `leaseSeconds`. Deterministic, no
@@ -122,7 +131,8 @@ Six conventions worth copying rather than reinventing:
 - **Assume the embedded adapters cannot see your bug.** Claim starvation was invisible to
   `deno task conformance` and appeared only against a live Postgres, because SQLite and PGlite are
   single-connection and never actually contend. Anything touching concurrent claims needs
-  `scripts/pg-conformance.sh`.
+  `scripts/pg-conformance.sh`, and its test belongs in `concurrency.test.ts` rather than a suite,
+  since a suite that cannot run on two of three adapters is not a port contract.
 - **A persistent database is not `:memory:`, and a "restart" needs one.** `init()` opens a fresh
   connection, so re-initializing an in-memory adapter gives you an EMPTY database rather than the
   one you just wrote, so a restart test that skips this passes by finding nothing. `backfill.test.ts`

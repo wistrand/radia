@@ -1,9 +1,10 @@
 # Plan: audit remediation
 
 > Status: **every package is closed** — A–G and J–O by 2026-08-03, **H, I, N, P, Q, R and S** on
-> 2026-08-04. What remains is the deferred low-severity batch below, plus two pooled-Postgres races
-> that shipped as code with no test that fails today (package S says which, and why). The guards
-> pass: `deno task conformance` is 463 passed, 0 failed, and 637+ with a live Postgres. Each done package is a status line here; its
+> 2026-08-04. What remains is the deferred low-severity batch below. The two pooled-Postgres races
+> package S fixed without a failing test now have one each (`conformance/concurrency.test.ts`, both
+> validated against the pre-fix adapter planted back in). The guards pass: `deno task conformance`
+> is 467 passed, 0 failed, and 648 with a live Postgres. Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
 > paths; items marked **reproduced** were verified empirically. Line numbers drift; trust the symbol,
@@ -540,7 +541,8 @@ adapters still agree: the full suite is green embedded and against a live Postgr
   backoff AND writes a stale epoch over a live fence. **The guard now names everything the read
   relied on**: state, `available_at <= now`, and the epoch the candidate was read at (null-safe, for
   a record never leased). Both adapters, because a claim rule they disagree about is one the
-  conformance suite cannot test.
+  conformance suite cannot test. Guard: `conformance/concurrency.test.ts`, "a claim never lands
+  inside another worker's nack backoff" (Postgres only; failed on every planted pre-fix run).
 - **Offset-based candidate paging could report a spurious empty.** An offset assumes the rows before
   the cursor stay put, and in a queue those are exactly the rows other claimers are removing: each
   departure shifts the rest forward and the next window skips them, so `take` answers "nothing
@@ -548,7 +550,11 @@ adapters still agree: the full suite is green embedded and against a live Postgr
   own key (`ClaimCursor` in `src/core/take.ts`, shared so the two cannot drift). The cursor is
   mixed-direction — priority descends, the other two ascend — so it is spelled out rather than
   written as a row comparison, and it must stay identical to `CLAIM_ORDER`. This also closes the
-  deferred-list entry that recorded the same defect.
+  deferred-list entry that recorded the same defect. Guard: `conformance/concurrency.test.ts`, "a
+  claim never steps over a record in a shifting candidate window" (Postgres only; failed on six of
+  seven planted pre-fix runs). The detector is ORDER, not an empty answer: a single claimer must be
+  served matches in claim order, so a later one arriving first proves the scan skipped one, and that
+  gives a trial per take instead of one per run.
 - **`stopRun` quarantined BEFORE writing the stop record**, so the token kept resolving while the
   run's leases were force-released: it could claim fresh work during its own revocation, and a throw
   between the two never closed the window. **The stop record is written first.** The partial failure

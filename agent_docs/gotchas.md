@@ -1370,6 +1370,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Method: how these were found
 
+- **A test for a race proves nothing until the pre-fix code fails it, and the first draft usually
+  does not.** Both guards in `conformance/concurrency.test.ts` passed against the exact defect they
+  were written for. The paging one had TWO independent reasons: a pushable pattern is filtered in
+  SQL, so a selective take sees a window of pure matches and never pages (the boundary the test was
+  aiming at was never reached), and matches parked at the tail of a queue shift *toward* a paging
+  claimer as rows leave, never past it. What made it decisive was changing the detector from "an
+  empty answer" to ORDER: one claimer must be served in claim order, so a later match arriving first
+  is a skip, and that is a trial per take rather than one per run.
 - **A check written against ONE member of a set breaks the moment the set grows, and a rename is
   exactly when it grows.** The exec worker decided "this is a saved procedure, not a built-in" with
   `b.tool !== "run_code"`. Renaming that to `run_javascript` kept it correct; adding `run_python`

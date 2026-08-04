@@ -1,7 +1,8 @@
 # Plan: validation
 
 > Status: the M0 fault subset is implemented (see [plan-m0-implementation.md](plan-m0-implementation.md)
-> Phase 6); the baselines/metrics and the fuller fault matrix (partition, failover, cursor
+> Phase 6) and the two CONTENDED cases were added 2026-08-04 (`conformance/concurrency.test.ts`,
+> Postgres only); the baselines/metrics and the rest of the matrix (partition, failover, cursor
 > storm) are not yet run. Origin: outline §12. The measurement plan that proves the design's
 > claims and the fault matrix each milestone must survive.
 
@@ -31,19 +32,29 @@ p50/p95/p99 take latency · throughput scaling in records × patterns × agents.
 
 ## Fault-injection matrix
 
-Each is a required case (referenced from [plan-milestones.md](plan-milestones.md) M2):
+Each is a required case (referenced from [plan-milestones.md](plan-milestones.md) M2). They
+exercise the guarantees in [design-api.md](design-api.md) (idempotency ordering, fencing) and
+[design-auth.md](design-auth.md) (revocation).
 
-- crash before external effect
-- crash after effect, before ack
-- crash after commit, before HTTP response
-- duplicate ack
-- stale ack after reassignment
-- partition during renewal
-- DB failover
-- conflicting idempotency payloads
-- schema migration with live patterns
-- revocation mid-lease
-- cursor expiry under reconnect storm
+| Case                                    | Where                                       |
+|-----------------------------------------|---------------------------------------------|
+| crash before external effect            | `conformance/suites/faults.ts`              |
+| crash after effect, before ack          | `conformance/suites/faults.ts`              |
+| crash after commit, before response     | `conformance/suites/faults.ts`              |
+| duplicate ack                           | `conformance/suites/faults.ts`              |
+| stale ack after reassignment            | `conformance/suites/faults.ts`              |
+| conflicting idempotency payloads        | `conformance/suites/idempotency.ts`         |
+| revocation mid-lease                    | `conformance/suites/auth.ts`                |
+| schema migration with live patterns     | `conformance/backfill.test.ts` (schema only) |
+| claim inside another worker's backoff   | `conformance/concurrency.test.ts` (Postgres) |
+| claim over a shifting candidate window  | `conformance/concurrency.test.ts` (Postgres) |
+| partition during renewal                | not written                                 |
+| DB failover                             | not written                                 |
+| cursor expiry under reconnect storm     | not written                                 |
 
-These exercise the guarantees in [design-api.md](design-api.md) (idempotency ordering,
-fencing) and [design-auth.md](design-auth.md) (revocation).
+The last two written cases are CONTENDED: they are properties of the claim path under real
+concurrency, so the embedded adapters (PGlite single-connection, SQLite single-writer) cannot
+express them and the file skips without `RADIA_PG_URL`. Both were validated by planting the
+pre-fix adapter back in and watching them fail, which is the only evidence that a race guard
+guards anything. The two rows above them were added by audit package S as code with no failing
+test; that gap is now closed.
