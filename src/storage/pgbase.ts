@@ -42,7 +42,7 @@ import {
 } from "./row.ts";
 import { firstByOrder, matchesRecord, orderRecords, pageRecords } from "../core/matching.ts";
 import { isTrivial, type JsonDialect, pushablePath, pushdown } from "./pushdown.ts";
-import { type Candidate, rankClaimable } from "../core/take.ts";
+import { type Candidate, type ClaimCursor, cursorOf, rankClaimable } from "../core/take.ts";
 import { addSeconds, minIso } from "../core/time.ts";
 import { newUlid } from "../core/ids.ts";
 import { RadiaError } from "../core/errors.ts";
@@ -517,8 +517,10 @@ export class PgSqlAdapter implements StorageAdapter {
       // whole candidate set: the claim below is a compare-and-set whose result is CHECKED, so a
       // lost race falls through to the next candidate instead of returning a lease for a record
       // somebody else already took.
-      for (let offset = 0;; offset += CANDIDATE_WINDOW) {
-        const candidates = await this.fetchCandidates(tx, selector, CANDIDATE_WINDOW, offset);
+      // The cursor is the LAST ROW EXAMINED, in claim order, so the next window resumes where this
+      // one stopped no matter how many rows other claimers removed in between.
+      for (let after: ClaimCursor | undefined;;) {
+        const candidates = await this.fetchCandidates(tx, selector, CANDIDATE_WINDOW, after);
         if (candidates.length === 0) return null;
         const ranked = rankClaimable(candidates, pattern, now, spec.allowTaint, spec.createdBy);
         const claimed = await this.claimFirst(tx, ranked, spec, now);
@@ -526,6 +528,7 @@ export class PgSqlAdapter implements StorageAdapter {
         // Nothing in this window was claimable (all filtered out, or every CAS lost). A record-id
         // take has no further windows; a pattern take keeps paging until the kind is exhausted.
         if (byId || candidates.length < CANDIDATE_WINDOW) return null;
+        after = cursorOf(candidates[candidates.length - 1]);
       }
     });
   }
@@ -569,13 +572,20 @@ export class PgSqlAdapter implements StorageAdapter {
           );
           if (won.affectedRows === 0) continue; // another claimer reclaimed it first
         } else {
+          // The guard names everything the READ relied on, not just the state. `state='available'`
+          // alone let a record be claimed inside a nack backoff: between the candidate read and
+          // this update another claimer can take it, work, and nack it with a future
+          // `available_at`, leaving the row available again with a bumped epoch — and this update
+          // matched it, ignoring the backoff and writing a stale epoch over a live fence. Neither
+          // is reachable on a single connection, which is why it survived the embedded suites.
           const won = await tx.query(
             `update record_runtime set state='leased', lease_id=$1, lease_epoch=$2,
                lease_owner=$3, leased_until=$4, lease_hard_deadline=$5
-             where record_id=$6 and state='available'`,
-            [spec.leaseId, epoch, spec.ownerRun, leasedUntil, hardDeadline, id],
+             where record_id=$6 and state='available' and available_at <= $7
+               and lease_epoch is not distinct from $8`,
+            [spec.leaseId, epoch, spec.ownerRun, leasedUntil, hardDeadline, id, now, cand.env.leaseEpoch ?? null],
           );
-          if (won.affectedRows === 0) continue; // it was claimed between the read and the update
+          if (won.affectedRows === 0) continue; // it moved between the read and the update
         }
         await this.appendEvent(tx, {
           runId: spec.ownerRun,
@@ -883,7 +893,7 @@ export class PgSqlAdapter implements StorageAdapter {
     tx: Sql,
     selector: TakeSelector,
     limit = CANDIDATE_WINDOW,
-    offset = 0,
+    after?: ClaimCursor,
   ): Promise<Candidate[]> {
     const rows = "recordId" in selector
       ? (await tx.query<RawRow>(
@@ -891,7 +901,7 @@ export class PgSqlAdapter implements StorageAdapter {
            where r.id=$1 and rt.state in ('available','leased') for update of rt skip locked`,
         [selector.recordId],
       )).rows
-      : await this.windowRows(tx, selector, limit, offset);
+      : await this.windowRows(tx, selector, limit, after);
     return rows.map((row) => ({ record: rowToRecord(row), env: rowToEnvelope(row) }));
   }
 
@@ -919,25 +929,40 @@ export class PgSqlAdapter implements StorageAdapter {
     tx: Sql,
     selector: { pattern: CompiledMatch },
     limit: number,
-    offset: number,
+    after?: ClaimCursor,
   ): Promise<RawRow[]> {
     const d = new PgJson(1, "r2"); // $1 is the kind
     const filter = pushdown(selector.pattern.where, d);
     const n = 1 + d.params.length;
+    // KEYSET, not OFFSET. Paging a queue by offset assumes the rows before the cursor stay put, and
+    // in a queue they are exactly the rows other claimers are removing: each row that leaves shifts
+    // the rest forward, so the next window skips as many as vanished and `take` can answer "nothing
+    // claimable" while work sits in the kind. The cursor is the ORDER's own key, mixed-direction
+    // (priority descends, the other two ascend), which is why it is spelled out rather than written
+    // as a row comparison. It must stay identical to CLAIM_ORDER; changing one alone silently
+    // reorders or skips.
+    const cursor = after
+      ? ` and (PRI < $${n + 2} or (PRI = $${n + 2} and (AVL > $${n + 3} or (AVL = $${n + 3} and ID > $${n + 4}))))`
+      : "";
+    const bare = cursor.replace(/PRI/g, "effective_priority").replace(/AVL/g, "available_at").replace(/ID/g, "record_id");
+    const joined = cursor.replace(/PRI/g, "rt2.effective_priority").replace(/AVL/g, "rt2.available_at").replace(
+      /ID/g,
+      "rt2.record_id",
+    );
     const inner = isTrivial(filter)
       ? `select record_id from record_runtime
-          where kind=$1 and state in ('available','leased')
+          where kind=$1 and state in ('available','leased')${bare}
           order by effective_priority desc, available_at asc, record_id asc
-          limit $${n + 1} offset $${n + 2}`
+          limit $${n + 1}`
       : `select rt2.record_id from record_runtime rt2 join records r2 on r2.id=rt2.record_id
-          where rt2.kind=$1 and rt2.state in ('available','leased') and ${filter.sql}
+          where rt2.kind=$1 and rt2.state in ('available','leased') and ${filter.sql}${joined}
           order by rt2.effective_priority desc, rt2.available_at asc, rt2.record_id asc
-          limit $${n + 1} offset $${n + 2}`;
+          limit $${n + 1}`;
     return (await tx.query<RawRow>(
       `select ${CANDIDATE_COLS} from records r join record_runtime rt on rt.record_id=r.id
          where rt.record_id in (${inner})
          ${CLAIM_ORDER}`,
-      [selector.pattern.kind, ...d.params, limit, offset],
+      [selector.pattern.kind, ...d.params, limit, ...(after ? [after.priority, after.availableAt, after.recordId] : [])],
     )).rows;
   }
 

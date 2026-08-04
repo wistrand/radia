@@ -392,6 +392,33 @@ export const authSuites: Suite[] = [
     },
   },
   {
+    name: "a quarantine kills the TOKEN before the leases, so a stopping run cannot claim on the way out",
+    run: async (adapter) => {
+      // The order is the property. Quarantining first left a window where the run's leases were
+      // force-released while its token still resolved, so it could claim fresh work during its own
+      // revocation — and a throw between the two never closed that window. Written this way the
+      // partial failure is the safe one: the token is dead and the leases lapse on their own clocks,
+      // which is what a graceful stop already does.
+      const space = newSpace(adapter);
+      const { definitionToken } = await space.createAgentDefinition("agent:w", [
+        { principal: "agent:w", kind: "task", operations: ["take", "query"] },
+      ]);
+      const { run, runToken } = await space.mintRun(definitionToken);
+      await space.put({ kind: "task", body: { tag: "t" } });
+      const held = await space.take({ pattern: { kind: "task" } }, {}, run);
+      assert(held, "the run holds a lease before the quarantine");
+
+      const stopped = await space.stopRun(run, { quarantine: true });
+      assertEquals(stopped.applied, true);
+      assertEquals(stopped.quarantined, 1, "the held lease was force-released");
+
+      // Both halves landed, and the token is the one that cannot be used again.
+      const resolved = await space.resolveToken(runToken);
+      assert(!resolved.ok && resolved.reason === "run_stopped", "the token stops resolving");
+      assertEquals((await space.ack(held!.lease, undefined, undefined, run)).status, "lease_lost");
+    },
+  },
+  {
     name: "quarantine invalidates a run's in-flight leases (late ack fences out as lease_lost)",
     run: async (adapter) => {
       const space = newSpace(adapter);

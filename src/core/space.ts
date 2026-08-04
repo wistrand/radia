@@ -467,7 +467,19 @@ export class Space {
     // identified by its content (`grantKey`), and `activeSet` drops exactly that entry while
     // leaving the others in force. Projecting by (principal, kind) instead would let a single
     // revocation silently take every grant on the kind with it.
-    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject, kind })).entries.values()];
+    const view = await this.registry(GRANT, grantKey, { principal: subject, kind });
+    this.warnIfIncomplete(view, principal, op, kind);
+    return this.constraintFrom([...view.entries.values()], principal, op, kind);
+  }
+
+  /** The pattern constraint a already-read grant set imposes. Split from the read so `readAccess`
+   *  can answer three questions from ONE view; the rule is unchanged. */
+  private constraintFrom(
+    grants: RadiaRecord[],
+    principal: string,
+    op: GrantOp,
+    kind: string,
+  ): Record<string, unknown>[] | null {
     const applicable = grants.filter((g) => {
       const ops = (g.body as Partial<GrantDef>)?.operations;
       return Array.isArray(ops) && ops.includes(op);
@@ -504,11 +516,17 @@ export class Space {
     // Only grants that permit THIS operation are relevant. A `put`-only grant says nothing about
     // reads, and counting it as "an unscoped grant on this kind" lifts the read restriction the
     // moment a read grant is narrowed while the write grant stays as it was.
-    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject, kind })).entries.values()]
-      .map((g) => g.body as GrantDef & { scope?: { createdBy?: string } })
-      .filter((g) => Array.isArray(g.operations) && g.operations.includes(op));
-    if (grants.length === 0 || !grants.every((g) => g.scope?.createdBy === "self")) return undefined;
+    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject, kind })).entries.values()];
+    if (!this.selfScoped(grants, op)) return undefined;
     return await this.runPrincipalsOf(subject, principal);
+  }
+
+  /** Do ALL the grants permitting `op` carry `scope: {createdBy: "self"}`? Split from the read so
+   *  `readAccess` can answer from one view. */
+  private selfScoped(grants: RadiaRecord[], op: GrantOp): boolean {
+    const applicable = (grants.map((g) => g.body as GrantDef & { scope?: { createdBy?: string } }))
+      .filter((g) => Array.isArray(g.operations) && g.operations.includes(op));
+    return applicable.length > 0 && applicable.every((g) => g.scope?.createdBy === "self");
   }
 
   /**
@@ -526,16 +544,22 @@ export class Space {
   async taintBarrier(principal: string, op: GrantOp, kind: string): Promise<string[] | undefined> {
     if (this.isPrivileged(principal)) return undefined; // no grants to read, so no barrier to impose
     const subject = this.grantSubject(principal);
-    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject, kind })).entries.values()]
-      .map((g) => g.body as GrantDef & { scope?: Record<string, string> })
+    const view = await this.registry(GRANT, grantKey, { principal: subject, kind });
+    return this.barrierFrom([...view.entries.values()], op);
+  }
+
+  /** The allowlist an already-read grant set imposes. Split from the read so `readAccess` can
+   *  answer from one view. */
+  private barrierFrom(grants: RadiaRecord[], op: GrantOp): string[] | undefined {
+    const applicable = (grants.map((g) => g.body as GrantDef & { scope?: Record<string, string> }))
       .filter((g) => Array.isArray(g.operations) && g.operations.includes(op));
     // Every applicable grant must state a barrier, or one that does not already permits the claim
     // (grants UNION). When they all do, the effective allowlist is their UNION for the same reason:
     // "these grants together permit" is a widening, and reading it as an intersection would make
     // adding a grant narrow a principal's reach, which is not what a grant is.
-    if (grants.length === 0 || !grants.every((g) => typeof g.scope?.taint === "string")) return undefined;
+    if (applicable.length === 0 || !applicable.every((g) => typeof g.scope?.taint === "string")) return undefined;
     const allowed = new Set<string>();
-    for (const g of grants) for (const l of parseTaintAllowlist(g.scope!.taint!)) allowed.add(l);
+    for (const g of applicable) for (const l of parseTaintAllowlist(g.scope!.taint!)) allowed.add(l);
     return [...allowed].sort();
   }
 
@@ -550,10 +574,36 @@ export class Space {
    * this, and apply both fields.
    */
   async readAccess(principal: string, op: GrantOp, kind: string): Promise<ReadAccess> {
-    const constraint = await this.authorize(principal, op, kind);
-    const createdBy = await this.authorScope(principal, op, kind);
-    const allowTaint = await this.taintBarrier(principal, op, kind);
-    return { constraint, createdBy, allowTaint };
+    // ONE registry read for all three answers. Asking separately cost four storage reads per
+    // coordination verb — the `grant` registry paged to exhaustion three times over, once per
+    // question, plus the `agent_run` read behind a self scope — for three views of the same set.
+    if (this.isPrivileged(principal)) return { constraint: null, createdBy: undefined, allowTaint: undefined };
+    const subject = this.grantSubject(principal);
+    const view = await this.registry(GRANT, grantKey, { principal: subject, kind });
+    this.warnIfIncomplete(view, principal, op, kind);
+    const grants = [...view.entries.values()];
+    const constraint = this.constraintFrom(grants, principal, op, kind);
+    const createdBy = this.selfScoped(grants, op) ? await this.runPrincipalsOf(subject, principal) : undefined;
+    return { constraint, createdBy, allowTaint: this.barrierFrom(grants, op) };
+  }
+
+  /**
+   * A truncated grant view decided this. Say so.
+   *
+   * `readRegistry` reports `complete: false` when it hits its page budget rather than returning a
+   * plausible prefix, and every authorization path took `.entries` and never looked. Truncation is
+   * fail-CLOSED here — reads are newest-first, so a retirement is inside the window while what it
+   * retires may be outside, and the entry drops out either way — so the cost is silence rather than
+   * misauthorization: a principal is denied and nothing says the answer was computed from part of
+   * its grants. Content-keyed grant writes make >20k records for one (principal, kind) implausible,
+   * which is why this warns rather than throws.
+   */
+  private warnIfIncomplete(view: RegistryView, principal: string, op: GrantOp, kind: string): void {
+    if (view.complete) return;
+    console.warn(
+      `[radia] grant view for '${principal}' (${op} on '${kind}') is INCOMPLETE after ${view.scanned} records; ` +
+        `this decision was computed from part of its grants`,
+    );
   }
 
   /** Does `record` fall inside an author restriction? `undefined` restriction means unrestricted. */
@@ -955,14 +1005,15 @@ export class Space {
     // silently report `applied: false` and leave the token working.
     const mint = await this.runRecord(run);
     if (!mint?.agent) return { applied: false, quarantined: 0 };
-    let quarantined = 0;
-    if (opts.quarantine) {
-      const now = await this.storage.now();
-      quarantined = await this.storage.quarantineLeasesOf(run, now);
-    }
     // The successor carries the SAME tokenHash as the mint, so resolving that token finds the stop
     // in the one indexed lookup it already does. Without it, a token-hash lookup could only ever
     // see the mint, and revocation depended on a second lookup nobody was guaranteed to make.
+    //
+    // WRITTEN FIRST, before any quarantine. The reverse order left a window where the run's leases
+    // were force-released while its token still resolved, so it could claim fresh work on its way
+    // out — and if the write then threw, that window never closed. Ordered this way the partial
+    // failure is the SAFE one: the token is dead and the leases expire on their own clocks, which
+    // is exactly what a graceful stop already does.
     await this.putRaw({
       kind: AGENT_RUN,
       body: {
@@ -973,6 +1024,11 @@ export class Space {
         quarantined: opts.quarantine ?? false,
       },
     });
+    let quarantined = 0;
+    if (opts.quarantine) {
+      const now = await this.storage.now();
+      quarantined = await this.storage.quarantineLeasesOf(run, now);
+    }
     this.notifier.notify();
     return { applied: true, quarantined };
   }

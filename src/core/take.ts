@@ -57,3 +57,23 @@ export function rankClaimable(
   });
   return ranked;
 }
+
+/**
+ * Where a candidate window stopped, in the claim order's own key.
+ *
+ * Lives here rather than in an adapter because both of them page the queue by it, and the key must
+ * be the ORDER's key: `effective_priority desc, available_at asc, record_id asc`. An offset-based
+ * window assumes the rows before it stay put, and in a queue those are exactly the rows other
+ * claimers are taking, so each departure shifts the rest forward and a window skips them — a `take`
+ * answering "nothing claimable" while work sits in the kind.
+ */
+export interface ClaimCursor {
+  priority: number;
+  availableAt: string;
+  recordId: string;
+}
+
+/** The cursor for the last row a window examined. */
+export function cursorOf(c: Candidate): ClaimCursor {
+  return { priority: c.env.effectivePriority ?? 0, availableAt: c.env.availableAt, recordId: c.record.id };
+}

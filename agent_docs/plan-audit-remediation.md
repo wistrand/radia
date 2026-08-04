@@ -1,8 +1,9 @@
 # Plan: audit remediation
 
-> Status: **only S is open** (four items, three of them needing a pooled Postgres); **E, K, L, M and
-> O closed** (2026-08-03), **H, I, N, P, Q and R** (2026-08-04); everything else is closed and
-> its guards pass (`deno task conformance`: 461 passed, 0 failed; 634+ with a live Postgres). Each done package is a status line here; its
+> Status: **every package is closed** — A–G and J–O by 2026-08-03, **H, I, N, P, Q, R and S** on
+> 2026-08-04. What remains is the deferred low-severity batch below, plus two pooled-Postgres races
+> that shipped as code with no test that fails today (package S says which, and why). The guards
+> pass: `deno task conformance` is 463 passed, 0 failed, and 637+ with a live Postgres. Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
 > paths; items marked **reproduced** were verified empirically. Line numbers drift; trust the symbol,
@@ -41,9 +42,9 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~P~~ | ~~Contracts nothing checks~~          | ~~P2~~   | **CLOSED 2026-08-04**                 |
 | ~~Q~~ | ~~Designed features unreachable~~     | ~~P2~~   | **CLOSED 2026-08-04**                 |
 | ~~R~~ | ~~Dead taint parameter; half-tested guard~~ | ~~P2~~ | **CLOSED 2026-08-04**                 |
-| S   | Round-two reports, re-derived           | P1/P2    | 11 of 12 reproduce; 7 **CLOSED 2026-08-04**; 4 open (3 need a pooled Postgres) |
+| ~~S~~ | ~~Round-two reports, re-derived~~     | ~~P1/P2~~ | **CLOSED 2026-08-04** (11 of 12 reproduced) |
 
-Every package except S is closed (A–R). Their lessons are rules in
+Every package is closed (A–S). Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -492,10 +493,11 @@ all three were verified to fail against the old behaviour.
 
 ## Package S: the round-two reports, re-derived (2026-08-04)
 
-All twelve were checked against source, and eleven reproduce; nothing was cleared. **Closed
-(seven):** the two reachable from the wire, the reserved-label allowlist hole, and all four doc
-corrections. **Open (four):** three pooled-Postgres races the embedded suites structurally cannot
-see, and one efficiency item plus one silence. Ranked by whether a caller can reach them today.
+All twelve were checked against source, and eleven reproduce; nothing was cleared, and all twelve
+are now **CLOSED**. Ranked below by whether a caller could reach them, which is also the order they
+were fixed in. Two of the pooled-Postgres races ship without a test that fails today — stated in
+their section, not buried — because staging them needs concurrent connections the embedded adapters
+cannot provide.
 
 **Reachable from the wire — CLOSED 2026-08-04:**
 
@@ -523,34 +525,51 @@ see, and one efficiency item plus one silence. Ranked by whether a caller can re
   Guard: `suites/auth.ts`, "the owner check runs BEHIND idempotency", asserting both halves — the
   replay, and that a stranger with no stored response is still fenced.
 
-**Pooled Postgres only, invisible to the embedded suites:**
+**Pooled Postgres only, invisible to the embedded suites — ALL CLOSED 2026-08-04.** Two of the three
+are races no single-connection adapter can stage, so they ship as code with no test that fails
+today: the embedded suites serialize, and forcing the interleaving needs the fault matrix
+([plan-validation.md](plan-validation.md)) driving concurrent connections. That is the same standing
+the guarded-UPDATE fix has, and it is stated rather than dressed up. What IS pinned is that both
+adapters still agree: the full suite is green embedded and against a live Postgres.
 
-- **The available-branch claim CAS guards neither `available_at` nor `lease_epoch`**
-  (`where record_id=? and state='available'`; the expired branch does check the epoch). VERIFIED by
-  inspection; does NOT reproduce single-connection (a nack with a 3600s backoff is respected by
-  pattern-take and take-by-id on both embedded adapters, so the report's flat wording overstates
-  it). The race: a concurrent take+nack-with-backoff between the candidate read and the CAS, which
-  claims inside the backoff AND writes a stale epoch over a live fence. Fix is one clause.
-- **Offset-based candidate paging can report a spurious empty.** VERIFIED by inspection. Rows
-  leaving the ordered set between pages shift later rows into the already-passed offset, so a
-  claimable record is skipped and `take` answers null. Same defect as the deferred-list entry
-  "pattern-take OFFSET pagination transiently skips claimable rows" — it is listed twice. A keyset
-  window fixes cost and correctness together.
-- **`stopRun` quarantines BEFORE writing the stop record.** VERIFIED by inspection: the token keeps
-  resolving until the successor commits, so a quarantined run can still claim in that window. The
-  sharper case is a throw between the two, which leaves leases quarantined and the run working.
+- **The available-branch claim CAS guarded neither `available_at` nor `lease_epoch`**
+  (`where record_id=? and state='available'`; the expired branch did check the epoch). It does NOT
+  reproduce single-connection — a nack with a 3600s backoff is respected by pattern-take and
+  take-by-id on both embedded adapters, so the report's flat wording overstated it. The race is a
+  concurrent take+nack-with-backoff between the candidate read and the CAS, which claims inside the
+  backoff AND writes a stale epoch over a live fence. **The guard now names everything the read
+  relied on**: state, `available_at <= now`, and the epoch the candidate was read at (null-safe, for
+  a record never leased). Both adapters, because a claim rule they disagree about is one the
+  conformance suite cannot test.
+- **Offset-based candidate paging could report a spurious empty.** An offset assumes the rows before
+  the cursor stay put, and in a queue those are exactly the rows other claimers are removing: each
+  departure shifts the rest forward and the next window skips them, so `take` answers "nothing
+  claimable" while work sits in the kind. **Both adapters page by KEYSET now**, on the claim order's
+  own key (`ClaimCursor` in `src/core/take.ts`, shared so the two cannot drift). The cursor is
+  mixed-direction — priority descends, the other two ascend — so it is spelled out rather than
+  written as a row comparison, and it must stay identical to `CLAIM_ORDER`. This also closes the
+  deferred-list entry that recorded the same defect.
+- **`stopRun` quarantined BEFORE writing the stop record**, so the token kept resolving while the
+  run's leases were force-released: it could claim fresh work during its own revocation, and a throw
+  between the two never closed the window. **The stop record is written first.** The partial failure
+  is now the safe one — token dead, leases lapsing on their own clocks, which is exactly a graceful
+  stop. Guard: `suites/auth.ts`, "a quarantine kills the TOKEN before the leases".
 
-**Real but quiet (one closed):**
+**Real but quiet — CLOSED 2026-08-04:**
 
-- **`readAccess` costs four storage reads per coordination verb.** VERIFIED by instrumenting the
-  adapter: `grant` read three times (`authorize`, `authorScope`, `taintBarrier`) plus one
-  `agent_run` for the self scope; `authorize` alone is one. One threaded `RegistryView` makes it
-  two.
-- **`authorize` discards `complete`.** VERIFIED: five of the eight grant-registry call sites take
-  `.entries` and never look. Truncation needs >20,000 grant records for one (principal, kind), and
-  is fail-CLOSED in both directions (newest-first, so a retirement is inside the window while what
-  it retires may not be), so the cost is silence rather than misauthorization. Content-keyed grant
-  writes make the threshold implausible; surfacing it is still cheap.
+- **`readAccess` cost four storage reads per coordination verb — now two.** Measured by
+  instrumenting the adapter, before and after: `grant` was read three times (`authorize`,
+  `authorScope`, `taintBarrier`) plus one `agent_run` for the self scope; it is one `grant` read
+  plus the `agent_run` now. The three rules moved into pure helpers over an already-read set
+  (`constraintFrom`, `selfScoped`, `barrierFrom`), so the public methods keep working for their own
+  callers and the rules themselves are unchanged.
+- **`authorize` discarded `complete`.** Five of the eight grant-registry call sites took `.entries`
+  and never looked. Truncation needs >20,000 grant records for one (principal, kind) and is
+  fail-CLOSED in both directions (reads are newest-first, so a retirement is inside the window while
+  what it retires may not be, and the entry drops out either way), so the cost is silence rather
+  than misauthorization — which is why `readAccess` now WARNS with the scanned count rather than
+  throwing. A denial computed from part of a principal's grants should say so; turning it into a 500
+  for the pathological case would be a worse trade.
 - **`parseTaintAllowlist` admitted the reserved `unknown` label — CLOSED 2026-08-04.** VERIFIED:
   it returned `["unknown"]`, so a grant could allow exactly the label `TAINT_UNKNOWN`'s own comment
   says "no allowlist may contain", admitting every pre-labels record the marker holds back.

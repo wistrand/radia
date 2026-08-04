@@ -46,7 +46,7 @@ import {
 } from "./row.ts";
 import { firstByOrder, matchesRecord, orderRecords, pageRecords } from "../core/matching.ts";
 import { isTrivial, type JsonDialect, pushdown } from "./pushdown.ts";
-import { type Candidate, rankClaimable } from "../core/take.ts";
+import { type Candidate, type ClaimCursor, cursorOf, rankClaimable } from "../core/take.ts";
 import { addSeconds, minIso } from "../core/time.ts";
 import { newUlid } from "../core/ids.ts";
 import { RadiaError } from "../core/errors.ts";
@@ -315,8 +315,9 @@ export class SqliteAdapter implements StorageAdapter {
     return this.tx(() => {
       const pattern = "pattern" in selector ? selector.pattern : undefined;
       const byId = "recordId" in selector;
-      for (let offset = 0;; offset += CANDIDATE_WINDOW) {
-        const candidates = this.fetchCandidates(selector, CANDIDATE_WINDOW, offset);
+      // The cursor is the LAST ROW EXAMINED, in claim order (see `windowRows`).
+      for (let after: ClaimCursor | undefined;;) {
+        const candidates = this.fetchCandidates(selector, CANDIDATE_WINDOW, after);
         if (candidates.length === 0) return null;
         const ranked = rankClaimable(candidates, pattern, now, spec.allowTaint, spec.createdBy);
         const claimed = this.claimFirst(ranked, spec, now);
@@ -324,6 +325,7 @@ export class SqliteAdapter implements StorageAdapter {
         // Nothing in this window was claimable (all filtered out, or every CAS lost). A record-id
         // take has no further windows; a pattern take keeps paging until the kind is exhausted.
         if (byId || candidates.length < CANDIDATE_WINDOW) return null;
+        after = cursorOf(candidates[candidates.length - 1]);
       }
     });
   }
@@ -363,13 +365,19 @@ export class SqliteAdapter implements StorageAdapter {
           );
           if (wonExpired === 0) continue; // another claimer reclaimed it first
         } else {
+          // The guard names everything the READ relied on, matching the Postgres adapter: with only
+          // `state='available'`, a record nacked into a backoff between the read and this update
+          // was claimed anyway, under a stale epoch. Single-connection here, so it is defence in
+          // depth rather than a live fix — and the two adapters must agree on the claim rule or the
+          // conformance suite is testing two different ones. (`is` is SQLite's null-safe equality,
+          // for a record that has never been leased.)
           const won = this.run(
             `update record_runtime set state='leased', lease_id=?, lease_epoch=?,
                lease_owner=?, leased_until=?, lease_hard_deadline=?
-             where record_id=? and state='available'`,
-            [spec.leaseId, epoch, spec.ownerRun, leasedUntil, hardDeadline, id],
+             where record_id=? and state='available' and available_at <= ? and lease_epoch is ?`,
+            [spec.leaseId, epoch, spec.ownerRun, leasedUntil, hardDeadline, id, now, cand.env.leaseEpoch ?? null],
           );
-          if (won === 0) continue; // it was claimed between the read and the update
+          if (won === 0) continue; // it moved between the read and the update
         }
         this.appendEvent({
           runId: spec.ownerRun,
@@ -783,13 +791,13 @@ export class SqliteAdapter implements StorageAdapter {
 
   /** One window of candidates in claim order. Bounded on purpose: never fetch every
    *  available-or-leased record of the kind, which makes a claim O(kind size). */
-  private fetchCandidates(selector: TakeSelector, limit = CANDIDATE_WINDOW, offset = 0): Candidate[] {
+  private fetchCandidates(selector: TakeSelector, limit = CANDIDATE_WINDOW, after?: ClaimCursor): Candidate[] {
     const rows = "recordId" in selector
       ? this.db.prepare(
         `select ${CANDIDATE_COLS} from records r join record_runtime rt on rt.record_id=r.id
            where r.id=? and rt.state in ('available','leased')`,
       ).all(selector.recordId) as RawRow[]
-      : this.windowRows(selector, limit, offset);
+      : this.windowRows(selector, limit, after);
     return rows.map((row) => ({ record: rowToRecord(row), env: rowToEnvelope(row) }));
   }
 
@@ -813,23 +821,37 @@ export class SqliteAdapter implements StorageAdapter {
    * and sorts. The fix is a better ESTIMATE, not a better query: see gotchas.md, "a claim on
    * Postgres is planned on a guess".
    */
-  private windowRows(selector: { pattern: CompiledMatch }, limit: number, offset: number): RawRow[] {
+  private windowRows(selector: { pattern: CompiledMatch }, limit: number, after?: ClaimCursor): RawRow[] {
     const d = new SqliteJson("r2");
     const filter = pushdown(selector.pattern.where, d);
+    // KEYSET, not OFFSET, matching the Postgres adapter: an offset assumes the rows before the
+    // cursor stay put, and in a queue those are precisely the rows other claimers are removing, so
+    // each departure shifts the rest forward and the next window skips them. Single-writer here, so
+    // this is agreement rather than a live fix — but the two adapters must page a queue by the same
+    // rule, or the conformance suite is testing two different claim orders.
+    const keyset = after
+      ? ` and (PRI < ? or (PRI = ? and (AVL > ? or (AVL = ? and ID > ?))))`
+      : "";
+    const bare = keyset.replace(/PRI/g, "effective_priority").replace(/AVL/g, "available_at").replace(/ID/g, "record_id");
+    const joined = keyset.replace(/PRI/g, "rt2.effective_priority").replace(/AVL/g, "rt2.available_at").replace(
+      /ID/g,
+      "rt2.record_id",
+    );
     const inner = isTrivial(filter)
       ? `select record_id from record_runtime
-           where kind=? and state in ('available','leased')
+           where kind=? and state in ('available','leased')${bare}
            order by effective_priority desc, available_at asc, record_id asc
-           limit ? offset ?`
+           limit ?`
       : `select rt2.record_id from record_runtime rt2 join records r2 on r2.id=rt2.record_id
-           where rt2.kind=? and rt2.state in ('available','leased') and ${filter.sql}
+           where rt2.kind=? and rt2.state in ('available','leased') and ${filter.sql}${joined}
            order by rt2.effective_priority desc, rt2.available_at asc, rt2.record_id asc
-           limit ? offset ?`;
+           limit ?`;
+    const cursorArgs = after ? [after.priority, after.priority, after.availableAt, after.availableAt, after.recordId] : [];
     return this.db.prepare(
       `select ${CANDIDATE_COLS} from records r join record_runtime rt on rt.record_id=r.id
          where rt.record_id in (${inner})
          order by rt.effective_priority desc, rt.available_at asc, r.id asc`,
-    ).all(selector.pattern.kind, ...d.params, limit, offset) as RawRow[];
+    ).all(selector.pattern.kind, ...d.params, ...cursorArgs, limit) as RawRow[];
   }
 
   private fetchEnvelopeRow(recordId: string): RawRow | null {

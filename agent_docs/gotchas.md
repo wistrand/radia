@@ -498,6 +498,16 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   idempotency key. Encode composite keys (`JSON.stringify([...])`) rather than joining on a
   separator no value can contain. Note `grep -P "\x00"` will not find these: grep suppresses binary
   matches.
+- **A queue is paged by KEYSET, never by OFFSET, and a CAS guards everything the read relied on.**
+  Both are the same mistake seen twice: assuming the rows you already looked at are still there. An
+  offset window assumes the rows BEFORE the cursor stay put, and in a queue those are exactly the
+  rows other claimers are removing, so each departure shifts the rest forward and the next window
+  skips them — `take` answering "nothing claimable" over a kind with work in it. And the
+  available-branch claim guarded only `state='available'`, so a record nacked into a backoff between
+  the read and the update was claimed anyway, under a stale epoch. Both adapters now page on the
+  claim order's own key (`ClaimCursor`, shared in `src/core/take.ts` so they cannot drift) and guard
+  on state, `available_at` and the epoch that was read. Neither is reachable on a single connection,
+  which is why both survived the embedded suites; staging them wants the fault matrix.
 - **The claim index must be ordered like the claim, and `state` must not lead it.** The candidate
   window sorts by `effective_priority desc, available_at asc, record_id asc`; an index only serves
   that if its columns are in that order. `idx_runtime_claim` is not (it leads with `available_at`)
