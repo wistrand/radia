@@ -192,6 +192,41 @@ export const taintSuites: Suite[] = [
     },
   },
   {
+    name: "taint: no allowlist may name the reserved label, though a raise still may",
+    run: async (adapter) => {
+      // "A label no allowlist may contain" was a comment, not a rule: `unknown` passed validation
+      // anywhere a label did, so `scope: {taint: "unknown"}` on a grant — or `allowTaint:
+      // ["unknown"]` on a take — admitted exactly the pre-labels records the marker holds back.
+      // Refused in the WIDENING direction only. A raise is monotone (a client marking its own
+      // record unclassifiable only narrows who will claim it), which is how the case above seeds
+      // a legacy row at all.
+      const space = newSpace(adapter);
+      assertEquals(await denied(() => space.take({ pattern: { kind: "task" } }, { allowTaint: ["unknown"] })), "invalid_taint");
+      assertEquals(
+        await denied(() => space.take({ pattern: { kind: "task" } }, { allowTaint: ["file", "unknown"] })),
+        "invalid_taint",
+        "…and it cannot ride along beside a real label",
+      );
+      assertEquals(
+        await denied(() =>
+          space.put({
+            kind: "grant",
+            body: { principal: "agent:w", kind: "task", operations: ["take"], scope: { taint: "unknown" } },
+          })
+        ),
+        "invalid_taint",
+        "a grant naming it is refused when ASSIGNED, not silently at claim time",
+      );
+
+      // The raise direction is unchanged, and an operator can still clear the marker: refusing that
+      // would leave a pre-labels record permanently unclaimable by anything stating a barrier.
+      const legacy = (await space.put({ kind: "task", body: { tag: "old" }, taint: ["unknown"] })).id;
+      const cleared = await space.declassify(legacy, "human:local", { labels: ["unknown"] });
+      assertEquals(cleared!.cleared, ["unknown"]);
+      assertEquals(await taintOf(space, cleared!.id), [], "the successor is claimable again");
+    },
+  },
+  {
     name: "taint: declassify clears ONE label and leaves the rest standing",
     run: async (adapter) => {
       // "Cleared" without "cleared of what" was the weakness of a bit: an operator who reviewed a

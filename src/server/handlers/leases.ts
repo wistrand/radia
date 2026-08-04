@@ -89,7 +89,9 @@ export async function handleTake(space: Space, req: Request, principal: string):
 
   const leaseSeconds = typeof j.leaseSeconds === "number" && j.leaseSeconds > 0 ? j.leaseSeconds : undefined;
   // The caller's own barrier: the labels it is willing to receive. `requireUntainted: true` used to
-  // mean "none"; the same intent is now an empty allowlist, stated as a list.
+  // mean "none"; the same intent is now an empty allowlist, stated as a list. Strict on the
+  // reserved label, unlike a raise: an allowlist naming `unknown` would admit every record written
+  // before labels existed, which is what that marker exists to hold back.
   const callerAllow = j.requireUntainted === true ? [] : clientTaint(j.allowTaint);
   try {
     // Authorize on the kind (from the pattern, or the record's own kind for a record-id take).
@@ -108,9 +110,8 @@ export async function handleTake(space: Space, req: Request, principal: string):
       // narrows `query`. Otherwise draining the queue reads every record of the kind. It cannot
       // ride in the pattern: `created_by` is envelope metadata, which patterns never see.
       createdBy = access.createdBy;
-      // The grant's barrier is ORed with the caller's own flag: a worker may always be MORE
-      // careful than its grants require, never less. Without this, `scope: {taint: "none"}` would
-      // be advice rather than enforcement.
+      // The grant's own barrier, carried to the intersection below: the principal cannot decline
+      // it, or `scope: {taint: "none"}` would be advice rather than enforcement.
       grantAllow = access.allowTaint;
     }
     const sel: TakeInput = recordId ? { recordId, pattern } : { pattern: pattern! };

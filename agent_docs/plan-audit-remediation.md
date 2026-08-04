@@ -1,7 +1,7 @@
 # Plan: audit remediation
 
 > Status: P, Q, R and S are open; **E, K, L, M and O are closed** (2026-08-03), **H, I and N** (2026-08-04); everything else is closed and
-> its guards pass (`deno task conformance`: 454 passed, 0 failed). Each done package is a status line here; its
+> its guards pass (`deno task conformance`: 456 passed, 0 failed). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
 > paths; items marked **reproduced** were verified empirically. Line numbers drift; trust the symbol,
@@ -40,7 +40,7 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | P   | Contracts nothing checks                | P2       | Drift in exactly the claims held loudest |
 | Q   | Designed features unreachable           | P2       | A built feature no caller can invoke   |
 | R   | Dead taint parameter; half-tested guard | P2       | Legibility, not leakage (see the entry) |
-| S   | Round-two reports, re-derived           | P1/P2    | 11 of 12 reproduce; the 2 wire-reachable ones **CLOSED 2026-08-04** |
+| S   | Round-two reports, re-derived           | P1/P2    | 11 of 12 reproduce; 7 **CLOSED 2026-08-04**; 4 open (3 need a pooled Postgres) |
 
 Packages A, B, C, D, E, F, G, H, I, J, K, L, M, N and O are closed. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
@@ -417,9 +417,10 @@ Guard for all three: a reachability test per feature that drives it through the 
 
 ## Package S: the round-two reports, re-derived (2026-08-04)
 
-All twelve were checked against source, and eleven reproduce; nothing was cleared. The two
-reachable from the wire are **FIXED**; the rest are recorded with a severity and are open. Ranked
-by whether a caller can reach them today.
+All twelve were checked against source, and eleven reproduce; nothing was cleared. **Closed
+(seven):** the two reachable from the wire, the reserved-label allowlist hole, and all four doc
+corrections. **Open (four):** three pooled-Postgres races the embedded suites structurally cannot
+see, and one efficiency item plus one silence. Ranked by whether a caller can reach them today.
 
 **Reachable from the wire — CLOSED 2026-08-04:**
 
@@ -464,7 +465,7 @@ by whether a caller can reach them today.
   resolving until the successor commits, so a quarantined run can still claim in that window. The
   sharper case is a throw between the two, which leaves leases quarantined and the run working.
 
-**Real but quiet:**
+**Real but quiet (one closed):**
 
 - **`readAccess` costs four storage reads per coordination verb.** VERIFIED by instrumenting the
   adapter: `grant` read three times (`authorize`, `authorScope`, `taintBarrier`) plus one
@@ -475,24 +476,44 @@ by whether a caller can reach them today.
   is fail-CLOSED in both directions (newest-first, so a retirement is inside the window while what
   it retires may not be), so the cost is silence rather than misauthorization. Content-keyed grant
   writes make the threshold implausible; surfacing it is still cheap.
-- **`parseTaintAllowlist` admits the reserved `unknown` label.** VERIFIED: `parseTaintAllowlist(
-  "unknown")` returns `["unknown"]`, so a grant can allow exactly the label that
-  `TAINT_UNKNOWN`'s own comment says "no allowlist may contain" — the barrier for records written
-  before labels existed. An explicit opt-in rather than an escalation, but it contradicts a stated
-  invariant that a conformance case is written against.
+- **`parseTaintAllowlist` admitted the reserved `unknown` label — CLOSED 2026-08-04.** VERIFIED:
+  it returned `["unknown"]`, so a grant could allow exactly the label `TAINT_UNKNOWN`'s own comment
+  says "no allowlist may contain", admitting every pre-labels record the marker holds back.
+  `normalizeTaint` refuses it now, with `{reserved: true}` for the two server paths that
+  legitimately handle it (a legacy record's stored labels travelling back out, and an operator
+  declassifying the marker — refusing that would leave such a record permanently unclaimable by
+  anything stating a barrier, with no remedy).
 
-**Doc/comment batch, all confirmed:**
+  **Refused in the WIDENING direction only**, which the suite forced into the open: the existing
+  "claimable by nothing that states a barrier" case seeds its legacy row by RAISING `unknown`, and
+  a blanket refusal broke it. That is the taint model's own asymmetry — raising is monotone, so a
+  client marking its own record unclassifiable only narrows who will claim it, while an allowlist
+  widens. `clientTaint` takes the same flag, so the two boundary raises (`put`, artifact header)
+  permit it and `take {allowTaint}` does not.
 
-- `handleTake` says the grant barrier is "ORed with the caller's own flag" eight lines above the
-  comment that correctly says the two INTERSECT. The code intersects.
-- `design-auth.md`'s taint section carries a corrected blockquote and then describes the OLD model
-  underneath it: `taint:false`, a "clean successor (same body, `taint:false`)", and a "known limit"
-  that taint is "one bit with no provenance". The blockquote contradicts its own section body.
-- `Space.mintOperatorToken` and `CredentialStore.addOperator` both say the operator token "resolves
-  to the privileged `human:local`". It resolves to `ctx.principal`, default **`local:dev`**, which
-  is privileged as the space's own identity. `human:local` is the named operator, a different thing.
-- `gotchas.md` says six kinds are defined in code; `RESERVED_KINDS` has **eight** (`interest` and
-  `shred` were added since).
+  Fixed the third path too, though nothing reported it: `Space.take` validated no allowlist at all,
+  so the check existed only at the HTTP boundary and an SDK/MCP/in-process caller walked past it.
+  It normalizes now, the same reason `compilePattern` validates its own input. Guard:
+  `suites/taint.ts`, "no allowlist may name the reserved label, though a raise still may" —
+  verified to fail with the check disabled.
+
+**Doc/comment batch — all four confirmed, all four CLOSED 2026-08-04:**
+
+- `handleTake` said the grant barrier is "ORed with the caller's own flag" eight lines above the
+  comment that correctly says the two INTERSECT. The code intersects; the stale half is gone.
+- `design-auth.md`'s taint section carried a corrected blockquote and then described the OLD model
+  underneath it (`taint:false`, a successor with "same body, `taint:false`", and a "known limit"
+  that taint is "one bit with no provenance"). The body now matches the blockquote: labels union,
+  a client may only ADD, declassify is per-label, and the real limit is that a label says WHAT was
+  touched rather than which ancestor contributed it.
+- `Space.mintOperatorToken` and `CredentialStore.addOperator` both said the operator token "resolves
+  to the privileged `human:local`". It resolves to `SpaceContext.principal` (`local:dev` by
+  default), which `isPrivileged` covers as the space's own identity. `human:local` is the NAMED
+  operator, a principal a person can hold — a distinction the whole "privilege is a named set, not
+  a name prefix" rule rests on, so the two docstrings were undoing it.
+- `gotchas.md` said six kinds are defined in code; `RESERVED_KINDS` has eight (`interest` and
+  `shred` arrived without the sentence being updated). It now names all eight and points at the
+  list, so the next addition has one place to look.
 
 ## Extends Package E: the array-index hole is in the SHARED path — CLOSED 2026-08-03
 

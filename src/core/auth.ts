@@ -59,7 +59,8 @@ export class CredentialStore {
   #operatorHashes = new Set<string>();
   #agentByRun = new Map<string, string>();
 
-  /** Register an operator token hash (resolves to the privileged `human:local`). */
+  /** Register an operator token hash. It resolves to the space's own principal (privileged), not
+   *  to `human:local`, which is the named operator a PERSON can hold. */
   addOperator(hash: string): void {
     this.#operatorHashes.add(hash);
   }

@@ -119,15 +119,33 @@ export const TAINT_UNKNOWN = "unknown";
 
 const VALID_TAINT = new Set<string>([...TAINT_LABELS, TAINT_UNKNOWN]);
 
-/** Normalize a client-supplied or stored label set: sorted, deduplicated, validated.
- *  An unrecognized label is REFUSED rather than dropped; silently ignoring one would let a caller
- *  believe it had restricted a record that is in fact unrestricted. */
-export function normalizeTaint(labels: readonly string[] | undefined): string[] {
+/**
+ * Normalize a label set: sorted, deduplicated, validated. An unrecognized label is REFUSED rather
+ * than dropped; silently ignoring one would let a caller believe it had restricted a record that is
+ * in fact unrestricted.
+ *
+ * `unknown` is RESERVED and refused by default, because the sentence above it only holds if no
+ * allowlist can name it: it was accepted anywhere a label was, so a grant could say
+ * `scope: {taint: "unknown"}` and claim exactly the pre-labels records the marker exists to hold
+ * back. `reserved: true` is for the two server paths that legitimately handle it — a legacy
+ * record's stored labels travelling back out, and an operator declassifying the marker itself.
+ */
+export function normalizeTaint(
+  labels: readonly string[] | undefined,
+  opts: { reserved?: boolean } = {},
+): string[] {
   if (!labels || labels.length === 0) return [];
   const out = new Set<string>();
   for (const l of labels) {
     if (!VALID_TAINT.has(l)) {
       throw new RadiaError("invalid_taint", `unknown taint label '${l}'; the vocabulary is ${[...TAINT_LABELS].join(", ")}`);
+    }
+    if (l === TAINT_UNKNOWN && !opts.reserved) {
+      throw new RadiaError(
+        "invalid_taint",
+        `'${TAINT_UNKNOWN}' is reserved: it marks records written before labels existed, so nothing ` +
+          `a client states may name it. A barrier that admits it admits every such record.`,
+      );
     }
     out.add(l);
   }
@@ -147,18 +165,25 @@ export function parseTaintAllowlist(value: string): string[] {
   return normalizeTaint(value.split(",").map((v) => v.trim()).filter(Boolean));
 }
 
-/** Labels a CLIENT raised, from a JSON array or a comma-separated header. Anything that is not a
- *  recognized label is refused by `normalizeTaint`; `undefined` means the client raised nothing. */
-export function clientTaint(raw: unknown): string[] | undefined {
+/**
+ * Labels from a client, as a JSON array or a comma-separated header. Anything unrecognized is
+ * refused by `normalizeTaint`; `undefined` means the client stated nothing.
+ *
+ * `reserved` marks the RAISE direction, where `unknown` is allowed. The asymmetry is the taint
+ * model's own: raising is monotone, so a client marking its record unclassifiable only narrows who
+ * will claim it, which is its own foot. An ALLOWLIST widens, so it may never name the reserved
+ * label — that is the direction that turns the pre-labels marker into no marker at all.
+ */
+export function clientTaint(raw: unknown, opts: { reserved?: boolean } = {}): string[] | undefined {
   if (raw === undefined || raw === null) return undefined;
   // An EMPTY ARRAY is not absence. As a raise it means "no labels", and as an allowlist it means
   // "accept nothing classified" — which is the strictest barrier there is. Collapsing it to
   // `undefined` turned the strictest possible request into no barrier at all.
-  if (Array.isArray(raw)) return normalizeTaint(raw.map(String));
+  if (Array.isArray(raw)) return normalizeTaint(raw.map(String), opts);
   // A comma list, for headers, which can only carry strings. An empty one is absence.
   if (typeof raw === "string") {
     const parts = raw.split(",").map((v) => v.trim()).filter(Boolean);
-    return parts.length === 0 ? undefined : normalizeTaint(parts);
+    return parts.length === 0 ? undefined : normalizeTaint(parts, opts);
   }
   throw new RadiaError("invalid_taint", "taint must be an array of labels");
 }

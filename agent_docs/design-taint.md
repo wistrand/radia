@@ -184,6 +184,14 @@ label that **no allowlist may contain**, so a legacy tainted record is claimable
 states a barrier. That is fail-closed and honest: the space does not know what those records
 touched, and pretending otherwise is the failure this whole change exists to avoid.
 
+That sentence was a comment before it was a rule: `normalizeTaint` accepted `unknown` wherever it
+accepted a label, so `scope: {taint: "unknown"}` on a grant admitted exactly these records. It is
+refused in the WIDENING direction only — an allowlist (a grant's scope, `take {allowTaint}`) may
+not name it, while a client RAISE still may, because raising is monotone and only narrows who will
+claim the raiser's own record. Two server paths keep naming it: a legacy record's stored labels
+travelling back out, and an operator declassifying the marker, which is the only remedy such a
+record has.
+
 ## The counter-argument
 
 Decentralised information-flow control (Asbestos, HiStar, Flume) is academically successful and

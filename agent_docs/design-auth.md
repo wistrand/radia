@@ -184,8 +184,8 @@ Cross-cutting versions are in [CLAUDE.md](../CLAUDE.md); detail here is authorit
   a label, and a declassify records the principal that performed it and WHICH labels it cleared.
 - A grant states which labels a claim may carry with `scope.taint`, an ALLOWLIST (`"none"` is the
   empty one). `allowTaint` on a take is the
-  worker's own flag, so on its own it is a convention; the grant-side barrier is what an operator
-  imposes. It applies only when every applicable grant carries it, because grants union.
+  worker's own allowlist, so on its own it is a convention; the grant-side barrier is what an
+  operator imposes. It applies only when every applicable grant carries it, because grants union.
 
 ## Principals
 
@@ -335,7 +335,7 @@ flowchart TB
     LE["claimed lease<br/>(lease_owner → agent)"] -->|"AUTHORITY lineage"| R["record emitted by ack"]
     PA["parent_ids<br/>(data parents)"] -->|"DATA lineage: taint = UNION(parents)"| R
     R --> DC["delegation_context.chain<br/>(who authorized this)"]
-    R --> TX["taint flag<br/>(is this untrusted data)"]
+    R --> TX["taint labels<br/>(what class of thing it touched)"]
 ```
 
 The two never cross: a tainted (untrusted) data parent still grants no authority, and a
@@ -371,28 +371,27 @@ link should print the plain artifact URL and let the viewer authenticate normall
 > the mechanism, which is unchanged.
 
 **Built (M1):** taint is untrusted **data** lineage, server-computed at commit
-(`Space.computeTaint`, used by put and ack): a record is tainted if a client **raised** it
-(`taint:true`, the source attestation) or **any `parent_ids` data parent is tainted**. It
-propagates through `ack` (the leased record is a data parent, so a tainted task → tainted
-result). A client may only *raise* taint; `taint:false` from a client is ignored. Clearing
-requires a privileged **declassify** (`POST /v0/ops/records/{id}/declassify`, operator-gated),
-which emits a **clean successor** (same body, `taint:false`, tainted original as its data
-parent). A sensitive consumer states which labels it accepts with `take {allowTaint}` (a claim-time
-taint barrier, `core/take.ts`). See [design-data-model.md](design-data-model.md) "Provenance vs.
-authority". Deferred: per-principal trust classification (auto-tainting untrusted principals'
+(`Space.computeTaint`, used by put and ack): a record carries the UNION of its own raised labels and
+every `parent_ids` data parent's. It propagates through `ack` (the leased record is a data parent,
+so a tainted task → tainted result). A client may only ADD labels; removing one is ignored, since
+raising is monotone and needs no trust. Clearing requires a privileged **declassify**
+(`POST /v0/ops/records/{id}/declassify`, operator-gated), which emits a **successor carrying the
+remaining labels**, with the original as its data parent — per-label, so clearing `file` leaves
+`net` standing. A sensitive consumer states which labels it accepts with `take {allowTaint}` (a
+claim-time ALLOWLIST, `core/take.ts`). See [design-data-model.md](design-data-model.md) "Provenance
+vs. authority". Deferred: per-principal trust classification (auto-tainting untrusted principals'
 puts) and the taint-composed chain-intersection policy (M3).
 
-The grant-side barrier (invariant above) is `Space.taintBarrier`: it reports whether every
-applicable grant carries `scope: {taint: "none"}`, and `handleTake` ORs the answer into the
-caller's own `allowTaint`, so the principal cannot decline it; the two INTERSECT, since a caller
-may narrow what it accepts and may never widen past what its grants permit.
+The grant-side barrier is `Space.taintBarrier`: it reports the allowlist every applicable grant
+agrees on (their UNION, since grants widen), and `handleTake` INTERSECTS that with the caller's own
+`allowTaint` — a caller may narrow what it accepts and may never widen past what its grants permit.
 
 **Known limits of the model, both real today:**
 
-- Taint is **one bit with no provenance**. A client-raised taint and an inherited one are
-  indistinguishable, and nothing records which parent raised it. Re-deriving "untrusted because of
-  which parent" means walking lineage and reading each ancestor's bit, which is ambiguous once more
-  than one ancestor is tainted.
+- A label says WHAT class of thing a record touched, not WHICH ancestor contributed it. Provenance
+  is in the log rather than the envelope, so "untrusted because of which parent" is a lineage walk —
+  deliberately, since a label exists only where that walk is too slow (see
+  [design-taint.md](design-taint.md)).
 - Taint is envelope state, so **no pattern can filter on it** in a query, a watch, or a grant
   pattern ([design-matching.md](design-matching.md)). Classification is enforced at claim time but
   is invisible to the language used for routing.

@@ -749,7 +749,9 @@ export class Space {
     clientRaise: string[] | undefined,
     writer: string,
   ): Promise<string[]> {
-    const labels = new Set<string>(normalizeTaint(clientRaise));
+    // A RAISE may name the reserved label (see `clientTaint`): it only restricts the writer's
+    // own record. The allowlist direction is where it is refused.
+    const labels = new Set<string>(normalizeTaint(clientRaise, { reserved: true }));
     for (const pid of parentIds) {
       const p = await this.storage.getRecord(pid);
       if (!p) continue;
@@ -975,10 +977,11 @@ export class Space {
     return { applied: true, quarantined };
   }
 
-  /** Mint an operator token (resolves to the privileged `human:local`, no expiry) for the bundled
-   *  dev console. Not a record: it is a server-lifetime bootstrap credential; the server re-mints
-   *  one at startup and injects it into the served UI so the console authenticates like any
-   *  client. */
+  /** Mint an operator token: no expiry, and it resolves to the SPACE'S OWN principal
+   *  (`SpaceContext.principal`, `local:dev` by default), which `isPrivileged` covers. Not
+   *  `human:local` — that is the named operator in `ctx.operators`, a different principal that a
+   *  person can hold. Not a record either: a server-lifetime bootstrap credential, re-minted at
+   *  startup, which is why it cannot be revoked and does not need to be. */
   async mintOperatorToken(): Promise<string> {
     const { token, hash } = await mintCredential();
     this.creds.addOperator(hash);
@@ -1161,7 +1164,7 @@ export class Space {
     // any data parent tainted. A client can only RAISE taint; clearing needs a privileged declassify.
     const writer = opts.principal ?? this.ctx.principal;
     const taint = opts.taint !== undefined
-      ? normalizeTaint(opts.taint)
+      ? normalizeTaint(opts.taint, { reserved: true }) // declassify's remainder: server-computed
       : await this.computeTaint(req.parentIds ?? [], req.taint, writer);
     const { record, bodyJson } = await buildRecord(req, {
       principal: opts.principal ?? this.ctx.principal, // created_by = the resolved caller
@@ -1732,7 +1735,10 @@ export class Space {
       leaseSeconds: opts.leaseSeconds ?? this.ctx.defaultLeaseSeconds,
       maxCumulativeSeconds: this.ctx.maxCumulativeSeconds,
       maxAttempts: this.ctx.maxAttempts,
-      allowTaint: opts.allowTaint,
+      // Validated HERE, not only at the HTTP boundary: the SDK, the MCP adapter and in-process
+      // callers never pass through a handler, the same reason `compilePattern` validates its own
+      // input. An allowlist is the widening direction, so the reserved label is refused.
+      allowTaint: opts.allowTaint ? normalizeTaint(opts.allowTaint) : undefined,
       createdBy: opts.createdBy,
     };
     const selector: TakeSelector = "recordId" in sel
@@ -2404,7 +2410,11 @@ export class Space {
     // an operator clear the one they reviewed and leave the rest standing, which is the difference
     // between a decision and a blanket.
     const present = rec.runtimeMeta.taint;
-    const cleared = opts.labels ? normalizeTaint(opts.labels).filter((l) => present.includes(l)) : present;
+    // `reserved: true`: an operator may name `unknown` here. Refusing it would leave a pre-labels
+    // record permanently unclaimable by anything that states a barrier, with no remedy.
+    const cleared = opts.labels
+      ? normalizeTaint(opts.labels, { reserved: true }).filter((l) => present.includes(l))
+      : present;
     const remaining = present.filter((l) => !cleared.includes(l));
     // ATTRIBUTED. Declassify is the one operation whose whole purpose is accountability (it is
     // the human decision that lets untrusted data reach a side-effecting worker), so it must name

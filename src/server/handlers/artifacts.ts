@@ -116,7 +116,7 @@ export async function handlePutArtifact(space: Space, req: Request, principal: s
         filename,
         appFields,
         parentIds: parentIds.length ? parentIds : undefined,
-        taint: clientTaint(req.headers.get("x-radia-taint")),
+        taint: clientTaint(req.headers.get("x-radia-taint"), { reserved: true }), // a RAISE
       },
       req.headers.get("Idempotency-Key") ?? undefined,
       principal,

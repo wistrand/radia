@@ -15,7 +15,7 @@ import { clientTaint } from "../../core/kinds.ts";
 function bodyTaint(raw: unknown): string[] | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (!Array.isArray(raw)) throw new RadiaError("invalid_taint", "taint must be an array of labels");
-  return clientTaint(raw);
+  return clientTaint(raw, { reserved: true }); // a RAISE; see clientTaint
 }
 import type { PutRequest } from "../../core/record.ts";
 import { combineMatch, type Pattern } from "../../core/matching.ts";

@@ -195,9 +195,10 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Registries, and reads that must not truncate
 
-- **`listKinds()` does not list every kind.** It reads `kind_def` RECORDS, and six kinds are defined
-  in code instead (`kind_def`, `grant`, `signal`, `agent_definition`, `agent_run`, `artifact`; see
-  `RESERVED_KINDS`). Anything answering "does this kind exist" must add them, or it will report that
+- **`listKinds()` does not list every kind.** It reads `kind_def` RECORDS, and EIGHT kinds are
+  defined in code instead (`kind_def`, `grant`, `signal`, `agent_definition`, `agent_run`,
+  `artifact`, `interest`, `shred`; see `RESERVED_KINDS`, which is the list — this entry said six
+  until two more were added without it). Anything answering "does this kind exist" must add them, or it will report that
   `artifact` is not a kind while the caller is successfully counting artifacts.
 - **Filtering a cursor-paged endpoint breaks paging unless the cursor is reported separately.** An
   empty page is how every caller detects the end of a log, so a page whose events were all withheld
