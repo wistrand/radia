@@ -465,6 +465,13 @@ is guessing. Two entries, each justified by an observed failure:
 | `createdBy: "self"` | records whose author resolves to my agent | "what did I create in this space" → 403 |
 | `leaseOwner: "self"` | records my RUN currently holds | a worker reporting its own stuck work (build order step 3/5) |
 
+`leaseOwner` is **designed, not built, and REFUSED** at grant-write time until it is. It validated
+and narrowed nothing for a while, which is worse than refusing: `authorScope` restricts only when
+every applicable grant is `createdBy`-scoped, so a grant carrying `leaseOwner` alone read as
+unrestricted and an operator's narrowing scope silently widened. Building it means an envelope-side
+filter on `lease_owner` in every read verb, so it reaches the storage port (a `query` reads
+`records` and would have to join `record_runtime`).
+
 Deferred until something needs them: `delegatedBy` (work emitted under my lease, which needs the
 `delegation_context` shape settled), and any envelope *value* predicate (`state`, `attempt`), which
 the existing ops selectors already express and which a self-scope only has to intersect with.

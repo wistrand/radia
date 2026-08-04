@@ -1377,6 +1377,13 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   question — whether the materialisation cache that decision requires is cheap or even buildable —
   was never measured and is still unbuilt. When a measurement decides something, write down what it
   did NOT decide, or the confidence leaks sideways.
+- **Validating a knob you do not enforce is worse than refusing it.** `scope: {leaseOwner: "self"}`
+  passed grant validation and narrowed nothing, and the failure direction is what matters:
+  `authorScope` restricts only when EVERY applicable grant is `createdBy`-scoped, so a grant
+  carrying only the unenforced key read as unrestricted. The operator wrote a narrowing scope and
+  got none, silently, in the widening direction. Refused at grant-write time until it is built. The
+  general shape: a vocabulary entry is a PROMISE, so ship it with the enforcement or refuse it —
+  accepting it is the only option that lies.
 - **An invariant that names a guard which is not running is the loudest kind of drift.** CLAUDE.md
   said the conformance suite runs against every implementation of every port "in CI from day one";
   the live-Postgres run was manual and the repo had no CI at all. The embedded adapters are

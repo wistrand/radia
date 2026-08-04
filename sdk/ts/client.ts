@@ -487,9 +487,22 @@ export class RadiaClient {
     return this.req("POST", "/v0/ops/remediate", { action, ...selector });
   }
 
-  /** Privileged declassify (operator): emit a clean (untainted) successor of a tainted record. */
-  declassify(recordId: string): Promise<{ declassifiedFrom: string; id: string }> {
-    return this.req("POST", `/v0/ops/records/${encodeURIComponent(recordId)}/declassify`);
+  /**
+   * Privileged declassify (operator): emit a successor carrying the labels that were NOT cleared.
+   *
+   * `labels` names which to clear; omitted, it clears all of them. Per-label is the point — a
+   * clearance that cannot say what it was FOR is the blanket the label vocabulary replaced — and
+   * the answer reports `cleared` and `remaining` so the caller sees what still stands.
+   */
+  declassify(
+    recordId: string,
+    labels?: string[],
+  ): Promise<{ declassifiedFrom: string; id: string; cleared: string[]; remaining: string[] }> {
+    return this.req(
+      "POST",
+      `/v0/ops/records/${encodeURIComponent(recordId)}/declassify`,
+      labels ? { labels } : undefined,
+    );
   }
 
   async getLineage(recordId: string): Promise<{ record: RadiaRecord; depth: number }[]> {

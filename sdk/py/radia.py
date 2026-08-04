@@ -629,11 +629,17 @@ class RadiaClient:
             body["limit"] = limit
         return self._req("POST", "/v0/ops/remediate", body)
 
-    def declassify(self, record_id: str) -> Dict[str, Any]:
-        """Privileged: emit a clean (untainted) successor of a tainted record."""
+    def declassify(self, record_id: str, labels: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+        """Privileged: emit a successor carrying the labels that were NOT cleared.
+
+        ``labels`` names which to clear; omitted, it clears all of them. The answer reports
+        ``cleared`` and ``remaining``, because a clearance that cannot say what it was FOR is the
+        blanket the label vocabulary replaced.
+        """
         from urllib.parse import quote
 
-        return self._req("POST", f"/v0/ops/records/{quote(record_id)}/declassify")
+        body = {"labels": list(labels)} if labels is not None else None
+        return self._req("POST", f"/v0/ops/records/{quote(record_id)}/declassify", body)
 
     # -- watches --
 

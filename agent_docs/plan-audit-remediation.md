@@ -1,7 +1,7 @@
 # Plan: audit remediation
 
-> Status: Q, R and S are open; **E, K, L, M and O are closed** (2026-08-03), **H, I, N and P** (2026-08-04); everything else is closed and
-> its guards pass (`deno task conformance`: 458 passed, 0 failed; 634 with a live Postgres). Each done package is a status line here; its
+> Status: R and S are open; **E, K, L, M and O are closed** (2026-08-03), **H, I, N, P and Q** (2026-08-04); everything else is closed and
+> its guards pass (`deno task conformance`: 461 passed, 0 failed; 634+ with a live Postgres). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
 > [gotchas.md](gotchas.md), which outlives this plan. Every item was substantiated against real code
 > paths; items marked **reproduced** were verified empirically. Line numbers drift; trust the symbol,
@@ -38,11 +38,11 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~N~~ | ~~`clientMeta` escapes the body guards~~ | ~~P2~~ | **CLOSED 2026-08-04**                 |
 | ~~O~~ | ~~Multi-instance freshness + ordering~~ | ~~P1~~   | **CLOSED 2026-08-03**                 |
 | ~~P~~ | ~~Contracts nothing checks~~          | ~~P2~~   | **CLOSED 2026-08-04**                 |
-| Q   | Designed features unreachable           | P2       | A built feature no caller can invoke   |
+| ~~Q~~ | ~~Designed features unreachable~~     | ~~P2~~   | **CLOSED 2026-08-04**                 |
 | R   | Dead taint parameter; half-tested guard | P2       | Legibility, not leakage (see the entry) |
 | S   | Round-two reports, re-derived           | P1/P2    | 11 of 12 reproduce; 7 **CLOSED 2026-08-04**; 4 open (3 need a pooled Postgres) |
 
-Packages A, B, C, D, E, F, G, H, I, J, K, L, M, N, O and P are closed. Their lessons are rules in
+Packages A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P and Q are closed. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -418,21 +418,39 @@ run was manual — an invariant that names a guard which is not running, which i
 drift. The repo had no CI at all, so this is the first workflow. Verified locally with the exact
 command the job runs: **634 passed, 0 failed** (458 embedded + 176 postgres).
 
-## Package Q: designed features unreachable (P2)
+## Package Q: designed features unreachable (P2) — CLOSED 2026-08-04
 
-Each of these is BUILT and cannot be invoked, which is a distinct failure from a bug: the code is
-correct and the path to it is missing, so tests of the unit pass while nothing exercises the design.
+Each of these was BUILT and could not be invoked, which is a distinct failure from a bug: the code
+is correct and the path to it is missing, so tests of the unit pass while nothing exercises the
+design. Every guard drives the OUTERMOST surface for that reason (`conformance/http.test.ts`), and
+all three were verified to fail against the old behaviour.
 
-- **Per-label declassify.** `Space.declassify` takes `{labels}`; the HTTP handler
-  (`src/server/handlers/ops.ts`) ignores the request body and always clears everything, and the SDK
-  method takes only a record id. The per-label design has no caller.
-- **`scope: {leaseOwner: "self"}`** validates in a grant and is enforced nowhere.
-- **Pattern-scoped artifact `put` grants on an app field** can never be satisfied, because the grant
-  check runs before `appFields` are parsed (already in the deferred batch below; listed here because
-  it is the same shape, not a separate bug class).
-
-Guard for all three: a reachability test per feature that drives it through the OUTERMOST surface
-(HTTP or CLI), not through `Space`. The unit tests for these pass today.
+- **Per-label declassify, reachable.** `Space.declassify` has always taken `{labels}` and the SPEC
+  already described the behaviour ("the named labels removed… the response and the event both
+  record which were `cleared` and which `remaining`"); the handler ignored the request body and
+  cleared everything, and returned an id alone. So the documented feature had no caller and the
+  answer could not say what a clearance was FOR — the exact weakness per-label exists to remove.
+  The handler parses `{labels}`, reports `cleared`/`remaining`, 400s an unrecognized label rather
+  than 500ing from inside the core, and an absent body still means "all of them". Both SDKs take an
+  optional `labels`, and the spec gained the `requestBody` it was describing without documenting.
+- **`scope: {leaseOwner: "self"}` REFUSED rather than enforced,** which is a scope call worth
+  stating. It validated and narrowed nothing: `authorScope` restricts only when every applicable
+  grant says `createdBy: "self"`, so a grant carrying `leaseOwner` alone read as UNRESTRICTED — an
+  operator wrote a narrowing scope, got no narrowing, silently, in the widening direction.
+  Enforcing it is not a line but a feature: an envelope-side filter on `lease_owner` in every read
+  verb, which means the storage port, since a `query` reads `records` and would have to join
+  `record_runtime`. Inventing that semantics for take/lineage/graph on the way past is how a
+  "reachability fix" becomes an unreviewed feature, so the key is refused at grant-write time until
+  it is built. `design-auth.md`'s selector table keeps it, marked not-built.
+- **Pattern-scoped artifact `put` grants on an app field, satisfiable.** The grant check ran against
+  `{mediaType}` alone, BEFORE `x-radia-meta` was parsed, so a grant scoped to an app field — the
+  shape the chat uses for `conversationId` — matched a body that structurally could not carry the
+  field, and every write 403'd. The parse moved above the check, which now matches everything
+  knowable before the payload, composed in `putArtifact`'s order (app fields first, the runtime's
+  own last and unforgeable). A pattern naming `digest` or `size` still cannot be satisfied and
+  deliberately: those are unknown until the bytes are read, and buffering 32 MiB to answer an
+  authorization question is a free denial of service. Said in the comment rather than left as the
+  next instance of this bug class.
 
 ## Package S: the round-two reports, re-derived (2026-08-04)
 

@@ -17,6 +17,7 @@ import { assert, assertEquals } from "@std/assert";
 import { makeArtifactHandler, makeHandler } from "../src/server/http.ts";
 import { Space } from "../src/core/space.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
+import { RadiaError } from "../src/core/errors.ts";
 
 type Handler = (req: Request) => Promise<Response>;
 
@@ -44,6 +45,16 @@ function post(path: string, body: unknown, headers: Record<string, string> = {})
 
 function get(path: string, headers: Record<string, string> = {}): Request {
   return new Request(`http://t${path}`, { headers });
+}
+
+/** The error CODE a call raised, or undefined if it succeeded. */
+async function denied(fn: () => Promise<unknown>): Promise<string | undefined> {
+  try {
+    await fn();
+    return undefined;
+  } catch (e) {
+    return e instanceof RadiaError ? e.code : `unexpected: ${e}`;
+  }
 }
 
 /** Drain a response so an unread body never leaks a resource into the next test. */
@@ -861,6 +872,115 @@ Deno.test("http: a shred marker cannot be forged by a participant", async () => 
     }
     assert(refused !== "wrote it", "a grant must not be enough to write a shred marker");
     assert(/operator/.test(refused), refused);
+  } finally {
+    await close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Reachability (audit package Q). Each of these was BUILT and could not be invoked, which is a
+// distinct failure from a bug: the unit tests passed while nothing exercised the design. So each
+// case drives the OUTERMOST surface — the same request a client sends — rather than `Space`.
+// ---------------------------------------------------------------------------
+
+Deno.test("http: declassify clears the NAMED labels, not always everything", async () => {
+  const { space, handler, close } = await newHandler();
+  try {
+    const { id } = await space.put({ kind: "task", body: { tag: "t" }, taint: ["file", "net"] });
+
+    // Per-label has been in `Space.declassify` and in the SPEC all along; the handler ignored the
+    // body and cleared everything, so the design had no caller and the documented behaviour was
+    // unreachable.
+    const res = await handler(post(`/v0/ops/records/${id}/declassify`, { labels: ["file"] }));
+    assertEquals(res.status, 200);
+    const out = await res.json();
+    assertEquals(out.cleared, ["file"]);
+    assertEquals(out.remaining, ["net"], "the label nobody reviewed still stands");
+    assertEquals((await space.getRecord(out.id))!.runtimeMeta.taint, ["net"]);
+
+    // No body still means "all of them", which is what a caller naming nothing means.
+    const all = await handler(post(`/v0/ops/records/${out.id}/declassify`, {}));
+    assertEquals((await all.json()).remaining, []);
+
+    // A label outside the closed vocabulary is a 400, not a 500 from inside the core.
+    const bad = await handler(post(`/v0/ops/records/${id}/declassify`, { labels: ["nonsense"] }));
+    assertEquals(bad.status, 400);
+    await drain(bad);
+  } finally {
+    await close();
+  }
+});
+
+Deno.test("http: a pattern-scoped artifact put grant can be satisfied by an app field", async () => {
+  const { space, handler, close } = await newHandler({ authRequired: true });
+  try {
+    // The grant check ran against `{mediaType}` alone, before `x-radia-meta` was parsed, so a
+    // grant scoped to an app field (the shape the chat uses for `conversationId`) matched a body
+    // that structurally could not carry the field. Fail-closed, and unusable.
+    // The app field has to be an INDEXED path for a pattern to compile against it, so the kind is
+    // extended exactly as the chat extends it — a reserved kind may be extended, never shrunk, and
+    // a redeclaration REPLACES rather than merges, so the runtime's own paths are repeated.
+    space.registerKind({
+      kind: "artifact",
+      indexedPaths: [
+        { path: "digest", type: "keyword" },
+        { path: "mediaType", type: "keyword" },
+        { path: "conversationId", type: "keyword" },
+      ],
+      claimable: false,
+    });
+    const { definitionToken } = await space.createAgentDefinition("agent:w", [
+      { principal: "agent:w", kind: "artifact", operations: ["put"], pattern: { conversationId: "c1" } },
+    ]);
+    const { runToken } = await space.mintRun(definitionToken);
+    const auth = { authorization: `Bearer ${runToken}` };
+
+    const write = (meta?: string) =>
+      handler(
+        new Request("http://t/v0/artifacts", {
+          method: "POST",
+          headers: { "content-type": "text/plain", ...auth, ...(meta ? { "x-radia-meta": meta } : {}) },
+          body: "hello",
+        }),
+      );
+
+    const inside = await write(JSON.stringify({ conversationId: "c1" }));
+    assertEquals(inside.status, 201, "an artifact carrying the scoped field is accepted");
+    await drain(inside);
+
+    const outside = await write(JSON.stringify({ conversationId: "c2" }));
+    assertEquals(outside.status, 403, "…and another conversation's is still refused");
+    await drain(outside);
+
+    const bare = await write(undefined);
+    assertEquals(bare.status, 403, "…as is one with no field at all");
+    await drain(bare);
+  } finally {
+    await close();
+  }
+});
+
+Deno.test("http: a grant may not carry a scope key nothing enforces", async () => {
+  const { space, close } = await newHandler();
+  try {
+    // `leaseOwner: "self"` validated and narrowed nothing: `authorScope` restricts only when every
+    // applicable grant says `createdBy: "self"`, so a grant carrying this one read as UNRESTRICTED.
+    // An operator wrote a narrowing scope and got no narrowing, in the widening direction. Refused
+    // until it is enforced, which needs an envelope filter every read verb applies.
+    const err = await denied(() =>
+      space.put({
+        kind: "grant",
+        body: { principal: "agent:w", kind: "task", operations: ["query"], scope: { leaseOwner: "self" } },
+      })
+    );
+    assertEquals(err, "invalid_grant");
+    // The scope key that IS enforced still works, so this is a refusal and not a retreat.
+    assert(
+      await space.put({
+        kind: "grant",
+        body: { principal: "agent:w", kind: "task", operations: ["query"], scope: { createdBy: "self" } },
+      }),
+    );
   } finally {
     await close();
   }

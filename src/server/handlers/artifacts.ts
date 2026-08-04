@@ -78,22 +78,14 @@ export async function handlePutArtifact(space: Space, req: Request, principal: s
     // Header validation FIRST: a bad media type or filename is knowable before a single byte is
     // read, and buffering 32MB only to reject the headers is a free denial-of-service.
     validateArtifactDef({ digest: "", size: 0, mediaType, filename });
-    // A pattern-scoped artifact grant matches on the record body, which is metadata. The scope
-    // can therefore say "this principal may only write image/png artifacts", checked before any
-    // bytes are stored.
-    const constraint = await space.authorize(principal, "put", ARTIFACT);
-    if (constraint && !space.bodyMatchesGrant(ARTIFACT, { mediaType }, constraint)) {
-      return problem(403, "forbidden", `artifact mediaType '${mediaType}' is outside the pattern scope of your put grant`);
-    }
-    const bytes = await readCapped(req, space.maxArtifactBytes);
-    if (bytes === "too_large") {
-      return problem(413, "artifact_too_large", `artifact exceeds the ${space.maxArtifactBytes}-byte limit`);
-    }
-    if (bytes.byteLength === 0) return problem(400, "invalid_body", "artifact body is empty");
-    const parentIds = (req.headers.get("x-radia-parent-ids") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
     // Application fields for the record body, as JSON in a header. A header is a ByteString, so
     // non-ASCII is rejected rather than silently mangled, the same rule that made idempotency keys
     // hashes rather than content (see gotchas.md). Bytes belong in the body; this is metadata.
+    //
+    // Parsed BEFORE authorization, which is the whole fix: the grant check ran against `{mediaType}`
+    // alone, so a pattern-scoped put grant on an app field (`{conversationId: "c1"}`, the shape the
+    // chat uses) could never be satisfied and every write 403'd. Fail-closed, and a feature nobody
+    // could use.
     const metaHeader = req.headers.get("x-radia-meta");
     let appFields: Record<string, unknown> | undefined;
     if (metaHeader) {
@@ -109,6 +101,24 @@ export async function handlePutArtifact(space: Space, req: Request, principal: s
         return problem(400, "invalid_artifact", "x-radia-meta must be a JSON object of field → scalar");
       }
     }
+    // A pattern-scoped artifact grant matches on the record body, which is metadata. The scope can
+    // therefore say "only image/png" or "only this conversation", checked before any bytes are
+    // stored. Matched against everything KNOWABLE before the payload, in the order `putArtifact`
+    // composes it (app fields first, the runtime's own last and unforgeable). A pattern naming
+    // `digest` or `size` still cannot be satisfied here, and deliberately: those are not known
+    // until the bytes are read, and buffering 32MB to answer an authorization question is a free
+    // denial of service.
+    const constraint = await space.authorize(principal, "put", ARTIFACT);
+    const scopeBody = { ...appFields, mediaType, ...(filename ? { filename } : {}) };
+    if (constraint && !space.bodyMatchesGrant(ARTIFACT, scopeBody, constraint)) {
+      return problem(403, "forbidden", `this artifact is outside the pattern scope of your put grant`);
+    }
+    const bytes = await readCapped(req, space.maxArtifactBytes);
+    if (bytes === "too_large") {
+      return problem(413, "artifact_too_large", `artifact exceeds the ${space.maxArtifactBytes}-byte limit`);
+    }
+    if (bytes.byteLength === 0) return problem(400, "invalid_body", "artifact body is empty");
+    const parentIds = (req.headers.get("x-radia-parent-ids") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
     const out = await space.putArtifact(
       bytes,
       {

@@ -7,7 +7,8 @@
 
 import type { Space } from "../../core/space.ts";
 import type { RecordState, StatsScope } from "../../storage/adapter.ts";
-import { problem } from "../problem.ts";
+import { problem, statusFor } from "../problem.ts";
+import { RadiaError } from "../../core/errors.ts";
 
 /**
  * How a scoped response describes itself.
@@ -323,11 +324,53 @@ export async function handleThread(
   });
 }
 
-/** Privileged declassify (operator-gated via the /ops boundary): emit a clean successor. */
-export async function handleDeclassify(space: Space, recordId: string, principal: string): Promise<Response> {
-  const out = await space.declassify(recordId, principal);
-  if (!out) return problem(404, "not_found", `no record ${recordId}`);
-  return Response.json({ declassifiedFrom: recordId, id: out.id });
+/**
+ * Privileged declassify (operator-gated via the /ops boundary): emit a successor carrying the
+ * labels that were NOT cleared.
+ *
+ * PER LABEL, which `Space.declassify` has always supported and this handler used to discard: it
+ * ignored the body and cleared everything, so the design had no caller and the spec described a
+ * feature no request could reach. An absent or empty `labels` still clears all of them, which is
+ * what a caller that names nothing means.
+ *
+ * The answer reports `cleared` and `remaining` rather than an id alone. A clearance that does not
+ * say what it was FOR is the weakness the per-label design exists to remove, and an operator who
+ * named one label needs to see the others still standing.
+ */
+export async function handleDeclassify(
+  space: Space,
+  req: Request,
+  recordId: string,
+  principal: string,
+): Promise<Response> {
+  let labels: string[] | undefined;
+  const raw = await req.text();
+  if (raw.trim().length > 0) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return problem(400, "invalid_body", "expected a JSON object, or no body at all to clear every label");
+    }
+    const j = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+    if (!j) return problem(400, "invalid_body", "expected a JSON object, or no body at all to clear every label");
+    if (j.labels !== undefined) {
+      if (!Array.isArray(j.labels) || j.labels.some((l) => typeof l !== "string")) {
+        return problem(400, "invalid_body", "labels must be an array of strings");
+      }
+      labels = j.labels as string[];
+    }
+  }
+  try {
+    const out = await space.declassify(recordId, principal, labels ? { labels } : undefined);
+    if (!out) return problem(404, "not_found", `no record ${recordId}`);
+    return Response.json({ declassifiedFrom: recordId, id: out.id, cleared: out.cleared, remaining: out.remaining });
+  } catch (e) {
+    // An unrecognized label is a 400, not a 500: the vocabulary is closed and the caller named
+    // something outside it.
+    if (e instanceof RadiaError) return problem(statusFor(e.code, 400), e.code, e.message);
+    throw e;
+  }
 }
 
 /** Selector-driven control-plane remediation: fix everything matching, not one id at a time

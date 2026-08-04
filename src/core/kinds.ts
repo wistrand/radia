@@ -194,12 +194,19 @@ const VALID_OPS = new Set<GrantOp>(["put", "take", "query", "read_one"]);
 
 /** The envelope-side selectors a grant may carry. Closed by design; extended only when a real
  *  failure names the field it needs (see design-auth.md, "Self-scoped ops grants"). */
-// The envelope-side selector vocabulary. Each key has its OWN value vocabulary: `createdBy` and
-// `leaseOwner` narrow to the principal ("self"), while `taint` is a classification barrier whose
-// only value is "none". Keep this closed; an unknown key or value must fail rather than be ignored.
+// The envelope-side selector vocabulary. Each key has its OWN value vocabulary: `createdBy`
+// narrows to the principal ("self"), while `taint` is a classification barrier whose only value is
+// "none". Keep this closed; an unknown key or value must fail rather than be ignored.
+//
+// `leaseOwner: "self"` is DESIGNED (design-auth.md's selector table: "records my RUN currently
+// holds") and NOT BUILT, so it is refused here rather than accepted. Accepting it was the worse of
+// the two: `authorScope` restricts only when every applicable grant says `createdBy: "self"`, so a
+// grant carrying `leaseOwner` alone read as UNRESTRICTED — an operator wrote a narrowing scope and
+// got no narrowing, silently, in the direction that widens. Enforcing it needs an envelope-side
+// filter on `lease_owner` in every read verb, which means the storage port (a query reads `records`
+// and would have to join `record_runtime`), so it is a feature to build rather than a line to add.
 const VALID_SCOPE_VALUES = new Map<string, Set<string>>([
   ["createdBy", new Set(["self"])],
-  ["leaseOwner", new Set(["self"])],
   // `taint` is the odd one out: its value is an ALLOWLIST, not a fixed token, so it is validated by
   // `parseTaintAllowlist` in `validateGrantDef` rather than by membership here. "none" is listed so
   // the common case reads the same as the other keys.

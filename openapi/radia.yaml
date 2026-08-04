@@ -996,14 +996,31 @@ paths:
       x-stability: experimental
       parameters:
         - { name: recordId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        description: "Omit the body (or `labels`) to clear every label the record carries."
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                labels:
+                  type: array
+                  items: { type: string }
+                  description: "Which labels to clear. Unrecognized labels are a 400: the vocabulary is closed."
       responses:
         "200":
-          description: "{declassifiedFrom, id}, carrying the clean successor's id"
+          description: "{declassifiedFrom, id, cleared, remaining}"
           content:
             application/json:
               schema:
                 type: object
-                properties: { declassifiedFrom: { type: string }, id: { type: string } }
+                properties:
+                  declassifiedFrom: { type: string }
+                  id: { type: string, description: "The successor carrying whatever was not cleared." }
+                  cleared: { type: array, items: { type: string } }
+                  remaining: { type: array, items: { type: string } }
+        "400": { $ref: "#/components/responses/Problem" }
         "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
 
