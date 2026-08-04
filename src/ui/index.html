@@ -276,18 +276,18 @@
       the ones that complete, because that comparison is the signal.</p>
       <div class="row">
         <div style="max-width:200px"><label>Granularity</label>
-          <select id="fl-gran" onchange="loadFlows()">
+          <select id="fl-gran" onchange="routeFlows()">
             <option value="kind+agent">kind + agent</option>
             <option value="kind">kind only</option>
           </select>
         </div>
         <div style="max-width:200px"><label>Fan-out counts</label>
-          <select id="fl-counts" onchange="loadFlows()">
+          <select id="fl-counts" onchange="routeFlows()">
             <option value="bucketed">bucketed (aggregates)</option>
             <option value="exact">exact (splits)</option>
           </select>
         </div>
-        <div style="max-width:160px"><label>Min occurrences</label><input id="fl-min" type="number" value="1" onchange="loadFlows()"></div>
+        <div style="max-width:160px"><label>Min occurrences</label><input id="fl-min" type="number" value="1" onchange="routeFlows()"></div>
       </div>
       <div id="fl-msg"></div>
     </div>
@@ -431,7 +431,78 @@ function selectTab(b) {
   if (b.dataset.tab === "space") startSpace();
   if (b.dataset.tab === "auth") loadAuth();
 }
-document.querySelectorAll("#nav button").forEach((b) => b.onclick = () => selectTab(b));
+document.querySelectorAll("#nav button").forEach((b) => b.onclick = () => navigate(b.dataset.tab));
+
+// ---- routing: the URL is the view ----
+//
+// `#tab/recordId?knobs`. A hash rather than a path because the console is served at `GET /` only, so
+// `/records/01K…` would 404, and because a hash round-trips through the sign-in screen for free:
+// `useToken` reloads the same URL, and `showSignIn` never touches `location`. That is the whole of
+// "the URL survives auth" — there is no save/restore, and adding one would be the thing that breaks.
+//
+// `applyRoute` runs from `start()`, AFTER the token gate, and from `hashchange`. Never at top level:
+// the old `?tab=` deep link ran unconditionally and opened the Feed and Space tabs behind the
+// sign-in overlay, where their 1s polls kept firing into a 401 with nothing on screen to say so.
+const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+/** The last hash THIS page wrote. A write already applied its own state, so the `hashchange` it
+ *  queues must be ignored; anything else (back, forward, a pasted URL) has to be applied. */
+let lastWritten = "";
+
+function readRoute() {
+  const [path, search] = location.hash.replace(/^#/, "").split("?");
+  const [tab, id] = path.split("/");
+  // A record id reaches an API path and a render, so junk in the URL is dropped here rather than
+  // turned into an odd request. An unknown tab falls back in `applyRoute`.
+  return { tab: tab || "overview", id: ULID.test(id || "") ? id : "", params: new URLSearchParams(search || "") };
+}
+
+function navigate(tab, id, params) {
+  const q = params && String(params) ? "?" + params : "";
+  const next = "#" + tab + (id ? "/" + id : "") + q;
+  if (location.hash !== next) {
+    lastWritten = next;
+    location.hash = next; // a history entry, so back returns to the previous view
+  }
+  applyRoute();
+}
+
+function applyRoute() {
+  const r = readRoute();
+  let b = document.querySelector(`#nav button[data-tab="${CSS.escape(r.tab)}"]`);
+  if (!b) { b = document.querySelector('#nav button[data-tab="overview"]'); r.id = ""; }
+  // Knobs BEFORE the tab, because entering a tab runs its loader and the loader reads these inputs.
+  // Each is validated against what the endpoint accepts: a bad one falls back to the current value
+  // rather than travelling on to become a 400.
+  if (b.dataset.tab === "flows") {
+    const g = r.params.get("granularity");
+    if (g === "kind" || g === "kind+agent") $("fl-gran").value = g;
+    const c = r.params.get("counts");
+    if (c === "bucketed" || c === "exact") $("fl-counts").value = c;
+    const m = Number(r.params.get("min"));
+    if (Number.isFinite(m) && m >= 1) $("fl-min").value = String(m);
+  }
+  selectTab(b);
+  if (r.id && b.dataset.tab === "records") showDetail(r.id);
+  if (r.id && b.dataset.tab === "graph") showGraph(r.id);
+}
+
+addEventListener("hashchange", () => {
+  if (location.hash === lastWritten) return; // our own write; already applied
+  applyRoute();
+});
+
+/** Selecting a record is a navigation, so it is shareable and the back button undoes it. */
+function selectRecord(id) {
+  navigate("records", id);
+}
+/** The Flows knobs exist to be varied and compared, which is only possible if a comparison can be
+ *  sent to someone. `min` is omitted at its default so the common URL stays short. */
+function routeFlows() {
+  const p = new URLSearchParams({ granularity: $("fl-gran").value, counts: $("fl-counts").value });
+  const min = Number($("fl-min").value);
+  if (Number.isFinite(min) && min > 1) p.set("min", String(min));
+  navigate("flows", "", p);
+}
 
 // ---- taint + delegation badges (shared by the records list, detail, and graph) ----
 function metaFlags(rec) {
@@ -558,7 +629,9 @@ async function loadRecords() {
   if (!kind) return;
   const r = await api("POST", "/v0/records/query", { kind, limit: Number($("rec-limit").value) || 50 });
   if (!r.ok) { $("rec-list").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
-  renderRecordList("rec-list", r.data.records, showDetail);
+  // The records browser NAVIGATES to a selection; the query playground below renders into its own
+  // panel and stays put, which is why the click handler is a parameter rather than a constant.
+  renderRecordList("rec-list", r.data.records, selectRecord);
 }
 function renderRecordList(el, records, onClick) {
   if (!records.length) { $(el).innerHTML = `<div class="empty">No matching records.</div>`; return; }
@@ -647,7 +720,7 @@ async function loadGraphRoots() {
   window._recs = window._recs || {};
   $("g-roots").innerHTML = `<div class="muted" style="margin:8px 0 4px">pick one:</div>` + recs.map((rec) => {
     window._recs[rec.id] = rec;
-    return `<button class="btn ghost" style="margin:0 4px 4px 0" onclick="showGraph('${rec.id}')">${esc(rec.id.slice(-8))}</button>`;
+    return `<button class="btn ghost" style="margin:0 4px 4px 0" onclick="navigate('graph','${rec.id}')">${esc(rec.id.slice(-8))}</button>`;
   }).join("");
 }
 let currentRoot = null, graphTimer = null;
@@ -715,10 +788,10 @@ function fmtMs(ms) {
   if (ms < 3600000) return `${Math.round(ms / 60000)}m`;
   return `${(ms / 3600000).toFixed(1)}h`;
 }
-/** A mined shape is a claim; its exemplars are the evidence. One click gets from one to the other. */
+/** A mined shape is a claim; its exemplars are the evidence. One click gets from one to the other,
+ *  and because it is a navigation the evidence has a URL somebody can be sent. */
 function openFromFlow(id) {
-  selectTab(document.querySelector('#nav button[data-tab="graph"]'));
-  showGraph(id);
+  navigate("graph", id);
 }
 
 function renderGraph(el, data) {
@@ -1227,14 +1300,12 @@ function start() {
   // The poll is also the expiry detector: a run token dies on its own clock, so nothing else would
   // notice until the next thing you clicked failed.
   healthTimer = setInterval(loadHealth, 5000);
+  // INSIDE the gate, and last: the route opens a tab, and opening the Feed or Space tab starts a 1s
+  // poll. Applied while signed out, those polls run behind the sign-in overlay against a token that
+  // is not there, and nothing on screen says so.
+  applyRoute();
 }
 start();
-// Deep link: /?tab=space opens a tab directly (handy for sharing a view, and for screenshots).
-const wantTab = new URLSearchParams(location.search).get("tab");
-if (wantTab) {
-  const b = document.querySelector(`#nav button[data-tab="${CSS.escape(wantTab)}"]`);
-  if (b) selectTab(b);
-}
 </script>
 </body>
 </html>

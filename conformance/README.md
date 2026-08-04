@@ -71,7 +71,7 @@ Postgres run was manual, while CLAUDE.md's invariant said the suite runs on ever
 | `concurrency.test.ts` | the fault matrix's CONTENDED half: the two claim-path races that need real parallel connections, so they skip without `RADIA_PG_URL` |
 | `flows.test.ts`    | flow mining, including the acceptance test written before the feature: the pipeline example's shape, recovered without the miner being told to look for it |
 | `loop.test.ts`     | the SDK worker loop losing a lease: the handler's cancellation channel (the one test here that binds a real port, since the SDK client and its SSE watchers are what is under test) |
-| `console.test.ts`  | the dev console, lifted out of the page source: HTML escaping, no credential in the page or in an event handler, and the sign-in gate |
+| `console.test.ts`  | the dev console, lifted out of the page source: HTML escaping, no credential in the page, in an event handler or in the URL, the sign-in gate, and the hash router (run against a stub DOM, since source text cannot show whether a route wires the tab, the selection and the knobs in the right order) |
 | `defaults.test.ts` | the posture an unconfigured space lands in: `--auth`, the runtime directory, optional-value flags |
 
 **One PGlite for the process, one schema per test.** Booting a WASM Postgres per test cost ~350ms

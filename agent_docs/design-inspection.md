@@ -291,6 +291,12 @@ becomes a defect.
 - **A watch per view leaks.** The watches map is never pruned and `Notifier` waiters accumulate.
   Inspection UIs are precisely the workload that opens many short-lived watches.
 - **Never let an inspection feature declare topology.** The shape is mined, never asserted.
+- **A view that cannot be linked to is not evidence.** An inspection answer is a claim, and a claim
+  whose backing nobody else can open is an assertion. The console keeps the view in the URL
+  (`#tab/recordId?knobs`), so a mined shape's exemplar, a record's lineage, and the granularity a
+  comparison was made at are all things to send someone. It also has to survive the credential
+  expiring mid-investigation, which costs nothing as long as the route is applied from inside the
+  sign-in gate rather than at page load.
 
 ## Verified ground
 

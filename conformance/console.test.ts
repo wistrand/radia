@@ -197,6 +197,167 @@ Deno.test("console: an expired token returns to sign-in, never reports 'offline'
   assert(/pill[^`]*offline/.test(loadHealth) && /onclick="setToken\(\)"[^`]*offline/.test(loadHealth), "the offline pill is not clickable");
 });
 
+Deno.test("console: the page's script parses", () => {
+  // No build step is a real architectural property here, and this is its one cost: a stray brace
+  // ships a console that is blank in every tab, and every other test in this file reads the source
+  // as TEXT, so all of them keep passing. `new Function` compiles the body without running it,
+  // which is the whole check.
+  const blocks = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  assertEquals(blocks.length, 1, "the page grew a second script block; compile that one too");
+  new Function(blocks[0][1]);
+});
+
+// ---- routing: the URL is the view ----
+
+const ulidLine = html.match(/^const ULID = .*$/m);
+assert(ulidLine, "the console no longer defines a top-level ULID pattern; update this test with it");
+const makeReadRoute = new Function(
+  "location",
+  `${ulidLine[0]}\n${extractFunction(html, "readRoute")}; return readRoute;`,
+) as (loc: { hash: string }) => () => { tab: string; id: string; params: URLSearchParams };
+const routeOf = (hash: string) => makeReadRoute({ hash })();
+
+Deno.test("console: a hash names a tab and a selection, and an empty one is the overview", () => {
+  assertEquals(routeOf("").tab, "overview");
+  assertEquals(routeOf("#").tab, "overview");
+  assertEquals(routeOf("#flows").tab, "flows");
+  const r = routeOf("#records/01KZ6X7QXBSV7PS9A9WS8VT6EJ");
+  assertEquals(r.tab, "records");
+  assertEquals(r.id, "01KZ6X7QXBSV7PS9A9WS8VT6EJ");
+});
+
+Deno.test("console: a record id out of the URL is validated before it becomes a request", () => {
+  // The id reaches an API path and a render. Anyone can type anything here, so a value that is not
+  // an id is DROPPED rather than forwarded: the tab still opens, and nothing odd is fetched.
+  for (const junk of ["notaulid", "../../etc/passwd", "<script>", "01KZ6X7QXBSV7PS9A9WS8VT6E", ""]) {
+    assertEquals(routeOf(`#records/${junk}`).id, "", `'${junk}' was accepted as a record id`);
+    assertEquals(routeOf(`#records/${junk}`).tab, "records", "a bad id must not also lose the tab");
+  }
+});
+
+Deno.test("console: the Flows knobs travel in the hash, so a comparison can be sent to someone", () => {
+  // Those knobs exist to be varied and compared (too fine and every flow is unique, too coarse and
+  // everything is one flow). A comparison nobody can link to is a comparison nobody can check.
+  const r = routeOf("#flows?granularity=kind&counts=exact&min=3");
+  assertEquals(r.tab, "flows");
+  assertEquals(r.params.get("granularity"), "kind");
+  assertEquals(r.params.get("counts"), "exact");
+  assertEquals(r.params.get("min"), "3");
+  // A knob is validated where it is applied, not here; what must hold is that a query string does
+  // not leak into the tab name and open the wrong view.
+  assertEquals(routeOf("#graph?x=1").tab, "graph");
+});
+
+/**
+ * The router, RUN rather than read. Every other check in this file reads the page as text, which
+ * cannot see whether `applyRoute` wires the tab, the selection and the knobs in the right order. A
+ * stub DOM is the cost of running it; the alternative is a build step, which the console exists
+ * without on purpose.
+ */
+function newRouter(hash: string) {
+  const tabs = ["overview", "records", "graph", "flows"];
+  const harness = `
+    ${ulidLine![0]}
+    let lastWritten = "";
+    const calls = [];
+    const inputs = { "fl-gran": {value:"kind+agent"}, "fl-counts": {value:"bucketed"}, "fl-min": {value:"1"} };
+    const $ = (id) => inputs[id];
+    const CSS = { escape: (s) => s.replace(/[^a-zA-Z0-9+_-]/g, "") };
+    const buttons = ${JSON.stringify(tabs)}.map((t) => ({ dataset: { tab: t }, classList: { add(){}, remove(){} } }));
+    const document = {
+      querySelector: (sel) => buttons.find((b) => sel.includes('data-tab="' + b.dataset.tab + '"')) || null,
+      querySelectorAll: () => [],
+    };
+    function selectTab(b) { calls.push("tab:" + b.dataset.tab); }
+    function showDetail(id) { calls.push("detail:" + id); }
+    function showGraph(id) { calls.push("graph:" + id); }
+    ${extractFunction(html, "readRoute")}
+    ${extractFunction(html, "navigate")}
+    ${extractFunction(html, "applyRoute")}
+    return { navigate, applyRoute, calls, inputs };
+  `;
+  return new Function("location", harness)({ hash }) as {
+    navigate: (t: string, id?: string) => void;
+    applyRoute: () => void;
+    calls: string[];
+    inputs: Record<string, { value: string }>;
+  };
+}
+
+Deno.test("console: a deep link opens the tab AND restores the selection", () => {
+  const id = "01KZ6X7QXBSV7PS9A9WS8VT6EJ";
+  const rec = newRouter(`#records/${id}`);
+  rec.applyRoute();
+  assertEquals(rec.calls, ["tab:records", `detail:${id}`]);
+
+  const graph = newRouter(`#graph/${id}`);
+  graph.applyRoute();
+  assertEquals(graph.calls, ["tab:graph", `graph:${id}`]);
+
+  // An unknown tab lands somewhere real rather than on a blank page, and drops the selection with
+  // it: a record id means nothing once the tab it belonged to is gone.
+  const junk = newRouter(`#nosuchtab/${id}`);
+  junk.applyRoute();
+  assertEquals(junk.calls, ["tab:overview"]);
+});
+
+Deno.test("console: a knob from the URL is applied before the loader, and validated first", () => {
+  // Order is the whole of it: entering the Flows tab runs its loader, and the loader reads these
+  // inputs. Applied after, the URL would say one thing and the table show another.
+  const good = newRouter("#flows?granularity=kind&counts=exact&min=4");
+  good.applyRoute();
+  assertEquals(good.calls, ["tab:flows"]);
+  assertEquals(good.inputs["fl-gran"].value, "kind");
+  assertEquals(good.inputs["fl-counts"].value, "exact");
+  assertEquals(good.inputs["fl-min"].value, "4");
+
+  // Anyone can type anything here. A value the endpoint would reject falls back to the default
+  // rather than travelling on to become a 400 that reads as the space being broken.
+  const bad = newRouter("#flows?granularity=bogus&counts=nope&min=-3");
+  bad.applyRoute();
+  assertEquals(bad.inputs["fl-gran"].value, "kind+agent");
+  assertEquals(bad.inputs["fl-counts"].value, "bucketed");
+  assertEquals(bad.inputs["fl-min"].value, "1");
+});
+
+Deno.test("console: the route is applied INSIDE the sign-in gate, never at page load", () => {
+  // The old `?tab=` deep link ran unconditionally, after `start()` had already bailed to the sign-in
+  // screen. Opening the Feed or Space tab starts a 1s poll, so a deep link with no token left those
+  // polls running behind the overlay, every call short-circuiting to a 401 with nothing on screen to
+  // say so. The route may only be applied once a credential exists.
+  const start = extractFunction(html, "start");
+  assert(/applyRoute\(\)/.test(start), "start() never applies the route, so a deep link does nothing");
+  const gate = start.indexOf("if (!AUTH_TOKEN) return showSignIn");
+  assert(gate >= 0 && start.indexOf("applyRoute()") > gate, "start() applies the route before checking for a token");
+  assert(!/\napplyRoute\(\);/.test(html), "the route is applied at top level, outside the gate");
+
+  // And the sign-in screen must leave the URL alone: that is the whole of how a view survives a
+  // credential expiring, since `useToken` reloads the same URL.
+  const showSignIn = extractFunction(html, "showSignIn");
+  assert(!/location\.hash/.test(showSignIn), "showSignIn touches the hash, so the view is lost on re-auth");
+});
+
+Deno.test("console: navigation goes through the URL, so the address bar cannot drift from the view", () => {
+  // A tab that mutates the DOM directly and leaves the hash behind is worse than no routing at all:
+  // the URL then names a view the page is not showing, and sharing it sends the wrong place.
+  assert(
+    /#nav button"\)\.forEach\(\(b\) => b\.onclick = \(\) => navigate\(/.test(html),
+    "the nav buttons no longer navigate; they apply a tab directly and the hash goes stale",
+  );
+  const navigate = extractFunction(html, "navigate");
+  assert(/location\.hash = next/.test(navigate), "navigate() does not write the URL");
+  assert(/applyRoute\(\)/.test(navigate), "navigate() writes the URL without applying it");
+});
+
+Deno.test("console: no credential is ever written into the URL", () => {
+  // The hash is shareable, lands in browser history, and is visible over a shoulder. A token in it
+  // would be a credential leak by design rather than by accident.
+  const offenders = [...html.matchAll(/location\.hash\s*=\s*([^;\n]*)/g)]
+    .map((m) => m[1])
+    .filter((expr) => /token|credential|secret|MINTED/i.test(expr));
+  assertEquals(offenders, [], "a credential is assigned into location.hash");
+});
+
 Deno.test("console: a network failure is an outcome, not an exception", () => {
   // `fetch` REJECTS when nothing is listening, and every caller reads `{ok, status}`. An uncaught
   // rejection left a stopped space showing the last good render, saying nothing.
