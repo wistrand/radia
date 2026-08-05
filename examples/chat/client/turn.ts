@@ -12,7 +12,7 @@ import type { ChatMessage, ToolDef } from "../provider/openrouter.ts";
 import type { Thread } from "./thread.ts";
 import { sessionOwner } from "../space/roles.ts";
 import { type CapabilityBody, capabilityKey, collapseByTool } from "../space/capability.ts";
-import { dim, endStatus, showArtifact, trunc, write } from "./terminal.ts";
+import { answerStream, columns, dim, endStatus, holdLine, notice, showArtifact, trunc, write } from "./terminal.ts";
 import { Waiter, waitWake } from "./waiting.ts";
 
 const MAX_ROUNDS = 8;
@@ -71,6 +71,9 @@ export async function runTurn(
   // query rather than a reconstruction from the transcript.
   const priorAttempt = new Map<string, { id: string; n: number }>();
   cancel = new AbortController();
+  // The turn owns the line from here until the `finally` below, so anything a background watcher
+  // produces waits rather than splicing itself into the answer.
+  holdLine(true);
   try {
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -86,14 +89,16 @@ export async function runTurn(
     });
     const { message, finishReason, streamed, tier, context, announced } = await streamResult(client, callId);
 
-    // Show the context window only when it actually dropped something; otherwise it is noise.
-    // It is reported by the inference-worker, so unlike the tier it cannot be known up front.
-    const win = context && context.hidden > 0 ? ` · ${context.sent} msgs, ${context.hidden} older not sent` : "";
+    // Show the context window only when it actually dropped something; otherwise it is noise. It is
+    // reported by the inference-worker, so unlike the tier it cannot be known up front. As a
+    // fraction rather than a sentence: this line is printed on every turn of a long conversation,
+    // and "38 msgs, 178 older not sent" spends eight words on two numbers.
+    const win = context && context.hidden > 0 ? ` · ${context.sent}/${context.sent + context.hidden} msgs` : "";
     // The label normally went up before the first token (see streamResult). This is the fallback
     // for when it could not: no progress record was visible (the session may lack a grant to read
     // them), so the tier is only knowable from the result.
-    if (!announced && tier) write(`  ${dim(`[routed → ${tier}${win}]`)}\n`);
-    else if (win) write(`${dim(`[context${win}]`)}\n`);
+    if (!announced && tier) write(`  ${dim(`[${tier}${win}]`)}\n`);
+    else if (win) write(`${dim(`[${win.slice(3)}]`)}\n`);
     await thread.append({ role: "assistant", content: message.content ?? null, tool_calls: message.tool_calls }, [callId]);
 
     if (message.tool_calls?.length) {
@@ -105,8 +110,13 @@ export async function runTurn(
     }
 
     // Final answer. If nothing streamed (an inference error, or a non-streamed reply), print the
-    // message content, or errors would be invisible.
-    if (!streamed) write(message.content || `(no content; finish_reason=${finishReason})`);
+    // message content, or errors would be invisible. Through the same renderer, so a one-shot reply
+    // is not the only markdown in the session that arrives raw.
+    if (!streamed) {
+      const answer = answerStream();
+      answer.push(message.content || `(no content; finish_reason=${finishReason})`);
+      answer.end();
+    }
     write("\n");
     return;
   }
@@ -115,7 +125,42 @@ export async function runTurn(
     // Cleared whether the turn ended, threw or was cancelled, so a stale controller cannot make the
     // NEXT turn abort before it starts.
     cancel = null;
+    holdLine(false); // and whatever queued while the turn ran gets printed now
   }
+}
+
+/**
+ * A tool call's arguments as `k=v`, which is how they are written everywhere else a person reads
+ * them. `{"expr":"17+156223"}` costs four characters of punctuation out of a 60-character budget,
+ * and a single-argument call (most of them) does not need its name at all.
+ */
+export function showArgs(args: Record<string, unknown>): string {
+  const keys = Object.keys(args);
+  if (keys.length === 0) return "";
+  const val = (v: unknown) => typeof v === "string" ? v : JSON.stringify(v);
+  if (keys.length === 1) return val(args[keys[0]]);
+  return keys.map((k) => `${k}=${val(args[k])}`).join(" ");
+}
+
+/**
+ * A tool result as the thing it actually says.
+ *
+ * Both halves of this line used to be raw JSON cut at a fixed width, so anything structured (an
+ * artifact, a workspace, a run) showed its braces and lost its content. A scalar prints as itself;
+ * an object leads with the field that carries the answer, when there is an obvious one.
+ */
+const PRIMARY = ["answer", "output", "text", "content", "result", "error", "artifactId", "name", "path"];
+export function showOutput(out: unknown): string {
+  if (out === null || out === undefined) return "(nothing)";
+  if (typeof out !== "object") return String(out);
+  const o = out as Record<string, unknown>;
+  const lead = PRIMARY.find((k) => o[k] !== undefined && o[k] !== null && o[k] !== "");
+  if (!lead) return JSON.stringify(out);
+  const value = typeof o[lead] === "object" ? JSON.stringify(o[lead]) : String(o[lead]);
+  // The rest is not dropped, only demoted: a caller who needs the whole object has the record, and
+  // the count says how much is not on screen.
+  const others = Object.keys(o).filter((k) => k !== lead).length;
+  return others > 0 ? `${value}${dim(` +${others}`)}` : value;
 }
 
 async function runToolCall(
@@ -131,7 +176,7 @@ async function runToolCall(
     args = JSON.parse(call.function.arguments || "{}");
   } catch { /* a malformed argument object is the model's problem to see in the result */ }
 
-  const prefix = `  · ${call.function.name}(${trunc(JSON.stringify(args), 60)}) `;
+  const prefix = `  · ${call.function.name}(${trunc(showArgs(args), 60)}) `;
   write(prefix);
   // `conversationId` travels in the BODY, not just parentIds, so a worker can key its progress
   // records to this turn: provenance is causality, not a lookup path.
@@ -183,7 +228,7 @@ async function runToolCall(
     throw e;
   }
   priorAttempt?.set(call.function.name, { id: toolCallId, n: attempt });
-  write(`-> ${trunc(JSON.stringify(result.output), 80)}\n`);
+  write(`${result.ok ? "→" : "✗"} ${trunc(showOutput(result.output), Math.max(24, columns() - prefix.length - 4))}\n`);
   await showArtifact(client, result.output);
   await thread.append(
     { role: "tool", tool_call_id: call.id, content: JSON.stringify(result.ok ? result.output : { error: result.output }) },
@@ -206,6 +251,9 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
   let lastIndex = -1; // watermark over ONE monotonic stream: an escalation hands it on, never resets
   let printed = false; // any visible text on the line yet
   let announced = false; // the routing label is on screen
+  // The answer is markdown, and it arrives in pieces, so the renderer is stateful and lives as long
+  // as the answer does. Off a terminal this is the model's bytes, unaltered.
+  let answer = answerStream();
 
   // The tier is known the moment the ROUTER decides it, which is before the tiered call exists and
   // so before any token can stream. Reading it from the router's progress record puts the label
@@ -222,7 +270,8 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
     // `routed` carries "→ tier"; `escalating` carries "from → to" when a worker gives up mid-answer
     // and hands the turn to a stronger model. Both are routing decisions, both belong in the
     // stream at the point they happen.
-    if (p.stage === "routed") label(`routed ${p.note}`);
+    // `routed` carries "→ deep", which reads as "[→ deep]" once the arrow is already there.
+    if (p.stage === "routed") label(p.note);
     else if (p.stage === "escalating") label(`escalated ${p.note}`);
   });
 
@@ -244,13 +293,20 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
         // are involved is named by the `escalating` progress record (see the label in
         // streamResult); this line's job is only to mark where the discarded text ends, and it has
         // to stand on its own because a session without a grant to read progress sees only this.
-        if (printed) write(`\n${dim("↩ discarding the partial answer above")}\n`);
+        //
+        // The renderer is replaced, not reset: the discarded attempt may have left a fence open or a
+        // table half collected, and the stronger model's answer starts from nothing.
+        if (printed) {
+          answer.end();
+          write(`\n${dim("↩ discarding the partial answer above")}\n`);
+        }
+        answer = answerStream();
         printed = false;
         continue;
       }
       if (!b.delta) continue;
       if (!printed) endStatus(waiter.prefix); // first token: drop the status, keep the prompt
-      write(b.delta);
+      answer.push(b.delta);
       printed = true;
     }
   };
@@ -271,13 +327,18 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
     },
   );
   if (outcome.status === "aborted") {
+    // `end()` on every exit, including this one: the renderer may be holding a partial line and an
+    // open style, and a cancelled turn that left the terminal bold would stay bold.
+    answer.end();
     endStatus(waiter.prefix);
     throw new TurnCancelled();
   }
   if (outcome.status === "timeout") {
+    answer.end();
     throw waiter.timeout(stall, "timed out waiting for inference. Is OPENROUTER_API_KEY valid and the model available?");
   }
   await printNew(); // flush any stragglers
+  answer.end(); // and anything the renderer was holding back for the next character
   if (!printed) endStatus(waiter.prefix); // nothing streamed (tool-call turn, or an error)
   return { ...outcome.body, streamed: printed, announced };
 }
@@ -420,8 +481,10 @@ export class ToolSet {
     // A partial read means the tool list is a guess. Say so once rather than running a turn that
     // silently lacks something: "the assistant does not have that tool" is indistinguishable from
     // "the assistant did not think to use it", and the second is what everyone assumes.
+    // `notice`, not `write`: this runs from a `capability` watch wakeup, so it can land at any
+    // point, including the middle of a streaming answer. It did.
     if (!view.complete) {
-      write(dim(`\n[tool list may be incomplete: stopped after ${view.entries.size} advertisements]\n`));
+      notice(dim(`[tool list may be incomplete: stopped after ${view.entries.size} advertisements]`));
     }
     // A capability whose `def` is not a tool definition is skipped rather than passed on (inside
     // `collapseByTool`). One malformed record would otherwise break EVERY turn, since the whole
@@ -442,7 +505,7 @@ export class ToolSet {
       const seen = `${tool}:${e.providers.join(",")}`;
       if (this.warned.get(tool) === seen) continue;
       this.warned.set(tool, seen);
-      write(dim(`\n[tool '${tool}' is advertised differently by ${e.providers.join(", ")}; using the newest]\n`));
+      notice(dim(`[tool '${tool}' is advertised differently by ${e.providers.join(", ")}; using the newest]`));
     }
     const tools = [...caps.values()].map((e) => e.def);
 

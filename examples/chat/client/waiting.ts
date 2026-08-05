@@ -66,6 +66,19 @@ interface ProgressBody {
   note?: string;
 }
 
+/**
+ * One progress record as a status line, trimmed to what is not inferable.
+ *
+ * Both trims are about the same thing: the line is redrawn several times a second, so anything
+ * constant in it is read once and then costs width forever. `agent:chat-` prefixes every worker in
+ * this fleet, and a worker's `note` (the model, the tool, the workspace) already says which one is
+ * acting, so the principal only earns its place when there is no note at all.
+ */
+function describe(p: ProgressBody): string {
+  const who = p.by.replace(/^agent:(chat-)?/, "");
+  return p.note ? `${p.stage} ${p.note}` : `${p.stage} (${who})`;
+}
+
 /** One awaited call: what has been reported about it, and how long it has been waiting. */
 export class Waiter {
   private readonly seen = new Set<string>();
@@ -103,7 +116,7 @@ export class Waiter {
       }
     } catch { /* no grant to read progress: fall through to the elapsed-only status */ }
     const secs = Math.round((Date.now() - this.started) / 1000);
-    if (this.last) showStatus(this.prefix, `${this.last.stage}${this.last.note ? ` ${this.last.note}` : ""} (${this.last.by}) · ${secs}s`);
+    if (this.last) showStatus(this.prefix, `${describe(this.last)} · ${secs}s`);
     else if (Date.now() - this.started > STALL_MS) showStatus(this.prefix, `${stallHint} · ${secs}s`);
     else showStatus(this.prefix, `waiting · ${secs}s`);
   }

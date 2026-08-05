@@ -1169,6 +1169,28 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Surfaces: HTTP, console, CLI and the SDKs
 
+- **A terminal has ONE cursor, so it needs one writer.** Three writers shared the chat's: the turn
+  streaming an answer, a `capability` watch wakeup, and every worker's inherited stderr. The two
+  background ones printed straight through, so a worker restarting mid-turn spliced a bracketed line
+  into the model's sentence and a crashing one wrote an unlabelled stack at whatever column the
+  answer had reached. The fix is a `write` funnel that tracks the cursor's column plus a `notice`
+  that holds a line until the turn releases it, and piping worker stderr instead of inheriting it.
+  Guarded by `examples/chat/smoke-render.ts`; the seam it needs is an output capture, because
+  ordering is invisible from outside a process that writes to the real terminal.
+- **A streaming renderer is only correct if the chunk boundaries cannot be felt.** Markdown rendered
+  as it arrives has to produce the same bytes whether the text comes whole or one character at a
+  time, and both bugs in the chat's first version were invisible to a complete string: a `_` at the
+  start of an otherwise empty buffer lost its look-back (fixed by remembering the last character
+  DEALT WITH, not the last one still buffered), and a closing fence consumed a newline that had not
+  arrived. The test shape that catches this class is rendering the same source at several chunk
+  sizes and comparing the results TO EACH OTHER, plus a deterministic fuzz over random splits;
+  `examples/chat/smoke-markdown.ts`. Do not test a stream by feeding it one buffer.
+- **A width constant is a bug on somebody else's terminal.** The status line was cut at 100 columns
+  and redrawn with `\r\x1b[2K`, which erases the row the cursor is on. On an 80-column window the
+  line wrapped, the erase cleared the second row, and the first row's fragment stayed on screen for
+  the session. Measure with `Deno.consoleSize` and cut to fit; and note the off-by-one under it,
+  found by the test rather than by reading: a `trunc` that appends its ellipsis AFTER slicing
+  returns n+1 characters, which is exactly enough to wrap.
 - **A cast is still a promise, not a check; `match` was the one that got away.** `pattern.match` was
   cast straight into the compiler, and `Object.keys(3)` is empty, so `match: 3` compiled to NO
   PREDICATE and returned every record of the kind: a malformed filter that WIDENS. Validated in

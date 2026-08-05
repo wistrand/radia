@@ -20,7 +20,7 @@
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import { activeByKey, activeSet, grantKey, RESERVED_KINDS } from "../../../sdk/ts/client.ts";
-import { dim, write } from "./terminal.ts";
+import { columns, dim, write } from "./terminal.ts";
 
 interface RequestBody {
   conversationId?: string;
@@ -124,7 +124,7 @@ export async function reviewGrantRequests(
   for (const [, rec] of pending) {
     const b = rec.body as RequestBody;
     const unknown = known.length > 0 && !known.includes(b.kind);
-    write(`\n${dim("─".repeat(60))}\n`);
+    write(`\n${dim("─".repeat(Math.min(60, columns())))}\n`);
     write(`The assistant is asking for permission it does not have:\n`);
     write(`  kind:       ${b.kind}${unknown ? "   ⚠ NOT a record kind on this space" : ""}\n`);
     write(`  operations: ${b.operations.join(", ")}\n`);
@@ -358,6 +358,6 @@ export async function reviewGrantRequests(
         }),
       },
     });
-    write(`${dim("─".repeat(60))}\n`);
+    write(`${dim("─".repeat(Math.min(60, columns())))}\n`);
   }
 }

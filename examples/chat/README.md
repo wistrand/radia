@@ -43,7 +43,7 @@ outside world).
 ## Testing it without a model
 
 ```bash
-deno task chat-test              # all fifteen suites, ~60s
+deno task chat-test              # all seventeen suites, ~60s
 deno task chat-test longthread   # one by name
 ```
 
@@ -85,6 +85,8 @@ real assembly, with no API key:
 | `fleet` | model advertisements: publish, restart without growing the space, withdraw on shutdown, revive |
 | `input` | the REPL's stdin, which has no space and no model in it: the keystroke that went missing between a turn ending and the next prompt (two readers on one exclusive stream), type-ahead during a turn, and Escape versus an arrow key |
 | `capability` | tool advertisements, keyed by `(provider, tool)`: replicas of one worker collapse to one tool silently, two DIFFERENT tools under one name are reported as conflicted rather than silently taking each other over, and a provider's withdrawal leaves its peers' tools standing |
+| `markdown` | rendering the answer WHILE IT ARRIVES: the same text has to render identically whether it comes whole, a line at a time or one character at a time, and 400 pseudo-random chunkings of a full answer are compared against it. Both bugs it found needed a specific split (a `_` landing at the start of an empty buffer; a closing fence arriving before its newline) and neither was reachable by rendering a complete string |
+| `render` | what the chat DRAWS, with no space and no terminal in it: a background watcher's line held back rather than spliced into a streaming answer, a status line that fits the window it is drawn in, colour that never reaches a pipe, and the two renderers for a tool call's arguments and result |
 | `vision` | reading a file: the accepted media types announced and enforced from ONE value, a PDF sent as a document part rather than an image, the artifact's own bytes reaching the provider (which is what proves the worker's read grant is really there), an answer that ran out of budget reported as truncated instead of passing for complete, and four refusals answered without spending a request |
 
 The long thread is the one that pays for itself: bugs here come from the SHAPE of accumulated
@@ -522,7 +524,7 @@ Three properties fall out of the substrate rather than being bolted on:
 
 **Read access is the one grantable capability, and it is off by default.** `RADIA_CHAT_EXEC_DIRS`
 lists directories the sandboxed program may read; unset (the default) means no filesystem at all,
-and the startup banner says which you have. Net, write, env and run stay denied whatever you set:
+and the startup banner's `exec` line says which you have. Net, write, env and run stay denied whatever you set:
 "look at this data" is a different risk from "change it" or "send it somewhere", and with no
 network a program that reads can only return what it read through output you are already shown.
 
@@ -642,15 +644,43 @@ re-dispatched id), and the chat renders the latest as a live status line:
 
 ```
 you> what's 17+156223
-  · calc({"expr":"17+156223"}) running (agent:chat-tools) · 1s
-assistant> routed → deep (agent:chat-router) · 2s
+  · calc(17+156223) running (tools) · 1s
+assistant> generating deep · anthropic/claude-opus-5 · 2s
 ```
 
 Stages: `routed` (router), `generating` with the tier and model it resolved, `escalating`
 when a worker hands the turn up a tier, `running` (tool-worker). The status line is wiped as soon
-as real output takes the line, and is TTY-only, so piped output is unchanged. Progress records carry
+as real output takes the line, and is TTY-only, so piped output is unchanged.
+
+**It is trimmed to what is not inferable from the rest of the line**, because it is redrawn several
+times a second and anything constant in it is read once and then costs width forever.
+`agent:chat-` prefixes every worker in the fleet, and a worker's `note` (the model, the tool, the
+workspace) already says which one is acting, so the principal only appears when there is no note.
+The same reasoning shortened the per-turn context label from "38 msgs, 178 older not sent" to
+`38/216 msgs`, and turned a tool call's arguments and result from raw JSON into `k=v` and the field
+that carries the answer. Progress records carry
 a `retentionUntil` (they're chatter, not history) and any client sees the same stream, including
 the console Feed.
+
+**The answer itself is markdown, rendered while it arrives** (`client/markdown.ts`). Headings,
+bullets, quotes, rules, inline spans, links and tables, with code fences left byte for byte alone
+because code is full of asterisks and mangling it is worse than not rendering it.
+
+Streaming is the whole difficulty: `**bold**` shows up split across arrivals, and a table is
+unreadable until its last row. So the renderer holds back as little as it can. Ten characters at a
+line start (enough to tell `# `, `- `, `1. `, `> `, a fence, `---` and `|` from a paragraph, and a
+provider's chunk is much longer than that), one character mid-line (all it takes to separate `*`
+from `**`), and as much as a link or a table needs, bounded, since neither is readable half drawn.
+
+The property that matters is CHUNK INDEPENDENCE, and it is what the suite tests: the same text has
+to render identically however it is split. Two bugs shipped in the first draft and neither was
+reachable by rendering a complete string. A `_` landing at the start of an otherwise empty buffer
+lost its look-back and italicised the rest of a `snake_case` identifier; a closing fence arriving
+before its newline consumed a line terminator that had not been sent yet and printed a blank line.
+
+Off a TTY the answer is passed through untouched, which is the same rule the status line follows: a
+redirected transcript is markdown, and rewriting it into box characters to look better in a window
+nobody is watching would make the example unscriptable.
 
 **Absence of progress is a WAITING signal, and only sometimes a stall.** A call nobody claimed
 produces no `progress` record, so past ~9s with nothing the chat offers a hint instead of sitting
@@ -743,11 +773,12 @@ Five areas. `chat.ts` opens with the same map.
 | File | Role |
 |------|------|
 | `config.ts` | everything read from the environment. Setup only: it never decides per-turn behaviour |
-| `fleet.ts` | launching the workers and the permission set each one gets. The security story, in one file |
+| `fleet.ts` | launching the workers and the permission set each one gets. The security story, in one file. It also OWNS each worker's stderr rather than letting it inherit the terminal, so a crash is labelled and lands between lines instead of inside an answer |
 | `thread.ts` | the conversation as `message` records on the space, plus the system prompt |
 | `turn.ts` | one user turn (`llm_call` → tools → answer), and the watched tool set. Contains no model, tier or tool choice |
 | `waiting.ts` | watch-driven wakeups, progress rendering, and stall diagnosis |
-| `terminal.ts` | everything drawn to the screen: TTY-only status line, artifact links, stdin |
+| `terminal.ts` | everything drawn to the screen. One `write` funnel that tracks the cursor's column, so `notice` (a background watcher, a worker's stderr) holds its line until the turn releases it; TTY-only status **and colour**; width from `Deno.consoleSize`; artifact links; the single stdin pump |
+| `markdown.ts` | the answer rendered as it streams. Knows nothing about a terminal beyond ANSI codes and a width, so it is driven by a callback and tested with a string |
 
 **`workers/`: the five agent processes, each with its own identity and grants**
 

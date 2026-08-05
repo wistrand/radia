@@ -1,28 +1,142 @@
 // Everything the chat draws, and nothing else.
 //
-// Two rules hold the rendering together. First, a status line is only ever drawn on a TTY: piped
-// output must stay byte-identical to a run with no status at all, or the example stops being
-// scriptable. Second, the line being redrawn is `<prefix><dim status>`, and the prefix is reprinted
-// on every redraw so the cursor never ends up somewhere the next write does not expect.
+// Three rules hold the rendering together.
+//
+// ESCAPES ARE FOR TERMINALS. A status line is only drawn on a TTY, and so is colour: piped output
+// must stay byte-identical to a run with no status at all, or the example stops being scriptable.
+// That rule was stated here from the start and `dim` did not follow it, so every redirected
+// transcript carried `\x1b[2m` around a third of its lines.
+//
+// THE LINE BEING REDRAWN is `<prefix><dim status>`, and the prefix is reprinted on every redraw so
+// the cursor never ends up somewhere the next write does not expect. It is also truncated to the
+// TERMINAL's width rather than a constant: a status wider than the window wraps onto a second
+// physical row, and `\r\x1b[2K` erases only the row the cursor is on, leaving the first row's
+// fragment on screen for the rest of the session.
+//
+// ONE WRITER OWNS THE CURSOR. Anything produced by a background watcher (a capability wakeup, a
+// worker's stderr) goes through `notice`, which holds it until the line is idle. Written directly,
+// those arrived in the middle of a streaming answer and spliced a bracketed line into the model's
+// sentence.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import { IMAGE_DIR, url } from "./config.ts";
+import { type AnswerStream, MarkdownStream, passthrough } from "./markdown.ts";
 
 const enc = new TextEncoder();
-export const write = (s: string) => Deno.stdout.writeSync(enc.encode(s));
 export const tty = Deno.stdout.isTerminal();
+/** NO_COLOR is the de-facto opt-out (no-color.org); read defensively so a missing --allow-env
+ *  degrades to colour rather than throwing. */
+const colour = tty && !(() => {
+  try {
+    return Deno.env.get("NO_COLOR");
+  } catch {
+    return "";
+  }
+})();
 
-export function trunc(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) + "…" : s;
+/** True when the cursor sits at column 0, so a full line may be printed without cutting into one. */
+let atLineStart = true;
+
+/** TEST SEAM, the output twin of `__useTestInput`. Ordering is the whole property here (was a line
+ *  held back, and did it come out at the right moment), and ordering is invisible from outside a
+ *  process whose writes go straight to the terminal. Set by `smoke-render.ts` and nothing else. */
+let sink: ((s: string) => void) | null = null;
+export function __captureOutput(): { text: () => string; stop: () => void } {
+  let out = "";
+  sink = (s) => {
+    out += s;
+  };
+  atLineStart = true;
+  holding = false;
+  pending.length = 0;
+  return { text: () => out, stop: () => (sink = null) };
 }
 
-/** Redraw the current line as prefix + dim status. */
-export const showStatus = (prefix: string, s: string) => tty && write(`\r\x1b[2K${prefix}\x1b[2m${trunc(s, 100)}\x1b[0m`);
+export function write(s: string): void {
+  if (!s) return;
+  if (sink) sink(s);
+  else Deno.stdout.writeSync(enc.encode(s));
+  atLineStart = s.endsWith("\n");
+}
+
+/** How wide the window is. 80 when that cannot be known (piped, or no terminal). */
+export function columns(): number {
+  if (!tty) return 80;
+  try {
+    return Deno.consoleSize().columns;
+  } catch {
+    return 80;
+  }
+}
+
+/** At most `n` characters, ellipsis INCLUDED. It used to append after slicing, so every truncated
+ *  string was one character over its budget: harmless in a message, and exactly enough to wrap the
+ *  status line onto a second row that the redraw could not erase. */
+export function trunc(s: string, n: number): string {
+  return s.length > n ? s.slice(0, Math.max(0, n - 1)) + "…" : s;
+}
+
+/**
+ * The status line's text, cut so that prefix + status fits one physical row.
+ *
+ * Separate and exported because this is the whole of the bug: the cut used to be a constant 100, so
+ * on any narrower window the line wrapped onto a second row and `\r\x1b[2K` erased only the row the
+ * cursor was on. The fragment left on the first row stayed there for the rest of the session.
+ */
+export function statusText(prefix: string, s: string): string {
+  return trunc(s, Math.max(16, columns() - prefix.length - 1));
+}
+
+/** Redraw the current line as prefix + dim status, cut to fit the window. */
+export const showStatus = (prefix: string, s: string) =>
+  tty && write(`\r\x1b[2K${prefix}\x1b[2m${statusText(prefix, s)}\x1b[0m`);
 
 /** Wipe the status, keeping the prefix, so real output can continue on the same line. */
 export const endStatus = (prefix: string) => tty && write(`\r\x1b[2K${prefix}`);
 
-export const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
+export const dim = (s: string) => colour ? `\x1b[2m${s}\x1b[0m` : s;
+
+/**
+ * Where the assistant's answer goes: a markdown renderer on a terminal, the model's own bytes
+ * anywhere else.
+ *
+ * The passthrough is not a fallback, it is the same rule the status line follows. A redirected
+ * transcript is markdown, which is a format, and rewriting it into box characters and escape codes
+ * would make the example unscriptable to make it prettier in a window nobody is looking at.
+ */
+export function answerStream(): AnswerStream {
+  return tty ? new MarkdownStream(write, { colour, width: columns() }) : passthrough(write);
+}
+
+// ---- out-of-band output ----
+//
+// A `capability` wakeup, a worker's stderr and a partial-registry warning all arrive on somebody
+// else's schedule. The turn owns the line while it runs, so these are queued and printed at the next
+// idle point rather than into the middle of whatever is being streamed.
+
+let holding = false;
+const pending: string[] = [];
+
+/** Claim the line for the duration of a turn. Releasing flushes anything that arrived meanwhile. */
+export function holdLine(on: boolean): void {
+  holding = on;
+  if (!on) flushNotices();
+}
+
+/** Print an out-of-band line, now or at the next idle point. Always ends up on its own line. */
+export function notice(s: string): void {
+  const line = s.endsWith("\n") ? s : `${s}\n`;
+  if (!holding && atLineStart) write(line);
+  else pending.push(line);
+}
+
+/** Print whatever was held back. Safe at any point where the cursor is at column 0. */
+export function flushNotices(): void {
+  if (pending.length === 0) return;
+  const held = pending.splice(0, pending.length);
+  if (!atLineStart) write("\n");
+  for (const line of held) write(line);
+}
 
 /**
  * A tool result that references an artifact is a payload the terminal cannot draw, so print a link.
@@ -130,6 +244,10 @@ export function lineReader(): () => Promise<string | null> {
       if (nl >= 0) {
         const line = buffered.slice(0, nl);
         buffered = buffered.slice(nl + 1);
+        // The TERMINAL echoed the newline, not us, so nothing else can know the cursor moved. Say
+        // so, or every notice after the first prompt queues forever waiting for a line start.
+        atLineStart = true;
+        flushNotices();
         return line;
       }
       if (inputEnded) {

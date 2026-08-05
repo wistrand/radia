@@ -47,7 +47,7 @@ import { ToolSet } from "./client/turn.ts";
 import { Thread } from "./client/thread.ts";
 import { cancelTurn, runTurn, TurnCancelled } from "./client/turn.ts";
 import { watchWakeups } from "./client/waiting.ts";
-import { dim, lineReader, watchCancel, write } from "./client/terminal.ts";
+import { dim, endStatus, lineReader, showStatus, watchCancel, write } from "./client/terminal.ts";
 import { reviewGrantRequests } from "./client/grants.ts";
 import { sleep } from "./util.ts";
 
@@ -185,33 +185,21 @@ Deno.addSignalListener("SIGINT", () => {
   Deno.exit(0);
 });
 
-console.log(`radia chat: logged in as ${owner}`);
-console.log(`tiers: ${Object.entries(TIERS).map(([t, m]) => `${t}=${m}`).join("  ")}`);
-console.log("routing: automatic. A router-worker classifies each turn and picks the tier; workers escalate when out of depth (no /commands).");
-console.log(
-  privileged
-    ? `auth: session runs PRIVILEGED as ${owner}, so space_* inspect/remediate tools have full /ops access.`
-    : `auth: session runs as scoped ${owner}. It can converse, but space_* /ops tools will 403 (try 'is the space healthy?').`,
-);
-console.log(`sandbox: ${toolRoots.join(", ")}`);
-console.log(
-  execRoots.length
-    ? `code execution: readable roots ${execRoots.join(", ")} (still no network, no write, no env)`
-    : "code execution: no filesystem (set RADIA_CHAT_EXEC_DIRS to grant read-only roots)",
-);
-// The guarantee above is the DENO jail's, and it is not uniform across languages: a bubblewrap jail
-// has to make an interpreter visible (so it sees /usr) and does not stop fork/exec. Saying "code
-// execution is X" once, for two jails that differ, is exactly the prose claim the `sandbox` record
-// exists to replace, so point at the record rather than restating a half-true sentence. Which
-// languages are actually served is not known yet here: the worker probes at boot and publishes only
-// what held, so the capability list is the answer and the banner must not pre-empt it.
-console.log(
-  "  languages are discovered, not configured: whichever run_* tools the exec worker advertises. " +
-    "Ask 'what can you run and under what isolation?' — the guarantees differ per jail and live in `sandbox` records.",
-);
-console.log(
-  `space ${url}${usingRunning ? " (existing)" : ` (spawned, persisted at ${spaceDb})`}. Open it and watch the Feed tab. Ctrl-D to quit.`,
-);
+// The banner is FACTS, aligned, one line each. It used to be nine lines of prose, several of them
+// two sentences long, which on an 80-column terminal was about fifteen physical rows of wrapped
+// text before the first prompt. What a reader needs at that moment is where the space is, who they
+// are, and which directories are exposed. The design positions it also carried (routing is
+// automatic, languages are discovered rather than configured, the guarantees differ per jail and
+// live in `sandbox` records) are all true and none of them are what you need in the first second;
+// they are in examples/chat/README.md, and the assistant can answer the jail question from the
+// records themselves, which is the whole point of it being a record.
+const field = (k: string, v: string) => write(`  ${dim(k.padEnd(9))}${v}\n`);
+write(`\nradia chat  ${dim("·")}  ${owner}${privileged ? dim("  (operator)") : ""}\n`);
+field("space", `${url}${usingRunning ? dim(" existing") : dim(` spawned, ${spaceDb}`)}`);
+field("tiers", Object.entries(TIERS).map(([t, m]) => `${t}=${m}`).join("  "));
+field("files", toolRoots.join(", "));
+field("exec", execRoots.length ? execRoots.join(", ") : dim("no filesystem (RADIA_CHAT_EXEC_DIRS)"));
+if (!privileged) field("auth", dim("scoped: space_* tools that touch /ops will 403"));
 
 let thread: Thread;
 try {
@@ -223,16 +211,25 @@ try {
   cleanup();
   Deno.exit(1);
 }
-if (thread.resumedFrom > 0) {
-  console.log(`resumed conversation ${thread.id}: ${thread.resumedFrom} earlier messages are in context`);
-} else {
-  console.log(`conversation ${thread.id}. Resume it later with --conversation ${thread.id} (or --conversation last)`);
-}
+field(
+  "thread",
+  thread.resumedFrom > 0
+    ? `${thread.id}${dim(` resumed, ${thread.resumedFrom} earlier messages in context`)}`
+    : `${thread.id}${dim("  --conversation last to resume it")}`,
+);
 // Procedures belong to a conversation, so the tool set can only be complete once there is one.
 await tools.scopeTo(thread.id);
 
-// Wait for the workers to publish their capabilities (the watch fills the set).
-for (let i = 0; i < 50 && tools.all().length === 0; i++) await sleep(200);
+// Wait for the workers to publish their capabilities (the watch fills the set). Up to ten seconds
+// of it, and it used to print nothing at all, so the first thing a new user saw was a hang.
+const bootStart = Date.now();
+for (let i = 0; i < 50 && tools.all().length === 0; i++) {
+  showStatus("  ", `starting workers · ${Math.round((Date.now() - bootStart) / 1000)}s`);
+  await sleep(200);
+}
+endStatus("");
+field("tools", tools.all().length > 0 ? `${tools.all().length} discovered` : dim("none advertised yet"));
+write(dim("\n  Ctrl-D to quit, Escape to cancel a turn.\n"));
 
 const nextLine = lineReader();
 while (true) {

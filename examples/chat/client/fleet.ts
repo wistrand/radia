@@ -33,11 +33,34 @@ import {
   VISION_MODEL,
 } from "./config.ts";
 import type { Bootstrapped } from "../space/roles.ts";
+import { dim, notice } from "./terminal.ts";
 
 const local = `http://127.0.0.1:${port}`;
 
-function spawn(args: string[]): Deno.ChildProcess {
-  return new Deno.Command("deno", { args: ["run", ...args], stdout: "null", stderr: "inherit", stdin: "null" }).spawn();
+/**
+ * Start a worker, and OWN its stderr rather than letting it inherit ours.
+ *
+ * Inherited, a worker writing at the wrong moment landed in the middle of a streamed answer, at
+ * whatever column it had reached, with nothing saying which process produced it. Piped, each line is
+ * labelled and goes through `notice`, so it waits for the line to be idle. A worker that dies at
+ * boot still gets its message out; it simply arrives at the next prompt.
+ */
+function spawn(name: string, args: string[]): Deno.ChildProcess {
+  const proc = new Deno.Command("deno", { args: ["run", ...args], stdout: "null", stderr: "piped", stdin: "null" }).spawn();
+  (async () => {
+    // Read to exhaustion whatever happens: an unread pipe fills and then BLOCKS the worker, which
+    // would turn a chatty process into a hung one.
+    const dec = new TextDecoder();
+    let rest = "";
+    for await (const chunk of proc.stderr) {
+      rest += dec.decode(chunk, { stream: true });
+      const lines = rest.split("\n");
+      rest = lines.pop() ?? "";
+      for (const line of lines) if (line.trim()) notice(dim(`[${name}] ${line}`));
+    }
+    if (rest.trim()) notice(dim(`[${name}] ${rest}`));
+  })().catch(() => {/* the worker is gone; nothing left to forward */});
+  return proc;
 }
 
 /**
@@ -70,7 +93,7 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
   // serves its model. Rank follows insertion order (cheap → capable) and drives escalation.
   let rank = 0;
   for (const [tier, model] of Object.entries(TIERS)) {
-    procs.push(spawn([
+    procs.push(spawn(`inference:${tier}`, [
       "--allow-net",
       "--allow-env",
       "examples/chat/workers/inference.ts",
@@ -84,7 +107,7 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
 
   // Router: claims UNTIERED calls, classifies, re-dispatches. Holds no key, because its classifier
   // is itself an `llm_call` served by the fleet.
-  procs.push(spawn([
+  procs.push(spawn("router", [
     "--allow-net",
     "--allow-env",
     "examples/chat/workers/router.ts",
@@ -96,7 +119,7 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
   // Images: same privilege shape as inference (key + egress, no files). Draws (storing its output as
   // an artifact and returning a reference) and reads (fetching an artifact and asking a vision
   // model). One process, because both halves want exactly the API key and the network and nothing else.
-  procs.push(spawn([
+  procs.push(spawn("images", [
     "--allow-net",
     "--allow-env",
     "examples/chat/workers/images.ts",
@@ -110,7 +133,7 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
   // Tools: reads only the sandbox dirs, reaches only the local space, and gets NO env. Its space_*
   // tools act as the SESSION principal (--session-token) so a scoped user cannot launder /ops
   // access through a privileged worker.
-  procs.push(spawn([
+  procs.push(spawn("tools", [
     `--allow-net=127.0.0.1:${port}`,
     `--allow-read=${toolRoots.join(",")}`,
     "examples/chat/workers/tools.ts",
@@ -136,7 +159,7 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
   // handed `--deny-read` on `.radia` (it holds the KEK and the database), and a deny beats an
   // allow in Deno, so a tree materialised under the runtime directory would be unreadable by the
   // very process meant to read it.
-  procs.push(spawn([
+  procs.push(spawn("exec", [
     `--allow-net=127.0.0.1:${port}`,
     "--allow-run=deno,bwrap",
     "--allow-env=HOME", // only to give the sandboxed child a module-cache home

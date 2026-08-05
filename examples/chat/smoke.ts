@@ -33,6 +33,8 @@ const SUITES = [
   { name: "capability", file: "smoke-capability.ts", about: "tool advertisements: replicas of one worker versus two tools wearing one name, and withdrawal" },
   { name: "input", file: "smoke-input.ts", about: "the REPL's stdin: the keystroke that went missing between a turn and the next prompt, type-ahead, and Escape" },
   { name: "vision", file: "smoke-vision.ts", about: "reading an image: the accepted formats announced and enforced from one value, and what is refused before a request is spent" },
+  { name: "render", file: "smoke-render.ts", about: "what the chat draws: a background writer that must not split a streaming answer, a status line that must fit the window, and colour that must not reach a pipe" },
+  { name: "markdown", file: "smoke-markdown.ts", about: "rendering the answer while it arrives: the same text must render identically whether it comes whole, a line at a time, or one character at a time" },
 ];
 
 const wanted = Deno.args.filter((a) => !a.startsWith("-"));
