@@ -1187,6 +1187,10 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Surfaces: HTTP, console, CLI and the SDKs
 
+- **A 401 is the first move of HTTP Basic, not a failure.** A server that logs every one reports a
+  successful authenticated clone as a wall of errors, and (because only failures were logged) says
+  nothing at all when it works: loudest precisely when nothing is wrong. Distinguish the CHALLENGE
+  (a 401 to a request that carried no credentials) from a refusal, and log something on success.
 - **A protocol that FALLS BACK hides its own bugs.** Git takes the smart transport only when the
   advertisement's content type is exactly `application/x-git-upload-pack-advertisement`; anything
   else and it walks the dumb routes, which works and is ten times slower. So the assertion cannot be

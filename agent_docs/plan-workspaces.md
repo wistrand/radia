@@ -1073,6 +1073,13 @@ one per head.
 legitimately differ (ordering, compression, deltas); what must match is the object IDS, which come
 from `git.ts` and are pinned by vectors there. So `git-pack.ts` can be rewritten freely.
 
+*A challenge is not a failure, and the log said otherwise.* HTTP Basic opens with a 401: git asks,
+is challenged, asks again with the password. Logging every 401 turned a WORKING clone into a wall of
+alarming lines — one per object under the dumb walk, two under the smart one — while a successful
+clone printed nothing at all, so the output was loudest exactly when nothing was wrong. A 401 that
+offered no credentials is now marked `challenge` and skipped, a real refusal still prints, and a
+served pack prints its size.
+
 *Three failures a reader would not catch, each planted and confirmed.* `deflate-raw` instead of
 zlib inside the pack differs by two bytes and gets `inflate: data stream error (incorrect header
 check)`. The per-object size header takes FOUR bits in its first byte and seven in the rest; getting

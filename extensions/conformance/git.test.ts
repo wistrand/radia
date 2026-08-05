@@ -811,3 +811,28 @@ Deno.test("[git] a want this history does not hold is refused, not silently omit
     });
   });
 });
+
+Deno.test("[git] a challenge is not a failure, and is reported as neither", async () => {
+  await withSpace(async (c) => {
+    await writeWorkspace(c, { name: "chal", owner: OWNER, files: { "a.txt": "A\n" } });
+    const seen: { status: number; challenge?: true }[] = [];
+    // HTTP Basic OPENS with a 401: git asks, is challenged, asks again with the password. Every
+    // authenticated clone therefore produces one, and reporting it as an error turned a working
+    // clone into a wall of alarming lines — under the dumb walk, one per object.
+    const handler = gitHandler(
+      (req) => (basicPassword(req) ? c : null),
+      {},
+      (e) => seen.push({ status: e.status, ...(e.challenge ? { challenge: true } : {}) }),
+    );
+    await withGitServer(handler, async (base) => {
+      await fetch(`${base}/chal.git/info/refs?service=git-upload-pack`); // no credentials
+      await fetch(`${base}/chal.git/info/refs?service=git-upload-pack`, {
+        headers: { authorization: `Basic ${btoa("u:whatever")}` },
+      });
+    });
+    assertEquals(seen.length, 2);
+    assertEquals(seen[0], { status: 401, challenge: true }, "an empty-handed 401 is the opening move");
+    assertEquals(seen[1].status, 200, "credentials get served");
+    assert(!seen[1].challenge);
+  });
+});

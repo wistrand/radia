@@ -724,7 +724,9 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           // And say when one WORKS, because the alternative is a server that prints nothing for a
           // successful clone and a page of text for a failed one.
           if (entry.path.endsWith("/git-upload-pack")) {
-            console.log(`  fetch ${entry.workspace}: ${Math.round(entry.bytes / 1024)} KB packed`);
+            const n = entry.bytes;
+            const size = n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} bytes`;
+            console.log(`  fetch ${entry.workspace}: ${size} packed`);
           }
         },
       );
