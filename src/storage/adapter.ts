@@ -155,6 +155,50 @@ export interface CompiledMatch {
   kind: string; // record kind discriminator
   where?: MatchNode; // undefined = match all of kind
   orderBy?: OrderBy[];
+  /**
+   * Most candidate rows this read may EXAMINE, counted before the oracle sees them.
+   *
+   * Not a limit on rows returned: an exact pre-filter (`pushdown.ts`) returns only matches and can
+   * never reach this. It bounds the other path, where SQL cannot decide the pattern and every row
+   * of the kind crosses into `matchesRecord`. That path costs 13.6s at a million records
+   * (`bench/deployment.ts`) in a single-threaded process, which makes it one principal's denial of
+   * service against every other. Exceeding it raises `scan_budget_exceeded`; it never truncates,
+   * because a bounded read whose result is treated as a population is this codebase's most
+   * repeated bug. Undefined means unbounded, which is what an in-process caller constructing a
+   * `CompiledMatch` by hand gets; `Space.compile` always sets it.
+   */
+  scanBudget?: number;
+}
+
+/** Rows an adapter fetches per chunk while walking a kind the pre-filter could not decide. Large
+ *  enough that the per-chunk statement overhead disappears, small enough that the yield between
+ *  chunks is frequent. Both adapters use it, because two adapters walking a kind by different rules
+ *  would make the conformance suite two different tests. */
+const SCAN_CHUNK = 1000;
+
+/** Never larger than the budget: a first chunk bigger than the whole budget would overshoot it by
+ *  construction, and the mechanism would be untestable below a thousand records. */
+export function scanChunkSize(budget?: number): number {
+  return budget === undefined ? SCAN_CHUNK : Math.max(1, Math.min(SCAN_CHUNK, budget));
+}
+
+/**
+ * Give the event loop a real turn between chunks, so a scan of a large kind is a delay for its
+ * caller rather than an outage for everyone else. Measured on 60k records, sqlite, one neighbour
+ * polling an indexed read while an unpushable scan ran: without this the neighbour ran ONCE and
+ * waited 138ms, the whole scan. With it, 24 times, worst wait 5.9ms, and the scan went 140ms to
+ * 184ms. That is the trade, stated plainly: the scan pays about a third for not being an outage.
+ *
+ * `setImmediate`, not `setTimeout(0)`: the timer clamp costs 2.2ms per yield against 0.013ms, which
+ * on the same rows was 353ms of scan rather than 184ms. A microtask (`await Promise.resolve()`)
+ * would be cheaper still and would do NOTHING, since it drains inside the same turn. The embedded
+ * adapters need this even where a chunk is awaited: PGlite is WASM in this process, so its `await`
+ * is not the socket round trip a real Postgres gives for free.
+ */
+export function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) =>
+    typeof setImmediate === "function" ? setImmediate(resolve) : setTimeout(resolve, 0)
+  );
 }
 
 // ---------------------------------------------------------------------------

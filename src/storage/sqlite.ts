@@ -33,6 +33,8 @@ import {
   type StorageAdapter,
   type TakeResult,
   type TakeSelector,
+  scanChunkSize,
+  yieldToEventLoop,
 } from "./adapter.ts";
 import {
   qmarks,
@@ -51,7 +53,7 @@ import { isTrivial, type JsonDialect, pushdown } from "./pushdown.ts";
 import { type Candidate, type ClaimCursor, cursorOf, rankClaimable } from "../core/take.ts";
 import { addSeconds, minIso } from "../core/time.ts";
 import { newUlid } from "../core/ids.ts";
-import { RadiaError } from "../core/errors.ts";
+import { RadiaError, scanBudgetExceeded } from "../core/errors.ts";
 
 /** One claim examines this many candidates at a time; a selective match pages further. */
 const CANDIDATE_WINDOW = 64;
@@ -375,9 +377,18 @@ export class SqliteAdapter implements StorageAdapter {
       const pattern = "pattern" in selector ? selector.pattern : undefined;
       const byId = "recordId" in selector;
       // The cursor is the LAST ROW EXAMINED, in claim order (see `windowRows`).
+      let examined = 0;
       for (let after: ClaimCursor | undefined;;) {
         const candidates = this.fetchCandidates(selector, CANDIDATE_WINDOW, after);
         if (candidates.length === 0) return null;
+        // A claim pages in windows, so it never had the memory problem `candidateMatches` had. It
+        // has the other one: an unpushable pattern makes every window a window of the QUEUE rather
+        // than of the matches, so the claim walks the whole kind 64 rows at a time and the ranker
+        // rejects almost all of it. Same budget, same reason.
+        examined += candidates.length;
+        if (pattern?.scanBudget !== undefined && examined > pattern.scanBudget) {
+          throw scanBudgetExceeded(pattern.kind, pattern.scanBudget);
+        }
         const ranked = rankClaimable(candidates, pattern, now, spec.allowTaint, spec.createdBy);
         const claimed = this.claimFirst(ranked, spec, now);
         if (claimed) return claimed;
@@ -784,45 +795,75 @@ export class SqliteAdapter implements StorageAdapter {
    * oracle's order is `x.id < y.id`, its deterministic tie-break, which `order by id asc` matches
    * exactly. Any other case fetches everything and lets the oracle sort; see `Pushed.exact`.
    */
-  private candidateRows(match: CompiledMatch, want?: number, page?: Page, scope?: StatsScope): RawRow[] {
+  private async candidateMatches(
+    match: CompiledMatch,
+    want?: number,
+    page?: Page,
+    scope?: StatsScope,
+  ): Promise<RadiaRecord[]> {
     const d = new SqliteJson();
     const filter = pushdown(match.where, d);
     const where = isTrivial(filter) ? "" : ` and ${filter.sql}`;
     // The cursor is an id comparison, so it is always EXACT: it constrains nothing the oracle
     // would have to re-check, and it applies whether or not the body filter could be pushed.
     const dir = page?.dir === "desc" ? "desc" : "asc";
-    const cursor = page?.after ? ` and id ${dir === "desc" ? "<" : ">"} ?` : "";
+    const cmp = dir === "desc" ? "<" : ">";
+    const cursor = page?.after ? ` and id ${cmp} ?` : "";
     // The author restriction is an exact column predicate, so it never needs the oracle's help and
     // never blocks the pushed limit.
     const author = scope?.createdBy ? ` and created_by in (${qmarks(scope.createdBy.length)})` : "";
+    const head = [match.kind, ...d.params, ...(page?.after ? [page.after] : []), ...(scope?.createdBy ?? [])];
     const bounded = want !== undefined && filter.exact && !match.orderBy?.length;
-    const params = [
-      match.kind,
-      ...d.params,
-      ...(page?.after ? [page.after] : []),
-      ...(scope?.createdBy ?? []),
-      ...(bounded ? [want] : []),
-    ];
-    return this.db
-      .prepare(
-        `select * from records where kind = ?${where}${cursor}${author}` +
-          (bounded ? ` order by id ${dir} limit ?` : ""),
-      )
-      .all(...params) as RawRow[];
+    if (bounded) {
+      const rows = this.db
+        .prepare(`select * from records where kind = ?${where}${cursor}${author} order by id ${dir} limit ?`)
+        .all(...head, want) as RawRow[];
+      return rows.map(rowToRecord).filter((rec) => matchesRecord(rec, match));
+    }
+    // The inexact path, where SQL narrows and the oracle decides. Walked in CHUNKS rather than
+    // fetched whole, for three reasons: the whole kind no longer has to fit in memory at once; the
+    // budget can stop it partway instead of after the damage; and the `await` between chunks is
+    // what lets another principal's request run, which a single `.all()` over a million rows does
+    // not (this adapter's driver is synchronous, so nothing else yields).
+    const chunk = this.db
+      .prepare(`select * from records where kind = ?${where}${cursor}${author} and id ${cmp} ? order by id ${dir} limit ?`);
+    const first = this.db
+      .prepare(`select * from records where kind = ?${where}${cursor}${author} order by id ${dir} limit ?`);
+    const size = scanChunkSize(match.scanBudget);
+    const out: RadiaRecord[] = [];
+    let examined = 0;
+    let after: string | undefined;
+    for (;;) {
+      const rows = (after === undefined ? first.all(...head, size) : chunk.all(...head, after, size)) as RawRow[];
+      if (rows.length === 0) return out;
+      examined += rows.length;
+      for (const row of rows) {
+        const rec = rowToRecord(row);
+        if (matchesRecord(rec, match)) out.push(rec);
+      }
+      // An `orderBy` has to see every match before it can say which comes first, so only the
+      // natural order can stop early. That is also the only order the SQL walk agrees with.
+      if (!match.orderBy?.length && want !== undefined && out.length >= want) return out;
+      if (rows.length < size) return out;
+      // Checked HERE, not before the oracle: the budget bounds the walk, so a read that finishes
+      // inside a chunk is never refused for the size of the chunk it happened to be given. What it
+      // refuses is continuing, which is the unbounded part.
+      if (match.scanBudget !== undefined && examined >= match.scanBudget) {
+        throw scanBudgetExceeded(match.kind, match.scanBudget);
+      }
+      after = String(rows[rows.length - 1].id);
+      await yieldToEventLoop();
+    }
   }
 
-  readOne(match: CompiledMatch, scope?: StatsScope): Promise<RadiaRecord | null> {
+  async readOne(match: CompiledMatch, scope?: StatsScope): Promise<RadiaRecord | null> {
     // SQL narrows; the core oracle decides. `pushdown` is a sound over-approximation, so this
     // filter never removes a record `matchesRecord` would have accepted.
-    const matches = this.candidateRows(match, 1, undefined, scope)
-      .map(rowToRecord)
-      .filter((rec) => matchesRecord(rec, match));
-    return Promise.resolve(firstByOrder(matches, match.orderBy));
+    return firstByOrder(await this.candidateMatches(match, 1, undefined, scope), match.orderBy);
   }
 
-  query(match: CompiledMatch, limit: number, page?: Page, scope?: StatsScope): Promise<RadiaRecord[]> {
-    const matches = this.candidateRows(match, limit, page, scope).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
-    return Promise.resolve(pageRecords(matches, match.orderBy, limit, page));
+  async query(match: CompiledMatch, limit: number, page?: Page, scope?: StatsScope): Promise<RadiaRecord[]> {
+    return pageRecords(await this.candidateMatches(match, limit, page, scope), match.orderBy, limit, page);
   }
 
   stats(scope?: StatsScope): Promise<KindStateCount[]> {

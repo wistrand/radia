@@ -487,6 +487,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   `$any` was that predicate until it was pushed (a type-guarded `EXISTS` over the elements, exact,
   so the LIMIT rides with it); `$each` is what still measures the wall, and a new unpushable node
   joins it silently unless a bench row keeps the path measured.
+- **The scan is chunked because the budget alone would not have fixed the outage.** A read whose
+  pre-filter is inexact walks the kind in chunks of 1000 (`scanChunkSize`) and yields between them,
+  raising `429 scan_budget_exceeded` past `maxScanRows` (200k). Two traps in that sentence, both
+  measured. The yield must be `setImmediate`, not `setTimeout(0)` (2.2ms per yield against 0.013ms,
+  which was 353ms of scan against 184ms) and certainly not a microtask, which drains in the same
+  turn and yields to nobody: without a real yield a neighbour's indexed read waited 138ms, the whole
+  scan. And the budget is checked AFTER the early exit, not before, or a read that finished inside
+  its first chunk gets refused for the size of the chunk it was handed.
 
 - **An ORDER BY can defeat the index that would have served the filter, and a partial index is
   unusable when its predicate column is a bound parameter.** Both bit the credential lookup, and

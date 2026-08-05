@@ -168,4 +168,95 @@ export const limitSuites: Suite[] = [
       assert(codes.every((c) => c !== ""), `a limit was not enforced in-process: ${JSON.stringify(codes)}`);
     },
   },
+  {
+    // The measured shape (`bench/deployment.ts`): an unpushable pattern pulls the whole kind through
+    // the oracle, 13.6s at a million records in a single-threaded process, so one principal's
+    // pattern is everyone else's outage. The budget bounds the rows one read may EXAMINE. It fires
+    // on candidates, never on results, which is what keeps it invisible to a pattern SQL can decide.
+    name: "a scan budget bounds what one read may push through the oracle",
+    run: async (adapter) => {
+      // The budget is under the kind's size and over the claim window, so both paths have to page
+      // more than once to reach it: a budget below one window would prove only that the first fetch
+      // overshot.
+      const space = new Space(adapter, { maxScanRows: 150 });
+      space.registerKind({
+        kind: "task",
+        indexedPaths: [{ path: "op", type: "keyword" }, { path: "n", type: "integer" }, { path: "tags", type: "array" }],
+      });
+      for (let i = 0; i < 400; i++) {
+        await space.put({ kind: "task", body: { op: i === 399 ? "rare" : "common", n: i, tags: [`t${i % 5}`] } });
+      }
+
+      // `$each` is not pushable (`pushdown.ts`), so every record of the kind reaches `matchesRecord`,
+      // and nothing satisfies this one, so nothing stops the walk before the budget does. That
+      // combination — undecidable in SQL, and few or no matches — is the whole shape of the problem:
+      // it is exactly what the deployment benchmark measured at 13.6s.
+      assertEquals(await codeOf(() => space.query({ kind: "task", match: { tags: { $each: "zz" } } }, 10)), "scan_budget_exceeded");
+      assertEquals(await codeOf(() => space.readOne({ kind: "task", match: { tags: { $each: "zz" } } })), "scan_budget_exceeded");
+      // A claim pages in windows instead of fetching the kind, and pays the same cost for the same
+      // reason: each window is a window of the queue, not of the matches.
+      assertEquals(
+        await codeOf(() => space.take({ pattern: { kind: "task", match: { tags: { $each: "zz" } } } })),
+        "scan_budget_exceeded",
+      );
+
+      // Every pushable predicate is decided in SQL, so it returns matches rather than candidates and
+      // cannot reach the budget however large the kind grows. This is the line the whole design
+      // rests on: the limit is invisible to patterns the database can answer.
+      assertEquals(await codeOf(() => space.query({ kind: "task", match: { op: "rare" } }, 10)), "");
+      assertEquals(await codeOf(() => space.query({ kind: "task", match: { n: { $gte: 0 } } }, 10)), "");
+      assertEquals(await codeOf(() => space.query({ kind: "task", match: { tags: { $any: "t3" } } }, 10)), "");
+      assertEquals(await codeOf(() => space.take({ pattern: { kind: "task", match: { op: "rare" } } })), "");
+
+      // And an inexact scan that finds what it needs early stops there rather than walking the kind,
+      // so the budget is a bound on WORK and not a cap on how large a kind may be while an
+      // unpushable pattern is in use. Matches are dense here, so the first chunk satisfies the limit.
+      const hits = await space.query({ kind: "task", match: { tags: { $each: { $in: ["t0", "t1", "t2", "t3", "t4"] } } } }, 5);
+      assertEquals(hits.length, 5);
+    },
+  },
+  {
+    // An unbudgeted scan is also an unbounded ALLOCATION: both adapters used to materialise every
+    // row of the kind before the oracle saw the first one. The chunked walk is what makes the
+    // budget enforceable partway rather than after the damage, and this pins its two edges, since
+    // an off-by-one at the chunk boundary is invisible in the common case.
+    name: "the chunked scan agrees with the whole-kind scan at every boundary",
+    run: async (adapter) => {
+      const space = new Space(adapter, { maxScanRows: 100_000 });
+      space.registerKind({
+        kind: "task",
+        indexedPaths: [{ path: "n", type: "integer" }, { path: "tags", type: "array" }],
+        sortablePaths: ["n"],
+      });
+      const ids: string[] = [];
+      for (let i = 0; i < 2500; i++) { // more than two chunks, and not a multiple of one
+        ids.push((await space.put({ kind: "task", body: { n: i, tags: i % 250 === 0 ? ["hit"] : ["miss"] } })).id);
+      }
+      const sorted = [...ids].sort();
+      const each = { tags: { $each: "hit" } };
+
+      const all = await space.query({ kind: "task", match: each }, 100);
+      assertEquals(all.length, 10, "every match across the chunk boundaries, none twice");
+      assertEquals(all.map((r) => r.id), all.map((r) => r.id).sort(), "in id order, the oracle tie-break");
+
+      // A limit smaller than the match count stops the walk early, and must still return the FIRST
+      // matches rather than whichever chunk happened to be in hand.
+      assertEquals((await space.query({ kind: "task", match: each }, 3)).map((r) => r.id), all.slice(0, 3).map((r) => r.id));
+      assertEquals((await space.readOne({ kind: "task", match: each }))?.id, all[0].id);
+
+      // A cursor into the middle resumes the walk rather than restarting it.
+      const after = await space.query({ kind: "task", match: each }, 100, { after: all[4].id });
+      assertEquals(after.map((r) => r.id), all.slice(5).map((r) => r.id));
+
+      // Descending, where the chunk cursor has to walk the other way.
+      const desc = await space.query({ kind: "task", match: each }, 100, { dir: "desc" });
+      assertEquals(desc.map((r) => r.id), [...all].reverse().map((r) => r.id));
+
+      // An order_by cannot stop early (the sort needs every match), so it exercises the full walk.
+      const ordered = await space.query({ kind: "task", match: each, orderBy: [{ path: "n", dir: "desc" }] }, 100);
+      assertEquals((ordered[0].body as { n: number }).n, 2250);
+      assertEquals(ordered.length, 10);
+      assertEquals(sorted.length, 2500);
+    },
+  },
 ];

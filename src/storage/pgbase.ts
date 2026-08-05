@@ -29,6 +29,8 @@ import {
   type StorageAdapter,
   type TakeResult,
   type TakeSelector,
+  scanChunkSize,
+  yieldToEventLoop,
 } from "./adapter.ts";
 import {
   pgPlaceholders,
@@ -47,7 +49,7 @@ import { isTrivial, type JsonDialect, pushablePath, pushdown } from "./pushdown.
 import { type Candidate, type ClaimCursor, cursorOf, rankClaimable } from "../core/take.ts";
 import { addSeconds, minIso } from "../core/time.ts";
 import { newUlid } from "../core/ids.ts";
-import { RadiaError } from "../core/errors.ts";
+import { RadiaError, scanBudgetExceeded } from "../core/errors.ts";
 
 /** Result of a SQL statement: the rows and (for writes) the number of rows affected. */
 export interface SqlResult<T> {
@@ -495,7 +497,12 @@ export class PgSqlAdapter implements StorageAdapter {
    * oracle's order is `x.id < y.id`, its deterministic tie-break, which `order by id asc` matches
    * exactly. Any other case fetches everything and lets the oracle sort; see `Pushed.exact`.
    */
-  private async candidateRows(match: CompiledMatch, want?: number, page?: Page, scope?: StatsScope): Promise<RawRow[]> {
+  private async candidateMatches(
+    match: CompiledMatch,
+    want?: number,
+    page?: Page,
+    scope?: StatsScope,
+  ): Promise<RadiaRecord[]> {
     const d = new PgJson(1); // $1 is the kind
     const filter = pushdown(match.where, d);
     const where = isTrivial(filter) ? "" : ` and ${filter.sql}`;
@@ -505,10 +512,11 @@ export class PgSqlAdapter implements StorageAdapter {
     // `collate "C"` for the same reason the ordering uses it: the oracle compares ids as JS
     // strings, and a linguistic collation would put a different set of records "after" the cursor.
     const dir = page?.dir === "desc" ? "desc" : "asc";
+    const cmp = dir === "desc" ? "<" : ">";
     let cursor = "";
     if (page?.after) {
       params.push(page.after);
-      cursor = ` and id collate "C" ${dir === "desc" ? "<" : ">"} $${params.length}`;
+      cursor = ` and id collate "C" ${cmp} $${params.length}`;
     }
     // The author restriction is an exact column predicate, so it never needs the oracle's help and
     // never blocks the pushed limit.
@@ -516,26 +524,56 @@ export class PgSqlAdapter implements StorageAdapter {
       params.push(scope.createdBy);
       cursor += ` and created_by = any($${params.length}::text[])`;
     }
-    const bounded = want !== undefined && filter.exact && !match.orderBy?.length;
-    if (bounded) params.push(want);
-    const res = await this.sql.query<RawRow>(
-      `select ${RECORD_COLS} from records where kind = $1${where}${cursor}` +
-        (bounded ? ` order by id collate "C" ${dir} limit $${params.length}` : ""),
-      params,
-    );
-    return res.rows;
+    const select = `select ${RECORD_COLS} from records where kind = $1${where}${cursor}`;
+    if (want !== undefined && filter.exact && !match.orderBy?.length) {
+      const res = await this.sql.query<RawRow>(
+        `${select} order by id collate "C" ${dir} limit $${params.length + 1}`,
+        [...params, want],
+      );
+      return res.rows.map(rowToRecord).filter((rec) => matchesRecord(rec, match));
+    }
+    // The inexact path: SQL narrows, the oracle decides, and the whole kind used to arrive in one
+    // result set. Chunked instead, so memory is bounded and the budget can stop the scan partway
+    // rather than after the damage. Each `await` here is also a turn of the event loop, which is
+    // what keeps one principal's undecidable pattern from being everyone else's outage.
+    const size = scanChunkSize(match.scanBudget);
+    const out: RadiaRecord[] = [];
+    let examined = 0;
+    let after: string | undefined;
+    for (;;) {
+      const args = after === undefined ? [...params, size] : [...params, after, size];
+      const tail = after === undefined
+        ? ` order by id collate "C" ${dir} limit $${params.length + 1}`
+        : ` and id collate "C" ${cmp} $${params.length + 1} order by id collate "C" ${dir} limit $${params.length + 2}`;
+      const res = await this.sql.query<RawRow>(select + tail, args);
+      if (res.rows.length === 0) return out;
+      examined += res.rows.length;
+      for (const row of res.rows) {
+        const rec = rowToRecord(row);
+        if (matchesRecord(rec, match)) out.push(rec);
+      }
+      // An `orderBy` has to see every match before it can say which comes first, so only the
+      // natural order can stop early. That is also the only order the SQL walk agrees with.
+      if (!match.orderBy?.length && want !== undefined && out.length >= want) return out;
+      if (res.rows.length < size) return out;
+      // Checked HERE, not before the oracle: the budget bounds the walk, so a read that finishes
+      // inside a chunk is never refused for the size of the chunk it happened to be given.
+      if (match.scanBudget !== undefined && examined >= match.scanBudget) {
+        throw scanBudgetExceeded(match.kind, match.scanBudget);
+      }
+      after = String(res.rows[res.rows.length - 1].id);
+      await yieldToEventLoop();
+    }
   }
 
   async readOne(match: CompiledMatch, scope?: StatsScope): Promise<RadiaRecord | null> {
     // SQL narrows; the core oracle decides. `pushdown` is a sound over-approximation, so this
     // filter never removes a record `matchesRecord` would have accepted.
-    const matches = (await this.candidateRows(match, 1, undefined, scope)).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
-    return firstByOrder(matches, match.orderBy);
+    return firstByOrder(await this.candidateMatches(match, 1, undefined, scope), match.orderBy);
   }
 
   async query(match: CompiledMatch, limit: number, page?: Page, scope?: StatsScope): Promise<RadiaRecord[]> {
-    const matches = (await this.candidateRows(match, limit, page, scope)).map(rowToRecord).filter((rec) => matchesRecord(rec, match));
-    return pageRecords(matches, match.orderBy, limit, page);
+    return pageRecords(await this.candidateMatches(match, limit, page, scope), match.orderBy, limit, page);
   }
 
   async stats(scope?: StatsScope): Promise<KindStateCount[]> {
@@ -580,9 +618,18 @@ export class PgSqlAdapter implements StorageAdapter {
       // somebody else already took.
       // The cursor is the LAST ROW EXAMINED, in claim order, so the next window resumes where this
       // one stopped no matter how many rows other claimers removed in between.
+      let examined = 0;
       for (let after: ClaimCursor | undefined;;) {
         const candidates = await this.fetchCandidates(tx, selector, CANDIDATE_WINDOW, after);
         if (candidates.length === 0) return null;
+        // A claim pages, so it never had the memory problem the scan had. It has the other one: an
+        // unpushable pattern makes each window a window of the QUEUE rather than of the matches, so
+        // the claim walks the whole kind 64 rows at a time. Same budget, same reason. Worse here in
+        // one respect: this runs inside a transaction, so the rows it examines are also rows it holds.
+        examined += candidates.length;
+        if (pattern?.scanBudget !== undefined && examined > pattern.scanBudget) {
+          throw scanBudgetExceeded(pattern.kind, pattern.scanBudget);
+        }
         const ranked = rankClaimable(candidates, pattern, now, spec.allowTaint, spec.createdBy);
         const claimed = await this.claimFirst(tx, ranked, spec, now);
         if (claimed) return claimed;

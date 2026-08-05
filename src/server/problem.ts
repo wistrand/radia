@@ -40,5 +40,9 @@ export function statusFor(code: string, fallback: number): number {
   // others, and a caller told 400 would look for a syntax error that is not there.
   if (code === "body_too_deep" || code === "array_too_long") return 413;
   if (code === "pattern_too_large") return 413;
+  // 429 rather than 413: the request is small and well-formed, and what it exceeded is a budget on
+  // the WORK it would cause. The same pattern succeeds against a smaller kind, and narrowing it or
+  // paging with `after` is a retry the caller can actually make.
+  if (code === "scan_budget_exceeded") return 429;
   return fallback;
 }

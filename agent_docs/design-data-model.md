@@ -199,8 +199,22 @@ rather than one number: a pattern is STORED and then evaluated against every can
 its cost is paid per record rather than once; a body's depth and fan-out are walked by the matcher,
 the event chain and every reader.
 
-Two remain, and both need a MECHANISM rather than a validator, which is why they are not here yet:
-slow-lane time and row-scan budgets (a scheduler concept, M3) and SSE buffer/backpressure limits.
+**The row-scan budget** was the first that needed a MECHANISM rather than a validator, and it is
+built (`CompiledMatch.scanBudget`, `SpaceContext.maxScanRows`, default 200k, both adapters). A
+pattern the pre-filter cannot decide is answered by walking the kind through `matchesRecord`, so its
+cost is the size of the kind and not of the request: 13.6s at a million records (`bench/deployment.ts`),
+in a process that serves nobody else meanwhile. Two halves, because the budget alone would not have
+fixed the second one:
+
+- The walk is CHUNKED and yields between chunks, so memory is bounded and another principal's read
+  interleaves. Measured on 60k records: a neighbour's indexed read waited 138ms, the whole scan;
+  now 5.9ms, and the scan pays about a third for it.
+- The budget then bounds the total, raising `429 scan_budget_exceeded`. It never truncates: a
+  bounded read whose result is treated as a population is this codebase's most repeated bug.
+
+Anything the database can decide returns matches rather than candidates and never approaches it,
+which is what keeps the limit invisible to ordinary use. Still to come: a slow-lane TIME budget
+(a scheduler concept, M3) and SSE buffer/backpressure limits.
 
 The gap with a live consumer WAS **record body size**: nothing rejected a large body, so the
 cross-cutting invariant that artifact bytes never travel inside a record (see

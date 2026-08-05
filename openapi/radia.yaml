@@ -26,6 +26,13 @@ info:
     limits is the signal: a body approaching artifact size is a payload in the wrong place, and
     unlike an artifact a body can never be erased.
 
+    Reads carry one more, and it is the only limit a caller cannot see in its own request:
+    `429 scan_budget_exceeded`, default 200 000 rows. A pattern the database cannot decide (see the
+    pushdown rules; `$each` is the operator that reaches this) is answered by walking the kind one
+    record at a time, so its cost is the size of the kind rather than of the request. Anything
+    decided in SQL returns matches rather than candidates and never approaches it. Narrow the
+    pattern, page it with `after`, or declare the path the predicate uses.
+
     Authorization (M1): kind-scoped grants are reserved `grant` records (assigned by an operator
     or the supervisor; discovered by query). Requests authenticate with `Authorization: Bearer
     <run-token>` minted through the bootstrap chain (agent-definitions → agent-runs → stop); a

@@ -107,6 +107,10 @@ export interface SpaceContext {
    *  so it needs a ceiling like any other resource; an agent loop opens one per KIND it claims, and
    *  an inspection console a handful, so this is far above ordinary use and only stops a leak. */
   maxWatchesPerPrincipal: number;
+  /** Candidate rows ONE read may push through the oracle (`CompiledMatch.scanBudget`). The only
+   *  limit here that bounds a cost the caller cannot see in its own request: a pattern SQL cannot
+   *  decide is cheap to send and linear in the size of the kind to answer. */
+  maxScanRows: number;
 }
 
 const DEFAULT_CONTEXT: SpaceContext = {
@@ -134,6 +138,11 @@ const DEFAULT_CONTEXT: SpaceContext = {
   watchIdleSeconds: 300,
   maxWatchesPerPrincipal: 64,
   maxInterestsPerPrincipal: 32,
+  // 200k rows, about 2.8s of oracle at the measured cost (`bench/deployment.ts`: 13.6s per million).
+  // High enough that no space reaches it by growing normally, since every pushable predicate returns
+  // matches rather than candidates and never counts against it. What it stops is the shape that has
+  // no ceiling at all: an unpushable pattern over an unbounded kind.
+  maxScanRows: 200_000,
 };
 
 /** How a caller selects work to take. */
@@ -3258,7 +3267,11 @@ export class Space {
   private compile(pattern: Pattern): CompiledMatch {
     // Validates predicate/order_by paths against the kind's declaration; throws RadiaError
     // (undeclared_path, unknown_kind, unsortable_path, ...).
-    return compilePattern(pattern, this.kinds.get(pattern.kind));
+    //
+    // The scan budget rides on the compiled pattern rather than on every read's signature, because
+    // this is the one place every read passes through and because the adapter is where rows are
+    // counted. A limit the storage port cannot see is a limit on nothing.
+    return { ...compilePattern(pattern, this.kinds.get(pattern.kind)), scanBudget: this.ctx.maxScanRows };
   }
 
   /**

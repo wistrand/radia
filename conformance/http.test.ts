@@ -1017,3 +1017,31 @@ Deno.test("http: a grant may not carry a scope key nothing enforces", async () =
     await close();
   }
 });
+
+Deno.test("http: an undecidable pattern over a large kind is a 429, not a stalled space", async () => {
+  // The limit a caller cannot see in its own request: the pattern is small and well-formed, and
+  // what it exceeds is the WORK it causes (`bench/deployment.ts`: 13.6s at a million records, in a
+  // process that serves nobody else meanwhile). 429 rather than 413 because narrowing or paging is
+  // a retry the caller can actually make, and because the same pattern is fine on a smaller kind.
+  const adapter = new SqliteAdapter(":memory:");
+  await adapter.init();
+  const space = new Space(adapter, { maxScanRows: 20 });
+  space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }, { path: "tags", type: "array" }] });
+  const handler = makeHandler(space, "<html>console</html>", false);
+  try {
+    for (let i = 0; i < 60; i++) await space.put({ kind: "task", body: { tag: "t", tags: ["a"] } });
+
+    const res = await handler(post("/v0/records/query", { kind: "task", match: { tags: { $each: "zz" } } }));
+    assertEquals(res.status, 429);
+    const body = await res.json();
+    assertEquals(body.type, "about:radia/scan_budget_exceeded");
+    assert(String(body.detail).includes("20"), `the message must name the budget: ${body.detail}`);
+
+    // The pushable half of the same shape stays a 200, which is what makes this a budget on
+    // undecidable work rather than a cap on how large a kind may be.
+    const ok = await handler(post("/v0/records/query", { kind: "task", match: { tags: { $any: "a" } }, limit: 5 }));
+    assertEquals(ok.status, 200);
+  } finally {
+    await adapter.close();
+  }
+});
