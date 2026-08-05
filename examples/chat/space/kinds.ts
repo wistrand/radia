@@ -22,6 +22,11 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     kind: "capability",
     indexedPaths: [{ path: "tool", type: "keyword" }, { path: "provider", type: "keyword" }],
     claimable: false,
+    // The latest-wins identity, declared so `radia gc` can compact the registry. Measured before:
+    // 1,498 capability records over 39 (provider, tool) pairs, because every session retires its
+    // tools on the way out and republishes them on the way in. The projection only ever reads the
+    // newest per pair; compaction deletes the rest, tombstones kept.
+    contentKey: ["provider", "tool"],
   });
   // REDECLARING a reserved kind, on purpose. `artifact` is defined in code with {digest, mediaType}
   // indexed; the app adds `conversationId` so a grant pattern can bind an artifact to the
@@ -69,7 +74,14 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     kind: "llm_call",
     indexedPaths: [{ path: "tier", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
   });
-  await client.registerKind({ kind: "model", indexedPaths: [{ path: "tier", type: "keyword" }], claimable: false });
+  // `contentKey: tier` matches `liveModels`' own projection (activeByKey on body.tier), so what
+  // compaction keeps is exactly what the router reads.
+  await client.registerKind({
+    kind: "model",
+    indexedPaths: [{ path: "tier", type: "keyword" }],
+    claimable: false,
+    contentKey: ["tier"],
+  });
   // `conversationId` on the RESULT kinds, not just the call kinds: these are keyed by callId, and a
   // grant scoped by conversation can only bind a path the body actually carries. Without it a
   // session holding a callId from another conversation could read its result.

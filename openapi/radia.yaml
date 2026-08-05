@@ -581,6 +581,60 @@ paths:
                   sample: { type: array, items: { type: string } }
         "400": { $ref: "#/components/responses/Problem" }
         "403": { $ref: "#/components/responses/Problem" }
+  /ops/gc:
+    post:
+      operationId: gc
+      summary: Run the retention sweep
+      description: |
+        Delete records whose writer-declared `retention_until` has passed. The second deliberate
+        carve-out from immutability, after artifact erasure, and shaped the same way: the content
+        goes, the evidence stays (the event log keeps every swept record's id, kind, digest and
+        transitions, plus one `gc` event per swept kind per batch). Absence of `retention_until`
+        means permanent, always; the runtime never invents a retention.
+
+        Never swept: records under an unexpired lease, `available` work of claimable kinds
+        (unclaimed work is not litter), reserved kinds, and `artifact` records (until blob GC
+        exists). Reference kinds (`claimable: false`) sweep from any state, since they sit
+        `available` forever by design.
+
+        On demand, never on a timer. `radia doctor` reports the backlog (`sweepable`); this runs
+        it. `dryRun` counts without deleting. Operator-only. See agent_docs/plan-gc.md.
+      x-stability: experimental
+      x-phase: "M2"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                limit: { type: integer, default: 1000, description: "Batch size (max 10000); up to 50 batches per call." }
+                dryRun: { type: boolean, description: "Count eligibility, delete nothing." }
+                compact: { type: boolean, default: true, description: "Also compact latest-wins registries: delete entries strictly older than the newest per content key (tombstones kept — deleting a retire-marker would silently undo the withdrawal), and interests whose run is over. Kinds opt in by declaring `contentKey` on their kind_def; grant/kind_def/signal/agent_definition never compact." }
+      responses:
+        "200":
+          description: swept
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [swept, eligible, byKind, more, passes]
+                properties:
+                  swept: { type: integer, description: "Records deleted (0 on dryRun)." }
+                  eligible: { type: integer }
+                  byKind: { type: object, additionalProperties: { type: integer } }
+                  more: { type: boolean, description: "A backlog remains; call again. Never read a capped count as the total." }
+                  passes: { type: integer }
+                  compaction:
+                    type: object
+                    required: [compacted, superseded, byKind, more]
+                    properties:
+                      compacted: { type: integer }
+                      superseded: { type: integer }
+                      byKind: { type: object, additionalProperties: { type: integer } }
+                      more: { type: boolean }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
   /watches:
     post:
       operationId: watch

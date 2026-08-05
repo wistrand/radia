@@ -27,7 +27,8 @@ Inspect
   health                              backend, DB clock, resolved principal
   stats                               record counts by kind and state
   doctor                              diagnostics: dead-letters, stuck leases, stale work,
-                                      erasures that no longer hold
+                                      erasures that no longer hold, sweepable retention backlog
+  gc [--run] [--limit <n>]            the retention sweep. Prints what would go; --run deletes it
   erasures [--undone]                 every shred, and whether its payload is still gone
   flows [--granularity kind|kind+agent] [--counts bucketed|exact] [--min <n>] [--hub-degree <n>]
                                       recurring shapes of work, mined from lineage
@@ -432,8 +433,32 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         if (chain?.ok && chain.signed && chain.sealed > 0) {
           lines.push(`event chain: ${chain.sealed} links verified, signed`);
         }
-        if (lines.length === 1) lines.push("no dead-letters, stuck leases, stale work, or undone erasures");
+        // The sweep is on demand, so the backlog line is the only way anyone learns to run it.
+        const sw = d.sweepable;
+        if (sw && sw.eligible > 0) {
+          const kinds = Object.entries(sw.byKind).map(([k, n]) => `${k}=${n}`).join("  ");
+          lines.push(`sweepable: ${sw.eligible}${sw.atLeast ? "+" : ""} records past retention (${kinds}) — radia gc to reclaim`);
+        }
+        if (lines.length === 1) lines.push("no dead-letters, stuck leases, stale work, undone erasures, or sweepable backlog");
         return lines.join("\n");
+      });
+    }
+
+    // The retention sweep. Deleting is the operator's act, so the DEFAULT prints what would go and
+    // `--run` does it: a destructive verb whose no-argument form destroys nothing.
+    case "gc": {
+      const dry = !has(argv, "--run");
+      const limitArg = flag(argv, "--limit");
+      const r = await client.gc({ dryRun: dry, ...(limitArg ? { limit: Number(limitArg) } : {}) });
+      return out(ctx, r, () => {
+        const fmt = (byKind: Record<string, number>) => Object.entries(byKind).map(([k, n]) => `${k}=${n}`).join("  ") || "(nothing)";
+        const c = r.compaction;
+        const compactLine = c && (c.superseded > 0 || c.compacted > 0)
+          ? `\n${dry ? `${c.superseded} superseded registry entries` : `compacted ${c.compacted} registry entries`}${c.more ? "+" : ""}: ${fmt(c.byKind)}`
+          : "";
+        return dry
+          ? `${r.eligible}${r.more ? "+" : ""} sweepable: ${fmt(r.byKind)}${compactLine}\nradia gc --run to delete them`
+          : `swept ${r.swept}${r.more ? " (more remain: run again)" : ""}: ${fmt(r.byKind)}${compactLine}`;
       });
     }
 
@@ -862,5 +887,6 @@ interface Diagnostics {
     };
   };
   undoneErasures?: { count: number; checked: number; complete: boolean; sample: unknown[] };
+  sweepable?: { eligible: number; byKind: Record<string, number>; atLeast: boolean };
   integrity?: { ok: boolean; sealed: number; signed: boolean; failure?: { idx: number; reason: string; detail: string } };
 }

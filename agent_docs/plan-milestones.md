@@ -119,6 +119,14 @@ event-log retention lands (M2).
 ### M2: coordination protocols
 
 - [ ] request/bid/award (see [design-marketplace.md](design-marketplace.md)): speculative ahead of a first user; gate behind a measured baseline like the scheduler, not build-on-spec (see [plan-validation.md](plan-validation.md))
+- [x] **retention GC + registry compaction** (2026-08-05, [plan-gc.md](plan-gc.md)): `Space.gc` /
+  `POST /v0/ops/gc` / `radia gc`, on demand only. `retention_until` is finally consulted: writers
+  declare expiry, the sweep deletes settled/reference records past it (never a held lease, never
+  unclaimed claimable work, never reserved kinds or artifacts), events keep the audit at ~200
+  bytes/record. Compaction deletes superseded latest-wins successors (keep-newest per `contentKey`,
+  tombstones included — the resurrection guard is planted-regression-proved) and dead runs'
+  interests. Motive was measured: registry successors were 52% of a live space, `llm_call` bodies
+  8 MB of 10 MB. Event-log retention (seal checkpointing, 410 activation) stays open below.
 - [ ] durable timers. In scope: the delayed-visibility sweeper over the envelope's `available_at` that retry backoff needs anyway. Out of scope: a general workflow-timer / cron / signal library, which is Temporal's ground; Radia does not reimplement durable execution (see [research-positioning.md](research-positioning.md))
 - [ ] transactional budget reservation/settlement
 - [~] runtime envelope encryption + crypto-shredding: **built for artifact blobs** (`src/storage/crypto.ts`: per-blob DEK, wrapped under a space KEK from env/keyring, destroyable sidecar so deleting the key destroys the payload while the record and its digest stay verifiable). Record *bodies* are plaintext; KMS wrapping + rotation are open.

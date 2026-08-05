@@ -485,6 +485,17 @@ export function validateKindDef(def: KindDef): void {
   if (def.claimable !== undefined && typeof def.claimable !== "boolean") {
     throw new RadiaError("invalid_type", "kind.claimable must be a boolean");
   }
+  // A compaction key over a path nobody can address is a key that silently never matches, so it is
+  // held to the same path grammar as everything else. It need NOT be an indexed path: the key is
+  // read per record during compaction, never matched by the planner.
+  for (const ck of def.contentKey ?? []) {
+    if (!validPath(ck)) {
+      throw new RadiaError("invalid_path", `invalid contentKey path '${ck}'`);
+    }
+  }
+  if (def.contentKey !== undefined && def.contentKey.length === 0) {
+    throw new RadiaError("invalid_kind", "contentKey must be omitted or non-empty: an empty key would make every record one identity");
+  }
 }
 
 export class KindRegistry {
@@ -497,6 +508,10 @@ export class KindRegistry {
       indexedPaths: [...def.indexedPaths],
       sortablePaths: [...(def.sortablePaths ?? [])],
       ...(def.claimable !== undefined ? { claimable: def.claimable } : {}),
+      // Copied explicitly, like every field here: this copy is a WHITELIST, and a field left out
+      // of it is silently dropped from every registered kind — which is how `contentKey` would
+      // have vanished between declaration and compaction.
+      ...(def.contentKey !== undefined ? { contentKey: [...def.contentKey] } : {}),
     });
   }
 

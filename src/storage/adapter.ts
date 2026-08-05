@@ -170,6 +170,35 @@ export interface CompiledMatch {
   scanBudget?: number;
 }
 
+/** What a retention sweep may touch. Computed by `Space.gc` from the kind registry, because the
+ *  adapter knows states and columns while only the registry knows which kinds are reference data
+ *  and which are reserved. */
+export interface SweepSelector {
+  /** Kinds eligible in ANY state (claimable:false reference kinds). All others sweep only from
+   *  `consumed`/`dead_letter`. */
+  anyStateKinds: string[];
+  /** Kinds never swept: the reserved kinds, incl. `artifact` until blob GC exists. */
+  neverKinds: string[];
+  /** Batch cap; a full batch sets `more`, and the caller decides whether to go again. */
+  limit: number;
+  /** Count eligibility, delete nothing. */
+  dryRun?: boolean;
+  /** Who asked, stamped on the `gc` events. */
+  runId: string;
+}
+
+export interface SweepResult {
+  /** Rows deleted (0 on dryRun). */
+  swept: number;
+  /** Rows that matched eligibility (== swept unless dryRun). */
+  eligible: number;
+  byKind: Record<string, number>;
+  /** The batch filled `limit`: run again for the rest. NEVER read a capped result as the total —
+   *  that is this codebase's most repeated bug, stated here because a GC backlog is exactly the
+   *  number an operator will quote. */
+  more: boolean;
+}
+
 /** Rows an adapter fetches per chunk while walking a kind the pre-filter could not decide. Large
  *  enough that the per-chunk statement overhead disappears, small enough that the yield between
  *  chunks is frequent. Both adapters use it, because two adapters walking a kind by different rules
@@ -437,6 +466,38 @@ export interface StorageAdapter {
    * Must be idempotent and safe to call on every startup.
    */
   prepareKind?(kind: string, paths: string[]): Promise<void>;
+
+  /**
+   * Retention sweep: delete records whose `retention_until` has passed, with their envelope and
+   * edge rows, in one transaction per batch. The ONE deliberate record-deletion path besides
+   * artifact shredding; see agent_docs/plan-gc.md for what it may and may never touch.
+   *
+   * Eligibility is entirely COLUMN predicates (no body pattern, no oracle, no scan budget):
+   *   - `retention_until` non-null and before the DB clock's now;
+   *   - no lease is HELD: `lease_id` set with an unexpired `leased_until` ("Retention GC never
+   *     discards a valid in-flight lease's completed work", CLAUDE.md). Settling clears `lease_id`
+   *     and leaves `leased_until` behind, so testing the timestamp alone embargoes every freshly
+   *     acked record for a lease-length — found by the conformance suite, kept as a comment;
+   *   - the kind is not in `neverKinds` (reserved kinds; artifact until blob GC exists);
+   *   - the state is `consumed`/`dead_letter`, UNLESS the kind is in `anyStateKinds`
+   *     (claimable:false reference kinds, whose records sit `available` forever by design —
+   *     unclaimed WORK is never litter, however old its retention).
+   *
+   * Appends one recordless `gc` event per swept kind (operation "gc", detail {swept, cutoff}) in
+   * the same transaction: the audit residue, at event size rather than record size. `dryRun`
+   * counts eligibility and deletes nothing. Idempotent; concurrent sweeps race harmlessly (the
+   * loser deletes zero rows).
+   */
+  sweepExpired(sel: SweepSelector): Promise<SweepResult>;
+
+  /**
+   * Delete these specific records (with envelope and edges), for registry COMPACTION: the caller
+   * has already computed which entries are superseded (`core/gc.ts`), so eligibility here is only
+   * the safety floor — a record holding a live lease is skipped whatever the caller decided, and
+   * the count of what was actually deleted is returned. Appends the same recordless `gc` events
+   * the retention sweep does, marked `compacted: true`.
+   */
+  sweepIds(ids: Ulid[], runId: string): Promise<{ swept: number; byKind: Record<string, number> }>;
 
   /** Envelopes currently in a given state, capped (diagnostics). `excludeKinds` filters them out
    *  at the query level (before the cap), used to skip reference kinds in the starvation check. */

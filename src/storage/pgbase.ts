@@ -29,6 +29,8 @@ import {
   type StorageAdapter,
   type TakeResult,
   type TakeSelector,
+  type SweepResult,
+  type SweepSelector,
   scanChunkSize,
   yieldToEventLoop,
 } from "./adapter.ts";
@@ -240,6 +242,10 @@ create index if not exists idx_records_body_gin on records using gin (body_jsonb
 -- a different record here than on SQLite. This index is what keeps the limit cheap AND identical
 -- across adapters.
 create index if not exists idx_records_id_c on records (id collate "C");
+-- The retention sweep's eligibility scan. Partial: most records carry no retention (absence means
+-- permanent), so the index holds only the sweepable minority. Same index, same reason, in the
+-- SQLite schema.
+create index if not exists idx_records_retention on records (retention_until) where retention_until is not null;
 -- One-time backfill of the reverse edge index for a database written by an older build. The
 -- guard makes this free on every later startup: the NOT EXISTS is evaluated once, and on a
 -- populated table the whole INSERT reads nothing. A space that genuinely has no edges (no record
@@ -987,6 +993,77 @@ export class PgSqlAdapter implements StorageAdapter {
         }, now);
       }
       return held.length;
+    });
+  }
+
+  async sweepExpired(sel: SweepSelector): Promise<SweepResult> {
+    const now = await this.now();
+    return await this.sql.transaction(async (tx) => {
+      // Same eligibility, same order, same shape as the SQLite adapter: two adapters sweeping by
+      // different rules would make the conformance suite two different tests.
+      const params: unknown[] = [now];
+      let where = `r.retention_until is not null and r.retention_until < $1
+              and (rt.lease_id is null or rt.leased_until is null or rt.leased_until <= $1)`;
+      if (sel.neverKinds.length > 0) {
+        params.push(sel.neverKinds);
+        where += ` and r.kind <> all($${params.length}::text[])`;
+      }
+      if (sel.anyStateKinds.length > 0) {
+        params.push(sel.anyStateKinds);
+        where += ` and (rt.state in ('consumed','dead_letter') or r.kind = any($${params.length}::text[]))`;
+      } else {
+        where += ` and rt.state in ('consumed','dead_letter')`;
+      }
+      params.push(sel.limit);
+      const rows = (await tx.query<{ id: string; kind: string }>(
+        `select r.id, r.kind from records r join record_runtime rt on rt.record_id = r.id
+          where ${where} order by r.id limit $${params.length}`,
+        params,
+      )).rows;
+
+      const byKind: Record<string, number> = {};
+      for (const r of rows) byKind[r.kind] = (byKind[r.kind] ?? 0) + 1;
+      const result: SweepResult = {
+        swept: sel.dryRun ? 0 : rows.length,
+        eligible: rows.length,
+        byKind,
+        more: rows.length >= sel.limit,
+      };
+      if (sel.dryRun || rows.length === 0) return result;
+
+      const ids = rows.map((r) => r.id);
+      await tx.query("delete from record_runtime where record_id = any($1::text[])", [ids]);
+      await tx.query("delete from record_edges where parent_id = any($1::text[]) or child_id = any($1::text[])", [ids]);
+      await tx.query("delete from records where id = any($1::text[])", [ids]);
+      for (const [kind, swept] of Object.entries(byKind)) {
+        await this.appendEvent(tx, { runId: sel.runId, operation: "gc", kind, detail: { swept, cutoff: now } }, now);
+      }
+      return result;
+    });
+  }
+
+  async sweepIds(ids: string[], runId: string): Promise<{ swept: number; byKind: Record<string, number> }> {
+    if (ids.length === 0) return { swept: 0, byKind: {} };
+    const now = await this.now();
+    return await this.sql.transaction(async (tx) => {
+      // The safety floor, re-checked HERE whatever the caller computed: a live lease wins.
+      const rows = (await tx.query<{ id: string; kind: string }>(
+        `select r.id, r.kind from records r join record_runtime rt on rt.record_id = r.id
+          where r.id = any($1::text[])
+            and (rt.lease_id is null or rt.leased_until is null or rt.leased_until <= $2)`,
+        [ids, now],
+      )).rows;
+      const byKind: Record<string, number> = {};
+      for (const r of rows) byKind[r.kind] = (byKind[r.kind] ?? 0) + 1;
+      if (rows.length === 0) return { swept: 0, byKind };
+      const del = rows.map((r) => r.id);
+      await tx.query("delete from record_runtime where record_id = any($1::text[])", [del]);
+      await tx.query("delete from record_edges where parent_id = any($1::text[]) or child_id = any($1::text[])", [del]);
+      await tx.query("delete from records where id = any($1::text[])", [del]);
+      for (const [kind, swept] of Object.entries(byKind)) {
+        await this.appendEvent(tx, { runId, operation: "gc", kind, detail: { swept, compacted: true } }, now);
+      }
+      return { swept: rows.length, byKind };
     });
   }
 

@@ -50,6 +50,7 @@ import {
   WRITE_PROTECTED_KINDS,
 } from "./kinds.ts";
 import { CredentialStore, hashToken, mintCredential, type ResolvedToken } from "./auth.ts";
+import { type CompactionResult, compactRegistries } from "./gc.ts";
 import { type BlobStore, MemoryBlobStore } from "../storage/blobs.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
@@ -78,7 +79,7 @@ import {
   thread,
 } from "./inspection.ts";
 import { chainedEvent, type IntegrityReport, linkEvents, SEAL_BATCH, type SealKey } from "./seal.ts";
-import { CHAIN_GENESIS, eventHash } from "../../sdk/ts/wire.ts";
+import { CHAIN_GENESIS, eventHash, RESERVED_KINDS } from "../../sdk/ts/wire.ts";
 
 export interface SpaceContext {
   principal: string;
@@ -1481,6 +1482,9 @@ export class Space {
       matchingInterests: (kind) => this.matchingInterests(kind),
       effectivePermissions: (principal) => this.effectivePermissions(principal),
       erasures: (opts) => this.erasures(opts),
+      // Retention only: the doctor's backlog number should not pay for a registry walk on every
+      // diagnostics call, and a superseded successor is bookkeeping, not a finding.
+      gcBacklog: () => this.gc({ dryRun: true, compact: false }),
       verifyIntegrity: () => this.verifyIntegrity(),
       getLineage: (id, max, createdBy) => this.getLineage(id, max, createdBy),
       getChildren: (id, limit) => this.getChildren(id, limit),
@@ -2087,6 +2091,72 @@ export class Space {
     const rows: { record: RadiaRecord | null; envelope: Envelope }[] = [];
     for (const e of envs) rows.push({ record: await this.storage.getRecord(e.recordId), envelope: e });
     return rows;
+  }
+
+  /**
+   * The retention sweep: delete records whose writer-declared `retention_until` has passed.
+   *
+   * The second deliberate carve-out from immutability, after artifact erasure, and shaped by the
+   * same rule: destroy the content, keep the evidence (the event log keeps id, kind, digest and
+   * every transition; the sweep adds one recordless `gc` event per kind per batch). See
+   * agent_docs/plan-gc.md for eligibility and for what is deliberately NOT swept.
+   *
+   * The kind classes come from the REGISTRY, which is why this lives here and not in the adapter:
+   * only the registry knows which kinds are reference data (`claimable: false`, sweepable from any
+   * state because they sit `available` forever by design) and which are reserved. A kind this
+   * process has never loaded defaults to the strict class (consumed/dead_letter only), which is
+   * the conservative side.
+   *
+   * ON DEMAND, never on a timer, like sealing and for the same reason: an idle space should hold
+   * no background work. `radia doctor` reports the backlog; `POST /v0/ops/gc` runs the sweep.
+   */
+  async gc(opts: { limit?: number; dryRun?: boolean; compact?: boolean; principal?: string } = {}): Promise<{
+    swept: number;
+    eligible: number;
+    byKind: Record<string, number>;
+    more: boolean;
+    passes: number;
+    compaction?: CompactionResult;
+  }> {
+    const limit = Math.min(Math.max(opts.limit ?? 1000, 1), 10_000);
+    const anyStateKinds = this.kinds.list()
+      .filter((d) => !isClaimable(d) && !RESERVED_KINDS.includes(d.kind))
+      .map((d) => d.kind);
+    const totals = { swept: 0, eligible: 0, byKind: {} as Record<string, number>, more: false, passes: 0 };
+    // Bounded batches rather than one unbounded delete: each pass is one transaction, so a crash
+    // loses at most a batch's progress and a concurrent reader never sees a half-swept batch. The
+    // pass cap bounds one CALL; `more` says a backlog remains and the caller decides.
+    const MAX_PASSES = 50;
+    for (;;) {
+      const r = await this.storage.sweepExpired({
+        anyStateKinds,
+        neverKinds: [...RESERVED_KINDS],
+        limit,
+        dryRun: opts.dryRun,
+        runId: opts.principal ?? this.ctx.runId,
+      });
+      totals.eligible += r.eligible;
+      totals.swept += r.swept;
+      for (const [k, n] of Object.entries(r.byKind)) totals.byKind[k] = (totals.byKind[k] ?? 0) + n;
+      totals.passes++;
+      totals.more = r.more;
+      // A dry run never loops: its count is a capped sample, and looping would re-count the same
+      // rows forever, since nothing was deleted.
+      if (opts.dryRun || !r.more || totals.passes >= MAX_PASSES) break;
+    }
+    // Registry compaction rides the same verb (phase 2, plan-gc.md): superseded successors of
+    // latest-wins registries, plus interests whose run is over. `core/gc.ts` owns the keep-newest
+    // logic and its resurrection guard; this only wires the reads and the one destructive member.
+    if (opts.compact !== false) {
+      const compaction = await compactRegistries({
+        listKinds: () => this.kinds.list(),
+        pageDesc: (kind, limit, after) => this.query({ kind }, limit, { dir: "desc", after }),
+        sweepIds: (ids, runId) => this.storage.sweepIds(ids, runId),
+        runIsLive: (run) => this.runIsLive(run),
+      }, { dryRun: opts.dryRun, runId: opts.principal ?? this.ctx.runId });
+      return { ...totals, compaction };
+    }
+    return totals;
   }
 
   /**

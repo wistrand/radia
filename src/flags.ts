@@ -25,6 +25,7 @@ export const VALUELESS = new Set([
   "--compact",
   "--partial",
   "--shared",
+  "--run",
   "--undone",
   "--compact-definition",
   "--anonymous",

@@ -200,6 +200,15 @@ await declareSandbox(admin, denoSandbox({
 // whole session, with nothing the worker could do about it.
 procs.push(...launchFleet(tokens, session.bearerToken ?? loginToken));
 
+// The retention sweep, at the one moment this app reliably has an operator credential in hand.
+// The sweep is on demand by design (an idle space holds no background work), so somebody has to
+// run it, and "the launcher, at boot" is the somebody a chat actually gets: yesterday's chunks and
+// progress records go before today's pile on. Best-effort in the background — a chat that cannot
+// sweep is a chat, not an error.
+admin.gc().then((r) => {
+  if (r.swept > 0) notice(dim(`swept ${r.swept} expired records (${Object.keys(r.byKind).join(", ")})`));
+}).catch(() => {/* not the session's problem */});
+
 const tools = new ToolSet(session);
 tools.watch(shutdown.signal); // background: keep the tool set live from capability records
 watchWakeups(session, shutdown.signal); // background: let the runtime push instead of polling

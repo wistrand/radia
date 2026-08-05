@@ -22,6 +22,7 @@ import { limitSuites } from "./suites/limits.ts";
 import { faultSuites } from "./suites/faults.ts";
 import { watchSuites } from "./suites/watches.ts";
 import { adminSuites, remediateSuites } from "./suites/admin.ts";
+import { gcSuites } from "./suites/gc.ts";
 import { authSuites } from "./suites/auth.ts";
 import { taintSuites } from "./suites/taint.ts";
 import { blobCryptoSuites, blobSuites } from "./suites/blobs.ts";
@@ -49,6 +50,7 @@ conformance(adapters, [
   ...faultSuites,
   ...watchSuites,
   ...adminSuites,
+  ...gcSuites,
   ...remediateSuites,
   ...authSuites,
   ...taintSuites,

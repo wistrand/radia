@@ -392,7 +392,7 @@ get rediscovered as new.
 | Hash-chained log unbuilt; events table has no hash column                          | both adapters; `design-observability.md`        |
 | No sweeper exists; expiry evaluated lazily                                         | the only `setInterval` in the RUNTIME is the MCP heartbeat (the console page has its own, in the browser) |
 | `GrantDef` has no TTL/expiry field                                                 | `src/core/kinds.ts`                             |
-| Retention GC absent: `retention_until` stored, never consulted                      | nothing sweeps on a schedule. Note the evidence CHANGED: there is now an on-demand erasure path (`Space.shredArtifact`), so "no delete path" is no longer why |
+| ~~Retention GC absent~~ BUILT 2026-08-05: `retention_until` is consulted by an on-demand sweep | `Space.gc`, `POST /v0/ops/gc`, `radia gc`; registry compaction beside it. Still nothing on a schedule, by design. See [plan-gc.md](plan-gc.md) |
 | **An artifact's payload can be erased on demand**, keeping the record, its digest and its lineage | `Space.shredArtifact`, `POST /v0/ops/records/{id}/shred`, `shred` records; a shredded read is 410 |
 | Record BODIES have no erasure path, because the routing language matches on them     | bodies are plaintext JSON; see design-data-model.md, "Erasure" |
 | No reactive recomputation or invalidation primitive                                | no dependency edges beyond `parent_ids`         |

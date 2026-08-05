@@ -11,7 +11,7 @@
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
 
 /** Progress is ephemeral chatter, so mark it GC-eligible rather than keeping it forever.
- *  (Retention GC lands in M2; `retentionUntil` is stored today, not yet swept.) */
+ *  (`radia gc` sweeps them once the hour passes; see agent_docs/plan-gc.md.) */
 const TTL_MS = 60 * 60 * 1000;
 
 export interface ProgressBody {

@@ -475,6 +475,31 @@ export async function handleRemediate(space: Space, req: Request): Promise<Respo
   return Response.json(out);
 }
 
+/** The retention sweep (`Space.gc`): on demand, operator-only via the ops-plane gate. `dryRun`
+ *  answers "what would go" without deleting, which is also how `doctor` reports the backlog. */
+export async function handleGc(space: Space, req: Request, principal: string): Promise<Response> {
+  let j: Record<string, unknown> = {};
+  try {
+    const text = await req.text();
+    if (text) {
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return problem(400, "invalid_body", "expected a JSON object");
+      }
+      j = parsed as Record<string, unknown>;
+    }
+  } catch {
+    return problem(400, "invalid_body", "expected a JSON object");
+  }
+  const out = await space.gc({
+    limit: typeof j.limit === "number" && Number.isFinite(j.limit) ? j.limit : undefined,
+    dryRun: j.dryRun === true,
+    compact: j.compact !== false,
+    principal,
+  });
+  return Response.json(out);
+}
+
 export async function handleAdmin(space: Space, recordId: string, action: string): Promise<Response> {
   let applied: boolean;
   if (action === "reclaim") applied = await space.reclaim(recordId);

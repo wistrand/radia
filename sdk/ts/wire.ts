@@ -195,6 +195,12 @@ export interface KindDef {
    *  `false` opts the kind out of the starvation check: a reference record sitting `available`
    *  forever is normal, not stale work. See `Space.diagnostics`. */
   claimable?: boolean;
+  /** Body paths that form this kind's LATEST-WINS identity, for a kind that is a registry (a
+   *  capability keyed by provider+tool, a model ad keyed by tier). Declaring it is what lets
+   *  `radia gc` compact the kind — delete every record strictly older than the newest per key,
+   *  tombstones included — without the runtime knowing what the kind means. A record missing any
+   *  key path is never compacted. Purely descriptive for matching; see agent_docs/plan-gc.md. */
+  contentKey?: string[];
 }
 
 /** The meta-kind. Defined here rather than in the runtime because a client writes one. */
@@ -224,7 +230,11 @@ export const RESERVED_KINDS = [KIND_DEF, GRANT, SIGNAL, AGENT_DEFINITION, AGENT_
 export function kindDefKey(def: KindDef): string {
   const ip = [...(def.indexedPaths ?? [])].map((p) => `${p.path}:${p.type}`).sort().join(",");
   const sp = [...(def.sortablePaths ?? [])].sort().join(",");
-  return `kind_def:${def.kind}:${ip}:${sp}:${def.claimable === false ? "ref" : "work"}`;
+  // `contentKey` participates so a redeclaration ADDING one is a changed def (a fresh record),
+  // not an idempotent replay of the old declaration. Omitted entirely when absent, so every key
+  // minted before the field existed stays byte-identical and old declarations do not re-write.
+  const ck = def.contentKey?.length ? `:ck=${[...def.contentKey].sort().join(",")}` : "";
+  return `kind_def:${def.kind}:${ip}:${sp}:${def.claimable === false ? "ref" : "work"}${ck}`;
 }
 
 // ---------------------------------------------------------------------------

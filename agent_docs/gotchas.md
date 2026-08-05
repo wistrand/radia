@@ -513,6 +513,17 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   `idx_records_kind_id (kind, id)` makes it an ordered seek that stops at the Nth match: 0.05ms,
   flat. Postgres carries `idx_records_id_c` for a different reason (byte-order ids), which is what
   hid the gap. `explain query plan` is the only way to see it; a benchmark shows it as a shape.
+- **GC's guards each have exactly one row where they bite, and a test that misses it tests
+  nothing.** Found by planting, three times in one sitting (`conformance/suites/gc.ts`). The lease
+  floor tests `lease_id`, not `leased_until`: settling clears the id and leaves the timestamp, so
+  testing time alone embargoes every freshly-acked record for a lease-length. Its observable case is
+  a LEASED REFERENCE record (`claimable` is a hint, so take-by-id works on reference kinds); on work
+  records the state guard masks it. The reserved-kind exclusion only bites on a CONSUMED artifact
+  (an available one is saved by the state guard first). And `NEVER_COMPACT` only bites when a
+  contentKey IS declared on a protected kind, which in-process registration allows — so the test
+  declares one on `agent_definition` and proves the exclusion holds anyway. A swept record also
+  cannot parent NEW work (`parent_not_found`): retention is the writer's promise nothing will
+  reference the record later, pinned in the suite.
 - **`record_edges` is a DERIVED index; `parent_ids` stays the source of truth.** `childrenOf` was a
   `LIKE` scan over the JSON text: 87µs at 1k records → 662µs at 20k for the same five children. It
   is a `(parent_id, child_id)` lookup now, flat at ~32µs. Three things keep the derivation honest:

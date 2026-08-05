@@ -634,6 +634,23 @@ export class RadiaClient {
     return this.req("GET", `/v0/ops/erasures${opts.undone ? "?undone=true" : ""}`);
   }
 
+  /** The retention sweep (operator): delete records whose `retention_until` has passed. A record
+   *  without one is permanent, always. On demand — nothing sweeps on a timer — so somebody has to
+   *  call this; `diagnostics().sweepable` says whether it is worth calling. `dryRun` counts
+   *  without deleting. */
+  gc(opts: { limit?: number; dryRun?: boolean; compact?: boolean } = {}): Promise<{
+    swept: number;
+    eligible: number;
+    byKind: Record<string, number>;
+    more: boolean;
+    passes: number;
+    /** Registry compaction (superseded latest-wins successors, dead runs' interests), unless
+     *  `compact: false`. Kinds opt in by declaring a `contentKey` on their kind_def. */
+    compaction?: { compacted: number; superseded: number; byKind: Record<string, number>; more: boolean };
+  }> {
+    return this.req("POST", "/v0/ops/gc", opts);
+  }
+
   /** Control-plane remediation: 'reclaim' | 'dead-letter' | 'requeue'. Returns {applied}. */
   async admin(action: "reclaim" | "dead-letter" | "requeue", recordId: string): Promise<{ applied: boolean }> {
     return await this.req("POST", `/v0/ops/records/${encodeURIComponent(recordId)}/${action}`);

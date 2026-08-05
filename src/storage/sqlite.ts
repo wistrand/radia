@@ -33,6 +33,8 @@ import {
   type StorageAdapter,
   type TakeResult,
   type TakeSelector,
+  type SweepResult,
+  type SweepSelector,
   scanChunkSize,
   yieldToEventLoop,
 } from "./adapter.ts";
@@ -241,6 +243,10 @@ create index if not exists idx_records_token_hash
 -- leading and id second the same query is an ordered seek that stops at the Nth match. Measured on
 -- 40k records, a predicate matching 1 in 7: 12.0ms -> 0.05ms, and flat rather than linear.
 create index if not exists idx_records_kind_id on records (kind, id);
+-- The retention sweep's eligibility scan. PARTIAL, because most records carry no retention at all
+-- (absence means permanent), so the index holds only the sweepable minority and costs the common
+-- put nothing.
+create index if not exists idx_records_retention on records (retention_until) where retention_until is not null;
 create table if not exists idempotency (
   principal text not null,
   operation text not null,
@@ -728,6 +734,77 @@ export class SqliteAdapter implements StorageAdapter {
       }
       return held.length;
     }));
+  }
+
+  sweepExpired(sel: SweepSelector): Promise<SweepResult> {
+    return this.now().then((now) =>
+      Promise.resolve(this.tx(() => {
+        // Eligibility in one indexed select (see the partial index over retention_until): columns
+        // only, so a sweep of a huge backlog never touches the oracle or the scan budget.
+        const neverPh = sel.neverKinds.length > 0 ? ` and r.kind not in (${qmarks(sel.neverKinds.length)})` : "";
+        const anyPh = sel.anyStateKinds.length > 0
+          ? ` or r.kind in (${qmarks(sel.anyStateKinds.length)})`
+          : "";
+        const rows = this.db.prepare(
+          `select r.id, r.kind from records r join record_runtime rt on rt.record_id = r.id
+            where r.retention_until is not null and r.retention_until < ?
+              and (rt.lease_id is null or rt.leased_until is null or rt.leased_until <= ?)${neverPh}
+              and (rt.state in ('consumed','dead_letter')${anyPh})
+            order by r.id limit ?`,
+        ).all(now, now, ...sel.neverKinds, ...sel.anyStateKinds, sel.limit) as { id: string; kind: string }[];
+
+        const byKind: Record<string, number> = {};
+        for (const r of rows) byKind[r.kind] = (byKind[r.kind] ?? 0) + 1;
+        const result: SweepResult = {
+          swept: sel.dryRun ? 0 : rows.length,
+          eligible: rows.length,
+          byKind,
+          more: rows.length >= sel.limit,
+        };
+        if (sel.dryRun || rows.length === 0) return result;
+
+        // Envelope and edges go with the record, in this transaction: a record without its runtime
+        // row is a state no reader is written for, so the deletion is all-or-nothing per batch.
+        const ph = qmarks(rows.length);
+        const ids = rows.map((r) => r.id);
+        this.db.prepare(`delete from record_runtime where record_id in (${ph})`).run(...ids);
+        this.db.prepare(`delete from record_edges where parent_id in (${ph}) or child_id in (${ph})`).run(...ids, ...ids);
+        this.db.prepare(`delete from records where id in (${ph})`).run(...ids);
+        // One recordless event per KIND, not per record: the audit residue must not replace the
+        // growth it removes with smaller growth forever.
+        for (const [kind, swept] of Object.entries(byKind)) {
+          this.appendEvent({ runId: sel.runId, operation: "gc", kind, detail: { swept, cutoff: now } }, now);
+        }
+        return result;
+      }))
+    );
+  }
+
+  sweepIds(ids: string[], runId: string): Promise<{ swept: number; byKind: Record<string, number> }> {
+    if (ids.length === 0) return Promise.resolve({ swept: 0, byKind: {} });
+    return this.now().then((now) =>
+      Promise.resolve(this.tx(() => {
+        // The safety floor, re-checked HERE whatever the caller computed: a live lease wins.
+        const ph = qmarks(ids.length);
+        const rows = this.db.prepare(
+          `select r.id, r.kind from records r join record_runtime rt on rt.record_id = r.id
+            where r.id in (${ph})
+              and (rt.lease_id is null or rt.leased_until is null or rt.leased_until <= ?)`,
+        ).all(...ids, now) as { id: string; kind: string }[];
+        const byKind: Record<string, number> = {};
+        for (const r of rows) byKind[r.kind] = (byKind[r.kind] ?? 0) + 1;
+        if (rows.length === 0) return { swept: 0, byKind };
+        const del = rows.map((r) => r.id);
+        const dph = qmarks(del.length);
+        this.db.prepare(`delete from record_runtime where record_id in (${dph})`).run(...del);
+        this.db.prepare(`delete from record_edges where parent_id in (${dph}) or child_id in (${dph})`).run(...del, ...del);
+        this.db.prepare(`delete from records where id in (${dph})`).run(...del);
+        for (const [kind, swept] of Object.entries(byKind)) {
+          this.appendEvent({ runId, operation: "gc", kind, detail: { swept, compacted: true } }, now);
+        }
+        return { swept: rows.length, byKind };
+      }))
+    );
   }
 
   private appendEvent(e: EventInput, ts: string): void {

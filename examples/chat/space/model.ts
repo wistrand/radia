@@ -9,8 +9,10 @@
 // happily dispatch an `llm_call` to a tier nobody serves: the call sits `available` and the chat
 // reports a stall rather than failing over. Closing that properly needs liveness the substrate does
 // not have yet: a heartbeat record would reintroduce exactly the unbounded-registry growth this
-// file exists to avoid, and the natural alternative (advertisements that expire) needs the
-// retention GC that is still M2. Do not "fix" it with a periodic re-publish.
+// file exists to avoid. The retention sweep now exists (plan-gc.md), so expiring advertisements is
+// BUILDABLE — but expiry alone re-creates the stall as a missing tier instead of a dead one, so it
+// still wants the re-advertise half thought through. Do not "fix" it with a periodic re-publish;
+// registry growth itself is handled now (the kind declares `contentKey`, so `radia gc` compacts it).
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import { activeByKey } from "../../../sdk/ts/registry.ts";

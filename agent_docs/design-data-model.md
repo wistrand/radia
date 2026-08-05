@@ -64,9 +64,9 @@ record_runtime               # mutable envelope, one row per record
 planning against them will find no behaviour there. Verified against `src/`:
 
 - `claim_until` is written as `undefined` at every call site (`Space.putRaw`, the settle path) and
-  no query filters on it. "No new claims after this time" describes nothing that happens. It joins
-  `retention_until` as a field that is stored and never consulted (see the claim ledger in
-  [research-applications.md](research-applications.md) §8).
+  no query filters on it. "No new claims after this time" describes nothing that happens.
+  (`retention_until` used to sit beside it as stored-never-consulted; the retention sweep now
+  consults it — `Space.gc`, [plan-gc.md](plan-gc.md).)
 - `effective_priority` is set to `0` with the comment "scheduler sets this for real in M3". It is
   indexed and ordered by, so the ranking machinery is real and its input is constant; `Space.take`
   ranks by it and therefore always falls through to the next tiebreak. "Aged by sweeper" is doubly
