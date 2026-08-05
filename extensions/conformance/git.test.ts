@@ -30,6 +30,7 @@ import {
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../../examples/operator.ts";
 import { writeWorkspace } from "../ts/workspace.ts";
+import { basicPassword, gitHandler } from "../ts/git-http.ts";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 
@@ -599,5 +600,214 @@ Deno.test("[git] an erased payload fails the export loudly instead of inventing 
     } finally {
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     }
+  });
+});
+
+// ── serving it over HTTP (plan-workspaces.md §12) ────────────────────────────────────────────────
+//
+// The acceptance test was written before the server, and it drives the real `git` binary against a
+// real socket. That is the only judge worth having here: the protocol is only "correct" in the sense
+// that a client nobody controls agrees, and Phase 8 already learned that an encoding can be
+// plausible, self-consistent and rejected by `git fsck`.
+//
+// What is under test is the INTEGRATION, not the protocol. Dumb HTTP was measured before any of this
+// was written: git 2.55 probes for smart, falls back, and asks for `info/refs`, `HEAD` and one
+// object per request. The open question was whether a URL works end to end against a live space
+// under a real credential.
+
+/** Serve `handler` on an ephemeral port for the duration of `fn`. */
+async function withGitServer<T>(
+  handler: (req: Request) => Promise<Response>,
+  fn: (base: string) => Promise<T>,
+): Promise<T> {
+  const server = Deno.serve({ port: 0, hostname: "127.0.0.1", onListen: () => {} }, handler);
+  const base = `http://127.0.0.1:${(server.addr as Deno.NetAddr).port}`;
+  try {
+    return await fn(base);
+  } finally {
+    await server.shutdown();
+  }
+}
+
+Deno.test("[git] a workspace clones over HTTP, and the checkout matches the manifest", async () => {
+  if (!await haveGit()) {
+    console.log("    (skipped: no git binary)");
+    return;
+  }
+  await withSpace(async (c) => {
+    const work = await Deno.makeTempDir({ prefix: "radia-clone-" });
+    try {
+      const v1 = await writeWorkspace(c, {
+        name: "site",
+        owner: OWNER,
+        files: { "index.html": "<h1>one</h1>\n", "css/style.css": "body{}\n" },
+      });
+      await writeWorkspace(c, {
+        name: "site",
+        owner: OWNER,
+        basedOn: v1.id,
+        files: { "index.html": "<h1>two</h1>\n", "css/style.css": "body{}\n" },
+      });
+
+      const seen: string[] = [];
+      await withGitServer(gitHandler(() => c, {}, (e) => seen.push(`${e.status} ${e.path}`)), async (base) => {
+        const clone = await git(["clone", "--quiet", `${base}/site.git`, `${work}/site`]);
+        assert(clone.ok, `git clone failed: ${clone.err}`);
+        // The checkout is the NEWEST version, byte for byte.
+        assertEquals(await Deno.readTextFile(`${work}/site/index.html`), "<h1>two</h1>\n");
+        assertEquals(await Deno.readTextFile(`${work}/site/css/style.css`), "body{}\n");
+        // Both versions, as a history a person can walk.
+        const log = await git(["-C", `${work}/site`, "log", "--oneline"]);
+        assertEquals(log.out.trim().split("\n").length, 2, log.out);
+        // git's own verdict on every object and the reachability graph.
+        assert((await git(["-C", `${work}/site`, "fsck", "--strict"])).ok, "git fsck must accept what was served");
+      });
+      // TWO requests, which is the whole point of the smart protocol: the advertisement, then one
+      // POST that returns a packfile. Under the dumb walk this same clone was an advertisement, a
+      // HEAD and one request per object, and that is the shape this assertion exists to notice if it
+      // ever comes back (a content type typo is enough — git falls back silently, and slowly).
+      assert(seen.some((s) => s.includes("info/refs")), seen.join("\n"));
+      assert(seen.some((s) => s.includes("git-upload-pack")), `expected a smart fetch, saw:\n${seen.join("\n")}`);
+      assertEquals(
+        seen.filter((s) => s.includes("/objects/")).length,
+        0,
+        `a smart clone fetches no loose objects, saw:\n${seen.join("\n")}`,
+      );
+    } finally {
+      await Deno.remove(work, { recursive: true }).catch(() => {});
+    }
+  });
+});
+
+Deno.test("[git] the clone is the CALLER's, and push is refused in words", async () => {
+  await withSpace(async (c) => {
+    // Authorization is per request, so the server never lends its own reach to a caller. Here the
+    // credential resolver refuses, which is what an unauthenticated `git clone` meets.
+    await withGitServer(gitHandler(() => null), async (base) => {
+      const res = await fetch(`${base}/site.git/info/refs?service=git-upload-pack`);
+      assertEquals(res.status, 401);
+      // Without a realm `git` fails outright instead of asking for a password.
+      assertStringIncludes(res.headers.get("www-authenticate") ?? "", "Basic");
+      assertStringIncludes(await res.text(), "definition token");
+    });
+
+    await withGitServer(gitHandler(() => c), async (base) => {
+      // A 404 would read as a missing feature and send someone looking for a flag. Push is not
+      // missing: it reopens the export-only decision, so it is refused with the reason and the verb
+      // that does the job instead.
+      const res = await fetch(`${base}/site.git/git-receive-pack`, { method: "POST" });
+      assertEquals(res.status, 403);
+      assertStringIncludes(await res.text(), "edit_workspace");
+
+      // A workspace nobody can see and one that does not exist answer the same, so a clone URL is
+      // not an existence oracle for somebody else's trees.
+      const missing = await fetch(`${base}/nope.git/info/refs`);
+      assertEquals(missing.status, 404);
+    });
+  });
+});
+
+Deno.test("[git] a definition token in the URL is what git stores, and it authenticates", async () => {
+  if (!await haveGit()) {
+    console.log("    (skipped: no git binary)");
+    return;
+  }
+  await withSpace(async (c) => {
+    const work = await Deno.makeTempDir({ prefix: "radia-clone-auth-" });
+    try {
+      await writeWorkspace(c, { name: "priv", owner: OWNER, files: { "a.txt": "A\n" } });
+      // The whole reason this phase waited: git persists a static secret and cannot renew, so the
+      // password has to be the DURABLE half. A definition token cannot read or write anything by
+      // itself, which is what makes it safe in a `.git/config`; the server exchanges it per
+      // connection for a run token that can.
+      const { definitionToken } = await c.createAgentDefinition("agent:git-reader", [
+        { principal: "agent:git-reader", kind: "workspace", operations: ["query", "read_one"] },
+        { principal: "agent:git-reader", kind: "artifact", operations: ["read_one"] },
+      ]);
+      // The same shape `radia git-serve` uses: one client per credential, re-authenticated when a
+      // fetch starts. Without the cache a dumb clone exchanges once per OBJECT and writes an
+      // `agent_run` record each time; without the re-authentication a revoked token keeps cloning
+      // until the cached run expires.
+      const clients = new Map<string, RadiaClient>();
+      const handler = gitHandler(async (req, { startsFetch }) => {
+        const password = basicPassword(req);
+        if (!password) return null;
+        if (startsFetch) clients.delete(password);
+        const cached = clients.get(password);
+        if (cached) return cached;
+        const fresh = new RadiaClient(url, { definitionToken: password });
+        await fresh.ensureCredential();
+        clients.set(password, fresh);
+        return fresh;
+      });
+      await withGitServer(handler, async (base) => {
+        const authed = base.replace("http://", `http://reader:${definitionToken}@`);
+        const clone = await git(["clone", "--quiet", `${authed}/priv.git`, `${work}/priv`]);
+        assert(clone.ok, `git clone with a definition token failed: ${clone.err}`);
+        assertEquals(await Deno.readTextFile(`${work}/priv/a.txt`), "A\n");
+
+        // And the off switch works on a clone URL: revoking stops the next fetch, immediately,
+        // because credentials resolve from records per request rather than from a cache.
+        await c.revokeDefinition("agent:git-reader");
+        const again = await git(["clone", "--quiet", `${authed}/priv.git`, `${work}/priv2`]);
+        assert(!again.ok, "a revoked definition must not be able to clone");
+      });
+    } finally {
+      await Deno.remove(work, { recursive: true }).catch(() => {});
+    }
+  });
+});
+
+Deno.test("[git] the dumb routes still serve, for anything that is not git", async () => {
+  await withSpace(async (c) => {
+    await writeWorkspace(c, { name: "dumb", owner: OWNER, files: { "a.txt": "A\n" } });
+    await withGitServer(gitHandler(() => c), async (base) => {
+      // No `?service=`, so this is the plain file a static mirror or a `curl` would read. It costs
+      // two `if`s to keep and it is the only thing a client without git can use.
+      const refs = await (await fetch(`${base}/dumb.git/info/refs`)).text();
+      assertStringIncludes(refs, "\trefs/heads/main");
+      assertEquals((await (await fetch(`${base}/dumb.git/HEAD`)).text()).trim(), "ref: refs/heads/main");
+
+      // And the loose object the advertisement names, at git's own layout.
+      const commit = refs.split("\t")[0];
+      const object = await fetch(`${base}/dumb.git/objects/${commit.slice(0, 2)}/${commit.slice(2)}`);
+      assertEquals(object.status, 200);
+      assertEquals(object.headers.get("content-type"), "application/x-git-loose-object");
+      assert((await object.arrayBuffer()).byteLength > 0);
+    });
+  });
+});
+
+Deno.test("[git] the smart advertisement says which branch to check out", async () => {
+  await withSpace(async (c) => {
+    await writeWorkspace(c, { name: "adv", owner: OWNER, files: { "a.txt": "A\n" } });
+    await withGitServer(gitHandler(() => c), async (base) => {
+      const body = await (await fetch(`${base}/adv.git/info/refs?service=git-upload-pack`)).text();
+      // The service header, then a flush, then the refs. Getting this order wrong makes git fall
+      // back to the dumb walk without saying anything.
+      assert(body.startsWith("001e# service=git-upload-pack\n0000"), JSON.stringify(body.slice(0, 40)));
+      // Capabilities ride on the FIRST ref line after a NUL, not on a line of their own, and
+      // `symref` is how a clone learns the default branch rather than guessing at it.
+      assertStringIncludes(body, "\0symref=HEAD:refs/heads/main");
+      assertStringIncludes(body, " HEAD\0");
+      assert(body.endsWith("0000"), JSON.stringify(body.slice(-8)));
+    });
+  });
+});
+
+Deno.test("[git] a want this history does not hold is refused, not silently omitted", async () => {
+  await withSpace(async (c) => {
+    await writeWorkspace(c, { name: "want", owner: OWNER, files: { "a.txt": "A\n" } });
+    await withGitServer(gitHandler(() => c), async (base) => {
+      // A client working from an advertisement that has moved on, or pointed at the wrong history.
+      // Sending a pack that just lacks the object gets reported by git as "did not send all
+      // necessary objects", which names neither the object nor the reason.
+      const want = `0032want ${"9".repeat(40)}\n00000009done\n`;
+      const res = await fetch(`${base}/want.git/git-upload-pack`, { method: "POST", body: want });
+      assertEquals(res.status, 200);
+      const body = await res.text();
+      assertStringIncludes(body, "ERR ");
+      assertStringIncludes(body, "9".repeat(40));
+    });
   });
 });

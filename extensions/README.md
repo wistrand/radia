@@ -58,8 +58,10 @@ meet, in any language.
 | `ts/workspace.ts` | multi-file working trees: manifest, tree digest, path safety, materialisation, and `attach` (an artifact that already exists becomes a file in a tree, moving no bytes and becoming a data parent so its labels follow) |
 | `ts/sandbox.ts` | running untrusted code in a permissionless subprocess, plus the spec describing that jail and the probe that tries to escape it. Imports nothing |
 | `ts/sandbox-registry.ts` | a sandbox as a RECORD: the operator declares, the worker verifies before serving |
-| `ts/git.ts` | a workspace's version history projected into a real git repository. Export only, no dependency, no `git` binary |
-| `ts/export-git.ts` | the runnable form: `deno task workspace-git --name <ws> --dir <out>` |
+| `ts/git.ts` | a workspace's version history projected into a real git repository. Export only, no dependency, no `git` binary. `buildWorkspaceRepo` returns the objects in memory; the disk export and the HTTP server are two SINKS for one builder, so neither reimplements the correspondence |
+| `ts/git-http.ts` | that history served for `git clone`: routes, the repo cache, and authorization as the CALLER, re-checked when a fetch starts. Both protocols, since the dumb routes cost two `if`s and are what anything without a git client can read. Read-only; push is refused in words |
+| `ts/git-pack.ts` | the SMART protocol: pkt-lines, the advertisement, `want`/`done`, and an undeltified packfile. Measured before it was built (22 versions of a 9-file tree = 96 objects, so 98 dumb round trips against 2 smart ones). NOT normative: two packs of one history may differ, only the object ids must match |
+| `ts/export-git.ts` | the runnable form: `deno task workspace-git --name <ws> --dir <out>` (serving is `radia git-serve`) |
 | `conformance/` | the contract an implementation must meet (`deno task extensions`) |
 
 Two isolation backends ship: `deno-permissions` (JS, safe by ABSENCE of flags) and `bubblewrap`

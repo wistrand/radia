@@ -1187,6 +1187,26 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Surfaces: HTTP, console, CLI and the SDKs
 
+- **A protocol that FALLS BACK hides its own bugs.** Git takes the smart transport only when the
+  advertisement's content type is exactly `application/x-git-upload-pack-advertisement`; anything
+  else and it walks the dumb routes, which works and is ten times slower. So the assertion cannot be
+  "the clone succeeded": it has to be on the SHAPE of the exchange (two requests, no loose objects).
+  Same class as a watch that 401s into a silent poll fallback, and it recurs wherever a client is
+  polite about a server's mistakes.
+- **`onShutdown` REPLACES the default signal behaviour, so a no-op handler makes a process
+  unkillable.** It registers listeners for SIGINT and SIGTERM; one that does nothing means neither
+  Ctrl-C nor `kill` stops the process, only SIGKILL. A long-running verb wants the shape `radia dev`
+  already uses — abort a controller, pass its signal to `serve`, await `finished`, return a status —
+  since `exit` outside `src/main.ts` is not allowed either. Also pick a port that is not `space + 1`:
+  a space binds two, and `git-serve` first defaulted onto the artifact origin.
+- **A cache in front of an authorization decision becomes an authorization decision.** The git
+  server caches a client per credential, because a dumb clone is one request per object and building
+  one per request exchanges the credential per object (a hundred `agent_run` records for one clone).
+  The obvious cache then made `radia revoke` take up to fifteen minutes, since a cached run token
+  outlives the definition it came from: the property that PAYS for a durable credential quietly
+  became an approximation. Re-authenticate at a boundary the protocol already has (`info/refs`
+  starts every fetch), and state the guarantee exactly: a revoked credential cannot start a fetch,
+  one in flight finishes. Found by an acceptance test that revoked and cloned again.
 - **A terminal has ONE cursor, so it needs one writer.** Three writers shared the chat's: the turn
   streaming an answer, a `capability` watch wakeup, and every worker's inherited stderr. The two
   background ones printed straight through, so a worker restarting mid-turn spliced a bracketed line

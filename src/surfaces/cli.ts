@@ -10,10 +10,11 @@
 import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
 // A SURFACE may import a convention; the runtime may not. See conformance/layering.test.ts.
 import { exportWorkspaceGit } from "../../extensions/ts/git.ts";
+import { basicPassword, gitHandler } from "../../extensions/ts/git-http.ts";
 import { summarizeWorkspaces } from "../../extensions/ts/workspace.ts";
 import { defaultBase, resolveDefinitionToken, resolveToken, saveLogin } from "../credentials.ts";
 import { flag, flags, has, positional } from "../flags.ts";
-import { onShutdown, stdin, UsageError } from "../platform.ts";
+import { onShutdown, serve, stdin, UsageError } from "../platform.ts";
 import type { Lease } from "../storage/adapter.ts";
 
 const HELP = `radia <command> [options]
@@ -32,8 +33,11 @@ Inspect
                                       recurring shapes of work, mined from lineage
   integrity                           verify the event chain; reports the FIRST divergence
   permissions <principal>             what that principal can actually do (the fold over its grants)
-  login <principal> [--grant k:ops]… [--compact]  mint a session token for a person
-                                      (--compact prints the token alone, for $(…) capture)
+  login <principal> [--grant k:ops]… [--compact | --compact-definition]
+                                      mint a session for a person, and keep the durable half so
+                                      the CLI signs in again by itself. --compact prints the
+                                      session token alone; --compact-definition prints the
+                                      durable one, for a tool that cannot re-authenticate
   shred <artifact-id> [--reason <t>] [--shared]  destroy an artifact's bytes, keep the record
   revoke <principal> [--reason <t>]   kill an agent definition's token, permanently
   kinds                               declared kinds (a query for kind_def records)
@@ -67,6 +71,11 @@ Workspaces (a convention, not a runtime concept: see extensions/)
                                       (bare: \`git clone <out>\` for a working copy).
                                       --partial exports what survives an ERASED payload,
                                       naming every omission in the commit that lost it
+  git-serve [--port <n>] [--host <h>] [--conversation <id>] [--partial] [--anonymous]
+                                      serve every workspace at /<name>.git for \`git clone\`.
+                                      Read-only; push is refused. Authenticate with a
+                                      definition token as the HTTP password, so a clone reads
+                                      what that principal can and \`radia revoke\` stops it
 
 \`take\` prints the claimed record together with its lease; pass that lease object straight back
 to \`ack\`/\`nack\`/\`release\` (as a JSON string, or - to read it from stdin).
@@ -185,6 +194,13 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // the one field a shell almost always wants, on stdout with no decoration to strip.
       if (has(argv, "--compact")) {
         console.log(run.runToken);
+        return 0;
+      }
+      // The DURABLE half alone, for a tool that stores what it is given and cannot re-authenticate:
+      // `git clone http://you:$(radia login human:me --compact-definition)@host/ws.git`. It is the
+      // safer of the two to put in a URL, since it cannot read or write anything by itself.
+      if (has(argv, "--compact-definition")) {
+        console.log(def.definitionToken);
         return 0;
       }
       const held = await client.permissions(who) as { kinds: { kind: string; operations: string[] }[] };
@@ -657,6 +673,93 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         lines.push(`  git clone ${r.dir} my-checkout`);
         return lines.join("\n");
       });
+    }
+
+    case "git-serve": {
+      // A CLIENT that happens to listen. It reads workspaces over `/v0` like anything else and the
+      // runtime learns nothing about git, which is the same split that made `workspace-git` a verb
+      // rather than an endpoint (see agent_docs/plan-workspaces.md §12).
+      // NOT 7789, which is where this started: `radia dev --port 7788` binds 7788 for the space and
+      // 7789 for the isolated artifact origin (`port + 1`), so the obvious neighbour collides with a
+      // default space every time.
+      const port = Number(flag(argv, "--port") ?? 7790);
+      const conversationId = flag(argv, "--conversation");
+      const anonymous = has(argv, "--anonymous");
+      // One client per credential, not per request. A dumb-protocol clone is one request per object,
+      // and a fresh client each time would exchange the credential each time: a hundred `agent_run`
+      // records for one clone, which is the fastest-growing kind in the space by a wide margin.
+      const clients = new Map<string, RadiaClient>();
+      const handler = gitHandler(
+        async (req, { startsFetch }) => {
+          // The CALLER's credential, so a clone reads what that person could read. `--anonymous`
+          // serves under this process's own instead: right for a laptop, wrong for anything shared,
+          // which is why it is a flag rather than a fallback.
+          if (anonymous) return client;
+          const password = basicPassword(req);
+          if (!password) return null;
+          // RE-AUTHENTICATE at the start of a fetch: minting is the only way to find out whether a
+          // definition token is still live, and doing it here bounds `radia revoke` to "cannot start
+          // another clone" rather than "stops working when the cached run expires, in 15 minutes".
+          if (startsFetch) clients.delete(password);
+          const cached = clients.get(password);
+          if (cached) return cached;
+          // A definition token, so the clone survives its own session: git replays a stored secret
+          // and has no way to renew. The SDK exchanges it for a run token.
+          const fresh = new RadiaClient(client.base, { definitionToken: password });
+          await fresh.ensureCredential(); // throws if the definition is revoked, which is a 401
+          clients.set(password, fresh);
+          return fresh;
+        },
+        { ...(conversationId ? { conversationId } : {}), partial: has(argv, "--partial") },
+        (entry) => {
+          // A CHALLENGE is not a failure: HTTP Basic opens with one, so every authenticated clone
+          // produces at least one 401 before it produces anything else. Logging those turned a
+          // working clone into a wall of alarming lines, and under the dumb walk (one request per
+          // object) into forty of them.
+          if (entry.challenge) return;
+          if (entry.status >= 400) {
+            console.error(`  ${entry.status} ${entry.path}`);
+            return;
+          }
+          // And say when one WORKS, because the alternative is a server that prints nothing for a
+          // successful clone and a page of text for a failed one.
+          if (entry.path.endsWith("/git-upload-pack")) {
+            console.log(`  fetch ${entry.workspace}: ${Math.round(entry.bytes / 1024)} KB packed`);
+          }
+        },
+      );
+      // The signal is what makes Ctrl-C work. `onShutdown` REPLACES the default terminating
+      // behaviour for SIGINT and SIGTERM, so registering a handler that does nothing leaves a server
+      // nothing can stop short of SIGKILL. Same shape as `radia dev`: abort, let `finished` resolve,
+      // return a status. Never `exit` outside `src/main.ts`.
+      const stopping = new AbortController();
+      let server;
+      try {
+        server = serve({ port, hostname: flag(argv, "--host") ?? "127.0.0.1", signal: stopping.signal }, handler);
+      } catch (e) {
+        // `Address already in use (os error 98)` on its own names neither the port nor a way out.
+        // A space occupies TWO ports, which is the collision people will actually hit.
+        if ((e as Error).name === "AddrInUse" || /already in use/i.test((e as Error).message ?? "")) {
+          console.error(`error: port ${port} is already in use. Pick another with --port <n>.`);
+          console.error(`  note: a space binds two ports — ${new URL(client.base).port || 80} for /v0 and the next one for the artifact origin.`);
+          return 1;
+        }
+        throw e;
+      }
+      console.log(`git server on http://127.0.0.1:${port}  (reading ${client.base})`);
+      console.log(
+        anonymous
+          ? `  git clone http://127.0.0.1:${port}/<workspace>.git      (serving as this process; anyone who can reach the port can read)`
+          : `  git clone http://you:$(radia login <principal> --compact-definition)@127.0.0.1:${port}/<workspace>.git`,
+      );
+      console.log(`  radia workspaces  lists what is there. Read-only: push is refused.`);
+      const unlisten = onShutdown(() => stopping.abort());
+      try {
+        await server.finished;
+      } finally {
+        unlisten();
+      }
+      return 0;
     }
 
     default:

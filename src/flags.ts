@@ -26,6 +26,8 @@ export const VALUELESS = new Set([
   "--partial",
   "--shared",
   "--undone",
+  "--compact-definition",
+  "--anonymous",
 ]);
 
 /** The value of `--name`, or undefined. First occurrence wins, not last, which keeps

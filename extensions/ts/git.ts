@@ -61,8 +61,14 @@ export async function gitObjectId(type: GitObjectType, payload: Uint8Array): Pro
 
 /** The bytes as git stores a LOOSE object: zlib of the framed object. */
 export async function gitLooseBytes(type: GitObjectType, payload: Uint8Array): Promise<Uint8Array> {
-  const stream = new Blob([framed(type, payload) as BlobPart]).stream()
-    .pipeThrough(new CompressionStream("deflate"));
+  return await zlib(framed(type, payload));
+}
+
+/** zlib, which is what git means by "compressed" in both the loose format and inside a packfile.
+ *  `deflate` in the Compression Streams API is the zlib-wrapped one; `deflate-raw` is not, and a
+ *  pack written with it is refused with `inflate: data stream error (incorrect header check)`. */
+export async function zlib(bytes: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(new CompressionStream("deflate"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
@@ -254,6 +260,28 @@ export interface GitExportResult {
   erased: { version: string; path: string; artifactId: string }[];
 }
 
+/**
+ * A workspace's history as git objects, in memory, before anything decides where they go.
+ *
+ * The disk export and the HTTP server are two SINKS for one builder. Splitting them is what stops a
+ * server reimplementing the correspondence (blob -> artifact, tree -> manifest, commit -> version),
+ * which is the part with the known-answer vectors behind it.
+ */
+export interface GitRepo {
+  /** Every object, keyed by id. Loose bytes come from `gitLooseBytes`; a packfile from `git-pack.ts`. */
+  objects: Map<string, GitObject>;
+  /** Branch name -> commit id. More than one means the workspace FORKED. */
+  branches: Record<string, string>;
+  /** The branch `HEAD` points at. */
+  head: string;
+  versions: ExportedVersion[];
+  /** Every omission when a payload had been ERASED; empty unless `partial` was asked for. */
+  erased: { version: string; path: string; artifactId: string }[];
+  /** The newest version's record id. A cache key: the objects are a pure function of the history,
+   *  and the history only grows at the head. */
+  at: string;
+}
+
 export interface GitExportOptions {
   conversationId?: string;
   /** Branch for the newest head. Others get `fork-<short record id>`. */
@@ -301,6 +329,32 @@ export async function exportWorkspaceGit(
   dir: string,
   opts: GitExportOptions = {},
 ): Promise<GitExportResult> {
+  const repo = await buildWorkspaceRepo(client, name, opts);
+  const bytes = await writeBareRepo(dir, [...repo.objects.values()], repo.branches, repo.head, repo.erased);
+  return {
+    dir,
+    branches: repo.branches,
+    head: repo.head,
+    versions: repo.versions,
+    objects: repo.objects.size,
+    bytes,
+    partial: repo.erased.length > 0,
+    erased: repo.erased,
+  };
+}
+
+/**
+ * Build every git object for one workspace's history, and stop there.
+ *
+ * The whole of the correspondence lives here; `exportWorkspaceGit` adds a directory and
+ * `extensions/ts/git-http.ts` adds a socket. Neither knows how a tree is encoded, which is what
+ * stops a server growing a second implementation of the part with the known-answer vectors.
+ */
+export async function buildWorkspaceRepo(
+  client: RadiaClient,
+  name: string,
+  opts: GitExportOptions = {},
+): Promise<GitRepo> {
   const versions = await collectVersions(client, name, opts);
   if (versions.length === 0) throw new Error(`no workspace named ${JSON.stringify(name)}`);
 
@@ -431,17 +485,7 @@ export async function exportWorkspaceGit(
     branches[branch] = commitByRecord.get(head.id)!;
   }
 
-  const bytes = await writeBareRepo(dir, [...objects.values()], branches, mainBranch, erased);
-  return {
-    dir,
-    branches,
-    head: mainBranch,
-    versions: exported,
-    objects: objects.size,
-    bytes,
-    partial: erased.length > 0,
-    erased,
-  };
+  return { objects, branches, head: mainBranch, versions: exported, erased, at: newest.id };
 }
 
 /** The commit message: a summary line, then trailers that lead back to the records.

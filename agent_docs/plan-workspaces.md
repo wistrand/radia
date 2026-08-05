@@ -82,7 +82,8 @@ Each is scoped to answer its question. Do not merge them.
 | 8 | Git export **(done)** | Is the git correspondence real, or only shaped like it? | — |
 | 9 | The read side **(done)** | What does an agent do when it cannot read? | — |
 | 10 | Editing in place | Does the immutable version model survive fine-grained change? | 3, 5 |
-| 11 | Serving a tree **(planned)** | Can a tree be VIEWED without the runtime learning what a tree is? | 2 |
+| 11 | Serving a tree **(done)** | Can a tree be VIEWED without the runtime learning what a tree is? | 2 |
+| 12 | Serving git over HTTP **(done, bar push)** | Is a clone URL worth a server, once a credential can outlive it? | — |
 
 **Phases 0-5 need no new isolation mechanism.** Every model stress worth finding is reachable with
 the Deno sandbox that already exists. Multi-language execution adds a large security surface and NO
@@ -989,6 +990,122 @@ manifest holds every path, so a listing leaks the shape of a tree in a way the s
 capability never could. The honest framing is "a static snapshot of a tree, served read-only from
 records" — enough for a multi-file website, and stopping well short of anything that needs a hosting
 story.
+
+### Phase 12: serving git over HTTP
+
+Phase 8 decided a server was separable from the objects and deferred it, on two costs. One has since
+been paid and the other is smaller than it looked.
+
+**The credential cost is gone.** Git persists a static secret and cannot renew, while every
+credential here died in 15 minutes; a clone whose `git pull` broke before lunch was worse than no
+server. A definition token is durable, mint-only and revocable, `radia login` stores one, and the
+SDK exchanges it (`conformance/exchange.test.ts`). What was the blocking phase is now a constructor
+argument.
+
+**The protocol cost was measured, not estimated.** `writeBareRepo` already emits `HEAD`,
+`refs/heads/*`, `info/refs` and `objects/info/packs` beside the loose objects, which IS the dumb
+surface. Verified against git 2.55 by serving an export through a twelve-line static file server and
+cloning it: git probes smart, falls back, and asks for `info/refs`, `HEAD`, then one object per
+request. So the first useful server contains no protocol code at all.
+
+#### 12.0 Split the builder from the sink — **DONE**
+
+`exportWorkspaceGit` builds `objects`, `branches`, `head` and `erased` in memory and only then calls
+`writeBareRepo`. `buildWorkspaceRepo` returns that in-memory repository and the export is it plus the
+disk write, so the server consumes the same builder rather than a second implementation of the
+correspondence. Pure refactor; the existing suite staying green is the verification.
+
+#### 12.1 Serve it, dumbly — **DONE**
+
+`radia git serve [--port N]` over `extensions/ts/git-http.ts`. Three routes per workspace:
+`/<name>.git/info/refs`, `/<name>.git/HEAD`, `/<name>.git/objects/xx/yyyy…`. Routed by name, so one
+server covers the space rather than one workspace.
+
+*The question is integration, not protocol.* Nothing about dumb HTTP is in doubt; whether a URL
+works end to end against a live space under a real credential is. The acceptance test was written
+first and drives the real `git` binary: clone, `git log`, and compare the checkout against the
+manifest's own digests. Real git is the only judge that catches an encoding that is plausible and
+wrong, which Phase 8 already learned the hard way.
+
+#### 12.2 Whose authority a clone runs under — **DONE, and it came with 12.1**
+
+Basic auth, password is a definition token: `git clone http://you:<token>@host/ws.git`. The server
+builds a client per credential, so every workspace and artifact read goes through the CALLER's
+grants rather than the server's, and `git pull` next week still works. Verified end to end against a
+live space, including `radia revoke` refusing the next clone.
+
+*Two things the acceptance test caught that reading would not have, both about the CACHE.* A dumb
+clone is one request per object, so a client built per REQUEST exchanges the credential per object
+and writes an `agent_run` record each time: a hundred records for one clone, in the kind that would
+then be the fastest-growing in the space. And caching the client the obvious way made revocation
+take up to fifteen minutes, because the cached run token outlives the definition it came from —
+which turned the property that PAYS for a durable credential into an approximation.
+
+So `ClientFor` is told when a request STARTS a fetch (`info/refs`, which git always asks for first)
+and re-authenticates only there. The guarantee is then exact and statable: a revoked credential
+cannot start a fetch, and one already in flight finishes. Re-verifying per object would cost a round
+trip each; not re-verifying at all leaves a clone URL working after `radia revoke`.
+
+#### 12.3 Smart HTTP — **DONE**
+
+*Measured first, as 12.1 was built to allow.* A realistic code-generation history (22 versions of a
+9-file tree) is **96 objects**: 30 blobs, 44 trees, 22 commits. Dumb makes that 98 HTTP round trips,
+which is nothing locally and five seconds at 50ms, and it grows with every iteration an agent makes.
+Smart makes it **two**, verified with `GIT_CURL_VERBOSE` against a live space: one `info/refs` and
+one `git-upload-pack` POST.
+
+`extensions/ts/git-pack.ts`: pkt-line framing, the advertisement, `want`/`have`/`done` parsing, and a
+version-2 packfile. Both protocols stay served — the dumb routes cost two `if`s and are what
+anything without a git client can read — and git takes the smart path on its own, because the
+content type IS the negotiation.
+
+*Deliberately absent, and both are the same judgement.* No delta compression: every object goes in
+whole, which `git index-pack` accepts and `git fsck` is happy with, and deltas are a bandwidth
+optimisation on top of the ten-times-fewer-round-trips one. No negotiation: `have` lines are parsed
+and ignored, so a `fetch` gets a full pack rather than a difference. Both are worth revisiting only
+with a workspace big enough to measure them, which is the rule that decided to build this at all.
+
+*Protocol v0.* Git sends `Git-Protocol: version=2` and falls back when the answer is a v0
+advertisement. v2's wins are ref filtering on repositories with thousands of refs; a workspace has
+one per head.
+
+**The normative surface did NOT widen**, which is the pleasant part. Two packs of one history may
+legitimately differ (ordering, compression, deltas); what must match is the object IDS, which come
+from `git.ts` and are pinned by vectors there. So `git-pack.ts` can be rewritten freely.
+
+*Three failures a reader would not catch, each planted and confirmed.* `deflate-raw` instead of
+zlib inside the pack differs by two bytes and gets `inflate: data stream error (incorrect header
+check)`. The per-object size header takes FOUR bits in its first byte and seven in the rest; getting
+that uniform desynchronises the whole pack after the first object rather than failing on the one
+that carried it. And the wrong content type on the advertisement makes git abandon the smart path,
+which in the good case is merely slow and silent — hence the assertion that a clone makes two
+requests and fetches no loose objects.
+
+#### 12.4 Never: receive-pack
+
+Push means READING packfiles (delta chains, the half Phase 8 avoided), and it reopens export-only
+from the outside — a decision resting on SHA-1 staying out of the attestation chain and on git
+history being rewritable while records are not. Refuse it with a message naming `edit_workspace`,
+rather than a 404 that reads like a missing feature.
+
+#### 12.5 Five things decided before 12.1, not during
+
+- **Snapshot per connection.** The advertisement and the objects describe ONE version set. A version
+  landing mid-clone otherwise makes the client ask for a sha the server does not have, and the clone
+  dies halfway. Same decision as §11.3.
+- **Its own port, never `/v0`.** A surface may import an extension and use `platform.serve`. Under
+  `/v0` this needs the frozen contract, an OpenAPI entry, and `src/server` learning what a workspace
+  is. The reasoning that made `workspace-git` a client verb applies unchanged.
+- **Erasure decided at build time.** Export fails by default and omits under `--partial`, recording
+  it in the commit trailers and the description. Deciding lazily per object means a clone that dies
+  on something git already committed to fetching.
+- **Cache in memory, keyed by the newest version's record id.** Ids are recomputed and thrown away
+  by design, so every serve otherwise rehashes the whole history. Derived state, in process, never
+  records — the rule the path capability already follows.
+- **Never store git objects as artifacts.** Tempting, because the path capability could then serve
+  them. But a git object is `deflate("blob <len>\0" + content)`, not the artifact's bytes, so every
+  object would be a new derived record: hundreds per export, and the storage-of-record inversion the
+  design refuses.
 
 ## Open, and better decided with Phase 1 evidence
 
