@@ -95,8 +95,11 @@ Deno.test({
     //
     //   1. The pattern must NOT be pushable. A pushed predicate filters the window in SQL, so a
     //      selective take sees a window of pure matches and never pages — `{tag: "rare"}` was one
-    //      query, no boundary, no bug. `$any` is not pushed (`pushdown.ts`, "quant"), so the window
+    //      query, no boundary, no bug. `$each` is not pushed (`pushdown.ts`, "quant"), so the window
     //      is the head of the QUEUE and the ranker rejects most of it, which forces the paging.
+    //      It was `$any` until `$any` became pushable, which quietly satisfied this test while
+    //      removing the only thing it tests. Whatever replaces it has to be checked the same way:
+    //      an unpushable predicate here is a precondition, not a detail of the fixture.
     //   2. Rows must be LEAVING the prefix while a claimer pages it, so a second population eats
     //      the noise concurrently. An offset counts positions in a set shrinking underneath it.
     //   3. The matches must sit in the MIDDLE. Removals shift later rows toward the front, so
@@ -138,7 +141,7 @@ Deno.test({
       const eat = async (who: string) => {
         while (!stop) {
           const got = await space.take(
-            { pattern: { kind: "task", match: { tags: { $any: "noise" } } } },
+            { pattern: { kind: "task", match: { tags: { $each: "noise" } } } },
             { leaseSeconds: 60 },
             who,
           );
@@ -153,7 +156,7 @@ Deno.test({
       try {
         while (served.length < MATCHES) {
           const got = await space.take(
-            { pattern: { kind: "task", match: { tags: { $any: "rare" } } } },
+            { pattern: { kind: "task", match: { tags: { $each: "rare" } } } },
             { leaseSeconds: 60 },
             "run:rare",
           );

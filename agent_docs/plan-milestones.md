@@ -133,6 +133,15 @@ event-log retention lands (M2).
   grant is withdrawn by a `retired: true` successor. Credentials resolve from records per request,
   uncached, which is what makes a revocation take effect on the next call rather than at expiry.
 - [ ] fault-injection suite
+- [x] **push `$any` into SQL** (`pushdown.ts`, both dialects): a type-guarded `EXISTS` over the
+  array's elements for a scalar element predicate, exact, so the caller's LIMIT rides with it.
+  Measured over HTTP against Postgres, it is flat at 1.6–1.9ms from 25k to 1M records
+  (`bench/deployment.ts`), where the unpushable path is 278ms → 13.6s over the same range.
+- [ ] **bound the oracle path that remains.** `$each` is deliberately NOT pushed (negating an
+  element predicate soundly-but-incompletely would EXCLUDE rows, and the empty array is where it
+  breaks first), so an unpushable pattern still pulls a whole kind into a single-threaded JS
+  process: 13.6s at 1M records, during which the space serves nobody else. The containing control
+  is the slow-lane row-scan budget in the M1 resource-limits row, which is unbuilt.
 
 **Verify:** fault-injection matrix (see [plan-validation.md](plan-validation.md)) passes;
 crypto-shredding deletes a body while the event chain still verifies.

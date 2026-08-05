@@ -125,6 +125,35 @@ class SqliteJson implements JsonDialect {
   cmpString(path: string[], op: CmpOp, value: string): string {
     return `(${this.type(path)} = 'text' and ${this.at(path)} ${SQL_CMP[op]} ${this.bind(value)})`;
   }
+
+  /**
+   * `$any`, as an EXISTS over `json_each` of the array at `path`.
+   *
+   * The `json_type = 'array'` guard is the semantics rather than a filter: `json_each` over a
+   * scalar yields that scalar as a single row, so without it `{tags:"x"}` would satisfy
+   * `{tags:{$any:"x"}}` while the oracle says false. Its `type` column carries the same
+   * distinctions `json_type` does above, which is what keeps `true` apart from the number 1.
+   */
+  private anyWhere(path: string[], where: string): string {
+    return `(${this.type(path)} = 'array' and exists (select 1 from json_each(${this.col}, '$.${path.join(".")}') je where ${where}))`;
+  }
+
+  anyEqScalar(path: string[], value: string | number | boolean | null): string {
+    if (value === null) return this.anyWhere(path, `je.type = 'null'`);
+    if (typeof value === "boolean") return this.anyWhere(path, `je.type = '${value}'`);
+    if (typeof value === "number") {
+      return this.anyWhere(path, `je.type in ('integer','real') and je.value = ${this.bind(value)}`);
+    }
+    return this.anyWhere(path, `je.type = 'text' and je.value = ${this.bind(value)}`);
+  }
+
+  anyCmpNumber(path: string[], op: CmpOp, value: number): string {
+    return this.anyWhere(path, `je.type in ('integer','real') and je.value ${SQL_CMP[op]} ${this.bind(value)}`);
+  }
+
+  anyCmpString(path: string[], op: CmpOp, value: string): string {
+    return this.anyWhere(path, `je.type = 'text' and je.value ${SQL_CMP[op]} ${this.bind(value)}`);
+  }
 }
 
 // SQLite has no boolean type; taint is stored as integer 0/1.
@@ -203,6 +232,13 @@ create table if not exists record_edges (
 -- whole kind -- and it is also why an index on tokenHash ALONE did not help.
 create index if not exists idx_records_token_hash
   on records (kind, json_extract(body_json, '$.tokenHash'));
+-- What makes an exact filter's PUSHED LIMIT actually cheap, and the SQLite counterpart of
+-- idx_records_id_c on the Postgres side. "where kind = ? ... order by id limit N" over the primary
+-- key alone plans as USE TEMP B-TREE FOR ORDER BY: the whole kind is read and sorted before the
+-- limit applies, so the limit saves nothing and read_one grows linearly with the space. With kind
+-- leading and id second the same query is an ordered seek that stops at the Nth match. Measured on
+-- 40k records, a predicate matching 1 in 7: 12.0ms -> 0.05ms, and flat rather than linear.
+create index if not exists idx_records_kind_id on records (kind, id);
 create table if not exists idempotency (
   principal text not null,
   operation text not null,

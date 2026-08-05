@@ -10,6 +10,8 @@ deno task bench -- --suite lineage       # one suite
 deno task bench -- --adapter sqlite      # one adapter
 deno task bench -- --scale 4             # 4x iterations: slower, steadier
 RADIA_PG_URL=postgres://… deno task bench    # adds a live Postgres column
+
+deno run -A bench/deployment.ts --url http://127.0.0.1:7899   # a real server, over HTTP
 ```
 
 Most of the three minutes is the scaling suites filling spaces to 40k records. `--suite` is the
@@ -23,7 +25,8 @@ Runs are reproducible enough to compare: repeating `take-ack` on the same machin
 They measure the **substrate**: core plus a storage adapter, in-memory, single process, no
 HTTP, no network, no fsync. That makes them a **floor for latency and a ceiling for
 throughput**, useful for finding hotspots and catching regressions, useless for capacity
-planning a deployment. A disk-backed or networked space is slower, and the ordering between
+planning a deployment. `deployment.ts` is the other side of that sentence, and the gap between
+them is about 95x on a single `put`. A disk-backed or networked space is slower, and the ordering between
 adapters can change under real fsync.
 
 Every row carries p50/p95/p99 rather than a mean, because the tail is what a stalled agent
@@ -41,6 +44,7 @@ constant result size is the signal.
 | `suites/lineage.ts` | `childrenOf` and `getLineage`, the documented hotspot, measured |
 | `suites/scale.ts` | the same operations re-measured at 2k / 10k / 40k records |
 | `suites/blobs.ts` | artifact bytes, and what encryption costs |
+| `deployment.ts` | standalone: one space over HTTP against whatever storage it was started with, re-measured as it fills. Takes a `--url` instead of an adapter, so it measures the thing the suites above cannot. **It writes records and cannot delete them**; point it at a throwaway space |
 | `edit-cost.ts` | standalone: what an edit costs versus rewriting a tree, in emitted characters and in records written. Not a timing suite, so it is run directly rather than through the harness |
 
 ## What the first run found
@@ -64,6 +68,16 @@ before it grew linearly with the space. Postgres tells the same story: `read_one
 predicate shape cost the same (equality, `$gt`, `$or`, and a match that hits nothing were within
 noise of each other), and `read_one` was no faster than `query limit=100`, since both scanned the
 kind and both materialized every match to return one record.
+
+**That flatness needs an index nobody would think to add, and it regressed once already.** A
+pushed `LIMIT` only helps if the database can produce rows in id order without reading the whole
+kind first, and SQLite's primary key alone does not do that: `where kind = ? … order by id limit N`
+plans as USE TEMP B-TREE FOR ORDER BY, sorting every record of the kind before the limit applies.
+`read_one` was back to 12.0ms at 40k, growing linearly, exactly the shape this section says was
+fixed. `idx_records_kind_id (kind, id)` turns it into an ordered seek that stops at the Nth match:
+12.0ms → 0.05ms, flat again. Postgres has the same index for a different reason (`idx_records_id_c`,
+byte-order ids), which is why only the SQLite side drifted, and why a claim about the SHAPE of a
+number is worth re-running rather than trusting.
 
 What actually bought the speedup is worth separating, because it is not the obvious answer. The
 GIN index over record bodies is *not* used for the benchmark's predicate at all: "rare" matches
@@ -118,6 +132,55 @@ gate. Flat is the correct shape for a single-winner claim; the number to watch i
 versus `file+aes-gcm` put 1.4ms / get 1.5ms. Reads pay because an encrypted blob cannot
 stream: AES-GCM verifies its tag over the whole ciphertext
 ([design-data-model.md](../agent_docs/design-data-model.md) §2.4).
+
+## What the deployment run found
+
+One space over HTTP against a live Postgres with fsync, filled to a million records, 64 requests in
+flight. Client, space and database on one machine, so latency is flattered and throughput
+penalised; the shapes are the point. p50/p99 in ms.
+
+| records | put/s | put | read_one | query | scoped | `$any` | `$each` | stats | take+ack |
+|---|---|---|---|---|---|---|---|---|---|
+| 25 000    | 3000 | 2.6/5.3 | 2.5/4.1 | 2.6/5.2 | 2.0/5.4 | 1.9/3.2 | 278/292 | 3.3/5.3 | 15.3/19.6 |
+| 100 000   | 3200 | 2.6/6.4 | 1.8/3.2 | 2.3/10.1 | 2.6/4.6 | 1.6/3.1 | 1218/1239 | 10.7/14.7 | 16.4/23.4 |
+| 400 000   | 2700 | 2.5/5.4 | 1.5/3.8 | 2.1/4.8 | 2.2/4.3 | 1.6/1.8 | 5332/5487 | 24.1/24.7 | 19.0/26.6 |
+| 1 000 000 | 2600 | 2.9/6.3 | 2.0/3.8 | 1.6/3.2 | 1.5/2.8 | 1.7/2.8 | **13634**/13960 | 51.1/52.2 | 20.4/27.5 |
+
+**The pushable paths are flat to a million records.** `put`, `read_one`, `query`, the owner-scoped
+query and `$any` stay in single-digit milliseconds with no trend across a 40x range. Pushdown plus
+declared indexes do the job they were built for.
+
+**Concurrency is doing all of the throughput.** One put over HTTP is 2.9ms serially and 0.38ms of
+wall clock at 64 in flight. Against `suites/records.ts`'s in-process 42µs that is about 70x, which
+is what the caveat above means in practice: sizing a deployment from the in-process numbers is not
+wrong at the margin, it is wrong about the machine you need.
+
+**The oracle path is the wall, and it grows with the record count exactly.** `$each` goes 278ms →
+1.2s → 5.3s → **13.6 seconds**, because `pushdown.ts` cannot express it and the whole kind is pulled
+into JS for the oracle to decide. The runtime is single-threaded, so those fourteen seconds are
+fourteen seconds in which the space serves nobody else: one agent with such a pattern is a denial of
+service against every other principal on the box, and nothing bounds it. The slow-lane row-scan
+budget (M1 resource limits, unbuilt) is the control that would.
+
+**`$any` used to be that row, at 14.1s.** It is now rendered into SQL as a type-guarded `EXISTS`
+over the array's elements, exact rather than merely sound, so the caller's `LIMIT` rides into the
+database with it (`src/storage/pushdown.ts`). The comparison that means something is the one where
+nothing matches, because a limit cannot cut a scan short when no row satisfies it: a matching
+`$any` could always stop early, so the first run's 14.1s was really the cost of an EMPTY predicate
+the database could not decide. At a million records (a second run, `--checkpoints 1000000`), `$any`
+matching nothing is **2.4ms**, a GIN lookup, since an empty match is what an index is best at,
+against 13.5s for the same shape left to the oracle. `$each` is that shape, and it stays with the oracle on purpose: expressing "every
+element matches" means negating the element predicate, and a negation that is sound-but-incomplete
+EXCLUDES rows, the one direction a pre-filter may never be wrong in.
+
+**`stats` is linear**, 3.3ms → 51ms for 40x the records. Expected for a counting aggregate, and
+worth knowing because `GET /v0/ops/digest` is reachable by a self-scoped caller.
+
+**`take+ack` drifts**, 15ms → 20ms p50 over 40x the data. Modest; watch it rather than act on it.
+
+Not reached: the LOG axis. A million records is about two million events, and nothing sweeps them,
+so the question of whether cost grows with history rather than contents starts an order of
+magnitude further out than this run went.
 
 ## Writing a benchmark
 

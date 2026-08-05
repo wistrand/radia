@@ -24,7 +24,14 @@
 //   - **String ordering is UTF-16 code-unit order** in the oracle and collation order in SQL.
 //     Range comparisons on strings are pushed only against an ASCII bound, under byte-order
 //     collation. See `asciiBound`.
-//   - **Array quantifiers** (`$any`/`$each`) are not pushed at all yet.
+//   - **`$any` is pushed; `$each` is not.** The oracle requires an ARRAY at the path (a scalar
+//     never distributes, and a missing path is false), so every rendering guards on the JSON type
+//     before asking about elements. `$each` stays with the oracle because expressing "every element
+//     matches" in SQL means negating the element predicate, and a negation that is merely sound
+//     rather than complete EXCLUDES rows: the one direction this file may never be wrong in. Note
+//     also that `$each` over an EMPTY array is true, which is the case such a negation gets wrong
+//     first. What it costs to leave it here is measured: 13.6s at a million records, against 1.7ms
+//     for the pushed `$any` (`bench/deployment.ts`).
 //   - **A path addresses stored data, not an array index and not a prototype.** An all-digit
 //     segment means different elements to each dialect and to the oracle, so it is not pushed at
 //     all (see `pushablePath`); a prototype-shaped name (`length`, `constructor`) resolves for
@@ -81,6 +88,20 @@ export interface JsonDialect {
   cmpNumber(path: string[], op: CmpOp, value: number): string;
   /** The JSON string at `path` compares `op` against ASCII `value` in byte order; false otherwise. */
   cmpString(path: string[], op: CmpOp, value: string): string;
+
+  // ---- `$any`: the value at `path` is an ARRAY with an element satisfying the predicate ----
+  //
+  // The array guard is not an optimisation, it is the semantics: the oracle returns false for a
+  // scalar at the path rather than distributing over it, and both dialects would otherwise treat a
+  // bare scalar as a one-element sequence and over-include. Over-inclusion is sound, so the guard is
+  // what buys EXACTNESS, which is what lets a caller's LIMIT ride into SQL.
+
+  /** Some element of the array at `path` is exactly `value` (same JSON type, same value). */
+  anyEqScalar(path: string[], value: string | number | boolean | null): string;
+  /** Some NUMBER element of the array at `path` compares `op` against `value`. */
+  anyCmpNumber(path: string[], op: CmpOp, value: number): string;
+  /** Some STRING element of the array at `path` compares `op` against ASCII `value`, byte order. */
+  anyCmpString(path: string[], op: CmpOp, value: string): string;
 }
 
 /**
@@ -194,8 +215,31 @@ export function pushdown(node: MatchNode | undefined, d: JsonDialect): Pushed {
       // saying so in SQL buys nothing, since those patterns are vanishingly rare.
       return TRUE_LOOSE;
     }
-    case "quant":
-      return TRUE_LOOSE; // $any/$each over arrays: not pushed yet
+    case "quant": {
+      // `$each` is deliberately left whole to the oracle; see the header. Only `$any` is pushed.
+      if (node.quant !== "any") return TRUE_LOOSE;
+      const p = pushablePath(node.path);
+      if (!p) return TRUE_LOOSE;
+      const pred = node.pred;
+      if (pred.t === "in") {
+        // The two existentials COMMUTE: "some element is in {a,b}" is "(some element is a) or (some
+        // element is b)". Worth stating because the same rewrite is wrong for `$each`, where the
+        // universal does not distribute over the disjunction.
+        if (pred.values.length === 0) return TRUE_LOOSE; // matches nothing; let the oracle say so
+        if (!pred.values.every(isScalar)) return TRUE_LOOSE; // a deep comparison per element
+        const arms = pred.values.map((v) => d.anyEqScalar(p, v as string | number | boolean | null));
+        return { sql: `(${arms.join(" or ")})`, exact: true };
+      }
+      if (pred.op === "eq") {
+        // An object or array element is key-order-sensitive deep equality, as at the top level.
+        return isScalar(pred.value) ? { sql: d.anyEqScalar(p, pred.value), exact: true } : TRUE_LOOSE;
+      }
+      if (typeof pred.value === "number") return { sql: d.anyCmpNumber(p, pred.op, pred.value), exact: true };
+      if (typeof pred.value === "string" && asciiBound(pred.value)) {
+        return { sql: d.anyCmpString(p, pred.op, pred.value), exact: true };
+      }
+      return TRUE_LOOSE;
+    }
   }
 }
 

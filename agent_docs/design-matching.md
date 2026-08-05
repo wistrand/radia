@@ -20,8 +20,10 @@ compile.
 **Predicate pushdown is built** (`src/storage/pushdown.ts`), and it does not compete with the
 oracle. It is a **sound pre-filter**: SQL that is *implied by* the oracle's verdict, never
 equivalent to it by assumption. The database narrows, `matchesRecord` still decides. Anything not
-expressible exactly (object/array equality, `$any`/`$each`, a non-ASCII range bound, a path that
-is not an identifier) renders as `TRUE` and falls through to the oracle. A filter that is not
+expressible exactly (object/array equality, `$each`, a non-ASCII range bound, a path that
+is not an identifier) renders as `TRUE` and falls through to the oracle. `$any` over a scalar
+element predicate IS pushed, guarded on the JSON type of both the array and the element; `$each` is
+not, because the empty array satisfies it and no element test. A filter that is not
 merely sound but *exact* additionally carries the caller's `LIMIT` into SQL, which is what makes
 `read_one` stop at the first match instead of materializing every one; on a declared indexed path
 its cost is then flat as the space grows rather than linear (`deno task bench -- --suite growth`).

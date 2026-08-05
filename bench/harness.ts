@@ -72,21 +72,26 @@ export async function measure(label: string, n: number, fn: (i: number) => Promi
 
 const fmt = (ms: number) => ms >= 100 ? `${ms.toFixed(0)}ms` : ms >= 1 ? `${ms.toFixed(1)}ms` : `${(ms * 1000).toFixed(0)}µs`;
 
-export function renderTable(rows: { adapter: string; m: Measurement }[]): string {
-  const head = ["ADAPTER", "OPERATION", "OPS", "OPS/S", "p50", "p95", "p99", "MAX"];
+/** `heading` names the first column: the adapter under test for an in-process suite, the scale
+ *  checkpoint for the deployment one. Everything else about the row is the same. */
+export function renderTable(rows: { adapter: string; m: Measurement }[], heading = "ADAPTER"): string {
+  const head = [heading, "OPERATION", "OPS", "OPS/S", "p50", "p95", "p99", "MAX"];
   const body = rows.map(({ adapter, m }) => {
     const sorted = [...m.samples].sort((a, b) => a - b);
     const ops = m.ops ?? m.samples.length;
     const perSec = m.elapsedMs && m.elapsedMs > 0 ? (ops / m.elapsedMs) * 1000 : 0;
+    // A row with no per-op samples measured THROUGHPUT only (a concurrent fill, where a per-op
+    // duration would time queueing rather than the operation). Blank percentiles, not zeros: `0µs`
+    // reads as instant, which is the opposite of what an unmeasured column means.
+    const tail = m.samples.length === 0
+      ? ["-", "-", "-", "-"]
+      : [fmt(percentile(sorted, 50)), fmt(percentile(sorted, 95)), fmt(percentile(sorted, 99)), fmt(sorted[sorted.length - 1] ?? 0)];
     return [
       adapter,
       m.label,
       String(ops),
       perSec >= 1000 ? `${(perSec / 1000).toFixed(1)}k` : perSec.toFixed(0),
-      fmt(percentile(sorted, 50)),
-      fmt(percentile(sorted, 95)),
-      fmt(percentile(sorted, 99)),
-      fmt(sorted[sorted.length - 1] ?? 0),
+      ...tail,
     ];
   });
   const widths = head.map((h, i) => Math.max(h.length, ...body.map((r) => r[i].length)));

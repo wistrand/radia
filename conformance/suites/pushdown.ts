@@ -234,8 +234,79 @@ export const pushdownSuites: Suite[] = [
       await space.put({ kind: "doc", body: { arr: ["c"] } });
 
       await finds(space, { arr: ["a", "b"] }, [id], "array literal equality");
-      await finds(space, { arr: { $any: "b" } }, [id], "$any is left to the oracle, not dropped");
-      await finds(space, { arr: { $each: { $in: ["a", "b"] } } }, [id], "$each likewise");
+      await finds(space, { arr: { $any: "b" } }, [id], "$any finds an element");
+      await finds(space, { arr: { $each: { $in: ["a", "b"] } } }, [id], "$each is left to the oracle, not dropped");
+    },
+  },
+  {
+    // `$any` is pushed (see `pushdown.ts`), and every case here is one where a plausible SQL
+    // rendering EXCLUDES a record the oracle accepts, or admits one it rejects while claiming to be
+    // exact. Measured motive: an unpushed `$any` scanned the whole kind into JS, 14s at 1M records
+    // (`bench/deployment.ts`).
+    name: "$any matches the oracle on the shapes SQL gets wrong",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const put = async (body: Record<string, unknown>) => (await space.put({ kind: "doc", body })).id;
+      const strings = await put({ arr: ["a", "b"] });
+      const numbers = await put({ arr: [1, 2] });
+      const bools = await put({ arr: [true] });
+      const nulls = await put({ arr: [null] });
+      const empty = await put({ arr: [] });
+      const nested = await put({ arr: [["a"]] });
+      await put({ arr: "a" }); // a scalar at the path, NOT an array
+      await put({ arr: { "0": "a" } }); // nor is an object whose keys look like indexes
+      const objects = await put({ arr: [{ a: 1 }] });
+
+      await finds(space, { arr: { $any: "a" } }, [strings], "a string element");
+      await finds(space, { arr: { $any: 1 } }, [numbers], "a number element");
+      // The distinction SQL erases: SQLite extracts JSON `true` and the number 1 both as 1, so a
+      // rendering without a type guard answers `{arr:[true]}` to `$any: 1`. The scalar `"a"` and the
+      // nested `["a"]` are the mirror image: `json_each` over a scalar yields it as one row, and
+      // jsonb `@>` calls both of them a match, so neither the guard nor the exact test is optional.
+      await finds(space, { arr: { $any: true } }, [bools], "a boolean element, not the number 1");
+      await finds(space, { arr: { $any: null } }, [nulls], "a null element; `[null]` HAS an element");
+      await finds(space, { arr: { $any: ["a"] } }, [nested], "a nested array matches as itself, not by its contents");
+      await finds(space, { arr: { $any: "zz" } }, [], "no element, no record; and the empty array has none");
+
+      // An element predicate over a structure is deep equality, so it stays with the oracle.
+      await finds(space, { arr: { $any: { $in: [{ a: 1 }] } } }, [objects], "a structural element still matches");
+
+      // Ordered comparisons over elements, where the type guard is again what SQL loses.
+      await finds(space, { arr: { $any: { $gt: 1 } } }, [numbers], "some element > 1");
+      await finds(space, { arr: { $any: { $gte: 1 } } }, [numbers], "…and >= includes the boundary");
+      await finds(space, { arr: { $any: { $gt: 0 } } }, [numbers], "a boolean element is not a number 1 > 0");
+      await finds(space, { arr: { $any: { $lt: "b" } } }, [strings], "some element < 'b'");
+      await finds(space, { arr: { $any: { $in: ["b", 2] } } }, [strings, numbers], "$in commutes with $any");
+
+      // Why `$each` is NOT pushed alongside `$any` (`pushdown.ts` header): the empty array satisfies
+      // every element predicate and no element test. Rendering `$each` as its `$any` twin is the
+      // shortcut that looks right on every corpus that happens to hold no empty array.
+      await finds(space, { arr: { $each: "zz" } }, [empty], "$each over an empty array is vacuously true");
+      await finds(space, { arr: { $each: { $gt: 0 } } }, [empty, numbers], "…and it does not exclude real matches");
+    },
+  },
+  {
+    // The case above only proves the pre-filter does not UNDER-return. `$any` also claims to be
+    // exact, which sends the caller's LIMIT into SQL, and there an over-returning filter is just as
+    // wrong: the decoys fill the page and the oracle rejects all of them, so a space holding ten
+    // matches answers with none. Every decoy shape here is one a dialect calls a match on its own
+    // (`json_each` over a scalar yields the scalar; jsonb `@>` descends into a nested array; both
+    // read JSON `true` as 1 without a type guard), and they own the low ids so a lost guard shows up
+    // as an empty page rather than a reordering.
+    name: "$any's pushed limit does not fill the page with what the oracle rejects",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const decoys = [{ arr: "hit" }, { arr: [["hit"]] }, { arr: [true] }, { arr: ["miss"] }];
+      for (let i = 0; i < 50; i++) await space.put({ kind: "doc", body: decoys[i % decoys.length] });
+      const hits: string[] = [];
+      const numbers: string[] = [];
+      for (let i = 0; i < 10; i++) hits.push((await space.put({ kind: "doc", body: { arr: ["hit"] } })).id);
+      for (let i = 0; i < 10; i++) numbers.push((await space.put({ kind: "doc", body: { arr: [1] } })).id);
+
+      const page = async (match: Record<string, unknown>) =>
+        (await space.query({ kind: "doc", match }, 5)).map((r) => r.id);
+      assertEquals(await page({ arr: { $any: "hit" } }), [...hits].sort().slice(0, 5), "a full page of real matches");
+      assertEquals(await page({ arr: { $any: 1 } }), [...numbers].sort().slice(0, 5), "…and `true` is not the number 1");
     },
   },
   {
@@ -302,18 +373,24 @@ export const pushdownSuites: Suite[] = [
       const hits: string[] = [];
       for (let i = 0; i < 10; i++) hits.push((await space.put({ kind: "doc", body: { arr: ["hit"] } })).id);
 
-      // `$any` is not pushable, so the pre-filter is `TRUE`. Pushing the caller's limit into SQL
+      // `$each` is not pushable, so the pre-filter is `TRUE`. Pushing the caller's limit into SQL
       // would return the ten lowest ids (all misses), and the oracle would reject every one,
       // answering "no matches" for a space holding ten. The limit only moves into SQL when the
       // filter is exact.
+      //
+      // This case used `$any` until `$any` became pushable, at which point it still passed while
+      // testing nothing: an exact filter returns the right five whether or not the limit rode into
+      // SQL. A test whose vehicle stops being an example of the thing it tests goes quiet rather
+      // than red, so the vehicle has to be the remaining inexact quantifier.
       // Sort rather than trusting insertion order: ULIDs minted inside one millisecond differ
       // only in their random half, so "the order they were put" is not "the order they sort".
       const byId = [...hits].sort();
-      const got = await space.query({ kind: "doc", match: { arr: { $any: "hit" } } }, 5);
+      const inexact = { arr: { $each: "hit" } };
+      const got = await space.query({ kind: "doc", match: inexact }, 5);
       assertEquals(got.length, 5, "a limited query over an inexact filter still returns full pages");
       assertEquals(got.map((r) => r.id), byId.slice(0, 5), "and returns the right records, in id order");
 
-      const one = await space.readOne({ kind: "doc", match: { arr: { $any: "hit" } } });
+      const one = await space.readOne({ kind: "doc", match: inexact });
       assertEquals(one?.id, byId[0], "read_one likewise looks past the non-matching prefix");
     },
   },

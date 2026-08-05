@@ -81,7 +81,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   rejects the extras), under-returning is a silent lost record, and for `take`, an empty space
   reported while work sits in it. So anything not expressible EXACTLY renders as `TRUE`: object
   and array equality (the oracle compares serialized text, so key order matters; jsonb normalizes
-  it), `$any`/`$each`, a range against a non-ASCII bound, any path segment outside `[A-Za-z0-9_]`
+  it), `$each`, a range against a non-ASCII bound, any path segment outside `[A-Za-z0-9_]`
   (segments are inlined into a JSON path literal so the planner can match an index, and restricting
   the alphabet is what makes that injection-proof), and any ALL-DIGIT segment (next entry). Three
   traps: rendering a node BINDS PARAMETERS as a side effect, so a caller discarding the SQL must
@@ -476,6 +476,18 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Storage, SQL and the planner
 
+- **A sound pre-filter is not a complete one, and the gap is measurable.** What `pushdown.ts`
+  cannot express renders as `TRUE`, and the whole kind is then pulled into JS for
+  `core/matching.ts` to decide. Measured over HTTP against Postgres (`bench/deployment.ts`): 278ms
+  at 25k records, **13.6 seconds at 1M**, tracking the record count exactly. The process is
+  single-threaded, so that is 14 seconds in which the space serves nobody else: one principal with
+  such a pattern is a denial of service against every other one, and no limit currently bounds it.
+  Every pushable predicate stays flat over the same range, so the ONLY way to see this is a
+  benchmark whose predicate is not pushable, which none of the in-process suites had.
+  `$any` was that predicate until it was pushed (a type-guarded `EXISTS` over the elements, exact,
+  so the LIMIT rides with it); `$each` is what still measures the wall, and a new unpushable node
+  joins it silently unless a bench row keeps the path measured.
+
 - **An ORDER BY can defeat the index that would have served the filter, and a partial index is
   unusable when its predicate column is a bound parameter.** Both bit the credential lookup, and
   neither is visible without `explain query plan`. `where kind=? and <expr>=? order by id desc
@@ -484,6 +496,13 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   kind in the index KEY: `(kind, json_extract(body_json,'$.tokenHash'))`, matching `SqliteJson.at`
   character for character. 3000 credential records: 1.23ms → 0.05ms, flat to 12k. Postgres needs
   none of it (GIN over `body_jsonb` serves every path), so this is the schema's only per-path index.
+- **A pushed LIMIT is worth nothing if the plan sorts first, and on SQLite the primary key does not
+  prevent that.** `where kind = ? … order by id limit N` plans as USE TEMP B-TREE FOR ORDER BY: the
+  whole kind is read and sorted, so an exact filter's pushed limit saves nothing and `read_one`
+  grows linearly with the space (12.0ms at 40k records, a predicate matching 1 in 7).
+  `idx_records_kind_id (kind, id)` makes it an ordered seek that stops at the Nth match: 0.05ms,
+  flat. Postgres carries `idx_records_id_c` for a different reason (byte-order ids), which is what
+  hid the gap. `explain query plan` is the only way to see it; a benchmark shows it as a shape.
 - **`record_edges` is a DERIVED index; `parent_ids` stays the source of truth.** `childrenOf` was a
   `LIKE` scan over the JSON text: 87µs at 1k records → 662µs at 20k for the same five children. It
   is a `(parent_id, child_id)` lookup now, flat at ~32µs. Three things keep the derivation honest:

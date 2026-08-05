@@ -330,6 +330,46 @@ class PgJson implements JsonDialect {
       this.bind(value)
     })`;
   }
+
+  /**
+   * `$any` with an ORDERED element comparison, as an EXISTS over the elements. Element equality
+   * does not come through here: `anyEqScalar` uses containment, which the GIN index can answer.
+   *
+   * The type guard is the semantics, not a filter: the oracle returns false for a scalar at the
+   * path rather than distributing over it, and `jsonb_array_elements` errors outright on a
+   * non-array, so without it a mixed-shape kind turns a query into a runtime error rather than a
+   * wrong answer.
+   */
+  private anyWhere(path: string[], where: (elem: string) => string): string {
+    return `(jsonb_typeof(${this.at(path)}) = 'array' and exists (select 1 from jsonb_array_elements(${
+      this.at(path)
+    }) as e where ${where("e.value")}))`;
+  }
+
+  anyEqScalar(path: string[], value: string | number | boolean | null): string {
+    // Containment alone, unlike `eqScalar` above, and it is the only term the GIN index answers.
+    // Wrapping the value in an array is what makes it exact: the array-contains-scalar exception is
+    // applied at the TOP level only, so with an array on the right every hazard is a non-match on
+    // pg16 (measured): a scalar at the path (`{"a":"x"}`), a nested element (`{"a":[["x"]]}`), a
+    // digit-keyed object (`{"a":{"0":"x"}}`), and `true` against 1. An EXISTS term here would be
+    // dead weight; the conformance corpus holds each of those shapes instead, so a Postgres that
+    // ever widened the exception fails a test rather than being caught by an untested conjunct.
+    return `${this.col} @> ${this.bind(JSON.stringify(nest(path, [value])))}::jsonb`;
+  }
+
+  anyCmpNumber(path: string[], op: CmpOp, value: number): string {
+    return this.anyWhere(
+      path,
+      (e) => `jsonb_typeof(${e}) = 'number' and ${e} ${SQL_CMP[op]} ${this.bind(JSON.stringify(value))}::jsonb`,
+    );
+  }
+
+  anyCmpString(path: string[], op: CmpOp, value: string): string {
+    return this.anyWhere(
+      path,
+      (e) => `jsonb_typeof(${e}) = 'string' and (${e} #>> '{}') collate "C" ${SQL_CMP[op]} ${this.bind(value)}`,
+    );
+  }
 }
 
 /** Internal signal: a concurrent op committed the same idempotency key first. Caught by
