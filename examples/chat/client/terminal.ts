@@ -21,6 +21,7 @@
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import { IMAGE_DIR, url } from "./config.ts";
 import { type AnswerStream, MarkdownStream, passthrough } from "./markdown.ts";
+import { decodeKey, History, historyPath, LineBuffer, loadHistory, renderLine, saveHistory } from "./edit.ts";
 
 const enc = new TextEncoder();
 export const tty = Deno.stdout.isTerminal();
@@ -49,6 +50,8 @@ export function __captureOutput(): { text: () => string; stop: () => void } {
   atLineStart = true;
   holding = false;
   pending.length = 0;
+  dropped = 0;
+  redrawPrompt = null;
   return { text: () => out, stop: () => (sink = null) };
 }
 
@@ -57,6 +60,19 @@ export function write(s: string): void {
   if (sink) sink(s);
   else Deno.stdout.writeSync(enc.encode(s));
   atLineStart = s.endsWith("\n");
+}
+
+/** A control sequence that draws nothing, so it must not be mistaken for output that moved the
+ *  cursor off column 0. Mode switches only; anything visible goes through `write`. */
+function control(s: string): void {
+  if (sink) sink(s);
+  else Deno.stdout.writeSync(enc.encode(s));
+}
+
+/** Start a fresh line unless one is already started. For anything that has to stand on its own but
+ *  follows output whose last character is not known to the caller. */
+export function ensureLine(): void {
+  if (!atLineStart) write("\n");
 }
 
 /** How wide the window is. 80 when that cannot be known (piped, or no terminal). */
@@ -116,6 +132,13 @@ export function answerStream(): AnswerStream {
 
 let holding = false;
 const pending: string[] = [];
+/** A turn can run for minutes, and a worker in a restart loop writes to stderr the whole time. What
+ *  is worth keeping is the FIRST lines (the original failure) plus a count; a screen of identical
+ *  stack traces buries the answer they interrupted and says nothing the first one did not. */
+const MAX_PENDING = 40;
+let dropped = 0;
+/** Set while a prompt is on screen, so a notice can erase it, print, and put it back. */
+let redrawPrompt: (() => void) | null = null;
 
 /** Claim the line for the duration of a turn. Releasing flushes anything that arrived meanwhile. */
 export function holdLine(on: boolean): void {
@@ -126,7 +149,20 @@ export function holdLine(on: boolean): void {
 /** Print an out-of-band line, now or at the next idle point. Always ends up on its own line. */
 export function notice(s: string): void {
   const line = s.endsWith("\n") ? s : `${s}\n`;
-  if (!holding && atLineStart) write(line);
+  if (holding) {
+    if (pending.length >= MAX_PENDING) dropped++;
+    else pending.push(line);
+    return;
+  }
+  // A prompt is on screen and half typed. Erase it, print, put it back with the cursor where the
+  // user left it. Written straight through, the notice landed on top of what they were typing.
+  if (redrawPrompt) {
+    write("\r\x1b[2K");
+    write(line);
+    redrawPrompt();
+    return;
+  }
+  if (atLineStart) write(line);
   else pending.push(line);
 }
 
@@ -134,6 +170,18 @@ export function notice(s: string): void {
 export function flushNotices(): void {
   if (pending.length === 0) return;
   const held = pending.splice(0, pending.length);
+  // Never silently: a dropped line is exactly the kind of thing whose absence reads as "nothing
+  // happened". Same rule the registry reads follow.
+  if (dropped > 0) {
+    held.push(`${dim(`[${dropped} more line${dropped === 1 ? "" : "s"} from the fleet, not shown]`)}\n`);
+    dropped = 0;
+  }
+  if (redrawPrompt) {
+    write("\r\x1b[2K");
+    for (const line of held) write(line);
+    redrawPrompt();
+    return;
+  }
   if (!atLineStart) write("\n");
   for (const line of held) write(line);
 }
@@ -229,50 +277,279 @@ function pumpStdin(): void {
   });
 }
 
-/** Resolve once a chunk newer than `after` has arrived, or stdin has ended. */
-function inputChanged(after: number): Promise<void> {
+/** Resolve once a chunk newer than `after` has arrived, or stdin has ended. `ms` bounds the wait,
+ *  which one caller needs: a lone Escape is only a lone Escape once nothing follows it. */
+function inputChanged(after: number, ms?: number): Promise<void> {
   pumpStdin();
   if (inputSeq > after || inputEnded) return Promise.resolve();
-  return new Promise<void>((resolve) => waiters.add(resolve));
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = ms === undefined ? undefined : setTimeout(() => {
+      waiters.delete(done);
+      resolve();
+    }, ms);
+    waiters.add(done);
+  });
 }
 
-/** Read stdin a line at a time. Works for an interactive TTY and for piped input, unlike prompt(). */
-export function lineReader(): () => Promise<string | null> {
-  return async function nextLine(): Promise<string | null> {
-    for (;;) {
-      const nl = buffered.indexOf("\n");
-      if (nl >= 0) {
-        const line = buffered.slice(0, nl);
-        buffered = buffered.slice(nl + 1);
-        // The TERMINAL echoed the newline, not us, so nothing else can know the cursor moved. Say
-        // so, or every notice after the first prompt queues forever waiting for a line start.
-        atLineStart = true;
-        flushNotices();
-        return line;
-      }
-      if (inputEnded) {
-        const rest = buffered;
-        buffered = "";
-        return rest || null;
-      }
-      await inputChanged(inputSeq);
+// ---- raw mode, owned for the whole session ----
+//
+// It used to be entered per turn and left at the prompt, so the prompt ran in cooked mode and got
+// what the line discipline gives you: backspace, `^W`, `^U`, and nothing else. Arrow keys were
+// handled by nobody, so pressing left inserted the literal bytes `^[[D` into the line, and there was
+// no history. Owning raw mode continuously is what buys the editor below, and it comes with two
+// obligations. Ctrl-C no longer raises SIGINT, so it is handled as a key. And the terminal has to be
+// restored on EVERY exit path, or a crash leaves the user's shell with no echo.
+
+const interactive = () => !!testInput || Deno.stdin.isTerminal();
+let raw = false;
+
+/** Enter raw mode and turn on bracketed paste. Idempotent. */
+export function claimTerminal(): void {
+  if (raw || !interactive()) return;
+  raw = true;
+  if (testInput) return;
+  Deno.stdin.setRaw(true);
+  // Bracketed paste is how a pasted block is told apart from someone typing very fast. Without it a
+  // paste containing newlines submits as several turns, one per line.
+  control("\x1b[?2004h");
+  // A resize changes where the line has to be cut. `draw` reads the width each time, so a keystroke
+  // fixes it on its own; this covers the case where the window is resized while nothing is typed.
+  try {
+    Deno.addSignalListener("SIGWINCH", () => redrawPrompt?.());
+  } catch { /* not available on this platform */ }
+}
+
+/** Give the terminal back. Safe to call more than once, and from an exit path. */
+export function releaseTerminal(): void {
+  if (!raw) return;
+  raw = false;
+  if (testInput) return;
+  try {
+    control("\x1b[?2004l");
+    Deno.stdin.setRaw(false);
+  } catch { /* not a terminal any more, or already restored */ }
+}
+
+/**
+ * Read a line, editing it as it is typed.
+ *
+ * Off a terminal this is the old newline scanner, byte for byte: piped input has no cursor to move
+ * and no history to browse, and a script's stdin must behave exactly as it did.
+ */
+export function lineReader(): (prompt?: string) => Promise<string | null> {
+  const history = new History();
+  const path = historyPath();
+  history.load(loadHistory(path));
+
+  return async function nextLine(prompt = ""): Promise<string | null> {
+    if (!interactive()) {
+      write(prompt);
+      return await readRawLine();
     }
+    claimTerminal();
+    const line = await editLine(prompt, history);
+    if (line !== null && line.trim()) {
+      history.add(line);
+      saveHistory(path, history.all());
+    } else {
+      history.reset();
+    }
+    return line;
   };
+}
+
+/** The pre-editor path: wait for a newline in the buffer. Used for pipes and for the suites. */
+async function readRawLine(): Promise<string | null> {
+  for (;;) {
+    const nl = buffered.indexOf("\n");
+    if (nl >= 0) {
+      const line = buffered.slice(0, nl);
+      buffered = buffered.slice(nl + 1);
+      // The TERMINAL echoed the newline, not us, so nothing else can know the cursor moved. Say
+      // so, or every notice after the first prompt queues forever waiting for a line start.
+      atLineStart = true;
+      flushNotices();
+      return line;
+    }
+    if (inputEnded) {
+      const rest = buffered;
+      buffered = "";
+      return rest || null;
+    }
+    await inputChanged(inputSeq);
+  }
+}
+
+/** How long to wait before deciding a lone Escape was not the start of an arrow key. */
+const ESCAPE_MS = 40;
+
+async function editLine(prompt: string, history: History): Promise<string | null> {
+  const line = new LineBuffer();
+  let pasting = false;
+  const draw = () => {
+    const { line: text, cursorColumn } = renderLine(prompt, line.text, line.cursor, columns());
+    write(`\r\x1b[2K${text}\r`);
+    if (cursorColumn > 0) write(`\x1b[${cursorColumn}C`);
+    atLineStart = false;
+  };
+  draw();
+  redrawPrompt = draw;
+  try {
+    for (;;) {
+      // Anything typed during the turn just ended is already in the buffer, so it is decoded here
+      // like anything else. Type-ahead becomes VISIBLE, which cooked mode never managed: those
+      // bytes were never echoed and appeared out of nowhere on the next Enter.
+      while (buffered.length > 0) {
+        const decoded = decodeKey(buffered, inputEnded);
+        if (!decoded) break;
+        buffered = buffered.slice(decoded.consumed);
+        const { key } = decoded;
+
+        if (key.type === "pasteStart") {
+          pasting = true;
+          continue;
+        }
+        if (key.type === "pasteEnd") {
+          pasting = false;
+          draw();
+          continue;
+        }
+        // Inside a paste, Enter is CONTENT. Treating it as submit is what splits a pasted block
+        // into one turn per line, which is the single most annoying thing a naive reader does.
+        if (key.type === "enter" && pasting) {
+          line.insert("\n");
+          continue;
+        }
+
+        switch (key.type) {
+          case "char":
+            line.insert(key.text!);
+            break;
+          case "enter": {
+            const text = line.text;
+            write("\r\x1b[2K");
+            write(`${prompt}${text.replace(/\n/g, dim("⏎"))}\n`);
+            atLineStart = true;
+            return text;
+          }
+          case "backspace":
+            line.backspace();
+            break;
+          case "delete":
+            line.delete();
+            break;
+          case "left":
+            line.cursor = Math.max(0, line.cursor - 1);
+            break;
+          case "right":
+            line.cursor = Math.min(line.length, line.cursor + 1);
+            break;
+          case "wordLeft":
+            line.cursor = line.wordStart();
+            break;
+          case "wordRight":
+            line.cursor = line.wordEnd();
+            break;
+          case "home":
+            line.cursor = 0;
+            break;
+          case "end":
+            line.cursor = line.length;
+            break;
+          case "killToEnd":
+            line.killToEnd();
+            break;
+          case "killToStart":
+            line.killToStart();
+            break;
+          case "killWord":
+            line.killWord();
+            break;
+          case "up": {
+            const prev = history.up(line.text);
+            if (prev !== undefined) line.set(prev);
+            break;
+          }
+          case "down": {
+            const next = history.down();
+            if (next !== undefined) line.set(next);
+            break;
+          }
+          case "clear":
+            write("\x1b[2J\x1b[H");
+            break;
+          case "escape":
+            // At the prompt Escape clears the line, which is the same "stop what is happening" it
+            // means during a turn. Nothing is submitted, so nothing is lost but the typing.
+            line.set("");
+            history.reset();
+            break;
+          case "interrupt":
+            // Ctrl-C clears a line that has something in it, and quits when there is nothing left to
+            // clear. Raw mode took SIGINT away, so this IS the quit path.
+            if (line.length > 0) {
+              line.set("");
+              history.reset();
+              break;
+            }
+            write("\r\x1b[2K");
+            atLineStart = true;
+            return null;
+          case "eof":
+            // Ctrl-D deletes forward mid-line and means end-of-input on an empty one, as everywhere.
+            if (line.length > 0) {
+              line.delete();
+              break;
+            }
+            write("\r\x1b[2K");
+            atLineStart = true;
+            return null;
+          case "ignore":
+            break;
+        }
+        if (!pasting) draw();
+      }
+      if (inputEnded && buffered.length === 0) {
+        write("\r\x1b[2K");
+        atLineStart = true;
+        return line.length > 0 ? line.text : null;
+      }
+      // A lone Escape is only lone once nothing has followed it, so the wait is bounded when the
+      // buffer holds something undecidable. Otherwise wait as long as it takes.
+      const undecided = buffered.length > 0;
+      await inputChanged(inputSeq, undecided ? ESCAPE_MS : undefined);
+      if (undecided && buffered.length > 0) {
+        // Nothing arrived: force the pending bytes to decode as what they are.
+        const decoded = decodeKey(buffered, true);
+        if (decoded && decoded.key.type === "escape") {
+          buffered = buffered.slice(decoded.consumed);
+          line.set("");
+          history.reset();
+          draw();
+        }
+      }
+    }
+  } finally {
+    redrawPrompt = null;
+  }
 }
 
 /**
  * Watch for Escape while a turn is in flight. Returns a stop function.
  *
- * RAW MODE ONLY WHILE A TURN RUNS. Cooked mode delivers nothing until Enter, so Escape would arrive
- * after the thing it was meant to interrupt had finished. Raw mode also stops Ctrl-C raising SIGINT,
- * which is why it is entered for the turn and left immediately afterwards: at the prompt, Ctrl-C
- * must still kill the process.
+ * Raw mode is already on (the prompt owns it now), so this only watches. Cooked mode would deliver
+ * nothing until Enter, and Escape would arrive after the thing it was meant to interrupt had
+ * finished.
  *
  * A no-op when stdin is not a terminal, so piped input and the smoke suites are unaffected.
  */
 export function watchCancel(onCancel: () => void): () => void {
-  if (!testInput && !Deno.stdin.isTerminal()) return () => {};
-  if (!testInput) Deno.stdin.setRaw(true);
+  if (!interactive()) return () => {};
+  claimTerminal();
   let stopped = false;
   (async () => {
     let seen = inputSeq;
@@ -299,8 +576,5 @@ export function watchCancel(onCancel: () => void): () => void {
   })().catch(() => {});
   return () => {
     stopped = true;
-    try {
-      if (!testInput) Deno.stdin.setRaw(false);
-    } catch { /* not a terminal any more, or already restored */ }
   };
 }

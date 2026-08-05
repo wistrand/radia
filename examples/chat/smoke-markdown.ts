@@ -169,6 +169,22 @@ const plain = (s: string) => s.replace(ESC, "");
 }
 
 {
+  // Both of these came off a real transcript, where a model asked to summarise a space answered
+  // with a two-column table of counts.
+  //
+  // It had no column labels, and the empty header row was drawn as a blank line with a rule under
+  // nothing. And its cells were `code`, whose backticks showed raw, because a table cell was the one
+  // place inline markers were never handled.
+  const src = "|  |  |\n|---|---|\n| `agent_run` | 1515 |\n| `interest` | 1464 |\n";
+  const out = stable("unlabelled table", src);
+  const rows = plain(out).split("\n").filter((l) => l.length > 0);
+  check("a table with no column labels loses the empty header", rows.length === 2, JSON.stringify(rows));
+  check("…and the rule under nothing", !rows[0].startsWith("─"), JSON.stringify(rows[0]));
+  check("code in a cell drops its backticks", rows[0] === "agent_run  1515", JSON.stringify(rows[0]));
+  check("…and the column still lines up", rows[1] === "interest   1464", JSON.stringify(rows[1]));
+}
+
+{
   // Too wide to align is a real case (a query result), and wrapping a table at an arbitrary column
   // is harder to read than the source it came from.
   const wide = `| a | b |\n|---|---|\n| ${"x".repeat(90)} | y |\n`;

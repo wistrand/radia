@@ -18,7 +18,12 @@
 // The interleaving is invisible to piped input, because `watchCancel` is a no-op off a terminal.
 // That is what `__useTestInput` exists for.
 
-import { __useTestInput, lineReader, watchCancel } from "./client/terminal.ts";
+import { __captureOutput, __useTestInput, lineReader, watchCancel } from "./client/terminal.ts";
+
+// The editor writes to the screen, and history writes to a FILE. Neither belongs in a suite: the
+// redraws would bury the OK lines, and the default history path is the user's own.
+Deno.env.set("RADIA_CHAT_HISTORY", await Deno.makeTempFile({ prefix: "radia-history-" }));
+__captureOutput();
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -93,11 +98,17 @@ function within<T>(ms: number, p: Promise<T>): Promise<T | "TIMED OUT"> {
   await new Promise((r) => setTimeout(r, 20));
   check("an arrow key does not cancel", !cancelled);
   stop();
-  // It stays in the buffer, since only the user knows what to do with it. What matters is that a
-  // turn is not discarded because somebody reached for history.
+  // It stays in the buffer for the PROMPT to interpret, which is now a history recall rather than
+  // three literal bytes in the line. That this test used to assert the literal bytes is exactly the
+  // bug the editor exists to fix: in cooked mode nobody handled arrow keys, so pressing one typed
+  // `^[[A` into whatever you were writing.
   const pending = nextLine();
   await kb.type("\n");
-  check("…and the turn is still running", (await within(2000, pending)) === "\x1b[A", JSON.stringify(await within(50, pending)));
+  const recalled = await within(2000, pending);
+  check("…and reaches the prompt as a key, not as text", !String(recalled).includes("\x1b"), JSON.stringify(recalled));
+  // "next" is what the block above submitted, and history is shared across these blocks by the
+  // temp file at the top. Up recalling it is the arrow key doing its job.
+  check("…so Up recalls the previous line", recalled === "next", JSON.stringify(recalled));
 }
 
 // ---- a line split across chunks is still one line ----

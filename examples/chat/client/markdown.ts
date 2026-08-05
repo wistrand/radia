@@ -436,7 +436,12 @@ export class MarkdownStream implements AnswerStream {
     this.mode = "text";
     this.lineStart = true;
     if (lines.length === 0) return;
-    const cells = lines.map((l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim()));
+    // Inline markers are STRIPPED inside a cell rather than styled. A column's width is a count of
+    // visible characters, and ANSI codes are invisible but not zero-length, so styling a cell and
+    // then padding it to a width miscounts by however many escape bytes it contains. Showing the
+    // backticks instead (which is what happened) is worse than showing neither.
+    const bare = (c: string) => c.replace(/`([^`]*)`/g, "$1").replace(/\*\*([^*]*)\*\*/g, "$1").replace(/\*([^*]*)\*/g, "$1");
+    const cells = lines.map((l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => bare(c.trim())));
     const isRule = (row: string[]) => row.length > 0 && row.every((c) => /^:?-{1,}:?$/.test(c));
     const rows = cells.filter((r) => !isRule(r));
     const cols = Math.max(...rows.map((r) => r.length));
@@ -447,7 +452,11 @@ export class MarkdownStream implements AnswerStream {
       for (const l of lines) this.out(`${l}\n`);
       return;
     }
-    const header = cells.length > 1 && isRule(cells[1]) ? rows[0] : undefined;
+    // A table whose header cells are all blank is a model formatting a list, not labelling columns.
+    // Printing it drew an empty row and then a rule under nothing.
+    const labelled = cells.length > 1 && isRule(cells[1]) && rows[0]?.some((c) => c.length > 0);
+    if (cells.length > 1 && isRule(cells[1]) && !labelled) rows.shift();
+    const header = labelled ? rows[0] : undefined;
     rows.forEach((row, i) => {
       if (header && i === 0) this.style(BOLD);
       this.out(row.map((c, n) => c.padEnd(widths[n])).join("  ").trimEnd());

@@ -101,10 +101,17 @@ export class Waiter {
     private readonly onProgress?: (p: ProgressBody) => void,
   ) {}
 
-  /** Poll this call's progress records and redraw the status line. */
-  async pump(callId: string, stallHint: string): Promise<void> {
+  /**
+   * Poll this call's progress records and redraw the status line.
+   *
+   * `force` skips the throttle, for the one moment that cannot wait for the next tick: the instant
+   * before the first token is printed. A routing decision written inside the last poll interval was
+   * otherwise never read, because the poll only runs while nothing has been printed, so the label
+   * describing the answer arrived AFTER the answer.
+   */
+  async pump(callId: string, stallHint: string, force = false): Promise<void> {
     const now = Date.now();
-    if (now < this.nextPoll) return;
+    if (!force && now < this.nextPoll) return;
     this.nextPoll = now + PROGRESS_POLL_MS;
     try {
       const rows = await this.client.query({ kind: "progress", match: { callId } }, 20);
@@ -115,6 +122,7 @@ export class Waiter {
         this.onProgress?.(this.last);
       }
     } catch { /* no grant to read progress: fall through to the elapsed-only status */ }
+    if (force) return; // the caller is about to print; drawing a status line over it is noise
     const secs = Math.round((Date.now() - this.started) / 1000);
     if (this.last) showStatus(this.prefix, `${describe(this.last)} · ${secs}s`);
     else if (Date.now() - this.started > STALL_MS) showStatus(this.prefix, `${stallHint} · ${secs}s`);

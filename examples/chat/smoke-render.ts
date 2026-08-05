@@ -20,7 +20,7 @@
 //   transcript carried `\x1b[2m` around a third of its lines. THIS SUITE runs with stdout piped,
 //   which is exactly the condition the rule is about.
 
-import { __captureOutput, columns, dim, flushNotices, holdLine, notice, statusText, write } from "./client/terminal.ts";
+import { __captureOutput, columns, dim, ensureLine, flushNotices, holdLine, notice, statusText, write } from "./client/terminal.ts";
 import { showArgs, showOutput } from "./client/turn.ts";
 
 let failed = 0;
@@ -92,6 +92,21 @@ function check(name: string, ok: boolean, detail = "") {
   );
 }
 
+{
+  // A worker in a restart loop writes to stderr for as long as the turn runs. The queue is bounded
+  // so a screen of identical stack traces cannot bury the answer they interrupted, and the drop is
+  // REPORTED, because a missing line reads as nothing having happened.
+  const cap = __captureOutput();
+  holdLine(true);
+  for (let i = 0; i < 100; i++) notice(`[exec] failure ${i}`);
+  holdLine(false);
+  cap.stop();
+  const lines = cap.text().trimEnd().split("\n");
+  check("a flood of notices is bounded", lines.length < 60, `${lines.length} lines`);
+  check("…keeping the first, which is the original failure", lines[0] === "[exec] failure 0", lines[0]);
+  check("…and saying how many were dropped", lines[lines.length - 1].includes("60 more lines"), lines[lines.length - 1]);
+}
+
 // ---- width ----
 
 {
@@ -119,6 +134,29 @@ function check(name: string, ok: boolean, detail = "") {
   cap.stop();
   check("piped output carries no escape sequences", cap.text() === "dimmed", JSON.stringify(cap.text()));
   check("…not even the reset", !cap.text().includes("\x1b"), JSON.stringify(cap.text()));
+}
+
+// ---- a line that has to stand on its own, after output that is not ours ----
+
+{
+  // The routing label follows the ANSWER, whose last character belongs to the model. Written
+  // without checking, it was appended to the final sentence: a real transcript ended
+  // "…let me know!  [fast · 34/228 msgs]".
+  const cap = __captureOutput();
+  write("the last sentence.");
+  ensureLine();
+  write("[fast]\n");
+  cap.stop();
+  check("a trailing label starts its own line", cap.text() === "the last sentence.\n[fast]\n", JSON.stringify(cap.text()));
+}
+
+{
+  const cap = __captureOutput();
+  write("already ended.\n");
+  ensureLine();
+  write("[fast]\n");
+  cap.stop();
+  check("…and adds no blank one when the line already ended", cap.text() === "already ended.\n[fast]\n", JSON.stringify(cap.text()));
 }
 
 // ---- the two renderers ----

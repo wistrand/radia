@@ -350,6 +350,11 @@ async function askAndAnswer(
 ): Promise<{ result: unknown; prompt: string }> {
   const replies = Array.isArray(answer) ? [...answer] : [answer];
   let stop: (() => string) | undefined;
+  // The QUESTION is handed to the reader rather than written ahead of it, because the line editor
+  // erases the row it is about to draw and would wipe anything printed first. So the stand-in has to
+  // record what it was asked: that text is on the person's screen either way, and a test that only
+  // captures `write` would stop seeing half the prompt.
+  let asked = "";
   const [result] = await Promise.all([
     tools.request_grant(request, { callId: "smoke", conversationId: mine }),
     (async () => {
@@ -359,10 +364,13 @@ async function askAndAnswer(
         await new Promise((r) => setTimeout(r, 50));
       }
       stop = capture();
-      await reviewGrantRequests(session, admin, "agent:chat-user", mine, () => Promise.resolve(replies.shift() ?? "no"));
+      await reviewGrantRequests(session, admin, "agent:chat-user", mine, (prompt?: string) => {
+        asked += prompt ?? "";
+        return Promise.resolve(replies.shift() ?? "no");
+      });
     })(),
   ]);
-  return { result, prompt: stop ? stop() : "" };
+  return { result, prompt: (stop ? stop() : "") + asked };
 }
 
 // A kind only somebody else has written to: the shape that makes a self-scoped read empty.

@@ -43,15 +43,31 @@ outside world).
 ## Testing it without a model
 
 ```bash
-deno task chat-test              # all seventeen suites, ~60s
+deno task chat-test              # all eighteen suites, ~60s
 deno task chat-test longthread   # one by name
 ```
+
+**The prompt is a real line editor** (`client/edit.ts`), which is why raw mode is now owned for the
+whole session rather than only during a turn. Arrow keys, Home and End, word motion (`Ctrl-←`,
+`Alt-B`, `Ctrl-W`), `Ctrl-K` and `Ctrl-U`, and history on Up and Down, persisted per user beside the
+credential file. Before this the prompt ran in cooked mode, where the driver gives you backspace,
+`^W` and `^U` and nothing else: pressing left inserted the literal bytes `^[[D` into what you were
+typing, and there was no history at all.
+
+Owning raw mode is what buys that, and it comes with obligations the terminal driver used to meet.
+`Ctrl-C` no longer raises a signal, so it is a key: it clears a line with something in it and quits
+an empty one. `Ctrl-D` deletes forward mid-line and ends input on an empty one. The terminal is
+restored on every exit path including a signal and an unhandled throw, because leaving raw mode
+behind means a shell with no echo. Bracketed paste is enabled, so a pasted block stays ONE input
+instead of submitting once per line. And the line is drawn on a single physical row, scrolled
+horizontally, for the same reason the status line is: wrapping means tracking how many rows the last
+draw used, and getting that wrong leaves fragments the erase cannot reach.
 
 **Escape cancels a turn.** It stops this process WAITING; it does not stop a worker. An `llm_call`
 or `tool_call` already claimed runs to completion and its result still lands in the space, which is
 what at-least-once means and is why the message says so rather than implying the work was undone.
-Raw mode is entered only for the duration of a turn, so Ctrl-C still kills the process at the prompt,
-and it is a no-op when stdin is not a terminal.
+At the prompt the same key clears the line. It is a no-op when stdin is not a terminal, where the
+editor is bypassed entirely and input is read a line at a time, byte for byte as before.
 
 The part that is not cosmetic: a cancel lands in exactly the window that BRICKS a conversation —
 after the assistant's `tool_calls` is on the thread and before its reply. So cancelling answers the
@@ -85,6 +101,7 @@ real assembly, with no API key:
 | `fleet` | model advertisements: publish, restart without growing the space, withdraw on shutdown, revive |
 | `input` | the REPL's stdin, which has no space and no model in it: the keystroke that went missing between a turn ending and the next prompt (two readers on one exclusive stream), type-ahead during a turn, and Escape versus an arrow key |
 | `capability` | tool advertisements, keyed by `(provider, tool)`: replicas of one worker collapse to one tool silently, two DIFFERENT tools under one name are reported as conflicted rather than silently taking each other over, and a provider's withdrawal leaves its peers' tools standing |
+| `edit` | the line editor the prompt runs in raw mode: key decoding that must not guess at a half-arrived escape sequence, word motion over punctuation, a cursor in characters rather than UTF-16 units, history, the scrolled redraw, and a paste that stays one input |
 | `markdown` | rendering the answer WHILE IT ARRIVES: the same text has to render identically whether it comes whole, a line at a time or one character at a time, and 400 pseudo-random chunkings of a full answer are compared against it. Both bugs it found needed a specific split (a `_` landing at the start of an empty buffer; a closing fence arriving before its newline) and neither was reachable by rendering a complete string |
 | `render` | what the chat DRAWS, with no space and no terminal in it: a background watcher's line held back rather than spliced into a streaming answer, a status line that fits the window it is drawn in, colour that never reaches a pipe, and the two renderers for a tool call's arguments and result |
 | `vision` | reading a file: the accepted media types announced and enforced from ONE value, a PDF sent as a document part rather than an image, the artifact's own bytes reaching the provider (which is what proves the worker's read grant is really there), an answer that ran out of budget reported as truncated instead of passing for complete, and four refusals answered without spending a request |
@@ -652,6 +669,13 @@ Stages: `routed` (router), `generating` with the tier and model it resolved, `es
 when a worker hands the turn up a tier, `running` (tool-worker). The status line is wiped as soon
 as real output takes the line, and is TTY-only, so piped output is unchanged.
 
+**The routing label has to precede the text it describes**, and the poll interval is what nearly
+stopped it. Progress is polled only while nothing has been printed, and the chunk read runs before
+the poll, so a `routed` record written inside the last interval was never read: the label then
+printed after the whole answer, appended to its final sentence. There is now a forced poll at the
+one moment that cannot wait, the instant before the first token, and the after-the-fact fallback
+(for a session with no grant to read progress) starts its own line.
+
 **It is trimmed to what is not inferable from the rest of the line**, because it is redrawn several
 times a second and anything constant in it is read once and then costs width forever.
 `agent:chat-` prefixes every worker in the fleet, and a worker's `note` (the model, the tool, the
@@ -743,7 +767,9 @@ enforced from this one value), `RADIA_CHAT_VISION_MAX_BYTES` and `RADIA_CHAT_VIS
 (answer budget, default 4096), `RADIA_CHAT_EXEC_TIMEOUT_MS` (code
 execution budget, default 5000), `RADIA_CHAT_EXEC_DIRS` (read-only roots for executed code;
 unset = no filesystem, and separate from `RADIA_CHAT_DIRS` on purpose), `RADIA_CHAT_DB` and
-`RADIA_CHAT_SCOPE` (below), `RADIA_DIR` (the runtime directory everything else defaults into).
+`RADIA_CHAT_SCOPE` (below), `RADIA_CHAT_HISTORY` (the prompt's history file; defaults beside the
+credential file, since history follows the person rather than the space), `RADIA_DIR` (the runtime
+directory everything else defaults into).
 (No tier setting: the router dispatches, escalation promotes. No role setting either: the session is
 whoever `RADIA_CHAT_TOKEN` belongs to.)
 
@@ -779,6 +805,7 @@ Five areas. `chat.ts` opens with the same map.
 | `waiting.ts` | watch-driven wakeups, progress rendering, and stall diagnosis |
 | `terminal.ts` | everything drawn to the screen. One `write` funnel that tracks the cursor's column, so `notice` (a background watcher, a worker's stderr) holds its line until the turn releases it; TTY-only status **and colour**; width from `Deno.consoleSize`; artifact links; the single stdin pump |
 | `markdown.ts` | the answer rendered as it streams. Knows nothing about a terminal beyond ANSI codes and a width, so it is driven by a callback and tested with a string |
+| `edit.ts` | what a keystroke MEANS and what the line looks like afterwards. No I/O at all, so the awkward cases are driven from a test rather than from a keyboard |
 
 **`workers/`: the five agent processes, each with its own identity and grants**
 

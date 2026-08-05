@@ -16,7 +16,9 @@
 //     thread.ts     the conversation as `message` records on the space
 //     turn.ts       one user turn: llm_call → tools → answer, plus tool discovery
 //     waiting.ts    watch-driven wakeups, progress rendering, stall diagnosis
-//     terminal.ts   everything drawn to the screen
+//     terminal.ts   everything drawn to the screen, and the one consumer of stdin
+//     edit.ts       what a keystroke means and what the line looks like after it (no I/O)
+//     markdown.ts   the answer rendered while it streams
 //
 //   workers/      the five agent processes, each with its own identity and grants
 //     inference.ts · router.ts · tools.ts · images.ts · exec.ts
@@ -47,7 +49,7 @@ import { ToolSet } from "./client/turn.ts";
 import { Thread } from "./client/thread.ts";
 import { cancelTurn, runTurn, TurnCancelled } from "./client/turn.ts";
 import { watchWakeups } from "./client/waiting.ts";
-import { dim, endStatus, lineReader, showStatus, watchCancel, write } from "./client/terminal.ts";
+import { dim, endStatus, lineReader, releaseTerminal, showStatus, watchCancel, write } from "./client/terminal.ts";
 import { reviewGrantRequests } from "./client/grants.ts";
 import { sleep } from "./util.ts";
 
@@ -72,6 +74,10 @@ const procs: Deno.ChildProcess[] = [];
 const shutdown = new AbortController();
 
 function cleanup() {
+  // FIRST, and on every path that reaches here. The prompt owns raw mode for the whole session, so
+  // exiting without giving it back leaves the user's shell with no echo and no line editing, which
+  // is a far worse thing to leave behind than whatever went wrong.
+  releaseTerminal();
   shutdown.abort();
   for (const p of procs) {
     try {
@@ -79,6 +85,18 @@ function cleanup() {
     } catch { /* already gone */ }
   }
 }
+// Raw mode swallows Ctrl-C, so the process can no longer die by signal while a prompt is up: the
+// editor handles that key itself. These cover the paths a signal still arrives on (a `kill`, a
+// terminal closing) and the ones where something throws its way out of the REPL.
+for (const sig of ["SIGTERM", "SIGHUP"] as const) {
+  try {
+    Deno.addSignalListener(sig, () => {
+      cleanup();
+      Deno.exit(0);
+    });
+  } catch { /* not available on this platform */ }
+}
+globalThis.addEventListener("unload", releaseTerminal);
 
 // Liveness only, and the one call that legitimately carries no credential: `/v0/health` is public
 // so a client can tell "no space here" apart from "not allowed", even under `--auth required`.
@@ -180,6 +198,8 @@ session.keepAlive(shutdown.signal, (reason) => {
   sessionLost = reason;
 });
 
+// Still registered, for the window before the prompt claims raw mode (bootstrap, the fleet start)
+// and for a SIGINT sent from elsewhere. At the prompt the editor answers Ctrl-C itself.
 Deno.addSignalListener("SIGINT", () => {
   cleanup();
   Deno.exit(0);
@@ -233,9 +253,11 @@ write(dim("\n  Ctrl-D to quit, Escape to cancel a turn.\n"));
 
 const nextLine = lineReader();
 while (true) {
-  write("\nyou> ");
-  const line = await nextLine();
-  if (line === null) break; // EOF / Ctrl-D
+  write("\n");
+  // The PROMPT is passed in rather than printed first, because the editor redraws the whole line on
+  // every keystroke and has to know what precedes the cursor.
+  const line = await nextLine("you> ");
+  if (line === null) break; // EOF / Ctrl-D, or Ctrl-C on an empty line
   if (!line.trim()) continue;
   // A session that cannot be renewed (stopped, or past its maximum lifetime) is over. Say so and
   // stop rather than letting the next write throw: an uncaught `token_expired` killed the REPL and

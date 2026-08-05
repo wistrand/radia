@@ -90,7 +90,7 @@ export async function reviewGrantRequests(
   admin: RadiaClient,
   subject: string,
   conversationId: string,
-  ask: () => Promise<string | null>,
+  ask: (prompt?: string) => Promise<string | null>,
 ): Promise<void> {
   let pending;
   try {
@@ -214,18 +214,21 @@ export async function reviewGrantRequests(
     }
     write(`${reads.length > 0 ? "" : "\n"}  [all] ALL records of that kind in this space${recommend === "all" ? " (recommended here)" : ""}\n`);
     write(`  [no] refuse\n`);
-    write("approve? ");
 
     let answer = "";
+    // The PROMPT goes to the reader rather than being written first. The line editor redraws the
+    // whole row on every keystroke, starting with an erase, so anything printed ahead of it is wiped
+    // the moment a key is pressed: the question would vanish as soon as you started answering it.
+    let question = "approve? ";
     for (let attempt = 0; attempt < 3; attempt++) {
-      const raw = ((await ask()) ?? "no").trim().toLowerCase();
+      const raw = ((await ask(question)) ?? "no").trim().toLowerCase();
       if (raw === "own" || raw === "o") answer = "own";
       else if (raw === "all" || raw === "a") answer = "all";
       else if (raw === "no" || raw === "n" || raw === "") answer = "no";
       if (answer) break;
       // An ambiguous "yes" is the whole reason these are words: it must not silently become either
       // a refusal (which the old code did) or the narrow grant.
-      write(dim(`  '${raw}' is not one of them. Answer own, all or no: `));
+      question = `  '${raw}' is not one of them. Answer own, all or no: `;
     }
     if (!answer) answer = "no";
     if (answer === "own" && reads.length === 0) {

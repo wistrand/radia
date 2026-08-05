@@ -1177,6 +1177,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   that holds a line until the turn releases it, and piping worker stderr instead of inheriting it.
   Guarded by `examples/chat/smoke-render.ts`; the seam it needs is an output capture, because
   ordering is invisible from outside a process that writes to the real terminal.
+- **Owning raw mode means owning everything the line discipline was doing for you.** A prompt in
+  cooked mode gets backspace, `^W` and `^U` and nothing else, so an arrow key inserts `^[[D` as text
+  and there is no history. Taking raw mode fixes that and transfers four obligations at once: Ctrl-C
+  stops being a signal and has to be a key, Ctrl-D has to mean two different things, the terminal
+  has to be restored on EVERY exit path (a crash otherwise leaves the user's shell with no echo),
+  and a paste has to be bracketed or a multi-line one submits once per line. The decoder must also
+  never guess at a half-arrived escape sequence: deciding early turns an arrow key into a cancel.
+  `examples/chat/client/edit.ts` is the pure half, which is what makes any of it testable.
 - **A streaming renderer is only correct if the chunk boundaries cannot be felt.** Markdown rendered
   as it arrives has to produce the same bytes whether the text comes whole or one character at a
   time, and both bugs in the chat's first version were invisible to a complete string: a `_` at the

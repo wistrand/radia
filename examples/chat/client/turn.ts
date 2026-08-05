@@ -12,7 +12,7 @@ import type { ChatMessage, ToolDef } from "../provider/openrouter.ts";
 import type { Thread } from "./thread.ts";
 import { sessionOwner } from "../space/roles.ts";
 import { type CapabilityBody, capabilityKey, collapseByTool } from "../space/capability.ts";
-import { answerStream, columns, dim, endStatus, holdLine, notice, showArtifact, trunc, write } from "./terminal.ts";
+import { answerStream, columns, dim, endStatus, ensureLine, holdLine, notice, showArtifact, trunc, write } from "./terminal.ts";
 import { Waiter, waitWake } from "./waiting.ts";
 
 const MAX_ROUNDS = 8;
@@ -96,9 +96,16 @@ export async function runTurn(
     const win = context && context.hidden > 0 ? ` · ${context.sent}/${context.sent + context.hidden} msgs` : "";
     // The label normally went up before the first token (see streamResult). This is the fallback
     // for when it could not: no progress record was visible (the session may lack a grant to read
-    // them), so the tier is only knowable from the result.
-    if (!announced && tier) write(`  ${dim(`[${tier}${win}]`)}\n`);
-    else if (win) write(`${dim(`[${win.slice(3)}]`)}\n`);
+    // them), so the tier is only knowable from the result. `ensureLine` because it follows an
+    // ANSWER, whose last character is the model's, not ours: without it the label was appended to
+    // the final sentence, which is where it was noticed.
+    if (!announced && tier) {
+      ensureLine();
+      write(`  ${dim(`[${tier}${win}]`)}\n`);
+    } else if (win) {
+      ensureLine();
+      write(`${dim(`[${win.slice(3)}]`)}\n`);
+    }
     await thread.append({ role: "assistant", content: message.content ?? null, tool_calls: message.tool_calls }, [callId]);
 
     if (message.tool_calls?.length) {
@@ -228,7 +235,9 @@ async function runToolCall(
     throw e;
   }
   priorAttempt?.set(call.function.name, { id: toolCallId, n: attempt });
-  write(`${result.ok ? "→" : "✗"} ${trunc(showOutput(result.output), Math.max(24, columns() - prefix.length - 4))}\n`);
+  // Capped as well as fitted: on a wide terminal "fits the window" is 200 characters of JSON, which
+  // is a wall rather than a summary. The record has the whole thing.
+  write(`${result.ok ? "→" : "✗"} ${trunc(showOutput(result.output), Math.max(24, Math.min(120, columns() - prefix.length - 4)))}\n`);
   await showArtifact(client, result.output);
   await thread.append(
     { role: "tool", tool_call_id: call.id, content: JSON.stringify(result.ok ? result.output : { error: result.output }) },
@@ -305,7 +314,14 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
         continue;
       }
       if (!b.delta) continue;
-      if (!printed) endStatus(waiter.prefix); // first token: drop the status, keep the prompt
+      if (!printed) {
+        // LAST CHANCE for the routing label to precede the text it describes. The progress poll runs
+        // only while nothing has been printed, and `beforeRead` runs before it, so a `routed` record
+        // written inside the last poll interval was never read: the label then appeared after the
+        // whole answer, describing something the user had already finished reading.
+        if (!announced) await waiter.pump(callId, stall, true);
+        endStatus(waiter.prefix); // first token: drop the status, keep the prompt
+      }
       answer.push(b.delta);
       printed = true;
     }
