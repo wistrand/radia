@@ -295,7 +295,9 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
       </div>
       <div class="card">
         <h3>Authorization</h3>
-        <p>Grants scoped to a kind and a pattern, short-lived credentials per worker, and labels that follow data through the system.</p>
+        <p>Grants scoped to a kind and a pattern, labels that follow data through the system, and
+        credentials that replace themselves so nobody signs in twice.
+        <a href="authorization.html">How it works &#8594;</a></p>
       </div>
       <div class="card">
         <h3>Large payloads</h3>
@@ -308,8 +310,8 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
       </div>
       <div class="card">
         <h3>Meeting the world</h3>
-        <p>Multi-file trees an agent can write, run in a jail, serve to a browser and export as a real
-        git repository. Built on the above, outside the runtime.
+        <p>Multi-file trees an agent can write, run in a jail, serve to a browser, and clone with git.
+        Built on the above, outside the runtime.
         <a href="workspaces.html">Workspaces &#8594;</a></p>
       </div>
     </div>

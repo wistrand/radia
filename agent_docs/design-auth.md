@@ -43,7 +43,32 @@ MINTING credential could mint a replacement first, and the caller who actually n
 responding to a leak and no longer holds the token. Revoking leaves already-minted runs alive on
 purpose — "stop handing out new authority" and "kill the work in flight" are different decisions.
 A definition may also not NAME a privileged principal, since that would be a permanent way to mint
-privileged runs. Requests authenticate with
+privileged runs.
+
+**The durable half, and why every consumer used to hold the wrong one.** The chain is already an
+OAuth-shaped split and was not being used as one: an `agent_definition` has no expiry and is
+revocable, and `resolveAuth` refuses that token for coordination ("a definition token does not
+authorize coordination; mint a run first"), so it cannot read, write or claim. It can only mint.
+That is exactly the property that makes a credential safe to keep on disk, and `radia login` used to
+create one and throw it away.
+
+The reason it matters is that **renewal is a LIVENESS protocol**: `renewRun` extends a token by
+presenting it before expiry, which needs a process awake and scheduled inside the window. A laptop
+that slept through it holds a token that cannot renew itself, a fresh CLI process never had one at
+all, and `git` replays a stored secret with no notion of renewal. So a run token's 15 minutes, and
+its 12-hour absolute ceiling, ended the session for every one of them.
+
+`ClientAuth.definitionToken` (`sdk/ts/client.ts`) fixes it client-side, with no runtime change: on
+`token_expired` or a 401 the client mints a new run and retries ONCE, never on a 403 (a grant
+problem, where retrying spends a mint and hides the answer), sharing one exchange across concurrent
+calls, and on the SSE stream too, since that is a raw request outliving everything else. `radia
+login` stores the durable half beside the run token, under its own key so it cannot overwrite the
+operator credential `radia dev` provisioned. Revocation is unaffected and still immediate, because
+resolution is per request from records: what a revoke cannot reach is a run already minted, which is
+the 15-minute blast radius the short token was always buying. Pinned by
+`conformance/exchange.test.ts`.
+
+Requests authenticate with
 `Authorization: Bearer <run-token>` → a `run:*` principal that **inherits its agent
 definition's grants** (`Space.grantSubject` maps `run:` → its `agent:`). Tokens are secrets:
 only their sha256 **hash** is stored (in the record body, since a hash is not a secret). Credentials are

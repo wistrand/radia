@@ -29,6 +29,9 @@ transaction that performed it, and finalized events are sealed into a signed has
 - **pattern**: the JSON match language, used identically for claiming, querying and scoping a grant
 - **lease**: a fenced, renewable, time-bounded claim; exactly one is valid at a time
 - **grant**: a record assigning a principal operations on a kind, optionally narrowed by a pattern
+- **definition token**: the durable half of a credential. Cannot read, write or claim; can only mint
+  a short-lived run token, which is why a client can keep one and re-authenticate itself
+- **run token**: the short-lived half, ~15 minutes, and the one that actually carries authority
 - **taint label**: a closed set (`file`, `net`, `foreign`) that unions along data parents; a grant's allowlist can bar one
 - **delegation context**: the authority chain, derived from the claimed lease and never from data parents
 - **artifact**: content-addressed bytes outside a record; the only thing that can be erased

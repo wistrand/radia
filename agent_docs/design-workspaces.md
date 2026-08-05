@@ -1,23 +1,18 @@
 # Workspaces for code generation (design)
 
-How a multi-file working tree lives in a space, and the relationship to git. Nothing here is built.
-The two prerequisites are: attempts link (`attempt` / `retryOf` on `tool_call`), and a run can be
-judged against a stated expectation (`check` records). Both shipped; see
-[../examples/chat/README.md](../examples/chat/README.md).
+How a multi-file working tree lives in a space, and the relationship to git.
 
-> **Status: the manifest half is BUILT** (`extensions/ts/workspace.ts`, Phase 1 of
-> [plan-workspaces.md](plan-workspaces.md)): the `workspace` kind, per-file artifacts, `treeDigest`,
-> `basedOn`, write-time path validation, content-keyed writes, and safe MATERIALISATION (Phase 2:
-> lexical revalidation plus a realpath containment check per file, with the tree's taint labels
-> carried on the manifest so one parent edge speaks for the whole tree). Measured, a manifest caps at
-> ~6 300 files against the 1 MiB record limit, which SETTLES the dependency question below in favour
-> of an artifact beside the manifest. Write-back, fork detection and GIT EXPORT are built too
-> (`captureWorkspace`/`commitWorkspace`, `forksOf`, `exportWorkspaceGit`); import is refused rather
-> than pending, for the reason under "Git" below.
+> **Status: BUILT, bar push.** Phases 0-12 of [plan-workspaces.md](plan-workspaces.md): the
+> `workspace` kind and its per-file artifacts, `treeDigest`, `basedOn`, write-time path validation,
+> content-keyed writes, safe materialisation (lexical revalidation plus a realpath containment check
+> per file, with the tree's labels on the manifest so one parent edge speaks for the whole tree),
+> write-back, fork detection, `check` attestations, editing in place, attachment, serving a tree over
+> one path capability, git export, and `git clone` over HTTP (`radia git-serve`, both protocols).
+> Measured, a manifest caps at ~6 300 files against the 1 MiB record limit, which settles the
+> dependency question below in favour of an artifact beside the manifest.
 >
-> Recorded in
-> [plan-milestones.md](plan-milestones.md) as a later goal. The decisions below are made, so the
-> open work is implementation and the four questions at the end.
+> What stays refused is IMPORT, and `git push` with it, for the reason under "Git" below. The open
+> questions at the end are the only design work left.
 >
 > A workspace and a second LANGUAGE are the same project: a multi-file tree needs an entrypoint
 > declaration, and that is per-language. Read [design-execution.md](design-execution.md) with this.
@@ -160,6 +155,19 @@ as history, and a person can `git log`, `git diff` and `git bisect` an agent's d
 with tooling they already have. Nothing downstream may depend on it being current or complete.
 Export only, because import means accepting trees whose history git can rewrite, which reopens the
 mutability problem from the outside.
+
+**Over HTTP as well as onto disk** (Phase 12, `extensions/ts/git-http.ts` + `git-pack.ts`, run with
+`radia git-serve`). Same objects, same builder: `buildWorkspaceRepo` returns them in memory and the
+disk export and the server are two sinks, so neither reimplements the correspondence. Both git
+protocols are served (the dumb one needs no protocol code, because the export's own files ARE its
+surface; the smart one turns a 96-object clone from 98 requests into 2), and `git push` is refused
+in words rather than by 404, because it is the import decision arriving from the outside.
+
+Authorization is the CALLER's: a definition token is the HTTP password, the server exchanges it per
+fetch, and a clone reads exactly the workspaces and artifacts that principal could read. That was
+the phase's real blocker rather than the protocol: git persists a static secret and cannot renew,
+which made a durable, mint-only credential a prerequisite (see
+[design-auth.md](design-auth.md), "The durable half").
 
 **The export is a bisect target, not a pull request.** One commit per attempt is auto-commit-on-save
 granularity, so the log reads like a fixup-spam branch and the urge to squash it will be strong.

@@ -120,9 +120,9 @@ mints an ordinary session for a named human through the same bootstrap chain eve
 it cannot read or write anything (the space answers "a definition token does not authorize
 coordination; mint a run first"), so it is safe on disk, and it mints a run whenever the short one
 lapses. Without it a session lasted 15 minutes, stretched to 12 hours by renewing, and then the only
-remedy was to run the command again — which no browser tab, `git` invocation or fresh CLI process
-can do for itself. `radia revoke <principal>` is the off switch, and the only one. See the exchange
-in `sdk/ts/client.ts` and `conformance/exchange.test.ts`.
+remedy was to run the command again, which nothing but a person at a keyboard can do.
+`radia revoke <principal>` is the off switch, and the only one. See the exchange in
+`sdk/ts/client.ts` and `conformance/exchange.test.ts`.
 
 It exists because identity scope is worthless without distinct identities. An app that pins a
 session's grants to `{owner: <principal>}` separates two people only if they ARE two principals;
@@ -188,12 +188,25 @@ returns three rows for a tree saved three times. The projection is latest-wins-m
 same rule every registry here uses, and it reports `complete: false` rather than printing a prefix
 that reads as a population.
 
-`workspace-git <name> --dir <out>` is the one verb that reaches outside the runtime, into
+`workspace-git <name> --dir <out>` is the verb that reaches outside the runtime, into
 `extensions/ts/git.ts`, and it is the reason this layer is a directory rather than an argument. It
 writes a BARE repository, so `git clone <out>` does the checkout; see
 [design-workspaces.md](design-workspaces.md) for why the projection is export-only. It needs
 `workspace: query` and `artifact: read_one`, and nothing more: an export reads exactly what its
 principal could already read, which is why it takes the caller's credential rather than holding one.
+
+`git-serve` is the same objects over HTTP, and the clearest case of what this layer is FOR: a CLI
+verb that binds its own port and talks `/v0` like any other client, so `git clone` works with no
+runtime change and no wire-contract entry. Authorization stays the caller's, since a definition
+token is the HTTP password and the server exchanges it per fetch, so a clone reads what that
+principal can
+and `radia revoke` stops the next one. Read-only; push is refused in words.
+
+Two things it taught, both about being a long-running process rather than about git.
+`onShutdown` REPLACES the default behaviour of SIGINT and SIGTERM, so a handler that does nothing
+leaves a server only SIGKILL can stop; use the abort-signal shape `radia dev` already has, since
+`exit` outside `src/main.ts` is not allowed. And a space binds TWO ports (`--port` and the artifact
+origin at `port + 1`), so the obvious neighbouring default collided with it every time.
 
 `erasures [--undone]` reports every shred and whether its payload is still gone, and `doctor`
 carries the same finding with the remedy attached. Both exist because shredding destroys the

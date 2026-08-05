@@ -255,6 +255,25 @@ $ git clone /tmp/landing.git &amp;&amp; cd landing &amp;&amp; git log --oneline
     </div>
 
     <p>
+      Or serve them, so the URL is the thing you hand somebody rather than a directory:
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">radia git-serve</div>
+      <pre class="terminal"><code>$ radia git-serve
+git server on http://127.0.0.1:7790  (reading http://127.0.0.1:7788)
+
+$ git clone http://you:&lt;token&gt;@127.0.0.1:7790/landing-page.git</code></pre>
+    </div>
+
+    <p>
+      That is a read of the space wearing a familiar shape, and it runs as <em>you</em>: the password
+      is a credential that can mint a session and do nothing else, so the clone sees exactly the
+      trees you could see and revoking it stops the next fetch. Push is refused with the reason
+      rather than a 404, because pushing is the one direction this does not go.
+    </p>
+
+    <p>
       A real repository, with real objects, that a real <code>git clone</code> reads. No git binary is
       involved in making it and no dependency was added: hashing and compression are both already in
       the platform. Each manifest version becomes a commit, the chain of versions becomes the parent

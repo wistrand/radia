@@ -1,7 +1,9 @@
 # Plan: milestones
 
-> Status: M0 (Phases 0–7) built and verified; M1 partly built (watches, authorization stack,
-> Postgres adapter); M2/M3 unbuilt. Origin: outline §11.
+> Status: M0 (Phases 0–7) built and verified; M1 largely built (watches, the authorization stack,
+> the Postgres adapter, the tamper-evident event chain, resource limits, credential exchange);
+> M2/M3 mostly unbuilt. Workspaces and the git projection are complete beside the list, bar push.
+> Origin: outline §11.
 
 ## Goal
 
@@ -10,28 +12,37 @@ implementation and storage backend can change behind it. Each milestone runs the
 conformance + fault-injection suite against every storage adapter (see
 [design-storage.md](design-storage.md) invariants).
 
-## Later: a workspace for code generation
+## Beside the milestones: a workspace for code generation (BUILT)
 
-The chat's sandbox is a single-file JS evaluator: program on stdin, `--no-remote`, no writes, no
-npm. Real code generation iterates on a PROJECT (several files, dependencies, a test runner, a diff
-between attempts), and that is a sandbox capability gap rather than a substrate one.
+This was a "later, not scheduled" note and it got built anyway, driven by use rather than by this
+list, which is worth recording as much as the outcome. The sandbox was a single-file JS evaluator
+and real code generation iterates on a PROJECT, so a tree became a manifest record plus one artifact
+per file: records stay the medium, the filesystem is ephemeral scratch, and every version of every
+file is content-addressed, attributable and individually erasable.
 
-The shape that fits: an attempt's workspace is a set of artifacts, the worker materialises them into
-a temp directory, runs, and stores changed files back as artifacts. Records stay the medium and the
-filesystem is ephemeral scratch, so every version of every file stays content-addressed,
-attributable and individually ERASABLE. The two pieces it builds on are done: attempts link
-(`attempt`/`retryOf` on `tool_call`) and a run can be judged against a stated expectation (`check`
-records). The design, including the git decision, is in
-[design-workspaces.md](design-workspaces.md). Not scheduled.
+Phases 0-12 of [plan-workspaces.md](plan-workspaces.md) are done: manifests, materialisation into a
+jail, write-back, fork detection, `check` attestations, editing in place, a second sandbox backend,
+serving a tree over one path capability, git export, and `git clone` over HTTP. Push stays refused.
+Three of those phases came from watching it fail rather than from the plan (git export, the read
+side, attachment), which is the same pattern as this note existing at all.
+
+None of it is in the runtime: the substrate has no idea what a file or a path is. See
+[design-workspaces.md](design-workspaces.md) and [extensions/README.md](../extensions/README.md).
 
 ## Current state
 
 M0 (Phases 0–7) plus M1 watches, the M1 **authorization stack** (grants, run-token bootstrap
-chain, per-run leases with stop/quarantine, delegation, taint), and the M1 **Postgres adapter**
-(conformance-verified against a live server) are built; see
+chain, per-run leases with stop/quarantine, delegation, taint), the M1 **Postgres adapter**
+(conformance-verified against a live server), the **tamper-evident event chain** and the M1
+**resource limits** are built; see
 [plan-m0-implementation.md](plan-m0-implementation.md) for the per-phase record and the
 `design-*` docs for spec + rationale + source pointers. Only the registry publish itself is
 unexercised. The rest of M2/M3 is unbuilt.
+
+One more thing landed off the list: **a client re-authenticates itself**. The durable half of the
+bootstrap chain is exchanged for the short half whenever that lapses. Renewing requires a process
+that is awake inside the window, which rules out most of the things holding a credential. See
+[design-auth.md](design-auth.md), "The durable half".
 
 ## Phases
 
@@ -87,7 +98,13 @@ two-terminal demo works.
 - [x] kind- and pattern-scoped grants: grants are `grant` records; `Space.authorize` + `isPrivileged`; enforced at the HTTP boundary; `/v0/ops/*` and `grant`/`signal` writes operator-only. **Pattern-scoped** grants built for read (query/read_one/take, `grant ∧ request` via `combineMatch`) AND write (put/ack, the record body must satisfy the pattern via `bodyMatchesGrant`). Delegation and taint are also built (rows below); budgets and per-principal trust classification still to do. See [design-auth.md](design-auth.md).
 - [~] resource limits enforced: record body bytes, artifact bytes, `$and`/`$or` nesting depth and watches per principal, plus (2026-08-04) **body depth** (`413 body_too_deep`), **body array length** (`413 array_too_long`), **pattern size** (`413 pattern_too_large`), **compiled predicate count** (`too_many_predicates`), **`$or` branch count** (`too_many_branches`), **`$in` cardinality** (`too_many_values`) and **registered interests per principal per kind** (`429 too_many_interests`). Each bounds a cost bytes do not: a pattern is stored and re-evaluated per candidate record, a body's shape is walked by the matcher and the event chain, and the interest registry is read by the dry-run matcher and the starvation split. Enforced in the RUNTIME, not the handler, since the SDK/MCP/in-process callers never pass through one; guarded by `conformance/suites/limits.ts`. Still to do: slow-lane time/row-scan budgets and SSE backpressure, both of which need a mechanism rather than a validator (see [design-data-model.md](design-data-model.md) §2).
 - [x] hash-chained event log: each event is sealed into a chain (`event_seal`) once the log's finality watermark passes it, so the hot path pays nothing and the chain is eventually consistent (`unsealed` says how far behind). Sealing runs ON DEMAND, never on a timer (the lesson `Notifier` and `sweepWatches` learned). The hash covers the event AND the record's `body_sha256`, so editing a body directly is caught rather than leaving a perfect chain. `src/core/seal.ts`, `GET /v0/ops/integrity`, `radia integrity`, in `radia doctor`. **A chain stored in the database it protects detects corruption and careless edits, not a rewrite**: each link is HMAC'd under a key that lives beside the database (`RADIA_SEAL_KEY`, else `.radia/seal.json`), which is what makes a rebuild detectable. Externally anchored checkpoints stay M2.
-- [ ] polished Python + TS SDKs
+- [~] polished Python + TS SDKs. **TS gained the credential exchange** (`ClientAuth.definitionToken`:
+  a client whose short token lapses mints another instead of ending the session, once per failure,
+  never on a 403, shared across concurrent calls, and on the SSE stream). That is what makes a
+  session outlive the 12-hour run ceiling, and renewal alone could not, since it serves only a
+  holder that is awake inside the window. **Python renews and does not
+  exchange**, so a Python `agent_loop` still ends at the ceiling: the one real parity gap, marked as
+  such in [sdk/README.md](../sdk/README.md).
 - [x] watches (SSE, cursors, 410 semantics): `POST /v0/watches` + `GET /v0/watches/{id}/events` (SSE, `Last-Event-ID`/`?cursor=` resumption, 410 `cursor_expired` path); backed by the event log + an in-process `Notifier` (LISTEN/NOTIFY-equivalent wakeup); wakeup-by-kind (+ predicate) matching in `Space.matchesEvent`; **grant-gated** (`Space.authorizeWatch`: any grant on the kind, pattern AND-ed into the watch scope). SDK `client.watch()` async generator; `agentLoop` is event-driven (watch wakeups + poll fallback). 410/GC dormant until event-log retention (M2).
 - [x] artifact service: the `BlobStore` port (content-addressed, memory + filesystem impls) + reserved `artifact` records + short-lived download capabilities + **optional encryption at rest** (per-blob AES-GCM DEK, AES-KW-wrapped under a space KEK). See [design-data-model.md](design-data-model.md) §2.4. Open: reference-aware GC and KEK rotation.
 - [x] orphan/starvation diagnostics: a derived report + remediation (`GET /v0/ops/diagnostics`; reclaim/dead-letter/requeue per record OR by envelope selector via `POST /v0/ops/remediate`, so draining a backlog is one call per page rather than one per record). `staleAvailable.split` now separates the two failures age alone conflates, by running the PATTERN match against the live interest registry: **orphaned** (no live interest matches, so waiting never helps) versus **starving** (a listener matches and is not claiming). The registry is read once per KIND, not per record. It refuses to answer when nothing was ever declared, since every record would then look orphaned, but it does answer when the declarations exist and their runs are gone: that is a dead fleet, not an absence of evidence. Guarded by `conformance/suites/starvation.ts`.

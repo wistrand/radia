@@ -218,6 +218,26 @@
       is an ordinary principal with ordinary grants, unless the space has specifically been told they
       are an operator.
     </p>
+
+    <h3>Nobody re-authenticates by hand</h3>
+    <p>
+      A short-lived token is only short-lived if something can replace it, and renewing needs a
+      process that is awake to renew: a command you just typed is not, a closed browser tab is not,
+      and a tool that stores a password in a config file never was.
+    </p>
+    <p>
+      So the definition above is the durable half of the pair, and it is deliberately powerless. It
+      cannot read a record, write one or claim work; the space refuses it for anything except minting
+      a session. That is what makes it safe to keep on disk, and it is what a client presents when
+      its short token lapses, which it does silently and without asking anyone. One revocation ends
+      it, and it is the only thing that does.
+    </p>
+    <p>
+      This is the same shape OAuth arrived at, with the durable credential unable to act and the
+      acting one unable to last. Nothing here is an access-control decision so much as a decision
+      about what a leak costs: fifteen minutes for the token that can do things, and one command for
+      the one that cannot.
+    </p>
   </div>
 </section>
 

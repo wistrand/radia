@@ -23,7 +23,7 @@ flowchart LR
 ```
 
 ```bash
-deno task conformance                     # sqlite + pglite + the blob port   (539 tests, ~25s)
+deno task conformance                     # sqlite + pglite + the blob port   (554 tests, ~25s)
 scripts/pg-conformance.sh                 # + a live Postgres
 RADIA_PG_URL=postgres://… scripts/pg-conformance.sh   # against your own server
 ```
@@ -34,8 +34,8 @@ ephemeral range; an unrelated outbound connection holding it, even in TIME_WAIT,
 fail with a docker "address already in use" that reads like a stale container and is not one).
 
 Each Postgres test runs in its own ephemeral schema, dropped on close, so it is safe to point at a
-database you care about. The live-server run adds its own storage tests to the embedded 539 (**741
-total**), and it is the only run that actually *contends* for claims, which is why a claim-path
+database you care about. The live-server run adds its own storage tests to the embedded 554 (counts move as suites
+are added; the claim to check is 0 failed), and it is the only run that actually *contends* for claims, which is why a claim-path
 change needs it (see "Writing a suite" below). The two cases in `concurrency.test.ts` are ignored
 entirely without it.
 

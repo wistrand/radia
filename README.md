@@ -184,6 +184,14 @@ mints an ordinary scoped session through the same bootstrap chain an agent uses,
 `radia permissions human:alice` says what it can actually do. A `human:` name carries no privilege;
 only the space's named operators have that.
 
+**You log in once.** A run token lives 15 minutes and cannot be renewed by anything that is not
+awake to renew it. A command you just typed is not, and neither is a tool that stores a password
+in a config file. So `radia login` also keeps the
+DURABLE half of the chain: a definition token, which cannot read or write anything (the space
+refuses it for coordination) and can only mint a session. Clients hold both and exchange the first
+for the second whenever it lapses, so nothing asks you to re-authenticate until
+`radia revoke human:alice`, which is the only thing that stops it.
+
 ```bash
 radia kinds                                   # declared kinds (a query for kind_def records)
 radia put job '{"tag":"a"}'                   # write a record
@@ -198,10 +206,36 @@ radia reclaim --all --drain                   # un-stick every expired lease
 radia login human:alice --grant job:query     # a scoped session for a person
 radia login human:alice --compact            # the token alone, for TOK=$(…)
 radia permissions human:alice                 # what that principal can actually do
+radia revoke human:alice                      # kill the durable credential; nothing else does
+radia workspaces                              # multi-file trees, newest version of each
+radia workspace-git site --dir /tmp/site.git  # a tree's history as a real git repository
+radia git-serve                               # …the same, over HTTP, for `git clone`
 ```
 
 Every command goes through the public `/v0` API; the CLI has no privileged backdoor. The
 list above is a taste; `radia help` prints the authoritative one.
+
+### Working trees, and git
+
+An agent that writes code needs somewhere to put it. A **workspace** is a multi-file tree built out
+of primitives that already existed: one manifest record listing paths, one artifact per file, and a
+latest-wins projection over the versions. The runtime learns nothing from any of it: it has no idea
+what a file or a path is. So this lives in [`extensions/`](extensions/README.md) beside the sandbox
+records that say what a jail actually guarantees.
+
+Trees can be materialised into a jail, written back as a new version, forked visibly when two
+writers share a base, served to a browser over one short-lived link, and handed to git:
+
+```bash
+radia workspace-git site --dir /tmp/site.git   # a bare repo; `git clone` it
+radia git-serve                                # …or serve every tree for `git clone` over HTTP
+```
+
+Export only, in both directions of that sentence: git is a projection of the records rather than
+their storage, and `git push` is refused with the reason. What that buys over git is per-file
+erasure without a rewritten history, every version attributable to a run, and grants that scope
+which tree an agent may touch at all. See
+[agent_docs/design-workspaces.md](agent_docs/design-workspaces.md).
 
 ### Joining from an MCP harness
 
