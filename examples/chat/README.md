@@ -43,7 +43,7 @@ outside world).
 ## Testing it without a model
 
 ```bash
-deno task chat-test              # all eighteen suites, ~60s
+deno task chat-test              # all nineteen suites, ~60s
 deno task chat-test longthread   # one by name
 ```
 
@@ -136,6 +136,7 @@ real assembly, with no API key:
 | `markdown` | rendering the answer WHILE IT ARRIVES: the same text has to render identically whether it comes whole, a line at a time or one character at a time, and 400 pseudo-random chunkings of a full answer are compared against it. Both bugs it found needed a specific split (a `_` landing at the start of an empty buffer; a closing fence arriving before its newline) and neither was reachable by rendering a complete string |
 | `render` | what the chat DRAWS, with no space and no terminal in it: a background watcher's line held back rather than spliced into a streaming answer, a status line that fits the window it is drawn in, colour that never reaches a pipe, and the two renderers for a tool call's arguments and result |
 | `vision` | reading a file: the accepted media types announced and enforced from ONE value, a PDF sent as a document part rather than an image, the artifact's own bytes reaching the provider (which is what proves the worker's read grant is really there), an answer that ran out of budget reported as truncated instead of passing for complete, and four refusals answered without spending a request |
+| `docs` | reading a documentation-sized corpus, run against this repository's own `agent_docs`: whether a file larger than the read cap is searched at all (it was silently skipped), whether a match inside one can then be READ (a whole-file read stops at 64 KB, so the citation pointed somewhere unreachable), and whether the heading index names files the way `read_file` takes them back |
 
 The long thread is the one that pays for itself: bugs here come from the SHAPE of accumulated
 state, which is cheap to construct as records and nearly impossible to hit reliably by chatting.
@@ -266,7 +267,23 @@ and the process that runs model-written code (**the sandbox**) holds no credenti
 full compromise of it yields a process that can print bytes to its parent. Path canonicalization
 (realpath + allowlist, in `tools/files.ts`) is defense-in-depth on top.
 
-Tools: `read_file`, `list_files`, `search_files`, `stat` (sandboxed to `RADIA_CHAT_DIRS`,
+**Point `RADIA_CHAT_DIRS` at a documentation tree and the file tools become a reading path**, which
+took two fixes to be true. `search_files` skipped every file over 64 KB in SILENCE, so on this
+repo's own `agent_docs` the two largest documents (`gotchas.md` at 149 KB, which is where most "why
+is it like this" answers live, and `plan-workspaces.md` at 76 KB) were invisible to search while
+every smaller file was covered: the answer came back short and looked complete. Anything genuinely
+too large to scan is now reported in `skipped` instead. And a match was a citation to somewhere
+unreachable, because a whole-file read stops at 64 KB; matches now carry the heading they sit under,
+`read_file {path, section}` returns that section complete, and a truncated whole-file read lists the
+sections as the way through.
+
+`outline` is the other half, and it is the one that suits a corpus this size. Measured on
+`agent_docs`: 23 files, 324 headings, an index of 21 KB against a corpus of 137,000 words — while a
+single keyword narrows almost nothing, because "record" appears in 65% of sections and "grant" in
+35%. Searching a corpus whose vocabulary is this uniform returns a third of it, unranked; reading
+the map and picking a section does not. Guarded by `deno task chat-test docs`.
+
+Tools: `read_file`, `list_files`, `search_files`, `outline`, `stat` (sandboxed to `RADIA_CHAT_DIRS`,
 default `examples/chat/sandbox`; `list_files`/`read_file`/`stat` return `size` + `modified`
 so size/date questions get ground truth, not guesses), `time`, `calc`, `save_content` (store
 text as an artifact), `share_artifact` (an openable link for one), `save_workspace` (a multi-file
@@ -860,7 +877,7 @@ Five areas. `chat.ts` opens with the same map.
 
 | File | Role |
 |------|------|
-| `files.ts` | sandboxed file + compute tools (`read_file`, `list_files`, `search_files`, `stat`, `time`, `calc`) |
+| `files.ts` | sandboxed file + compute tools (`read_file` incl. one section of a large file, `list_files`, `search_files`, `outline`, `stat`, `time`, `calc`) |
 | `space.ts` | space inspection (`space_stats`/`query`/`count`/`lineage`/`children`/`events`/`flows`/`doctor`) and remediation (`reclaim`/`dead_letter`/`requeue`) |
 | `save.ts` | `save_content`: store text the assistant wrote as an artifact |
 | (the sandbox itself moved to [`extensions/ts/sandbox.ts`](../../extensions/ts/sandbox.ts): `deno run -` with zero permissions, output cap, kill timer) |
