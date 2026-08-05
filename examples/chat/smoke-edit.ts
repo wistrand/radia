@@ -35,6 +35,10 @@ function check(name: string, ok: boolean, detail = "") {
   check("Home and End have two encodings each", one("\x1b[H")?.key.type === "home" && one("\x1b[4~")?.key.type === "end");
   check("Ctrl-C is a key now, not a signal", one("\x03")?.key.type === "interrupt");
   check("Ctrl-W kills a word", one("\x17")?.key.type === "killWord");
+  // The key that fetches the clipboard itself, for the bytes a terminal cannot send. It does not
+  // collide with the emulator's Ctrl+Shift+V, which never reaches us: that one is consumed by the
+  // terminal, which sends the clipboard's TEXT as a bracketed paste instead.
+  check("Ctrl-V asks for the clipboard", one("\x16")?.key.type === "clipboard");
 
   // The property the whole decoder exists for: a partial sequence must not be guessed at. Deciding
   // early turns an arrow key into a cancel, which discards a turn nobody asked to discard.
@@ -213,6 +217,47 @@ const cap = __captureOutput();
   const pending = nextLine("you> ");
   await kb.type("\x03"); // Ctrl-C on an empty line
   check("…and quits when there is nothing left to clear", (await within(2000, pending)) === null);
+}
+
+{
+  // Ctrl-V inserts whatever the hook returns, at the cursor, and the hook is where the effects are.
+  // The editor must not know what an artifact is; here the hook stands in for "read the clipboard,
+  // store the bytes, hand back a marker", which is exactly its contract in the chat.
+  const kb = keyboard();
+  const nextLine = lineReader({ onClipboard: () => Promise.resolve("[attached shot.png · image/png · 12 KB · artifactId 01K]") });
+  const pending = nextLine("you> ");
+  await kb.type("look at ");
+  await kb.type("\x16");
+  await kb.type(" please\n");
+  check(
+    "Ctrl-V inserts what the hook returns",
+    (await within(2000, pending)) === "look at [attached shot.png · image/png · 12 KB · artifactId 01K] please",
+    String(await within(50, pending)),
+  );
+}
+
+{
+  // A hook that throws must cost the keystroke and nothing else. A clipboard read leaves the
+  // process (a subprocess that can hang, a space that can refuse the write), so this is the
+  // ordinary case rather than the exotic one, and losing the line being typed would be the worst
+  // possible answer to a failed paste.
+  const kb = keyboard();
+  const nextLine = lineReader({ onClipboard: () => Promise.reject(new Error("no clipboard reader")) });
+  const pending = nextLine("you> ");
+  await kb.type("still here");
+  await kb.type("\x16");
+  await kb.type("\n");
+  check("a failing clipboard keeps the line", (await within(2000, pending)) === "still here", String(await within(50, pending)));
+}
+
+{
+  // With no hook at all (a chat built without one, or a host with no reader) the key is inert
+  // rather than a stray character in the line.
+  const kb = keyboard();
+  const nextLine = lineReader();
+  const pending = nextLine("you> ");
+  await kb.type("plain\x16text\n");
+  check("Ctrl-V with no hook inserts nothing", (await within(2000, pending)) === "plaintext", String(await within(50, pending)));
 }
 
 {

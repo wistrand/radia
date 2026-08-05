@@ -63,6 +63,37 @@ instead of submitting once per line. And the line is drawn on a single physical 
 horizontally, for the same reason the status line is: wrapping means tracking how many rows the last
 draw used, and getting that wrong leaves fragments the erase cannot reach.
 
+**`Ctrl-V` attaches whatever is on the clipboard**, because the terminal cannot. A TTY carries text,
+so when the clipboard holds a picture the emulator's own paste shortcut has nothing to send and
+sends NOTHING: no character, no error, a key that looks broken. This one asks the desktop instead.
+Text is inserted as an ordinary paste would be, so the key is never the wrong one to press. An image
+or a PDF becomes an artifact and leaves `[attached … artifactId …]` in the message, which is what
+`analyze_image` takes. A file COPIED in a file manager arrives as a path rather than as bytes
+(`text/uri-list`) and is read from disk.
+
+| host | tool | text | image / PDF | file copied in a file manager |
+|---|---|---|---|---|
+| Wayland | `wl-paste` (wl-clipboard) | yes | yes | yes |
+| X11 | `xclip` | yes | yes | yes, when the manager offers `text/uri-list` |
+| macOS | `pbpaste`, plus `pngpaste` for images | yes | only with `pngpaste` (`brew install pngpaste`) | no: Finder offers `public.file-url`, which neither tool reads |
+
+Installed is not the same as usable, and the difference is the whole reason the reader is chosen by
+DISPLAY SERVER rather than by what happens to be on PATH. A distro that ships `wl-clipboard` on a
+machine logged into X11 has a `wl-paste` that spawns happily and fails on every read; picking it
+because it exists gave a banner naming a reader and a key that did nothing, forever. So Wayland
+requires `WAYLAND_DISPLAY`, X11 requires `DISPLAY` (Wayland first, which is the right order under
+XWayland where both are set), and macOS requires being macOS. With no reader the banner says so.
+A missing `pngpaste` is reported by name too: "empty" would be a lie to someone holding a screenshot.
+
+Three things about that are deliberate. The REPL does the reading, not the tools worker: this is
+your own process with your own filesystem, while that worker is confined to the sandbox directories
+precisely so the process that can read files cannot reach the network. The session's grant gained
+`artifact: put` to make it possible, which is a real widening, bounded by the same scope pattern as
+everything else and by the fact that artifact bytes are the one thing in a space that can be
+destroyed afterwards. And every clipboard read has a two-second deadline: the prompt is in raw mode
+with a half-drawn line while it runs, and a clipboard owner that stops answering (which happens, and
+did during development) would otherwise hang the session with no way out.
+
 **Escape cancels a turn.** It stops this process WAITING; it does not stop a worker. An `llm_call`
 or `tool_call` already claimed runs to completion and its result still lands in the space, which is
 what at-least-once means and is why the message says so rather than implying the work was undone.

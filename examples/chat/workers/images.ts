@@ -89,7 +89,9 @@ const ANALYZE_IMAGE: ToolDef = {
       `Accepts ${visionTypes.join(", ")}, up to ${sizeLabel(MAX_IMAGE_BYTES)}; ` +
       "anything else is refused. A PDF is read as PAGES, layout and all, so use this rather than " +
       "trying to extract its text. Pass an artifactId, never a path, a URL or base64: get one from " +
-      "generate_image, from save_content, or by listing your artifacts with space_query " +
+      "generate_image, from save_content, from a file the person ATTACHED (their message carries " +
+      "`[attached … artifactId <id>]`, which is a file they are showing you and usually the thing " +
+      "they are asking about), or by listing your artifacts with space_query " +
       "{kind: \"artifact\"}. The model sees ONLY this file and your question, not the " +
       "conversation, so make the question self-contained; ask for what you actually need (\"what " +
       "is written on the sign?\", \"what is the total on the invoice?\") rather than \"describe " +

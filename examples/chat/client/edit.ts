@@ -36,6 +36,8 @@ export type KeyType =
   | "escape"
   | "pasteStart"
   | "pasteEnd"
+  /** Ctrl-V: fetch the clipboard OURSELVES, for the things a terminal cannot send. */
+  | "clipboard"
   | "ignore";
 
 export interface Key {
@@ -89,6 +91,11 @@ const CONTROL: Record<string, KeyType> = {
   "\x0e": "down",
   "\x10": "up",
   "\x15": "killToStart",
+  // Ctrl-V, and it does not collide with the terminal's own paste even though Shift is not encoded:
+  // Ctrl+Shift+V is consumed by the EMULATOR, which sends the clipboard's text as a bracketed paste
+  // and never sends this byte. So the two coexist, and this key is the one to press when the other
+  // did nothing, which is exactly what happens with a picture on the clipboard.
+  "\x16": "clipboard",
   "\x17": "killWord",
 };
 

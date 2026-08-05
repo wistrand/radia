@@ -49,8 +49,10 @@ import { ToolSet } from "./client/turn.ts";
 import { Thread } from "./client/thread.ts";
 import { cancelTurn, runTurn, TurnCancelled } from "./client/turn.ts";
 import { watchWakeups } from "./client/waiting.ts";
-import { dim, endStatus, lineReader, releaseTerminal, showStatus, watchCancel, write } from "./client/terminal.ts";
+import { dim, endStatus, lineReader, notice, releaseTerminal, showStatus, watchCancel, write } from "./client/terminal.ts";
 import { reviewGrantRequests } from "./client/grants.ts";
+import { clipboardReader, missingClipboardTool, readClipboard } from "./client/clipboard.ts";
+import { mediaTypeFor } from "./util.ts";
 import { sleep } from "./util.ts";
 
 if (!apiKey) {
@@ -260,9 +262,76 @@ for (let i = 0; i < 50 && tools.all().length === 0; i++) {
 }
 endStatus("");
 field("tools", tools.all().length > 0 ? `${tools.all().length} discovered` : dim("none advertised yet"));
+
+/**
+ * Ctrl-V: attach whatever is on the clipboard.
+ *
+ * The terminal cannot deliver a picture. Its paste shortcut has nothing to send when the clipboard
+ * holds one, so it sends nothing at all, and the key looks broken. This reads the clipboard through
+ * the desktop instead: text is inserted as an ordinary paste would, bytes become an artifact, and a
+ * file copied in a file manager (which arrives as a path, not as bytes) is read from disk.
+ *
+ * THIS process does the reading, not a worker. It is the person's own process with the person's own
+ * filesystem; the tools worker is confined to the sandbox directories on purpose, and widening it to
+ * arbitrary paths to save a hop would trade the property that the file-reading process cannot reach
+ * the network.
+ */
+const clipboard = await clipboardReader();
+field("clipboard", clipboard ? `${clipboard}  ${dim("Ctrl-V attaches an image, a PDF or a copied file")}` : dim("no reader (wl-paste / xclip / pngpaste); Ctrl-V does nothing"));
 write(dim("\n  Ctrl-D to quit, Escape to cancel a turn.\n"));
 
-const nextLine = lineReader();
+/** Store bytes as an artifact of this conversation and return the marker that goes in the message. */
+async function attach(bytes: Uint8Array, mediaType: string, filename: string): Promise<string> {
+  // No size check here on purpose: the space holds the ceiling (413 artifact_too_large) and the
+  // vision worker holds its own, tighter one. A third number in the client is a third number to
+  // drift, and it would refuse files that are perfectly storable but merely too big to LOOK at.
+  const { id, size } = await session.putArtifact(bytes, {
+    mediaType,
+    filename,
+    // The stamp the GRANT matches on the way in. Without it the write is refused rather than
+    // misfiled, which is the correct order for a scope check.
+    meta: { conversationId: conversation.id, owner },
+    // Bytes off the local filesystem, which is exactly what the label names. The exec worker stamps
+    // the same one for the same reason; nothing bars it today, and the point of a closed label set
+    // is that provenance is stated when it is known rather than invented later.
+    taint: ["file"],
+  });
+  return `[attached ${filename} · ${mediaType} · ${size >= 1024 * 1024 ? `${Math.round(size / 1024 / 1024)} MB` : `${Math.round(size / 1024)} KB`} · artifactId ${id}]`;
+}
+
+const nextLine = lineReader({
+  onClipboard: async () => {
+    const clip = await readClipboard();
+    if (!clip) {
+      // Name the missing tool when there is one. "Empty" would be a lie on a Mac holding a
+      // screenshot, and the person would go looking at their clipboard rather than at their PATH.
+      const missing = missingClipboardTool();
+      notice(dim(missing ? `clipboard: ${missing} is not installed, so images cannot be read here` : "clipboard: empty"));
+      return "";
+    }
+    // Text behaves as a paste, so the key is never the wrong one to press.
+    if (clip.kind === "text") return clip.text;
+    try {
+      if (clip.kind === "bytes") {
+        const ext = clip.mediaType.split("/")[1]?.replace("+xml", "") ?? "bin";
+        return await attach(clip.bytes, clip.mediaType, `pasted-${Date.now()}.${ext}`);
+      }
+      // A file copied in a file manager: a path, so the bytes come off disk.
+      const marks: string[] = [];
+      for (const path of clip.paths.slice(0, 4)) {
+        const bytes = await Deno.readFile(path);
+        const name = path.split("/").pop() || "file";
+        marks.push(await attach(bytes, mediaTypeFor(name), name));
+      }
+      if (clip.paths.length > marks.length) notice(dim(`clipboard: ${clip.paths.length - marks.length} more file(s) not attached`));
+      return marks.join(" ");
+    } catch (e) {
+      // Reported, never thrown: a failed attach must cost the keystroke and not the line being typed.
+      notice(dim(`clipboard: ${e instanceof Error ? e.message : e}`));
+      return "";
+    }
+  },
+});
 while (true) {
   write("\n");
   // The PROMPT is passed in rather than printed first, because the editor redraws the whole line on

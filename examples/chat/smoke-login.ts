@@ -185,6 +185,28 @@ const listed = await alice.client.query({ kind: "artifact" }, 50);
 check("a session can LIST its own artifacts", listed.some((r) => r.id === art.id), `${listed.length} visible`);
 check("…and only its own", listed.every((r) => (r.body as { owner?: string }).owner === idOwner), listed.map((r) => (r.body as { owner?: string }).owner).join(","));
 
+// 2b. ATTACHING a file (Ctrl-V at the prompt) is the session writing bytes under its own name. The
+// grant that allows it is pattern-scoped, and a scope on a WRITE is checked against the body, so the
+// stamp is not bookkeeping: it is the thing that decides whether the write happens at all.
+const attached = await alice.client.putArtifact(new TextEncoder().encode("pretend PNG"), {
+  mediaType: "image/png",
+  filename: "pasted.png",
+  meta: { conversationId: idConv, owner: idOwner },
+  taint: ["file"],
+});
+check("a session can attach a file of its own", Boolean(attached.id), attached.id);
+let forgedAttach = "stored it";
+try {
+  await alice.client.putArtifact(new TextEncoder().encode("not mine"), {
+    mediaType: "image/png",
+    filename: "theirs.png",
+    meta: { conversationId: idConv, owner: "human:bob" },
+  });
+} catch (e) {
+  forgedAttach = (e as Error).message;
+}
+check("…and cannot attach one stamped with someone else's owner", forgedAttach !== "stored it", forgedAttach);
+
 // 3. The structural guard. The bug above is not visible at any one call site: `sessionOwner()` reads
 // correctly and returns the wrong value only because of which PROCESS the code is in. So assert the
 // separation instead of the symptom. Anything the tools-worker loads must take identity from the

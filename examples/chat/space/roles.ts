@@ -212,7 +212,15 @@ export function userGrants(scope?: Record<string, unknown>): Grant[] {
     // assistant correctly diagnosed the gap and then had to ask a human to widen a grant to see its
     // OWN files. The pattern is what makes this safe: the same scope that limits `read_one` limits
     // the listing, so it enumerates this identity's artifacts and nobody else's.
-    { kind: "artifact", operations: ["read_one", "query"], ...scoped },
+    //
+    // `put` is what lets a person ATTACH a file (Ctrl-V at the prompt). It is a real widening and
+    // worth stating as one: the session can write bytes into the space under its own name. Three
+    // things bound it. The pattern is matched against the BODY on the way in, so an attachment that
+    // is not stamped with this scope is refused rather than misfiled; bytes live outside the record,
+    // so unlike anything else here they can be destroyed if the wrong file is pasted; and the
+    // alternative was worse, since the only process that can read the person's filesystem is this
+    // one, and routing the bytes through a worker would mean handing a worker arbitrary paths.
+    { kind: "artifact", operations: ["put", "read_one", "query"], ...scoped },
     // A tree the session owns. Scoped like the rest, so a session sees its own workspaces and no
     // one else's, and the runtime enforces the stamp on the way in as well as the way out.
     { kind: "workspace", operations: ["query"], ...scoped },

@@ -340,7 +340,18 @@ export function releaseTerminal(): void {
  * Off a terminal this is the old newline scanner, byte for byte: piped input has no cursor to move
  * and no history to browse, and a script's stdin must behave exactly as it did.
  */
-export function lineReader(): (prompt?: string) => Promise<string | null> {
+export interface ReaderHooks {
+  /**
+   * What Ctrl-V does: fetch the clipboard and return the text to insert at the cursor.
+   *
+   * INJECTED, because this module owns raw mode and the redraw and must not learn what an artifact
+   * is. The caller holds the space; here it is a function that returns a string, and "" means
+   * nothing was inserted.
+   */
+  onClipboard?: () => Promise<string>;
+}
+
+export function lineReader(hooks: ReaderHooks = {}): (prompt?: string) => Promise<string | null> {
   const history = new History();
   const path = historyPath();
   history.load(loadHistory(path));
@@ -351,7 +362,7 @@ export function lineReader(): (prompt?: string) => Promise<string | null> {
       return await readRawLine();
     }
     claimTerminal();
-    const line = await editLine(prompt, history);
+    const line = await editLine(prompt, history, hooks);
     if (line !== null && line.trim()) {
       history.add(line);
       saveHistory(path, history.all());
@@ -387,7 +398,7 @@ async function readRawLine(): Promise<string | null> {
 /** How long to wait before deciding a lone Escape was not the start of an arrow key. */
 const ESCAPE_MS = 40;
 
-async function editLine(prompt: string, history: History): Promise<string | null> {
+async function editLine(prompt: string, history: History, hooks: ReaderHooks = {}): Promise<string | null> {
   const line = new LineBuffer();
   let pasting = false;
   const draw = () => {
@@ -482,6 +493,19 @@ async function editLine(prompt: string, history: History): Promise<string | null
           case "clear":
             write("\x1b[2J\x1b[H");
             break;
+          case "clipboard": {
+            // The one key whose handler leaves the process, so it is also the one that can be slow.
+            // The hook has its own deadline; what matters here is that the line is redrawn
+            // afterwards whatever happened, because `notice()` from inside the hook erases it.
+            if (!hooks.onClipboard) break;
+            try {
+              const inserted = await hooks.onClipboard();
+              if (inserted) line.insert(inserted);
+            } catch (e) {
+              notice(dim(`clipboard: ${e instanceof Error ? e.message : e}`));
+            }
+            break;
+          }
           case "escape":
             // At the prompt Escape clears the line, which is the same "stop what is happening" it
             // means during a turn. Nothing is submitted, so nothing is lost but the typing.
