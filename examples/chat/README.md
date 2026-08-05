@@ -748,6 +748,14 @@ space healthy?"), and `space_query {kind: grant}` is denied too. The tools-worke
 `space_*` verb under YOUR token, so a scoped session cannot launder /ops access through a worker
 that holds more.
 
+That handoff has a clock, and getting it wrong is silent. The worker is given the session's token as
+it stands at launch, never the one read off disk: a stored login whose short half lapsed is repaired
+in the REPL's memory through the durable half, and passing the disk value shipped a dead credential
+to the worker, which answered `token_expired` to every `space_*` call for the whole session. The
+worker then renews its copy itself, because `agentLoop` only keeps alive the client it is given and
+this is a second one. It deliberately holds no definition token, since a worker that can mint your
+sessions can be you at will, so it lives to the 12-hour run ceiling and then says so.
+
 The chat resolves who the token belongs to from the SPACE, never from a body field, so it cannot be
 told to be someone else. What that buys, covered by `deno run -A examples/chat/smoke-login.ts`: two
 people in the same conversation each read only their own records, neither can write a record stamped

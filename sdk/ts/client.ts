@@ -194,6 +194,19 @@ export class RadiaClient {
     if (this.auth.definitionToken && !this.auth.token) await this.exchange();
   }
 
+  /**
+   * The run token this client is using RIGHT NOW, which is not necessarily the one it was built
+   * with: an exchange replaces it in place the first time the short half lapses.
+   *
+   * Exists for launchers that hand a credential to a child process. Passing the value you
+   * constructed the client with is the bug this accessor is here to prevent: the parent recovers
+   * silently through its definition token while the child, which has no durable half, is handed a
+   * token that is already dead and can never mint another.
+   */
+  get bearerToken(): string | undefined {
+    return this.auth.token;
+  }
+
   health(): Promise<{ storage: string; now: string; version: string; principal: string }> {
     return this.req("GET", "/v0/health");
   }

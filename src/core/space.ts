@@ -31,8 +31,6 @@ import {
   AGENT_DEFINITION,
   AGENT_RUN,
   INTEREST,
-  RESERVED_KINDS,
-  ARTIFACT,
   normalizeTaint,
   parseTaintAllowlist,
   SHRED,
@@ -47,18 +45,38 @@ import {
   kindDefKey,
   KindRegistry,
   META_RESERVED,
-  validateArtifactDef,
-  validateArtifactFields,
   validateGrantDef,
   validateKindDef,
   WRITE_PROTECTED_KINDS,
 } from "./kinds.ts";
 import { CredentialStore, hashToken, mintCredential, type ResolvedToken } from "./auth.ts";
-import { type BlobStore, isDigest, MemoryBlobStore } from "../storage/blobs.ts";
+import { type BlobStore, MemoryBlobStore } from "../storage/blobs.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
 import { activeSet, grantKey, isRetired, readRegistry, type RegistryView } from "./registry.ts";
 import { Notifier } from "./notifier.ts";
+import { type FlowReport, type FlowShape, mineFlows } from "./flows.ts";
+import {
+  type ArtifactHost,
+  type ArtifactMeta,
+  CapabilityStore,
+  putArtifact,
+  readArtifact,
+  shredArtifact,
+  shredOf,
+} from "./artifacts.ts";
+import {
+  type Diagnostics,
+  diagnostics,
+  digest,
+  explainQuery,
+  GRAPH_FANOUT,
+  type InspectionHost,
+  type LiveInterest,
+  type SpaceDigest,
+  type StaleSplit,
+  thread,
+} from "./inspection.ts";
 import { chainedEvent, type IntegrityReport, linkEvents, SEAL_BATCH, type SealKey } from "./seal.ts";
 import { CHAIN_GENESIS, eventHash } from "../../sdk/ts/wire.ts";
 
@@ -223,60 +241,6 @@ export interface EffectivePermissions {
   complete: boolean;
 }
 
-export interface Diagnostics {
-  now: string;
-  counts: Record<string, number>;
-  deadLetter: { count: number; sample: unknown[] };
-  stuckLeases: { count: number; atLeast: boolean; sampledFrom: number; sample: unknown[] };
-  /** Unclaimed *claimable* (work) records older than the threshold: a starvation signal.
-   *  Reference kinds (`claimable:false`: facts, config, grants, history) are excluded: they sit
-   *  available forever by design and are not stale. */
-  staleAvailable: {
-    count: number;
-    thresholdSeconds: number;
-    sample: unknown[];
-    /** The two failures age alone cannot tell apart. ABSENT when the space publishes no live
-     *  interests at all: with an empty registry every record looks orphaned, and that is a fact
-     *  about the fleet's instrumentation rather than about the work. */
-    split?: StaleSplit;
-  };
-  /** Erasures that no longer hold: the bytes are back at the same content address. ABSENT for a
-   *  scoped caller rather than zero, because a confident `0` about something the caller cannot see
-   *  is the "empty scoped answer reads as empty space" failure this file already guards elsewhere. */
-  undoneErasures?: { count: number; checked: number; complete: boolean; sample: unknown[] };
-  /** The event chain's verdict. ABSENT for a scoped caller, like `undoneErasures` and for the same
-   *  reason: the chain covers everyone's activity, so a scoped `ok:true` would be reassurance
-   *  about records the caller cannot see. */
-  integrity?: IntegrityReport;
-}
-
-/** A registered interest whose run is still able to claim. */
-export interface LiveInterest {
-  run: string;
-  agent?: string;
-  match?: Record<string, unknown>;
-}
-
-/**
- * Why unclaimed work is unclaimed, which age alone cannot say.
- *
- * ORPHANED and STARVING call for opposite actions. Nothing is listening for an orphan, so waiting
- * never helps and the fix is to start a worker or fix a pattern; a starving record has a listener
- * that is not claiming, so the worker is down, wedged, or barred, and the fix is over there. The
- * old report called both "stale available" and left an operator to guess.
- */
-export interface StaleSplit {
-  /** No live interest matches. See `caveat`: this is evidence, not proof. */
-  orphaned: { count: number; sample: unknown[] };
-  /** A live interest matches and nothing has claimed it anyway. */
-  starving: { count: number; sample: unknown[] };
-  /** False when an interest registry read was truncated, so `orphaned` may be overstated. */
-  complete: boolean;
-  /** Always present, because both counts rest on the interest registry being a faithful picture of
-   *  who is listening, and it is only ever best-effort. */
-  caveat: string;
-}
-
 /** One shred, and whether it still means anything. */
 export interface ErasureStatus {
   shredId: string;
@@ -297,87 +261,7 @@ function labelFor(rec: RadiaRecord): string {
   return hint ? `${rec.kind}:${hint}` : rec.kind;
 }
 
-/** How many children of ONE record a graph walk follows. The walk's node cap bounds the picture;
- *  this bounds the reading, so a record with a huge fan-out cannot dominate a single step. */
-const GRAPH_FANOUT = 200;
-
-/** How a repeated token renders in a signature. Bucketing is what makes a shape AGGREGATE: a
- *  four-word job and a five-word one are the same flow, and exact counts would file them apart and
- *  report every run as unique. Exact stays available because the bucket is a guess about which
- *  differences matter. */
-function flowCount(n: number, mode: "bucketed" | "exact"): string {
-  if (n === 1) return "";
-  if (mode === "exact") return `×${n}`;
-  if (n <= 3) return "×2-3";
-  if (n <= 7) return "×4-7";
-  if (n <= 15) return "×8-15";
-  if (n <= 31) return "×16-31";
-  if (n <= 63) return "×32-63";
-  return "×64+";
-}
-
-/** Median, rounded. A mean over durations is dominated by the one occurrence that sat overnight. */
-function median(xs: number[]): number {
-  if (xs.length === 0) return 0;
-  const s = [...xs].sort((a, b) => a - b);
-  const mid = s.length >> 1;
-  return Math.round(s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2);
-}
-
-/** Flow mining bounds. The scan is a whole-space read, so every one of these exists to keep it from
- *  becoming an unbounded one; hitting any of them reports `complete: false` rather than truncating
- *  quietly, because a mined shape read as the population is this feature's version of the
- *  bounded-read bug. */
-const FLOW_MAX_RECORDS = 5000;
-const FLOW_PAGE = 500;
-const FLOW_MAX_SHAPES = 50;
-const FLOW_EXEMPLARS = 3;
-
-/** Hub detection. A record needs `DEGREE` children before it is even tested, which is what keeps an
- *  ordinary fan-out (a job with five tasks) out of the test; only the widest `CANDIDATES` per
- *  component are tested, since each test is a graph pass; and removing it must leave `PIECES`
- *  independent pieces, which is the property that distinguishes a hub from a fan-out that
- *  reconverges. */
-const FLOW_HUB_DEGREE = 8;
-const FLOW_HUB_CANDIDATES = 8;
-const FLOW_HUB_PIECES = 3;
-/** Records of one kind in a line before the line is read as a VERSION SPINE rather than as work.
- *  One same-kind edge is ambiguous and two is a coin flip; three is a thing being saved again. */
-const FLOW_CHAIN_MIN = 3;
-
-/** A recurring shape of work, mined from what happened. Never declared: the runtime has no
- *  topology to assert, which is the whole reason this has to be recovered rather than read. */
-export interface FlowShape {
-  /** `job → task×4-7 → result×4-7 → summary`: one segment per causal depth, tokens sorted. */
-  signature: string;
-  occurrences: number;
-  /** Mechanical, never a model's verdict: `failed` = a `dead_letter` in the subgraph, `open` = work
-   *  still claimable or claimed, `complete` = everything settled or terminal by design. */
-  outcomes: { complete: number; open: number; failed: number };
-  successRate: number;
-  medianDurationMs: number;
-  medianRecords: number;
-  /** Roots of the newest occurrences, so a reader can go look at the thing itself. */
-  exemplars: string[];
-}
-
-export interface FlowReport {
-  granularity: "kind" | "kind+agent";
-  counts: "bucketed" | "exact";
-  flows: FlowShape[];
-  scanned: { records: number; kinds: string[]; subgraphs: number };
-  /** Subgraphs with a parent outside the scan, whose signature is therefore a FRAGMENT: the flow
-   *  started somewhere this caller could not see, or before the record cap. */
-  fragments: number;
-  /** Records linked to nothing, excluded from `flows` unless asked for. Counted rather than
-   *  dropped: a large number is a real finding (registry churn), just not a flow. */
-  singletons: number;
-  /** Hub records cut out so the work hanging off them could be mined separately. A non-zero count
-   *  means the signatures below are the pieces, and the `X ⇒` prefix names what they hung from. */
-  hubs: number;
-  complete: boolean;
-  notes?: string[];
-}
+export type { Diagnostics, FlowReport, FlowShape, LiveInterest, StaleSplit };
 
 export class Space {
   private readonly kinds = new KindRegistry();
@@ -391,20 +275,8 @@ export class Space {
   /** Live download capabilities: token -> the one artifact it opens, and when it lapses. In
    *  memory and short-lived by design. A capability is a delegation of a read the caller already
    *  held, not a credential, and it must not outlive the process that issued it. */
-  /**
-   * Live download capabilities. IN MEMORY on purpose, and the limitation is accepted rather than
-   * unnoticed: they are process-local, lost on restart, and invisible to a second instance.
-   * Persisting them would put high-churn, security-critical state into records, which is the one
-   * shape CLAUDE.md's stopping rule names as a bad fit. A capability is a short-lived view, not
-   * durable state — what makes a TREE durable is the records themselves, or `radia workspace-git`,
-   * which turns one into a real git repository on disk that outlives every process here.
-   *
-   * `index` is present when the capability opens a SET of artifacts by path rather than one record.
-   */
-  private readonly downloadCaps = new Map<
-    string,
-    { recordId?: string; index?: Map<string, string>; expiresAt: number }
-  >();
+  /** Short-lived download capabilities (`core/artifacts.ts`). Process-local by design. */
+  private readonly caps: CapabilityStore;
 
   constructor(
     private readonly storage: StorageAdapter,
@@ -414,6 +286,7 @@ export class Space {
     private readonly blobs: BlobStore = new MemoryBlobStore(),
   ) {
     this.ctx = { ...DEFAULT_CONTEXT, ...ctx };
+    this.caps = new CapabilityStore(this.ctx.downloadCapabilitySeconds);
     // Bootstrap: the reserved control kinds (kind_def, grant, signal) are defined in code so
     // queries for their records compile. Every other kind is a kind_def record, loaded by
     // loadKinds(); grants are grant records, read by authorize().
@@ -1432,11 +1305,9 @@ export class Space {
 
   // ---- artifacts (design-data-model §2.4) --------------------------------------------------
   //
-  // An artifact is a RECORD whose body describes bytes held in the blob store. Everything that
-  // makes records useful (grants, taint, lineage, the event log, retention) therefore applies
-  // to it with no new machinery, and only the payload sits outside. The reference clients hold is
-  // the record id: stable, immutable, and never a signed URL (which would expire inside a record
-  // that cannot be rewritten).
+  // The verbs live in `core/artifacts.ts` and reach back through a narrow host port; the download
+  // capabilities are a store of their own. What stays here is the wiring, because only the service
+  // knows the blob store, the byte ceiling and how a record is committed.
 
   get maxArtifactBytes(): number {
     return this.ctx.maxArtifactBytes;
@@ -1450,245 +1321,62 @@ export class Space {
     return this.blobs.name;
   }
 
-  /** Store bytes and commit the `artifact` record that references them. The digest and size are
-   *  computed here, never taken from the client. They are runtime-authoritative like any other
-   *  server-assigned field. */
-  async putArtifact(
+  private get artifactHost(): ArtifactHost {
+    return {
+      blobs: this.blobs,
+      maxArtifactBytes: this.ctx.maxArtifactBytes,
+      getRecord: (id) => this.storage.getRecord(id),
+      now: () => this.storage.now(),
+      put: (req, idem, principal) => this.put(req, idem, principal),
+      putRaw: (req, idem, opts) => this.putRaw(req, idem, opts),
+      query: (pattern, limit, page, scope) => this.query(pattern, limit, page, scope),
+    };
+  }
+
+  putArtifact(
     bytes: Uint8Array,
-    meta: {
-      mediaType: string;
-      filename?: string;
-      parentIds?: string[];
-      retentionUntil?: string;
-      taint?: string[];
-      /**
-       * APPLICATION fields merged into the artifact's record body.
-       *
-       * The body is otherwise entirely runtime-built, which would leave artifacts as the one kind
-       * an application cannot scope: a grant pattern matches the body, so with nothing of the
-       * app's in there, "artifacts belonging to this conversation" is inexpressible and any
-       * holder of an artifact id can read it. These are client CLAIMS like any other body
-       * content (the runtime routes on them, never trusts them), and the authoritative fields
-       * below always win, so nothing here can forge a digest, size or media type.
-       */
-      appFields?: Record<string, unknown>;
-    },
+    meta: ArtifactMeta,
     idempotencyKey?: string,
     principal?: string,
   ): Promise<{ id: string; digest: string; size: number }> {
-    if (bytes.byteLength > this.ctx.maxArtifactBytes) {
-      throw new RadiaError("artifact_too_large", `artifact exceeds the ${this.ctx.maxArtifactBytes}-byte limit`);
-    }
-    validateArtifactDef({ digest: "", mediaType: meta.mediaType, size: 0, filename: meta.filename });
-    validateArtifactFields(meta.appFields);
-
-    const ref = await this.blobs.put(bytes);
-    // Authoritative fields LAST: an app field can never shadow the digest, size or media type the
-    // runtime computed, whatever the caller sent.
-    const body: ArtifactDef = { ...meta.appFields, digest: ref.digest, mediaType: meta.mediaType, size: ref.size };
-    if (meta.filename) body.filename = meta.filename;
-    const { id } = await this.put(
-      {
-        kind: ARTIFACT,
-        body,
-        parentIds: meta.parentIds,
-        retentionUntil: meta.retentionUntil,
-        taint: meta.taint,
-      },
-      idempotencyKey,
-      principal,
-    );
-    return { id, digest: ref.digest, size: ref.size };
+    return putArtifact(this.artifactHost, bytes, meta, idempotencyKey, principal);
   }
 
-  /** The artifact record plus a byte stream, or null if the id is not an artifact / the blob is
-   *  gone. Callers authorize FIRST: this is the read itself, not the check. */
-  async readArtifact(recordId: string): Promise<{ record: RadiaRecord; def: ArtifactDef; stream: ReadableStream<Uint8Array> } | null> {
-    const record = await this.storage.getRecord(recordId);
-    if (!record || record.kind !== ARTIFACT) return null;
-    const def = record.body as ArtifactDef;
-    if (!def || !isDigest(def.digest)) return null;
-    const stream = await this.blobs.get(def.digest);
-    return stream ? { record, def, stream } : null;
+  readArtifact(
+    recordId: string,
+  ): Promise<{ record: RadiaRecord; def: ArtifactDef; stream: ReadableStream<Uint8Array> } | null> {
+    return readArtifact(this.artifactHost, recordId);
   }
 
-  /**
-   * Destroy an artifact's bytes and record that it happened.
-   *
-   * NOT irreversible, and the doc used to say it was. This destroys the runtime's COPY; the content
-   * address stays valid, so anyone holding the payload can store it again and every record that
-   * referenced it reads once more. `Space.erasures` reports a shred in that state rather than
-   * pretending otherwise; see the erasure invariant in CLAUDE.md for why neither refusing the write
-   * nor refusing the read is the fix.
-   *
-   * Immutability is the substrate's core property and erasure is a real requirement (a subject
-   * exercising a right, a secret written by accident, a retention deadline), so this is a carve-out
-   * with a stated shape rather than a hole. What is destroyed is the PAYLOAD; the record, its id,
-   * its lineage and the event chain all survive, and the content address stays valid because the
-   * digest is over plaintext. So the space still says "an artifact with this digest was here, and
-   * was erased", which is what an auditor needs and what a plain delete would take away.
-   *
-   * Under encryption this is crypto-shredding: `BlobStore.delete` destroys the per-blob key before
-   * the ciphertext, so an interrupted erase leaves unreadable bytes rather than readable ones.
-   * Without a KEK it is a plain delete, and the caller should be told which they got.
-   *
-   * The marker is written AFTER the bytes are gone, deliberately. A crash between the two leaves
-   * data erased and reported as merely missing, which is a cosmetic failure; the other order leaves
-   * data alive and reported as erased, which is a lie about a security property.
-   *
-   * SHARED BYTES. The store is content-addressed, so identical payloads are ONE blob that several
-   * artifact records reference. Erasing by content erases it for all of them. That is the right
-   * semantics (there is one payload) and a sharp edge (two people who uploaded the same file), so
-   * a shared blob refuses unless the caller says it means it.
-   */
-  async shredArtifact(
+  shredArtifact(
     recordId: string,
     opts: { principal?: string; reason?: string; acknowledgeShared?: boolean } = {},
   ): Promise<{ digest: string; references: number; encrypted: boolean; alreadyGone: boolean }> {
-    const record = await this.storage.getRecord(recordId);
-    if (!record || record.kind !== ARTIFACT) throw new RadiaError("not_found", `no artifact ${recordId}`);
-    const def = record.body as ArtifactDef;
-    if (!def || !isDigest(def.digest)) throw new RadiaError("not_found", `artifact ${recordId} has no digest`);
-
-    // Every artifact record pointing at these bytes. Read to exhaustion: a bounded count that
-    // undercounts would let a shared blob past the guard below, which is the failure that turns a
-    // targeted erasure into somebody else's data loss.
-    const refs = await readRegistry(
-      (limit, after) => this.query({ kind: ARTIFACT, match: { digest: def.digest } }, limit, { dir: "desc", after }),
-      (_b, r) => r.id,
-    );
-    const references = refs.entries.size;
-    if (!refs.complete) {
-      throw new RadiaError("registry_incomplete", `could not count every reference to ${def.digest}; refusing to erase`);
-    }
-    if (references > 1 && !opts.acknowledgeShared) {
-      throw new RadiaError(
-        "shared_payload",
-        `${references} artifact records reference this content, and erasing is by CONTENT: all of ` +
-          `them lose it. Pass acknowledgeShared to proceed.`,
-      );
-    }
-
-    const alreadyGone = (await this.blobs.stat(def.digest)) === null;
-    await this.blobs.delete(def.digest);
-    const at = await this.storage.now();
-    await this.putRaw({
-      kind: SHRED,
-      body: {
-        digest: def.digest,
-        artifactId: recordId,
-        references,
-        reason: opts.reason ?? "",
-        at,
-        // Whether the bytes were destroyed or the KEY was: only the second is unrecoverable against
-        // someone holding a copy of the storage, and a caller deciding whether an erasure is
-        // sufficient needs to know which one it got.
-        method: this.blobs.name.includes("aes") ? "crypto-shred" : "delete",
-      },
-      parentIds: [recordId],
-    }, undefined, { principal: opts.principal });
-    return { digest: def.digest, references, encrypted: this.blobs.name.includes("aes"), alreadyGone };
+    return shredArtifact(this.artifactHost, recordId, opts);
   }
 
-  /** Was this content erased on purpose? Distinguishes a 410 from a 404, which is the difference
-   *  between "destroyed" and "never here" and the only thing a reader can still learn. */
-  async shredOf(digest: string): Promise<Record<string, unknown> | null> {
-    const rows = await this.query({ kind: SHRED, match: { digest } }, 1, { dir: "desc" });
-    return rows.length > 0 ? rows[0].body as Record<string, unknown> : null;
+  shredOf(digest: string): Promise<Record<string, unknown> | null> {
+    return shredOf(this.artifactHost, digest);
   }
 
-  /** Mint a short-lived capability to download ONE artifact. The caller must already be authorized
-   *  to read it; this delegates that read to a context that cannot send an Authorization header
-   *  (an `<img src>` in the console), which is why the design specifies capabilities rather than
-   *  putting a bearer token in a URL. */
-  /**
-   * Mint a capability over a SET of artifacts, addressed by path.
-   *
-   * The runtime learns "a capability may name artifacts by path" and nothing else — not what a
-   * workspace is, not what a manifest is, not that these paths are a website. The caller supplies
-   * the index; an extension builds it from a tree, and any other application wanting to serve a set
-   * of named blobs gets the same primitive. That is the same generalisation the erasure carve-out
-   * made ("too large for a body" became "erasable, whatever its size") rather than teaching `src/`
-   * a domain concept.
-   *
-   * PATH TRAVERSAL IS STRUCTURALLY ABSENT here, which is worth stating because "serve a directory
-   * over HTTP" is normally where it lives. The path is looked up in this fixed index; there is no
-   * filesystem to escape, no normalisation to get wrong, and `..` simply misses. The index IS the
-   * allowlist.
-   *
-   * Authorization happens at MINT, over every entry, exactly as the single-artifact form does — so
-   * the served path carries no credential and needs no grant read per request.
-   */
   mintPathCapability(entries: { path: string; artifactId: string }[]): { capability: string; expiresAt: string } {
-    const { capability, expiresAt, at } = this.newCapability();
-    this.downloadCaps.set(capability, { index: new Map(entries.map((e) => [e.path, e.artifactId])), expiresAt: at });
-    this.sweepCapabilities();
-    return { capability, expiresAt };
+    return this.caps.mintPathCapability(entries);
   }
 
-  /** Which artifact does this capability serve at this path? `null` for an unknown capability, an
-   *  expired one, or a path the index does not contain — the caller cannot tell those apart, which
-   *  is deliberate: a probe learns nothing about the shape of the tree. */
   resolveCapabilityPath(capability: string, path: string): string | null {
-    const cap = this.downloadCaps.get(capability);
-    if (!cap?.index) return null;
-    if (cap.expiresAt <= Date.now()) {
-      this.downloadCaps.delete(capability);
-      return null;
-    }
-    return cap.index.get(path) ?? null;
-  }
-
-  private newCapability(): { capability: string; expiresAt: string; at: number } {
-    const bytes = new Uint8Array(16);
-    crypto.getRandomValues(bytes);
-    const capability = btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-    const at = Date.now() + this.ctx.downloadCapabilitySeconds * 1000;
-    return { capability, expiresAt: new Date(at).toISOString(), at };
+    return this.caps.resolveCapabilityPath(capability, path);
   }
 
   mintDownloadCapability(recordId: string): { capability: string; expiresAt: string } {
-    // 16 random bytes as base64url: 22 characters instead of the 64 hex ones this used to emit.
-    // These travel in a URL a person is shown, pastes and sometimes reads aloud, and length is the
-    // property that decides whether that is bearable. 128 bits is not a compromise here: the token
-    // opens ONE artifact for a few minutes and is not an identity, so the exposure a guess would
-    // buy is bounded in both directions. Guessing 2^128 inside that window is not a thing.
-    const { capability, expiresAt, at } = this.newCapability();
-    this.downloadCaps.set(capability, { recordId, expiresAt: at });
-    this.sweepCapabilities();
-    return { capability, expiresAt };
+    return this.caps.mintDownloadCapability(recordId);
   }
 
-  /**
-   * Which artifact does this capability open, if any? The capability already NAMES one record, so a
-   * URL carrying it needs nothing else: that is what lets the short form (`/a/<capability>`) drop
-   * both the 26-character id and the query string.
-   */
   resolveDownloadCapability(capability: string): string | null {
-    const cap = this.downloadCaps.get(capability);
-    if (!cap) return null;
-    if (cap.expiresAt <= Date.now()) {
-      this.downloadCaps.delete(capability);
-      return null;
-    }
-    return cap.recordId ?? null;
+    return this.caps.resolveDownloadCapability(capability);
   }
 
-  /** Does this capability open this artifact, right now? Scoped to one record on purpose: a
-   *  leaked capability is one object for a few minutes, not an identity. */
   checkDownloadCapability(capability: string, recordId: string): boolean {
-    const cap = this.downloadCaps.get(capability);
-    if (!cap) return false;
-    if (cap.expiresAt <= Date.now()) {
-      this.downloadCaps.delete(capability);
-      return false;
-    }
-    return cap.recordId === recordId;
-  }
-
-  private sweepCapabilities(): void {
-    const now = Date.now();
-    for (const [token, cap] of this.downloadCaps) if (cap.expiresAt <= now) this.downloadCaps.delete(token);
+    return this.caps.checkDownloadCapability(capability, recordId);
   }
 
   async readOne(pattern: Pattern, scope?: StatsScope): Promise<RadiaRecord | null> {
@@ -1773,550 +1461,71 @@ export class Space {
   }
 
   /**
-   * Why a query returned what it did, for a caller that cannot see the traps.
+   * The derived reads, all of them compositions over the verbs above (`core/inspection.ts`).
    *
-   * Every note here answers a documented trap that a correct-looking query walks into silently:
-   * a full page read as a population, a default order that returns the OLDEST rows, a reference
-   * kind whose records sit available forever by design, a kind nobody has declared. These are all
-   * cases where the request SUCCEEDED, so an error cannot carry the warning and prose in a doc
-   * arrives too late. Attach it to the answer instead.
-   *
-   * Never make this change the result. It annotates, so a caller that ignores it is exactly as
-   * correct as before.
+   * They live outside this class for the reason the design doc gives: an inspection feature that
+   * accumulates state of its own can disagree with the space it describes. The port they take is
+   * every read they use and no write, which is what keeps that true by construction.
    */
+  private get inspectionHost(): InspectionHost {
+    return {
+      listKinds: () => this.kinds.list(),
+      kindDef: (kind) => this.kinds.get(kind),
+      now: () => this.storage.now(),
+      stats: (scope) => this.storage.stats(scope),
+      staleSeconds: this.ctx.diagnosticsStaleSeconds,
+      queryEnvelopes: (opts) => this.queryEnvelopes(opts as Parameters<Space["queryEnvelopes"]>[0]),
+      liveInterests: (kind) => this.liveInterests(kind),
+      interestMatches: (i, kind, body) => this.interestMatches(i, kind, body),
+      matchingInterests: (kind) => this.matchingInterests(kind),
+      effectivePermissions: (principal) => this.effectivePermissions(principal),
+      erasures: (opts) => this.erasures(opts),
+      verifyIntegrity: () => this.verifyIntegrity(),
+      getLineage: (id, max, createdBy) => this.getLineage(id, max, createdBy),
+      getChildren: (id, limit) => this.getChildren(id, limit),
+      authorAllows: (createdBy, record) => this.authorAllows(createdBy, record),
+    };
+  }
+
   explainQuery(
     pattern: Pattern,
     returned: number,
     limit: number,
     page?: { after?: string; dir?: "asc" | "desc" },
   ): string[] {
-    const notes: string[] = [];
-    const def = this.kinds.get(pattern.kind);
-    if (!def) {
-      notes.push(
-        `no kind '${pattern.kind}' is declared, so this can only ever return nothing. Declared: ` +
-          `${this.kinds.list().map((k) => k.kind).sort().join(", ") || "(none)"}.`,
-      );
-    }
-    if (returned >= limit) {
-      notes.push(
-        `results filled the limit (${limit}), so this is a PAGE and not a population. Page on with ` +
-          `'after' set to the last id; never treat a full page as the total.`,
-      );
-    }
-    if (!pattern.orderBy && !page?.dir) {
-      notes.push(
-        "no orderBy and no dir, so records come back OLDEST first (ascending by id). A registry " +
-          "read wants dir='desc', or the newest declaration falls off the end.",
-      );
-    }
-    if (def && def.claimable === false) {
-      notes.push(
-        `kind '${pattern.kind}' is claimable:false (reference data), so records sitting 'available' ` +
-          "forever is normal rather than stuck work.",
-      );
-    }
-    if (def && pattern.match) {
-      const declared = new Set(def.indexedPaths.map((p) => p.path));
-      const unindexed = Object.keys(pattern.match).filter((k) => !k.startsWith("$") && !declared.has(k));
-      if (unindexed.length > 0) {
-        notes.push(
-          `match names ${unindexed.join(", ")}, which ${unindexed.length === 1 ? "is" : "are"} not a ` +
-            `declared indexed path of '${pattern.kind}' (declared: ${[...declared].sort().join(", ") || "(none)"}).`,
-        );
-      }
-    }
-    return notes;
+    return explainQuery(this.inspectionHost, pattern, returned, limit, page);
   }
 
-  /**
-   * What a space contains, in one read: the orientation an investigator needs before asking
-   * anything else.
-   *
-   * Generated from records, never hand-written, so it cannot drift from the space it describes.
-   * This is the artifact an inspection agent trusts most, which makes it the worst possible place
-   * to return a plausible prefix: every registry read here pages to exhaustion and the result says
-   * `complete: false` rather than quietly truncating.
-   */
-  async digest(principal: string, scope?: { createdBy?: string[] } | null): Promise<{
-    api: string;
-    kinds: { kind: string; indexedPaths: string[]; sortablePaths?: string[]; claimable: boolean; reserved: boolean }[];
-    counts: { kind: string; state: string; count: number }[];
-    /** The routing topology as an EDGE LIST, one row per (kind, agent), not one per pattern. A
-     *  worker that serves twenty tools publishes twenty interests; listing them all buries the
-     *  shape this read exists to show. `patterns` counts them, and `POST /v0/ops/dry-run` answers
-     *  which one a given record would reach. */
-    interests: { kind: string; agent: string; runs: number; patterns: number }[];
-    /** Interests hidden by the caller's scope. An empty list means "none you may see", never
-     *  "nobody is listening", and the difference has to be stated or it gets reported as fact. */
-    interestsWithheld?: number;
-    permissions: EffectivePermissions;
-    complete: boolean;
-  }> {
-    const reserved = new Set(RESERVED_KINDS);
-    const kinds = this.kinds.list()
-      .map((d) => ({
-        kind: d.kind,
-        indexedPaths: d.indexedPaths.map((p) => p.path),
-        ...(d.sortablePaths ? { sortablePaths: d.sortablePaths } : {}),
-        claimable: d.claimable !== false,
-        reserved: reserved.has(d.kind),
-      }))
-      .sort((a, b) => (a.kind < b.kind ? -1 : 1));
-
-    // The prospective half of the topology. Reported per kind so "who is listening for X" is
-    // answerable without a second call; liveness is still the run's, as everywhere else.
-    const edges = new Map<string, { kind: string; agent: string; runs: Set<string>; patterns: number }>();
-    let complete = true;
-    let withheld = 0;
-    for (const k of kinds) {
-      const found = await this.matchingInterests(k.kind); // listing mode: no candidate body
-      if (!found.complete) complete = false;
-      for (const i of found.interests) {
-        // Interests are the one cross-principal part of the digest: the full set IS the routing
-        // table, which `POST /v0/ops/dry-run` keeps operator-only. A scoped caller sees its own,
-        // matching the rule that any principal may read its own authorization and no one else's.
-        if (scope?.createdBy && !scope.createdBy.includes(i.run)) {
-          withheld++;
-          continue;
-        }
-        const agent = i.agent ?? i.run;
-        const key = `${k.kind}|${agent}`;
-        const edge = edges.get(key) ?? { kind: k.kind, agent, runs: new Set<string>(), patterns: 0 };
-        edge.runs.add(i.run);
-        edge.patterns++;
-        edges.set(key, edge);
-      }
-    }
-    return {
-      api: "v0",
-      kinds,
-      counts: await this.stats(),
-      interests: [...edges.values()]
-        .map((e) => ({ kind: e.kind, agent: e.agent, runs: e.runs.size, patterns: e.patterns }))
-        .sort((a, b) => (a.kind === b.kind ? (a.agent < b.agent ? -1 : 1) : a.kind < b.kind ? -1 : 1)),
-      ...(withheld > 0 ? { interestsWithheld: withheld } : {}),
-      permissions: await this.effectivePermissions(principal),
-      complete,
-    };
+  digest(principal: string, scope?: { createdBy?: string[] } | null): Promise<SpaceDigest> {
+    return digest(this.inspectionHost, principal, scope);
   }
 
-  /**
-   * The whole causal story around one record, in the order it happened.
-   *
-   * Reconstructing this by hand means walking `parent_ids` up to a root, then children down, then
-   * sorting, and getting the paging right at every step. Models get it wrong in a specific way:
-   * they walk one direction, treat a bounded page as the whole fan-out, and report a partial story
-   * with the same confidence as a complete one. It is a composition of reads the ops plane already
-   * has, which is exactly what that plane is for.
-   *
-   * Ordered by id, which is creation order (ULIDs are monotonic), so the sequence IS the causality
-   * for anything written in one process.
-   */
-  async thread(
+  thread(
     recordId: string,
     opts: { maxNodes?: number; createdBy?: string[] } = {},
   ): Promise<{ root: string; records: RadiaRecord[]; truncated: boolean }> {
-    const max = opts.maxNodes ?? 200;
-    const lineage = await this.getLineage(recordId, max, opts.createdBy);
-    if (lineage.length === 0) return { root: recordId, records: [], truncated: false };
-    // The deepest ancestor reachable is the root of the story. Ties break on id so the answer is
-    // deterministic when a record has several roots at the same depth.
-    const deepest = Math.max(...lineage.map((l) => l.depth));
-    const root = lineage.filter((l) => l.depth === deepest).map((l) => l.record.id).sort()[0];
+    return thread(this.inspectionHost, recordId, opts);
+  }
 
-    const seen = new Map<string, RadiaRecord>();
-    for (const l of lineage) seen.set(l.record.id, l.record);
-    let truncated = false;
-    // Traversal is tracked SEPARATELY from the result set. The ancestors are already in `seen`
-    // from the lineage walk, so skipping anything seen would stop the walk at the record asked
-    // about and silently drop everything below it.
-    const walked = new Set<string>();
-    const queue = [root];
-    while (queue.length > 0 && seen.size < max) {
-      const id = queue.shift()!;
-      if (walked.has(id)) continue;
-      walked.add(id);
-      const children = await this.getChildren(id, GRAPH_FANOUT);
-      if (children.length >= GRAPH_FANOUT) truncated = true;
-      for (const c of children) {
-        if (!this.authorAllows(opts.createdBy, c)) continue;
-        if (!seen.has(c.id)) seen.set(c.id, c);
-        if (!walked.has(c.id)) queue.push(c.id);
-      }
-    }
-    if (queue.length > 0) truncated = true;
-    const records = [...seen.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    return { root, records, truncated };
+  diagnostics(scope?: StatsScope): Promise<Diagnostics> {
+    return diagnostics(this.inspectionHost, scope);
   }
 
   /**
-   * The workflow diagram nobody wrote: recurring shapes of work, mined from lineage.
+   * Mined flows: the shapes of work this space actually ran (`core/flows.ts`).
    *
-   * A content-routed space cannot render its own process, because there is no process to render.
-   * What exists is what happened, so the shape has to be RECOVERED: abstract each causally
-   * connected subgraph to the sequence of `(kind, agent)` along its depth, drop ids and payloads,
-   * then group. Success mining and livelock detection are one primitive read two ways (repetition
-   * with progress versus without), which is why the signature is over ancestry rather than a
-   * per-record score.
-   *
-   * Partial subgraphs are INPUT, not noise. A shape that reliably starts and rarely finishes is the
-   * failure signal recovered from success mining, and it only exists if the incomplete ones are
-   * mined beside the complete ones.
-   *
-   * Both granularity knobs exist because granularity is the whole design (too specific and every
-   * flow is unique; too coarse and everything is one flow) and neither setting is knowable in
-   * advance. They are parameters to measure, not constants to guess.
+   * The mining itself is a reader over lineage, so it lives outside this class and reaches back
+   * through a narrow port. What stays here is the port, because only the service knows how a kind
+   * compiles, how a stale registry is refreshed, and which agent is behind a run.
    */
-  async flows(opts: {
-    granularity?: "kind" | "kind+agent";
-    counts?: "bucketed" | "exact";
-    maxRecords?: number;
-    minOccurrences?: number;
-    includeReserved?: boolean;
-    includeSingletons?: boolean;
-    /** Children a record needs before it is TESTED as a hub; 0 leaves every component whole. */
-    hubDegree?: number;
-    scope?: StatsScope;
-  } = {}): Promise<FlowReport> {
-    const granularity = opts.granularity ?? "kind+agent";
-    const counting = opts.counts ?? "bucketed";
-    const cap = Math.min(Math.max(opts.maxRecords ?? FLOW_MAX_RECORDS, 1), FLOW_MAX_RECORDS);
-    const minOccurrences = Math.max(opts.minOccurrences ?? 1, 1);
-    const notes: string[] = [];
-    let complete = true;
-
-    // Reserved kinds are the substrate's own bookkeeping (declarations, grants, run records). They
-    // are the highest-volume kinds in a quiet space, so including them by default would make every
-    // space's top flow a registry write and bury the work.
-    const reserved = new Set(RESERVED_KINDS);
-    const claimable = new Map(this.kinds.list().map((d) => [d.kind, isClaimable(d)]));
-    let kinds = this.kinds.list().map((d) => d.kind).filter((k) => opts.includeReserved || !reserved.has(k));
-    if (opts.scope?.kinds) kinds = kinds.filter((k) => opts.scope!.kinds!.includes(k));
-    kinds.sort();
-
-    // --- the scan. One keyset walk per kind, stopping at the cap rather than at a page boundary.
-    const nodes = new Map<string, { kind: string; agent: string; createdAt: string; parents: string[] }>();
-    const agentCache = new Map<string, string>();
-    const agentOf = async (createdBy: string): Promise<string> => {
-      const memo = agentCache.get(createdBy);
-      if (memo) return memo;
-      const resolved = createdBy.startsWith("run:") ? (await this.agentForRun(createdBy)) ?? createdBy : createdBy;
-      agentCache.set(createdBy, resolved);
-      return resolved;
-    };
-    for (const kind of kinds) {
-      const compiled = await this.compileFresh({ kind });
-      let after: string | undefined;
-      for (;;) {
-        if (nodes.size >= cap) {
-          complete = false;
-          notes.push(`the scan stopped at ${cap} records; these shapes are mined from a PREFIX of the space`);
-          break;
-        }
-        const page = await this.storage.query(compiled, Math.min(FLOW_PAGE, cap - nodes.size), { after }, opts.scope);
-        for (const rec of page) {
-          nodes.set(rec.id, {
-            kind: rec.kind,
-            agent: await agentOf(rec.runtimeMeta.createdBy),
-            createdAt: rec.runtimeMeta.createdAt,
-            parents: rec.runtimeMeta.parentIds,
-          });
-        }
-        if (page.length === 0) break;
-        after = page[page.length - 1].id;
-      }
-      if (!complete) break;
-    }
-
-    // --- outcomes. One bulk read per state instead of an envelope fetch per record: mining is a
-    // whole-space read already, and N round trips on top of it is what makes such a feature
-    // unusable on a real space.
-    //
-    // Scoped to the kinds actually mined, which is not cosmetic: an unscoped state scan spends its
-    // budget on the kinds this scan EXCLUDED (a real space had 1135 `agent_run` and 1080 `interest`
-    // envelopes ahead of the work), so records fell out of the map and an unknown state reads as
-    // "nothing wrong". That is the wrong direction to be wrong in.
-    const mined = new Set(kinds);
-    const notMined = this.kinds.list().map((d) => d.kind).filter((k) => !mined.has(k));
-    const stateOf = new Map<string, RecordState>();
-    for (const state of ["available", "leased", "consumed", "dead_letter"] as RecordState[]) {
-      const envs = await this.storage.envelopesInState(state, cap, notMined, opts.scope);
-      if (envs.length >= cap) complete = false;
-      for (const e of envs) stateOf.set(e.recordId, state);
-    }
-
-    // --- components. Union-find over parent edges INSIDE the scanned set; a parent outside it is
-    // what makes a subgraph a fragment, and that has to be said rather than shown as a short shape.
-    const parent = new Map<string, string>();
-    const find = (x: string): string => {
-      let r = x;
-      while (parent.get(r) !== r) r = parent.get(r) ?? r;
-      while (parent.get(x) !== r) {
-        const next = parent.get(x) ?? r;
-        parent.set(x, r);
-        x = next;
-      }
-      return r;
-    };
-    const union = (a: string, b: string) => {
-      const [ra, rb] = [find(a), find(b)];
-      if (ra !== rb) parent.set(ra, rb);
-    };
-    for (const id of nodes.keys()) parent.set(id, id);
-    const fragment = new Set<string>();
-    for (const [id, n] of nodes) {
-      for (const p of n.parents) {
-        if (nodes.has(p)) union(p, id);
-        else fragment.add(id); // resolved to a component root below, once the unions are settled
-      }
-    }
-    const components = new Map<string, string[]>();
-    for (const id of nodes.keys()) {
-      const root = find(id);
-      const members = components.get(root) ?? [];
-      members.push(id);
-      components.set(root, members);
-    }
-    // --- the hub cut. A flow is a connected subgraph, which holds until ONE long-lived record ties
-    // everything to everything: the chat's `conversation` links every turn, so a whole multi-day
-    // chat mined as a single shape that occurred exactly once and said nothing. Measured on a real
-    // corpus, every conversation-rooted shape was unique.
-    //
-    // The cut is DERIVED, never a named kind, or an inspection feature would be declaring the
-    // topology it exists to discover. The test is structural: a hub is a node whose REMOVAL leaves
-    // many independent pieces. That is what separates a conversation from a wide fan-out, which is
-    // also high-degree — a job's tasks reconverge on a summary, so deleting the job still leaves one
-    // piece and the pipeline's shape survives the pass untouched.
-    const hubDegree = Math.max(opts.hubDegree ?? FLOW_HUB_DEGREE, 0);
-    const tokenOf = (id: string) => {
-      const n = nodes.get(id)!;
-      return granularity === "kind" ? n.kind : `${n.kind}@${n.agent}`;
-    };
-    /** Connected pieces of `members` with `cut` deleted. Local union-find; the outer one is spent. */
-    const piecesOf = (members: string[], cut: Set<string>): string[][] => {
-      const live = members.filter((id) => !cut.has(id));
-      const set = new Set(live);
-      const up = new Map(live.map((id) => [id, id]));
-      const root = (x: string): string => {
-        while (up.get(x) !== x) {
-          up.set(x, up.get(up.get(x)!)!);
-          x = up.get(x)!;
-        }
-        return x;
-      };
-      for (const id of live) {
-        for (const p of nodes.get(id)!.parents) {
-          if (!set.has(p)) continue;
-          const [a, b] = [root(id), root(p)];
-          if (a !== b) up.set(a, b);
-        }
-      }
-      const out = new Map<string, string[]>();
-      for (const id of live) {
-        const r = root(id);
-        const bucket = out.get(r);
-        if (bucket) bucket.push(id);
-        else out.set(r, [id]);
-      }
-      return [...out.values()];
-    };
-    /** Maximal groups joined only by SAME-KIND parent edges: a version spine, or a same-kind star.
-     *  Kind, never `kind@agent`: a workspace saved by two agents is still one thing. */
-    const piecesOfSameKind = (members: string[]): string[][] => {
-      const set = new Set(members);
-      const up = new Map(members.map((id) => [id, id]));
-      const root = (x: string): string => {
-        while (up.get(x) !== x) {
-          up.set(x, up.get(up.get(x)!)!);
-          x = up.get(x)!;
-        }
-        return x;
-      };
-      for (const id of members) {
-        const kind = nodes.get(id)!.kind;
-        for (const p of nodes.get(id)!.parents) {
-          if (!set.has(p) || nodes.get(p)!.kind !== kind) continue;
-          const [a, b] = [root(id), root(p)];
-          if (a !== b) up.set(a, b);
-        }
-      }
-      const out = new Map<string, string[]>();
-      for (const id of members) {
-        const r = root(id);
-        const bucket = out.get(r);
-        if (bucket) bucket.push(id);
-        else out.set(r, [id]);
-      }
-      return [...out.values()];
-    };
-    const units: { members: string[]; prefix: string; fragment: boolean }[] = [];
-    let hubs = 0;
-    for (const members of components.values()) {
-      const cut = new Set<string>();
-      if (hubDegree > 0 && members.length > hubDegree) {
-        // A hub is not always ONE record. A workspace writes each version with the previous as its
-        // parent, so ten saves are a ten-record SPINE with each turn's output hanging off its own
-        // version, and the spine links every turn to every other exactly as a conversation does. It
-        // is the same structure stretched into a line, so it gets the same test, applied to a
-        // same-kind connected GROUP instead of a node.
-        //
-        // Three members is the floor, and it is what protects real work: ONE same-kind edge is
-        // ambiguous (a router's `llm_call` producing an inference `llm_call` is a step, not a
-        // version), while three records of a kind in a line is a thing being saved repeatedly.
-        const spines = piecesOfSameKind(members).filter((p) => p.length >= FLOW_CHAIN_MIN);
-        const childCount = new Map<string, number>();
-        for (const id of members) {
-          for (const p of nodes.get(id)!.parents) {
-            if (nodes.has(p)) childCount.set(p, (childCount.get(p) ?? 0) + 1);
-          }
-        }
-        // Only the widest few of either shape are ever tested: the piece count is a graph pass, and
-        // a component with no hub must not pay for one per node.
-        const candidates: string[][] = [
-          ...spines.sort((a, b) => b.length - a.length),
-          ...members
-            .filter((id) => (childCount.get(id) ?? 0) >= hubDegree)
-            .sort((a, b) => (childCount.get(b) ?? 0) - (childCount.get(a) ?? 0))
-            .map((id) => [id]),
-        ].slice(0, FLOW_HUB_CANDIDATES);
-        // Cut everything, then RESTORE what turns out not to be needed. Testing candidates one at a
-        // time cannot work, because they interact: a workspace spine splits nothing while the
-        // conversation still links every turn, and the conversation splits nothing while the spine
-        // does, so a forward pass rejects each on the strength of the other still being there. From
-        // the other end the question is answerable one candidate at a time — does putting this one
-        // back re-merge the pieces? — which is k tests rather than 2^k, and yields the smallest cut
-        // that still decomposes rather than the first one found.
-        for (const c of candidates) for (const id of c) cut.add(id);
-        if (piecesOf(members, cut).length < FLOW_HUB_PIECES) {
-          cut.clear(); // no decomposition available: leave the component whole, as before hubs existed
-        } else {
-          for (const c of candidates) {
-            for (const id of c) cut.delete(id);
-            if (piecesOf(members, cut).length < FLOW_HUB_PIECES) for (const id of c) cut.add(id); // needed
-          }
-        }
-        hubs += cut.size;
-      }
-      // The hub's own kind stays in the signature, or the turns of a conversation and the steps of
-      // a job would merge on the strength of looking alike. PER PIECE, not per component: naming
-      // every hub that was cut anywhere gave two identical turns different keys depending on
-      // whether their conversation happened to also hold a workspace, which splits exactly what the
-      // signature exists to aggregate. A piece is prefixed by what it actually hung from.
-      for (const piece of cut.size === 0 ? [members] : piecesOf(members, cut)) {
-        const within = new Set(piece);
-        const touching = new Set<string>();
-        for (const id of piece) for (const p of nodes.get(id)!.parents) if (cut.has(p)) touching.add(p);
-        for (const c of cut) for (const p of nodes.get(c)!.parents) if (within.has(p)) touching.add(c);
-        units.push({
-          members: piece,
-          prefix: [...new Set([...touching].map(tokenOf))].sort().join(" + "),
-          fragment: piece.some((id) => fragment.has(id)),
-        });
-      }
-    }
-
-    // --- abstraction. Ids are monotonic ULIDs minted by this process at commit, so ascending id IS
-    // a topological order: a parent always exists before the child that names it. That is what lets
-    // depth be one pass instead of a walk per node.
-    const shapes = new Map<string, { occurrences: number; complete: number; open: number; failed: number; durations: number[]; sizes: number[]; exemplars: string[] }>();
-    let unknownState = 0;
-    let singletons = 0;
-    for (const unit of units) {
-      const members = unit.members;
-      // A record linked to nothing is not a flow of one. Left in, the registry writes outrank every
-      // real shape: a live space put `capability`×861 and `model`×215 above `llm_call → llm_result`,
-      // which answers "what does this space do" with its own bookkeeping.
-      if (members.length === 1 && !unit.fragment) {
-        singletons++;
-        if (!opts.includeSingletons) continue;
-      }
-      members.sort();
-      const within = new Set(members);
-      const depth = new Map<string, number>();
-      let failed = false;
-      let open = false;
-      let first = Infinity;
-      let last = -Infinity;
-      for (const id of members) {
-        const n = nodes.get(id)!;
-        // Parents in THIS unit, not merely in the scan: a node whose only parent was the hub is a
-        // root of its own flow now, and counting the cut edge would push every depth down by one.
-        const inside = n.parents.filter((p) => within.has(p));
-        depth.set(id, inside.length === 0 ? 0 : 1 + Math.max(...inside.map((p) => depth.get(p) ?? 0)));
-        const state = stateOf.get(id);
-        if (state === undefined) unknownState++;
-        if (state === "dead_letter") failed = true;
-        // A `claimable:false` kind sits `available` forever BY DESIGN (facts, summaries, the
-        // registries). Reading that as unfinished work would mark every terminated pipeline open.
-        if (state === "leased" || (state === "available" && claimable.get(n.kind) !== false)) open = true;
-        const t = Date.parse(n.createdAt);
-        if (Number.isFinite(t)) {
-          first = Math.min(first, t);
-          last = Math.max(last, t);
-        }
-      }
-      const levels = new Map<number, Map<string, number>>();
-      for (const id of members) {
-        const token = tokenOf(id);
-        const level = levels.get(depth.get(id)!) ?? new Map<string, number>();
-        level.set(token, (level.get(token) ?? 0) + 1);
-        levels.set(depth.get(id)!, level);
-      }
-      const signature = [...levels.entries()]
-        .sort((a, b) => a[0] - b[0])
-        .map(([, tokens]) =>
-          [...tokens.entries()]
-            .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-            .map(([token, n]) => token + flowCount(n, counting))
-            .join(" + ")
-        )
-        .join(" → ");
-      const key = (unit.prefix ? `${unit.prefix} ⇒ ` : "") + (unit.fragment ? `… → ${signature}` : signature);
-      const s = shapes.get(key) ?? { occurrences: 0, complete: 0, open: 0, failed: 0, durations: [], sizes: [], exemplars: [] };
-      s.occurrences++;
-      if (failed) s.failed++;
-      else if (open) s.open++;
-      else s.complete++;
-      s.durations.push(Number.isFinite(first) && Number.isFinite(last) ? last - first : 0);
-      s.sizes.push(members.length);
-      s.exemplars.push(members[0]);
-      shapes.set(key, s);
-    }
-    if (unknownState > 0) {
-      complete = false;
-      notes.push(`${unknownState} records had no envelope in the state scan, so their outcome is a guess, not a reading`);
-    }
-
-    const flows = [...shapes.entries()]
-      .filter(([, s]) => s.occurrences >= minOccurrences)
-      .map(([signature, s]) => ({
-        signature,
-        occurrences: s.occurrences,
-        outcomes: { complete: s.complete, open: s.open, failed: s.failed },
-        successRate: s.complete / s.occurrences,
-        medianDurationMs: median(s.durations),
-        medianRecords: median(s.sizes),
-        exemplars: s.exemplars.sort().slice(-FLOW_EXEMPLARS).reverse(),
-      }))
-      .sort((a, b) =>
-        b.occurrences - a.occurrences || b.successRate - a.successRate || (a.signature < b.signature ? -1 : 1)
-      );
-    if (flows.length > FLOW_MAX_SHAPES) {
-      complete = false;
-      notes.push(`${flows.length} distinct shapes were mined and ${FLOW_MAX_SHAPES} are shown; a long tail of near-unique shapes usually means the granularity is too fine`);
-    }
-    return {
-      granularity,
-      counts: counting,
-      flows: flows.slice(0, FLOW_MAX_SHAPES),
-      scanned: { records: nodes.size, kinds, subgraphs: components.size },
-      fragments: units.filter((u) => u.fragment).length,
-      singletons,
-      hubs,
-      complete,
-      ...(notes.length > 0 ? { notes } : {}),
-    };
+  flows(opts: Parameters<typeof mineFlows>[1] = {}): Promise<FlowReport> {
+    return mineFlows({
+      listKinds: () => this.kinds.list(),
+      compile: (kind) => this.compileFresh({ kind }),
+      query: (match, limit, page, scope) => this.storage.query(match, limit, page, scope),
+      envelopesInState: (state, limit, exclude, scope) => this.storage.envelopesInState(state, limit, exclude, scope),
+      agentForRun: (run) => this.agentForRun(run),
+    }, opts);
   }
 
   /** Signs each chain link under a key held OUTSIDE the database. Absent means the chain detects
@@ -2920,149 +2129,7 @@ export class Space {
     return { action, matched: rows.length, applied, more: rows.length >= limit, sample: rows.slice(0, 5).map((r) => r.envelope.recordId) };
   }
 
-  /** A derived health report, composed from queryEnvelopes + stats: counts by state,
-   *  dead-letters, expired-but-stuck leases, and available records that have sat unclaimed. */
-  async diagnostics(scope?: StatsScope): Promise<Diagnostics> {
-    const now = await this.storage.now();
-    // Every component below carries the scope, so a scoped report is computed over that subset
-    // rather than assembled from the whole space and trimmed. A count filtered after the fact is
-    // the dangerous failure here: it is invisible in the output, it just looks plausible.
-    const stats = await this.storage.stats(scope);
-    const total = (state: string) => stats.filter((s) => s.state === state).reduce((a, s) => a + s.count, 0);
-    const SAMPLE = 500;
-    const STALE_S = this.ctx.diagnosticsStaleSeconds;
-    // Starvation is only meaningful for CLAIMABLE (work) kinds: reference records (facts, config,
-    // grants, kind_defs, history) sit `available` forever by design and are not stale, so exclude them
-    // (filtered in the query, before the sample cap, so real stale work is never crowded out).
-    const referenceKinds = this.kinds.list().filter((d) => !isClaimable(d)).map((d) => d.kind);
-
-    const deadLetter = await this.queryEnvelopes({ state: "dead_letter", limit: 50, scope });
-    const stuck = await this.queryEnvelopes({ state: "leased", expired: true, limit: SAMPLE, scope });
-    const stale = await this.queryEnvelopes({ state: "available", staleSeconds: STALE_S, limit: SAMPLE, excludeKinds: referenceKinds, scope });
-    const env = (r: { envelope: Envelope }) => r.envelope;
-
-    // OMITTED for a scoped caller, not zeroed. Shred records are operator-visible, so a session
-    // would get a confident `0` about something it cannot see — the same trap `describeScope` exists
-    // for, and worse here, because "no erasure was undone" is exactly the reassurance nobody should
-    // receive on no evidence.
-    const split = await this.splitStale(stale);
-    const erasures = scope ? null : await this.erasures({ onlyUndone: true });
-    const undone = erasures
-      ? {
-        count: erasures.erasures.length,
-        checked: erasures.checked,
-        complete: erasures.complete,
-        sample: erasures.erasures.slice(0, 10),
-      }
-      : undefined;
-
-    return {
-      now,
-      // No `expired` count: expiry is IMPLICIT. A lease that lapses leaves the record in state
-      // `leased` (a later take reclaims it, bumping the attempt), so nothing ever writes the
-      // `expired` state and reporting it would always be a confident zero next to hundreds of
-      // demonstrably lapsed leases. The real number is `stuckLeases` below.
-      counts: {
-        available: total("available"),
-        leased: total("leased"),
-        consumed: total("consumed"),
-        dead_letter: total("dead_letter"),
-      },
-      deadLetter: { count: total("dead_letter"), sample: deadLetter.slice(0, 10).map((r) => ({ recordId: env(r).recordId, kind: env(r).kind, attempt: env(r).attempt })) },
-      stuckLeases: {
-        count: stuck.length,
-        // The scan is capped, so a full page means "at least this many". Otherwise a reader (or a
-        // model) reports a cap as if it were a census.
-        atLeast: stuck.length >= SAMPLE,
-        sampledFrom: Math.min(total("leased"), SAMPLE),
-        sample: stuck.slice(0, 10).map((r) => ({ recordId: env(r).recordId, kind: env(r).kind, leaseId: env(r).leaseId, leasedUntil: env(r).leasedUntil, attempt: env(r).attempt })),
-      },
-      staleAvailable: {
-        count: stale.length,
-        thresholdSeconds: STALE_S,
-        sample: stale.slice(0, 10).map((r) => ({ recordId: env(r).recordId, kind: env(r).kind, availableAt: env(r).availableAt })),
-        ...(split ? { split } : {}),
-      },
-      // In the health report because a reversed erasure is the most consequential thing this can
-      // find, and nothing else was ever going to surface it.
-      ...(undone ? { undoneErasures: undone } : {}),
-      // Same reasoning: a broken chain is not something anyone thinks to ask about until it
-      // matters, and a health report that omits it says the space is fine when it cannot know.
-      // Operator-only, because the chain covers every principal's activity.
-      ...(scope ? {} : { integrity: await this.verifyIntegrity() }),
-    };
-  }
-
   /**
-   * Split unclaimed work into "nobody is listening" and "somebody is listening and not claiming".
-   *
-   * The interest registry is read ONCE PER KIND, not once per record: the registry read pages to
-   * exhaustion and the pattern test is a function call, so doing it the other way round turns a
-   * hundred stale records into a hundred full registry scans.
-   *
-   * Returns undefined when the space holds no live interests at all. Every record would classify as
-   * orphaned, and that answer describes the fleet's instrumentation rather than its work: publishing
-   * an interest is best-effort in `agentLoop` (a worker without the grant is invisible), so an empty
-   * registry means "nobody said" and not "nobody is listening".
-   */
-  private async splitStale(rows: { record: RadiaRecord | null; envelope: Envelope }[]): Promise<StaleSplit | undefined> {
-    if (rows.length === 0) return undefined;
-    const byKind = new Map<string, { interests: LiveInterest[]; complete: boolean; published: number }>();
-    for (const kind of new Set(rows.map((r) => r.envelope.kind))) {
-      byKind.set(kind, await this.liveInterests(kind));
-    }
-    // Nothing DECLARED, so there is nothing to reason from. A fleet whose interests are all dead is
-    // a different matter and does get split: everything comes back orphaned, which is the true
-    // answer and an actionable one.
-    if ([...byKind.values()].every((v) => v.published === 0)) return undefined;
-
-    const orphaned: unknown[] = [];
-    const starving: unknown[] = [];
-    let complete = true;
-    for (const row of rows) {
-      const kind = row.envelope.kind;
-      const live = byKind.get(kind)!;
-      if (!live.complete) complete = false;
-      // A record whose body could not be read is counted as STARVING, the conservative side: it
-      // claims no fleet is missing, so it cannot send anyone chasing a worker that exists.
-      const listeners = row.record
-        ? live.interests.filter((i) => this.interestMatches(i, kind, row.record!.body))
-        : live.interests;
-      const entry = { recordId: row.envelope.recordId, kind, availableAt: row.envelope.availableAt };
-      if (listeners.length === 0) orphaned.push(entry);
-      else starving.push({ ...entry, listeners: listeners.length, agents: [...new Set(listeners.map((l) => l.agent ?? l.run))] });
-    }
-    return {
-      orphaned: { count: orphaned.length, sample: orphaned.slice(0, 10) },
-      starving: { count: starving.length, sample: starving.slice(0, 10) },
-      complete,
-      caveat: "an interest is a worker's own declaration and publishing one is best-effort, so " +
-        "'orphaned' means no live interest MATCHES, not that nothing is listening. A worker without " +
-        "the grant to publish, or one that never did, is invisible here.",
-    };
-  }
-
-  /**
-   * Every erasure and whether it STILL HOLDS.
-   *
-   * Shredding destroys the runtime's copy, not the ability to store those bytes: the content address
-   * stays valid, so anyone holding the payload can write it again and every record referencing it
-   * reads once more. Nothing in the system noticed. `shredOf` had exactly one caller, inside the
-   * branch that runs after a read has already failed, so a reversed erasure was not merely a no-op,
-   * it was INVISIBLE.
-   *
-   * Detection rather than enforcement, and that is the design rather than a compromise:
-   *
-   *   - Refusing to STORE a payload whose digest was once shredded poisons a content address for
-   *     the whole space, and breaks a program that legitimately recomputes the same output.
-   *   - Refusing to SERVE the shredded record while identical bytes are readable through a newer
-   *     one protects the paper trail rather than the person, and makes a broken guarantee look
-   *     intact — the failure this codebase names in the sandbox design.
-   *
-   * So the honest move is to report the true fact ("this erasure was undone") instead of the
-   * misleading one ("this record is erased"), and to put it where an operator asks rather than on
-   * the read path, which costs one `stat` per shred instead of a query per artifact read.
-   *
    * Extend the event chain over everything that has become final since the last pass.
    *
    * ON DEMAND, never on a timer: an idle space should hold no background work, the same lesson
@@ -3162,6 +2229,26 @@ export class Space {
   }
 
   /**
+   * Every erasure and whether it STILL HOLDS.
+   *
+   * Shredding destroys the runtime's copy, not the ability to store those bytes: the content address
+   * stays valid, so anyone holding the payload can write it again and every record referencing it
+   * reads once more. Nothing in the system noticed. `shredOf` had exactly one caller, inside the
+   * branch that runs after a read has already failed, so a reversed erasure was not merely a no-op,
+   * it was INVISIBLE.
+   *
+   * Detection rather than enforcement, and that is the design rather than a compromise:
+   *
+   *   - Refusing to STORE a payload whose digest was once shredded poisons a content address for
+   *     the whole space, and breaks a program that legitimately recomputes the same output.
+   *   - Refusing to SERVE the shredded record while identical bytes are readable through a newer
+   *     one protects the paper trail rather than the person, and makes a broken guarantee look
+   *     intact, the failure this codebase names in the sandbox design.
+   *
+   * So the honest move is to report the true fact ("this erasure was undone") instead of the
+   * misleading one ("this record is erased"), and to put it where an operator asks rather than on
+   * the read path, which costs one `stat` per shred instead of a query per artifact read.
+   *
    * Pages to exhaustion and reports `complete`, because a partial list of erasures read as a
    * population would say "all erasures hold" about a space nobody finished scanning.
    */

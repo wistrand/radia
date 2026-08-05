@@ -191,7 +191,12 @@ await declareSandbox(admin, denoSandbox({
   readRoots: execRoots,
   timeoutMs: Number(EXEC_TIMEOUT_MS),
 }));
-procs.push(...launchFleet(tokens, loginToken));
+// The session's CURRENT token, never the one read off disk. `session.health()` above has already
+// forced an exchange if the stored half had lapsed, which is the normal case for `--conversation
+// last` a few hours later: the REPL recovers in memory and `loginToken` stays dead. Handing the
+// stale one to the tools worker is what made every `space_*` call answer `token_expired` for the
+// whole session, with nothing the worker could do about it.
+procs.push(...launchFleet(tokens, session.bearerToken ?? loginToken));
 
 const tools = new ToolSet(session);
 tools.watch(shutdown.signal); // background: keep the tool set live from capability records

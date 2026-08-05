@@ -29,6 +29,18 @@ const client = new RadiaClient(url, { token }); // claims tool_calls, publishes 
 // The space_* inspection/remediation tools act as the SESSION principal, not the worker, so the
 // answer matches what the person asking is allowed to see (a scoped session gets 403 on /ops).
 const spaceClient = new RadiaClient(url, { token: sessionToken });
+// It needs its own keep-alive, and that is easy to miss: `agentLoop` below renews the credential of
+// the client it is GIVEN, so the worker's own token stays live while this second one, the only one
+// the space_* tools use, lapsed after fifteen minutes and stayed lapsed. It cannot recover on its
+// own either, because it deliberately holds no definition token: the durable half mints sessions
+// for a person, and a worker that could mint them would be a worker that can be that person at
+// will. So renewal to the run ceiling is the whole of what this half can have.
+const sessionAlive = new AbortController();
+spaceClient.keepAlive(sessionAlive.signal, (reason) => {
+  // A ceiling reached, or the run stopped. Say it once, plainly: the alternative is every space_*
+  // call answering `token_expired` with nothing saying why, which is what a person actually saw.
+  console.error(`tools worker: the session credential is over (${reason}); space_* tools will fail until the chat is restarted`);
+});
 // File/compute tools (sandboxed, no client) + space inspection + remediation (session-scoped).
 // `save_content` writes artifacts as the WORKER (its own token, `artifact: put`), not as the
 // session: storing a file is the worker's own action, unlike the space_* tools, which act as the
@@ -85,3 +97,4 @@ await agentLoop(client, {
     }
   },
 });
+sessionAlive.abort(); // the loop returned, so nothing is left to keep a credential alive for

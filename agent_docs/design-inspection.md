@@ -162,8 +162,12 @@ so it is cheaper than it was.
 
 ### Flows is mining, and its acceptance test already exists
 
-**BUILT (2026-08-04):** `Space.flows` in `src/core/space.ts`, `GET /v0/ops/flows`, `radia flows`,
-the chat's `space_flows`, and the console's Flows tab.
+**BUILT (2026-08-04):** `Space.flows`, mining in `src/core/flows.ts`, `GET /v0/ops/flows`,
+`radia flows`, the chat's `space_flows`, and the console's Flows tab. The mining reaches the space
+through a read-only port rather than through `Space`, which is the structural version of the rule
+this doc argues for: an inspection feature that can write can disagree with what it describes.
+The other derived reads (`digest`, `thread`, `diagnostics`, `explainQuery`) sit beside it in
+`src/core/inspection.ts` under the same rule.
 
 [research-self-modeling.md](research-self-modeling.md) specifies signature mining: abstract completed
 subgraphs to `(kind, agent)` sequences, group, count, score. Recurring shapes with occurrence counts,

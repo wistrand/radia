@@ -87,6 +87,38 @@ Deno.test("[exchange] an expired token is replaced, and the call succeeds", asyn
   }
 });
 
+Deno.test("[exchange] the token a launcher hands to a child is the LIVE one", async () => {
+  // The bug this pins, seen in a real session: the chat starts with a stored login whose run token
+  // lapsed hours ago, recovers in memory through its definition token, and then launches its tools
+  // worker with the value it read off disk. The worker holds no durable half by design, so every
+  // `space_*` call answered `token_expired` for the whole session and nothing could fix it.
+  //
+  // A recovered client therefore has to be able to say which token it is actually using, and the
+  // answer has to work somewhere else: a child process is a different client, not a copy of this one.
+  const s = await newSpace();
+  try {
+    const { run, runToken } = await s.space.mintRun(s.definitionToken);
+    await s.space.stopRun(run); // the stored half is dead before the parent even starts
+    const parent = new RadiaClient(s.base, { token: runToken, definitionToken: s.definitionToken });
+    assertEquals(parent.bearerToken, runToken, "before any call it still holds what it was built with");
+
+    await parent.put({ kind: "task", body: { tag: "recovered" } });
+    assert(parent.bearerToken, "a recovered client must expose a token");
+    assert(parent.bearerToken !== runToken, "and it must not still be the dead one");
+
+    // The child: a plain client with no way back to the durable half, exactly like the tools worker.
+    const child = new RadiaClient(s.base, { token: parent.bearerToken });
+    const found = await child.query({ kind: "task", match: { tag: "recovered" } }, 5);
+    assertEquals(found.length, 1, "the handed-over token has to work in a process that cannot mint");
+
+    // And the stale one still does not, which is what makes the assertion above mean something.
+    const stale = new RadiaClient(s.base, { token: runToken });
+    await assertRejects(() => stale.query({ kind: "task" }, 1), RadiaClientError);
+  } finally {
+    await s.close();
+  }
+});
+
 Deno.test("[exchange] a forbidden call is NOT retried", async () => {
   const s = await newSpace();
   try {

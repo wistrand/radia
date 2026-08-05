@@ -51,7 +51,7 @@ newcomer's question had no answer, and with it and item 2 built, that question i
 
 ### What item 2 shipped, and the half it did not
 
-`Space.flows` (`src/core/space.ts`), `GET /v0/ops/flows`, `radia flows`, the chat's `space_flows`,
+`Space.flows` (mining in `src/core/flows.ts`), `GET /v0/ops/flows`, `radia flows`, the chat's `space_flows`,
 and the console's **Flows** tab. Each causally connected subgraph is abstracted to the sequence of
 `(kind, agent)` per depth and grouped; both granularity knobs are parameters because a mis-set one
 fails silently. Acceptance test met: `conformance/flows.test.ts` recovers the pipeline's
