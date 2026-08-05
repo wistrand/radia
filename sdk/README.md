@@ -22,9 +22,21 @@ imports.
 | Remediation | `admin(action, id)` / `remediate(action, selector)` | `admin(action, id)` / `remediate(action, state=…, expired=…)` |
 | Ops queries | `queryEnvelopes` / `diagnostics` / `erasures` / `getStats` / `getEvents` | `query_envelopes` / `diagnostics` / `erasures` / `get_stats` / `get_events` |
 | Bootstrap   | `grant` / `createAgentDefinition` / `createRun` / `stopRun` | `grant` / `create_agent_definition` / `create_run` / `stop_run` |
-| Credential  | `keepAlive(signal, onLost)` renews at half-life | `keep_alive(stop, on_lost)`, same, in a daemon thread |
+| Credential  | `{definitionToken}` exchanges on expiry; `keepAlive(signal, onLost)` renews at half-life | `keep_alive(stop, on_lost)`, renewal only (see below) |
 | Children    | `getChildren` / `getChildrenPage` (paged) | `get_children` / `get_children_page` (paged) |
 | Dependencies| none beyond the runtime | none, standard library only (3.9+) |
+
+**The credential renews itself, and can also replace itself.** `keepAlive` renews a run token
+ahead of expiry, which only works for a process that is awake: a laptop that slept through the
+window wakes holding a token that cannot renew itself, a fresh CLI process never had one, and a
+run's absolute lifetime (12 hours) is a wall no renewal passes. So `ClientAuth` also takes a
+`definitionToken`, the DURABLE half of the bootstrap chain, and the client mints a new run whenever
+the short one stops working: once per failure, only on expiry (never on a 403, which is a grant
+problem), and shared across concurrent calls so a fleet waking together produces one run rather than
+one each. The SSE watch goes through the same path, since it is a raw request that outlives
+everything else a client does. A definition token cannot read or write anything — the space refuses
+it for coordination — which is exactly what makes it safe to keep on disk; `radia revoke` is its off
+switch. Pinned by `conformance/exchange.test.ts`.
 
 **Two helpers that are not verbs**, both extracted from a client that learned them the hard way.
 `readRegistry` reads a registry projection, paging to exhaustion and reporting `complete: false`
@@ -43,7 +55,10 @@ making decisions rather than making requests, it belongs one directory over.
 core: coordination verbs, watches, artifacts, remediation, the basic ops reads, and bootstrap.
 Python tracks that set and nothing more. The inspection surface (`digest`, `thread`, `flows`,
 `integrity`, `dryRun`, `queryExplained` / `explain`, `publishInterest`, `queryAll`) is TS-only, because the one consumer
-that drives it (the chat example) is TS. Never add a Python method for parity's own sake; extend
+that drives it (the chat example) is TS. **Credential EXCHANGE is TS-only too, and that one is a
+gap rather than a scoping decision**: a Python `agent_loop` still ends at the 12-hour ceiling. It
+wants the same `definition_token` treatment when a Python consumer needs a session that outlives a
+day. Never add a Python method for parity's own sake; extend
 Python when a Python consumer needs the call.
 
 ## Credentials

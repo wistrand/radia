@@ -90,6 +90,11 @@ if set, else `$XDG_STATE_HOME/radia/credentials.json`, `%APPDATA%\radia\…`, or
 Resolution order for any client: `RADIA_TOKEN` → the stored credential for that base URL → none,
 which is a `401` unless the space was started with `--auth open`.
 
+**Two identities share the file, under separate keys.** The operator credential sits at the base
+URL; a person's `radia login` sits at `<base>#login` (`storedLogin`/`saveLogin`). One key for both
+means the login replaces the operator entry, and the CLI's remediation verbs, the chat's bootstrap
+and the MCP adapter all start acting as whoever signed in last.
+
 Keyed by base URL means keyed by HOST: a space on `127.0.0.1` has no credential under `localhost`,
 even though both reach it. Every default in this repo says `127.0.0.1` for that reason.
 
@@ -110,6 +115,14 @@ one: a definition principal had to be `agent:`, and every `human:*` was privileg
 So the only way to be a person on a space was to be god. `radia login human:alice [--grant k:ops]…`
 mints an ordinary session for a named human through the same bootstrap chain every agent uses
 (definition → run token), privileged only if the space names them an operator.
+
+**It keeps the DEFINITION token**, which it used to create and throw away. That is the durable half:
+it cannot read or write anything (the space answers "a definition token does not authorize
+coordination; mint a run first"), so it is safe on disk, and it mints a run whenever the short one
+lapses. Without it a session lasted 15 minutes, stretched to 12 hours by renewing, and then the only
+remedy was to run the command again — which no browser tab, `git` invocation or fresh CLI process
+can do for itself. `radia revoke <principal>` is the off switch, and the only one. See the exchange
+in `sdk/ts/client.ts` and `conformance/exchange.test.ts`.
 
 It exists because identity scope is worthless without distinct identities. An app that pins a
 session's grants to `{owner: <principal>}` separates two people only if they ARE two principals;

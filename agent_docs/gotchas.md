@@ -576,6 +576,24 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Credentials, tokens and sessions
 
+- **Renewal is a LIVENESS protocol, so it only serves holders that are alive.** `renewRun` extends a
+  token by presenting it before expiry, which needs a process awake and scheduled inside the window.
+  That excludes a laptop that slept through it (an expired token cannot renew itself), a fresh CLI
+  process, a closed browser tab, and anything that only replays a stored secret. The fix was already
+  built and unused: an `agent_definition` has no expiry, `POST /v0/agent-runs` mints a run from it,
+  and the space REFUSES that token for coordination, so the durable half cannot act. Hold both,
+  exchange on expiry. Renew where lease ownership must survive (exchange changes the `run:`
+  principal, so in-flight claims fence out); exchange everywhere else.
+- **A retry wrapper must not wrap the retry.** Routing the credential exchange through the same
+  `req` that triggers it made a FAILING exchange re-enter the wrapper, await the in-flight exchange
+  it was already inside, and deadlock: a revoked definition hung the caller instead of reporting
+  itself. The exchange uses a raw request with no retry. Found by the test, not by reading.
+- **One credential file, two identities.** `radia dev` provisions an OPERATOR credential per space
+  and `radia login` authenticates a PERSON against the same space. Keyed by base URL alone the
+  second silently replaces the first, and the CLI's remediation verbs, the chat's bootstrap and the
+  MCP adapter all start acting as whoever logged in last. Logins live under their own suffix; the
+  operator entry is never touched. Caught one edit before it shipped, and guarded by
+  `conformance/exchange.test.ts`.
 - **"Public route" means no credential is REQUIRED, not that a bad one is ignored.** `GET /` and
   `GET /v0/health` skip authentication so the console can bootstrap under `--auth required`. The
   skip covered every credential error, so an expired or garbage token got

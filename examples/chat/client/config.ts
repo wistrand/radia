@@ -6,7 +6,7 @@
 // (CLAUDE.md, "discover, don't hardcode").
 
 import { arg } from "../util.ts";
-import { resolveToken } from "../../../src/credentials.ts";
+import { resolveToken, storedLogin } from "../../../src/credentials.ts";
 
 /** Same port as `deno task dev` by default, so a console you already have open shows this run. */
 export const url = Deno.env.get("RADIA_URL") ?? "http://127.0.0.1:7788";
@@ -22,7 +22,20 @@ export const port = new URL(url).port || "7788";
  * was launched rather than of who is using it. Requiring a token means the answer to "who is this"
  * is always a credential the space issued, never an absence.
  */
-export const loginToken = arg("--token") ?? Deno.env.get("RADIA_CHAT_TOKEN");
+// NEVER falls back to `resolveToken`, which answers with the OPERATOR credential `radia dev`
+// provisioned. Reading it here would silently run the person's session as the operator, which is
+// the exact conflation the paragraph above exists to prevent.
+export const loginToken = arg("--token") ?? Deno.env.get("RADIA_CHAT_TOKEN") ?? storedLogin(url)?.token;
+
+/**
+ * The DURABLE half of the person's credential, when `radia login` stored one.
+ *
+ * This is what stops a conversation ending because a clock ran out. A run token lives 15 minutes
+ * and renews until a 12-hour ceiling; past that the REPL printed "mint a new one and restart with
+ * --conversation" and took the session with it. A definition token cannot read or write anything,
+ * so holding it costs nothing, and it mints a fresh session whenever the short one lapses.
+ */
+export const loginDefinitionToken = arg("--definition-token") ?? storedLogin(url)?.definitionToken;
 
 /**
  * The OPERATOR credential the launcher bootstraps with: registering kinds, minting the worker run

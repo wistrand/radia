@@ -40,7 +40,7 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { assignUserGrants, bootstrap, setSessionOwner } from "./space/roles.ts";
-import { apiKey, EXEC_TIMEOUT_MS, execRoots, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
+import { apiKey, EXEC_TIMEOUT_MS, execRoots, loginDefinitionToken, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
 import { FLEET_PROVIDERS, launchFleet, spawnSpace } from "./client/fleet.ts";
 import { retireProviderCapabilities } from "./space/capability.ts";
 import { denoSandbox } from "../../extensions/ts/sandbox.ts";
@@ -160,7 +160,13 @@ const conversation = await resolveConversation();
 // Who is at the keyboard, resolved from the SPACE rather than taken on trust: the token names a
 // run, and its subject is the person. Nothing the caller says is consulted, so a forged body field
 // cannot claim someone else's identity.
-const session = new RadiaClient(url, { token: loginToken });
+// BOTH HALVES. The run token is what every request carries; the definition token is what mints the
+// next one when it lapses, so a long conversation is no longer bounded by a credential's clock.
+const session = new RadiaClient(url, {
+  token: loginToken,
+  ...(loginDefinitionToken ? { definitionToken: loginDefinitionToken } : {}),
+});
+await session.ensureCredential(); // fail here, at startup, rather than on the first message
 const who = (await session.health()).principal;
 const perms = await admin.permissions(who) as { subject: string; privileged: boolean };
 const owner = perms.subject;
@@ -263,7 +269,10 @@ while (true) {
   // stop rather than letting the next write throw: an uncaught `token_expired` killed the REPL and
   // took the conversation's context with it, and the stack trace named the SDK rather than the
   // credential.
-  if (sessionLost) {
+  // A session that could not be renewed AND cannot mint another is over. With a definition token
+  // this is nearly unreachable: renewal failing just means the next request exchanges. It still
+  // happens when the definition itself was revoked, which is the one case that SHOULD end here.
+  if (sessionLost && !loginDefinitionToken) {
     write(`\nsession ended: ${sessionLost}\n`);
     write(`Mint a new one with \`radia login ${owner}\` and restart with --conversation ${conversation.id}.\n`);
     break;

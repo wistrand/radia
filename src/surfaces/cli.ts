@@ -11,7 +11,7 @@ import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
 // A SURFACE may import a convention; the runtime may not. See conformance/layering.test.ts.
 import { exportWorkspaceGit } from "../../extensions/ts/git.ts";
 import { summarizeWorkspaces } from "../../extensions/ts/workspace.ts";
-import { defaultBase, resolveToken } from "../credentials.ts";
+import { defaultBase, resolveDefinitionToken, resolveToken, saveLogin } from "../credentials.ts";
 import { flag, flags, has, positional } from "../flags.ts";
 import { onShutdown, stdin, UsageError } from "../platform.ts";
 import type { Lease } from "../storage/adapter.ts";
@@ -90,7 +90,16 @@ export async function runCli(cmd: string, argv: string[]): Promise<number> {
   }
   const base = flag(argv, "--url") ?? defaultBase();
   const token = resolveToken(base);
-  const ctx: Ctx = { client: new RadiaClient(base, token ?? {}), json: has(argv, "--json"), token: !!token };
+  // Both halves, when both exist. Every CLI verb is a fresh PROCESS, so it can never renew a token
+  // the way a long-running worker does: it either finds a live one or the command fails. With the
+  // durable half it mints one instead, which is why `radia query` still works the morning after
+  // `radia login` rather than a quarter of an hour later.
+  const definitionToken = resolveDefinitionToken(base);
+  const ctx: Ctx = {
+    client: new RadiaClient(base, { ...(token ? { token } : {}), ...(definitionToken ? { definitionToken } : {}) }),
+    json: has(argv, "--json"),
+    token: !!token || !!definitionToken,
+  };
   try {
     return await dispatch(cmd, argv, ctx);
   } catch (e) {
@@ -155,6 +164,17 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       });
       const def = await client.createAgentDefinition(who, grants as never);
       const run = await client.createRun(def.definitionToken);
+      // KEEP THE DURABLE HALF. It was created and thrown away, so a session lasted 15 minutes and
+      // could be stretched to 12 hours by renewing, after which the only remedy was to run this
+      // command again. The definition token cannot read or write anything — the space refuses it
+      // for coordination — so what is stored is a mint-only credential, and `radia revoke` is its
+      // off switch. Written to the same per-user file the CLI already reads, owner-only.
+      const stored = saveLogin(client.base, {
+        principal: who,
+        token: run.runToken,
+        definitionToken: def.definitionToken,
+        mintedAt: new Date().toISOString(),
+      });
       // Report what the person can ACTUALLY do, not what this command just added. A `--grant`-less
       // login is not necessarily a powerless one: grants are assigned by whoever holds the ops
       // plane, so an app (the chat) or an earlier login may already have given this principal its
@@ -178,7 +198,13 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           `  ${run.runToken}`,
           "",
           "  Paste that into the console's principal pill, or send it as Authorization: Bearer.",
-          "  It is shown once and expires; mint another with the same command.",
+          "  It expires in minutes; the CLI does not need it, and mints its own from the credential",
+          "  below whenever the short one lapses.",
+          "",
+          stored.ok
+            ? `  kept at ${stored.path} — \`radia\` now signs in as ${who} without asking again.\n` +
+              `  Revoke it with \`radia revoke ${who}\`; nothing else takes it away.`
+            : `  could not store the durable credential (${stored.error}); this session ends when the token above does.`,
         ].join("\n"));
     }
 

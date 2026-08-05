@@ -17,6 +17,15 @@ import { env, mkdirp, readTextFile, removeFile, restrictToOwner, writeTextFile }
 export interface StoredCredential {
   token: string;
   mintedAt: string;
+  /**
+   * The DURABLE half, when there is one. A definition token cannot read or write anything (the
+   * space refuses it for coordination); it can only mint a run token. So it is the piece worth
+   * keeping on disk, and the piece that stops a person re-authenticating by hand every 15 minutes.
+   *
+   * Absent for `radia dev`'s operator credential, which is minted in memory at startup and dies
+   * with the process, so it has nothing durable to store.
+   */
+  definitionToken?: string;
   /** Informational: which storage the space was running on when this was written. */
   storage?: string;
 }
@@ -63,11 +72,17 @@ export function baseKey(base: string): string {
 /** Write (or replace) the credential for a base URL. Best-effort: a read-only home directory
  *  must not stop the server from booting, so failures are reported, not thrown. */
 export function saveCredential(base: string, cred: StoredCredential): { path: string; ok: boolean; error?: string } {
+  return writeEntry(baseKey(base), cred);
+}
+
+/** One entry of the credential file, replaced in place. Owner-only on the way out: the file holds
+ *  every credential this machine has for every space it talks to. */
+function writeEntry(key: string, cred: StoredCredential): { path: string; ok: boolean; error?: string } {
   const path = credentialsPath();
   try {
     mkdirp(dirname(path));
     const all = read(path);
-    all[baseKey(base)] = cred;
+    all[key] = cred;
     writeTextFile(path, JSON.stringify(all, null, 2) + "\n");
     restrictToOwner(path);
     return { path, ok: true };
@@ -97,6 +112,42 @@ export function resolveToken(base: string): string | undefined {
   const explicit = env("RADIA_TOKEN");
   if (explicit) return explicit;
   return read(credentialsPath())[baseKey(base)]?.token;
+}
+
+/**
+ * The durable half for this base URL, if one was stored. `RADIA_DEFINITION_TOKEN` overrides, for
+ * the same reasons `RADIA_TOKEN` does: CI, a remote space, a credential that never touches disk.
+ *
+ * Handed to `RadiaClient` alongside the run token so a client whose short credential lapses mints
+ * another instead of ending the session. An explicit `RADIA_TOKEN` does NOT suppress it: the two
+ * answer different questions, and a run token supplied by hand still expires in 15 minutes.
+ */
+export function resolveDefinitionToken(base: string): string | undefined {
+  return env("RADIA_DEFINITION_TOKEN") ?? read(credentialsPath())[baseKey(base)]?.definitionToken;
+}
+
+// ---- a person's login, kept apart from the operator's credential ----
+//
+// TWO IDENTITIES, ONE FILE. `radia dev` provisions an OPERATOR credential under the base URL, and
+// `radia login` authenticates a PERSON against the same space. Storing both under one key means the
+// second overwrites the first, and the CLI's operator verbs, the chat's bootstrap and the MCP
+// adapter all start acting as whoever logged in last. So a login lives under its own suffix, the
+// operator entry is untouched, and nothing reads a login unless it asked for one.
+
+const LOGIN = "#login";
+
+/** The most recent `radia login` for this space, if there was one. */
+export function storedLogin(base: string): (StoredCredential & { principal?: string }) | undefined {
+  return read(credentialsPath())[baseKey(base) + LOGIN];
+}
+
+/** Record a person's session: the run token they can paste, and the durable half that mints the
+ *  next one. Last login wins, which is what a person means by logging in again. */
+export function saveLogin(
+  base: string,
+  cred: StoredCredential & { principal: string },
+): { path: string; ok: boolean; error?: string } {
+  return writeEntry(baseKey(base) + LOGIN, cred);
 }
 
 /** Default base URL for clients: `RADIA_URL`, else the `radia dev` default. */

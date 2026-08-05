@@ -52,6 +52,18 @@ export class RadiaClientError extends Error {
   }
 }
 
+/**
+ * Did this fail because the credential is over, as opposed to insufficient?
+ *
+ * The space distinguishes them and so must this: `token_expired` and `run_stopped` mean mint
+ * another, `forbidden` means the principal may not do this and never will by trying again. A bare
+ * 401 counts too, since a space that has forgotten a run answers that way.
+ */
+function expired(e: unknown): boolean {
+  if (!(e instanceof RadiaClientError)) return false;
+  return e.status === 401 || e.code === "token_expired" || e.code === "run_stopped";
+}
+
 /** Read RADIA_URL if env access is permitted; a no --allow-env worker falls back to the default.
  *  `127.0.0.1`, not `localhost`: `radia dev` binds the former and keys its provisioned credential
  *  by host, so the two names are two different spaces to anything that looks a credential up. */
@@ -66,6 +78,17 @@ function defaultBase(): string {
 export interface ClientAuth {
   /** A run token (or definition token, for minting) sent as `Authorization: Bearer`. */
   token?: string;
+  /**
+   * The DURABLE half of the credential, exchanged for a run token whenever the short one stops
+   * working. Never sent as the credential for an ordinary call: the space refuses it with
+   * "a definition token does not authorize coordination; mint a run first", which is the property
+   * that makes it safe to keep on disk. It can only mint.
+   *
+   * With one of these a client never needs re-authenticating by hand. Without one, an expired
+   * token is the end of the session, which is what every consumer here used to live with: a run
+   * token lives 15 minutes, renews until a 12-hour ceiling, and then the process is finished.
+   */
+  definitionToken?: string;
 }
 
 /** What a grant narrowed a read to. Absent when nothing was narrowed. */
@@ -91,6 +114,13 @@ export class RadiaClient {
   }
 
   private async req(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<any> {
+    return await this.authorized(() => this.rawReq(method, path, body, headers));
+  }
+
+  /** One request, no retry. The exchange itself uses this: routing it through `req` made a FAILING
+   *  exchange re-enter `authorized`, which awaited the in-flight exchange it was already inside and
+   *  deadlocked. A revoked definition hung the caller instead of reporting itself. */
+  private async rawReq(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<any> {
     const res = await fetch(this.base + path, {
       method,
       headers: {
@@ -104,6 +134,64 @@ export class RadiaClient {
     const data = text ? JSON.parse(text) : null;
     if (!res.ok) throw new RadiaClientError(res.status, data?.title ?? "error", data?.detail ?? text);
     return data;
+  }
+
+  // ---- the credential, kept alive without anybody re-authenticating ----
+
+  /** One exchange at a time. Ten concurrent calls hitting an expired token must produce ONE new
+   *  run, not ten: each `agent_runs` POST writes a record, and a fleet waking together would mint
+   *  a burst of them and then discard all but the last. */
+  private exchanging: Promise<void> | null = null;
+
+  /**
+   * Run `call`, and if the credential has expired, mint a fresh run and try once more.
+   *
+   * REACTIVE, not scheduled, and that is the point. `keepAlive` renews ahead of expiry, which works
+   * only for a process that is awake: a laptop that sleeps through the window comes back holding a
+   * token that cannot renew itself, and a browser tab or a `git` invocation never had a timer at
+   * all. Exchanging on the failure covers every case a schedule cannot.
+   *
+   * ONCE. A second failure is a real one, and looping would turn an unauthorized client into a
+   * request generator.
+   *
+   * ONLY ON EXPIRY. A 403 is a GRANT problem: the credential is fine and the principal may not do
+   * this. Retrying it would spend a mint and hide the actual answer.
+   */
+  private async authorized<T>(call: () => Promise<T>): Promise<T> {
+    try {
+      return await call();
+    } catch (e) {
+      if (!this.auth.definitionToken || !expired(e)) throw e;
+      await this.exchange();
+      return await call();
+    }
+  }
+
+  /** Swap the definition token for a fresh run token, in place. Never through `req`: see `rawReq`. */
+  private exchange(): Promise<void> {
+    this.exchanging ??= (async () => {
+      try {
+        const { runToken } = await this.rawReq("POST", "/v0/agent-runs", {}, {
+          "Authorization": `Bearer ${this.auth.definitionToken}`,
+        }) as { runToken: string };
+        this.auth.token = runToken;
+      } finally {
+        this.exchanging = null;
+      }
+    })();
+    return this.exchanging;
+  }
+
+  /**
+   * Make sure this client holds a usable run token, minting one if it has only the durable half.
+   *
+   * Called for its effect at startup by anything that would rather fail at boot than on its first
+   * real request, and by `watch()`, whose SSE connect is a raw fetch that never passes through
+   * `req`. That stream is exactly where a credential fix gets forgotten: it did not carry
+   * `Authorization` at all once, and every connect 401'd into a silent poll fallback.
+   */
+  async ensureCredential(): Promise<void> {
+    if (this.auth.definitionToken && !this.auth.token) await this.exchange();
   }
 
   health(): Promise<{ storage: string; now: string; version: string; principal: string }> {
@@ -646,6 +734,7 @@ export class RadiaClient {
    * broken.
    */
   async artifactMeta(recordId: string): Promise<{ digest: string; mediaType: string; size: number } | null> {
+    return await this.authorized(async () => {
     const headers: Record<string, string> = {};
     if (this.auth.token) headers["Authorization"] = `Bearer ${this.auth.token}`;
     const res = await fetch(`${this.base}/v0/artifacts/${encodeURIComponent(recordId)}`, { method: "HEAD", headers });
@@ -659,21 +748,24 @@ export class RadiaClient {
       mediaType: res.headers.get("content-type") ?? "application/octet-stream",
       size: Number(res.headers.get("content-length") ?? 0),
     };
+    });
   }
 
   async getArtifact(recordId: string): Promise<Uint8Array> {
-    const headers: Record<string, string> = {};
-    if (this.auth.token) headers["Authorization"] = `Bearer ${this.auth.token}`;
-    const res = await fetch(`${this.base}/v0/artifacts/${encodeURIComponent(recordId)}`, { headers });
-    if (!res.ok) {
-      const text = await res.text();
-      let data: { title?: string; detail?: string } | null = null;
-      try {
-        data = text ? JSON.parse(text) : null;
-      } catch { /* not a problem document */ }
-      throw new RadiaClientError(res.status, data?.title ?? "error", data?.detail ?? text);
-    }
-    return new Uint8Array(await res.arrayBuffer());
+    return await this.authorized(async () => {
+      const headers: Record<string, string> = {};
+      if (this.auth.token) headers["Authorization"] = `Bearer ${this.auth.token}`;
+      const res = await fetch(`${this.base}/v0/artifacts/${encodeURIComponent(recordId)}`, { headers });
+      if (!res.ok) {
+        const text = await res.text();
+        let data: { title?: string; detail?: string } | null = null;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch { /* not a problem document */ }
+        throw new RadiaClientError(res.status, data?.title ?? "error", data?.detail ?? text);
+      }
+      return new Uint8Array(await res.arrayBuffer());
+    });
   }
 
   /** A short-lived, single-artifact download capability. Use it for contexts that cannot send an
@@ -705,8 +797,10 @@ export class RadiaClient {
    * that looks exactly like an idle space.
    */
   async *watch(pattern: Pattern, signal?: AbortSignal): AsyncGenerator<Wakeup> {
+    await this.ensureCredential(); // a client holding only the durable half has nothing to send yet
     let watchId = (await this.req("POST", "/v0/watches", pattern) as { watchId: string }).watchId;
     let cursor: string | undefined; // opaque resume token (Last-Event-ID), never parsed
+    let reconnected = false; // one credential exchange per authorization failure, not a loop
     while (!signal?.aborted) {
       let res: Response;
       try {
@@ -744,11 +838,22 @@ export class RadiaClient {
         }
         continue;
       }
+      if (res.status === 401 && this.auth.definitionToken && !reconnected) {
+        // The stream outlives the token that opened it. A watch held for hours across a token's
+        // 15-minute life is the LONGEST-running thing any client does, so it meets expiry first and
+        // the raw connect never passes through `req`, where the exchange lives. Mint and reconnect
+        // once; a second 401 is a real refusal.
+        await res.body?.cancel();
+        await this.exchange();
+        reconnected = true;
+        continue;
+      }
       if (res.status === 401 || res.status === 403) {
         // Typed, not a bare Error: `agentLoop` distinguishes a permanent authorization failure from
         // a transient drop by `status`, and an untyped throw there is retried as a hiccup.
         throw new RadiaClientError(res.status, "forbidden", `watch ${watchId} refused: ${(await res.text()).slice(0, 200)}`);
       }
+      reconnected = false; // a connect that got past auth clears the one-shot
       if (!res.ok || !res.body) {
         await sleep(300);
         continue;
