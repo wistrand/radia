@@ -27,7 +27,7 @@
 // (a `--db` of its own, or a scratch Postgres database), never at one you care about. Its kinds are
 // prefixed `bench_` so at least it cannot collide with an application's.
 
-import { RadiaClient } from "../sdk/ts/client.ts";
+import { RadiaClient, RadiaClientError } from "../sdk/ts/client.ts";
 import { measure, type Measurement, renderTable } from "./harness.ts";
 import { flag, has } from "../src/flags.ts";
 import { resolveToken } from "../src/credentials.ts";
@@ -92,10 +92,25 @@ async function fill(from: number, to: number): Promise<Measurement> {
 }
 
 const rows: { adapter: string; m: Measurement }[] = [];
-let filled = 0;
+
+/**
+ * Where the space already is, rather than assuming it starts empty.
+ *
+ * Two things this buys, both learned by wanting them mid-run. A long fill can be RESUMED after an
+ * interruption instead of starting over, and an already-filled space can be measured as it stands
+ * (`--checkpoints` just above its current count fills almost nothing and measures everything). A
+ * counter that starts at zero against a populated space writes the whole corpus a second time.
+ */
+const existing = (await client.getStats()).filter((s) => s.kind === DOC).reduce((n, s) => n + s.count, 0);
+if (existing > 0) console.error(`  … ${existing.toLocaleString()} ${DOC} records already here; filling from there`);
+let filled = existing;
 
 for (const target of checkpoints) {
-  rows.push({ adapter: target.toLocaleString(), m: await fill(filled, target) });
+  // Past this checkpoint already: skip the FILL, still take the measurements. Skipping both was the
+  // first version and it made the useful case impossible — pointing this at a space that is already
+  // the size you care about, and asking what it costs there.
+  if (target <= filled) console.error(`  … already past ${target.toLocaleString()}; measuring without filling`);
+  else rows.push({ adapter: target.toLocaleString(), m: await fill(filled, target) });
   filled = target;
   const at = (m: Measurement) => rows.push({ adapter: target.toLocaleString(), m });
 
@@ -117,7 +132,27 @@ for (const target of checkpoints) {
   // the difference is purely where the pass happens. `$each` below is the shape the pre-pushdown
   // `$any` row had (unpushable AND empty), kept so the oracle path stays measured.
   at(await measure("query $any miss (pushed)", 5, () => client.query({ kind: DOC, match: { labels: { $any: "zz" } } }, 25)));
-  at(await measure("query $each (oracle)", 5, () => client.query({ kind: DOC, match: { labels: { $each: "l3" } } }, 25)));
+  // Past `maxScanRows` (200k by default) this is REFUSED rather than served, which is the scan
+  // budget doing its job: an unpushable pattern is bounded by the work it may cause instead of by
+  // the size of the kind. The refusal is timed like anything else, because the number that matters
+  // is what a refused query COSTS — it should stay flat as the kind grows, where the same row was
+  // linear before. Swallowed here rather than thrown, so one expected 429 does not end a two-hour
+  // run; `refusals` says how many landed, and a row that is part served and part refused would be
+  // meaningless, so it is reported.
+  let refused = 0;
+  let attempts = 0; // counted, not assumed: `measure` warms up before it counts, so the calls that
+  // reach the space outnumber the samples, and a label reading "refused 10/5" is a number nobody
+  // can act on.
+  const each = await measure("query $each (oracle)", 5, async () => {
+    attempts++;
+    try {
+      await client.query({ kind: DOC, match: { labels: { $each: "l3" } } }, 25);
+    } catch (e) {
+      if (e instanceof RadiaClientError && e.code === "scan_budget_exceeded") refused++;
+      else throw e;
+    }
+  });
+  at({ ...each, label: refused === 0 ? each.label : `query $each (refused ${refused}/${attempts})` });
   at(await measure("stats", 10, () => client.getStats()));
 
   await Promise.all(Array.from({ length: 120 }, (_, i) => client.put({ kind: JOB, body: { tag: "a", n: i } })));
@@ -129,7 +164,12 @@ for (const target of checkpoints) {
     if (claim) await client.ack(claim.lease, { kind: DONE, body: { ok: true } });
   }, 0));
 
+  // PRINTED PER CHECKPOINT, not only at the end. A run to twenty million takes hours, and the
+  // version that rendered once at the end meant stopping it early — because the shape was already
+  // clear, or because something looked wrong — threw away every measurement it had taken. A
+  // benchmark you cannot abandon is one you have to finish to learn anything from.
   console.error(`  … ${target.toLocaleString()} records`);
+  console.log(`\n${renderTable(rows.filter((r) => r.adapter === target.toLocaleString()), "RECORDS")}`);
 }
 
 console.log(`\n${url}  (${concurrency} in flight while filling)\n`);

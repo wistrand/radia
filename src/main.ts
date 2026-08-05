@@ -23,7 +23,7 @@ const USAGE = `radia <command>
 
   dev [--port <n>] [--host <addr>] [--storage pglite|sqlite|postgres] [--db [path|url]]
       [--blobs <dir>] [--blob-kek [file]] [--seal-key [file]] [--auth required|open]
-      [--artifact-port <n>]
+      [--artifact-port <n>] [--max-scan-rows <n>]
       Run an embedded space + web console. Everything it writes goes under ./.radia
       (RADIA_DIR moves it); bare --db and --blob-kek take their defaults from there.
   mcp [--url <base>]
@@ -103,7 +103,27 @@ async function dev(args: string[]): Promise<void> {
   console.log(`radia dev: blobs=${blobs.name}${blobDir ? ` (${blobDir})` : " (in-memory)"}${kek ? ` (encrypted, KEK from ${kek.source})` : ""}`);
   // One line naming the whole on-disk footprint, so "where did this write?" never needs archaeology.
   if (dbPath || blobDir || kek) console.log(`radia dev: runtime dir=${radiaDir()}`);
-  const space = new Space(storage, {}, blobs);
+  // The one resource limit a deployment genuinely has to tune, and the first `SpaceContext` value
+  // this entry point passes at all: it bounds the rows ONE read may push through the oracle when
+  // the pre-filter could not decide the pattern (`storage/pushdown.ts`). Measured at 5.5M records,
+  // the default refuses such a query in ~2.5s (`bench/deployment.ts`).
+  //
+  // Both directions are real. Raise it for a space whose operators legitimately run a big
+  // undecidable scan and would rather wait; lower it on a small machine, or where no read should
+  // ever cost that much. `0` means unbounded, which is the pre-budget behaviour and is offered
+  // because a benchmark or a migration sometimes wants exactly that — it is not a setting to run a
+  // shared space on.
+  const scanFlag = flag(args, "--max-scan-rows");
+  const maxScanRows = scanFlag === undefined ? undefined : Number(scanFlag);
+  if (maxScanRows !== undefined && (!Number.isInteger(maxScanRows) || maxScanRows < 0)) {
+    throw new UsageError(`--max-scan-rows must be a non-negative whole number (0 = unbounded), got '${scanFlag}'`);
+  }
+  const space = new Space(storage, maxScanRows === undefined ? {} : { maxScanRows }, blobs);
+  if (maxScanRows !== undefined) {
+    console.log(
+      `radia dev: scan budget ${maxScanRows === 0 ? "DISABLED: one undecidable pattern can walk a whole kind" : `${maxScanRows} rows per read`}`,
+    );
+  }
   // The event chain is signed under a key that does NOT live in the database, which is the whole
   // difference between "detects corruption" and "detects a rewrite": an attacker who can edit rows
   // can recompute every hash, and cannot forge the seals over them. Same shape as the blob KEK, and

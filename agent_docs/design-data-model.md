@@ -211,6 +211,10 @@ fixed the second one:
   now 5.9ms, and the scan pays about a third for it.
 - The budget then bounds the total, raising `429 scan_budget_exceeded`. It never truncates: a
   bounded read whose result is treated as a population is this codebase's most repeated bug.
+  Tunable per space (`radia dev --max-scan-rows <n>`, `0` disables), because a limit an operator
+  can neither raise for a legitimate scan nor lower on a small machine is one they will route
+  around. `0` has to be TRANSLATED to "no budget" rather than passed through, since the adapters
+  refuse at `examined >= budget` and a literal zero would refuse everything.
 
 Anything the database can decide returns matches rather than candidates and never approaches it,
 which is what keeps the limit invisible to ordinary use. Still to come: a slow-lane TIME budget

@@ -31,7 +31,9 @@ info:
     pushdown rules; `$each` is the operator that reaches this) is answered by walking the kind one
     record at a time, so its cost is the size of the kind rather than of the request. Anything
     decided in SQL returns matches rather than candidates and never approaches it. Narrow the
-    pattern, page it with `after`, or declare the path the predicate uses.
+    pattern, page it with `after`, or declare the path the predicate uses. Per space it is
+    `radia dev --max-scan-rows <n>` (`0` disables it), so this is the one limit here whose value a
+    client cannot assume.
 
     Authorization (M1): kind-scoped grants are reserved `grant` records (assigned by an operator
     or the supervisor; discovered by query). Requests authenticate with `Authorization: Bearer

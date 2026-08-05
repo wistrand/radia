@@ -145,6 +145,10 @@ penalised; the shapes are the point. p50/p99 in ms.
 | 100 000   | 3200 | 2.6/6.4 | 1.8/3.2 | 2.3/10.1 | 2.6/4.6 | 1.6/3.1 | 1218/1239 | 10.7/14.7 | 16.4/23.4 |
 | 400 000   | 2700 | 2.5/5.4 | 1.5/3.8 | 2.1/4.8 | 2.2/4.3 | 1.6/1.8 | 5332/5487 | 24.1/24.7 | 19.0/26.6 |
 | 1 000 000 | 2600 | 2.9/6.3 | 2.0/3.8 | 1.6/3.2 | 1.5/2.8 | 1.7/2.8 | **13634**/13960 | 51.1/52.2 | 20.4/27.5 |
+| 5 500 000 | 3200 | 2.4/4.3 | 2.2/3.2 | 2.2/3.8 | 1.6/2.9 | 1.9/2.8 | **refused** 2476 | 298/321 | 16.3/21.7 |
+
+The 5.5M row was taken after the scan budget landed, and it is a different measurement in one
+column: `$each` is no longer served at all. See "the budget, measured at scale" below.
 
 **The pushable paths are flat to a million records.** `put`, `read_one`, `query`, the owner-scoped
 query and `$any` stay in single-digit milliseconds with no trend across a 40x range. Pushdown plus
@@ -155,12 +159,32 @@ wall clock at 64 in flight. Against `suites/records.ts`'s in-process 42µs that 
 is what the caveat above means in practice: sizing a deployment from the in-process numbers is not
 wrong at the margin, it is wrong about the machine you need.
 
-**The oracle path is the wall, and it grows with the record count exactly.** `$each` goes 278ms →
-1.2s → 5.3s → **13.6 seconds**, because `pushdown.ts` cannot express it and the whole kind is pulled
-into JS for the oracle to decide. The runtime is single-threaded, so those fourteen seconds are
-fourteen seconds in which the space serves nobody else: one agent with such a pattern is a denial of
-service against every other principal on the box, and nothing bounds it. The slow-lane row-scan
-budget (M1 resource limits, unbuilt) is the control that would.
+**The oracle path WAS the wall, and it grew with the record count exactly.** `$each` went 278ms →
+1.2s → 5.3s → **13.6 seconds**, because `pushdown.ts` cannot express it and the whole kind was
+pulled into JS for the oracle to decide, in a single-threaded process that therefore served nobody
+else meanwhile. That is what the scan budget was built for, and the row above it now reads
+`refused`.
+
+**The budget, measured at scale.** A run toward twenty million was stopped at 5.5M because the two
+things worth learning had already answered themselves, both taken WHILE 64 writers were filling, so
+they are comparable to each other rather than to the idle table above:
+
+| records | `$each` (refused) | stats |
+|---|---|---|
+| 2.09M | 4269ms | 143ms |
+| 3.72M | 3994ms | 249ms |
+| 5.32M | 4119ms | 397ms |
+
+A refused query costs the SAME at 5.3M as at 2.1M while the kind grows 2.5×, which is the whole
+claim the budget makes: the cost of an undecidable pattern is bounded by the work it may cause
+rather than by the size of the kind. Unloaded it is 2.5s, which is 200k rows of oracle plus the
+chunk round trips.
+
+**And it does not hold the runtime, which is the half that matters.** A neighbour polling an indexed
+read while one refused `$each` ran: the scan took 2538ms and the neighbour's worst wait was **48ms**
+(99 completed reads). Before the walk was chunked, the same neighbour waited the entire scan. The
+yield between chunks is what makes an expensive query one caller's delay instead of everyone's
+outage, and it holds at five and a half million records.
 
 **`$any` used to be that row, at 14.1s.** It is now rendered into SQL as a type-guarded `EXISTS`
 over the array's elements, exact rather than merely sound, so the caller's `LIMIT` rides into the
@@ -173,14 +197,28 @@ against 13.5s for the same shape left to the oracle. `$each` is that shape, and 
 element matches" means negating the element predicate, and a negation that is sound-but-incomplete
 EXCLUDES rows, the one direction a pre-filter may never be wrong in.
 
-**`stats` is linear**, 3.3ms → 51ms for 40x the records. Expected for a counting aggregate, and
-worth knowing because `GET /v0/ops/digest` is reachable by a self-scoped caller.
+**`stats` is linear and it is the one still unbounded**: 3.3ms → 51ms → **298ms at 5.5M**, about
+54ms per million, so ~1.1s at twenty. It has no budget, and `GET /v0/ops/digest` reaches it for a
+self-scoped caller. Measured before assuming the worst, though: it does NOT hold the runtime. During
+one 210ms `stats` a neighbour completed 171 indexed reads with a worst wait of 8ms, because this is
+a `count(*) group by` the runtime AWAITS rather than CPU it holds. So it is a Postgres backend per
+request, not an outage — a different and milder class than the oracle path, and the reason to treat
+it as a thing to watch rather than the next thing to bound.
 
-**`take+ack` drifts**, 15ms → 20ms p50 over 40x the data. Modest; watch it rather than act on it.
+**`take+ack` does not drift after all.** It read 15ms → 20ms to a million and then 16.3ms at 5.5M,
+so the earlier "drift" was noise across runs rather than a trend. Claim-order index and all.
 
-Not reached: the LOG axis. A million records is about two million events, and nothing sweeps them,
-so the question of whether cost grows with history rather than contents starts an order of
-magnitude further out than this run went.
+Not reached: the LOG axis. 5.5M records is about 11M events, and nothing sweeps them, so the
+question of whether cost grows with history rather than contents is still open — that is what a run
+to twenty million would actually be for, rather than another confirmation that the indexed paths
+are flat.
+
+**Two things this run changed about the bench itself**, both discovered by wanting them mid-run.
+It prints each checkpoint's table AS IT COMPLETES, because a version that renders once at the end
+means stopping early (the shape is clear, or something looks wrong) throws away every measurement
+taken so far. And it seeds its counter from the space's own record count, so a long fill can be
+resumed after an interruption, and an already-filled space can be measured as it stands by naming a
+checkpoint at or below its current size.
 
 ## Writing a benchmark
 

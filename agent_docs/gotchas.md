@@ -480,8 +480,10 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   cannot express renders as `TRUE`, and the whole kind is then pulled into JS for
   `core/matching.ts` to decide. Measured over HTTP against Postgres (`bench/deployment.ts`): 278ms
   at 25k records, **13.6 seconds at 1M**, tracking the record count exactly. The process is
-  single-threaded, so that is 14 seconds in which the space serves nobody else: one principal with
-  such a pattern is a denial of service against every other one, and no limit currently bounds it.
+  single-threaded, so that was 14 seconds in which the space served nobody else. Both halves are
+  fixed and both are measured at 5.5M: the budget refuses at a FLAT ~2.5s (4269/3994/4119ms at
+  2.1M/3.7M/5.3M under load, so the cost no longer tracks the kind), and the chunked walk's yield
+  keeps a neighbour's indexed read at a 48ms worst wait during a 2538ms refused scan.
   Every pushable predicate stays flat over the same range, so the ONLY way to see this is a
   benchmark whose predicate is not pushable, which none of the in-process suites had.
   `$any` was that predicate until it was pushed (a type-guarded `EXISTS` over the elements, exact,

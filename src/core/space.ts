@@ -127,7 +127,8 @@ export interface SpaceContext {
   maxWatchesPerPrincipal: number;
   /** Candidate rows ONE read may push through the oracle (`CompiledMatch.scanBudget`). The only
    *  limit here that bounds a cost the caller cannot see in its own request: a pattern SQL cannot
-   *  decide is cheap to send and linear in the size of the kind to answer. */
+   *  decide is cheap to send and linear in the size of the kind to answer. `0` disables it
+   *  (`radia dev --max-scan-rows 0`), which is the pre-budget behaviour and not a shared-space setting. */
   maxScanRows: number;
 }
 
@@ -2358,7 +2359,12 @@ export class Space {
     // The scan budget rides on the compiled pattern rather than on every read's signature, because
     // this is the one place every read passes through and because the adapter is where rows are
     // counted. A limit the storage port cannot see is a limit on nothing.
-    return { ...compilePattern(pattern, this.kinds.get(pattern.kind)), scanBudget: this.ctx.maxScanRows };
+    //
+    // 0 means UNBOUNDED, and it has to be translated here rather than passed through: the adapters
+    // refuse once `examined >= scanBudget`, so a literal 0 would refuse every inexact read after its
+    // first chunk — the exact opposite of what an operator disabling a limit is asking for.
+    const budget = this.ctx.maxScanRows > 0 ? this.ctx.maxScanRows : undefined;
+    return { ...compilePattern(pattern, this.kinds.get(pattern.kind)), scanBudget: budget };
   }
 
   /**

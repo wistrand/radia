@@ -84,3 +84,47 @@ Deno.test("flags: a verb reads its positional through the shared scanner, not ar
     );
   }
 });
+
+Deno.test("dev: --max-scan-rows tunes the budget, and 0 means unbounded rather than nothing", async () => {
+  // A resource limit with no knob is one an operator can neither raise for a legitimate large scan
+  // nor lower on a small machine. `main.ts` passed an EMPTY SpaceContext, so none of these limits
+  // was reachable from the CLI at all; this is the first one that is.
+  //
+  // The 0 case is the reason this test exists rather than being obvious. The adapters refuse once
+  // `examined >= scanBudget`, so passing a literal 0 through would refuse every undecidable read
+  // after its first chunk: the exact opposite of what someone disabling a limit is asking for. It is
+  // translated to "no budget" in `Space.compile`, and that translation is invisible at both ends.
+  const { Space } = await import("../src/core/space.ts");
+  const { SqliteAdapter } = await import("../src/storage/sqlite.ts");
+  const { RadiaError } = await import("../src/core/errors.ts");
+
+  const bounded = async (maxScanRows: number | undefined) => {
+    const adapter = new SqliteAdapter(":memory:");
+    await adapter.init();
+    try {
+      const space = new Space(adapter, maxScanRows === undefined ? {} : { maxScanRows });
+      space.registerKind({ kind: "task", indexedPaths: [{ path: "tags", type: "array" }] });
+      for (let i = 0; i < 60; i++) await space.put({ kind: "task", body: { tags: ["a"] } });
+      try {
+        // `$each` is the unpushable one, so this walks the kind (see pushdown.ts).
+        await space.query({ kind: "task", match: { tags: { $each: "zz" } } }, 5);
+        return "served";
+      } catch (e) {
+        return e instanceof RadiaError ? e.code : `unexpected: ${(e as Error).message}`;
+      }
+    } finally {
+      await adapter.close();
+    }
+  };
+
+  assertEquals(await bounded(20), "scan_budget_exceeded", "a small budget refuses");
+  assertEquals(await bounded(0), "served", "0 must DISABLE the budget, not refuse everything");
+  assertEquals(await bounded(undefined), "served", "the 200k default is far above a 60-record kind");
+
+  // And the flag reaches it. Reading the source, like the --auth default above: the alternative is
+  // starting a server, and the assertion should fail when this literal stops being wired.
+  const main = await Deno.readTextFile(new URL("../src/main.ts", import.meta.url));
+  assert(/flag\(args, "--max-scan-rows"\)/.test(main), "--max-scan-rows is no longer parsed in main.ts");
+  assert(/new Space\(storage, maxScanRows === undefined \? \{\} : \{ maxScanRows \}/.test(main), "…or no longer reaches the Space");
+  assert(/\[--max-scan-rows <n>\]/.test(main), "…or is missing from the usage text");
+});
