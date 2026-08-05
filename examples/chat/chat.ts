@@ -226,7 +226,10 @@ Deno.addSignalListener("SIGINT", () => {
 // live in `sandbox` records) are all true and none of them are what you need in the first second;
 // they are in examples/chat/README.md, and the assistant can answer the jail question from the
 // records themselves, which is the whole point of it being a record.
-const field = (k: string, v: string) => write(`  ${dim(k.padEnd(9))}${v}\n`);
+// `${k} ` before the pad, so a label AT the column width still gets a separator. Without it
+// "clipboard" (exactly 9) printed as `clipboardwl-paste`, and every future label of that length
+// would have done the same.
+const field = (k: string, v: string) => write(`  ${dim(`${k} `.padEnd(9))}${v}\n`);
 write(`\nradia chat  ${dim("·")}  ${owner}${privileged ? dim("  (operator)") : ""}\n`);
 field("space", `${url}${usingRunning ? dim(" existing") : dim(` spawned, ${spaceDb}`)}`);
 field("tiers", Object.entries(TIERS).map(([t, m]) => `${t}=${m}`).join("  "));
@@ -277,7 +280,7 @@ field("tools", tools.all().length > 0 ? `${tools.all().length} discovered` : dim
  * the network.
  */
 const clipboard = await clipboardReader();
-field("clipboard", clipboard ? `${clipboard}  ${dim("Ctrl-V attaches an image, a PDF or a copied file")}` : dim("no reader (wl-paste / xclip / pngpaste); Ctrl-V does nothing"));
+field("paste", clipboard ? `${clipboard}  ${dim("Ctrl-V attaches an image, a PDF or a copied file")}` : dim("no reader (wl-paste / xclip / pngpaste); Ctrl-V does nothing"));
 write(dim("\n  Ctrl-D to quit, Escape to cancel a turn.\n"));
 
 /** Store bytes as an artifact of this conversation and return the marker that goes in the message. */

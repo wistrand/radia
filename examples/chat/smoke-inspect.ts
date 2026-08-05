@@ -119,8 +119,24 @@ check(
   visible.count === 3 && !visible.more,
   `${visible.count}${visible.more ? "+" : ""} of ${3 + 700} in the space`,
 );
-const counted = await tools.space_count({ kind: "message" }) as { count: number; scope?: { narrowedBy?: unknown[] } };
+const counted = await tools.space_count({ kind: "message" }) as { count: number; scope?: { narrowedBy?: unknown[] }; distinct?: unknown };
 check("…and counts only those", counted.count === 3, `${counted.count}`);
+check("a kind with one record per thing reports no version count", counted.distinct === undefined);
+
+// A count of RECORDS is not a count of THINGS on a kind that keeps its history, and the difference
+// is invisible in the number. Live case: a workspace saved fifteen times answered `count: 15`, and
+// that was reported as "15 instances of a workspace named fireworks" while `radia workspaces` said
+// one workspace with 15 versions. Every registry here has this shape, so the count has to carry the
+// correction with it — prose in a description arrives after the number has already been quoted.
+type Counted = { count: number; distinct?: { by: string; count: number; note: string } };
+for (let v = 0; v < 4; v++) {
+  await admin.put({ kind: "workspace", body: { name: "saved-often", conversationId: mine, owner: CHAT_USER, treeDigest: `t1:v${v}`, files: [] } });
+}
+await admin.put({ kind: "workspace", body: { name: "saved-once", conversationId: mine, owner: CHAT_USER, treeDigest: "t1:x", files: [] } });
+const ws = await tools.space_count({ kind: "workspace" }) as Counted;
+check("a registry kind's count is of VERSIONS, and says so", ws.count === 5 && ws.distinct?.count === 2, `${ws.count} records, ${ws.distinct?.count} distinct`);
+check("…naming the field it deduplicated on", ws.distinct?.by === "name", ws.distinct?.by ?? "(none)");
+check("…and saying which number to report", (ws.distinct?.note ?? "").includes("VERSIONS"), (ws.distinct?.note ?? "").slice(0, 60));
 
 // The reason four sessions in a row reported their own slice as the space: a narrowed read looked
 // exactly like an unrestricted one. The ops plane has always described its scope; the coordination

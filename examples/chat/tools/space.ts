@@ -18,6 +18,40 @@ function compact(rec: RadiaRecord): unknown {
   return { id: rec.id, kind: rec.kind, createdAt: rec.runtimeMeta.createdAt, body };
 }
 
+/**
+ * Does this set of records describe fewer THINGS than there are records, and under which field?
+ *
+ * Every registry in this system is a latest-wins projection over successor records: saving a
+ * workspace again writes another `workspace`, retiring a capability writes another `capability`.
+ * So a record count on one of those kinds is an EDIT COUNT, and reporting it as a population is a
+ * wrong answer that looks like a right one — a workspace saved fifteen times was reported as
+ * "15 instances of a workspace named fireworks", while `radia workspaces` (the shared latest-wins
+ * projection) said one workspace, 15 versions.
+ *
+ * The candidates are the fields those registries actually key on. No guessing about WHICH is the
+ * content key: the claim made here is only the observable one, that N records carry M distinct
+ * values of a field, which is true whatever the key turns out to be.
+ */
+function distinctKey(records: RadiaRecord[]): { distinct?: { by: string; count: number; note: string } } {
+  if (records.length < 2) return {};
+  for (const field of ["name", "tool", "path", "model", "principal"]) {
+    const values = records.map((r) => (r.body as Record<string, unknown>)?.[field]).filter((v) => typeof v === "string");
+    if (values.length !== records.length) continue;
+    const count = new Set(values).size;
+    if (count === records.length) continue; // one record per thing: the count IS the population
+    return {
+      distinct: {
+        by: field,
+        count,
+        note: `${records.length} records carry only ${count} distinct '${field}' value(s): this kind keeps its ` +
+          `history, so the count is of VERSIONS, not of things. Report ${count}, or use the tool that ` +
+          `projects the kind (list_workspaces for workspaces).`,
+      },
+    };
+  }
+  return {};
+}
+
 /** Coerce a model-supplied order_by into valid OrderKeys: keep only elements with a string `path`.
  *  A mis-shaped element (the model guessing `{field:…}` or omitting `path`) then degrades to
  *  no-sort instead of a cryptic `unsortable_path: order_by path 'undefined'`. */
@@ -159,6 +193,9 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
     // what an aggregation question actually needs. The model was computing percentages from
     // whatever 10 records it happened to see. Bounded by the server's own query cap, and it says so
     // rather than rounding the truth off.
+    //
+    // See `distinctKey` below for the other half: on a kind that keeps its history, how many
+    // RECORDS matched is not how many THINGS there are.
     space_count: async (a) => {
       const CAP = 500; // the server's max query limit
       const page = await client.queryPage(
@@ -168,9 +205,17 @@ export function makeInspectTools(client: RadiaClient): Record<string, Tool> {
       // A count is the shape most likely to be quoted as a fact about the space, so a narrowed one
       // has to say what it counted over.
       const scope = page.scope ? { scope: page.scope } : {};
+      // A count of RECORDS is not a count of THINGS on a kind that keeps its history. Every registry
+      // here (workspace, procedure, model, capability) is a latest-wins projection over successor
+      // records, so a workspace saved fifteen times is fifteen records and one workspace — which is
+      // exactly what got reported as "15 instances of a workspace named fireworks". The duplicate
+      // key is visible in the records already fetched, so say it rather than leaving the caller to
+      // multiply one thing by its own edit history.
+      // Only on the EXACT branch: a distinct count over a page that stopped at the cap would be a
+      // second number with the same defect as the first.
       return page.records.length >= CAP
         ? { count: CAP, exact: false, note: `at least ${CAP} records match; narrow the match for an exact count`, ...scope }
-        : { count: page.records.length, exact: true, ...scope };
+        : { count: page.records.length, exact: true, ...distinctKey(page.records), ...scope };
     },
 
     space_record: async (a) => {
@@ -306,7 +351,7 @@ export const INSPECT_SCHEMAS: ToolDef[] = [
   { type: "function", function: { name: "space_stats", description: "Counts of records by kind and state in the Radia space (a quick overview / health check).", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "space_kinds", description: "List the registered record kinds and their indexed/sortable paths.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "space_query", description: "Find records by kind, with an optional match (equality/$gt/$in/$exists/…) and order_by. order_by is an array of {path, dir?} over the kind's SORTABLE paths only (list a kind's sortable paths with space_kinds), and only over fields in the record BODY. When a record was created is not a body field, so there is no way to sort by time. Without order_by, records come back in ascending record-id order; that is stable, not arbitrary, but it means a `limit` gives you the OLDEST matches, never the newest. So this is the wrong tool for 'the most recent X': use space_events (the event log is in time order) or narrow the match instead. Returns up to `limit` (default 10, max 25) records with size-capped bodies, plus `more`: true when further records match. The result is then a PAGE, so never count or compute percentages from it (space_stats has per-kind totals). The conversation itself is records: kind 'message' with match {conversationId}, order_by [{path:\"index\"}]. A `scope` in the answer means your GRANT narrowed the read: what came back is a slice of that kind, not the kind. Say so instead of describing it as everything, and do not try to widen it by guessing at kinds.", parameters: { type: "object", properties: { kind: { type: "string" }, match: { type: "object" }, orderBy: { type: "array", items: { type: "object", properties: { path: { type: "string" }, dir: { type: "string", enum: ["asc", "desc"] } }, required: ["path"] } }, limit: { type: "integer" } }, required: ["kind"] } } },
-  { type: "function", function: { name: "space_count", description: "How MANY records match, not which ones: {count, exact}. Use this for totals, distributions and percentages, counting each value separately (e.g. one call per tier) rather than counting the records a query happened to return. A count is over the WHOLE SPACE unless the match narrows it, so a question about this conversation must say so: {kind:'tool_call', match:{conversationId, tool:'run_code'}}. `exact` is false only when the match is too broad to count precisely. A `scope` in the answer means the count covers only the records your grant lets you read. Quote it as a count of the records you can see, never as the space's total.", parameters: { type: "object", properties: { kind: { type: "string" }, match: { type: "object" } }, required: ["kind"] } } },
+  { type: "function", function: { name: "space_count", description: "How MANY records match, not which ones: {count, exact}. Use this for totals, distributions and percentages, counting each value separately (e.g. one call per tier) rather than counting the records a query happened to return. A count is over the WHOLE SPACE unless the match narrows it, so a question about this conversation must say so: {kind:'tool_call', match:{conversationId, tool:'run_code'}}. `exact` is false only when the match is too broad to count precisely. A `scope` in the answer means the count covers only the records your grant lets you read. Quote it as a count of the records you can see, never as the space's total. This counts RECORDS, and on a kind that keeps its history (workspace, procedure, model, capability: saving one again writes a successor) that is a count of versions rather than of things — a `distinct` field in the answer says so and gives the real number. For workspaces prefer list_workspaces, which projects them.", parameters: { type: "object", properties: { kind: { type: "string" }, match: { type: "object" } }, required: ["kind"] } } },
   { type: "function", function: { name: "space_record", description: "Fetch a single record by id.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
   { type: "function", function: { name: "space_lineage", description: "The ANCESTRY (parent_ids, UP) of a record: {depth, id, kind}, i.e. how it was derived. A root record (e.g. a conversation) has no ancestors; to find what REFERENCES it, use space_children.", parameters: { type: "object", properties: { recordId: { type: "string" } }, required: ["recordId"] } } },
   { type: "function", function: { name: "space_children", description: "Records that REFERENCE this record via parent_ids: its children (DOWN, the reverse of lineage), with bodies. Use this to follow links from a root: a conversation's messages (kind:message) and llm_calls, an llm_call's chunks + result, a task's results. Optional `kind` filter (e.g. 'message'). Returns up to `limit` (default 25).", parameters: { type: "object", properties: { recordId: { type: "string" }, kind: { type: "string" }, limit: { type: "integer" } }, required: ["recordId"] } } },
