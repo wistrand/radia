@@ -1,6 +1,7 @@
 # Plan: workspace agents, and promotion as grant rotation
 
-> Status: DESIGN, nothing built (2026-08-06). Origin: a speculation about running LLM-written
+> Status: phase 1 BUILT and green on both adapters (2026-08-06); phases 2 to 6 designed. Origin:
+> a speculation about running LLM-written
 > code over protected data, plus the review that found several of its guarantees weaker than the
 > enforcement behind them. That is the claim ledger below, and it is why this file exists before
 > any code. Containment needs no runtime change. Read [design-auth.md](design-auth.md) (grants,
@@ -192,15 +193,21 @@ kind (they are conventions and the tests that prove them); 4 to 6 are the build,
 `extensions/` and all of it a client. Dependencies: 1 gates everything, 2 and 3 are independent
 of each other, 4 needs 2, 5 needs 4, 6 needs 5.
 
-**1. Does the compartment hold, with nothing new?**
-Ships: a `conformance/suites/compartment.ts` (adapter-parameterized, since grants are records and
-both adapters must agree) plus rows in the `http.test.ts` guard table, and the kind-naming
-convention written down.
-Done when: a member reads and claims; a non-member's ordinary grant reaches neither, on a kind it
-was never granted; a producer's write outside its pattern is refused on the put path, the
-artifact path AND the ack-emitted result; a client pattern can only narrow. At least one of those
-proved against a planted regression, per the rule for structural guards.
-Abandon criterion: if any of them fails, nothing below is worth building.
+**1. Does the compartment hold, with nothing new? BUILT (2026-08-06), and it does.**
+Shipped: `conformance/suites/compartment.ts`, five cases on both adapters, driving the HANDLERS
+because enforcement is at the HTTP boundary and only there (a test calling `space.put` would pass
+while the boundary leaked). Answered: a kind nobody was granted is closed for query, take and put
+while the grants that principal DOES hold keep working; a member reads, claims and chains an
+ack-emitted result inside the compartment; a producer's write outside its pattern is refused on
+all three paths, and omitting the field is not a way out; a read narrows, says it narrowed, and a
+client pattern asking for another compartment returns nothing; crossing out takes a principal
+granted both sides, which `effectivePermissions` names.
+Both write-side guards were proved against planted regressions (disabling `bodyMatchesGrant` in
+`handlers/records.ts`, then in `Space.ack`, fails exactly the write-path case and nothing else).
+The convention this pins, for anyone extending it: a compartment is a DEDICATED KIND, its members
+are grants pattern-scoped on a `compartment` field, and artifacts join by REDECLARING the
+reserved `artifact` kind with `compartment` added to its indexed paths, since a pattern may only
+name declared paths and `artifact` cannot be replaced.
 
 **2. Does digest-pinned promotion work?**
 Ships: an `exec_request` kind declaring `workspace` and `tier` as indexed keywords, and

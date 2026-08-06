@@ -24,6 +24,7 @@ import { watchSuites } from "./suites/watches.ts";
 import { adminSuites, remediateSuites } from "./suites/admin.ts";
 import { gcSuites } from "./suites/gc.ts";
 import { authSuites } from "./suites/auth.ts";
+import { compartmentSuites } from "./suites/compartment.ts";
 import { taintSuites } from "./suites/taint.ts";
 import { blobCryptoSuites, blobSuites } from "./suites/blobs.ts";
 import { FileBlobStore, MemoryBlobStore } from "../src/storage/blobs.ts";
@@ -53,6 +54,7 @@ conformance(adapters, [
   ...gcSuites,
   ...remediateSuites,
   ...authSuites,
+  ...compartmentSuites,
   ...taintSuites,
 ]);
 
