@@ -15,7 +15,7 @@ import { assert, assertEquals } from "@std/assert";
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../../examples/operator.ts";
 import { brokeredInvoker, labelsForJail } from "../ts/broker.ts";
-import { BINDING, declareBinding, WorkspaceHost } from "../ts/host.ts";
+import { BINDING, declareBinding, treeCache, type TreeCache, WorkspaceHost } from "../ts/host.ts";
 import { declareExecRequest, EXEC_REQUEST, promote } from "../ts/promotion.ts";
 import { writeWorkspace } from "../ts/workspace.ts";
 
@@ -26,7 +26,14 @@ const AGENT = "agent:worker";
 interface Ctx {
   operator: RadiaClient;
   /** Stand up an agent bound to a one-file workspace, and return a host that runs it brokered. */
-  hostFor: (entry: string, opts?: { labels?: string[]; stamp?: Record<string, unknown> }) => Promise<WorkspaceHost>;
+  hostFor: (
+    entry: string,
+    opts?: { labels?: string[]; stamp?: Record<string, unknown>; cache?: TreeCache },
+  ) => Promise<WorkspaceHost>;
+  /** Another request at the digest currently bound: a second claim for the same code. */
+  freshRequest: () => Promise<void>;
+  /** Promote and bind DIFFERENT code, then queue a request for it. */
+  rebind: (entry: string) => Promise<void>;
 }
 
 async function withSpace<T>(fn: (ctx: Ctx) => Promise<T>): Promise<T> {
@@ -55,23 +62,37 @@ async function withSpace<T>(fn: (ctx: Ctx) => Promise<T>): Promise<T> {
     claimable: false,
   });
   let n = 0;
+  let current = "";
+  /** Promote the code, bind the agent to it, and queue one request. Shared by `hostFor` and
+   *  `rebind`, because a promotion that forgot either lock is a different test than these. */
+  const install = async (entry: string): Promise<string> => {
+    const ws = await writeWorkspace(operator, { name: `ws${++n}`, owner: "human:alice", files: { "main.ts": entry } });
+    await promote(operator, { digest: ws.treeDigest, tier: "prod", pins: [{ principal: AGENT, operations: ["take"] }] });
+    await operator.put({ kind: BINDING, body: { agent: AGENT, workspaceDigest: ws.treeDigest, entrypoint: "main.ts" } });
+    await operator.put({ kind: EXEC_REQUEST, body: { workspace: ws.treeDigest, tier: "prod", job: "j" } });
+    current = ws.treeDigest;
+    return ws.treeDigest;
+  };
   try {
     return await fn({
       operator,
       hostFor: async (entry, o = {}) => {
-        const ws = await writeWorkspace(operator, { name: `ws${++n}`, owner: "human:alice", files: { "main.ts": entry } });
         const { definitionToken } = await operator.createAgentDefinition(AGENT, []);
-        await promote(operator, { digest: ws.treeDigest, tier: "prod", pins: [{ principal: AGENT, operations: ["take"] }] });
         await operator.grant(AGENT, "exec_result", ["put"]);
         await operator.grant(AGENT, "note", ["put"]);
-        await operator.put({ kind: BINDING, body: { agent: AGENT, workspaceDigest: ws.treeDigest, entrypoint: "main.ts" } });
-        await operator.put({ kind: EXEC_REQUEST, body: { workspace: ws.treeDigest, tier: "prod", job: "j" } });
+        await install(entry);
         return new WorkspaceHost({
           base: url,
           credentials: { [AGENT]: definitionToken },
           reader: operator,
           invoke: brokeredInvoker(operator, o),
         });
+      },
+      freshRequest: async () => {
+        await operator.put({ kind: EXEC_REQUEST, body: { workspace: current, tier: "prod", job: `j${++n}` } });
+      },
+      rebind: async (entry) => {
+        await install(entry);
       },
     });
   } finally {
@@ -189,5 +210,39 @@ Deno.test("[broker] a retried attempt's writes dedupe, so at-least-once does not
       1,
       "the retry's write is a replay, not a second record",
     );
+  });
+});
+
+Deno.test("[broker] a warm tree is reused, and a new digest is never served from a warm one", async () => {
+  await withSpace(async ({ operator, hostFor, freshRequest, rebind }) => {
+    // Phase 6. The warm entry is keyed by DIGEST, which is what makes the optimisation provably
+    // safe rather than merely likely: there is no way for a cache hit to serve code that changed,
+    // because changed code is a different key.
+    const cache = treeCache(operator);
+    const host = await hostFor(
+      `export default async (record, space) => ({ kind: "exec_result", body: { tag: "v1" } });`,
+      { cache },
+    );
+
+    const coldStart = performance.now();
+    assertEquals((await host.tick()).map((o) => o.status), ["acked"]);
+    const cold = performance.now() - coldStart;
+    assertEquals(cache.stats, { hits: 0, misses: 1 });
+
+    await freshRequest();
+    const warmStart = performance.now();
+    assertEquals((await host.tick()).map((o) => o.status), ["acked"]);
+    const warm = performance.now() - warmStart;
+    assertEquals(cache.stats, { hits: 1, misses: 1 }, "the second claim on one digest re-materialises nothing");
+    console.log(`  tree cache: cold ${cold.toFixed(0)}ms, warm ${warm.toFixed(0)}ms`);
+
+    // The correctness claim, stated as the thing that would break it: promote different code and
+    // the SAME host must run the new version, because the digest is part of the key.
+    await rebind(`export default async (record, space) => ({ kind: "exec_result", body: { tag: "v2" } });`);
+    assertEquals((await host.tick()).map((o) => o.status), ["acked"]);
+    assertEquals(cache.stats, { hits: 1, misses: 2 }, "a new digest is a new entry, never a warm one");
+    const results = await operator.query({ kind: "exec_result" }, 5, { dir: "desc" });
+    assertEquals((results[0].body as { tag: string }).tag, "v2", "a warm cache must never serve stale code");
+    await cache.clear();
   });
 });

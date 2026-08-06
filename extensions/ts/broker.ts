@@ -30,8 +30,7 @@
 
 import type { RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
 import { jailArgs, type RunOptions } from "./sandbox.ts";
-import { materialize } from "./workspace.ts";
-import type { InvokeContext, Invoker } from "./host.ts";
+import { type InvokeContext, type Invoker, treeCache, type TreeCache } from "./host.ts";
 
 /** Frames are prefixed on stdout, because an entrypoint that logs is normal and its chatter must
  *  never be parsed as protocol. Everything unprefixed is the program's own output. */
@@ -64,6 +63,10 @@ export interface BrokerOptions {
    *  out is the broker. */
   run?: Pick<RunOptions, "readRoots" | "writeRoots" | "denyRead" | "memoryMb">;
   timeoutMs?: number;
+  /** Materialised trees, shared across claims and keyed by digest (phase 6). Safe because a warm
+   *  entry cannot be stale: different code is a different digest. Pass one cache to a whole host
+   *  so every agent on the same digest shares the fetch. */
+  cache?: TreeCache;
 }
 
 /** The labels a jail's declared powers imply, so the host stamps them instead of trusting a
@@ -76,7 +79,8 @@ export function labelsForJail(opts: { readRoots?: string[]; net?: boolean } = {}
 }
 
 /** The program the jail actually runs. Generated, never materialised into the tree: the tree is
- *  content-addressed and adding a file to it would change the digest that identifies the code. */
+ *  content-addressed and adding a file to it would change the digest that identifies the code,
+ *  and since phase 6 that directory is shared between claims. `entrypoint` is an absolute path. */
 function bootSource(entrypoint: string, record: RadiaRecord): string {
   return `
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -105,7 +109,7 @@ const space = {
   readOne: (pattern) => call("read_one", { pattern }),
 };
 const record = ${JSON.stringify(record)};
-const mod = await import(${JSON.stringify(`./${entrypoint}`)});
+const mod = await import(${JSON.stringify(`file://${entrypoint}`)});
 const out = await mod.default(record, space);
 await Deno.stdout.write(enc.encode(${JSON.stringify(RESULT_MARK)} + JSON.stringify(out ?? null) + "\\n"));
 `;
@@ -119,16 +123,17 @@ await Deno.stdout.write(enc.encode(${JSON.stringify(RESULT_MARK)} + JSON.stringi
  * without a credential.
  */
 export function brokeredInvoker(reader: RadiaClient, opts: BrokerOptions = {}): Invoker {
+  const cache = opts.cache ?? treeCache(reader);
   return async (ctx: InvokeContext) => {
-    const rows = await reader.query({ kind: "workspace", match: { treeDigest: ctx.binding.workspaceDigest } }, 1, { dir: "desc" });
-    if (rows.length === 0) throw new Error(`no workspace manifest for ${ctx.binding.workspaceDigest}`);
-    const root = await Deno.makeTempDir({ prefix: "radia-broker-" });
+    const root = await cache.root(ctx.binding.workspaceDigest);
+    // The boot program is PER RECORD (it carries the claimed record), so it cannot live in the
+    // tree: that directory is now shared between claims and two of them would clobber each
+    // other's. Its own directory, added to the read roots, and removed after the run.
+    const bootDir = await Deno.makeTempDir({ prefix: "radia-boot-" });
+    const bootPath = `${bootDir}/boot.mjs`;
     try {
-      // deno-lint-ignore no-explicit-any
-      await materialize(reader, rows[0].body as any, root);
-      const bootPath = `${root}/.radia-boot.mjs`;
-      await Deno.writeTextFile(bootPath, bootSource(ctx.binding.entrypoint, ctx.record));
-      const readRoots = [root, ...(opts.run?.readRoots ?? [])];
+      await Deno.writeTextFile(bootPath, bootSource(`${root}/${ctx.binding.entrypoint}`, ctx.record));
+      const readRoots = [root, bootDir, ...(opts.run?.readRoots ?? [])];
       const child = new Deno.Command(Deno.execPath(), {
         cwd: root,
         args: jailArgs({ ...opts.run, readRoots }, opts.run?.memoryMb ?? 256, bootPath),
@@ -140,7 +145,7 @@ export function brokeredInvoker(reader: RadiaClient, opts: BrokerOptions = {}): 
       }).spawn();
       return await serve(child, ctx, opts);
     } finally {
-      await Deno.remove(root, { recursive: true }).catch(() => {});
+      await Deno.remove(bootDir, { recursive: true }).catch(() => {});
     }
   };
 }

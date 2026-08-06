@@ -72,6 +72,69 @@ export async function readBindings(client: RadiaClient): Promise<Binding[]> {
   return [...latest.values()].map((r) => r.body as unknown as Binding);
 }
 
+/**
+ * Materialised trees, keyed by digest.
+ *
+ * Per-claim materialise-and-jail pays for a manifest read plus one artifact fetch per file, every
+ * time, for bytes that cannot have changed. Content addressing makes the fix provably safe rather
+ * than merely likely: a warm entry CANNOT be stale, because different code is a different digest
+ * and would be a different key.
+ *
+ * WHAT THIS DOES NOT CACHE, and must not: the PROCESS. That argument covers code, not state, and a
+ * jail reused between claims carries globals, open handles and whatever the last run left in
+ * memory from one record to the next. A pool of live interpreters is a different proposition with
+ * a different safety case, and it does not get to borrow this one.
+ */
+export interface TreeCache {
+  /** The materialised root for a digest, fetched once. Concurrent callers share one
+   *  materialisation rather than racing to write the same files. */
+  root(digest: string): Promise<string>;
+  readonly stats: { hits: number; misses: number };
+  clear(): Promise<void>;
+}
+
+export function treeCache(reader: RadiaClient, opts: { max?: number; dir?: string } = {}): TreeCache {
+  const max = opts.max ?? 4; // a tier runs one digest; this covers a rotation, a rollback and a spare
+  const entries = new Map<string, { root: Promise<string>; used: number }>();
+  const stats = { hits: 0, misses: 0 };
+  let clock = 0;
+  const build = async (digest: string): Promise<string> => {
+    const rows = await reader.query({ kind: "workspace", match: { treeDigest: digest } }, 1, { dir: "desc" });
+    if (rows.length === 0) throw new Error(`no workspace manifest for ${digest}`);
+    const root = await Deno.makeTempDir({ prefix: "radia-tree-", ...(opts.dir ? { dir: opts.dir } : {}) });
+    // deno-lint-ignore no-explicit-any
+    await materialize(reader, rows[0].body as any, root);
+    return root;
+  };
+  return {
+    stats,
+    root(digest: string): Promise<string> {
+      const hit = entries.get(digest);
+      if (hit) {
+        stats.hits++;
+        hit.used = ++clock;
+        return hit.root;
+      }
+      stats.misses++;
+      // The PROMISE is cached, not the path: two claims for one digest arriving together would
+      // otherwise both materialise into different directories, and the loser's would leak.
+      const root = build(digest);
+      entries.set(digest, { root, used: ++clock });
+      while (entries.size > max) {
+        const oldest = [...entries.entries()].sort((a, b) => a[1].used - b[1].used)[0];
+        entries.delete(oldest[0]);
+        oldest[1].root.then((r) => Deno.remove(r, { recursive: true })).catch(() => {});
+      }
+      return root;
+    },
+    async clear(): Promise<void> {
+      const roots = [...entries.values()].map((e) => e.root);
+      entries.clear();
+      for (const r of roots) await r.then((p) => Deno.remove(p, { recursive: true })).catch(() => {});
+    },
+  };
+}
+
 export interface InvokeContext {
   binding: Binding;
   /** The claimed request. An entrypoint sees this and nothing else. */
@@ -114,14 +177,11 @@ export interface HostOptions {
  * Read-only, no network, cwd inside the tree. The entrypoint cannot reach the space: it returns a
  * value, and the host writes it under the agent's identity.
  */
-export function sandboxInvoker(reader: RadiaClient, opts: { timeoutMs?: number } = {}): Invoker {
+export function sandboxInvoker(reader: RadiaClient, opts: { timeoutMs?: number; cache?: TreeCache } = {}): Invoker {
+  const cache = opts.cache ?? treeCache(reader);
   return async (ctx) => {
-    const rows = await reader.query({ kind: "workspace", match: { treeDigest: ctx.binding.workspaceDigest } }, 1, { dir: "desc" });
-    if (rows.length === 0) throw new Error(`no workspace manifest for ${ctx.binding.workspaceDigest}`);
-    const root = await Deno.makeTempDir({ prefix: "radia-host-" });
-    try {
-      // deno-lint-ignore no-explicit-any
-      await materialize(reader, rows[0].body as any, root);
+    const root = await cache.root(ctx.binding.workspaceDigest);
+    {
       const boot = `const record = ${JSON.stringify(ctx.record)};\n` +
         `const mod = await import(${JSON.stringify(`./${ctx.binding.entrypoint}`)});\n` +
         `const out = await mod.default(record);\n` +
@@ -133,8 +193,6 @@ export function sandboxInvoker(reader: RadiaClient, opts: { timeoutMs?: number }
       const line = run.stdout.split("\n").find((l) => l.startsWith("radia:"));
       if (!line) throw new Error("entrypoint produced no result");
       return JSON.parse(line.slice("radia:".length)) as { kind: string; body: unknown };
-    } finally {
-      await Deno.remove(root, { recursive: true }).catch(() => {});
     }
   };
 }
