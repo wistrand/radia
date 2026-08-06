@@ -890,6 +890,13 @@ export class SqliteAdapter implements StorageAdapter {
     return Promise.resolve(resolveEventHorizon(oldest, exists, after));
   }
 
+  async appendGcEvent(e: EventInput): Promise<{ cursor: string; seq: number }> {
+    const now = await this.now();
+    this.appendEvent(e, now);
+    const row = this.db.prepare("select last_insert_rowid() as seq").get() as { seq: number };
+    return { cursor: String(row.seq), seq: row.seq };
+  }
+
   /**
    * Rows of the kind that survive the SQL pre-filter: a superset of what the oracle accepts.
    *

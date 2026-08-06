@@ -314,6 +314,15 @@ export async function handleIntegrity(space: Space): Promise<Response> {
       unsealedNote: `${r.unsealed}+ events are committed but not yet sealed; sealing follows the ` +
         "log's finality watermark, so the most recent activity is always outside the chain",
     } : {}),
+    ...(r.truncated ? {
+      truncatedNote: `the chain begins at idx ${r.truncated.anchorIdx}: ${r.truncated.swept} ` +
+        `events were removed by event-log GC, ` +
+        (r.truncated.attested
+          ? (r.signed
+            ? "attested by the anchor's signature and a sealed horizon statement"
+            : "with a sealed horizon statement; on an UNSIGNED chain that is naive-edit evidence only")
+          : "and nothing attests the truncation"),
+    } : {}),
   });
 }
 

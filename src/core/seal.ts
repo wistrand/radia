@@ -141,10 +141,45 @@ export interface IntegrityReport {
   /** Present only when the chain is signed. `false` means a link's signature did not verify, which
    *  is the case a bare chain cannot distinguish from an honest rebuild. */
   signed: boolean;
+  /**
+   * Present when the chain begins past genesis: event GC's anchor state. `swept` counts events
+   * whose content is gone (`anchorIdx` links below the anchor, plus the anchor's own event once
+   * the sweep completes); the anchor's dense idx is what makes it exact. `attested` means the
+   * retained suffix carries a sealed horizon statement covering the anchor, so the truncation is
+   * the one the sweep declared; without it `ok` is false (`unattested_truncation`). On an
+   * unsigned chain an attestation is naive-edit evidence only, like the chain itself.
+   */
+  truncated?: { anchorIdx: number; swept: number; attested: boolean };
   failure?: {
     idx: number;
     eventId: string;
-    reason: "hash_mismatch" | "broken_link" | "missing_event" | "bad_signature" | "gap";
+    reason: "hash_mismatch" | "broken_link" | "missing_event" | "bad_signature" | "gap" | "unattested_truncation";
     detail: string;
   };
+}
+
+/**
+ * The horizon statement and its reader, in one place so the sweep and the verifier cannot
+ * disagree about the format. The event sweep (plan-gc.md phase 3) writes and SEALS this before it
+ * deletes anything; verify then accepts a chain that begins at idx J only when the newest sealed
+ * statement attests an anchor at or above J. A deeper truncation deletes the statement with the
+ * rest and leaves an anchor with no attestation, which is reported as exactly that.
+ */
+export function horizonStatement(
+  anchor: { idx: number; cursor: string; seq: number },
+  runId: string,
+): { runId: string; operation: string; detail: Record<string, unknown> } {
+  return {
+    runId,
+    operation: "gc",
+    detail: { eventHorizon: { anchorIdx: anchor.idx, cursor: anchor.cursor, seq: anchor.seq } },
+  };
+}
+
+/** The anchor idx a sealed event attests, or null when it is not a horizon statement. */
+export function attestedAnchorIdx(e: SpaceEvent): number | null {
+  if (e.operation !== "gc") return null;
+  const d = e.detail as { eventHorizon?: { anchorIdx?: unknown } } | undefined | null;
+  const idx = d?.eventHorizon?.anchorIdx;
+  return typeof idx === "number" && Number.isInteger(idx) && idx >= 0 ? idx : null;
 }

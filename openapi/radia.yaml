@@ -1033,16 +1033,29 @@ paths:
                     properties:
                       idx: { type: integer }
                       hash: { type: string }
+                  truncated:
+                    type: object
+                    description: >-
+                      present when the chain begins past genesis: event-log GC removed `swept`
+                      events below the anchor. `attested` means a sealed horizon statement covers
+                      the truncation (honest GC seals one before deleting); an unattested
+                      truncation is reported as a failure (`unattested_truncation`), because it is
+                      indistinguishable from someone deleting history.
+                    properties:
+                      anchorIdx: { type: integer }
+                      swept: { type: integer }
+                      attested: { type: boolean }
                   failure:
                     type: object
                     description: "the FIRST divergence; absent when ok"
                     properties:
                       idx: { type: integer }
                       eventId: { type: string }
-                      reason: { type: string, enum: [hash_mismatch, broken_link, missing_event, bad_signature, gap] }
+                      reason: { type: string, enum: [hash_mismatch, broken_link, missing_event, bad_signature, gap, unattested_truncation] }
                       detail: { type: string }
                   note: { type: string, description: "present when the chain is unsigned" }
                   unsealedNote: { type: string }
+                  truncatedNote: { type: string }
 
   /ops/flows:
     get:

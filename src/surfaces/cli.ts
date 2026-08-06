@@ -323,6 +323,12 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
             : `chain BROKEN at link ${r.failure?.idx}: ${r.failure?.reason} (${r.failure?.detail})`,
         ];
         if (r.head) lines.push(`head ${r.head.idx} ${r.head.hash.slice(0, 16)}…`);
+        if (r.truncated) {
+          lines.push(
+            `truncated: begins at link ${r.truncated.anchorIdx}, ${r.truncated.swept} events removed by event GC` +
+              (r.truncated.attested ? " (attested)" : " (UNATTESTED)"),
+          );
+        }
         if (r.unsealed > 0) lines.push(`${r.unsealed}+ events not yet sealed (sealing follows the finality watermark)`);
         // Never let an unsigned chain be quoted as tamper-detection. It is not, and the difference
         // is the entire value of the feature.

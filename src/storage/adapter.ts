@@ -506,6 +506,16 @@ export interface StorageAdapter {
    */
   eventHorizon(after: string): Promise<EventHorizonCheck>;
 
+  /**
+   * Append one recordless operational event (GC evidence: the record sweep's per-kind residue
+   * uses an in-transaction path; this is the standalone one for the event sweep's horizon
+   * statement). Returns where the event landed in the log so the caller can confirm the chain
+   * sealed through it — the statement must be sealed BEFORE the sweep deletes, or an honest crash
+   * becomes indistinguishable from tampering. Never a substitute for record events: those are
+   * appended inside the transaction that performs the mutation. (M2)
+   */
+  appendGcEvent(e: EventInput): Promise<{ cursor: string; seq: number }>;
+
   // Kind declarations are NOT a storage concern: they are kind_def records, written via put()
   // and read via query() like any record (see core/space.ts loadKinds). No kinds table.
 

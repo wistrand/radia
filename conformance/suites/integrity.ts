@@ -208,6 +208,186 @@ export const integritySuites: Suite[] = [
       assertEquals(first.prevHash, CHAIN_GENESIS);
     },
   },
+
+  // --- event-log truncation (plan-gc.md phase 3, step 2): honest GC is anchored and attested;
+  // everything that is not stays a tamper verdict. The truncated states are planted with raw SQL
+  // in the sweep's REQUIRED order (statement sealed first, then events and seals together),
+  // because the sweep itself is step 3.
+
+  {
+    name: "an anchored truncation with its sealed statement verifies, and says what it cannot check",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      space.sealKey = await sealKey();
+      await work(space);
+      await space.sealEvents();
+      const seals = await adapter.getSeals(-1, 100);
+      assert(seals.length >= 4, "expected enough links to truncate");
+      const anchor = seals[2];
+
+      const { attested } = await space.attestEventTruncation(anchor);
+      assert(attested, "the statement must seal before any deletion");
+      await rawExec(adapter, "delete from events where seq <= ?", [anchor.seq]);
+      await rawExec(adapter, "delete from event_seal where idx < ?", [anchor.idx]);
+
+      const r = await space.verifyIntegrity();
+      assertEquals(r.ok, true);
+      assertEquals(r.truncated, { anchorIdx: anchor.idx, swept: anchor.idx + 1, attested: true });
+      // The anchor's content cannot be rechecked, so it is not counted among the verified links.
+      assertEquals(r.checked, r.sealed - anchor.idx - 1);
+      // And the truncation IS the horizon phase 1's boundary reads back.
+      assertEquals((await adapter.eventHorizon("0")).horizon, { cursor: anchor.cursor, swept: anchor.idx + 1 });
+    },
+  },
+  {
+    name: "a sweep in flight verifies: statement sealed, planned anchor not yet content-swept",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      space.sealKey = await sealKey();
+      await work(space);
+      await space.sealEvents();
+      const seals = await adapter.getSeals(-1, 100);
+
+      const { attested } = await space.attestEventTruncation(seals[2]);
+      assert(attested);
+      // Oldest-first pair deletion has reached idx 1: idx 0 fully gone, idx 1 intact, the planned
+      // anchor (2) untouched. The chain begins BELOW the attested anchor, which is honest.
+      await rawExec(adapter, "delete from events where seq <= ?", [seals[0].seq]);
+      await rawExec(adapter, "delete from event_seal where idx < ?", [seals[1].idx]);
+
+      const r = await space.verifyIntegrity();
+      assertEquals(r.ok, true);
+      assertEquals(r.truncated, { anchorIdx: seals[1].idx, swept: seals[1].idx, attested: true });
+    },
+  },
+  {
+    name: "a truncation nothing attests is a tamper verdict, and deeper-than-attested too",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      space.sealKey = await sealKey();
+      await work(space);
+      await space.sealEvents();
+      const seals = await adapter.getSeals(-1, 100);
+
+      // No statement at all: the chain merely begins late. Honest GC never produces this.
+      await rawExec(adapter, "delete from events where seq <= ?", [seals[1].seq]);
+      await rawExec(adapter, "delete from event_seal where idx < ?", [seals[1].idx]);
+      const bare = await space.verifyIntegrity();
+      assertEquals(bare.ok, false);
+      assertEquals(bare.failure?.reason, "unattested_truncation");
+      assertEquals(bare.truncated?.attested, false);
+
+      // Attest an anchor, then truncate DEEPER than declared: the statement survives but does
+      // not cover the chain's actual start, which is exactly a tamper hiding behind honest GC.
+      const { attested } = await space.attestEventTruncation(seals[2]);
+      assert(attested);
+      await rawExec(adapter, "delete from events where seq <= ?", [seals[3].seq]);
+      await rawExec(adapter, "delete from event_seal where idx < ?", [seals[3].idx]);
+      const deeper = await space.verifyIntegrity();
+      assertEquals(deeper.ok, false);
+      assertEquals(deeper.failure?.reason, "unattested_truncation");
+    },
+  },
+  {
+    name: "a mid-chain gap past the anchor is still a gap",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      space.sealKey = await sealKey();
+      await work(space);
+      await space.sealEvents();
+      const seals = await adapter.getSeals(-1, 100);
+      const anchor = seals[1];
+      const { attested } = await space.attestEventTruncation(anchor);
+      assert(attested);
+      await rawExec(adapter, "delete from events where seq <= ?", [anchor.seq]);
+      await rawExec(adapter, "delete from event_seal where idx < ?", [anchor.idx]);
+      assertEquals((await space.verifyIntegrity()).ok, true);
+
+      // The cover-up shape, inside the retained suffix: a pair deleted mid-chain. Anchoring must
+      // not have widened what a gap means.
+      await rawExec(adapter, "delete from events where seq = ?", [seals[3].seq]);
+      await rawExec(adapter, "delete from event_seal where idx = ?", [seals[3].idx]);
+      const r = await space.verifyIntegrity({ seal: false });
+      assertEquals(r.ok, false);
+      assertEquals(r.failure?.reason, "gap");
+      assertEquals(r.failure?.idx, seals[3].idx);
+    },
+  },
+  {
+    name: "deleting the horizon statement un-attests the anchor",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      space.sealKey = await sealKey();
+      await work(space);
+      await space.sealEvents();
+      const seals = await adapter.getSeals(-1, 100);
+      const anchor = seals[1];
+      const { attested } = await space.attestEventTruncation(anchor);
+      assert(attested);
+      await rawExec(adapter, "delete from events where seq <= ?", [anchor.seq]);
+      await rawExec(adapter, "delete from event_seal where idx < ?", [anchor.idx]);
+      assertEquals((await space.verifyIntegrity()).ok, true);
+
+      // The statement sits at the head here, so deleting its pair leaves a SHORTER chain that
+      // recomputes perfectly: the one variant the dense-idx check cannot catch. What catches it
+      // is the anchor losing its attestation.
+      const events = await space.getEvents("0");
+      const stmt = events.find((e) => e.operation === "gc");
+      assert(stmt, "the horizon statement must be in the retained log");
+      await rawExec(adapter, "delete from events where seq = ?", [stmt!.seq]);
+      await rawExec(adapter, "delete from event_seal where seq = ?", [stmt!.seq]);
+      const r = await space.verifyIntegrity({ seal: false });
+      assertEquals(r.ok, false);
+      assertEquals(r.failure?.reason, "unattested_truncation");
+    },
+  },
+  {
+    name: "an anchor whose signature does not verify is a rebuilt chain, not GC",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      space.sealKey = await sealKey();
+      await work(space);
+      await space.sealEvents();
+      const seals = await adapter.getSeals(-1, 100);
+      const anchor = seals[2];
+      const { attested } = await space.attestEventTruncation(anchor);
+      assert(attested);
+      await rawExec(adapter, "delete from events where seq <= ?", [anchor.seq]);
+      await rawExec(adapter, "delete from event_seal where idx < ?", [anchor.idx]);
+
+      // The anchor's hash cannot be recomputed (its event is gone), so its SIGNATURE is the only
+      // thing tying the retained suffix to the history it claims. Forge it and the whole anchored
+      // construction must collapse.
+      await rawExec(adapter, "update event_seal set sig = ? where idx = ?", ["AAAA", anchor.idx]);
+      const r = await space.verifyIntegrity({ seal: false });
+      assertEquals(r.ok, false);
+      assertEquals(r.failure?.reason, "bad_signature");
+      assertEquals(r.failure?.idx, anchor.idx);
+    },
+  },
+  {
+    name: "unsigned: an attested truncation passes with the caveat the whole chain carries",
+    run: async (adapter) => {
+      // Extends the pinned posture above ("an UNSIGNED chain accepts a rebuild"): unsigned
+      // anchoring is naive-edit evidence only, so an attested truncation is accepted and the
+      // report's `signed: false` is what says how much that means. An UNATTESTED one still fails,
+      // which is exactly the naive edit the bare chain exists to catch.
+      const space = newSpace(adapter);
+      await work(space);
+      await space.sealEvents();
+      const seals = await adapter.getSeals(-1, 100);
+      const anchor = seals[1];
+      const { attested } = await space.attestEventTruncation(anchor);
+      assert(attested);
+      await rawExec(adapter, "delete from events where seq <= ?", [anchor.seq]);
+      await rawExec(adapter, "delete from event_seal where idx < ?", [anchor.idx]);
+
+      const r = await space.verifyIntegrity();
+      assertEquals(r.ok, true);
+      assertEquals(r.signed, false);
+      assertEquals(r.truncated, { anchorIdx: anchor.idx, swept: anchor.idx + 1, attested: true });
+    },
+  },
 ];
 
 /**

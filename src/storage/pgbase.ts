@@ -1147,6 +1147,16 @@ export class PgSqlAdapter implements StorageAdapter {
     return resolveEventHorizon(oldest, exists, after);
   }
 
+  async appendGcEvent(e: EventInput): Promise<{ cursor: string; seq: number }> {
+    const now = await this.now();
+    const res = await this.sql.query<{ seq: string; cursor: string }>(
+      `insert into events (id, ts, run_id, operation, record_id, kind, state, detail, body_sha256)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9) returning seq::text as seq, xid::text as cursor`,
+      [newUlid(), now, e.runId, e.operation, e.recordId ?? null, e.kind ?? null, e.state ?? null, e.detail ? JSON.stringify(e.detail) : null, e.bodySha256 ?? null],
+    );
+    return { cursor: res.rows[0].cursor, seq: Number(res.rows[0].seq) };
+  }
+
   private async fetchCandidates(
     tx: Sql,
     selector: TakeSelector,

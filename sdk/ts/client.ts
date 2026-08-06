@@ -314,8 +314,12 @@ export class RadiaClient {
     unsealed: number;
     signed: boolean;
     head?: { idx: number; hash: string };
+    /** Present when the chain begins past genesis (event-log GC's anchor state). `attested`
+     *  means a sealed horizon statement covers the truncation; unattested truncation fails. */
+    truncated?: { anchorIdx: number; swept: number; attested: boolean };
     failure?: { idx: number; eventId: string; reason: string; detail: string };
     note?: string;
+    truncatedNote?: string;
   }> {
     return this.req("GET", "/v0/ops/integrity");
   }

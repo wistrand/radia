@@ -238,8 +238,14 @@ the oldest seal + whether its event survives, covering the anchor state AND a sw
 implemented in `sqlite.ts`/`pgbase.ts`, the sentinel-exempt 410 in `watches.ts`, the
 `logBeginsAfter`/`sweptBefore` annotation in `ops.ts`; planted truncations pinned in
 `conformance/suites/gc.ts` and the boundary in `http.test.ts`. (2) Anchored verify + the
-sealed horizon statement, with plants: a REAL mid-chain gap must still fail; a deleted horizon
-statement must be flagged. (3) The sweep itself: seal-first, window ∩ sealed-only, events and
+sealed horizon statement — BUILT (2026-08-06): `IntegrityReport.truncated` + the
+`unattested_truncation` verdict (`space.ts verifyIntegrity`, judged AFTER the walk because the
+statement sits above the anchor), the statement format as one writer/reader pair in `seal.ts`
+(`horizonStatement`/`attestedAnchorIdx`), and `Space.attestEventTruncation` (append via the
+port's `appendGcEvent`, seal, confirm coverage) which the sweep MUST call and see `attested:
+true` before deleting. Plants in `conformance/suites/integrity.ts`: mid-chain gap past an anchor
+still fails, a deleted statement un-attests, deeper-than-attested fails, a forged anchor
+signature fails, unsigned passes attested with its standing caveat. (3) The sweep itself: seal-first, window ∩ sealed-only, events and
 seals below horizon, anchor retained, never splitting events that share a cursor (an xid groups
 siblings; a split would put retained events below the horizon); plants: never-sweep-unsealed, and
 a sweep killed mid-batch leaves a chain verify still passes. Plus one end-to-end check: an SDK

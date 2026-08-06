@@ -79,7 +79,15 @@ import {
   type StaleSplit,
   thread,
 } from "./inspection.ts";
-import { chainedEvent, type IntegrityReport, linkEvents, SEAL_BATCH, type SealKey } from "./seal.ts";
+import {
+  attestedAnchorIdx,
+  chainedEvent,
+  horizonStatement,
+  type IntegrityReport,
+  linkEvents,
+  SEAL_BATCH,
+  type SealKey,
+} from "./seal.ts";
 import { CHAIN_GENESIS, eventHash, RESERVED_KINDS } from "../../sdk/ts/wire.ts";
 
 export interface SpaceContext {
@@ -2352,10 +2360,32 @@ export class Space {
     let prev = CHAIN_GENESIS;
     let expectIdx = 0;
     let afterIdx = -1;
+    let first = true;
+    // Event GC leaves a chain that begins past genesis (the anchor state: links below the anchor
+    // deleted, the anchor's own event swept once the sweep completes). Those facts are collected
+    // during the walk and judged AFTER it, because the horizon statement that makes the
+    // truncation honest is sealed above it in the retained suffix.
+    let truncated: NonNullable<IntegrityReport["truncated"]> | undefined;
+    let anchorEventId = "";
+    let attested = -1; // newest sealed horizon statement's anchorIdx; the walk ascends, last wins
     for (;;) {
       const seals = await this.storage.getSeals(afterIdx, Math.min(opts.limit ?? SEAL_BATCH, SEAL_BATCH));
       if (seals.length === 0) break;
       for (const seal of seals) {
+        const event = await this.eventById(seal.eventId, seal.cursor, seal.seq);
+        if (first) {
+          first = false;
+          if (seal.idx > 0 || !event) {
+            // The anchor. Its prev_hash points at a deleted link, so the chain is accepted FROM
+            // its hash; what stands behind that hash is the signature (on a signed chain) plus
+            // the attestation judged below. A chain that merely STARTS late without either stays
+            // a tamper verdict.
+            truncated = { anchorIdx: seal.idx, swept: seal.idx + (event ? 0 : 1), attested: false };
+            anchorEventId = seal.eventId;
+            expectIdx = seal.idx;
+            if (seal.idx > 0) prev = seal.prevHash;
+          }
+        }
         // A missing position is a DELETED link. Without this check a truncated chain verifies
         // perfectly, which is the failure an audit most needs to catch.
         if (seal.idx !== expectIdx) {
@@ -2364,11 +2394,19 @@ export class Space {
         if (seal.prevHash !== prev) {
           return fail(seal.idx, seal.eventId, "broken_link", `prev_hash does not match the hash at ${seal.idx - 1}`);
         }
-        const event = await this.eventById(seal.eventId, seal.cursor, seal.seq);
-        if (!event) return fail(seal.idx, seal.eventId, "missing_event", "the sealed event is no longer in the log");
-        const hash = await eventHash(seal.prevHash, chainedEvent(seal.idx, event));
-        if (hash !== seal.hash) {
-          return fail(seal.idx, seal.eventId, "hash_mismatch", "the event does not hash to its seal; it was altered after sealing");
+        if (!event) {
+          // Tolerated at the anchor alone, pending attestation; anywhere else it is tampering.
+          if (!(truncated && seal.idx === truncated.anchorIdx)) {
+            return fail(seal.idx, seal.eventId, "missing_event", "the sealed event is no longer in the log");
+          }
+        } else {
+          const hash = await eventHash(seal.prevHash, chainedEvent(seal.idx, event));
+          if (hash !== seal.hash) {
+            return fail(seal.idx, seal.eventId, "hash_mismatch", "the event does not hash to its seal; it was altered after sealing");
+          }
+          const a = attestedAnchorIdx(event);
+          if (a !== null) attested = a;
+          report.checked++;
         }
         if (this.sealKey) {
           if (!seal.sig) return fail(seal.idx, seal.eventId, "bad_signature", "the link carries no signature on a signed chain");
@@ -2379,10 +2417,45 @@ export class Space {
         prev = seal.hash;
         expectIdx++;
         afterIdx = seal.idx;
-        report.checked++;
+      }
+    }
+    if (truncated) {
+      // Honest states have the chain beginning AT or BELOW the attested anchor: mid-sweep the
+      // oldest surviving pair sits below it, at completion exactly on it. Deeper is dishonest.
+      truncated.attested = attested >= truncated.anchorIdx;
+      report.truncated = truncated;
+      if (!truncated.attested) {
+        return fail(
+          truncated.anchorIdx,
+          anchorEventId,
+          "unattested_truncation",
+          attested < 0
+            ? `the chain begins at idx ${truncated.anchorIdx} with no sealed horizon statement; honest event GC seals its horizon before deleting`
+            : `the chain begins at idx ${truncated.anchorIdx} but the newest sealed horizon statement attests only idx ${attested}: the log was truncated deeper than GC declared`,
+        );
       }
     }
     return report;
+  }
+
+  /**
+   * Write and seal the horizon statement that makes an event-log truncation attributable to GC
+   * rather than to tampering. The M2 event sweep MUST call this and see `attested: true` BEFORE
+   * it deletes anything: a crash after deletion but before the statement leaves an anchor with no
+   * attestation, which verify reports as tampering, and would be right to. `attested: false`
+   * means the statement is committed but the finality watermark has not let the chain seal
+   * through it yet; the sweep must not proceed until a later attempt seals it.
+   */
+  async attestEventTruncation(
+    anchor: { idx: number; cursor: string; seq: number },
+    runId = "gc:events",
+  ): Promise<{ attested: boolean }> {
+    const at = await this.storage.appendGcEvent(horizonStatement(anchor, runId));
+    await this.sealEvents();
+    const head = await this.storage.sealHead();
+    const attested = !!head &&
+      (BigInt(head.cursor) > BigInt(at.cursor) || (head.cursor === at.cursor && head.seq >= at.seq));
+    return { attested };
   }
 
   /** The sealed event, read back for verification. Positioned by its cursor rather than scanned:
