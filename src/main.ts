@@ -23,7 +23,7 @@ const USAGE = `radia <command>
 
   dev [--port <n>] [--host <addr>] [--storage pglite|sqlite|postgres] [--db [path|url]]
       [--blobs <dir>] [--blob-kek [file]] [--seal-key [file]] [--auth required|open]
-      [--artifact-port <n>] [--max-scan-rows <n>]
+      [--artifact-port <n>] [--max-scan-rows <n>] [--event-retention <seconds>]
       Run an embedded space + web console. Everything it writes goes under ./.radia
       (RADIA_DIR moves it); bare --db and --blob-kek take their defaults from there.
   mcp [--url <base>]
@@ -118,7 +118,21 @@ async function dev(args: string[]): Promise<void> {
   if (maxScanRows !== undefined && (!Number.isInteger(maxScanRows) || maxScanRows < 0)) {
     throw new UsageError(`--max-scan-rows must be a non-negative whole number (0 = unbounded), got '${scanFlag}'`);
   }
-  const space = new Space(storage, maxScanRows === undefined ? {} : { maxScanRows }, blobs);
+  // Event-log retention is OPT-IN: absent, the log is never truncated and the evidence promise
+  // stays unqualified. Weeks, not hours (plan-gc.md phase 3): the window must dwarf any watch
+  // reconnect gap, since a client sleeping past it gets a 410 and must re-sync by query.
+  const evFlag = flag(args, "--event-retention");
+  const eventRetentionSeconds = evFlag === undefined ? undefined : Number(evFlag);
+  if (eventRetentionSeconds !== undefined && (!Number.isInteger(eventRetentionSeconds) || eventRetentionSeconds < 0)) {
+    throw new UsageError(`--event-retention must be a non-negative whole number of seconds, got '${evFlag}'`);
+  }
+  const space = new Space(storage, {
+    ...(maxScanRows === undefined ? {} : { maxScanRows }),
+    ...(eventRetentionSeconds === undefined ? {} : { eventRetentionSeconds }),
+  }, blobs);
+  if (eventRetentionSeconds !== undefined) {
+    console.log(`radia dev: event-log retention ${eventRetentionSeconds}s (gc truncates the sealed log to this window)`);
+  }
   if (maxScanRows !== undefined) {
     console.log(
       `radia dev: scan budget ${maxScanRows === 0 ? "DISABLED: one undecidable pattern can walk a whole kind" : `${maxScanRows} rows per read`}`,

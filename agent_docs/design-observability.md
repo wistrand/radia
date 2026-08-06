@@ -20,7 +20,10 @@ stale-available records), and **remediation** (`adminTransition`,
 **declassify** (`POST /v0/ops/records/{id}/declassify`, operator-gated; see
 [design-auth.md](design-auth.md)) is the other operator action on this plane. All `/v0/ops/*` is
 grant-gated to operator principals (enforced). The **hash-chained log is built** (M1: `src/core/seal.ts`, `GET /v0/ops/integrity`); external
-anchoring of checkpoints stays M2. **Not
+anchoring of checkpoints stays M2. **Event-log retention is built** (an M2 slice, 2026-08-06):
+opt-in `eventRetentionSeconds` truncates the log to an attested anchor via the `gc` verb, so audit
+and re-execution reach the HORIZON, not genesis, on a space that enables it; won/lost is stated in
+[plan-gc.md](plan-gc.md) ("The ledger"). **Not
 implemented:** envelope
 repeated-shape livelock detection (M3),
 re-execution tooling (M3). The orphan/starving split IS built (M1): `diagnostics` runs the pattern
@@ -41,7 +44,10 @@ heuristic conflates and whose remedies point in opposite directions.
 ## Invariants
 
 - The event log is append-only and written in the **same transaction** as each mutation,
-  with run identity on every event.
+  with run identity on every event. Append-only means never rewritten, not permanent: with
+  `eventRetentionSeconds` set, the `gc` verb deletes a PREFIX, anchored and attested so
+  `verifyIntegrity` tells honest truncation from tampering; unset (the default), the log is
+  complete from genesis. See [plan-gc.md](plan-gc.md) phase 3.
 - The lineage DAG is acyclic by construction (see
   [design-data-model.md](design-data-model.md)); livelock is a *repeating signature along
   a chain*, not a cycle.
@@ -75,9 +81,11 @@ heuristic conflates and whose remedies point in opposite directions.
 ## Event log
 
 Append-only, same transaction as each mutation, run identity on every event. Incident
-scope = one lineage query. Retention vs. deletion duties are handled by crypto-shredding
-or payload tombstoning (envelope + hashes retained, body destroyed), planned from day
-one.
+scope = one lineage query. Deletion duties are BUILT and split by what is destroyed
+([plan-gc.md](plan-gc.md)): crypto-shredding for artifact payloads (chain hashes survive), the
+record sweep for bodies (event residue survives), and opt-in event retention for the residue
+itself (the anchor seal and its idx-count survive). Each tier trades audit depth for bounded
+growth; the ledger in plan-gc.md states what each buys and loses.
 
 ## Diagnostics
 
@@ -188,9 +196,15 @@ flowchart TB
      force rather than letting "verified" mean two things.
    - **A missing index is a deleted link.** Delete an event and its seal together and what remains
      recomputes perfectly; the dense-index check is what catches the cover-up.
+   - **Honest truncation must not look like that cover-up.** Event GC deletes a prefix by design,
+     so the sweep seals a horizon statement BEFORE deleting and keeps the newest pre-horizon seal
+     as the anchor; verify accepts a chain beginning past genesis only when the retained suffix
+     attests it (`truncated` in the report), and everything else stays a tamper verdict
+     (`unattested_truncation`). See [plan-gc.md](plan-gc.md) phase 3.
 
-   Sealing runs ON DEMAND (verification seals first), never on a timer: an idle space holds no
-   background work, the same rule `Notifier` and `sweepWatches` follow.
+   Sealing runs ON DEMAND (verification seals first, the gc verb seals before it sweeps), never on
+   a timer: an idle space holds no background work, the same rule `Notifier` and `sweepWatches`
+   follow.
 3. **Signatures at trust boundaries only (federation-time):** export bundles and
    cross-space transfers are runtime-signed together with the checkpoint proving chain
    position. Agent-held keys (via workload identity, no static key at rest) only when

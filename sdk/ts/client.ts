@@ -673,6 +673,19 @@ export class RadiaClient {
     /** Registry compaction (superseded latest-wins successors, dead runs' interests), unless
      *  `compact: false`. Kinds opt in by declaring a `contentKey` on their kind_def. */
     compaction?: { compacted: number; superseded: number; byKind: Record<string, number>; more: boolean };
+    /** Event-log retention (present when the space configures `eventRetentionSeconds`): the log
+     *  truncated to the window ∩ the sealed head, anchored and attested so integrity can tell
+     *  honest GC from tampering. `unsealed: 1` means a seal-first debt remains (reported as N+). */
+    events?: {
+      enabled: boolean;
+      sealed: number;
+      unsealed: number;
+      swept: number;
+      eligible: number;
+      anchorIdx?: number;
+      attested?: boolean;
+      more: boolean;
+    };
   }> {
     return this.req("POST", "/v0/ops/gc", opts);
   }

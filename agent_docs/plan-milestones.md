@@ -126,11 +126,20 @@ pinned in `conformance/http.test.ts` and the horizon derivation per adapter in
   bytes/record. Compaction deletes superseded latest-wins successors (keep-newest per `contentKey`,
   tombstones included — the resurrection guard is planted-regression-proved) and dead runs'
   interests. Motive was measured: registry successors were 52% of a live space, `llm_call` bodies
-  8 MB of 10 MB. Event-log retention (seal checkpointing, 410 activation) stays open below.
+  8 MB of 10 MB.
+- [x] **event-log retention** (2026-08-06, [plan-gc.md](plan-gc.md) phase 3, all three steps):
+  opt-in `eventRetentionSeconds` (`radia dev --event-retention`); `Space.gcEvents` rides the gc
+  verb — seal-first, anchor through the seals, attest a sealed horizon statement BEFORE deleting,
+  then seal+event pairs oldest-first. `verifyIntegrity` reports honest truncation as
+  `truncated`+attested and everything else as tampering (`unattested_truncation`); watch cursors
+  below the horizon 410 (the `"0"` sentinel clamps, or the SDKs' recovery would loop); ops reads
+  annotate. What a space wins and loses by enabling it: plan-gc.md, "The ledger".
 - [ ] durable timers. In scope: the delayed-visibility sweeper over the envelope's `available_at` that retry backoff needs anyway. Out of scope: a general workflow-timer / cron / signal library, which is Temporal's ground; Radia does not reimplement durable execution (see [research-positioning.md](research-positioning.md))
 - [ ] transactional budget reservation/settlement
 - [~] runtime envelope encryption + crypto-shredding: **built for artifact blobs** (`src/storage/crypto.ts`: per-blob DEK, wrapped under a space KEK from env/keyring, destroyable sidecar so deleting the key destroys the payload while the record and its digest stay verifiable). Record *bodies* are plaintext; KMS wrapping + rotation are open.
-- [ ] signed, externally-anchored log checkpoints
+- [ ] signed, externally-anchored log checkpoints. The INTERNAL half converged with event GC
+  (plan-gc.md phase 3): each seal is self-contained and the retained suffix verifies from an
+  anchor, so what remains open is only publishing a checkpoint outside the operator's trust domain
 - [ ] lineage viewer
 - [x] run-scoped short-lived credentials: built in M1 with the bootstrap chain above. A run token
   carries `expiresAt`, renews at half-life (`keepAlive` in both SDKs) and is capped by

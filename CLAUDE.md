@@ -113,7 +113,7 @@ Research and planning:
 - [agent_docs/plan-audit-remediation.md](agent_docs/plan-audit-remediation.md): confirmed defects from two full-codebase audits (2026-07-27, 2026-08-03), grouped by root cause with the guard each one needs. Items are marked VERIFIED or REPORTED; a REPORTED one has not been re-derived and should be checked before it is trusted. Read before touching auth scope enforcement, credential resolution, lease settle, grant supersede, pushdown, or declassify. No P0 is open (K closed 2026-08-03: definitions are revocable).
 - [agent_docs/design-inspection.md](agent_docs/design-inspection.md): inspecting emergent flows. Why a content-routed substrate cannot render its own workflow, the three audiences that ask different questions, what shape each mechanism has to take, and the constraints that turn an inspection feature into a defect. Read before adding any view or read verb.
 - [agent_docs/plan-inspection.md](agent_docs/plan-inspection.md): the inspection backlog: order, audience per item, and the one open prerequisite (watch lifecycle).
-- [agent_docs/plan-gc.md](agent_docs/plan-gc.md): garbage collection. Retention sweep (`retention_until`, finally consulted) and registry compaction (keep-newest per content key, tombstones kept) are BUILT; event-log retention and blob GC are designed, not scheduled. Read before touching deletion, `retention_until`, or any latest-wins registry's growth.
+- [agent_docs/plan-gc.md](agent_docs/plan-gc.md): garbage collection. Retention sweep (`retention_until`, finally consulted), registry compaction (keep-newest per content key, tombstones kept) and opt-in event-log retention (anchored + attested truncation, `eventRetentionSeconds`) are BUILT; blob GC is designed, not scheduled. Its "ledger" section states what each sweep buys and loses. Read before touching deletion, `retention_until`, the event chain, or any latest-wins registry's growth.
 - [agent_docs/research-self-modeling.md](agent_docs/research-self-modeling.md): whether a space can hold an agent's model of its own process in the same medium as its model of the world. Covers the paired self-report/measurement claim, the verified blockers, and the calibration baseline. Research, gated like the marketplace; nothing scheduled.
 - [agent_docs/gotchas.md](agent_docs/gotchas.md): rejected approaches, the risk register, and non-obvious "why is it like this" decisions. **Read the SECTION for what you are changing, not the file**: the traps are grouped by subsystem, with a linked contents list at the top. The ones most often needed are [credentials](agent_docs/gotchas.md#credentials-tokens-and-sessions), [grants and scopes](agent_docs/gotchas.md#grants-scopes-and-narrowed-answers), [registries and bounded reads](agent_docs/gotchas.md#registries-and-reads-that-must-not-truncate), [leases and watches](agent_docs/gotchas.md#leases-claims-events-and-watches), and [storage and the planner](agent_docs/gotchas.md#storage-sql-and-the-planner).
 
@@ -226,8 +226,11 @@ live at the top of the relevant `agent_docs/` file, not here.
   record survives. Immutable means never rewritten, not permanent; a record neither stamped nor
   of a kind declaring `defaultRetentionSeconds` is permanent, and the runtime stamps only what the
   record or its kind_def declared (the default is MATERIALIZED into the record at commit, so a
-  redeclaration never changes history). What GC keeps is the evidence: the event log retains every
-  swept record's id, kind, digest and transitions. Never swept, whatever the clock says: a record
+  redeclaration never changes history). What GC keeps is the evidence, two-tiered once a space
+  sets `eventRetentionSeconds` (off by default): the event log retains every swept record's id,
+  kind, digest and transitions until the EVENT horizon, past which only the anchor seal remains,
+  its dense idx counting the removed links and a sealed horizon statement attesting the truncation
+  so integrity tells honest GC from tampering (plan-gc.md phase 3). Never swept, whatever the clock says: a record
   under a live lease, unclaimed claimable work, reserved kinds, `artifact` records (bytes with no
   other path to them), the newest record per registry key — tombstones above all, because deleting
   a `retired: true` marker silently undoes the withdrawal. Never a timer: the verb, plus an

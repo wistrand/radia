@@ -1157,6 +1157,44 @@ export class PgSqlAdapter implements StorageAdapter {
     return { cursor: res.rows[0].cursor, seq: Number(res.rows[0].seq) };
   }
 
+  async latestSealBefore(cutoffTs: string): Promise<EventSeal | null> {
+    const res = await this.sql.query<Record<string, unknown>>(
+      `select s.idx, s.event_id, s.cursor, s.seq, s.hash, s.prev_hash, s.sig
+         from event_seal s join events e on e.seq = s.seq
+        where e.ts < $1 order by s.idx desc limit 1`,
+      [cutoffTs],
+    );
+    return res.rows.length ? rowToSeal(res.rows[0]) : null;
+  }
+
+  async sweepSealedEvents(anchor: { idx: number; seq: number }, limit: number, dryRun?: boolean): Promise<{ events: number; done: boolean }> {
+    if (dryRun) {
+      const res = await this.sql.query<{ c: string }>(
+        "select count(*) c from event_seal s join events e on e.seq = s.seq where s.idx <= $1",
+        [anchor.idx],
+      );
+      return { events: Number(res.rows[0].c), done: true };
+    }
+    return await this.sql.transaction(async (tx) => {
+      const doomed = (await tx.query<{ idx: string; seq: string }>(
+        "select idx, seq from event_seal where idx < $1 order by idx asc limit $2",
+        [anchor.idx, limit],
+      )).rows;
+      let events = 0;
+      if (doomed.length > 0) {
+        const r1 = await tx.query("delete from events where seq = any($1::bigint[])", [doomed.map((d) => Number(d.seq))]);
+        events += r1.affectedRows ?? 0;
+        await tx.query("delete from event_seal where idx = any($1::bigint[])", [doomed.map((d) => Number(d.idx))]);
+      }
+      const done = doomed.length < limit;
+      if (done) {
+        const r2 = await tx.query("delete from events where seq = $1", [anchor.seq]);
+        events += r2.affectedRows ?? 0;
+      }
+      return { events, done };
+    });
+  }
+
   private async fetchCandidates(
     tx: Sql,
     selector: TakeSelector,

@@ -11,6 +11,7 @@ import type { StorageAdapter } from "../../src/storage/adapter.ts";
 import { Space } from "../../src/core/space.ts";
 import { RadiaError } from "../../src/core/errors.ts";
 import { activeByKey } from "../../sdk/ts/registry.ts";
+import { SealKey } from "../../src/core/seal.ts";
 import { rawExec } from "./integrity.ts";
 
 const PAST = "2020-01-01T00:00:00.000Z";
@@ -488,6 +489,132 @@ export const gcSuites: Suite[] = [
       assertEquals((await adapter.eventHorizon(survivor.cursor)).expired, false);
       assertEquals((await adapter.eventHorizon(h.horizon!.cursor)).expired, false);
       assertEquals((await adapter.eventHorizon(seals[0].cursor)).expired, true);
+    },
+  },
+
+  // --- the event sweep itself (plan-gc.md phase 3, step 3). Retention -1 puts the cutoff a
+  // second in the FUTURE: with a millisecond clock, several puts land in one tick, and a cutoff
+  // of "now" would flake on whether the last event squeaked under it.
+
+  {
+    name: "event GC is off by default: an unconfigured space never truncates its log",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      for (const tag of ["a", "b"]) await space.put({ kind: "note", body: { tag } });
+      assertEquals((await space.gc({ dryRun: true })).events, undefined);
+      assertEquals((await space.gcEvents()).enabled, false);
+      assertEquals((await space.getEvents("0")).length, 2);
+    },
+  },
+  {
+    name: "event GC: seal-first, anchored, attested, and the boundary reads it back",
+    run: async (adapter) => {
+      const space = new Space(adapter, { eventRetentionSeconds: -1 });
+      space.registerKind({ kind: "note", indexedPaths: [{ path: "tag", type: "keyword" }], claimable: false });
+      space.sealKey = await SealKey.fromBytes(new Uint8Array(32).fill(7), "test");
+      for (const tag of ["a", "b", "c", "d", "e"]) await space.put({ kind: "note", body: { tag } });
+
+      const r = await space.gcEvents();
+      assertEquals(r.attested, true);
+      assert(r.anchorIdx !== undefined && r.swept === r.anchorIdx + 1, `swept ${r.swept} != anchor ${r.anchorIdx} + 1`);
+
+      const v = await space.verifyIntegrity();
+      assertEquals(v.ok, true);
+      assertEquals(v.truncated, { anchorIdx: r.anchorIdx!, swept: r.swept, attested: true });
+      const h = await adapter.eventHorizon("0");
+      assertEquals(h.horizon?.swept, r.swept);
+      const retained = await space.getEvents("0");
+      assert(retained.length > 0 && retained.every((e) => BigInt(e.cursor) > BigInt(h.horizon!.cursor)));
+    },
+  },
+  {
+    name: "event GC: a dry run reports the seal-first debt instead of paying it",
+    run: async (adapter) => {
+      const space = new Space(adapter, { eventRetentionSeconds: -1 });
+      space.registerKind({ kind: "note", indexedPaths: [{ path: "tag", type: "keyword" }], claimable: false });
+      for (const tag of ["a", "b", "c", "d", "e"]) await space.put({ kind: "note", body: { tag } });
+
+      // Never sealed: the dry run answers "nothing can sweep YET, and here is why", and deletes
+      // and seals nothing. This is the never-doctored space of the plan, made visible.
+      const dry = await space.gcEvents({ dryRun: true });
+      assertEquals({ sealed: dry.sealed, unsealed: dry.unsealed, eligible: dry.eligible, swept: dry.swept, more: dry.more }, { sealed: 0, unsealed: 1, eligible: 0, swept: 0, more: true });
+      assertEquals((await space.getEvents("0")).length, 5, "a dry run deletes nothing");
+
+      // The live run pays the debt and sweeps: only-sealed is enforced by construction, since
+      // candidates are selected THROUGH seals.
+      const live = await space.gcEvents();
+      assert(live.sealed >= 5, "the live run seals first");
+      assertEquals(live.swept, live.anchorIdx! + 1);
+      assertEquals((await space.verifyIntegrity()).ok, true);
+    },
+  },
+  {
+    name: "event GC: refuses to delete while the horizon statement is unsealed",
+    run: async (adapter) => {
+      // 501 events: attest's own sealing pass covers at most SEAL_BATCH (500) links, so with a
+      // zero seal budget the statement cannot seal and the sweep MUST walk away. This is the
+      // ordering rule under failure: better a sweep that does nothing than a truncation verify
+      // would rightly call tampering.
+      const space = new Space(adapter, { eventRetentionSeconds: -1 });
+      space.registerKind({ kind: "note", indexedPaths: [{ path: "tag", type: "keyword" }], claimable: false });
+      for (let i = 0; i < 501; i++) await space.put({ kind: "note", body: { tag: `t${i}` } });
+      await space.sealEvents(1); // just enough chain for an anchor candidate to exist
+
+      const r = await space.gcEvents({ sealBudget: 0 });
+      assertEquals(r.attested, false);
+      assertEquals(r.swept, 0);
+      assertEquals(r.more, true);
+      assertEquals((await space.getEvents("0", 1000)).length, 502, "501 events + the statement, nothing deleted");
+      assertEquals((await space.verifyIntegrity({ seal: false })).ok, true);
+    },
+  },
+  {
+    name: "event GC: bounded batches resume, and every intermediate state verifies",
+    run: async (adapter) => {
+      const space = new Space(adapter, { eventRetentionSeconds: -1 });
+      space.registerKind({ kind: "note", indexedPaths: [{ path: "tag", type: "keyword" }], claimable: false });
+      space.sealKey = await SealKey.fromBytes(new Uint8Array(32).fill(7), "test");
+      for (const tag of ["a", "b", "c", "d", "e", "f"]) await space.put({ kind: "note", body: { tag } });
+
+      // Two pairs per call: the state after this IS the killed-mid-sweep state (each batch is one
+      // transaction), and it must verify as honest GC, not tampering.
+      const first = await space.gcEvents({ limit: 2 });
+      assertEquals(first.attested, true);
+      assertEquals(first.swept, 2);
+      assertEquals(first.more, true);
+      const mid = await space.verifyIntegrity();
+      assertEquals(mid.ok, true);
+      assert(mid.truncated?.attested, "the in-flight truncation must be attested");
+
+      const rest = await space.gcEvents();
+      assertEquals(rest.more, false);
+      assertEquals((await space.verifyIntegrity()).ok, true);
+    },
+  },
+  {
+    name: "event GC never splits events that share a cursor",
+    run: async (adapter) => {
+      // ack-with-result appends two events in ONE transaction, so on the pg dialects they share
+      // an xid (the cursor). Tampering the second event's ts to the future BEFORE sealing puts
+      // the window boundary inside that group; the guard must sweep less, never split.
+      const space = new Space(adapter, { eventRetentionSeconds: -1 });
+      space.registerKind({ kind: "job", indexedPaths: [{ path: "tag", type: "keyword" }] });
+      await space.put({ kind: "job", body: { tag: "a" } });
+      const t = await space.take({ pattern: { kind: "job" } });
+      assert(t);
+      await space.ack(t!.lease, { kind: "result", body: { ok: true } }); // events: put, take, put(result), ack
+      const evs = await space.getEvents("0");
+      await rawExec(adapter, "update events set ts = ? where seq = ?", [FUTURE, evs[evs.length - 1].seq]);
+
+      const r = await space.gcEvents();
+      // sqlite cursors are per-event, so the candidate (the result put, idx 2) stands; on the pg
+      // dialects it shares the ack's xid and the guard steps down to the take (idx 1).
+      assertEquals(r.anchorIdx, adapter.name === "sqlite" ? 2 : 1);
+      const h = await adapter.eventHorizon("0");
+      assert(h.horizon, "the sweep must have truncated");
+      const retained = await space.getEvents("0");
+      assert(retained.every((e) => BigInt(e.cursor) > BigInt(h.horizon!.cursor)), "no retained event may sit at or below the horizon");
+      assertEquals((await space.verifyIntegrity()).ok, true);
     },
   },
 ];

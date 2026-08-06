@@ -93,7 +93,9 @@ Five distinct concepts, never overloaded onto one field:
 | `leased_until`    | current lease expiry                       |
 
 Retention expiry does **not** invalidate an in-flight valid lease. Administrative GC
-never discards valid completed work.
+never discards valid completed work. What sweeping past `retention_until` deletes and what it
+keeps (the event residue, and that residue's own opt-in horizon) is [plan-gc.md](plan-gc.md),
+"The ledger".
 
 ## Client vs. runtime-authoritative metadata
 

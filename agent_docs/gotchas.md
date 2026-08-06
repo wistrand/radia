@@ -317,7 +317,23 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   many streams are open, and none at all when nobody waits. The first poll of a space's life always
   reports a change, since a record written before it took its baseline would otherwise be the one
   wakeup this exists to deliver. Errors are swallowed — the poll is a hint, the log is the truth.
-- **A claim must not lock, or even read, what it does not claim.** `take` selected every
+- **Never 410 the `"0"` cursor sentinel; clamp it.** Both SDKs recover from `410 cursor_expired`
+  by resetting to the literal `"0"` and reconnecting with no sleep, so a uniform
+  `cursor < horizon → 410` hot-loops every shipped client forever. `"0"`/absent means "from the
+  beginning", which on a truncated log is the oldest retained event; only an explicit non-sentinel
+  cursor below the horizon is refused (`watches.ts`). The comparison lives on the storage port
+  (`eventHorizon`), never in the transport, because cursors are dialect-shaped (seq vs. xid8).
+  Ops reads never 410 at all: they clamp and annotate (`logBeginsAfter`/`sweptBefore`), or the
+  first sweep would permanently break every from-zero read.
+- **Event GC's deletion order is what separates honest truncation from tampering.** Three rules,
+  each of which turns a crash into a false tamper verdict if broken (`Space.gcEvents` owns them):
+  the horizon statement is written AND sealed before the first delete (`attestEventTruncation`
+  must return `attested: true`, else the sweep walks away); events and their seals delete
+  TOGETHER, oldest-first, per transaction, so every observable state is a clean prefix
+  truncation; and a cursor group is never split — an xid groups one transaction's events, so the
+  anchor steps DOWN and sweeps less rather than stranding a retained sibling below the horizon.
+  Verify accepts "begins at J" only when the newest sealed statement attests an anchor ≥ J, which
+  is what lets a killed-and-resumed sweep still pass. `take` selected every
   available-or-leased record of the kind `for update … skip locked`, then filtered in the runtime.
   Two bugs in one line. **Starvation:** one claimer's open transaction held row locks on the whole
   queue, so a peer's `skip locked` found nothing and was told EMPTY while work remained (67 wasted

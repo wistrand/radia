@@ -75,6 +75,11 @@ export interface Diagnostics {
    *  on demand, so without this row nobody learns there is anything to run. `atLeast` marks a
    *  capped count; ABSENT for a scoped caller, like the rows above. */
   sweepable?: { eligible: number; byKind: Record<string, number>; atLeast: boolean };
+  /** Event-log retention backlog, present when `eventRetentionSeconds` is configured. `unsealed`
+   *  is the seal-first debt: those events cannot sweep (or be truncation candidates) until a gc
+   *  seals them, and on a never-doctored space it is the whole log, so without this row the first
+   *  gc looks hung. */
+  eventsSweepable?: { eligible: number; unsealed: number };
   /** The event chain's verdict. ABSENT for a scoped caller, like `undoneErasures` and for the same
    *  reason: the chain covers everyone's activity, so a scoped `ok:true` would be reassurance
    *  about records the caller cannot see. */
@@ -128,8 +133,15 @@ export interface InspectionHost {
   effectivePermissions(principal: string): Promise<unknown>;
   erasures(opts: { onlyUndone?: boolean }): Promise<{ erasures: unknown[]; checked: number; complete: boolean }>;
   /** The retention sweep in dry-run: what a `POST /v0/ops/gc` would delete. A read, like everything
-   *  here — dryRun is what makes it admissible through this port. */
-  gcBacklog(): Promise<{ eligible: number; byKind: Record<string, number>; more: boolean }>;
+   *  here — dryRun is what makes it admissible through this port. `events` is present when
+   *  event-log retention is configured: what the event sweep would truncate, and how much must
+   *  seal first. */
+  gcBacklog(): Promise<{
+    eligible: number;
+    byKind: Record<string, number>;
+    more: boolean;
+    events?: { enabled: boolean; eligible: number; unsealed: number };
+  }>;
   verifyIntegrity(): Promise<IntegrityReport>;
   getLineage(recordId: string, max: number, createdBy?: string[]): Promise<{ record: RadiaRecord; depth: number }[]>;
   getChildren(recordId: string, limit: number): Promise<RadiaRecord[]>;
@@ -391,6 +403,9 @@ export async function diagnostics(h: InspectionHost, scope?: StatsScope): Promis
     // Reported even at zero (an operator asking "is there anything to sweep" deserves the number),
     // but only when it IS zero-or-more of something the caller may see.
     ...(backlog ? { sweepable: { eligible: backlog.eligible, byKind: backlog.byKind, atLeast: backlog.more } } : {}),
+    ...(backlog?.events?.enabled
+      ? { eventsSweepable: { eligible: backlog.events.eligible, unsealed: backlog.events.unsealed } }
+      : {}),
     // Same reasoning: a broken chain is not something anyone thinks to ask about until it
     // matters, and a health report that omits it says the space is fine when it cannot know.
     // Operator-only, because the chain covers every principal's activity.

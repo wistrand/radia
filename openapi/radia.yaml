@@ -589,7 +589,10 @@ paths:
         Delete records whose `retention_until` has passed. The second deliberate carve-out from
         immutability, after artifact erasure, and shaped the same way: the content goes, the
         evidence stays (the event log keeps every swept record's id, kind, digest and transitions,
-        plus one `gc` event per swept kind per batch). The runtime stamps only what was declared:
+        plus one `gc` event per swept kind per batch). With `eventRetentionSeconds` configured the
+        evidence is itself two-tiered: events outlive their records until the EVENT horizon, past
+        which only the anchor seal remains, whose dense idx states exactly how many links history
+        lost (see `events` below). The runtime stamps only what was declared:
         an explicit `retentionUntil` on the put, else the kind_def's `defaultRetentionSeconds`
         materialized at commit; a record with neither is permanent. Aged idempotency rows sweep in
         the same pass.
@@ -636,6 +639,26 @@ paths:
                       compacted: { type: integer }
                       superseded: { type: integer }
                       byKind: { type: object, additionalProperties: { type: integer } }
+                      more: { type: boolean }
+                  events:
+                    type: object
+                    description: >-
+                      Event-log retention (present when the space configures `eventRetentionSeconds`;
+                      absent = the log is never truncated). The sweep seals first, picks its anchor
+                      through the seals (only sealed events are ever candidates), seals a horizon
+                      statement BEFORE deleting, then removes seal+event pairs oldest-first below the
+                      anchor, whose seal is retained. Integrity then reports the truncation as
+                      `truncated` + attested rather than as tampering. Watch cursors below the new
+                      horizon get 410; from-zero ops reads clamp and annotate.
+                    required: [enabled, sealed, unsealed, swept, eligible, more]
+                    properties:
+                      enabled: { type: boolean }
+                      sealed: { type: integer, description: "Links sealed by the seal-first pass." }
+                      unsealed: { type: integer, description: "1 = a seal-first debt remains (a probe, report as N+); those events cannot sweep yet." }
+                      swept: { type: integer, description: "Events deleted (0 on dryRun)." }
+                      eligible: { type: integer }
+                      anchorIdx: { type: integer }
+                      attested: { type: boolean, description: "False = the horizon statement did not seal; nothing was deleted, run again." }
                       more: { type: boolean }
         "400": { $ref: "#/components/responses/Problem" }
         "403": { $ref: "#/components/responses/Problem" }

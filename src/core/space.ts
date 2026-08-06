@@ -147,6 +147,12 @@ export interface SpaceContext {
    *  the lazy-lease-expiry shape, so an active space pays for its own housekeeping and an idle one
    *  runs nothing, with no timer. `0` disables it; the `gc` verb still owns compaction and backlogs. */
   gcEveryWrites: number;
+  /** Event-log retention (plan-gc.md phase 3). `null` (the default) means events are never swept
+   *  and the evidence promise stays unqualified. When set, the `gc` verb truncates the log to
+   *  this window ∩ the sealed head, anchored and attested so verify can tell it from tampering.
+   *  Weeks, not hours: it must dwarf any watch reconnect gap, since a client sleeping past it
+   *  gets a 410 and re-syncs by query. Verb-only, never amortized. */
+  eventRetentionSeconds: number | null;
 }
 
 /** Rows one amortized sweep pass may delete: small enough that the write paying for it feels a few
@@ -185,7 +191,29 @@ const DEFAULT_CONTEXT: SpaceContext = {
   maxScanRows: 200_000,
   idempotencyRetentionSeconds: 7 * 24 * 3600,
   gcEveryWrites: 1000,
+  eventRetentionSeconds: null, // opt-in: an unconfigured space never truncates its log
 };
+
+/** What one event-log retention pass did (`Space.gcEvents`; rides the `gc` verb). */
+export interface EventGcResult {
+  /** False when `eventRetentionSeconds` is unset: the log is never truncated. */
+  enabled: boolean;
+  /** Links sealed by the seal-first pass this call ran. */
+  sealed: number;
+  /** Seal-first debt after the budget: 0 = fully sealed, 1 = at least one unsealed (a probe,
+   *  like `IntegrityReport.unsealed`; report it as "N+"). Unsealed events can never sweep. */
+  unsealed: number;
+  /** Events deleted (0 on a dry run). */
+  swept: number;
+  /** Events at or below the anchor (dry run: what would go). */
+  eligible: number;
+  /** The chosen anchor: the newest sealed event outside the retention window, cursor-group safe. */
+  anchorIdx?: number;
+  /** Whether the horizon statement sealed; false aborts the sweep with `more: true`. */
+  attested?: boolean;
+  /** Work remains: a seal backlog, an unsealed statement, or pairs past this call's limit. */
+  more: boolean;
+}
 
 /** How a caller selects work to take. */
 export type TakeInput =
@@ -2167,6 +2195,7 @@ export class Space {
     more: boolean;
     passes: number;
     compaction?: CompactionResult;
+    events?: EventGcResult;
   }> {
     const limit = Math.min(Math.max(opts.limit ?? 1000, 1), 10_000);
     const totals = { swept: 0, eligible: 0, idempotency: 0, byKind: {} as Record<string, number>, more: false, passes: 0 };
@@ -2196,6 +2225,11 @@ export class Space {
     // An explicit LIVE gc restarts the amortized clock. Not a dry run: doctor calls this dry on
     // every diagnostics, and a backlog report must not keep postponing the sweep it reports on.
     if (!opts.dryRun) this.writesSinceSweep = 0;
+    // Event-log retention rides the verb too (phase 3, plan-gc.md) and ONLY the verb: sealing on
+    // the write path is exactly the background work the on-demand rule refuses.
+    const events = this.ctx.eventRetentionSeconds != null
+      ? await this.gcEvents({ dryRun: opts.dryRun, runId: opts.principal })
+      : undefined;
     // Registry compaction rides the same verb (phase 2, plan-gc.md): superseded successors of
     // latest-wins registries, plus interests whose run is over. `core/gc.ts` owns the keep-newest
     // logic and its resurrection guard; this only wires the reads and the one destructive member.
@@ -2206,9 +2240,74 @@ export class Space {
         sweepIds: (ids, runId) => this.storage.sweepIds(ids, runId),
         runIsLive: (run) => this.runIsLive(run),
       }, { dryRun: opts.dryRun, runId: opts.principal ?? this.ctx.runId });
-      return { ...totals, compaction };
+      return { ...totals, compaction, ...(events ? { events } : {}) };
     }
-    return totals;
+    return { ...totals, ...(events ? { events } : {}) };
+  }
+
+  /**
+   * Event-log retention: truncate the log to `eventRetentionSeconds` ∩ the sealed head
+   * (plan-gc.md phase 3). The order is the contract, each step for a reason the plants pin:
+   * seal FIRST (a never-sealed space must not sweep nothing forever, and only sealed events are
+   * ever candidates); pick the anchor through the seals, never splitting events that share a
+   * cursor (an xid groups siblings, and a split would strand retained events below the horizon);
+   * attest and SEE `attested: true` before the first delete (an honest crash must not read as
+   * tampering); then delete pairs oldest-first so every observable state is a clean prefix
+   * truncation. Refusing to proceed (statement not sealed yet) reports `more: true` rather than
+   * weakening any step.
+   */
+  async gcEvents(
+    opts: { dryRun?: boolean; limit?: number; sealBudget?: number; runId?: string } = {},
+  ): Promise<EventGcResult> {
+    const retention = this.ctx.eventRetentionSeconds;
+    const out: EventGcResult = { enabled: retention != null, sealed: 0, unsealed: 0, swept: 0, eligible: 0, more: false };
+    if (retention == null) return out;
+    // A dry run reports the seal-first debt instead of paying it: doctor runs this on every
+    // diagnostics, and "what would sweep" must not quietly become "seal 5000 links".
+    out.sealed = (await this.sealEvents(opts.sealBudget ?? (opts.dryRun ? 0 : 10 * SEAL_BATCH))).sealed;
+    const head = await this.storage.sealHead();
+    out.unsealed = (await this.storage.sealableEvents(head ? { cursor: head.cursor, seq: head.seq } : null, 1)).length;
+    out.more = out.unsealed > 0; // a seal backlog is work this call did not finish
+    if (!head) return out;
+
+    const cutoff = addSeconds(await this.storage.now(), -retention);
+    let anchor = await this.storage.latestSealBefore(cutoff);
+    const [oldest] = await this.storage.getSeals(-1, 1);
+    // Never split a cursor group: if the next seal shares the candidate's cursor, the window
+    // boundary falls inside one transaction's events; step down and sweep less instead.
+    while (anchor) {
+      const [next] = await this.storage.getSeals(anchor.idx, 1);
+      if (!next || next.cursor !== anchor.cursor) break;
+      if (anchor.idx - 1 < oldest.idx) {
+        anchor = null;
+        break;
+      }
+      [anchor] = await this.storage.getSeals(anchor.idx - 2, 1);
+    }
+    if (!anchor) return out;
+    out.anchorIdx = anchor.idx;
+
+    if (opts.dryRun) {
+      out.eligible = (await this.storage.sweepSealedEvents({ idx: anchor.idx, seq: anchor.seq }, 0, true)).events;
+      return out;
+    }
+    const { attested } = await this.attestEventTruncation(anchor, opts.runId ?? this.ctx.runId);
+    out.attested = attested;
+    if (!attested) {
+      // The statement is committed but the chain has not sealed through it (finality watermark
+      // behind, or the seal backlog outran the budget). Deleting now would manufacture the
+      // unattested state verify rightly calls tampering, so nothing is deleted.
+      out.more = true;
+      return out;
+    }
+    const r = await this.storage.sweepSealedEvents(
+      { idx: anchor.idx, seq: anchor.seq },
+      Math.min(Math.max(opts.limit ?? 10_000, 1), 100_000),
+    );
+    out.swept = r.events;
+    out.eligible = r.events;
+    if (!r.done) out.more = true;
+    return out;
   }
 
   /** The eligibility classes the sweep needs, computed from the registry (only it knows which

@@ -125,6 +125,6 @@ Deno.test("dev: --max-scan-rows tunes the budget, and 0 means unbounded rather t
   // starting a server, and the assertion should fail when this literal stops being wired.
   const main = await Deno.readTextFile(new URL("../src/main.ts", import.meta.url));
   assert(/flag\(args, "--max-scan-rows"\)/.test(main), "--max-scan-rows is no longer parsed in main.ts");
-  assert(/new Space\(storage, maxScanRows === undefined \? \{\} : \{ maxScanRows \}/.test(main), "…or no longer reaches the Space");
+  assert(/\.\.\.\(maxScanRows === undefined \? \{\} : \{ maxScanRows \}\)/.test(main), "…or no longer reaches the Space");
   assert(/\[--max-scan-rows <n>\]/.test(main), "…or is missing from the usage text");
 });

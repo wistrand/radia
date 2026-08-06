@@ -516,6 +516,20 @@ export interface StorageAdapter {
    */
   appendGcEvent(e: EventInput): Promise<{ cursor: string; seq: number }>;
 
+  /** The newest seal whose event still exists and predates `cutoffTs` (DB-clock ISO): the event
+   *  sweep's anchor candidate. Selecting THROUGH seals is what enforces window ∩ sealed-only: an
+   *  unsealed event can never be chosen, whatever its age. (M2) */
+  latestSealBefore(cutoffTs: string): Promise<EventSeal | null>;
+
+  /**
+   * Delete sealed events below the anchor: seal+event PAIRS oldest-first (up to `limit` pairs),
+   * then the anchor's own event once no pairs remain, the anchor seal retained. One transaction,
+   * so every observable state is a clean prefix truncation and a kill between calls loses only
+   * progress. `dryRun` counts the events that would go. The caller MUST have sealed a horizon
+   * statement covering the anchor first; `Space.gcEvents` owns that order. (M2)
+   */
+  sweepSealedEvents(anchor: { idx: number; seq: number }, limit: number, dryRun?: boolean): Promise<{ events: number; done: boolean }>;
+
   // Kind declarations are NOT a storage concern: they are kind_def records, written via put()
   // and read via query() like any record (see core/space.ts loadKinds). No kinds table.
 

@@ -336,9 +336,11 @@
     </p>
     <p>
       Partly this is practical: a megabyte of base64 in a body makes matching slow and pages
-      unpredictable. But it also creates the one place in the system where something can actually be
-      deleted. Records are permanent by design. Payloads are not, so if a customer asks you to erase
-      their file, you can, and the record, its history and everything that referred to it survive.
+      unpredictable. But it also creates the one place in the system where content can be destroyed
+      on demand. Records are permanent unless whoever wrote them declared an expiry, and sweeping
+      those out later is housekeeping that leaves an audit trail, not erasure. Payloads are the
+      opposite: if a customer asks you to erase their file, you can, right then, and the record,
+      its history and everything that referred to it survive.
     </p>
     <p class="explanation">
       This works for real documents and not for short secrets. The hash of the original stays in the

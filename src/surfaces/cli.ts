@@ -445,6 +445,12 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           const kinds = Object.entries(sw.byKind).map(([k, n]) => `${k}=${n}`).join("  ");
           lines.push(`sweepable: ${sw.eligible}${sw.atLeast ? "+" : ""} records past retention (${kinds}) — radia gc to reclaim`);
         }
+        // Two separate lines on purpose: the seal-first debt is why an event backlog can read as
+        // zero, and on a never-doctored space it is the whole log, so the first gc looks hung
+        // without this.
+        const ev = d.eventsSweepable;
+        if (ev && ev.eligible > 0) lines.push(`event log: ${ev.eligible} sealed events past retention — radia gc --run truncates (anchored + attested)`);
+        if (ev && ev.unsealed > 0) lines.push(`event log: unsealed events pending — gc seals before it sweeps, so the first run pays the whole seal debt`);
         if (lines.length === 1) lines.push("no dead-letters, stuck leases, stale work, undone erasures, or sweepable backlog");
         return lines.join("\n");
       });
@@ -463,9 +469,15 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           ? `\n${dry ? `${c.superseded} superseded registry entries` : `compacted ${c.compacted} registry entries`}${c.more ? "+" : ""}: ${fmt(c.byKind)}`
           : "";
         const idemLine = r.idempotency > 0 ? `\n${dry ? `${r.idempotency} aged idempotency rows` : `swept ${r.idempotency} aged idempotency rows`}` : "";
+        const ev = r.events;
+        const evLine = ev && ev.enabled
+          ? "\n" + (dry
+            ? `event log: ${ev.eligible} sealed events past retention${ev.unsealed ? ` (+${ev.unsealed}+ unsealed: gc seals first)` : ""}`
+            : `event log: ${ev.attested === false ? "statement not sealed yet, nothing truncated (run again)" : `truncated ${ev.swept} events${ev.anchorIdx !== undefined ? ` to anchor ${ev.anchorIdx}` : ""}`}${ev.sealed ? `, sealed ${ev.sealed} links first` : ""}`)
+          : "";
         return dry
-          ? `${r.eligible}${r.more ? "+" : ""} sweepable: ${fmt(r.byKind)}${compactLine}${idemLine}\nradia gc --run to delete them`
-          : `swept ${r.swept}${r.more ? " (more remain: run again)" : ""}: ${fmt(r.byKind)}${compactLine}${idemLine}`;
+          ? `${r.eligible}${r.more ? "+" : ""} sweepable: ${fmt(r.byKind)}${compactLine}${idemLine}${evLine}\nradia gc --run to delete them`
+          : `swept ${r.swept}${r.more ? " (more remain: run again)" : ""}: ${fmt(r.byKind)}${compactLine}${idemLine}${evLine}`;
       });
     }
 
@@ -901,5 +913,6 @@ interface Diagnostics {
   };
   undoneErasures?: { count: number; checked: number; complete: boolean; sample: unknown[] };
   sweepable?: { eligible: number; byKind: Record<string, number>; atLeast: boolean };
+  eventsSweepable?: { eligible: number; unsealed: number };
   integrity?: { ok: boolean; sealed: number; signed: boolean; failure?: { idx: number; reason: string; detail: string } };
 }

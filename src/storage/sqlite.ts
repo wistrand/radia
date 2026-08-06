@@ -897,6 +897,37 @@ export class SqliteAdapter implements StorageAdapter {
     return { cursor: String(row.seq), seq: row.seq };
   }
 
+  latestSealBefore(cutoffTs: string): Promise<EventSeal | null> {
+    const row = this.db.prepare(
+      `select s.idx, s.event_id, s.cursor, s.seq, s.hash, s.prev_hash, s.sig
+         from event_seal s join events e on e.seq = s.seq
+        where e.ts < ? order by s.idx desc limit 1`,
+    ).get(cutoffTs) as RawRow | undefined;
+    return Promise.resolve(row ? rowToSeal(row) : null);
+  }
+
+  sweepSealedEvents(anchor: { idx: number; seq: number }, limit: number, dryRun?: boolean): Promise<{ events: number; done: boolean }> {
+    if (dryRun) {
+      const row = this.db.prepare(
+        "select count(*) c from event_seal s join events e on e.seq = s.seq where s.idx <= ?",
+      ).get(anchor.idx) as { c: number };
+      return Promise.resolve({ events: row.c, done: true });
+    }
+    return Promise.resolve(this.tx(() => {
+      const doomed = this.db.prepare(
+        "select idx, seq from event_seal where idx < ? order by idx asc limit ?",
+      ).all(anchor.idx, limit) as { idx: number; seq: number }[];
+      let events = 0;
+      if (doomed.length > 0) {
+        events += this.run(`delete from events where seq in (${qmarks(doomed.length)})`, doomed.map((d) => d.seq));
+        this.run(`delete from event_seal where idx in (${qmarks(doomed.length)})`, doomed.map((d) => d.idx));
+      }
+      const done = doomed.length < limit;
+      if (done) events += this.run("delete from events where seq = ?", [anchor.seq]);
+      return { events, done };
+    }));
+  }
+
   /**
    * Rows of the kind that survive the SQL pre-filter: a superset of what the oracle accepts.
    *

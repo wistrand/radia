@@ -1,8 +1,9 @@
 # Plan: garbage collection (retention sweep + registry compaction)
 
-> Status: phases 1–2 built (2026-08-05), plus the amortized write-path sweep, idempotency-row
-> sweeping and kind-level `defaultRetentionSeconds` (2026-08-06); phases 3–4 designed, not
-> scheduled. Origin: a measured finding, not a feature request — see the table below. Read
+> Status: phases 1–3 built (records 2026-08-05; the amortized write-path sweep, idempotency-row
+> sweeping, kind-level `defaultRetentionSeconds`, and all three steps of event-log retention
+> 2026-08-06); phase 4 (blob GC) designed, not scheduled. Origin: a measured finding, not a
+> feature request — see the table below. Read
 > [design-data-model.md](design-data-model.md) for `retention_until`'s field semantics and
 > [design-observability.md](design-observability.md) for the event chain GC must not break.
 
@@ -44,6 +45,33 @@ They share the deletion mechanics and nothing else.
   same move one level up — the record goes; the EVENT LOG keeps id, kind, `body_sha256` and every
   transition (~200 bytes against ~1.1 KB/record all-in, measured in `bench/deployment.ts`).
 - Immutable means never rewritten, not permanent. Absence of `retention_until` = permanent, always.
+
+## The ledger: what each sweep buys, and what it costs
+
+The one place the trade is stated whole; the sections below carry the mechanics.
+
+- **Record sweep** (on for any record stamped or kind-defaulted; the amortized pass keeps an
+  active space from growing).
+  Won: bounded rows and disk; flow mining, `stats` and the Feed read work instead of exhaust.
+  Lost: the BODY. Lineage over a swept parent reports fragments, v1 cannot answer "swept or never
+  existed", and a swept record cannot parent new work (`parent_not_found`). What survives: the
+  event residue (id, kind, `body_sha256`, every transition) — until the event horizon below.
+- **Registry compaction** (rides the verb).
+  Won: projections whose read cost is the number of MEANINGS, not the number of writes.
+  Lost: succession history of compacted registries (who republished, when, how often).
+  Never lost: `grant`/`kind_def`/`signal`/`agent_definition` history, and the newest entry per
+  key, tombstones above all.
+- **Event sweep** (opt-in: `eventRetentionSeconds`; off = the log is complete from genesis).
+  Won: the log and seal tables stop growing, which no record setting achieves (they grow per
+  WRITE); and stale watch resumes are refused (410) instead of silently jumping the gap.
+  Lost: audit and re-execution reach the horizon, not genesis; the record sweep's evidence
+  residue now expires too (the two-tiered promise); a from-zero ops read is the retained log,
+  annotated; a watch asleep past the window must re-sync by query. What survives: the anchor
+  seal, its dense idx counting exactly how many links history lost, and the sealed statement
+  that lets verify tell honest GC from tampering — on an UNSIGNED space, naive-edit evidence
+  only, like the chain itself.
+- **Never lost under any setting:** erasure detection (`shred` records + blob stat, never
+  events), work under a live lease, unclaimed claimable work, reserved kinds, artifact records.
 
 ## Eligibility (phase 1)
 
@@ -150,13 +178,16 @@ the one-liner is an index on `created_at where created_at <> ''`.
    stamps `llm_chunk`/`progress` (24h) and `llm_call` (7d), boot-time sweep in the chat launcher.
 2. **Registry compaction** — `contentKey` on `KindDef`, keep-newest compactor, dead-run interest
    sweep, resurrection guard.
-3. **Event-log retention** — designed below ("Phase 3"), not built. This is where the design
-   weight is: a wrong deletion here loses the audit, not litter.
+3. **Event-log retention** — BUILT, all three steps (see "Phase 3" below): the 410 + clamp
+   boundary, the anchored verify + sealed horizon statement, and the sweep
+   (`Space.gcEvents`, riding the `gc` verb; `eventRetentionSeconds` in `SpaceContext`,
+   `radia dev --event-retention`, off by default).
 4. **Reference-aware blob GC** — artifacts join retention.
 
-## Phase 3: event GC, analyzed (2026-08-06; not built)
+## Phase 3: event GC (analyzed and BUILT 2026-08-06)
 
-Facts verified against the code and a live space before any of this is trusted.
+Facts verified against the code and a live space before any of this was trusted; the build-order
+list at the end carries the per-step pointers into `src/` and the plants that guard them.
 
 **The consumers, and what each one's contract becomes.** Watch streams (SSE resume via
 `Last-Event-ID`; the 410 path is live at `watches.ts` since step 1 below, firing only once a
@@ -228,8 +259,9 @@ sweepable backlog, or the first run looks hung.
 
 **The evidence horizon.** This phase makes record GC's promise two-tiered: records go at the
 retention horizon leaving events as residue; the residue goes at the event horizon leaving only the
-anchor and its idx-count. The CLAUDE.md invariant, this file's own evidence section, and the
-OpenAPI text state the promise unqualified and need the two-horizon framing when this lands.
+anchor and its idx-count. The CLAUDE.md invariant and the OpenAPI `/ops/gc` text now carry the
+two-horizon framing (updated with the build). Unqualified evidence remains the default: an
+unconfigured space never truncates its log.
 Unaffected, verified: erasure detection reads `shred` RECORDS plus blob stat, never events.
 
 **Build order and the plants that matter.** (1) 410 + clamp — BUILT (2026-08-06):
@@ -245,12 +277,22 @@ statement sits above the anchor), the statement format as one writer/reader pair
 port's `appendGcEvent`, seal, confirm coverage) which the sweep MUST call and see `attested:
 true` before deleting. Plants in `conformance/suites/integrity.ts`: mid-chain gap past an anchor
 still fails, a deleted statement un-attests, deeper-than-attested fails, a forged anchor
-signature fails, unsigned passes attested with its standing caveat. (3) The sweep itself: seal-first, window ∩ sealed-only, events and
-seals below horizon, anchor retained, never splitting events that share a cursor (an xid groups
-siblings; a split would put retained events below the horizon); plants: never-sweep-unsealed, and
-a sweep killed mid-batch leaves a chain verify still passes. Plus one end-to-end check: an SDK
-watch survives a sweep under its resume cursor without spinning (the sentinel rule, exercised
-through a real client).
+signature fails, unsigned passes attested with its standing caveat. (3) The sweep itself — BUILT
+(2026-08-06): `Space.gcEvents` (rides the `gc` verb when `eventRetentionSeconds` is set; never
+amortized), over two port methods: `latestSealBefore` (candidates selected THROUGH seals, so
+window ∩ sealed-only holds by construction) and `sweepSealedEvents` (seal+event pairs
+oldest-first per transaction, anchor seal retained, its event last). Order inside `gcEvents`:
+seal within a budget, pick the anchor without splitting a cursor group (an xid groups siblings;
+the guard steps DOWN and sweeps less), attest and require `attested: true`, then delete; a
+statement that cannot seal aborts the sweep with `more: true` and deletes nothing. Dry runs
+report the seal-first debt instead of paying it, which is doctor's "must seal first" row
+(`eventsSweepable`). Plants in `conformance/suites/gc.ts`: off-by-default, seal-first, the
+unsealed-statement refusal (501 events against `SEAL_BATCH`), bounded batches with every
+intermediate state verifying, and the cursor-group guard (a tampered-ts ack pair; the pg
+dialects step down, sqlite need not). The end-to-end check is `conformance/resume.test.ts`: a
+real `client.watch()` over a socket survives a sweep under its held cursor — one 410, sentinel
+recovery, wakeups resume; a server that 410'd the sentinel would hang the test rather than fail
+it.
 
 ## Rejected
 
