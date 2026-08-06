@@ -1,8 +1,8 @@
 # Plan: ops-plane tiers (powers as grant records)
 
-> Status: phases 1–4 BUILT (2026-08-06): the `ops_grant` kind, the five powers, the three-way
-> gate, reporting through `effectivePermissions`. Phase 5 (supervisor demotion, the dev/MCP
-> observer credential) is open, with its one decision unmade. Decided: ops powers are RECORDS (a
+> Status: ALL PHASES BUILT (2026-08-06): the `ops_grant` kind, the five powers, the three-way
+> gate, reporting through `effectivePermissions`, the supervisor demotion, and the observer
+> credential the MCP adapter defaults to. Decided: ops powers are RECORDS (a
 > reserved `ops_grant` kind) assigned by config operators. Rejected: a second config list (breeds
 > a third, and dodges "express it through the substrate") and discipline-only (`radia login` for
 > daily work; already possible, structurally weak). The powers being split are named in
@@ -73,17 +73,25 @@ Reporting lands BEFORE enforcement: `effectivePermissions` / `GET /v0/ops/permis
 resolved powers first, so every later plant can assert promise == enforcement through the same
 surface an operator would check.
 
-## Target state for today's privileged set
+## The privileged set after phase 5 (BUILT; decisions recorded)
 
-- `ctx.operators`: unchanged, full tier.
-- The supervisor agent: demoted out of `isPrivileged`. It keeps `grant`/`signal` writes (the
-  CLAUDE.md invariant names it beside operators there) and gets `observe` + `remediate` as
-  ordinary `ops_grant` records; it loses purge, declassify, minting and the coordination bypass.
-  The exact kept set is the one OPEN decision in this plan, settled when phase 5 builds; the
-  invariant text moves in the same change.
-- The dev/MCP default: `radia dev` provisions an OBSERVER credential beside the root one; the MCP
-  adapter and the CLI read verbs prefer it, and only explicitly-destructive CLI verbs reach for
-  the root credential. The model behind MCP then holds `observe`, not power 7.
+- `ctx.operators` and the space's in-process identity: unchanged, full tier.
+- The supervisor: demoted out of `isPrivileged`. DECIDED kept set: `grant`/`signal` puts only
+  (the carve-out in `Space.authorize`); powers arrive like anyone's, as `ops_grant` records an
+  operator assigns. It lost purge, declassify, minting, `ops_grant`/`agent_*` writes and the
+  coordination bypass — and GAINED bootability: it was fully privileged AND unmintable (a
+  definition may not name a privileged principal), a god role nobody could authenticate as. Its
+  grant-writes stay escalation-adjacent by design; the difference from the bit is that each one
+  is a record in the audit trail.
+- The dev/MCP default: `radia dev` provisions `agent:local-observer` (a definition whose token is
+  stored under the `#observer` key, mint-only and revocable via `radia revoke`, reused across
+  restarts and re-minted only when it stops resolving) plus an `observe` ops_grant written with
+  `opsGrantKey` as the idempotency key, so restarts replay instead of append. DECIDED: `radia
+  mcp` defaults to it (`RADIA_TOKEN` overrides; the operator token is only the fallback for a
+  pre-observer file), so coordination through MCP 403s until an operator grants kinds — the
+  chat's `grant_request` discipline, made the default posture. The CLI's read-only verbs
+  (`OBSERVER_VERBS` in `cli.ts`) ride it too; coordination and destructive verbs keep the
+  operator token.
 
 ## Build order
 
@@ -101,9 +109,12 @@ surface an operator would check.
    refusals naming the power, declassify-cannot-shred and the reverse, sweep-opens-no-reads, no
    grant/ops_grant writes below full, no coordination bypass, retire-closes-next-request, and
    the permissions report equal to what the gate resolved.
-5. **Defaults** — OPEN: supervisor demotion, then the dev/MCP observer credential. Each moves a
-   shipped default, so each carries its own doc edit (the CLAUDE.md invariant;
-   architecture-surfaces.md for credentials) and a `defaults.test.ts` pin in the same change.
+5. **Defaults** — BUILT: the supervisor demotion (`isPrivileged` shrinks; the `grant`/`signal`
+   carve-out in `authorize`; plants in `suites/auth.ts` incl. "the demoted supervisor is a usable
+   role") and the observer credential (`main.ts` provisioning, `#observer` in `credentials.ts`,
+   the MCP default in `mcp/server.ts`, `OBSERVER_VERBS` in `cli.ts`; pinned by the source-read
+   test in `defaults.test.ts`, like the `--auth` default). CLAUDE.md invariant and design-auth
+   updated in the same change.
 
 ## Non-goals
 

@@ -125,8 +125,9 @@ export function validateOpsGrantDef(def: OpsGrantDef): void {
   }
 }
 
-/** Reserved kinds only a human/supervisor principal may write directly (assigned, never
- *  self-declared). Runs/definitions are also written internally by the bootstrap endpoints. */
+/** Reserved kinds only an OPERATOR may write directly (assigned, never self-declared), with one
+ *  carve-out in `Space.authorize`: the supervisor may put `grant`/`signal`, its entire remaining
+ *  privilege. Runs/definitions are also written internally by the bootstrap endpoints. */
 export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, SHRED, OPS_GRANT]);
 
 /**

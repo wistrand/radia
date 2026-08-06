@@ -7,9 +7,11 @@ Origin: outline §8.
 (reserved `grant` kind; body `{principal, kind, operations}`, indexed on principal+kind, never
 wildcard; `src/core/kinds.ts`). `Space.authorize(principal, op, kind)` enforces them and
 `Space.isPrivileged` marks operators: a principal NAMED in `SpaceContext.operators` (default
-`["human:local"]`, the no-header dev identity), the one configured supervisor
-(`SpaceContext.supervisor`, default `agent:supervisor`), or the space's own identity. It is a named
-set, not a name shape: `human:` is a namespace, not a privilege. That was the earlier rule, and it
+`["human:local"]`, the no-header dev identity) or the space's own identity. The SUPERVISOR is no
+longer in that set (demoted, [plan-ops-tiers.md](plan-ops-tiers.md) phase 5): it keeps exactly
+`grant`/`signal` writes as a carve-out in `authorize` and is otherwise ordinary, which also makes
+it MINTABLE (a definition may not name a privileged principal, and it no longer is one). It is a
+named set, not a name shape: `human:` is a namespace, not a privilege. That was the earlier rule, and it
 meant a space could not have ordinary people on it at all, so the only human credential available
 was god-mode. Enforcement is wired at the HTTP
 boundary (`src/server/http.ts` + the record/take/watch handlers): coordination `put`/`take`/
@@ -105,7 +107,10 @@ separates two people only if they are two principals, so an app that shares one 
 everyone (as `examples/chat` did with `agent:chat-user`) has a scope that binds to the same value
 for all of them. `Space.mintOperatorToken` mints the
 operator credential at startup. It resolves to the space's own principal, is server-lifetime, and
-is not a record; `radia dev` writes it where the CLI and the MCP adapter read it. Never resolve it
+is not a record; `radia dev` writes it where the CLI's coordination and destructive verbs read it.
+The MCP adapter and the CLI's read-only verbs prefer the OBSERVER credential provisioned beside it
+(`agent:local-observer`, `observe` only; [architecture-surfaces.md](architecture-surfaces.md)).
+Never resolve the operator token
 as a definition token: that would let a leaked operator credential mint a run and become durable.
 `GET /v0/health` echoes the resolved `principal`. SDK: `new RadiaClient(url, {token})` /
 `.withToken()`, `client.createAgentDefinition/createRun/stopRun/grant`. Conformance:
@@ -203,9 +208,11 @@ Cross-cutting versions are in [CLAUDE.md](../CLAUDE.md); detail here is authorit
 
 - Grants are kind-scoped, never wildcard, and assigned by a privileged control plane,
   never self-declared.
-- `signal` and grant management are writable only by an OPERATOR (a principal named in
-  `SpaceContext.operators`) or the supervisor agent. Not by every `human:*`: a logged-in person is
-  an ordinary principal.
+- `grant` and `signal` are writable only by an OPERATOR (a principal named in
+  `SpaceContext.operators`) or the supervisor agent, and that is the supervisor's ENTIRE
+  privilege: `ops_grant` and `agent_*` writes are operator-only (a power-granter could grant
+  itself powers), and the supervisor holds no coordination bypass and no ops powers by right.
+  Not every `human:*` either: a logged-in person is an ordinary principal.
 - `delegation_context` is server-derived from the claimed lease; data parents contribute
   no authority.
 - Taint clears only via privileged **declassify**. Ordinary agents cannot write
@@ -222,9 +229,11 @@ Cross-cutting versions are in [CLAUDE.md](../CLAUDE.md); detail here is authorit
 - `run:*` (an instance)
 
 The namespace says what KIND of principal it is, never what it may do. Privilege is the named set in
-`SpaceContext.operators` plus the supervisor, so `human:alice` is an ordinary principal that holds
-exactly the grants assigned to it, and `agent:supervisor` is privileged while looking like any other
-agent. Reading privilege off the prefix is the mistake this design used to make.
+`SpaceContext.operators`, so `human:alice` is an ordinary principal that holds
+exactly the grants assigned to it. Reading privilege off the prefix is the mistake this design used
+to make. The supervisor (`SpaceContext.supervisor`) is an ordinary agent with one carve-out,
+`grant`/`signal` writes; it boots through the same chain as everyone (it could not before the
+demotion: fully privileged AND unmintable, a god role nobody could authenticate as).
 
 A person and an agent take the SAME path to a credential: a definition (which may be a `human:` or
 an `agent:` principal) mints short-lived run tokens. So there is one bootstrap chain to reason
@@ -236,7 +245,7 @@ self-declared:
 ```mermaid
 flowchart TB
     H[human:* or agent:* definition<br/>grants, budgets, patterns] -->|POST /agent-runs<br/>definition credential mints token| R[run:*, short-lived token]
-    O[operator<br/>ctx.operators, or the supervisor] -->|POST /agent-definitions<br/>privileged control plane assigns grants| H
+    O[operator<br/>ctx.operators] -->|POST /agent-definitions<br/>privileged control plane assigns grants| H
     R -->|owns| L[leases]
 ```
 
@@ -336,10 +345,11 @@ flowchart TD
     Oper --> Ops
     Ops{"path under /v0/ops/* ?"} -->|"yes, not privileged"| E403a[["403"]]
     Ops -->|"no, or privileged"| Az["authorize(principal, op, kind)"]
-    Az --> Priv{"privileged?<br/>subject in ctx.operators,<br/>supervisor, or the space itself"}
+    Az --> Priv{"privileged?<br/>subject in ctx.operators,<br/>or the space itself"}
     Priv -->|"yes"| Allow(["allow, no constraint"])
-    Priv -->|"no"| Res{"reserved-kind write?<br/>grant / signal / agent_*"}
-    Res -->|"yes"| E403b[["403 forbidden"]]
+    Priv -->|"no"| Res{"reserved-kind write?<br/>grant / signal / agent_* / ops_grant"}
+    Res -->|"grant or signal, subject IS the supervisor"| Allow
+    Res -->|"yes, anyone else"| E403b[["403 forbidden"]]
     Res -->|"no"| Grant{"matching grant record<br/>for (subject, kind, op)?"}
     Grant -->|"none"| E403c[["403 forbidden"]]
     Grant -->|"yes, no pattern"| Allow
@@ -377,13 +387,14 @@ Rules any tiering must hold:
 - Every tier is inspectable through `effectivePermissions` / `GET /v0/ops/permissions` before it
   is believed; every grant defect so far was a promise that did not match the enforcement.
 
-Who holds the whole bit today, and why that is too many: the auto-provisioned local credential
-(`radia dev` writes it; the CLI, the console sign-in and the MCP adapter read it, so in a dev
-space the MODEL behind MCP holds power 7 and can write `grant` records through `space_put`); the
-supervisor agent, an LLM-driven principal holding shred and mint; and every person in
-`ctx.operators`, however little of the list they need day to day. The tiers below full that exist
-today are the two extremes: self-scoped ops reads (`opsScope`, own records of granted kinds) and
-nothing.
+Who holds the whole bit now (phase 5 built, 2026-08-06): `ctx.operators` and the space's own
+in-process identity, nobody else. The supervisor is DEMOTED to its `grant`/`signal` carve-out and
+is otherwise ordinary — which also made it mintable for the first time, since a definition may
+not name a privileged principal and it no longer is one. The MCP adapter defaults to the
+OBSERVER credential (`agent:local-observer`, an `ops_grant` with `observe`, provisioned by
+`radia dev` as a revocable definition token), so the model behind a harness inspects the space
+and holds neither power 6 nor 7; the CLI's read-only verbs ride the same credential, and only
+coordination and destructive verbs reach the operator token.
 
 ## Delegation
 

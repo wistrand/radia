@@ -21,7 +21,8 @@
 // ONLY. Every log line goes to stderr, or the harness sees a corrupt stream.
 
 import { RadiaClient, RadiaClientError } from "../../../sdk/ts/client.ts";
-import { defaultBase, resolveToken } from "../../credentials.ts";
+import { defaultBase, resolveToken, storedObserver } from "../../credentials.ts";
+import { env } from "../../platform.ts";
 import type { Lease, RadiaRecord } from "../../storage/adapter.ts";
 import type { Pattern } from "../../core/matching.ts";
 import { TOOLS } from "./tools.ts";
@@ -46,12 +47,25 @@ interface Claim {
 
 export async function runMcp(argv: string[]): Promise<void> {
   const base = flag(argv, "--url") ?? defaultBase();
-  const token = resolveToken(base);
-  const client = new RadiaClient(base, token ?? {});
+  // The OBSERVER is the default (plan-ops-tiers.md phase 5): the model behind this adapter gets
+  // unscoped ops READS and nothing else, so it can inspect the space and cannot write grants,
+  // coordinate ungranted, or destroy anything. `RADIA_TOKEN` stays the explicit override for a
+  // caller that WANTS a differently-scoped session (a login, a worker run, or the operator);
+  // the operator token is only the fallback for a space provisioned before observers existed.
+  const explicit = env("RADIA_TOKEN");
+  const observer = explicit ? undefined : storedObserver(base)?.definitionToken;
+  const token = observer ? undefined : resolveToken(base);
+  const client = new RadiaClient(base, observer ? { definitionToken: observer } : token ? { token } : {});
   const claims = new Map<string, Claim>();
 
-  log(`radia mcp: space=${base} auth=${token ? "bearer token" : "none (open local space)"}`);
-  if (!token) {
+  log(`radia mcp: space=${base} auth=${
+    observer
+      ? "observer (ops reads; coordination needs grants — see radia permissions agent:local-observer)"
+      : token
+      ? "bearer token"
+      : "none (open local space)"
+  }`);
+  if (!observer && !token) {
     log("radia mcp: no credential found. Start `radia dev` (auto-provisions one) or set RADIA_TOKEN.");
   }
 

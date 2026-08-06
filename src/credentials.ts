@@ -150,6 +150,27 @@ export function saveLogin(
   return writeEntry(baseKey(base) + LOGIN, cred);
 }
 
+// ---- the observer credential, the safe default for the MCP adapter ----
+//
+// A third identity in the file (plan-ops-tiers.md phase 5): `radia dev` provisions an
+// `agent:local-observer` definition holding the `observe` ops power and nothing else. The MCP
+// adapter prefers it, so the model behind a harness inspects the space and cannot write grants,
+// coordinate ungranted, or destroy anything. What is stored is the DEFINITION token: mint-only,
+// safe on disk, and revocable with `radia revoke agent:local-observer`, which the operator
+// credential above never was.
+
+const OBSERVER = "#observer";
+
+/** The observer credential `radia dev` provisioned for this space, if any. */
+export function storedObserver(base: string): StoredCredential | undefined {
+  return read(credentialsPath())[baseKey(base) + OBSERVER];
+}
+
+/** Record the observer credential (the definition token is the piece that matters). */
+export function saveObserver(base: string, cred: StoredCredential): { path: string; ok: boolean; error?: string } {
+  return writeEntry(baseKey(base) + OBSERVER, cred);
+}
+
 /** Default base URL for clients: `RADIA_URL`, else the `radia dev` default. */
 export function defaultBase(): string {
   return env("RADIA_URL") ?? "http://127.0.0.1:7788";

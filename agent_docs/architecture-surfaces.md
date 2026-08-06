@@ -90,10 +90,20 @@ if set, else `$XDG_STATE_HOME/radia/credentials.json`, `%APPDATA%\radia\…`, or
 Resolution order for any client: `RADIA_TOKEN` → the stored credential for that base URL → none,
 which is a `401` unless the space was started with `--auth open`.
 
-**Two identities share the file, under separate keys.** The operator credential sits at the base
-URL; a person's `radia login` sits at `<base>#login` (`storedLogin`/`saveLogin`). One key for both
-means the login replaces the operator entry, and the CLI's remediation verbs, the chat's bootstrap
-and the MCP adapter all start acting as whoever signed in last.
+**Three identities share the file, under separate keys.** The operator credential sits at the base
+URL; a person's `radia login` sits at `<base>#login` (`storedLogin`/`saveLogin`); the OBSERVER sits
+at `<base>#observer` (`storedObserver`/`saveObserver`): an `agent:local-observer` definition token,
+mint-only and revocable, whose `ops_grant` holds exactly `observe`
+([plan-ops-tiers.md](plan-ops-tiers.md) phase 5). One key for all of them
+means a login would replace the operator entry, and the CLI's remediation verbs, the chat's
+bootstrap and the MCP adapter would all start acting as whoever signed in last.
+
+**Who reads which:** `radia mcp` DEFAULTS to the observer (`RADIA_TOKEN` overrides; the operator
+token is only the fallback for a file written before observers existed), so the model behind a
+harness inspects the space and cannot write grants, coordinate ungranted, or destroy anything.
+The CLI's read-only verbs (`OBSERVER_VERBS` in `cli.ts`: stats, events, doctor, erasures, flows,
+integrity, permissions, get, lineage, children) ride the observer too; coordination and
+destructive verbs keep the operator credential.
 
 Keyed by base URL means keyed by HOST: a space on `127.0.0.1` has no credential under `localhost`,
 even though both reach it. Every default in this repo says `127.0.0.1` for that reason.

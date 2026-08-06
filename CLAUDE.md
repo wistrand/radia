@@ -114,7 +114,7 @@ Research and planning:
 - [agent_docs/design-inspection.md](agent_docs/design-inspection.md): inspecting emergent flows. Why a content-routed substrate cannot render its own workflow, the three audiences that ask different questions, what shape each mechanism has to take, and the constraints that turn an inspection feature into a defect. Read before adding any view or read verb.
 - [agent_docs/plan-inspection.md](agent_docs/plan-inspection.md): the inspection backlog: order, audience per item, and the one open prerequisite (watch lifecycle).
 - [agent_docs/plan-gc.md](agent_docs/plan-gc.md): garbage collection. Retention sweep (`retention_until`, finally consulted), registry compaction (keep-newest per content key, tombstones kept) and opt-in event-log retention (anchored + attested truncation, `eventRetentionSeconds`) are BUILT; blob GC is designed, not scheduled. Its "ledger" section states what each sweep buys and loses. Read before touching deletion, `retention_until`, the event chain, or any latest-wins registry's growth.
-- [agent_docs/plan-ops-tiers.md](agent_docs/plan-ops-tiers.md): splitting the one operator bit. The seven bundled powers are named in design-auth.md ("The operator bit"); powers 1–5 are BUILT as reserved `ops_grant` records (`observe`/`remediate`/`sweep`/`declassify`/`purge`, assigned by config operators, fail-closed, enforced in `http.ts` and reported by `effectivePermissions.opsPowers`), with the escalation root (grant/identity writes) and the coordination bypass never below the full tier. Open: supervisor demotion and the dev/MCP observer credential (phase 5). Read before touching `isPrivileged`, the ops gate, or the supervisor's authority.
+- [agent_docs/plan-ops-tiers.md](agent_docs/plan-ops-tiers.md): splitting the one operator bit. The seven bundled powers are named in design-auth.md ("The operator bit"); powers 1–5 are BUILT as reserved `ops_grant` records (`observe`/`remediate`/`sweep`/`declassify`/`purge`, assigned by config operators, fail-closed, enforced in `http.ts` and reported by `effectivePermissions.opsPowers`), with the escalation root (grant/identity writes) and the coordination bypass never below the full tier. ALL PHASES BUILT: the supervisor is demoted to a `grant`/`signal` carve-out (and thereby mintable for the first time), and `radia mcp` defaults to the revocable OBSERVER credential (`agent:local-observer`, `observe` only), as do the CLI's read-only verbs. Read before touching `isPrivileged`, the ops gate, or the supervisor's authority.
 - [agent_docs/research-self-modeling.md](agent_docs/research-self-modeling.md): whether a space can hold an agent's model of its own process in the same medium as its model of the world. Covers the paired self-report/measurement claim, the verified blockers, and the calibration baseline. Research, gated like the marketplace; nothing scheduled.
 - [agent_docs/gotchas.md](agent_docs/gotchas.md): rejected approaches, the risk register, and non-obvious "why is it like this" decisions. **Read the SECTION for what you are changing, not the file**: the traps are grouped by subsystem, with a linked contents list at the top. The ones most often needed are [credentials](agent_docs/gotchas.md#credentials-tokens-and-sessions), [grants and scopes](agent_docs/gotchas.md#grants-scopes-and-narrowed-answers), [registries and bounded reads](agent_docs/gotchas.md#registries-and-reads-that-must-not-truncate), [leases and watches](agent_docs/gotchas.md#leases-claims-events-and-watches), and [storage and the planner](agent_docs/gotchas.md#storage-sql-and-the-planner).
 
@@ -259,9 +259,12 @@ live at the top of the relevant `agent_docs/` file, not here.
   `retention_until`, and `leased_until` are distinct concepts. Retention GC never
   discards a valid in-flight lease's completed work.
 - **Grants are kind-scoped, never wildcard, and assigned, never self-declared.** Manifest
-  capability claims are descriptive, not authorization. `signal` and grant management are
-  writable only by an OPERATOR (a principal the space NAMES in `SpaceContext.operators`) or the
-  supervisor agent. `human:` is a namespace, not a privilege: a logged-in person is an ordinary
+  capability claims are descriptive, not authorization. `grant` and `signal` writes are for an
+  OPERATOR (a principal the space NAMES in `SpaceContext.operators`) or the supervisor agent,
+  and that carve-out is the supervisor's ENTIRE privilege: it is otherwise an ordinary principal
+  (demoted, plan-ops-tiers.md phase 5) — no coordination bypass, no ops powers by right, and
+  `ops_grant`/`agent_*` writes stay operator-only, because a power-granter could grant itself
+  powers. `human:` is a namespace, not a privilege: a logged-in person is an ordinary
   principal.
 - **Taint is a closed set of BARRIER labels, raised freely and cleared only by privileged
   declassify.** `TAINT_LABELS` (`file`/`net`/`foreign`) names a classification some policy bars,

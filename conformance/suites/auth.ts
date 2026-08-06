@@ -164,12 +164,14 @@ export const authSuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter);
       assert(space.isPrivileged("human:local"), "the no-header dev identity is an operator");
-      assert(space.isPrivileged("agent:supervisor"));
+      // The supervisor is DEMOTED (plan-ops-tiers.md phase 5): grant/signal writes are its whole
+      // carve-out, and it is otherwise ordinary — no coordination bypass, no ops powers by right.
+      assert(!space.isPrivileged("agent:supervisor"), "the supervisor no longer holds the operator bit");
       assert(!space.isPrivileged("agent:worker"));
       assert(!space.isPrivileged("run:123"));
-      // No grants exist, yet operators pass every op.
+      // No grants exist, yet operators pass every op; the demoted supervisor does not.
       await space.authorize("human:local", "put", "task");
-      await space.authorize("agent:supervisor", "take", "task");
+      assertEquals(await denied(() => space.authorize("agent:supervisor", "take", "task")), "forbidden");
 
       // The point of the set: `human:*` used to confer operator authority by NAME SHAPE, so there
       // was no way to have a person who was merely a user, and logging someone in handed them
@@ -245,9 +247,31 @@ export const authSuites: Suite[] = [
       await space.put({ kind: "grant", body: { principal: "agent:worker", kind: "grant", operations: ["put"] } });
       assertEquals(await denied(() => space.authorize("agent:worker", "put", "grant")), "forbidden");
       assertEquals(await denied(() => space.authorize("agent:worker", "put", "signal")), "forbidden");
-      // a human/supervisor still may
+      // an operator still may, and the supervisor keeps exactly grant + signal: its designed
+      // purpose, and its ENTIRE remaining carve-out after the demotion.
       await space.authorize("human:local", "put", "grant");
       await space.authorize("agent:supervisor", "put", "signal");
+      await space.authorize("agent:supervisor", "put", "grant");
+      // Nothing else rides along: powers would be self-escalation, agent_* is identity.
+      assertEquals(await denied(() => space.authorize("agent:supervisor", "put", "ops_grant")), "forbidden");
+      assertEquals(await denied(() => space.authorize("agent:supervisor", "put", "agent_definition")), "forbidden");
+    },
+  },
+  {
+    name: "the demoted supervisor is a usable role: mintable, power-grantable, and no more",
+    run: async (adapter) => {
+      // Before the demotion the supervisor was fully privileged AND unmintable (a definition may
+      // not name a privileged principal): a god role nobody could authenticate as. Now it boots
+      // like any agent and holds what an operator assigns.
+      const space = newSpace(adapter);
+      const { definitionToken } = await space.createAgentDefinition("agent:supervisor", []);
+      const { runToken } = await space.mintRun(definitionToken);
+      assert(runToken.length > 0, "the supervisor can finally hold a credential");
+
+      // Ops powers arrive like anyone's: assigned, and only then held.
+      assertEquals((await space.opsPowers("agent:supervisor")).size, 0, "no powers by right");
+      await space.put({ kind: "ops_grant", body: { principal: "agent:supervisor", operations: ["observe", "remediate"] } });
+      assertEquals([...await space.opsPowers("agent:supervisor")].sort(), ["observe", "remediate"]);
     },
   },
   {

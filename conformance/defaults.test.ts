@@ -22,6 +22,22 @@ Deno.test("dev: --auth defaults to required", async () => {
   assertEquals(m[1], "required", "--auth must default to required");
 });
 
+Deno.test("dev: an observer credential is provisioned, and the MCP adapter defaults to it", async () => {
+  // The posture (plan-ops-tiers.md phase 5): the model behind `radia mcp` holds `observe`, not
+  // the operator bit. Three literals keep it wired: dev provisions the observer definition with
+  // its ops_grant, the MCP adapter prefers the stored observer, and the CLI's read-only verbs
+  // ride it too. Source-read like the --auth default above, and each half must fail alone.
+  const main = await Deno.readTextFile(new URL("../src/main.ts", import.meta.url));
+  assert(/agent:local-observer/.test(main), "dev no longer provisions the observer identity");
+  assert(/operations: \["observe"\]/.test(main), "…or no longer assigns it exactly the observe power");
+  assert(/saveObserver\(/.test(main), "…or no longer stores its definition token");
+  const mcp = await Deno.readTextFile(new URL("../src/surfaces/mcp/server.ts", import.meta.url));
+  assert(/storedObserver\(base\)/.test(mcp), "the MCP adapter no longer reads the observer credential");
+  assert(/definitionToken: observer/.test(mcp), "…or no longer prefers it as its default auth");
+  const cli = await Deno.readTextFile(new URL("../src/surfaces/cli.ts", import.meta.url));
+  assert(/OBSERVER_VERBS/.test(cli), "the CLI's read-only verbs no longer ride the observer");
+});
+
 Deno.test("paths: every runtime default lives under one directory", async () => {
   // The complaint this fixes: `.radia-blobs/`, `.radia-kek.json`, `.radia-chat-space.db` and
   // `.radia-chat-space.db-blobs/` were four top-level entries in a project, each named where it was

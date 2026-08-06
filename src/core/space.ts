@@ -50,6 +50,7 @@ import {
   OPS_POWERS,
   type OpsGrantDef,
   type OpsPower,
+  SIGNAL,
   validateGrantDef,
   validateKindDef,
   validateOpsGrantDef,
@@ -498,21 +499,25 @@ export class Space {
   }
 
   /**
-   * A privileged principal has operator access: `/ops/*`, grant and signal writes, and any
-   * operation without a grant.
+   * A privileged principal has operator access: `/ops/*` with every power, grant and signal
+   * writes, minting, and any operation without a grant.
    *
    * Membership is a NAMED SET, never a prefix. `human:*` conferred operator authority by name
    * shape, so there was no way to have a person who was merely a user: logging someone in made
    * them an operator, and a console holding their credential held everything. `ctx.operators` says
-   * who, and everyone else is ordinary however they are named.
+   * who, and everyone else is ordinary however they are named. The space's own runtime identity
+   * stays privileged: it is the in-process plane that unauthenticated dev requests resolve to.
    *
-   * The supervisor agent (reached directly or through a run of it) and the space's own runtime
-   * identity stay privileged: they are the in-process plane that unauthenticated dev requests
-   * resolve to.
+   * The SUPERVISOR is deliberately NOT here (plan-ops-tiers.md phase 5). It keeps exactly one
+   * carve-out, `grant`/`signal` writes in `authorize`, and is otherwise an ordinary principal:
+   * grantable ops powers, mintable definitions, no coordination bypass, no purge/declassify. It
+   * held the whole bit while ALSO being unmintable (a definition may not name a privileged
+   * principal), which made it a fully-privileged principal nobody could authenticate as: the
+   * demotion is what makes the role usable at all.
    */
   isPrivileged(principal: string): boolean {
     const subject = this.grantSubject(principal);
-    return this.ctx.operators.includes(subject) || subject === this.ctx.supervisor ||
+    return this.ctx.operators.includes(subject) ||
       subject === this.ctx.runId || subject === this.ctx.principal;
   }
 
@@ -532,17 +537,25 @@ export class Space {
    */
   async authorize(principal: string, op: GrantOp, kind: string): Promise<Record<string, unknown>[] | null> {
     if (this.isPrivileged(principal)) return null;
+    const subject = this.grantSubject(principal);
     if ((op === "put" || op === "take") && WRITE_PROTECTED_KINDS.has(kind)) {
+      // The supervisor's ENTIRE remaining privilege (plan-ops-tiers.md phase 5): it assigns
+      // grants and writes signals, which is the role's designed purpose, and nothing else rides
+      // along. Never `ops_grant` (a power-granter can grant itself powers), never `agent_*`
+      // (identity), never `shred`. Its grant-writes remain escalation-adjacent by design, and
+      // every one is a RECORD in the audit trail, which is the difference from the bit it lost.
+      if (op === "put" && (kind === GRANT || kind === SIGNAL) && subject === this.ctx.supervisor) {
+        return null;
+      }
       // Name the rule that actually applies. "requires a human principal" was true when every
       // `human:*` was privileged by NAME SHAPE; now an operator is a NAMED principal
       // (`ctx.operators`), so `human:alice` hits this too and being told to be a human is advice
       // that cannot be followed.
       throw new RadiaError(
         "forbidden",
-        `writing '${kind}' records requires an operator or the supervisor: it is assigned, never self-declared`,
+        `writing '${kind}' records requires an operator${kind === GRANT || kind === SIGNAL ? " or the supervisor" : ""}: it is assigned, never self-declared`,
       );
     }
-    const subject = this.grantSubject(principal);
     // Grants are records: query the ones for this (subject, kind) and check the op.
     //
     // ADDITIVE, not latest-wins: a principal may hold several grants on one kind (different

@@ -12,7 +12,9 @@ import { BlobCipher, loadKek } from "./storage/crypto.ts";
 import { loadSealKey } from "./core/seal.ts";
 import { Space } from "./core/space.ts";
 import { startServer } from "./server/http.ts";
-import { clearCredential, saveCredential } from "./credentials.ts";
+import { clearCredential, saveCredential, saveObserver, storedObserver } from "./credentials.ts";
+import { OPS_GRANT } from "./core/kinds.ts";
+import { opsGrantKey } from "./core/registry.ts";
 import { runCli } from "./surfaces/cli.ts";
 import { runMcp } from "./surfaces/mcp/server.ts";
 import { flag, optionalFlag } from "./flags.ts";
@@ -153,8 +155,32 @@ async function dev(args: string[]): Promise<void> {
   // real Bearer token like any production client instead of relying on the no-header shortcut.
   const base = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
   const saved = saveCredential(base, { token: operatorToken, mintedAt: new Date().toISOString(), storage: storage.name });
-  if (saved.ok) console.log(`radia dev: operator credential provisioned at ${saved.path} (radia <cmd> and radia mcp use it)`);
+  if (saved.ok) console.log(`radia dev: operator credential provisioned at ${saved.path} (destructive radia verbs use it)`);
   else console.log(`radia dev: could not write ${saved.path} (${saved.error}). Set RADIA_TOKEN to use the CLI`);
+  // The OBSERVER credential (plan-ops-tiers.md phase 5): an `agent:local-observer` definition
+  // holding the `observe` ops power. The MCP adapter and read-only CLI verbs prefer it, so a
+  // model harness inspects the space without holding the operator bit; coordination through MCP
+  // 403s until an operator grants kinds. The DEFINITION token is what lands on disk (mint-only,
+  // revocable via `radia revoke agent:local-observer`), reused across restarts and re-minted
+  // only when missing or no longer resolving.
+  const OBSERVER = "agent:local-observer";
+  try {
+    const stored = storedObserver(base);
+    const alive = stored?.definitionToken !== undefined &&
+      (await space.resolveToken(stored.definitionToken)).ok;
+    let definitionToken = alive ? stored!.definitionToken! : undefined;
+    if (!definitionToken) {
+      definitionToken = (await space.createAgentDefinition(OBSERVER, [])).definitionToken;
+      saveObserver(base, { token: "", mintedAt: new Date().toISOString(), definitionToken, storage: storage.name });
+    }
+    // Content-keyed via the idempotency key, so every restart replays the same write instead of
+    // appending a duplicate assignment.
+    const power = { principal: OBSERVER, operations: ["observe"] };
+    await space.put({ kind: OPS_GRANT, body: power }, opsGrantKey(power));
+    console.log(`radia dev: observer credential provisioned (${OBSERVER}: ops reads only; radia mcp defaults to it)`);
+  } catch (e) {
+    console.log(`radia dev: could not provision the observer credential (${(e as Error).message}); radia mcp will fall back to the operator token`);
+  }
   // The console requires a credential in EVERY mode, not only `--auth required`, so print one
   // unconditionally. It used to be shown only in required mode, which left the operator hunting
   // for a token the sign-in screen asks for.

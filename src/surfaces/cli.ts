@@ -12,9 +12,9 @@ import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
 import { exportWorkspaceGit } from "../../extensions/ts/git.ts";
 import { basicPassword, gitHandler } from "../../extensions/ts/git-http.ts";
 import { summarizeWorkspaces } from "../../extensions/ts/workspace.ts";
-import { defaultBase, resolveDefinitionToken, resolveToken, saveLogin } from "../credentials.ts";
+import { defaultBase, resolveDefinitionToken, resolveToken, saveLogin, storedObserver } from "../credentials.ts";
 import { flag, flags, has, positional } from "../flags.ts";
-import { onShutdown, serve, stdin, UsageError } from "../platform.ts";
+import { env, onShutdown, serve, stdin, UsageError } from "../platform.ts";
 import type { Lease } from "../storage/adapter.ts";
 
 const HELP = `radia <command> [options]
@@ -93,18 +93,26 @@ interface Ctx {
   token: boolean;
 }
 
+/** Verbs that only READ the ops plane ride the OBSERVER credential when one exists (plan-ops-tiers.md
+ *  phase 5): the operator token stays for coordination verbs and everything destructive, so a
+ *  routine `radia doctor` is not a process holding the whole operator bit. An explicit
+ *  `RADIA_TOKEN` still wins for every verb (resolveToken precedence). */
+const OBSERVER_VERBS = new Set(["stats", "events", "doctor", "erasures", "flows", "integrity", "permissions", "get", "lineage", "children"]);
+
 export async function runCli(cmd: string, argv: string[]): Promise<number> {
   if (cmd === "help") {
     console.log(HELP);
     return 0;
   }
   const base = flag(argv, "--url") ?? defaultBase();
-  const token = resolveToken(base);
+  const observer = OBSERVER_VERBS.has(cmd) && !env("RADIA_TOKEN") ? storedObserver(base)?.definitionToken : undefined;
+  const token = observer ? undefined : resolveToken(base);
   // Both halves, when both exist. Every CLI verb is a fresh PROCESS, so it can never renew a token
   // the way a long-running worker does: it either finds a live one or the command fails. With the
   // durable half it mints one instead, which is why `radia query` still works the morning after
-  // `radia login` rather than a quarter of an hour later.
-  const definitionToken = resolveDefinitionToken(base);
+  // `radia login` rather than a quarter of an hour later. The observer credential IS a durable
+  // half, so it rides the same exchange.
+  const definitionToken = observer ?? resolveDefinitionToken(base);
   const ctx: Ctx = {
     client: new RadiaClient(base, { ...(token ? { token } : {}), ...(definitionToken ? { definitionToken } : {}) }),
     json: has(argv, "--json"),
