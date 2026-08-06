@@ -44,8 +44,13 @@ info:
     to that subject and reports what it may do, and any principal may ask about ITSELF. `Authorization: Bearer` is the only
     auth channel. Absent a credential the caller defaults to the operator `human:local` (act as a
     scoped principal by minting a real run token). `put`/`take`/`query`/`read_one` are
-    grant-checked; `/v0/ops/*` and writing `grant`/`signal`/`agent_*` records require an operator
-    (`403`); an invalid/expired/stopped bearer token is `401`.
+    grant-checked; `/v0/ops/*` requires an operator or an ops POWER held as a reserved
+    `ops_grant` record (`observe` opens every ops read unscoped; `remediate`/`sweep`/
+    `declassify`/`purge` each open one write verb; a refusal names the missing power). Writing
+    `grant`/`signal`/`agent_*`/`ops_grant` records requires an operator (`403`): identity and
+    grant writes are never a power. Below the powers sits the self-scoped read tier (own records
+    of kinds granted with `scope.createdBy:"self"`). An invalid/expired/stopped bearer token is
+    `401`.
 
     Implemented through M0 (Phases 0-6) plus M1 watches + grants + the auth bootstrap chain / run
     tokens + artifacts (blob storage, unencrypted in v1). Not implemented yet: OIDC,
@@ -604,7 +609,8 @@ paths:
 
         Never on a timer: this verb, plus an amortized batch the write path itself runs every
         `gcEveryWrites` commits. `radia doctor` reports the backlog (`sweepable`); `dryRun` counts
-        without deleting. Operator-only. See agent_docs/plan-gc.md.
+        without deleting. A live run needs the `sweep` ops power (operators hold every power);
+        `dryRun` is a read and needs only `observe`. See agent_docs/plan-gc.md.
       x-stability: experimental
       x-phase: "M2"
       requestBody:
@@ -946,7 +952,7 @@ paths:
         behind it pages to exhaustion and reports `complete: false` rather than returning a
         plausible prefix, because this is the artifact an inspection agent trusts most. A
         self-scoped caller sees its own interests only; the full interest list is the routing table
-        and stays operator-only, like `POST /ops/dry-run`.
+        and needs the `observe` ops power (operators hold it implicitly), like `POST /ops/dry-run`.
       x-stability: experimental
       responses:
         "200":
@@ -990,8 +996,9 @@ paths:
       description: >
         Runs the matching direction backwards: many registered patterns against one candidate body,
         rather than one pattern against many records. The body need not describe a record that
-        exists, which is the point. Operator-gated: it reports what every principal listens for,
-        which is the routing table rather than a self-scoped fact. An interest is reported only
+        exists, which is the point. Gated by the `observe` ops power (operators hold it
+        implicitly): it reports what every principal listens for, which is the routing table
+        rather than a self-scoped fact. An interest is reported only
         while its RUN is live, because a crashed worker never retires its own.
       x-stability: experimental
       requestBody:
@@ -1251,7 +1258,7 @@ paths:
   /ops/records/{recordId}/declassify:
     post:
       operationId: declassify
-      summary: Privileged declassify that clears taint by emitting a clean successor (operator only)
+      summary: Privileged declassify that clears taint by emitting a clean successor (operator, or the `declassify` ops power)
       description: >
         Records are immutable, so declassify emits a NEW record with the same kind + body,
         the named labels removed (or all of them when none are named), and the original as its data
@@ -1292,7 +1299,7 @@ paths:
   /ops/records/{recordId}/shred:
     post:
       operationId: shredArtifact
-      summary: Destroy an artifact's bytes, keeping the record (operator only)
+      summary: Destroy an artifact's bytes, keeping the record (operator, or the `purge` ops power)
       description: |
         The one carve-out from immutability. Records are never deleted, and erasure is a real
         requirement (a subject exercising a right, a secret written by accident, a retention
@@ -1450,9 +1457,9 @@ paths:
         operation, self-scope applied only when every grant permitting that read is scoped, and
         retirement applied after newest-per-key. Recomputing that inside each decision left no way
         to check it, and every grant defect so far has been a promise that did not match the
-        enforcement. Operator only, because reading another principal's authorization is not something a
-        self scope may reach. `complete: false` means the grant scan could not be exhausted and the
-        view may be missing entries.
+        enforcement. Any principal may read its OWN; reading another's needs the `observe` ops
+        power or an operator. `complete: false` means the grant scan could not be exhausted and
+        the view may be missing entries.
       x-stability: experimental
       parameters:
         - { name: principal, in: query, required: true, schema: { type: string } }
@@ -1473,6 +1480,12 @@ paths:
                     properties:
                       reachable: { type: boolean }
                       kinds: { type: array, items: { type: string } }
+                  opsPowers:
+                    type: array
+                    items: { type: string, enum: [observe, remediate, sweep, declassify, purge] }
+                    description: >-
+                      Ops-plane powers held as `ops_grant` records (all five for a privileged
+                      principal), reported through the same resolution the gate enforces.
                   kinds:
                     type: array
                     items:

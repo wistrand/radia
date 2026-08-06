@@ -10,6 +10,7 @@ export {
   grantKey,
   isRetired,
   newestByKey,
+  opsGrantKey,
   readRegistry,
   RETIRED,
   type RegistryView,

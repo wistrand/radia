@@ -146,6 +146,16 @@ export function grantKey(body: unknown): string | undefined {
   return JSON.stringify(["g2", g.principal, g.kind, ops, g.pattern ?? null]);
 }
 
+/** The logical identity of an ops grant (plan-ops-tiers.md): principal plus its sorted power set,
+ *  so re-assigning the same powers dedups and a retraction targets exactly one entry. Same
+ *  versioned-tag rule as `grantKey`: bump the tag whenever the body's shape changes. */
+export function opsGrantKey(body: unknown): string | undefined {
+  const g = body as { principal?: unknown; operations?: unknown };
+  if (typeof g?.principal !== "string") return undefined;
+  const ops = Array.isArray(g.operations) ? [...g.operations].map(String).sort().join(",") : "";
+  return JSON.stringify(["og1", g.principal, ops]);
+}
+
 /** What a registry read produced, and whether it saw everything. */
 export interface RegistryView {
   /** Current entry per key, retired ones dropped. */

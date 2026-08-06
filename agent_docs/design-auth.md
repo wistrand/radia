@@ -19,8 +19,10 @@ pattern is AND-ed into the watch match, so it wakes only on records inside its s
 `forbidden`). A watch **re-derives that scope for as long as its stream runs** (`Space.scopeWatch`
 / `revalidateWatch`), on attach and whenever an `AUTHORIZATION_KINDS` record goes past in the event
 log, so revocation reaches an open connection instead of waiting for a disconnect. The stream also
-re-resolves the credential, so a stopped run loses it. `/v0/ops/*` requires a privileged principal; writing a reserved control kind
-(`grant`/`signal`/`agent_*`) requires privilege, meaning an operator or the supervisor: a logged-in
+re-resolves the credential, so a stopped run loses it. `/v0/ops/*` requires a privileged principal
+or an ops POWER held as a reserved `ops_grant` record (see "The operator bit" below); writing a
+reserved control kind
+(`grant`/`signal`/`agent_*`/`ops_grant`) requires privilege, meaning an operator or the supervisor: a logged-in
 `human:alice` is refused like any other principal. Grants are **assigned, never self-declared**.
 Every coordination verb is grant-gated; there is no unauthenticated observe path.
 
@@ -347,9 +349,14 @@ flowchart TD
 ## The operator bit: a power taxonomy
 
 `Space.isPrivileged` is ONE bit (`ctx.operators` + the supervisor + the space's own identity), and
-that bit bundles seven separable powers. Named here so tiers can be discussed at all;
-[plan-ops-tiers.md](plan-ops-tiers.md) is the decided build plan for splitting them (ops powers as
-grant records).
+that bit bundles seven separable powers. Named here so tiers can be discussed at all.
+**Powers 1–5 are now grantable individually** ([plan-ops-tiers.md](plan-ops-tiers.md), built
+2026-08-06): a reserved `ops_grant` record `{principal, operations}` over the closed vocabulary
+`observe`/`remediate`/`sweep`/`declassify`/`purge`, written only by an operator, resolved
+per-request and fail-closed (`Space.opsPowers`), enforced as a three-way gate in
+`src/server/http.ts` and reported by `effectivePermissions.opsPowers`. Powers 6 and 7 are never
+grantable; the supervisor and the ambient dev credential still hold the whole bit (the plan's
+open phase 5).
 
 | # | Power               | What it reaches                                                                                                        | Blast radius |
 |---|---------------------|------------------------------------------------------------------------------------------------------------------------|--------------|

@@ -617,4 +617,25 @@ export const gcSuites: Suite[] = [
       assertEquals((await space.verifyIntegrity()).ok, true);
     },
   },
+  {
+    name: "gc compaction never compacts ops_grant: power history is audit, and a swept retirement is a restored power",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      // Same shape as the agent_definition case above: declare a contentKey in-process so the
+      // NEVER_COMPACT exclusion in core/gc.ts is the only thing standing.
+      space.registerKind({
+        kind: "ops_grant",
+        indexedPaths: [{ path: "principal", type: "keyword" }],
+        claimable: false,
+        contentKey: ["principal"],
+      });
+      await space.put({ kind: "ops_grant", body: { principal: "agent:x", operations: ["observe"] } });
+      await space.put({ kind: "ops_grant", body: { principal: "agent:x", operations: ["observe"], retired: true } });
+      const before = (await space.query({ kind: "ops_grant" }, 50)).length;
+      assertEquals(before, 2, "an assignment and its retirement are separate records");
+      await space.gc();
+      assertEquals((await space.query({ kind: "ops_grant" }, 50)).length, before, "ops_grant never compacts, whatever key anyone declares");
+      assertEquals((await space.opsPowers("agent:x")).size, 0, "the retirement stands");
+    },
+  },
 ];

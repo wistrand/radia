@@ -691,4 +691,37 @@ export const authSuites: Suite[] = [
       assertEquals(scope!.includes("agent:w"), true, "the agent itself is always in its own scope");
     },
   },
+  {
+    name: "ops_grant bodies are closed: unknown powers, empty sets and privileged principals are refused",
+    run: async (adapter) => {
+      // The vocabulary is the security boundary (plan-ops-tiers.md): the identity root and the
+      // coordination bypass are never powers, so an unknown word must be a write error, not a
+      // grant that quietly opens nothing or, worse, something later.
+      const space = newSpace(adapter);
+      assertEquals(
+        await denied(() => space.put({ kind: "ops_grant", body: { principal: "agent:x", operations: ["mint"] } })),
+        "invalid_ops_grant",
+        "identity powers must not be grantable",
+      );
+      assertEquals(
+        await denied(() => space.put({ kind: "ops_grant", body: { principal: "agent:x", operations: [] } })),
+        "invalid_ops_grant",
+      );
+      // `human:local` is the default operator: it already holds every power, and a record claiming
+      // to assign it one only looks load-bearing.
+      assertEquals(
+        await denied(() => space.put({ kind: "ops_grant", body: { principal: "human:local", operations: ["observe"] } })),
+        "invalid_ops_grant",
+      );
+
+      // The projection: powers union across records, and a retirement subtracts on the next read.
+      await space.put({ kind: "ops_grant", body: { principal: "agent:x", operations: ["observe"] } });
+      await space.put({ kind: "ops_grant", body: { principal: "agent:x", operations: ["sweep"] } });
+      assertEquals([...await space.opsPowers("agent:x")].sort(), ["observe", "sweep"]);
+      await space.put({ kind: "ops_grant", body: { principal: "agent:x", operations: ["sweep"], retired: true } });
+      assertEquals([...await space.opsPowers("agent:x")], ["observe"], "a retirement closes exactly its entry");
+      // A privileged principal reports every power without any record existing.
+      assertEquals((await space.opsPowers("human:local")).size, 5);
+    },
+  },
 ];

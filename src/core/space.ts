@@ -46,8 +46,13 @@ import {
   kindDefKey,
   KindRegistry,
   META_RESERVED,
+  OPS_GRANT,
+  OPS_POWERS,
+  type OpsGrantDef,
+  type OpsPower,
   validateGrantDef,
   validateKindDef,
+  validateOpsGrantDef,
   WRITE_PROTECTED_KINDS,
 } from "./kinds.ts";
 import { CredentialStore, hashToken, mintCredential, type ResolvedToken } from "./auth.ts";
@@ -55,7 +60,7 @@ import { type CompactionResult, compactRegistries } from "./gc.ts";
 import { type BlobStore, MemoryBlobStore } from "../storage/blobs.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
-import { activeSet, grantKey, isRetired, readRegistry, type RegistryView } from "./registry.ts";
+import { activeSet, grantKey, isRetired, opsGrantKey, readRegistry, type RegistryView } from "./registry.ts";
 import { Notifier } from "./notifier.ts";
 import { type FlowReport, type FlowShape, mineFlows } from "./flows.ts";
 import {
@@ -289,6 +294,11 @@ export interface EffectivePermissions {
     kindNotDeclared?: true;
   }[];
   ops: { reachable: boolean; kinds: string[] };
+  /** Ops-plane powers held via `ops_grant` records (all of them for a privileged principal).
+   *  Reported through the same resolution the gate enforces (`Space.opsPowers`), so this line IS
+   *  the enforcement, not a restatement of it. Distinct from `ops` above, which is the
+   *  self-scoped read tier (own records of granted kinds). */
+  opsPowers: OpsPower[];
   /** False if the grant scan could not be exhausted. The picture may be missing entries. */
   complete: boolean;
 }
@@ -735,7 +745,15 @@ export class Space {
   async effectivePermissions(principal: string): Promise<EffectivePermissions> {
     const subject = this.grantSubject(principal);
     if (this.isPrivileged(principal)) {
-      return { principal, subject, privileged: true, kinds: [], ops: { reachable: true, kinds: [] }, complete: true };
+      return {
+        principal,
+        subject,
+        privileged: true,
+        kinds: [],
+        ops: { reachable: true, kinds: [] },
+        opsPowers: [...OPS_POWERS],
+        complete: true,
+      };
     }
     const view = await this.registry(GRANT, grantKey, { principal: subject });
     const byKind = new Map<string, { kind: string; operations: GrantOp[]; scoped: boolean; unscoped: boolean; opsEligible: boolean; patterns: Record<string, unknown>[] }>();
@@ -784,6 +802,7 @@ export class Space {
       privileged: false,
       kinds,
       ops: { reachable: opsKinds.length > 0, kinds: opsKinds.sort() },
+      opsPowers: [...await this.opsPowers(principal)].sort(),
       complete: view.complete,
     };
   }
@@ -1274,6 +1293,20 @@ export class Space {
       validateGrantDef(def);
       this.checkGrantPattern(def);
     }
+    // An ops_grant IS an ops-plane power assignment (plan-ops-tiers.md). Two refusals beyond the
+    // shape check: a privileged principal already holds every power, so granting it one only
+    // manufactures a record that looks load-bearing and is not; and the vocabulary is closed at
+    // validate (identity and grant writes are never a power).
+    if (req.kind === OPS_GRANT) {
+      const def = req.body as OpsGrantDef;
+      validateOpsGrantDef(def);
+      if (this.isPrivileged(def.principal)) {
+        throw new RadiaError(
+          "invalid_ops_grant",
+          `'${def.principal}' is privileged and already holds every ops power; an ops_grant may not name it`,
+        );
+      }
+    }
     return undefined;
   }
 
@@ -1483,6 +1516,29 @@ export class Space {
    * `run:<ulid>`, run tokens are re-minted, and comparing to the current run would silently hide
    * the same agent's earlier work. Throws `forbidden` when nothing is scoped to it.
    */
+  /**
+   * The ops-plane powers a principal holds (plan-ops-tiers.md): the union of its active
+   * `ops_grant` records' operations. Privileged principals hold every power; everyone else holds
+   * exactly what an operator assigned, resolved per request and never cached (the same rule as
+   * credentials: a revocation is discovered, not remembered). FAIL-CLOSED twice over: no records
+   * means no powers, and an INCOMPLETE registry read also means no powers, because a picture that
+   * may be missing a retirement must never open anything. `effectivePermissions` reports through
+   * this same function, so the promise cannot drift from the enforcement.
+   */
+  async opsPowers(principal: string): Promise<Set<OpsPower>> {
+    if (this.isPrivileged(principal)) return new Set<OpsPower>(OPS_POWERS);
+    const subject = this.grantSubject(principal);
+    const view = await this.registry<OpsGrantDef>(OPS_GRANT, opsGrantKey, { principal: subject });
+    if (!view.complete) return new Set();
+    const powers = new Set<OpsPower>();
+    for (const rec of view.entries.values()) {
+      const ops = (rec.body as OpsGrantDef).operations;
+      if (!Array.isArray(ops)) continue;
+      for (const op of ops) if ((OPS_POWERS as readonly string[]).includes(op)) powers.add(op as OpsPower);
+    }
+    return powers;
+  }
+
   async opsScope(principal: string): Promise<StatsScope | null> {
     if (this.isPrivileged(principal)) return null;
     const subject = this.grantSubject(principal);

@@ -26,7 +26,7 @@
 // adapters re-check the lease floor under it whatever this logic decides.
 
 import type { KindDef } from "./kinds.ts";
-import { AGENT_DEFINITION, AGENT_RUN, GRANT, INTEREST, KIND_DEF, SIGNAL } from "./kinds.ts";
+import { AGENT_DEFINITION, AGENT_RUN, GRANT, INTEREST, KIND_DEF, OPS_GRANT, SIGNAL } from "./kinds.ts";
 import { getPath } from "./matching.ts";
 import type { RadiaRecord } from "../storage/adapter.ts";
 
@@ -37,8 +37,10 @@ const RUNTIME_KEYS: Record<string, string[]> = {
   [AGENT_RUN]: ["run"],
 };
 
-/** Reserved kinds that must never compact, whatever anyone declares. See the header. */
-const NEVER_COMPACT = new Set([GRANT, KIND_DEF, SIGNAL, AGENT_DEFINITION]);
+/** Reserved kinds that must never compact, whatever anyone declares. See the header. `ops_grant`
+ *  for the same reason as `grant`: the assignment history of an ops power is audit, and deleting
+ *  a retire-marker would silently restore a power. */
+const NEVER_COMPACT = new Set([GRANT, KIND_DEF, SIGNAL, AGENT_DEFINITION, OPS_GRANT]);
 
 /** Everything compaction needs from the space. `sweepIds` is the destructive member; the rest are
  *  reads. The adapters keep their own lease floor under `sweepIds`. */

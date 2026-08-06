@@ -1,9 +1,11 @@
 # Plan: ops-plane tiers (powers as grant records)
 
-> Status: designed 2026-08-06, not built. Decided: ops powers become RECORDS (a reserved
-> `ops_grant` kind) assigned by config operators. Rejected: a second config list (breeds a third,
-> and dodges "express it through the substrate") and discipline-only (`radia login` for daily
-> work; already possible, structurally weak). The powers being split are named in
+> Status: phases 1–4 BUILT (2026-08-06): the `ops_grant` kind, the five powers, the three-way
+> gate, reporting through `effectivePermissions`. Phase 5 (supervisor demotion, the dev/MCP
+> observer credential) is open, with its one decision unmade. Decided: ops powers are RECORDS (a
+> reserved `ops_grant` kind) assigned by config operators. Rejected: a second config list (breeds
+> a third, and dodges "express it through the substrate") and discipline-only (`radia login` for
+> daily work; already possible, structurally weak). The powers being split are named in
 > [design-auth.md](design-auth.md) "The operator bit: a power taxonomy". Read
 > [gotchas.md](gotchas.md#grants-scopes-and-narrowed-answers) before touching enforcement.
 
@@ -85,20 +87,23 @@ surface an operator would check.
 
 ## Build order
 
-1. **Taxonomy** in design-auth.md: DONE with this plan.
-2. **The kind**: `ops_grant` reserved kind, registry read, write protection, refuse naming a
-   privileged principal, `effectivePermissions` reporting. Plants: a non-operator's write is
-   refused; a retire closes access on the next request; an incomplete registry read denies; gc
-   compaction refuses it (the `NEVER_COMPACT` plant, like `agent_definition`'s).
-3. **`observe`** at the gate. Plants: an observer reads everything on the table including
-   integrity and erasures; every ops WRITE 403s naming the power; a put/take without an ordinary
-   grant still 403s (no power 7); the selfscope suite stays green untouched.
-4. **The write half**: `remediate`, `sweep`, `declassify`, `purge`, per-route. Plants: each power
-   reaches exactly its verbs and none of its neighbours' (declassify-cannot-shred above all); a
-   holder of all four still cannot write a `grant` record.
-5. **Defaults**: supervisor demotion, then the dev/MCP observer credential. Each moves a shipped
-   default, so each carries its own doc edit (the CLAUDE.md invariant; architecture-surfaces.md
-   for credentials) and a `defaults.test.ts` pin in the same change.
+1. **Taxonomy** in design-auth.md: DONE.
+2. **The kind** — BUILT: `OPS_GRANT` + `validateOpsGrantDef` (`core/kinds.ts`, vocabulary closed
+   at write), `opsGrantKey` (`sdk/ts/registry.ts`), `Space.opsPowers` (fail-closed on an
+   incomplete view), the privileged-principal refusal in `validateReservedBody`, `NEVER_COMPACT`
+   membership, `opsPowers` on `effectivePermissions`. Plants: `suites/auth.ts` (closed bodies,
+   union + retire, privileged short-circuit), `suites/gc.ts` (compaction refusal).
+3. **`observe`** at the gate — BUILT: the three-way in `http.ts` (`requiredOpsPower` + the gc
+   either/or), self-scope path untouched.
+4. **The write half** — BUILT: `remediate`/`sweep`/`declassify`/`purge` per route; the live/dry
+   gc split decided in `handleGc` where the body is parsed. Plants for 3+4:
+   `http.test.ts` "each ops power opens exactly its verbs": the observe read table,
+   refusals naming the power, declassify-cannot-shred and the reverse, sweep-opens-no-reads, no
+   grant/ops_grant writes below full, no coordination bypass, retire-closes-next-request, and
+   the permissions report equal to what the gate resolved.
+5. **Defaults** — OPEN: supervisor demotion, then the dev/MCP observer credential. Each moves a
+   shipped default, so each carries its own doc edit (the CLAUDE.md invariant;
+   architecture-surfaces.md for credentials) and a `defaults.test.ts` pin in the same change.
 
 ## Non-goals
 

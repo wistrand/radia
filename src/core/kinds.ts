@@ -41,6 +41,7 @@ import {
   GRANT as WIRE_GRANT,
   INTEREST as WIRE_INTEREST,
   KIND_DEF,
+  OPS_GRANT as WIRE_OPS_GRANT,
   SHRED as WIRE_SHRED,
   SIGNAL as WIRE_SIGNAL,
 } from "../../sdk/ts/wire.ts";
@@ -83,9 +84,50 @@ export const SHRED = WIRE_SHRED;
  */
 export const INTEREST = WIRE_INTEREST;
 
+/** Reserved kind: an ops-plane power assignment (body = an OpsGrantDef). The tier between
+ *  self-scoped reads and the full operator bit; see plan-ops-tiers.md and design-auth.md
+ *  "The operator bit". Assigned by a config operator, additive, retired to revoke. */
+export const OPS_GRANT = WIRE_OPS_GRANT;
+
+/**
+ * The closed ops-power vocabulary (design-auth.md "The operator bit", powers 1–5). Powers 6
+ * (identity root: grant/signal/agent_* writes, minting, revoke) and 7 (coordination bypass) are
+ * deliberately NOT here and never will be: a tier holding 6 is the full tier with extra steps,
+ * and an observer that can also write ungranted records is not one. Extend only when a real
+ * failure names the next power.
+ */
+export const OPS_POWERS = ["observe", "remediate", "sweep", "declassify", "purge"] as const;
+export type OpsPower = (typeof OPS_POWERS)[number];
+
+/** Body of an `ops_grant` record. `operations` mirrors the grant field name on purpose, so the
+ *  console and `effectivePermissions` render both registries the same way. */
+export interface OpsGrantDef {
+  principal: string;
+  operations: OpsPower[];
+}
+
+/** Validate an ops_grant body. Throws RadiaError. The privileged-principal refusal lives in
+ *  `Space.validateReservedBody` (it needs the context's operator set). */
+export function validateOpsGrantDef(def: OpsGrantDef): void {
+  if (typeof def.principal !== "string" || def.principal.length === 0) {
+    throw new RadiaError("invalid_ops_grant", "ops_grant.principal must be a non-empty string");
+  }
+  if (!Array.isArray(def.operations) || def.operations.length === 0) {
+    throw new RadiaError("invalid_ops_grant", "ops_grant.operations must be a non-empty array");
+  }
+  for (const op of def.operations) {
+    if (!(OPS_POWERS as readonly string[]).includes(op)) {
+      throw new RadiaError(
+        "invalid_ops_grant",
+        `unknown ops power '${op}' (expected ${OPS_POWERS.join(", ")}); identity and grant writes are never a power`,
+      );
+    }
+  }
+}
+
 /** Reserved kinds only a human/supervisor principal may write directly (assigned, never
  *  self-declared). Runs/definitions are also written internally by the bootstrap endpoints. */
-export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, SHRED]);
+export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, SHRED, OPS_GRANT]);
 
 /**
  * Kinds whose appearance in the event log means somebody's authorization may have just changed.
@@ -394,6 +436,8 @@ export const META_RESERVED: KindDef[] = [
   // nothing queries by it; it is compiled and evaluated, never matched against.
   { kind: INTEREST, indexedPaths: [{ path: "kind", type: "keyword" }], claimable: false },
   { kind: SHRED, indexedPaths: [{ path: "digest", type: "keyword" }], claimable: false },
+  // Indexed on principal: the ops gate reads one principal's powers per request.
+  { kind: OPS_GRANT, indexedPaths: [{ path: "principal", type: "keyword" }], claimable: false },
   // Indexed on digest (find every record referencing the same bytes) and mediaType (route by what
   // it is: an image worker claims `{mediaType: "image/png"}` without a routing table).
   {

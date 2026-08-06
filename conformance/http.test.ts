@@ -1170,3 +1170,83 @@ Deno.test("http: an ops events read below the horizon says where the log begins"
     await adapter.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Ops tiers (plan-ops-tiers.md): powers as ops_grant records, the three-way gate.
+// The matrix below is the plan's plants: each power reaches exactly its verbs and
+// none of its neighbours', and nothing below the full tier holds the identity
+// root (grant/ops_grant writes) or the coordination bypass.
+// ---------------------------------------------------------------------------
+
+Deno.test("http: each ops power opens exactly its verbs; none confers the identity root or the bypass", async () => {
+  const { space, handler, close } = await newHandler({ authRequired: true });
+  const status = async (p: Promise<Response>) => {
+    const r = await p;
+    await drain(r);
+    return r.status;
+  };
+  try {
+    const bearer = async (agent: string, powers?: string[]) => {
+      const { definitionToken } = await space.createAgentDefinition(agent, []);
+      const { runToken } = await space.mintRun(definitionToken);
+      if (powers) await space.put({ kind: "ops_grant", body: { principal: agent, operations: powers } });
+      return { authorization: `Bearer ${runToken}` };
+    };
+    const obs = await bearer("agent:obs", ["observe"]);
+    const med = await bearer("agent:med", ["remediate"]);
+    const dcl = await bearer("agent:dcl", ["declassify"]);
+    const prg = await bearer("agent:prg", ["purge"]);
+    const swp = await bearer("agent:swp", ["sweep"]);
+
+    // observe opens every READ unscoped, including the ones the self-scope tier never reaches.
+    for (const path of ["/v0/ops/stats", "/v0/ops/events", "/v0/ops/diagnostics", "/v0/ops/integrity", "/v0/ops/erasures", "/v0/ops/digest", "/v0/ops/flows"]) {
+      assertEquals(await status(handler(get(path, obs))), 200, `observe must open ${path}`);
+    }
+    // …and ANOTHER principal's permissions, which self-scope never could.
+    assertEquals(await status(handler(get("/v0/ops/permissions?principal=agent:med", obs))), 200);
+
+    // A dry gc is a read; a live one demands `sweep`, refused by name.
+    assertEquals(await status(handler(post("/v0/ops/gc", { dryRun: true }, obs))), 200);
+    const liveDenied = await handler(post("/v0/ops/gc", {}, obs));
+    assertEquals(liveDenied.status, 403);
+    assert((await liveDenied.json()).detail.includes("sweep"), "the refusal must name the missing power");
+    assertEquals(await status(handler(post("/v0/ops/gc", {}, swp))), 200);
+    // A write power opens no reads.
+    assertEquals(await status(handler(get("/v0/ops/stats", swp))), 403);
+    assertEquals(await status(handler(get("/v0/ops/stats", med))), 403);
+
+    // The write half, each verb by its own power and not a neighbour's.
+    const denied = await handler(post("/v0/ops/remediate", { action: "reclaim", state: "leased", expired: true }, obs));
+    assertEquals(denied.status, 403);
+    assert((await denied.json()).detail.includes("remediate"));
+    assertEquals(await status(handler(post("/v0/ops/remediate", { action: "reclaim", state: "leased", expired: true }, med))), 200);
+
+    const tainted = await space.put({ kind: "task", body: { tag: "t" }, taint: ["file"] });
+    assertEquals(await status(handler(post(`/v0/ops/records/${tainted.id}/declassify`, { labels: ["file"] }, prg))), 403, "purge must not declassify");
+    assertEquals(await status(handler(post(`/v0/ops/records/${tainted.id}/declassify`, { labels: ["file"] }, dcl))), 200);
+
+    const art = await space.putArtifact(new TextEncoder().encode("doomed"), { mediaType: "text/plain" });
+    assertEquals(await status(handler(post(`/v0/ops/records/${art.id}/shred`, {}, dcl))), 403, "declassify must not shred");
+    assertEquals(await status(handler(post(`/v0/ops/records/${art.id}/shred`, {}, prg))), 200);
+
+    const rec = await space.put({ kind: "task", body: { tag: "r" } });
+    assertEquals(await status(handler(post(`/v0/ops/records/${rec.id}/reclaim`, {}, obs))), 403);
+
+    // No identity root below full: a power holder cannot write authorization records…
+    assertEquals(await status(handler(post("/v0/records", { kind: "ops_grant", body: { principal: "agent:prg", operations: ["observe"] } }, prg))), 403);
+    assertEquals(await status(handler(post("/v0/records", { kind: "grant", body: { principal: "agent:obs", kind: "task", operations: ["query"] } }, obs))), 403);
+    // …and no coordination bypass: ungranted put/query stay refused whatever powers are held.
+    assertEquals(await status(handler(post("/v0/records", { kind: "task", body: { tag: "x" } }, obs))), 403);
+    assertEquals(await status(handler(post("/v0/records/query", { kind: "task" }, obs))), 403);
+
+    // Promise == enforcement: the self report carries exactly what the gate resolved.
+    const perm = await (await handler(get("/v0/ops/permissions?principal=agent:med", med))).json();
+    assertEquals(perm.opsPowers, ["remediate"]);
+
+    // A retirement closes on the NEXT request: resolution is per request, never cached.
+    await space.put({ kind: "ops_grant", body: { principal: "agent:obs", operations: ["observe"], retired: true } });
+    assertEquals(await status(handler(get("/v0/ops/stats", obs))), 403);
+  } finally {
+    await close();
+  }
+});

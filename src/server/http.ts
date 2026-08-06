@@ -13,6 +13,7 @@
 //     Requests authenticate with `Authorization: Bearer <run-token>`; see design-auth.md.
 
 import type { Space } from "../core/space.ts";
+import type { OpsPower } from "../core/kinds.ts";
 import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
 import { handleCreateDefinition, handleCreateRun, handleRenewRun, handleRevokeDefinition, handleStopRun } from "./handlers/agents.ts";
@@ -63,6 +64,20 @@ function loadVendor(name: string): string {
  *  operator-only. */
 const READ_ONLY_OPS =
   /^\/v0\/ops\/(stats|events|diagnostics|digest|flows|records(\/[^/]+(\/(envelope|lineage|children|graph|thread))?)?)$/;
+
+/** The ops WRITE half, each verb mapped to the power it demands (plan-ops-tiers.md). Everything
+ *  unmapped is a read and needs `observe` (or falls to the self-scope tier). `POST /v0/ops/gc` is
+ *  deliberately absent: its dry run is a read, so the live/dry split is decided in `handleGc`
+ *  after the body is parsed. `POST /v0/ops/dry-run` is a read despite the method. */
+function requiredOpsPower(method: string, path: string): OpsPower | null {
+  if (method !== "POST") return null;
+  if (path === "/v0/ops/remediate") return "remediate";
+  const m = path.match(/^\/v0\/ops\/records\/[^/]+\/(reclaim|dead-letter|requeue|declassify|shred)$/);
+  if (!m) return null;
+  if (m[1] === "declassify") return "declassify";
+  if (m[1] === "shred") return "purge";
+  return "remediate";
+}
 
 export function startServer(opts: ServerOptions): { finished: Promise<void> } {
   const hostname = opts.host ?? "127.0.0.1"; // loopback by default; --host 0.0.0.0 to expose
@@ -311,24 +326,38 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     const asksAboutSelf = url.pathname === "/v0/ops/permissions" &&
       [principal, space.grantSubject(principal)].includes(url.searchParams.get("principal") ?? "");
 
-    // The observe-and-operate plane is grant-gated. Operator (human/supervisor) sees everything;
-    // anyone else sees the plane only through a SELF SCOPE: the kinds they hold a
-    // `scope.createdBy:"self"` grant on, restricted to their own records. `opsScope` throws
-    // `forbidden` when nothing is scoped to them.
-    //
-    // A scope does NOT open the whole plane: the write half (remediate/admin/declassify) stays
-    // operator-only below, because those are the interrupt half and taint clears only via
-    // privileged declassify.
+    // The observe-and-operate plane is a THREE-WAY gate (plan-ops-tiers.md). A privileged
+    // principal holds every power. Anyone else holds exactly the powers its `ops_grant` records
+    // assign: `observe` opens every READ unscoped, and each write verb demands its own power
+    // (`remediate`/`sweep`/`declassify`/`purge`), refused BY NAME so the caller is not sent off
+    // to request a kind grant that cannot help. Below that sits the self-scope tier unchanged:
+    // the kinds a `scope.createdBy:"self"` grant covers, own records, reads only. No power ever
+    // opens the coordination plane; `authorize` never consults this.
     let opsScope: StatsScope | null = null;
+    let opsPowers: ReadonlySet<OpsPower> | null = null;
     if (url.pathname.startsWith("/v0/ops/") && !asksAboutSelf) {
-      try {
-        opsScope = await space.opsScope(principal);
-      } catch (e) {
-        if (e instanceof RadiaError) return problem(403, e.code, e.message);
-        throw e;
-      }
-      if (opsScope && !READ_ONLY_OPS.test(url.pathname)) {
-        return problem(403, "forbidden", `principal '${principal}' may only READ the ops plane, and only its own records`);
+      opsPowers = await space.opsPowers(principal);
+      const need = requiredOpsPower(req.method, url.pathname);
+      if (need) {
+        if (!opsPowers.has(need)) {
+          return problem(403, "forbidden", `'${need}' ops power required for ${url.pathname}; an operator assigns it as an ops_grant record`);
+        }
+      } else if (req.method === "POST" && url.pathname === "/v0/ops/gc") {
+        // Either power reaches the verb; the live/dry split is decided in the handler, where the
+        // body is parsed. A sweep-only holder may also dry-run: a preview of its own power.
+        if (!opsPowers.has("sweep") && !opsPowers.has("observe")) {
+          return problem(403, "forbidden", "'sweep' (live) or 'observe' (dryRun) ops power required for /v0/ops/gc");
+        }
+      } else if (!opsPowers.has("observe")) {
+        try {
+          opsScope = await space.opsScope(principal);
+        } catch (e) {
+          if (e instanceof RadiaError) return problem(403, e.code, e.message);
+          throw e;
+        }
+        if (opsScope && !READ_ONLY_OPS.test(url.pathname)) {
+          return problem(403, "forbidden", `principal '${principal}' may only READ the ops plane, and only its own records`);
+        }
       }
     }
 
@@ -451,7 +480,9 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
       case "POST /v0/ops/remediate":
         return await handleRemediate(space, req);
       case "POST /v0/ops/gc":
-        return await handleGc(space, req, principal);
+        // The dry/live split is body-dependent, so the gate could not decide it: a dry run is a
+        // read (`observe` reached here), a live one needs `sweep`, checked in the handler.
+        return await handleGc(space, req, principal, opsPowers?.has("sweep") ?? false);
       case "GET /v0/ops/records":
         return await handleEnvelopeQuery(space, url, opsScope);
       case "GET /v0/ops/permissions":

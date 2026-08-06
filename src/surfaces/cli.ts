@@ -272,6 +272,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         subject: string;
         complete: boolean;
         ops: { reachable: boolean; kinds: string[] };
+        opsPowers?: string[];
         kinds: { kind: string; operations: string[]; readsScopedToSelf: boolean; patterns: unknown[] }[];
       };
       return out(ctx, p, () => {
@@ -283,7 +284,8 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           const pat = k.patterns.length > 0 ? `   scoped to ${JSON.stringify(k.patterns)}` : "";
           lines.push(`  ${k.kind.padEnd(20)} ${k.operations.join(",")}${scope}${pat}`);
         }
-        lines.push(`  ops plane: ${p.ops.reachable ? `readable for ${p.ops.kinds.join(", ")}` : "no"}`);
+        if (p.opsPowers && p.opsPowers.length > 0) lines.push(`  ops powers: ${p.opsPowers.join(", ")}`);
+        lines.push(`  ops plane: ${p.ops.reachable ? `self-scoped reads for ${p.ops.kinds.join(", ")}` : p.opsPowers?.includes("observe") ? "unscoped reads (observe)" : "no"}`);
         if (!p.complete) lines.push("  WARNING: the grant scan could not be exhausted; this view may be incomplete");
         return lines.join("\n");
       });

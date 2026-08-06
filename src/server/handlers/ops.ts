@@ -491,9 +491,11 @@ export async function handleRemediate(space: Space, req: Request): Promise<Respo
   return Response.json(out);
 }
 
-/** The retention sweep (`Space.gc`): on demand, operator-only via the ops-plane gate. `dryRun`
- *  answers "what would go" without deleting, which is also how `doctor` reports the backlog. */
-export async function handleGc(space: Space, req: Request, principal: string): Promise<Response> {
+/** The retention sweep (`Space.gc`): on demand, gated by ops power. A DRY run is a read (the
+ *  gate admits it with `observe`; it is how `doctor` reports the backlog); a LIVE run deletes,
+ *  so it demands the `sweep` power, decided here because only the parsed body says which one
+ *  this is. */
+export async function handleGc(space: Space, req: Request, principal: string, allowLive: boolean): Promise<Response> {
   let j: Record<string, unknown> = {};
   try {
     const text = await req.text();
@@ -506,6 +508,9 @@ export async function handleGc(space: Space, req: Request, principal: string): P
     }
   } catch {
     return problem(400, "invalid_body", "expected a JSON object");
+  }
+  if (j.dryRun !== true && !allowLive) {
+    return problem(403, "forbidden", "'sweep' ops power required for a live gc; dryRun:true needs only 'observe'");
   }
   const out = await space.gc({
     limit: typeof j.limit === "number" && Number.isFinite(j.limit) ? j.limit : undefined,
