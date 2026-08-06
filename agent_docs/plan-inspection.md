@@ -35,7 +35,7 @@ resequencing: shipping the top three serves agents and newcomers and does nothin
 
 | # | Item                                                    | For       | Why here                                                                 |
 |---|---------------------------------------------------------|-----------|--------------------------------------------------------------------------|
-| 1 | `explain` on query, evidence-linked narrative           | Agent     | **`explain` DONE.** Evidence-linked narrative is a console concern, still open |
+| 1 | `explain` on query, evidence-linked narrative           | Agent     | **`explain` DONE**, and now RENDERED: the console's Records browser and Query playground request it and show the notes (2026-08-06). Evidence-linked findings landed the same day as the console Overview's doctor view (`loadDoctor`: `GET /v0/ops/diagnostics` as ranked findings, every sample a link into Records). Narrative for arbitrary generated answers stays open |
 | 2 | Flows tab                                               | Newcomer  | **DONE** (2026-08-04). Mining + the tab; the `flow` RECORD is not written, see below |
 | 3 | Interest-as-records, dry-run matcher                    | All three | **DONE**, and it paid out: the orphaned/starving split is built on it (2026-08-04). The routing diagram is still not |
 | 4 | Thread grouping, `thread()`, shape-aware collapsing     | Agent     | **`thread()` DONE.** Feed grouping and collapsing are console work, still open |

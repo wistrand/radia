@@ -131,6 +131,10 @@
       <div id="overview-health" class="muted">loading…</div>
     </div>
     <div class="panel">
+      <h2>Findings <button class="btn ghost" style="float:right" onclick="loadDoctor()">Refresh</button></h2>
+      <div id="doctor"><div class="empty">loading…</div></div>
+    </div>
+    <div class="panel">
       <h2>Records by kind and state <button class="btn ghost" style="float:right" onclick="loadStats()">Refresh</button></h2>
       <div id="stats"></div>
     </div>
@@ -143,8 +147,13 @@
       <div class="row">
         <div><label>Kind</label><input id="rec-kind" list="kind-list" placeholder="task"></div>
         <div style="max-width:120px"><label>Limit</label><input id="rec-limit" type="number" value="50"></div>
+        <div style="max-width:160px"><label>Order</label><select id="rec-dir">
+          <option value="desc" selected>newest first</option>
+          <option value="asc">oldest first</option>
+        </select></div>
       </div>
       <div class="actions"><button class="btn" onclick="loadRecords()">Load</button></div>
+      <div id="rec-msg"></div>
     </div>
     <div class="grid2">
       <div class="panel"><h2>Results</h2><div id="rec-list"><div class="empty">Load a kind to browse.</div></div></div>
@@ -423,7 +432,7 @@ function selectTab(b) {
   stopFeed();
   stopGraphLive();
   stopSpace();
-  if (b.dataset.tab === "overview") { loadHealth(); loadStats(); }
+  if (b.dataset.tab === "overview") { loadHealth(); loadDoctor(); loadStats(); }
   if (b.dataset.tab === "kinds") loadKinds();
   if (b.dataset.tab === "feed") startFeed();
   if (b.dataset.tab === "graph") loadGraphRoots();
@@ -537,14 +546,35 @@ async function loadHealth() {
   const who = await api("GET", "/v0/ops/permissions?principal=" + encodeURIComponent(d.principal || ""));
   if (!who.ok && who.status === 401) { showSignIn("That token is expired or no longer valid. Paste a new one."); return; }
   IDENTITY = who.ok
-    ? { principal: d.principal, subject: who.data.subject, privileged: !!who.data.privileged, kinds: who.data.kinds || [] }
-    : { principal: d.principal, subject: d.principal, privileged: false, kinds: [], unknown: true };
+    ? {
+      principal: d.principal,
+      subject: who.data.subject,
+      privileged: !!who.data.privileged,
+      kinds: who.data.kinds || [],
+      // Ops powers (plan-ops-tiers.md): `observe` opens the plane's READS unscoped, so "scoped ⇒
+      // the ops plane will 403" stopped being true and this copy must not keep saying it.
+      powers: who.data.opsPowers || [],
+    }
+    : { principal: d.principal, subject: d.principal, privileged: false, kinds: [], powers: [], unknown: true };
   const label = esc(IDENTITY.subject || d.principal || "?");
-  const badge = IDENTITY.privileged ? "operator" : (IDENTITY.unknown ? "?" : "scoped");
+  const badge = IDENTITY.privileged
+    ? "operator"
+    : IDENTITY.unknown
+    ? "?"
+    : IDENTITY.powers.includes("observe")
+    ? "observer"
+    : IDENTITY.powers.length
+    ? "powers"
+    : "scoped";
+  const pillTitle = IDENTITY.privileged
+    ? "operator: every kind, full ops plane. Click to change token"
+    : IDENTITY.powers.length
+    ? `ops powers: ${IDENTITY.powers.join(", ")}. Coordination still needs kind grants. Click to change token`
+    : "a scoped session: only its own grants; the ops plane needs an ops power or an operator. Click to change token";
   $("health").innerHTML = `<span class="pill">storage: ${esc(d.storage)}</span>`
     + `<span class="pill">api ${esc(d.api)}</span>`
     + `<span class="pill">v${esc(d.version)}</span>`
-    + `<span class="pill" style="cursor:pointer" onclick="setToken()" title="${IDENTITY.privileged ? "operator: every kind, full ops plane. Click to change token" : "a scoped session: only its own grants, and the ops plane will 403. Click to change token"}">as ${label} · ${badge}</span>`;
+    + `<span class="pill" style="cursor:pointer" onclick="setToken()" title="${esc(pillTitle)}">as ${label} · ${badge}</span>`;
   $("overview-health").innerHTML =
     `<div><b>Principal:</b> <span class="mono">${label}</span> `
     + (IDENTITY.unknown
@@ -552,7 +582,9 @@ async function loadHealth() {
       ? `<span class="muted">could not read this principal's permissions, so what it may do is unknown</span>`
       : IDENTITY.privileged
       ? `<span class="tag tag-grant">operator</span>`
-      : `<span class="tag tag-taint">scoped</span> <span class="muted">${IDENTITY.kinds.length} kind${IDENTITY.kinds.length === 1 ? "" : "s"} granted; the ops plane (stats, events, remediation) will 403</span>`)
+      : IDENTITY.powers.length
+      ? `<span class="tag tag-grant">${esc(IDENTITY.powers.join(", "))}</span> <span class="muted">ops power${IDENTITY.powers.length === 1 ? "" : "s"}; ${IDENTITY.kinds.length} kind${IDENTITY.kinds.length === 1 ? "" : "s"} granted for coordination</span>`
+      : `<span class="tag tag-taint">scoped</span> <span class="muted">${IDENTITY.kinds.length} kind${IDENTITY.kinds.length === 1 ? "" : "s"} granted; the ops plane needs an ops power (an operator assigns one as an ops_grant record)</span>`)
     + ` <button class="btn ghost" onclick="setToken()">change token</button>`
     + ` <button class="btn ghost" onclick="useToken(null)" title="forget this token and return to the sign-in screen">sign out</button>`
     + `</div>`
@@ -565,10 +597,10 @@ async function loadHealth() {
 }
 async function loadStats() {
   const r = await api("GET", "/v0/ops/stats");
-  // A scoped session cannot reach the ops plane at all. Blanking here read as "empty space", which
-  // is the worst answer: it is indistinguishable from a healthy idle one.
+  // A session without the observe power cannot reach the plane's reads. Blanking here read as
+  // "empty space", which is the worst answer: it is indistinguishable from a healthy idle one.
   if (!r.ok) {
-    $("stats").innerHTML = `<div class="note ${r.status === 403 ? "info" : "err"}">${esc(errText(r))}${r.status === 403 ? " — this console is signed in as a scoped principal, so the ops plane is closed to it. Sign out or paste an operator token." : ""}</div>`;
+    $("stats").innerHTML = `<div class="note ${r.status === 403 ? "info" : "err"}">${esc(errText(r))}${r.status === 403 ? " — this session holds no observe ops power, so the plane's reads are closed to it. Sign in with the observer credential radia dev provisioned, or have an operator assign one (ops_grant)." : ""}</div>`;
     return;
   }
   const rows = r.data.stats;
@@ -578,7 +610,94 @@ async function loadStats() {
     + `</tbody></table>`;
 }
 
+// ---- doctor (the operator's question, answered where the operator looks) ----
+// A composition of ONE existing read (GET /v0/ops/diagnostics), ranked by severity: what breaks
+// trust in the history first (chain, erasures), then what is stuck, then housekeeping. Every
+// finding carries the record ids it rests on as LINKS, because an inspection answer is a claim
+// and a claim whose backing nobody can open is an assertion (design-inspection.md). No new
+// server surface, and no state of its own to disagree with the space.
+function doctorLinks(sample, key) {
+  return (sample || []).slice(0, 5).map((s) => {
+    const id = String((s || {})[key] || "");
+    return id
+      ? `<button class="btn ghost" style="padding:1px 6px;font-size:11px" onclick="selectRecord('${esc(id)}')">${esc(id.slice(-8))}</button>`
+      : "";
+  }).join(" ");
+}
+async function loadDoctor() {
+  const r = await api("GET", "/v0/ops/diagnostics");
+  if (!r.ok) {
+    $("doctor").innerHTML = `<div class="note ${r.status === 403 ? "info" : "err"}">${esc(errText(r))}${r.status === 403 ? " — findings need the observe ops power or an operator session." : ""}</div>`;
+    return;
+  }
+  const d = r.data;
+  const out = [];
+  // A broken chain outranks everything: the findings below it are computed FROM the history it
+  // says cannot be trusted.
+  const chain = d.integrity;
+  if (chain && !chain.ok) {
+    out.push(`<div class="note err"><b>EVENT CHAIN BROKEN</b> at link ${Number(chain.failure && chain.failure.idx)}: `
+      + `${esc((chain.failure && chain.failure.reason) || "")} — ${esc((chain.failure && chain.failure.detail) || "")}</div>`);
+  }
+  const und = d.undoneErasures;
+  if (und && und.count) {
+    out.push(`<div class="note err"><b>ERASURES NO LONGER HOLDING:</b> ${und.count} of ${und.checked} — the payload is back `
+      + `at the same content address and every record referencing it reads again. ${doctorLinks(und.sample, "artifactId")}`
+      + `<div class="muted">re-erase with <code>radia shred &lt;id&gt; --shared</code>: that destroys the bytes for EVERY record holding them</div></div>`);
+  }
+  if (d.deadLetter && d.deadLetter.count) {
+    out.push(`<div class="note info"><b>dead-letter:</b> ${d.deadLetter.count} record${d.deadLetter.count === 1 ? "" : "s"} out of retries `
+      + `${doctorLinks(d.deadLetter.sample, "recordId")}<div class="muted">requeue from the record's detail, or <code>radia requeue --all</code></div></div>`);
+  }
+  if (d.stuckLeases && d.stuckLeases.count) {
+    out.push(`<div class="note info"><b>stuck leases:</b> ${d.stuckLeases.count}${d.stuckLeases.atLeast ? "+" : ""} expired but still held `
+      + `${doctorLinks(d.stuckLeases.sample, "recordId")}<div class="muted">a later take reclaims them; <code>radia reclaim --all --drain</code> does it now</div></div>`);
+  }
+  const st = d.staleAvailable;
+  if (st && st.count) {
+    const sp = st.split;
+    out.push(`<div class="note info"><b>stale available:</b> ${st.count} unclaimed past ${Number(st.thresholdSeconds)}s`
+      + (sp
+        ? ` — ${sp.orphaned.count} orphaned (nothing is listening) ${doctorLinks(sp.orphaned.sample, "recordId")}, ${sp.starving.count} starving (a listener is not claiming)`
+        : ` ${doctorLinks(st.sample, "recordId")}`)
+      + (sp && !sp.complete ? `<div class="muted">interest scan INCOMPLETE: orphaned may be overstated</div>` : "")
+      + (sp ? `<div class="muted">${esc(sp.caveat || "")}</div>` : "")
+      + `</div>`);
+  }
+  const sw = d.sweepable;
+  if (sw && sw.eligible > 0) {
+    const kinds = Object.entries(sw.byKind || {}).map(([k, n]) => `${esc(k)}=${n}`).join("  ");
+    out.push(`<div class="note info"><b>sweepable:</b> ${sw.eligible}${sw.atLeast ? "+" : ""} records past retention (${kinds}) — <code>radia gc --run</code> reclaims</div>`);
+  }
+  const ev = d.eventsSweepable;
+  if (ev && (ev.eligible > 0 || ev.unsealed > 0)) {
+    out.push(`<div class="note info"><b>event log:</b> `
+      + (ev.eligible > 0 ? `${ev.eligible} sealed events past retention (gc truncates, anchored + attested)` : "")
+      + (ev.eligible > 0 && ev.unsealed > 0 ? "; " : "")
+      + (ev.unsealed > 0 ? "unsealed events pending — gc seals before it sweeps" : "")
+      + `</div>`);
+  }
+  if (!out.length) out.push(`<div class="note ok">no dead letters, stuck leases, stale work, undone erasures, or sweepable backlog</div>`);
+  // The chain named even when fine: an all-clear that silently omits a check it ran reads as a
+  // broader guarantee than it is.
+  if (chain && chain.ok && chain.sealed > 0) {
+    out.push(`<div class="muted">event chain: ${chain.sealed} links`
+      + (chain.signed ? ", signed" : ", UNSIGNED (detects corruption and careless edits, not a rewrite)")
+      + (chain.truncated ? `; begins at link ${chain.truncated.anchorIdx}, ${chain.truncated.swept} removed by event GC${chain.truncated.attested ? " (attested)" : " (UNATTESTED)"}` : "")
+      + `</div>`);
+  }
+  if (d.scope) {
+    out.push(`<div class="muted">scoped view: findings cover only records this session may see; the chain, erasures and sweep backlogs are absent here, not clean</div>`);
+  }
+  $("doctor").innerHTML = out.join("");
+}
+
 // ---- kinds (kinds are kind_def records: discover by query, declare by put) ----
+let KIND_DEFS = new Map(); // kind name -> latest declaration; the records browser reads it for columns
+async function ensureKinds() {
+  if (!KIND_DEFS.size) await loadKinds();
+  return KIND_DEFS;
+}
 async function loadKinds() {
   const r = await api("POST", "/v0/records/query", { kind: "kind_def", limit: 1000 });
   if (!r.ok) return;
@@ -590,6 +709,7 @@ async function loadKinds() {
     if (!prev || prev.id < rec.id) latest.set(def.kind, { id: rec.id, def });
   }
   const kinds = [...latest.values()].map((v) => v.def);
+  KIND_DEFS = new Map(kinds.map((k) => [k.kind, k]));
   $("kind-list").innerHTML = kinds.map((k) => `<option value="${esc(k.kind)}">`).join("");
   if (!kinds.length) { $("kinds-list").innerHTML = `<div class="empty">No kinds registered.</div>`; return; }
   $("kinds-list").innerHTML = kinds.map((k) =>
@@ -624,27 +744,50 @@ async function putRecord() {
 }
 
 // ---- records browser ----
+/** The kind's own declaration says which body paths matter, so those are the columns: the table
+ *  schema is read from the substrate, never invented here. */
+function indexedPathsOf(kind) {
+  const def = KIND_DEFS.get(kind);
+  return def ? (def.indexedPaths || []).map((p) => p.path).slice(0, 4) : [];
+}
+/** `explain` notes are the traps this query walked into, answered where the mistake happens.
+ *  Built for models reading the response; a person reading a panel has the same problem. */
+function explainNotes(notes) {
+  return (notes || []).map((n) => `<div class="note info">${esc(n)}</div>`).join("");
+}
 async function loadRecords() {
   const kind = $("rec-kind").value.trim();
   if (!kind) return;
-  const r = await api("POST", "/v0/records/query", { kind, limit: Number($("rec-limit").value) || 50 });
-  if (!r.ok) { $("rec-list").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
+  await ensureKinds();
+  // NEWEST FIRST by default. A bounded read with the default order returns the OLDEST rows, so
+  // this browser used to present a long-lived kind's ancient history as "the records" — the exact
+  // bounded-read trap gotchas.md calls the most repeated bug in this codebase.
+  const dir = $("rec-dir").value === "asc" ? "asc" : "desc";
+  const r = await api("POST", "/v0/records/query", { kind, limit: Number($("rec-limit").value) || 50, dir, explain: true });
+  if (!r.ok) { $("rec-list").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; $("rec-msg").innerHTML = ""; return; }
+  $("rec-msg").innerHTML = explainNotes(r.data.explain);
   // The records browser NAVIGATES to a selection; the query playground below renders into its own
   // panel and stays put, which is why the click handler is a parameter rather than a constant.
-  renderRecordList("rec-list", r.data.records, selectRecord);
+  renderRecordList("rec-list", r.data.records, selectRecord, indexedPathsOf(kind));
 }
-function renderRecordList(el, records, onClick) {
+function renderRecordList(el, records, onClick, paths = []) {
   if (!records.length) { $(el).innerHTML = `<div class="empty">No matching records.</div>`; return; }
   window._recs = window._recs || {};
+  const cols = paths.map((p) => `<th class="mono">${esc(p)}</th>`).join("");
   const rows = records.map((rec) => {
     window._recs[rec.id] = rec;
     const preview = esc(JSON.stringify(rec.body)).slice(0, 60);
     const flags = metaFlags(rec);
+    const cells = paths.map((p) => {
+      const v = p.split(".").reduce((o, k) => (o == null ? undefined : o[k]), rec.body);
+      return `<td class="mono">${v === undefined ? `<span class="muted">·</span>` : esc((typeof v === "string" ? v : JSON.stringify(v)).slice(0, 24))}</td>`;
+    }).join("");
     return `<tr class="click" onclick="(${onClick.name})('${rec.id}')"><td class="mono">${esc(rec.id.slice(-8))}</td>`
       + `<td class="mono muted">${esc(rec.runtimeMeta.createdAt.slice(11, 23))}</td>`
+      + cells
       + `<td class="mono">${flags ? flags + "<br>" : ""}${preview}</td></tr>`;
   }).join("");
-  $(el).innerHTML = `<table><thead><tr><th>ID</th><th>Created</th><th>Body</th></tr></thead><tbody>${rows}</tbody></table>`;
+  $(el).innerHTML = `<table><thead><tr><th>ID</th><th>Created</th>${cols}<th>Body</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 async function showDetail(id, target = "rec-detail") {
   let rec = (window._recs || {})[id];
@@ -870,11 +1013,13 @@ async function runQuery() {
   catch (e) { return note("q-msg", "err", "Match: invalid JSON"); }
   try { orderBy = $("q-order").value.trim() ? JSON.parse($("q-order").value) : undefined; }
   catch (e) { return note("q-msg", "err", "Order by: invalid JSON"); }
+  const kind = $("q-kind").value.trim();
+  await ensureKinds();
   const r = await api("POST", "/v0/records/query",
-    { kind: $("q-kind").value.trim(), match, orderBy, limit: Number($("q-limit").value) || 50 });
+    { kind, match, orderBy, limit: Number($("q-limit").value) || 50, explain: true });
   if (!r.ok) { note("q-msg", "err", errText(r)); $("q-results").innerHTML = ""; return; }
-  $("q-msg").innerHTML = `<div class="note ok">${r.data.records.length} record(s)</div>`;
-  renderRecordList("q-results", r.data.records, showDetail);
+  $("q-msg").innerHTML = `<div class="note ok">${r.data.records.length} record(s)</div>` + explainNotes(r.data.explain);
+  renderRecordList("q-results", r.data.records, showDetail, indexedPathsOf(kind));
 }
 
 // ---- worker ----
