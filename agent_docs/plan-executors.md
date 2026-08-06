@@ -159,6 +159,8 @@ procedure and a binding target has two names for one thing.
   broker wrote its boot to `/tmp` by default, which is right for a standalone host and wrong for the
   chat's exec worker, which holds write access to its workspace root and nowhere else. `bootRoot`
   exists for that, and the failure without it was another silent nack.
-- **A silent nack loop is the least diagnosable failure here.** `agentLoop`'s `log` defaults to a
-  no-op, so a throwing handler retries invisibly and the caller sees only a tool-call timeout.
-  Every one of the bugs above presented identically until the log was turned on.
+- **A silent nack loop is the least diagnosable failure here. FIXED (2026-08-06).** `agentLoop`'s
+  `log` defaulted to a no-op and the nack path used it, so a throwing handler retried invisibly and
+  the caller saw only a tool-call timeout. Every one of the bugs above presented identically until
+  the log was turned on by hand. Failures now reach stderr when no `log` was given, in both SDKs;
+  routine trace stays opt-in. `conformance/loop.test.ts`, and gotchas.md under leases.

@@ -98,6 +98,13 @@ A `403` on a watch is treated as permanent (the run has no grant for that kind):
 loudly once and fall back to polling, rather than retrying forever. "Silently slow" would be a
 worse failure than "loudly wrong".
 
+`log` is optional and the loop is SILENT without one, but only about routine trace (took, acked,
+fenced). A FAILURE is never silent: a handler that throws, a take that errors, a watch refused and
+an interest that could not be published go to `console.error` / `stderr` when no `log` was given.
+Pass a `log` to route them elsewhere; there is no way to switch them off. A swallowed handler
+exception is indistinguishable from a hang, because the record is claimed, nacked, reclaimed and
+nacked again with nothing anywhere saying why.
+
 **The watch stream authenticates, and re-creates itself when the server forgets it.** The SSE
 connect is a raw request, so it does not inherit the client's `Authorization` unless it is set
 there explicitly — TS did not, so under `--auth required` every connect 401'd and the loop

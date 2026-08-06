@@ -310,6 +310,15 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Leases, claims, events and watches
 
+- **A worker loop must never swallow a handler exception, whatever its logging is configured to
+  do.** `agentLoop`'s `log` defaulted to a no-op and the nack path used it, so a throwing handler
+  retried invisibly: claimed, nacked, reclaimed, nacked again, with nothing anywhere naming the
+  cause. Every caller saw the same symptom, "the work never completed", which is indistinguishable
+  from a worker that was never started. Three separate defects in one afternoon presented that way.
+  Failures now reach `console.error` when no `log` was given, in both SDKs, and there is no way to
+  turn them off; routine trace stays opt-in. Guarded by `conformance/loop.test.ts`, including that a
+  caller WHO DID pass a log does not also get stderr.
+
 - **A watch is dropped when it is IDLE, never when it disconnects.** The map was never pruned at
   all: every `POST /v0/watches` allocated an entry that outlived any interest in it, from a cheap
   authenticated call, and the workload that makes it bite is an inspection console opening many
