@@ -1378,6 +1378,14 @@ paths:
       parameters:
         - { name: after, in: query, required: false, schema: { type: integer, default: 0 } }
         - { name: limit, in: query, required: false, schema: { type: integer, default: 200, maximum: 500 } }
+        - name: tail
+          in: query
+          required: false
+          schema: { type: integer, maximum: 500 }
+          description: >-
+            The newest N events, ascending, instead of paging forward from `after`; `nextAfter` is
+            always returned (the high-water cursor on an empty log), so a live view seeds from the
+            tail and follows without replaying the whole log to reach the present.
       responses:
         "200":
           description: >

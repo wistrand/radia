@@ -550,13 +550,15 @@ class RadiaClient:
 
         return self._req("GET", f"/v0/ops/events?after={quote(after)}&limit={limit}")["events"]
 
-    def get_events_page(self, after: str = "0", limit: int = 200) -> Dict[str, Any]:
+    def get_events_page(self, after: str = "0", limit: int = 200, tail: Optional[int] = None) -> Dict[str, Any]:
         """The whole page: events plus nextAfter, the scoped-withheld fields, and the event-GC
         truncation annotation (logBeginsAfter/sweptBefore) when the read started below the
-        horizon. Prefer this over get_events when paging."""
+        horizon. Prefer this over get_events when paging. tail=N returns the newest N events
+        ascending with nextAfter always usable for following, which is how a live view starts."""
         from urllib.parse import quote
 
-        return self._req("GET", f"/v0/ops/events?after={quote(after)}&limit={limit}")
+        q = f"tail={tail}" if tail is not None else f"after={quote(after)}&limit={limit}"
+        return self._req("GET", f"/v0/ops/events?{q}")
 
     def get_stats(self) -> List[Dict[str, Any]]:
         return self._req("GET", "/v0/ops/stats")["stats"]

@@ -120,6 +120,26 @@ const EVENT_SCAN_PAGES = 20;
 export async function handleEvents(space: Space, url: URL, scope?: StatsScope | null): Promise<Response> {
   const after = url.searchParams.get("after") ?? "0"; // opaque cursor, passed through
   const limit = Math.min(Number(url.searchParams.get("limit") ?? "200") || 200, 500);
+  // `tail=N`: the newest N events, ascending, plus a cursor to FOLLOW from. A live view starting
+  // at "0" replays the whole log to reach the present, which reads as history when the question
+  // is "what is happening"; a view starting at the high-water shows nothing until something
+  // moves. The tail is the third answer, and `nextAfter` is always usable, even on an empty log.
+  const tailRaw = url.searchParams.get("tail");
+  if (tailRaw !== null) {
+    const tail = Math.min(Math.max(Number(tailRaw) || 0, 1), 500);
+    const raw = await space.latestEvents(tail);
+    const events = scope
+      ? raw.filter((e) =>
+        (!scope.createdBy || scope.createdBy.includes(e.runId)) &&
+        (!scope.kinds || (e.kind !== undefined && scope.kinds.includes(e.kind))))
+      : raw;
+    return Response.json({
+      events,
+      // From the last RAW event, scoped or not, so a follower advances past what it cannot see.
+      nextAfter: raw.length ? raw[raw.length - 1].cursor : await space.latestCursor(),
+      ...(scope ? { scope: describeScope(scope) } : {}),
+    });
+  }
   // A read starting below the event-GC horizon mechanically begins at the oldest retained event;
   // the clamp is free. What must not be free is the caller believing it read from genesis, so the
   // response says where the log now begins. Unlike the watch's 410, the sentinel is INCLUDED:

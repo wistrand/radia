@@ -83,6 +83,27 @@ export const eventSuites: Suite[] = [
     },
   },
   {
+    name: "latestEvents is the tail: newest N ascending, and following from it is gap-free",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      for (const tag of ["a", "b", "c", "d", "e"]) await space.put({ kind: "task", body: { tag } });
+
+      const tail = await adapter.latestEvents(3);
+      const all = await space.getEvents();
+      assertEquals(tail.map((e) => e.seq), all.slice(-3).map((e) => e.seq), "the newest three, in ascending order");
+
+      // The whole point of the tail: a live view seeds from it and FOLLOWS. The next event after
+      // the tail's last cursor must be exactly the next thing that happens, no gap, no replay.
+      const { id } = await space.put({ kind: "task", body: { tag: "f" } });
+      const next = await adapter.getEvents(tail[tail.length - 1].cursor, 10);
+      assertEquals(next.length, 1);
+      assertEquals(next[0].recordId, id);
+
+      // Wider than the log: everything, still ascending, never padded.
+      assertEquals((await adapter.latestEvents(100)).length, 6);
+    },
+  },
+  {
     name: "lineage query returns a record's ancestry via parent_ids",
     run: async (adapter) => {
       const space = newSpace(adapter);

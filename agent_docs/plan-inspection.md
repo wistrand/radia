@@ -37,13 +37,13 @@ resequencing: shipping the top three serves agents and newcomers and does nothin
 |---|---------------------------------------------------------|-----------|--------------------------------------------------------------------------|
 | 1 | `explain` on query, evidence-linked narrative           | Agent     | **`explain` DONE**, and now RENDERED: the console's Records browser and Query playground request it and show the notes (2026-08-06). Evidence-linked findings landed the same day as the console Overview's doctor view (`loadDoctor`: `GET /v0/ops/diagnostics` as ranked findings, every sample a link into Records). Narrative for arbitrary generated answers stays open |
 | 2 | Flows tab                                               | Newcomer  | **DONE** (2026-08-04). Mining + the tab; the `flow` RECORD is not written, see below |
-| 3 | Interest-as-records, dry-run matcher                    | All three | **DONE**, and it paid out: the orphaned/starving split is built on it (2026-08-04). The routing diagram is still not |
-| 4 | Thread grouping, `thread()`, shape-aware collapsing     | Agent     | **`thread()` DONE.** Feed grouping and collapsing are console work, still open |
-| 5 | Waterfall, OTLP export                                  | Newcomer  | Adoption work: meets engineers inside tools they already trust             |
+| 3 | Interest-as-records, dry-run matcher                    | All three | **DONE**, and it paid out twice: the orphaned/starving split (2026-08-04), and the ROUTING DIAGRAM (2026-08-06, the console Kinds tab: agents ←listen— kinds from live interests, beside the per-kind digest of declaration + counts + listeners) |
+| 4 | Thread grouping, `thread()`, shape-aware collapsing     | Agent     | **DONE** (2026-08-06): the Feed groups by lineage root (cached, bounded lookups), collapses same-shape runs into ×N, and its match filter is a REAL query (dogfooding); knobs travel in the hash |
+| 5 | Waterfall, OTLP export                                  | Newcomer  | **Waterfall DONE** (2026-08-06): a Graph view mode, time as the x-axis, bars honest about "a record is not a span" (creation → last derived record), depth as indent, knob in the hash. OTLP export still open |
 | 6 | Space digest                                            | Agent     | **DONE.** Pages to exhaustion and reports `complete: false`                |
 | 7 | "Who can see this record"                               | Operator  | The read-side twin of the dry-run matcher; same machinery                  |
 | 8 | Replay with an explicit horizon                         | Operator  | A dividend already earned; the window closes when retention GC lands       |
-| 9 | Taint overlay (colour by label), then provenance         | Operator  | The substrate change LANDED (labels, not one bit), so the overlay is rendering; provenance is a pruned lineage walk |
+| 9 | Taint overlay (colour by label), then provenance         | Operator  | **Colour-by-label DONE** (2026-08-06): graph and waterfall dot per label, records list names each label. Fixed in passing: `taint` is always an ARRAY on the wire, so the old truthiness check had been marking EVERY record tainted since the labels landed. Provenance ("which ancestor introduced `net`") is still the pruned lineage walk, open |
 | — | Erasures that no longer hold                             | Operator  | **DONE, unplanned.** Arrived from a live incident rather than this list; see below |
 
 Item 1 is independent of everything else. Item 3 was the one whose absence explained why the

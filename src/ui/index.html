@@ -55,8 +55,9 @@
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: top; }
   th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
-  tr.click { cursor: pointer; }
+  .click { cursor: pointer; }
   tr.click:hover td { background: var(--code); }
+  span.click:hover, b.click:hover { text-decoration: underline; }
   code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px;
     padding: 12px; overflow: auto; font-size: 12.5px; }
@@ -163,9 +164,13 @@
 
   <!-- KINDS -->
   <section id="kinds">
+    <div class="panel">
+      <h2>Routing: who is listening right now <button class="btn ghost" style="float:right" onclick="loadKindsTab()">Refresh</button></h2>
+      <div id="routing"><div class="empty">loading…</div></div>
+    </div>
     <div class="grid2">
       <div class="panel">
-        <h2>Registered kinds <button class="btn ghost" style="float:right" onclick="loadKinds()">Refresh</button></h2>
+        <h2>Registered kinds <button class="btn ghost" style="float:right" onclick="loadKindsTab()">Refresh</button></h2>
         <div id="kinds-list"></div>
       </div>
       <div class="panel">
@@ -252,6 +257,15 @@
           <input type="checkbox" id="feed-live" style="width:auto" checked onchange="toggleLive()"> live
         </label>
       </h2>
+      <div class="row">
+        <div style="max-width:150px"><label>View</label><select id="feed-group" onchange="routeFeed()">
+          <option value="thread" selected>by thread</option>
+          <option value="flat">flat</option>
+        </select></div>
+        <div style="max-width:200px"><label>Kind</label><input id="feed-kind" list="kind-list" placeholder="all kinds" onchange="routeFeed()"></div>
+        <div><label>Match (JSON; a real query on the kind decides which records show)</label><input id="feed-match" placeholder='{ "tag": "urgent" }' onchange="routeFeed()"></div>
+      </div>
+      <div id="feed-msg"></div>
       <div id="feed-list"><div class="empty">No events yet.</div></div>
     </div>
   </section>
@@ -263,6 +277,10 @@
       <p class="muted" style="margin-top:0">Pick a record to see its <code>parent_ids</code> graph: how records relate (a conversation and its messages/calls/results, a job fanning out into tasks and back into a summary).</p>
       <div class="row">
         <div><label>Kind to pick from</label><input id="g-kind" list="kind-list" value="conversation"></div>
+        <div style="max-width:150px"><label>View</label><select id="g-view" onchange="routeGraphView()">
+          <option value="layers" selected>layers</option>
+          <option value="waterfall">waterfall</option>
+        </select></div>
         <div style="max-width:180px"><label>&nbsp;</label>
           <label style="font-size:12px;color:var(--muted);display:block"><input type="checkbox" id="g-hidechunks" style="width:auto" checked> hide llm_chunk</label>
           <label style="font-size:12px;color:var(--muted);display:block"><input type="checkbox" id="g-live" style="width:auto" onchange="toggleGraphLive()"> live</label>
@@ -317,7 +335,7 @@
             <option value="run">run</option>
           </select>
         </label>
-        <button class="btn ghost" onclick="resetSpace()">Reset</button>
+        <button class="btn ghost" onclick="resetSpace()" title="drop the map and replay the whole retained log through the layout (the same log always renders the same picture)">Replay all</button>
         <span class="muted mono" id="space-count"></span>
       </div>
       <div id="space-msg"></div>
@@ -433,7 +451,7 @@ function selectTab(b) {
   stopGraphLive();
   stopSpace();
   if (b.dataset.tab === "overview") { loadHealth(); loadDoctor(); loadStats(); }
-  if (b.dataset.tab === "kinds") loadKinds();
+  if (b.dataset.tab === "kinds") loadKindsTab();
   if (b.dataset.tab === "feed") startFeed();
   if (b.dataset.tab === "graph") loadGraphRoots();
   if (b.dataset.tab === "flows") loadFlows();
@@ -490,6 +508,18 @@ function applyRoute() {
     const m = Number(r.params.get("min"));
     if (Number.isFinite(m) && m >= 1) $("fl-min").value = String(m);
   }
+  if (b.dataset.tab === "feed") {
+    const k = r.params.get("kind");
+    if (k !== null) $("feed-kind").value = k;
+    const m = r.params.get("match");
+    if (m !== null) $("feed-match").value = m;
+    const v = r.params.get("view");
+    if (v === "flat" || v === "thread") $("feed-group").value = v;
+  }
+  if (b.dataset.tab === "graph") {
+    const v = r.params.get("view");
+    if (v === "layers" || v === "waterfall") $("g-view").value = v;
+  }
   selectTab(b);
   if (r.id && b.dataset.tab === "records") showDetail(r.id);
   if (r.id && b.dataset.tab === "graph") showGraph(r.id);
@@ -514,14 +544,29 @@ function routeFlows() {
 }
 
 // ---- taint + delegation badges (shared by the records list, detail, and graph) ----
+// Taint is a CLOSED SET of labels (design-taint.md), so the rendering names which classification
+// a record carries instead of one undifferentiated "tainted". `taint` is always an array on the
+// wire, so the old truthiness check marked EVERY record tainted, empty array included.
+const TAINT_COLORS = { file: "var(--warn)", net: "var(--err)", foreign: "var(--info)" };
+function taintLabels(meta) {
+  const t = (meta || {}).taint;
+  return Array.isArray(t) ? t : t ? ["tainted"] : [];
+}
 function metaFlags(rec) {
   const m = rec.runtimeMeta || {};
-  let h = "";
-  if (m.taint) h += `<span class="tag tag-taint" title="untrusted data lineage">tainted</span>`;
+  let h = taintLabels(m)
+    .map((l) => `<span class="tag tag-taint" title="barrier label: a classification some policy bars, not where content came from">taint: ${esc(l)}</span>`)
+    .join("");
   if (m.delegationContext && m.delegationContext.chain && m.delegationContext.chain.length) {
     h += `<span class="tag tag-deleg" title="authority chain, derived from the lease">deleg: ${esc(m.delegationContext.chain.join(" → "))}</span>`;
   }
   return h;
+}
+/** SVG dots for a node's labels, one per label, coloured by classification. */
+function taintMarks(labels, x, y) {
+  return labels.map((l, i) =>
+    `<circle cx="${x - i * 12}" cy="${y}" r="4" fill="${TAINT_COLORS[l] || "var(--muted)"}"><title>taint: ${esc(l)}</title></circle>`
+  ).join("");
 }
 
 // ---- health / overview ----
@@ -698,6 +743,103 @@ async function ensureKinds() {
   if (!KIND_DEFS.size) await loadKinds();
   return KIND_DEFS;
 }
+/**
+ * The Kinds tab is the DIGEST view: what each kind is (declaration), how much of it exists
+ * (counts by state) and who is listening for it (live interests) — one read, generated from
+ * records, paged to exhaustion server-side. The prospective topology (kinds ←listen— agents) is
+ * the half of "where is the workflow?" that Flows' history cannot answer.
+ */
+async function loadKindsTab() {
+  await loadKinds(); // datalist + KIND_DEFS, and the plain declaration list as the fallback view
+  const r = await api("GET", "/v0/ops/digest");
+  if (!r.ok) {
+    $("routing").innerHTML = `<div class="note ${r.status === 403 ? "info" : "err"}">${esc(errText(r))}${r.status === 403 ? " — the digest needs the observe ops power, an operator session, or a self-scoped grant." : ""}</div>`;
+    return; // the declaration list from loadKinds stays as the degraded view
+  }
+  renderRouting(r.data);
+  renderKindDigest(r.data);
+}
+function renderRouting(d) {
+  const ints = d.interests || [];
+  const withheld = d.interestsWithheld
+    ? `<div class="muted">${d.interestsWithheld} interest${d.interestsWithheld === 1 ? "" : "s"} withheld by scope: an empty diagram means "none you may see", never "nobody is listening"</div>`
+    : "";
+  if (!ints.length) {
+    $("routing").innerHTML = `<div class="empty">Nobody is listening right now. Interests appear while an agentLoop runs; liveness comes from the RUN, so a stopped worker's interest does not count.</div>` + withheld;
+    return;
+  }
+  const agents = [...new Set(ints.map((i) => i.agent))].sort();
+  const kinds = [...new Set(ints.map((i) => i.kind))].sort();
+  const rowH = 34, padY = 16, nodeW = 170, nodeH = 24, leftX = 8, rightX = 420;
+  const height = padY * 2 + Math.max(agents.length, kinds.length) * rowH;
+  const ay = new Map(agents.map((a, i) => [a, padY + i * rowH + nodeH / 2]));
+  const ky = new Map(kinds.map((k, i) => [k, padY + i * rowH + nodeH / 2]));
+  let s = `<svg viewBox="0 0 ${rightX + nodeW + 16} ${height}" width="${rightX + nodeW + 16}" height="${height}">`;
+  for (const i of ints) {
+    const a = ay.get(i.agent), k = ky.get(i.kind);
+    if (a === undefined || k === undefined) continue;
+    const mx = (leftX + nodeW + rightX) / 2;
+    s += `<path d="M${leftX + nodeW},${a} C${mx},${a} ${mx},${k} ${rightX},${k}" fill="none" stroke="var(--line)" stroke-width="1.5">`
+      + `<title>${esc(i.agent)} listens for ${esc(i.kind)}: ${i.patterns} pattern${i.patterns === 1 ? "" : "s"} across ${i.runs} live run${i.runs === 1 ? "" : "s"}</title></path>`;
+  }
+  for (const a of agents) {
+    const y = ay.get(a);
+    s += `<rect x="${leftX}" y="${y - nodeH / 2}" width="${nodeW}" height="${nodeH}" rx="7" fill="var(--panel)" stroke="var(--muted)" stroke-width="1.5"/>`
+      + `<text x="${leftX + 10}" y="${y + 4}" font-size="11" fill="var(--ink)">${esc(a).slice(0, 24)}</text>`;
+  }
+  for (const k of kinds) {
+    const y = ky.get(k);
+    s += `<g style="cursor:pointer" onclick="openKindRecords('${esc(k)}')">`
+      + `<rect x="${rightX}" y="${y - nodeH / 2}" width="${nodeW}" height="${nodeH}" rx="7" fill="var(--panel)" stroke="${graphColor(k)}" stroke-width="2"/>`
+      + `<text x="${rightX + 10}" y="${y + 4}" font-size="11" fill="var(--ink)">${esc(k).slice(0, 24)}</text>`
+      + `<title>browse ${esc(k)} records</title></g>`;
+  }
+  s += `</svg>`;
+  const silent = (d.kinds || []).filter((k) => !ky.has(k.kind) && !k.reserved).length;
+  $("routing").innerHTML = `<div style="overflow:auto">${s}</div>`
+    + `<div class="muted">agents on the left listen for kinds on the right — the prospective topology, mined from live interest records, never declared.`
+    + (silent ? ` ${silent} declared kind${silent === 1 ? " has" : "s have"} no live listener.` : "")
+    + `</div>` + withheld
+    + (d.complete === false ? `<div class="note err">the digest's registry scan could not be exhausted; this picture may be missing entries</div>` : "");
+}
+function renderKindDigest(d) {
+  const counts = new Map(); // kind -> {state: count}
+  for (const c of d.counts || []) {
+    if (!counts.has(c.kind)) counts.set(c.kind, {});
+    counts.get(c.kind)[c.state] = c.count;
+  }
+  const listeners = new Map(); // kind -> interests[]
+  for (const i of d.interests || []) {
+    if (!listeners.has(i.kind)) listeners.set(i.kind, []);
+    listeners.get(i.kind).push(i);
+  }
+  const rows = (d.kinds || []).map((k) => {
+    const c = counts.get(k.kind) || {};
+    const badges = ["available", "leased", "consumed", "dead_letter"]
+      .filter((st) => c[st])
+      .map((st) => `<span class="badge st-${esc(st)}">${esc(st)} ${c[st]}</span>`)
+      .join(" ") || `<span class="muted">no records</span>`;
+    const who = (listeners.get(k.kind) || [])
+      .map((i) => `<span class="tag mono" title="${esc(i.patterns)} pattern(s), ${esc(i.runs)} live run(s)">${esc(i.agent)}${i.runs > 1 ? ` ×${i.runs}` : ""}</span>`)
+      .join(" ");
+    return `<div class="panel" style="background:var(--bg)"><b class="mono click" onclick="openKindRecords('${esc(k.kind)}')">${esc(k.kind)}</b>`
+      + (k.reserved ? ` <span class="tag">reserved</span>` : "")
+      + (k.claimable === false ? ` <span class="tag" title="reference data: sits available forever by design">reference</span>` : "")
+      + `<div style="margin-top:6px">${badges}</div>`
+      + `<div class="muted" style="margin-top:6px">indexed: ${(k.indexedPaths || []).map((p) => `<code>${esc(p)}</code>`).join(", ") || "none"}`
+      + ((k.sortablePaths || []).length ? ` · sortable: ${(k.sortablePaths || []).map((p) => `<code>${esc(p)}</code>`).join(", ")}` : "")
+      + `</div>`
+      + `<div class="muted" style="margin-top:4px">listeners: ${who || "none live"}</div></div>`;
+  }).join("");
+  if (rows) $("kinds-list").innerHTML = rows;
+}
+/** A kind node is a question ("what is in it?"), so clicking one is a navigation into the
+ *  records browser with the kind prefilled. */
+function openKindRecords(kind) {
+  $("rec-kind").value = kind;
+  navigate("records");
+  loadRecords();
+}
 async function loadKinds() {
   const r = await api("POST", "/v0/records/query", { kind: "kind_def", limit: 1000 });
   if (!r.ok) return;
@@ -856,7 +998,9 @@ function graphColor(kind) {
 async function loadGraphRoots() {
   const kind = $("g-kind").value.trim();
   if (!kind) return;
-  const r = await api("POST", "/v0/records/query", { kind, limit: 50 });
+  // Newest first: the root picker showed the 50 OLDEST conversations of a long-lived space, the
+  // same bounded-read trap the records browser shipped.
+  const r = await api("POST", "/v0/records/query", { kind, limit: 50, dir: "desc" });
   if (!r.ok) { $("g-roots").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
   const recs = r.data.records;
   if (!recs.length) { $("g-roots").innerHTML = `<div class="empty">No ${esc(kind)} records.</div>`; return; }
@@ -877,7 +1021,15 @@ async function refreshGraph() {
   const q = $("g-hidechunks").checked ? "?exclude=llm_chunk" : "";
   const r = await api("GET", `/v0/ops/records/${encodeURIComponent(currentRoot)}/graph${q}`);
   if (!r.ok) { $("g-canvas").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
-  renderGraph("g-canvas", r.data);
+  if ($("g-view").value === "waterfall") renderWaterfall("g-canvas", r.data);
+  else renderGraph("g-canvas", r.data);
+}
+/** The view is a knob, so it travels in the hash like the Flows knobs: a waterfall someone is
+ *  looking at is a claim about timing, and a claim should be sendable. */
+function routeGraphView() {
+  const p = new URLSearchParams();
+  if ($("g-view").value === "waterfall") p.set("view", "waterfall");
+  navigate("graph", currentRoot || "", p);
 }
 function startGraphLive() { if (!graphTimer) graphTimer = setInterval(refreshGraph, 1500); }
 function stopGraphLive() { if (graphTimer) { clearInterval(graphTimer); graphTimer = null; } }
@@ -994,7 +1146,7 @@ function renderGraph(el, data) {
     const rx = p.x + nodeW / 2, ty = p.y - nodeH / 2;
     let marks = "";
     if (n.delegated) marks += `<circle cx="${rx - 8}" cy="${ty + 7}" r="4" fill="var(--accent)"><title>delegated work (chain length ${n.delegated})</title></circle>`;
-    if (n.taint) marks += `<circle cx="${rx - (n.delegated ? 20 : 8)}" cy="${ty + 7}" r="4" fill="var(--err)"><title>tainted (untrusted data lineage)</title></circle>`;
+    marks += taintMarks(taintLabels(n), rx - (n.delegated ? 20 : 8), ty + 7);
     s += `<g onclick="showDetail('${n.id}','g-detail')">`
       + `<rect x="${p.x - nodeW / 2}" y="${p.y - nodeH / 2}" width="${nodeW}" height="${nodeH}" rx="7" fill="var(--panel)" stroke="${c}" stroke-width="2"/>`
       + `<circle cx="${p.x - nodeW / 2 + 12}" cy="${p.y}" r="4" fill="${c}"/>`
@@ -1004,6 +1156,71 @@ function renderGraph(el, data) {
   }
   s += `</svg>`;
   $(el).innerHTML = `<div style="overflow:auto">${s}</div>`;
+}
+
+/**
+ * The same subgraph with TIME as the x-axis: the waterfall, the most legible artifact tracing
+ * produces. Honesty first (design-inspection.md, "a record is not a span"): a record has no
+ * duration, so a bar runs from a record's creation to the creation of the last record DERIVED
+ * from it — the window in which it was being worked — and a leaf is a point. Rows indent by
+ * causal depth, so parent→child reads as it does in a trace viewer. Everything here is the graph
+ * response already fetched; no new read.
+ */
+function renderWaterfall(el, data) {
+  const { nodes, edges } = data;
+  if (!nodes.length) { $(el).innerHTML = `<div class="empty">empty</div>`; return; }
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  // Causal depth for the indent: same relaxation as the layered view.
+  const gen = new Map(nodes.map((n) => [n.id, 0]));
+  for (let iter = 0; iter < nodes.length; iter++) {
+    let changed = false;
+    for (const e of edges) {
+      if (byId.has(e.from) && byId.has(e.to) && gen.get(e.from) + 1 > gen.get(e.to)) {
+        gen.set(e.to, gen.get(e.from) + 1);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  // A node's window closes when its last direct derivative is created.
+  const lastChild = new Map();
+  for (const e of edges) {
+    const c = byId.get(e.to);
+    if (!c || !byId.has(e.from)) continue;
+    const prev = lastChild.get(e.from);
+    if (!prev || c.createdAt > prev) lastChild.set(e.from, c.createdAt);
+  }
+  const sorted = [...nodes].sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
+  const t0 = Date.parse(sorted[0].createdAt);
+  const t1 = Math.max(t0 + 1, ...sorted.map((n) => Date.parse(lastChild.get(n.id) || n.createdAt)));
+  const gutter = 190, plotW = 640, rowH = 24, padY = 26, barH = 12;
+  const X = (t) => gutter + ((t - t0) / (t1 - t0)) * plotW;
+  const height = padY + sorted.length * rowH + 10;
+  let s = `<svg viewBox="0 0 ${gutter + plotW + 90} ${height}" width="${gutter + plotW + 90}" height="${height}">`;
+  // Time ruler: offsets from the first record, because "14:32:07.118" answers nothing a delta does.
+  for (let i = 0; i <= 4; i++) {
+    const t = t0 + ((t1 - t0) * i) / 4;
+    s += `<line x1="${X(t)}" y1="${padY - 12}" x2="${X(t)}" y2="${height - 6}" stroke="var(--line)" stroke-width="1"/>`
+      + `<text x="${X(t) + 3}" y="${padY - 14}" font-size="10" fill="var(--muted)">+${esc(fmtMs(Math.round(t - t0)))}</text>`;
+  }
+  sorted.forEach((n, i) => {
+    const y = padY + i * rowH;
+    const start = Date.parse(n.createdAt);
+    const end = Date.parse(lastChild.get(n.id) || n.createdAt);
+    const x0 = X(start), x1 = Math.max(x0 + 3, X(end));
+    const c = graphColor(n.kind);
+    const indent = Math.min(gen.get(n.id) || 0, 10) * 10;
+    s += `<g class="click" onclick="showDetail('${n.id}','g-detail')">`
+      + `<text x="${8 + indent}" y="${y + barH - 2}" font-size="11" fill="var(--ink)">${esc(String(n.label || n.kind)).slice(0, Math.max(6, 22 - indent / 6))}</text>`
+      + `<rect x="${x0}" y="${y}" width="${x1 - x0}" height="${barH}" rx="3" fill="${c}" fill-opacity="0.55" stroke="${c}" stroke-width="1">`
+      + `<title>${esc(n.kind)} …${esc(String(n.id).slice(-8))}\ncreated ${esc(n.createdAt)}\n${lastChild.has(n.id) ? "last derived record " + esc(fmtMs(end - start)) + " later" : "nothing derived from it"}</title></rect>`
+      + (n.delegated ? `<circle cx="${x1 + 8}" cy="${y + barH / 2}" r="4" fill="var(--accent)"><title>delegated work (chain length ${n.delegated})</title></circle>` : "")
+      + taintMarks(taintLabels(n), x1 + (n.delegated ? 20 : 8), y + barH / 2)
+      + `</g>`;
+  });
+  s += `</svg>`;
+  $(el).innerHTML = `<div style="overflow:auto">${s}</div>`
+    + `<div class="muted">a record has no duration: a bar spans its creation to the last record derived from it; a point had no derivatives</div>`;
 }
 
 // ---- query ----
@@ -1061,30 +1278,149 @@ async function settle(op) {
 }
 
 // ---- feed ----
-let feedSeq = "0", feedTimer = null, feedRows = [];
+let feedSeq = null, feedTimer = null, feedRows = []; // null cursor = the tail seed has not landed yet
+// Arrival order interleaves every concurrent flow into noise exactly when the space gets
+// interesting (design-inspection.md), so the default view groups events by their LINEAGE ROOT
+// and collapses same-op runs inside a thread into a count. Roots are resolved through the
+// existing lineage read, cached, and bounded per poll; the flat table stays one toggle away.
+const feedRoots = new Map(); // recordId -> root record id (every ancestor caches to the same root)
+const feedRootKinds = new Map(); // root id -> its kind, for the group header
+let feedMatchIds = null; // Set of record ids the match filter admits; null = no match filter
+let feedPolling = false; // lineage lookups can outlast the 1s poll interval
+
+/** The lineage root of a record, as a GROUPING KEY: on a DAG with several deepest ancestors the
+ *  oldest wins, which is stable, not authoritative. One call caches the whole ancestry. */
+async function rootOf(id) {
+  if (feedRoots.has(id)) return feedRoots.get(id);
+  const r = await api("GET", "/v0/ops/records/" + encodeURIComponent(id) + "/lineage");
+  if (!r.ok) { feedRoots.set(id, id); return id; }
+  let root = id, kind = "", best = -1;
+  for (const n of r.data.lineage || []) {
+    if (n.depth > best || (n.depth === best && n.record.id < root)) { best = n.depth; root = n.record.id; kind = n.record.kind; }
+  }
+  for (const n of r.data.lineage || []) feedRoots.set(n.record.id, root);
+  feedRoots.set(id, root);
+  if (kind) feedRootKinds.set(root, kind);
+  return root;
+}
+async function resolveFeedRoots() {
+  if ($("feed-group").value !== "thread") return;
+  let budget = 40; // per poll; the rest group under their own id until a later poll resolves them
+  for (const e of feedRows) {
+    if (!e.recordId || feedRoots.has(e.recordId)) continue;
+    if (budget-- <= 0) break;
+    await rootOf(e.recordId);
+  }
+}
+/** The match filter is a REAL query, never a client-side re-implementation of matching: the
+ *  oracle decides which records pass, the feed shows only their events. Bounded, and says so. */
+async function refreshFeedMatch() {
+  const kind = $("feed-kind").value.trim();
+  const raw = $("feed-match").value.trim();
+  if (!kind || !raw) {
+    feedMatchIds = null;
+    $("feed-msg").innerHTML = raw && !kind ? `<div class="note info">a match filter needs a kind: patterns are compiled per kind</div>` : "";
+    return;
+  }
+  let match;
+  try { match = JSON.parse(raw); } catch (e) { feedMatchIds = null; $("feed-msg").innerHTML = `<div class="note err">Match: invalid JSON</div>`; return; }
+  const r = await api("POST", "/v0/records/query", { kind, match, limit: 500, dir: "desc" });
+  if (!r.ok) { feedMatchIds = null; $("feed-msg").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
+  feedMatchIds = new Set(r.data.records.map((x) => x.id));
+  $("feed-msg").innerHTML = `<div class="muted">match filter: events for the newest ${feedMatchIds.size} matching record${feedMatchIds.size === 1 ? "" : "s"} (a bounded query, refreshed each poll, not a census)</div>`;
+}
 async function pollFeed() {
-  const r = await api("GET", "/v0/ops/events?after=" + encodeURIComponent(feedSeq) + "&limit=200");
-  if (!r.ok) return;
-  const evs = r.data.events;
-  // Cursor is opaque; events are returned ascending, so the last one is the new high-water.
-  if (evs.length) feedSeq = String(evs[evs.length - 1].cursor ?? evs[evs.length - 1].seq);
-  for (const e of evs) feedRows.unshift(e);
-  feedRows = feedRows.slice(0, 300);
-  renderFeed();
+  if (feedPolling || feedSeq === null) return; // never follow before the tail seed set the cursor
+  feedPolling = true;
+  try {
+    const r = await api("GET", "/v0/ops/events?after=" + encodeURIComponent(feedSeq) + "&limit=200");
+    if (!r.ok) return;
+    const evs = r.data.events;
+    // Cursor is opaque; events are returned ascending, so the last one is the new high-water.
+    if (evs.length) feedSeq = String(evs[evs.length - 1].cursor ?? evs[evs.length - 1].seq);
+    for (const e of evs) feedRows.unshift(e);
+    feedRows = feedRows.slice(0, 300);
+    if (feedMatchIds && evs.length) await refreshFeedMatch(); // new records may match; keep the set current
+    await resolveFeedRoots();
+    renderFeed();
+  } finally {
+    feedPolling = false;
+  }
+}
+function feedCells(e, n) {
+  return `<td class="mono muted">${esc((e.ts || "").slice(11, 23))}</td>`
+    + `<td><b>${esc(e.operation)}</b>${n > 1 ? ` <span class="muted">×${n}</span>` : ""}</td>`
+    + `<td class="mono">${esc(e.kind || "")}</td>`
+    + `<td class="mono">${e.recordId ? `<span class="click" onclick="selectRecord('${esc(e.recordId)}')">${esc(e.recordId.slice(-8))}</span>` : ""}</td>`
+    + `<td>${e.state ? stateBadge(e.state) : ""}</td>`
+    + `<td class="mono muted">${e.detail ? esc(JSON.stringify(e.detail)) : ""}</td>`;
 }
 function renderFeed() {
-  if (!feedRows.length) { $("feed-list").innerHTML = `<div class="empty">No events yet.</div>`; return; }
-  $("feed-list").innerHTML =
-    `<table><thead><tr><th>#</th><th>Time</th><th>Op</th><th>Kind</th><th>Record</th><th>State</th><th>Detail</th></tr></thead><tbody>`
-    + feedRows.map((e) =>
-      `<tr><td class="mono muted">${e.seq}</td><td class="mono muted">${esc((e.ts || "").slice(11, 23))}</td>`
-      + `<td><b>${esc(e.operation)}</b></td><td class="mono">${esc(e.kind || "")}</td>`
-      + `<td class="mono">${esc((e.recordId || "").slice(-8))}</td>`
-      + `<td>${e.state ? stateBadge(e.state) : ""}</td>`
-      + `<td class="mono muted">${e.detail ? esc(JSON.stringify(e.detail)) : ""}</td></tr>`
-    ).join("") + `</tbody></table>`;
+  const kindF = $("feed-kind").value.trim();
+  let rows = feedRows;
+  if (kindF && !feedMatchIds) rows = rows.filter((e) => e.kind === kindF);
+  if (feedMatchIds) rows = rows.filter((e) => e.recordId && feedMatchIds.has(e.recordId));
+  if (!rows.length) { $("feed-list").innerHTML = `<div class="empty">No events${feedRows.length ? " match the filter" : " yet"}.</div>`; return; }
+  if ($("feed-group").value !== "thread") {
+    $("feed-list").innerHTML =
+      `<table><thead><tr><th>#</th><th>Time</th><th>Op</th><th>Kind</th><th>Record</th><th>State</th><th>Detail</th></tr></thead><tbody>`
+      + rows.map((e) => `<tr><td class="mono muted">${e.seq}</td>${feedCells(e, 1)}</tr>`).join("")
+      + `</tbody></table>`;
+    return;
+  }
+  // Rows arrive newest-first, so first appearance orders the groups by latest activity for free.
+  const groups = new Map();
+  for (const e of rows) {
+    const key = e.recordId ? (feedRoots.get(e.recordId) || e.recordId) : "ops";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(e);
+  }
+  const html = [...groups.entries()].map(([root, evs]) => {
+    // Oldest-first inside a thread (a story reads forward), with consecutive same-shape events
+    // collapsed into one row ×N: forty llm_chunk puts are one fact, not forty rows.
+    const asc = [...evs].reverse();
+    const runs = [];
+    for (const e of asc) {
+      const last = runs[runs.length - 1];
+      if (last && last.e.operation === e.operation && last.e.kind === e.kind && last.e.state === e.state) { last.n++; last.e = e; }
+      else runs.push({ e, n: 1 });
+    }
+    const head = root === "ops"
+      ? `<b>operational events</b> <span class="muted">(no record)</span>`
+      : `<span class="click" onclick="navigate('graph','${esc(root)}')" title="open this thread's graph"><b>${esc(feedRootKinds.get(root) || "thread")}</b> <span class="mono">…${esc(root.slice(-8))}</span></span> <span class="muted">· ${evs.length} event${evs.length === 1 ? "" : "s"}</span>`;
+    return `<div class="panel" style="background:var(--bg);margin-bottom:8px"><div style="margin-bottom:6px">${head}</div>`
+      + `<table><tbody>` + runs.map((x) => `<tr>${feedCells(x.e, x.n)}</tr>`).join("") + `</tbody></table></div>`;
+  }).join("");
+  $("feed-list").innerHTML = html;
 }
-function startFeed() { feedSeq = "0"; feedRows = []; pollFeed(); if ($("feed-live").checked) feedTimer = setInterval(pollFeed, 1000); }
+/** The Feed knobs travel in the hash, like the Flows knobs and for the same reason: a filtered,
+ *  grouped view is a claim about the space, and a claim should be sendable. */
+function routeFeed() {
+  const p = new URLSearchParams();
+  const k = $("feed-kind").value.trim();
+  const m = $("feed-match").value.trim();
+  if (k) p.set("kind", k);
+  if (m) p.set("match", m);
+  if ($("feed-group").value === "flat") p.set("view", "flat");
+  navigate("feed", "", p);
+}
+function startFeed() {
+  feedSeq = null;
+  feedRows = [];
+  refreshFeedMatch().then(seedFeed);
+  if ($("feed-live").checked) feedTimer = setInterval(pollFeed, 1000);
+}
+/** Start at the TAIL: the newest events plus a cursor to follow. Opening the feed used to replay
+ *  the whole log from "0", which presents history as if it were happening now and takes a
+ *  long-lived space minutes to reach the present. */
+async function seedFeed() {
+  const r = await api("GET", "/v0/ops/events?tail=100");
+  if (!r.ok) { $("feed-list").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
+  feedRows = [...r.data.events].reverse();
+  feedSeq = String(r.data.nextAfter ?? "0");
+  await resolveFeedRoots();
+  renderFeed();
+}
 function stopFeed() { if (feedTimer) { clearInterval(feedTimer); feedTimer = null; } }
 function toggleLive() { stopFeed(); if ($("feed-live").checked) feedTimer = setInterval(pollFeed, 1000); }
 
@@ -1098,7 +1434,7 @@ function toggleLive() { stopFeed(); if ($("feed-live").checked) feedTimer = setI
 const SPACE_CAP = 3000;      // visible records; the least interesting are dropped past this
 const SPACE_BATCH = 500;     // events per poll
 let spaceScript = null;      // Promise for the lazily-injected vendor bundle
-let spaceCursor = "0";
+let spaceCursor = null; // null = seed from the tail; "0" only when Replay explicitly asks for history
 let spaceTimer = null;
 let spacePolling = false;
 // recordId -> last node props pushed (drives add-vs-update) AND the eviction order: a Map iterates
@@ -1152,12 +1488,20 @@ async function pollSpace() {
   if (!g || !g.view || spacePolling) return;
   spacePolling = true;
   try {
-    const r = await api("GET", "/v0/ops/events?after=" + encodeURIComponent(spaceCursor) + "&limit=" + SPACE_BATCH);
+    // First poll seeds from the TAIL (the newest SPACE_BATCH events), then follows. Opening the
+    // tab used to replay the entire log through the layout, which took a long-lived space minutes
+    // to reach the present; Replay below still does that, as an explicit choice.
+    const seed = spaceCursor === null;
+    const r = await api(
+      "GET",
+      seed ? "/v0/ops/events?tail=" + SPACE_BATCH : "/v0/ops/events?after=" + encodeURIComponent(spaceCursor) + "&limit=" + SPACE_BATCH,
+    );
     if (!r.ok) { note("space-msg", "err", errText(r)); return; }
     $("space-msg").innerHTML = "";
     const evs = r.data.events;
+    if (seed) spaceCursor = String(r.data.nextAfter ?? "0");
     if (!evs.length) return;
-    spaceCursor = String(evs[evs.length - 1].cursor ?? evs[evs.length - 1].seq);
+    if (!seed) spaceCursor = String(evs[evs.length - 1].cursor ?? evs[evs.length - 1].seq);
 
     const adds = new Map(), updates = new Map(), edges = [], results = [];
     for (const e of evs) {

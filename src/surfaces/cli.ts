@@ -45,7 +45,7 @@ Inspect
   get <record-id>                     one record
   lineage <record-id>                 ancestry via parent_ids
   children <record-id>                records descending from it
-  events [--after <cursor>] [--limit <n>]
+  events [--after <cursor> | --tail <n>] [--limit <n>]
   watch <kind> [--match <json>]       stream wakeups until interrupted
 
 Coordinate
@@ -595,7 +595,14 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
     }
 
     case "events": {
-      const page = await client.getEventsPage(flag(argv, "--after") ?? "0", Number(flag(argv, "--limit") ?? "50"));
+      const after = flag(argv, "--after");
+      const limit = Number(flag(argv, "--limit") ?? "50") || 50;
+      // The TAIL is the default. `radia events` used to print the OLDEST 50 of the log, which on
+      // any long-lived space is ancient history presented as "the events"; --after keeps the
+      // forward-paging behavior for a caller walking the log deliberately.
+      const page = after !== undefined
+        ? await client.getEventsPage(after, limit)
+        : await client.getEventsPage("0", limit, { tail: Number(flag(argv, "--tail") ?? String(limit)) || limit });
       const evs = page.events;
       // A read below the event-GC horizon is served from the oldest retained event; say so, or
       // the table reads as the whole log.

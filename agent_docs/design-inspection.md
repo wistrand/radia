@@ -90,7 +90,10 @@ That one change unlocks a cascade, which is the reason it ranks above features t
   STARVING (one matches and nothing claims), which age and state heuristics cannot tell apart. "An
   interest that has not matched in an hour" is the remaining half and needs a time series.
 - **The routing diagram becomes possible**: kinds as nodes, interests as edges to agents, mined from
-  evidence and continuously true, with dead edges dropping off as workers retire.
+  evidence and continuously true, with dead edges dropping off as workers retire. **Built
+  (2026-08-06)** in the console's Kinds tab, over the digest read: agents ←listen— kinds, a
+  withheld-by-scope caveat instead of an empty diagram reading as silence, and each kind clicking
+  through to its records.
 
 ## What each mechanism has to be
 
@@ -135,7 +138,10 @@ added.
 - **Feed** is arrival-ordered, so it interleaves every concurrent flow into noise exactly when the
   space gets interesting. It wants grouping by lineage root and collapsing of same-kind, same-parent
   runs into a count. Its filter box should take the same match object the API takes, which is
-  dogfooding and doubles as the cheapest way to learn the query language.
+  dogfooding and doubles as the cheapest way to learn the query language. **Built (2026-08-06)**:
+  thread grouping is the default (roots resolved through the lineage read, cached, 40 lookups per
+  poll so a burst degrades to self-grouping rather than blocking), the match filter runs a real
+  bounded query and says it is bounded, and the flat table stays one toggle away.
 - **Graph** renders one record's neighbourhood. It wants time as an axis (that is a waterfall, the
   most legible artifact distributed tracing produces) and it wants the other two lineages a record
   carries: `delegation_context` and `taint`.
@@ -144,9 +150,12 @@ added.
 
 **Replay is a dividend already earned.** An append-only event log plus immutable records means
 "show me the space at 14:32" and replay at speed are pure reads. Time-travel debugging is the payoff
-append-only architectures usually never cash in, and this one can. Build it with an explicit horizon,
-because retention GC does not exist yet and replay depth is currently unbounded by accident; when
-retention lands the window closes silently.
+append-only architectures usually never cash in, and this one can. Retention landed (2026-08-06,
+[plan-gc.md](plan-gc.md)): on a space with `eventRetentionSeconds` the replay window IS the event
+horizon, and a from-zero read says where the log begins rather than silently starting late. The
+console's live views now seed from the TAIL (`?tail=N`, `latestEvents` on the port) and follow,
+because opening a view used to replay the whole log as if history were happening now; the Space
+tab's "Replay all" keeps the deliberate whole-log replay one click away.
 
 ### The taint overlay is now mostly rendering, like the delegation one
 

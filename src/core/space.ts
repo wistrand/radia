@@ -1927,6 +1927,16 @@ export class Space {
     return this.storage.getEvents(afterCursor, limit);
   }
 
+  /** The newest `limit` final events, ascending: the tail a live view starts from. */
+  latestEvents(limit: number): Promise<SpaceEvent[]> {
+    return this.storage.latestEvents(limit);
+  }
+
+  /** The current high-water cursor: following from it delivers only future events. */
+  latestCursor(): Promise<string> {
+    return this.storage.latestCursor();
+  }
+
   /** The event log's truncation floor, and whether `after` resumes below it (see
    *  `StorageAdapter.eventHorizon` for the contract, including sentinel policy). */
   eventHorizon(after: string): Promise<EventHorizonCheck> {

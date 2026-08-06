@@ -467,6 +467,11 @@ export interface StorageAdapter {
    *  delivered. Opaque; pass it back to getEvents. (M1) */
   latestCursor(): Promise<string>;
 
+  /** The newest `limit` FINAL events, in ASCENDING order: the tail a live view starts from,
+   *  instead of replaying the whole log to reach the present. Same finality watermark as
+   *  `getEvents`, so following from the last returned cursor is gap-free. (M2) */
+  latestEvents(limit: number): Promise<SpaceEvent[]>;
+
   /**
    * Events that are FINAL and not yet sealed, in chain order, after `(cursor, seq)`.
    *

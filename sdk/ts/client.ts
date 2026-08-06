@@ -539,6 +539,9 @@ export class RadiaClient {
   async getEventsPage(
     after = "0",
     limit = 200,
+    /** `tail: N` returns the newest N events ascending instead of paging forward from `after`,
+     *  with `nextAfter` always usable for following — the way a live view starts. */
+    opts: { tail?: number } = {},
   ): Promise<
     {
       events: SpaceEvent[];
@@ -552,7 +555,8 @@ export class RadiaClient {
       sweptBefore?: number;
     }
   > {
-    const r = await this.req("GET", `/v0/ops/events?after=${encodeURIComponent(after)}&limit=${limit}`);
+    const q = opts.tail !== undefined ? `tail=${opts.tail}` : `after=${encodeURIComponent(after)}&limit=${limit}`;
+    const r = await this.req("GET", `/v0/ops/events?${q}`);
     return {
       events: r.events,
       nextAfter: r.nextAfter,

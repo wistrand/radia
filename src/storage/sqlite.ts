@@ -655,6 +655,16 @@ export class SqliteAdapter implements StorageAdapter {
     return Promise.resolve(String(row.seq));
   }
 
+  latestEvents(limit: number): Promise<SpaceEvent[]> {
+    const rows = this.db.prepare(
+      `select * from (
+         select seq, id, ts, run_id, operation, record_id, kind, state, detail from events
+          order by seq desc limit ?
+       ) order by seq asc`,
+    ).all(limit) as RawRow[];
+    return Promise.resolve(rows.map(rowToEvent));
+  }
+
   envelopesInState(
     state: string,
     limit: number,

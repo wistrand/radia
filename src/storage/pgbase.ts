@@ -905,6 +905,20 @@ export class PgSqlAdapter implements StorageAdapter {
     return String(res.rows[0].cursor);
   }
 
+  async latestEvents(limit: number): Promise<SpaceEvent[]> {
+    // The same finality watermark as getEvents: a tail that included a non-final event would hand
+    // the follower a cursor past events still able to appear behind it.
+    const res = await this.sql.query<RawRow>(
+      `select * from (
+         select seq, xid, xid::text as cursor, id, ts, run_id, operation, record_id, kind, state, detail
+           from events where xid < pg_snapshot_xmin(pg_current_snapshot())
+          order by xid desc, seq desc limit $1
+       ) t order by t.xid asc, t.seq asc`,
+      [limit],
+    );
+    return res.rows.map(rowToEvent);
+  }
+
   async envelopesInState(
     state: string,
     limit: number,
