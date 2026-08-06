@@ -1,6 +1,7 @@
 # Plan: workspace agents, and promotion as grant rotation
 
-> Status: phase 1 BUILT and green on both adapters (2026-08-06); phases 2 to 6 designed. Origin:
+> Status: phases 1 to 4 BUILT (2026-08-06); phases 5 and 6 (the broker, warm pools) designed.
+> Origin:
 > a speculation about running LLM-written
 > code over protected data, plus the review that found several of its guarantees weaker than the
 > enforcement behind them. That is the claim ledger below, and it is why this file exists before
@@ -209,29 +210,66 @@ are grants pattern-scoped on a `compartment` field, and artifacts join by REDECL
 reserved `artifact` kind with `compartment` added to its indexed paths, since a pattern may only
 name declared paths and `artifact` cannot be replaced.
 
-**2. Does digest-pinned promotion work?**
-Ships: an `exec_request` kind declaring `workspace` and `tier` as indexed keywords, and
-`extensions/ts/promotion.ts` (`promote`, `rollback`) doing grant-then-retire with the
-`:after:<recordId>` revive suffix, because both footguns are one-liners to get wrong (footnotes
-1 and 2). A `radia promote` verb is optional and deliberately deferred: the extension is the
-contract, the verb is convenience.
-Done when: an unpromoted digest is refused on `put` AND on `take`; rotation leaves no gap;
-rollback to a previously retired digest actually grants.
+**2. Does digest-pinned promotion work? BUILT (2026-08-06), and it does.**
+Shipped: `extensions/ts/promotion.ts` (`EXEC_REQUEST_KIND` with `workspace` and `tier` indexed,
+`promote`, `rollback`, `pinnedDigests`) and `extensions/conformance/promotion.test.ts`, five
+cases against a real space, because a pin is tested by trying to submit and claim at an
+unpromoted digest and only a running space can be asked. A `radia promote` verb stays deferred:
+the extension is the contract, the verb would be convenience.
+Answered: an unpromoted digest is refused at the WRITE (the submitter's pattern) and yields
+nothing at the CLAIM (the runner's), while the operator can see the record so the test cannot
+pass by having written nothing; rotation closes the old digest on both sides; rollback to a
+retired digest actually grants and repeating it writes nothing; a tier rotates alone, leaving
+another tier's pin and unrelated grants untouched.
+Both footguns are proved against planted regressions, and the ORDER one taught something: the
+obvious test could not see it. Retire-first ends in the same state, so asserting on the state
+after the call passes either way, and the suite did. The window is inside the call, so what the
+test asserts is the ORDER OF WRITES, through a recording client. Written the natural way, this
+phase would have shipped a guard that could never fail.
 
-**3. Does the exit gate compose?**
-Ships: one exporter definition with grants on both sides, and (if the deployment wants it) a
-declassifier holding the `declassify` ops power and nothing else; the `grant_request` flow for
-asking; the promotion checklist that runs `radia permissions` on both.
-Done when: no compartment member can write outside without a second grant; the exporter can, and
-`effectivePermissions` names it as holding both sides.
+**3. Does the exit gate compose? BUILT (2026-08-06), and the phase changed shape on contact.**
+As written, its "done when" was already true: phase 1 proved the enforcement (a member cannot
+write outside, a principal granted both sides can). What was missing is the other half any rule
+like this needs, and the half that makes it more than a sentence: a way to FIND the principals
+who hold both, since there is no second mechanism behind the rule and a mis-written grant is the
+leak.
+Shipped: `extensions/ts/compartment.ts` (`auditCompartment`, `unexpectedCrossers`) and
+`extensions/conformance/compartment.test.ts`. The audit reports the boundary's three doors, only
+one of which is obvious: crossers (read inside, write outside), artifact grants with no
+compartment pattern (`artifact` is reserved, so it is scoped by pattern or not at all), and ops
+POWERS, which are no grant at all. Its caveats say what it cannot see, starting with privileged
+principals, who are named in config rather than in records.
+`unexpectedCrossers(expected)` is the promotion checklist as a function rather than a paragraph
+nobody runs. `request_grant` stays where it is: an app-level tool in the chat example, not a
+general convention to build on.
+Plant: replacing the registry projection with a raw scan fails the retired-grant case and nothing
+else, which is the failure that matters, because an audit reporting a crossing revoked months ago
+is one nobody believes when it is finally right.
+It also found something on its first real run. `agent:local-observer` holds `observe` in EVERY
+space, so a real deployment starts with a principal that reads every body in every compartment.
+That is D7 stated as a rule; the audit puts it on the first line of the answer, and the test
+asserts it rather than treating it as a fixture.
 
-**4. Can a generic host run someone else's code as that someone?**
-Ships: the `binding` kind (D3), `extensions/ts/host.ts` (resolve binding, materialize digest into
-the sandbox its pattern selects, mint the agent's run, claim under it, invoke the entrypoint), a
-runnable entry beside `export-git.ts`, and `extensions/conformance/host.test.ts`.
-Done when: a host holding several definitions never claims as itself (`created_by`, `lease_owner`
-and `delegation_context` are the agent's); a binding with no matching grant claims nothing; a
-granted digest with no binding runs nothing.
+**4. Can a generic host run someone else's code as that someone? BUILT (2026-08-06), and it can.**
+Shipped: the `binding` kind (D3: no `contentKey`, so it never compacts) and
+`extensions/ts/host.ts` (`readBindings`, `WorkspaceHost.tick`, `sandboxInvoker`), with
+`extensions/conformance/host.test.ts`. The invoker is PLUGGABLE, which is both how the identity
+cases stay independent of execution and how phase 5 replaces the default with the brokered one.
+The default materialises the tree and runs the entrypoint in the Deno jail with the record
+interpolated: read-only, no network, result returned rather than written, and the host acks it as
+the agent.
+Answered: one host serving two agents produces results authored by BOTH agents, each carrying its
+own delegation chain, with the host holding no identity in the space; a binding whose agent holds
+no grant reports `refused` and leaves the work claimable; a granted digest with no binding does
+nothing, and writing the binding later makes the same space run.
+Plant: making the host claim as ITSELF fails the attribution case and the refusal case, and
+nothing else.
+**A fourth case the plan did not predict.** Both locks can be present and DISAGREE: a binding at
+digest B while the grant pins A means the agent legitimately claims A's work and the host would
+run B's code, which is the hijack the two locks exist to prevent, wearing the shape of a
+misconfiguration. The host now refuses that pairing, releases the claim so a correctly bound host
+can take it, and reports `digest_mismatch`. Two locks are necessary and not sufficient: they must
+also agree.
 
 **5. Can the jail be denied the token?**
 Ships: `extensions/ts/broker.ts` (the protocol, NORMATIVE), the shim the entrypoint imports, the
