@@ -10,6 +10,7 @@
 import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
 // A SURFACE may import a convention; the runtime may not. See conformance/layering.test.ts.
 import { exportWorkspaceGit } from "../../extensions/ts/git.ts";
+import { buildThreadSpans, postTraces, recordSpans, toResourceSpans, traceIdOf } from "../../extensions/ts/otlp.ts";
 import { basicPassword, gitHandler } from "../../extensions/ts/git-http.ts";
 import { summarizeWorkspaces } from "../../extensions/ts/workspace.ts";
 import { defaultBase, resolveDefinitionToken, resolveToken, saveLogin, storedObserver } from "../credentials.ts";
@@ -46,6 +47,7 @@ Inspect
   lineage <record-id>                 ancestry via parent_ids
   children <record-id>                records descending from it
   events [--after <cursor> | --tail <n>] [--limit <n>]
+  otlp --to <collector> (--thread <recordId> | --follow) [--trace-root <kind>]
   watch <kind> [--match <json>]       stream wakeups until interrupted
 
 Coordinate
@@ -97,7 +99,7 @@ interface Ctx {
  *  phase 5): the operator token stays for coordination verbs and everything destructive, so a
  *  routine `radia doctor` is not a process holding the whole operator bit. An explicit
  *  `RADIA_TOKEN` still wins for every verb (resolveToken precedence). */
-const OBSERVER_VERBS = new Set(["stats", "events", "doctor", "erasures", "flows", "integrity", "permissions", "get", "lineage", "children"]);
+const OBSERVER_VERBS = new Set(["stats", "events", "doctor", "erasures", "flows", "integrity", "permissions", "get", "lineage", "children", "otlp"]);
 
 export async function runCli(cmd: string, argv: string[]): Promise<number> {
   if (cmd === "help") {
@@ -620,6 +622,121 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           ]))
           : note + "(no events)"
       );
+    }
+
+    // OTLP export: threads as traces, attempts as spans (extensions/ts/otlp.ts). A CLIENT that
+    // pushes, the way git-serve is a client that listens: the runtime knows nothing about OTel,
+    // and the collector (Jaeger v2, Tempo, Alloy) receives plain OTLP/HTTP JSON on /v1/traces.
+    case "otlp": {
+      const to = flag(argv, "--to");
+      const thread = flag(argv, "--thread");
+      const follow = has(argv, "--follow");
+      if (!to || (!thread && !follow)) return usage("otlp --to <collector> (--thread <recordId> | --follow) [--trace-root <kind>]");
+      const traceRootKind = flag(argv, "--trace-root");
+      // `claimable` decides whether an unsettled record is OPEN work or reference data that sits
+      // available by design. Best-effort: kind_def is a coordination read the observer credential
+      // deliberately lacks, and without it every kind is treated as claimable, which only
+      // over-reports `radia.open`.
+      const claimable = new Map<string, boolean>();
+      try {
+        for (const rec of await client.query({ kind: "kind_def" }, 500, { dir: "desc" })) {
+          const def = rec.body as { kind?: unknown; claimable?: unknown };
+          if (def && typeof def.kind === "string" && !claimable.has(def.kind)) claimable.set(def.kind, def.claimable !== false);
+        }
+      } catch { /* scoped session: default everything claimable */ }
+      const claimableOf = (k: string) => claimable.get(k) !== false;
+      // The trace boundary. Default: the lineage root. `--trace-root <kind>` cuts at the nearest
+      // ancestor of that kind instead — the hub problem flows already hit: a conversation-rooted
+      // trace is a whole multi-day chat, and `--trace-root message` makes the TURN the trace.
+      const rootOf = async (id: string) => {
+        const lin = await client.getLineage(id);
+        if (traceRootKind) {
+          let best: { record: { id: string; kind: string }; depth: number } | null = null;
+          for (const n of lin) if (n.record.kind === traceRootKind && (!best || n.depth < best.depth)) best = n;
+          if (best) return best.record.id;
+        }
+        let root = id, depth = -1;
+        for (const n of lin) if (n.depth > depth || (n.depth === depth && n.record.id < root)) { depth = n.depth; root = n.record.id; }
+        return root;
+      };
+
+      if (thread) {
+        // One shot: membership by walking DOWN from the root, transitions by one pass over the
+        // retained log filtered to the members. Bounded and says so when a bound bites.
+        const root = await rootOf(thread);
+        const members = new Map();
+        const queue = [root];
+        let truncatedWalk = false;
+        while (queue.length) {
+          const id = queue.shift()!;
+          if (members.has(id)) continue;
+          if (members.size >= 2000) { truncatedWalk = true; break; }
+          const rec = await client.getRecord(id).catch(() => null);
+          if (!rec) continue;
+          members.set(id, rec);
+          for (const child of await client.getChildren(id, 200)) if (!members.has(child.id)) queue.push(child.id);
+        }
+        const evs = [];
+        let after = "0";
+        let sweptNote = "";
+        for (;;) {
+          const p = await client.getEventsPage(after, 500);
+          if (p.sweptBefore) sweptNote = `the log begins after event GC's horizon (${p.sweptBefore} events swept), so early attempts may be missing`;
+          for (const e of p.events) if (e.recordId && members.has(e.recordId)) evs.push(e);
+          if (!p.events.length || !p.nextAfter) break;
+          after = p.nextAfter;
+        }
+        const rs = await buildThreadSpans([...members.values()], evs, root, { claimableOf });
+        await postTraces(to, rs);
+        const spans = rs.reduce((n, r) => n + r.scopeSpans[0].spans.length, 0);
+        console.log(`exported ${spans} span(s) across ${rs.length} service(s), trace ${await traceIdOf(root)}`);
+        if (truncatedWalk) console.log("note: the membership walk stopped at 2000 records; the trace is a prefix");
+        if (sweptNote) console.log(`note: ${sweptNote}`);
+        return 0;
+      }
+
+      // Follow: start from NOW (the tail gives a usable cursor even on an empty log), buffer each
+      // record's transitions, and emit its spans when a terminal settle arrives. Ctrl-C flushes.
+      const seed = await client.getEventsPage("0", 1, { tail: 1 });
+      let cursor = String(seed.nextAfter ?? "0");
+      const roots = new Map<string, string>(), recs = new Map<string, Awaited<ReturnType<typeof client.getRecord>> | null>(), buf = new Map<string, Parameters<typeof recordSpans>[1]>();
+      let pending: Parameters<typeof toResourceSpans>[0] = [], sent = 0, stopping = false;
+      const unlisten = onShutdown(() => { stopping = true; });
+      const flush = async () => {
+        if (!pending.length) return;
+        const batch = pending;
+        pending = [];
+        await postTraces(to, toResourceSpans(batch));
+        sent += batch.length;
+        console.error(`otlp: ${sent} span(s) exported`);
+      };
+      console.error(`otlp: following ${client.base ?? ""} -> ${to} (Ctrl-C to stop)`);
+      while (!stopping) {
+        const p = await client.getEventsPage(cursor, 200);
+        for (const e of p.events) {
+          const rid = e.recordId;
+          if (!rid) continue;
+          if (!buf.has(rid)) buf.set(rid, []);
+          buf.get(rid)!.push(e);
+          if (!recs.has(rid)) recs.set(rid, await client.getRecord(rid).catch(() => null));
+          if (!roots.has(rid)) roots.set(rid, await rootOf(rid).catch(() => rid));
+          const rec = recs.get(rid);
+          if (!rec) continue;
+          const terminal = e.operation === "ack" || e.operation === "release" ||
+            (e.operation === "nack" && e.state === "dead_letter") ||
+            (e.operation === "put" && !claimableOf(rec.kind));
+          if (terminal) {
+            pending.push(...await recordSpans(rec, buf.get(rid)!, roots.get(rid) ?? rid, { claimable: claimableOf(rec.kind) }));
+            buf.delete(rid);
+          }
+        }
+        if (p.events.length && p.nextAfter) cursor = p.nextAfter;
+        await flush();
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      await flush();
+      unlisten?.();
+      return 0;
     }
 
     case "watch": {

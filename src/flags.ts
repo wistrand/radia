@@ -29,6 +29,7 @@ export const VALUELESS = new Set([
   "--undone",
   "--compact-definition",
   "--anonymous",
+  "--follow",
 ]);
 
 /** The value of `--name`, or undefined. First occurrence wins, not last, which keeps
