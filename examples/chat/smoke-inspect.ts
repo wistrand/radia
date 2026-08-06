@@ -484,6 +484,22 @@ check(
   (misquery.notes ?? []).join(" | ").slice(0, 80),
 );
 
+// THE CHAT'S OWN RETENTION DECLARATIONS, pinned where they are actually declared. The GC
+// conformance suite proves the MECHANISM with kinds of its own, so deleting the three
+// `defaultRetentionSeconds` lines from space/kinds.ts would leave every suite green while chunks
+// went back to being permanent — the exact silent regression that made them permanent for a month.
+// The chunk written above went through `registerChatKinds`, so its stamp is the declaration's.
+const stamped = await admin.query({ kind: "llm_chunk", match: { callId: myCall } }, 1);
+check("an llm_chunk is born with the kind's retention stamped in", Boolean(stamped[0]?.retentionUntil), stamped[0]?.retentionUntil ?? "(none)");
+const { id: callRec } = await admin.put({ kind: "llm_call", body: { conversationId: mine } });
+check("an llm_call too", Boolean((await admin.getRecord(callRec))?.retentionUntil));
+const { id: prog } = await admin.put({ kind: "progress", body: { conversationId: mine, callId: myCall, stage: "running", by: "agent:x" } });
+check("and a progress record", Boolean((await admin.getRecord(prog))?.retentionUntil));
+// The other side of the same declaration: the THREAD is permanent. A default that leaked onto
+// `message` would quietly give conversations an expiry date nobody chose.
+const { id: msg } = await admin.put({ kind: "message", body: { conversationId: mine, role: "user", index: 99, content: "keep me" } });
+check("a message carries NO retention: the thread is permanent", (await admin.getRecord(msg))?.retentionUntil === undefined);
+
 space.kill();
 await space.status;
 console.log(failed === 0 ? "\nok" : `\nFAILED (${failed})`);

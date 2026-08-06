@@ -201,6 +201,19 @@ export interface KindDef {
    *  tombstones included — without the runtime knowing what the kind means. A record missing any
    *  key path is never compacted. Purely descriptive for matching; see agent_docs/plan-gc.md. */
   contentKey?: string[];
+  /**
+   * Retention for records of this kind whose writer stamped none: MATERIALIZED into
+   * `retention_until` at commit, from the DB clock, never evaluated at sweep time — so every
+   * record stays self-describing and a later redeclaration changes only FUTURE records' fate,
+   * never retroactively. An explicit `retentionUntil` on the put always wins.
+   *
+   * Declaring this makes the kind ephemera-by-default: a writer wanting one record kept must
+   * stamp a far-future date, because absence no longer means permanence for this kind. That is
+   * the declarer's call to make, the same way `indexedPaths` and `claimable` already are — the
+   * alternative was retention remembered per call site, which is how the chat's chunks were
+   * permanent for a month. See agent_docs/plan-gc.md.
+   */
+  defaultRetentionSeconds?: number;
 }
 
 /** The meta-kind. Defined here rather than in the runtime because a client writes one. */
@@ -230,11 +243,13 @@ export const RESERVED_KINDS = [KIND_DEF, GRANT, SIGNAL, AGENT_DEFINITION, AGENT_
 export function kindDefKey(def: KindDef): string {
   const ip = [...(def.indexedPaths ?? [])].map((p) => `${p.path}:${p.type}`).sort().join(",");
   const sp = [...(def.sortablePaths ?? [])].sort().join(",");
-  // `contentKey` participates so a redeclaration ADDING one is a changed def (a fresh record),
-  // not an idempotent replay of the old declaration. Omitted entirely when absent, so every key
-  // minted before the field existed stays byte-identical and old declarations do not re-write.
+  // `contentKey` and `defaultRetentionSeconds` participate so a redeclaration ADDING one is a
+  // changed def (a fresh record), not an idempotent replay of the old declaration. Each is omitted
+  // entirely when absent, so every key minted before the field existed stays byte-identical and
+  // old declarations do not re-write.
   const ck = def.contentKey?.length ? `:ck=${[...def.contentKey].sort().join(",")}` : "";
-  return `kind_def:${def.kind}:${ip}:${sp}:${def.claimable === false ? "ref" : "work"}${ck}`;
+  const rt = def.defaultRetentionSeconds ? `:rt=${def.defaultRetentionSeconds}` : "";
+  return `kind_def:${def.kind}:${ip}:${sp}:${def.claimable === false ? "ref" : "work"}${ck}${rt}`;
 }
 
 // ---------------------------------------------------------------------------

@@ -27,8 +27,6 @@ const rank = Number(arg("--rank") ?? "0"); // capability rank (cheap→capable);
 // The omitted ones stay retrievable (the assistant knows its own conversation id and can query
 // them), so this bounds per-turn cost without making history unreachable.
 const WINDOW = Number(arg("--window") ?? Deno.env.get("RADIA_CHAT_WINDOW") ?? "40");
-/** How long a chunk outlives its turn. Retention, not behaviour: `radia gc` reclaims them. */
-const CHUNK_TTL_MS = 24 * 3600 * 1000;
 const WINDOW_CAP = 400; // ceiling on the current-turn expansion below, so one runaway turn is bounded
 const client = new RadiaClient(url, token ? { token } : {});
 
@@ -157,15 +155,13 @@ await agentLoop(client, {
         body.stream === false
           ? () => Promise.resolve() // raw-prompt one-off calls don't emit chunk records
           : async (delta) => {
+            // Retention comes from the KIND (`llm_chunk` declares defaultRetentionSeconds, see
+            // space/kinds.ts), stamped by the runtime at commit — not remembered here per call
+            // site, which is how chunks were permanent for a month.
             await c.put({
               kind: "llm_chunk",
               body: { callId: resultKey, conversationId: body.conversationId, owner: body.owner, index: index++, delta },
               parentIds: [callId],
-              // A chunk's whole job ends when the turn does (the result carries the full text; the
-              // watermark replay in turn.ts only matters mid-turn), so it is the COUNT hog with no
-              // afterlife: ~8 records per call at the 150ms cadence, ~400 for a one-minute answer.
-              // A day covers any reattach that will ever happen.
-              retentionUntil: new Date(Date.now() + CHUNK_TTL_MS).toISOString(),
             });
           },
       );
@@ -182,7 +178,6 @@ await agentLoop(client, {
             kind: "llm_chunk",
             body: { callId: resultKey, conversationId: body.conversationId, owner: body.owner, index: index++, delta: "", reset: true },
             parentIds: [callId],
-            retentionUntil: new Date(Date.now() + CHUNK_TTL_MS).toISOString(),
           });
         }
         await progress(c, {

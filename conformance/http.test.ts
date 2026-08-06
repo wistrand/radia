@@ -314,6 +314,49 @@ Deno.test("http: a principal may read its OWN permissions, and only its own", as
   }
 });
 
+Deno.test("http: gc is the interrupt half of the ops plane, and a scoped principal never reaches it", async () => {
+  // The most consequential boundary the plane has: /v0/ops/gc DELETES records. It is deliberately
+  // absent from READ_ONLY_OPS, and this pins that absence — that regex is exactly the kind of
+  // thing a refactor widens, and until this test nothing would have failed if a self-scoped
+  // session gained deletion. The principal here HOLDS a self-scoped grant, so the read half of the
+  // plane is open to it; a no-grant principal (shut out of everything) would prove nothing about
+  // the read/interrupt split.
+  const { space, handler, close } = await newHandler();
+  try {
+    const { definitionToken } = await space.createAgentDefinition("agent:w", [
+      { principal: "agent:w", kind: "task", operations: ["put", "query"], scope: { createdBy: "self" } },
+    ]);
+    const { runToken } = await space.mintRun(definitionToken);
+    const auth = { authorization: `Bearer ${runToken}` };
+
+    // A record that IS sweepable, so a leak would be observable as deletion, not as a no-op.
+    space.registerKind({ kind: "note", indexedPaths: [], claimable: false });
+    const { id } = await space.put({ kind: "note", body: {}, retentionUntil: "2020-01-01T00:00:00.000Z" });
+
+    // The split, both halves: the read half answers this principal, the interrupt half refuses it.
+    assertEquals((await handler(get("/v0/ops/stats", auth))).status, 200, "the READ half is open to a self scope");
+    const refused = await handler(post("/v0/ops/gc", {}, auth));
+    assertEquals(refused.status, 403, "gc is operator-only: a scoped principal must never delete");
+    assert(await space.getRecord(id), "and nothing was deleted by the refused call");
+
+    // Unauthenticated under --auth required: 401, before any handler runs.
+    const { handler: strict, close: closeStrict } = await newHandler({ authRequired: true });
+    assertEquals((await strict(post("/v0/ops/gc", {}))).status, 401);
+    await closeStrict();
+
+    // The operator sweeps, and the response carries every field the contract promises.
+    const ok = await handler(post("/v0/ops/gc", {}));
+    assertEquals(ok.status, 200);
+    const body = await ok.json();
+    assertEquals(body.swept, 1);
+    assertEquals(body.idempotency, 0);
+    assert(body.compaction, "compaction rides the same verb by default");
+    assertEquals(await space.getRecord(id), null);
+  } finally {
+    await close();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Wire shapes: a cast is a promise to the type checker, not a check.
 // ---------------------------------------------------------------------------

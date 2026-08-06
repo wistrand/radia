@@ -84,14 +84,9 @@ export async function runTurn(
       kind: "llm_call",
       // `owner` rides along so a worker can copy it onto the result and chunks. That is what lets
       // a grant bind records the SESSION did not write but that were produced for it.
+      // Retention comes from the KIND (space/kinds.ts declares it), stamped at commit.
       body: { conversationId: thread.id, owner: sessionOwner(), upToIndex: thread.upToIndex, tools: tools.all() },
       parentIds: [thread.id],
-      // The BYTE hog of a chat space: this body carries the tool list and is re-put every round,
-      // and nothing reads it after the result lands (context assembly reads `message` records).
-      // Measured live: 747 llm_calls held 8 MB of the 10 MB of all bodies. A week covers any
-      // debugging of a turn anyone actually does; the thread itself is `message` records, which
-      // carry no retention and stay.
-      retentionUntil: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(),
     });
     const { message, finishReason, streamed, tier, context, announced } = await streamResult(client, callId);
 

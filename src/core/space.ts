@@ -131,7 +131,18 @@ export interface SpaceContext {
    *  decide is cheap to send and linear in the size of the kind to answer. `0` disables it
    *  (`radia dev --max-scan-rows 0`), which is the pre-budget behaviour and not a shared-space setting. */
   maxScanRows: number;
+  /** How long a stored idempotency response outlives its write. Far beyond any honest retry loop:
+   *  a replay after this window re-executes, which is the ordinary at-least-once posture. */
+  idempotencyRetentionSeconds: number;
+  /** Every this-many record commits, the WRITING call runs one small retention batch inline —
+   *  the lazy-lease-expiry shape, so an active space pays for its own housekeeping and an idle one
+   *  runs nothing, with no timer. `0` disables it; the `gc` verb still owns compaction and backlogs. */
+  gcEveryWrites: number;
 }
+
+/** Rows one amortized sweep pass may delete: small enough that the write paying for it feels a few
+ *  milliseconds, not a collection. A backlog bigger than this drains across later triggers. */
+const AMORTIZED_BATCH = 256;
 
 const DEFAULT_CONTEXT: SpaceContext = {
   principal: "local:dev", // auto-provisioned locally; real principals land in Phase 7
@@ -163,6 +174,8 @@ const DEFAULT_CONTEXT: SpaceContext = {
   // matches rather than candidates and never counts against it. What it stops is the shape that has
   // no ceiling at all: an unpushable pattern over an unbounded kind.
   maxScanRows: 200_000,
+  idempotencyRetentionSeconds: 7 * 24 * 3600,
+  gcEveryWrites: 1000,
 };
 
 /** How a caller selects work to take. */
@@ -1276,7 +1289,16 @@ export class Space {
     const taint = opts.taint !== undefined
       ? normalizeTaint(opts.taint, { reserved: true }) // declassify's remainder: server-computed
       : await this.computeTaint(req.parentIds ?? [], req.taint, writer);
-    const { record, bodyJson } = await buildRecord(req, {
+    // The kind's default retention, MATERIALIZED here at commit — never evaluated at sweep time.
+    // Materializing keeps every record self-describing and makes a later redeclaration change only
+    // future records' fate; a default consulted at sweep time would turn a kind_def redeclare into
+    // a mass-deletion instrument over records already written. An explicit stamp always wins.
+    let retentionUntil = req.retentionUntil;
+    if (retentionUntil === undefined) {
+      const seconds = this.kinds.get(req.kind)?.defaultRetentionSeconds;
+      if (seconds) retentionUntil = addSeconds(now, seconds);
+    }
+    const { record, bodyJson } = await buildRecord({ ...req, retentionUntil }, {
       principal: opts.principal ?? this.ctx.principal, // created_by = the resolved caller
       schemaVersion: this.ctx.schemaVersion,
       maxRecordBytes: this.ctx.maxRecordBytes,
@@ -1302,6 +1324,7 @@ export class Space {
       },
     });
     this.notifier.notify(); // wake any watch streams
+    await this.maybeAmortizedSweep(); // the write that crossed the threshold pays for the batch
     return { id: result.id };
   }
 
@@ -1631,7 +1654,15 @@ export class Space {
       // and comparing the wrong one made a worker's own ack read as `foreign` against the task it
       // had just claimed. That is precisely the saturation labels exist to avoid.
       const taint = await this.computeTaint(parentIds, result.taint, principal ?? this.ctx.principal);
-      const { record, bodyJson } = await buildRecord({ ...result, parentIds }, {
+      // The kind default, same as putRaw: an ack-emitted result is a put with a lease attached,
+      // and a default that skipped this path would make every worker-written record of an
+      // ephemera kind permanent — the exact records the default exists for.
+      let retentionUntil = result.retentionUntil;
+      if (retentionUntil === undefined) {
+        const seconds = this.kinds.get(result.kind)?.defaultRetentionSeconds;
+        if (seconds) retentionUntil = addSeconds(now, seconds);
+      }
+      const { record, bodyJson } = await buildRecord({ ...result, parentIds, retentionUntil }, {
         principal: principal ?? this.ctx.principal, // created_by = the acking caller
         schemaVersion: this.ctx.schemaVersion,
         maxRecordBytes: this.ctx.maxRecordBytes,
@@ -1658,6 +1689,9 @@ export class Space {
     const r = await this.storage.ack(this.ref(lease, principal), resultInput, idem);
     if (declared && r.status === "ok") await this.adoptKind(declared);
     this.notifier.notify(); // an emitted result is a new available record to wake on
+    // The result record committed inside storage.ack, not through putRaw, so it counts here or the
+    // amortized clock undercounts exactly the worker fleet's writes.
+    await this.maybeAmortizedSweep();
     return r;
   }
 
@@ -2113,30 +2147,30 @@ export class Space {
   async gc(opts: { limit?: number; dryRun?: boolean; compact?: boolean; principal?: string } = {}): Promise<{
     swept: number;
     eligible: number;
+    idempotency: number;
     byKind: Record<string, number>;
     more: boolean;
     passes: number;
     compaction?: CompactionResult;
   }> {
     const limit = Math.min(Math.max(opts.limit ?? 1000, 1), 10_000);
-    const anyStateKinds = this.kinds.list()
-      .filter((d) => !isClaimable(d) && !RESERVED_KINDS.includes(d.kind))
-      .map((d) => d.kind);
-    const totals = { swept: 0, eligible: 0, byKind: {} as Record<string, number>, more: false, passes: 0 };
+    const totals = { swept: 0, eligible: 0, idempotency: 0, byKind: {} as Record<string, number>, more: false, passes: 0 };
     // Bounded batches rather than one unbounded delete: each pass is one transaction, so a crash
     // loses at most a batch's progress and a concurrent reader never sees a half-swept batch. The
     // pass cap bounds one CALL; `more` says a backlog remains and the caller decides.
     const MAX_PASSES = 50;
+    // The idempotency cutoff rides the FIRST pass only: after it those rows are gone, and a dry
+    // run would count the same rows once per pass.
+    const idempotencyBefore = addSeconds(await this.storage.now(), -this.ctx.idempotencyRetentionSeconds);
     for (;;) {
       const r = await this.storage.sweepExpired({
-        anyStateKinds,
-        neverKinds: [...RESERVED_KINDS],
-        limit,
-        dryRun: opts.dryRun,
+        ...this.sweepSelector(limit, opts.dryRun),
         runId: opts.principal ?? this.ctx.runId,
+        ...(totals.passes === 0 ? { idempotencyBefore } : {}),
       });
       totals.eligible += r.eligible;
       totals.swept += r.swept;
+      totals.idempotency += r.idempotency;
       for (const [k, n] of Object.entries(r.byKind)) totals.byKind[k] = (totals.byKind[k] ?? 0) + n;
       totals.passes++;
       totals.more = r.more;
@@ -2144,6 +2178,9 @@ export class Space {
       // rows forever, since nothing was deleted.
       if (opts.dryRun || !r.more || totals.passes >= MAX_PASSES) break;
     }
+    // An explicit LIVE gc restarts the amortized clock. Not a dry run: doctor calls this dry on
+    // every diagnostics, and a backlog report must not keep postponing the sweep it reports on.
+    if (!opts.dryRun) this.writesSinceSweep = 0;
     // Registry compaction rides the same verb (phase 2, plan-gc.md): superseded successors of
     // latest-wins registries, plus interests whose run is over. `core/gc.ts` owns the keep-newest
     // logic and its resurrection guard; this only wires the reads and the one destructive member.
@@ -2157,6 +2194,54 @@ export class Space {
       return { ...totals, compaction };
     }
     return totals;
+  }
+
+  /** The eligibility classes the sweep needs, computed from the registry (only it knows which
+   *  kinds are reference data and which are reserved). Shared by the verb and the amortized pass. */
+  private sweepSelector(limit: number, dryRun?: boolean) {
+    return {
+      anyStateKinds: this.kinds.list()
+        .filter((d) => !isClaimable(d) && !RESERVED_KINDS.includes(d.kind))
+        .map((d) => d.kind),
+      neverKinds: [...RESERVED_KINDS],
+      limit,
+      dryRun,
+    };
+  }
+
+  /** Commits since the last amortized sweep. Instance state, like the notifier: two instances over
+   *  one database each keep their own count, which only means the housekeeping runs a bit oftener. */
+  private writesSinceSweep = 0;
+  private amortizedSweepRunning = false;
+
+  /**
+   * The amortized half of GC: every `gcEveryWrites` record commits, the WRITING call runs one small
+   * retention batch inline.
+   *
+   * The lazy-lease-expiry shape, deliberately: no timer (an idle space runs nothing and does not
+   * grow), and the cost lands on the principal generating the litter, which is the fair place for
+   * it. Awaited rather than fire-and-forget, so the Nth writer pays a bounded few milliseconds
+   * (one indexed batch) and tests are deterministic; the guard keeps a slow sweep from stacking.
+   * Retention only — compaction walks whole registries and stays with the explicit verb, because
+   * registry litter grows per session, not per write.
+   *
+   * A failed pass is swallowed: housekeeping must never fail the write that happened to trigger it.
+   */
+  private async maybeAmortizedSweep(): Promise<void> {
+    if (this.ctx.gcEveryWrites <= 0) return;
+    if (++this.writesSinceSweep < this.ctx.gcEveryWrites) return;
+    this.writesSinceSweep = 0;
+    if (this.amortizedSweepRunning) return;
+    this.amortizedSweepRunning = true;
+    try {
+      await this.storage.sweepExpired({
+        ...this.sweepSelector(AMORTIZED_BATCH),
+        runId: this.ctx.runId,
+        idempotencyBefore: addSeconds(await this.storage.now(), -this.ctx.idempotencyRetentionSeconds),
+      });
+    } catch { /* the backlog waits for the next trigger or the verb */ } finally {
+      this.amortizedSweepRunning = false;
+    }
   }
 
   /**

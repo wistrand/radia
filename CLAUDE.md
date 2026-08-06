@@ -223,13 +223,16 @@ live at the top of the relevant `agent_docs/` file, not here.
   (`record_runtime`) changes. Two carve-outs, both DELETION rather than mutation: erasure
   destroys a payload (the invariant below), and GC deletes whole records — but only ones whose
   writer declared a `retention_until`, or superseded registry successors whose newest same-key
-  record survives. Immutable means never rewritten, not permanent; absence of `retention_until`
-  IS permanence, and the runtime never invents a retention. What GC keeps is the evidence: the
-  event log retains every swept record's id, kind, digest and transitions. Never swept, whatever
-  the clock says: a record under a live lease, unclaimed claimable work, reserved kinds,
-  `artifact` records (bytes with no other path to them), the newest record per registry key —
-  tombstones above all, because deleting a `retired: true` marker silently undoes the withdrawal.
-  On demand only, never a timer. See [agent_docs/plan-gc.md](agent_docs/plan-gc.md).
+  record survives. Immutable means never rewritten, not permanent; a record neither stamped nor
+  of a kind declaring `defaultRetentionSeconds` is permanent, and the runtime stamps only what the
+  record or its kind_def declared (the default is MATERIALIZED into the record at commit, so a
+  redeclaration never changes history). What GC keeps is the evidence: the event log retains every
+  swept record's id, kind, digest and transitions. Never swept, whatever the clock says: a record
+  under a live lease, unclaimed claimable work, reserved kinds, `artifact` records (bytes with no
+  other path to them), the newest record per registry key — tombstones above all, because deleting
+  a `retired: true` marker silently undoes the withdrawal. Never a timer: the verb, plus an
+  amortized batch the write path itself pays for every `gcEveryWrites` commits (the lazy
+  lease-expiry shape). See [agent_docs/plan-gc.md](agent_docs/plan-gc.md).
 - **Client-submitted vs. runtime-authoritative metadata is a hard API split.** Clients
   submit *claims* (`confidence`, `requested_priority`); the runtime decides what they
   are worth. `created_by`, `delegation_context`, `created_at`, `schema_version`,

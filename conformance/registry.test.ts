@@ -15,8 +15,9 @@
 // same-millisecond revival, which is common, to fix a race that is not. See `newer` in
 // sdk/ts/registry.ts and gotchas.md.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { activeByKey, grantKey } from "../src/core/registry.ts";
+import { kindDefKey } from "../sdk/ts/wire.ts";
 import type { RadiaRecord } from "../src/storage/adapter.ts";
 
 /** A record with a hand-made id. `ms` is the ULID's 10-character timestamp half; `low` stands in
@@ -137,4 +138,28 @@ Deno.test("registry: a grant whose scoping field this build does not understand 
     JSON.stringify(["g2", "agent:w", "message", "query", { conversationId: "c1" }]),
     "the key is version-tagged; bump the tag when the grant body's shape changes",
   );
+});
+
+Deno.test("registry: kindDefKey is byte-stable for declarations that predate every optional field", () => {
+  // The key IS the idempotency anchor for kind declarations: `registerKind` writes a `kind_def`
+  // record under it, so re-declaring an unchanged kind writes NOTHING. That only holds while an
+  // old declaration keeps minting the exact bytes it minted before each optional field existed —
+  // break it and every space re-writes its whole kind registry on every boot, an append storm from
+  // the machinery built to prevent append storms. So the exact string is pinned, not just its
+  // properties: a new field must extend the key ONLY when present.
+  const legacy = {
+    kind: "task",
+    indexedPaths: [{ path: "b", type: "keyword" as const }, { path: "a", type: "integer" as const }],
+    sortablePaths: ["a"],
+  };
+  assertEquals(kindDefKey(legacy), "kind_def:task:a:integer,b:keyword:a:work");
+  assertEquals(kindDefKey({ ...legacy, claimable: false }), "kind_def:task:a:integer,b:keyword:a:ref");
+
+  // The two GC-era fields extend the key only when declared, and a changed value is a changed key
+  // (a redeclaration that adds or alters one must write a successor, not replay the old write).
+  const keyed = kindDefKey({ ...legacy, contentKey: ["tool", "provider"] });
+  assertEquals(keyed, "kind_def:task:a:integer,b:keyword:a:work:ck=provider,tool");
+  const retained = kindDefKey({ ...legacy, defaultRetentionSeconds: 3600 });
+  assertEquals(retained, "kind_def:task:a:integer,b:keyword:a:work:rt=3600");
+  assert(kindDefKey({ ...legacy, defaultRetentionSeconds: 7200 }) !== retained, "a changed default is a changed declaration");
 });

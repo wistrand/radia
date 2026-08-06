@@ -10,10 +10,6 @@
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
 
-/** Progress is ephemeral chatter, so mark it GC-eligible rather than keeping it forever.
- *  (`radia gc` sweeps them once the hour passes; see agent_docs/plan-gc.md.) */
-const TTL_MS = 60 * 60 * 1000;
-
 export interface ProgressBody {
   conversationId: string;
   /** The call the CHAT awaits. For a re-dispatched call that is `replyTo`, not the new record id. */
@@ -37,8 +33,10 @@ export async function progress(
     await client.put({
       kind: "progress",
       body: { ...p, conversationId: p.conversationId },
+      // Retention comes from the KIND: `progress` declares defaultRetentionSeconds in kinds.ts and
+      // the runtime stamps it at commit. This file used to stamp its own per put, which was the
+      // per-call-site memory the kind-level default exists to retire.
       parentIds,
-      retentionUntil: new Date(Date.now() + TTL_MS).toISOString(),
     });
   } catch { /* no grant, space hiccup: the turn continues without a status line */ }
 }

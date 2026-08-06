@@ -456,9 +456,10 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         const compactLine = c && (c.superseded > 0 || c.compacted > 0)
           ? `\n${dry ? `${c.superseded} superseded registry entries` : `compacted ${c.compacted} registry entries`}${c.more ? "+" : ""}: ${fmt(c.byKind)}`
           : "";
+        const idemLine = r.idempotency > 0 ? `\n${dry ? `${r.idempotency} aged idempotency rows` : `swept ${r.idempotency} aged idempotency rows`}` : "";
         return dry
-          ? `${r.eligible}${r.more ? "+" : ""} sweepable: ${fmt(r.byKind)}${compactLine}\nradia gc --run to delete them`
-          : `swept ${r.swept}${r.more ? " (more remain: run again)" : ""}: ${fmt(r.byKind)}${compactLine}`;
+          ? `${r.eligible}${r.more ? "+" : ""} sweepable: ${fmt(r.byKind)}${compactLine}${idemLine}\nradia gc --run to delete them`
+          : `swept ${r.swept}${r.more ? " (more remain: run again)" : ""}: ${fmt(r.byKind)}${compactLine}${idemLine}`;
       });
     }
 

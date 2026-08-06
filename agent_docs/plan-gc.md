@@ -1,7 +1,8 @@
 # Plan: garbage collection (retention sweep + registry compaction)
 
-> Status: phases 1–2 built (2026-08-05); phases 3–4 designed, not scheduled. Origin: a measured
-> finding, not a feature request — see the table below. Read
+> Status: phases 1–2 built (2026-08-05), plus the amortized write-path sweep, idempotency-row
+> sweeping and kind-level `defaultRetentionSeconds` (2026-08-06); phases 3–4 designed, not
+> scheduled. Origin: a measured finding, not a feature request — see the table below. Read
 > [design-data-model.md](design-data-model.md) for `retention_until`'s field semantics and
 > [design-observability.md](design-observability.md) for the event chain GC must not break.
 
@@ -49,11 +50,26 @@ They share the deletion mechanics and nothing else.
 - Never a record whose lease is unexpired, whatever its state (the CLAUDE.md invariant, as SQL).
 - Never `available` work of a claimable kind: unclaimed work is not litter, `deadline_at` owns
   giving up. Claimable kinds sweep only from `consumed` / `dead_letter`.
+  **Stated plainly, because it compounds: unstamped abandoned work has NO deletion path at all.**
+  Nothing enforces `deadline_at` (it appears nowhere in the claim path), so an unclaimed job sits
+  `available` forever; `remediate --stale` can dead-letter it, but a dead-lettered record without
+  a `retention_until` still never sweeps. That chain is deliberate — each link is the safe choice —
+  and its end state is immortal abandoned work until durable timers (M2) give `deadline_at` teeth.
+  An operator who wants such work gone today must requeue-or-dead-letter it AND stamp retention on
+  what replaces it, or declare a `defaultRetentionSeconds` on the kind going forward.
 - `claimable: false` kinds sweep from any state: reference data sits `available` forever by design.
 - Never a reserved kind, and never `artifact` until reference-aware blob GC exists (phase 4):
   sweeping an artifact record strands its bytes with no path to them but `erasures`.
 - Eligibility is COLUMN predicates (`retention_until < now`, state, lease), never a body pattern:
   no oracle, no scan-budget interaction, index-served.
+- A kind may declare `defaultRetentionSeconds` on its `kind_def`: MATERIALIZED into
+  `retention_until` at commit (DB clock), on the put path and the ack-result path alike, with an
+  explicit stamp always winning. Materialize-at-commit is the load-bearing choice: every record
+  stays self-describing and a redeclaration changes only future records — a default consulted at
+  sweep time would make a kind_def redeclare a mass-deletion instrument over history. The
+  consequence is the declarer's to own: absence stops meaning permanence for that kind, and a
+  writer wanting one record kept stamps a far-future date. This replaced retention remembered per
+  call site, which is the repo's named most-repeated bug class wearing a new field.
 
 ## What deletion breaks, and the answers
 
@@ -71,8 +87,11 @@ They share the deletion mechanics and nothing else.
   integrity property. Event GC (phase 3) is where the chain work lives.
 - One recordless `gc` event per sweep batch (kind, cutoff, count) — audit without per-record
   events, which would trade 1.1 KB of record for 200 bytes of event forever.
-- Idempotency rows sweep by `created_at` age; rows from before the column existed (`''`) never
-  sweep, because an unknown age must not read as an old one.
+- Idempotency rows sweep by `created_at` age (`idempotencyRetentionSeconds`, default 7 days); rows
+  whose age is `''` never sweep, because an unknown age must not read as an old one. Two findings
+  behind that sentence: this section CLAIMED the sweep a day before it existed (the drift class
+  this repo names), and the insert had never stamped `created_at` at all — every row was `''`, so
+  the sweep as first written would have deleted nothing forever. Both fixed, both pinned.
 
 ## Compaction scope (phase 2)
 
@@ -94,6 +113,16 @@ On demand, never a timer — the lesson `Notifier`, `sweepWatches` and sealing a
 and reports per-kind counts; `radia gc` wraps it; `radia doctor` reports the sweepable backlog so
 the operator learns there is something to run. Batched keyset deletes, per-batch transactions,
 idempotent, safe to run concurrently (a lost race deletes zero rows).
+
+**And the amortized half, so GC is a property of an active space rather than an operator
+discipline.** Every `gcEveryWrites` record commits (default 1000; `0` disables), the writing call
+runs ONE small retention batch inline (`AMORTIZED_BATCH`, 256 rows) — the lazy-lease-expiry shape.
+No timer is involved, an idle space runs nothing and does not grow, and the cost lands on the
+principal generating the litter. Awaited rather than fire-and-forget, so the Nth writer pays a
+bounded few milliseconds and the behaviour is deterministic under test. Retention only: compaction
+walks whole registries, its litter grows per session not per write, and it stays with the verb. A
+live `gc` call restarts the amortized clock; a DRY one deliberately does not, or doctor's own
+backlog report would forever postpone the sweep it reports on.
 
 ## Phases
 

@@ -342,6 +342,12 @@ export class SqliteAdapter implements StorageAdapter {
         .map((c) => c.name),
     );
     if (!eventCols.has("body_sha256")) this.#db!.exec("alter table events add column body_sha256 text");
+    // Pre-column rows get '' (age unknown), which the idempotency sweep deliberately never touches.
+    const idemCols = new Set(
+      (this.#db!.prepare("select name from pragma_table_info('idempotency')").all() as { name: string }[])
+        .map((c) => c.name),
+    );
+    if (!idemCols.has("created_at")) this.#db!.exec("alter table idempotency add column created_at text not null default ''");
   }
 
   close(): Promise<void> {
@@ -755,9 +761,18 @@ export class SqliteAdapter implements StorageAdapter {
 
         const byKind: Record<string, number> = {};
         for (const r of rows) byKind[r.kind] = (byKind[r.kind] ?? 0) + 1;
+        // The idempotency store, in the same transaction: age-based, and rows with created_at ''
+        // (age unknown) are never touched.
+        let idem = 0;
+        if (sel.idempotencyBefore) {
+          idem = sel.dryRun
+            ? Number((this.db.prepare("select count(*) c from idempotency where created_at <> '' and created_at < ?").get(sel.idempotencyBefore) as { c: number }).c)
+            : this.run("delete from idempotency where created_at <> '' and created_at < ?", [sel.idempotencyBefore]);
+        }
         const result: SweepResult = {
           swept: sel.dryRun ? 0 : rows.length,
           eligible: rows.length,
+          idempotency: idem,
           byKind,
           more: rows.length >= sel.limit,
         };
@@ -1011,7 +1026,13 @@ export class SqliteAdapter implements StorageAdapter {
     }
     const result = run();
     this.db
-      .prepare("insert into idempotency (principal, operation, idem_key, request_hash, response_json) values (?,?,?,?,?)")
+      // `created_at` is stamped IN SQL with the same expression `now()` uses (the DB clock
+      // invariant), because an insert that omitted it fell to the schema's `''` default — which
+      // meant EVERY row, not just pre-column ones, read as "age unknown" and the age-based sweep
+      // in `sweepExpired` would have deleted nothing forever.
+      .prepare(
+        "insert into idempotency (principal, operation, idem_key, request_hash, response_json, created_at) values (?,?,?,?,?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+      )
       .run(idem.principal, idem.operation, idem.key, idem.requestHash, JSON.stringify(result));
     return result;
   }

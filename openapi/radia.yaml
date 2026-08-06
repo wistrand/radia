@@ -586,19 +586,22 @@ paths:
       operationId: gc
       summary: Run the retention sweep
       description: |
-        Delete records whose writer-declared `retention_until` has passed. The second deliberate
-        carve-out from immutability, after artifact erasure, and shaped the same way: the content
-        goes, the evidence stays (the event log keeps every swept record's id, kind, digest and
-        transitions, plus one `gc` event per swept kind per batch). Absence of `retention_until`
-        means permanent, always; the runtime never invents a retention.
+        Delete records whose `retention_until` has passed. The second deliberate carve-out from
+        immutability, after artifact erasure, and shaped the same way: the content goes, the
+        evidence stays (the event log keeps every swept record's id, kind, digest and transitions,
+        plus one `gc` event per swept kind per batch). The runtime stamps only what was declared:
+        an explicit `retentionUntil` on the put, else the kind_def's `defaultRetentionSeconds`
+        materialized at commit; a record with neither is permanent. Aged idempotency rows sweep in
+        the same pass.
 
         Never swept: records under an unexpired lease, `available` work of claimable kinds
         (unclaimed work is not litter), reserved kinds, and `artifact` records (until blob GC
         exists). Reference kinds (`claimable: false`) sweep from any state, since they sit
         `available` forever by design.
 
-        On demand, never on a timer. `radia doctor` reports the backlog (`sweepable`); this runs
-        it. `dryRun` counts without deleting. Operator-only. See agent_docs/plan-gc.md.
+        Never on a timer: this verb, plus an amortized batch the write path itself runs every
+        `gcEveryWrites` commits. `radia doctor` reports the backlog (`sweepable`); `dryRun` counts
+        without deleting. Operator-only. See agent_docs/plan-gc.md.
       x-stability: experimental
       x-phase: "M2"
       requestBody:
@@ -618,10 +621,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [swept, eligible, byKind, more, passes]
+                required: [swept, eligible, idempotency, byKind, more, passes]
                 properties:
                   swept: { type: integer, description: "Records deleted (0 on dryRun)." }
                   eligible: { type: integer }
+                  idempotency: { type: integer, description: "Aged idempotency rows swept (rows of unknown age never are)." }
                   byKind: { type: object, additionalProperties: { type: integer } }
                   more: { type: boolean, description: "A backlog remains; call again. Never read a capped count as the total." }
                   passes: { type: integer }

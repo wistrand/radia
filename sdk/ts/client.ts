@@ -634,13 +634,15 @@ export class RadiaClient {
     return this.req("GET", `/v0/ops/erasures${opts.undone ? "?undone=true" : ""}`);
   }
 
-  /** The retention sweep (operator): delete records whose `retention_until` has passed. A record
-   *  without one is permanent, always. On demand — nothing sweeps on a timer — so somebody has to
-   *  call this; `diagnostics().sweepable` says whether it is worth calling. `dryRun` counts
-   *  without deleting. */
+  /** The retention sweep (operator): delete records whose `retention_until` has passed — stamped
+   *  explicitly, or materialized from the kind_def's `defaultRetentionSeconds`; a record with
+   *  neither is permanent. Nothing runs on a timer: the space amortizes small batches onto its own
+   *  write path, and this verb drains backlogs and runs compaction.
+   *  `diagnostics().sweepable` says whether it is worth calling; `dryRun` counts without deleting. */
   gc(opts: { limit?: number; dryRun?: boolean; compact?: boolean } = {}): Promise<{
     swept: number;
     eligible: number;
+    idempotency: number;
     byKind: Record<string, number>;
     more: boolean;
     passes: number;

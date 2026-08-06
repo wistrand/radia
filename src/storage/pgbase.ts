@@ -223,6 +223,8 @@ alter table events add column if not exists xid xid8 not null default pg_current
 -- which is honest: those events were written before anything captured it, so a chain over them
 -- proves their order and not the bodies they refer to.
 alter table events add column if not exists body_sha256 text;
+-- Pre-column idempotency rows get '' (age unknown), which the age sweep deliberately never touches.
+alter table idempotency add column if not exists created_at text not null default '';
 -- records.body_jsonb is the parsed form of body_json, for predicate pushdown. GENERATED, so it
 -- cannot drift from the text the record actually committed with, and no write path has to know it
 -- exists. Without it every pushed predicate would re-parse the body text once per row per
@@ -1023,9 +1025,24 @@ export class PgSqlAdapter implements StorageAdapter {
 
       const byKind: Record<string, number> = {};
       for (const r of rows) byKind[r.kind] = (byKind[r.kind] ?? 0) + 1;
+      // The idempotency store, in the same transaction: age-based, '' (age unknown) never touched.
+      let idem = 0;
+      if (sel.idempotencyBefore) {
+        if (sel.dryRun) {
+          const c = await tx.query<{ c: number }>(
+            "select count(*)::int as c from idempotency where created_at <> '' and created_at < $1",
+            [sel.idempotencyBefore],
+          );
+          idem = Number(c.rows[0]?.c ?? 0);
+        } else {
+          const d = await tx.query("delete from idempotency where created_at <> '' and created_at < $1", [sel.idempotencyBefore]);
+          idem = d.affectedRows;
+        }
+      }
       const result: SweepResult = {
         swept: sel.dryRun ? 0 : rows.length,
         eligible: rows.length,
+        idempotency: idem,
         byKind,
         more: rows.length >= sel.limit,
       };
@@ -1268,9 +1285,13 @@ export class PgSqlAdapter implements StorageAdapter {
     // IdempotencyReplay, which rolls this attempt back (discarding its effect) so withRetry
     // re-runs and the SELECT above replays the winner's stored response. On single-connection
     // embedded backends there is no race, so this always inserts (1 row).
+    // `created_at` stamped IN SQL with the clock `now()` uses: omitting it fell to the schema's
+    // `''` default, which meant every row read as "age unknown" and the age-based sweep would have
+    // deleted nothing forever. Same fix, same reason, in the SQLite adapter.
     const ins = await tx.query(
-      `insert into idempotency (principal, operation, idem_key, request_hash, response_json)
-       values ($1,$2,$3,$4,$5) on conflict (principal, operation, idem_key) do nothing`,
+      `insert into idempotency (principal, operation, idem_key, request_hash, response_json, created_at)
+       values ($1,$2,$3,$4,$5, to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+       on conflict (principal, operation, idem_key) do nothing`,
       [idem.principal, idem.operation, idem.key, idem.requestHash, JSON.stringify(result)],
     );
     if (ins.affectedRows === 0) throw new IdempotencyReplay();

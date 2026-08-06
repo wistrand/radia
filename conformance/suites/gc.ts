@@ -152,6 +152,131 @@ export const gcSuites: Suite[] = [
     },
   },
   {
+    // The THIRD append-only store. The subtle half is the stamp: the insert used to omit
+    // `created_at`, falling to the schema's '' default — so every row read as "age unknown" and an
+    // age-based sweep would have deleted nothing, forever, while the plan said otherwise.
+    name: "gc sweeps aged idempotency rows, and never the ones whose age is unknown",
+    run: async (adapter) => {
+      const space = new Space(adapter, { idempotencyRetentionSeconds: 3600 });
+      space.registerKind({ kind: "job", indexedPaths: [{ path: "tag", type: "keyword" }] });
+      await space.put({ kind: "job", body: { tag: "a" } }, "key-fresh");
+      // A row from before the stamp existed: planted directly, since no current write path can
+      // produce one — which is exactly why it must be pinned rather than assumed.
+      // deno-lint-ignore no-explicit-any
+      const db = (adapter as any).db ?? (adapter as any).sql;
+      if (db?.prepare) {
+        db.prepare("insert into idempotency (principal, operation, idem_key, request_hash, response_json) values ('p','put','key-unknown','h','{}')").run();
+      } else {
+        await db.query("insert into idempotency (principal, operation, idem_key, request_hash, response_json) values ('p','put','key-unknown','h','{}')");
+      }
+
+      // Fresh rows are inside the window: nothing sweeps.
+      const first = await space.gc({ compact: false });
+      assertEquals(first.idempotency, 0, "a fresh row is inside the retention window");
+
+      // Shrink the window to zero-ish by constructing a space whose window is negative-adjacent:
+      // a 1-second window plus a stamped row older than it. Simplest honest route: a second space
+      // over the same adapter with a tiny window, after the clock has moved past it.
+      await new Promise((r) => setTimeout(r, 20));
+      const tight = new Space(adapter, { idempotencyRetentionSeconds: 0.001 });
+      tight.registerKind({ kind: "job", indexedPaths: [{ path: "tag", type: "keyword" }] });
+      const swept = await tight.gc({ compact: false });
+      assertEquals(swept.idempotency, 1, "the aged stamped row goes; the ''-aged row NEVER does");
+
+      // And the replay contract degrades the honest way: the key re-executes as a fresh write.
+      const again = await tight.put({ kind: "job", body: { tag: "a" } }, "key-fresh");
+      assert(again.id, "a swept key re-executes rather than erroring");
+    },
+  },
+  {
+    // Kind-level default retention (plan-gc.md): declared once on the kind_def, MATERIALIZED into
+    // each record at commit. The alternative was retention remembered per call site, which is the
+    // named most-repeated bug class of this codebase wearing a new field.
+    name: "gc kind defaults are materialized at commit, and an explicit stamp wins",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({
+        kind: "chunk",
+        indexedPaths: [{ path: "n", type: "integer" }],
+        claimable: false,
+        defaultRetentionSeconds: 3600,
+      });
+      space.registerKind({ kind: "note", indexedPaths: [], claimable: false });
+
+      const { id: defaulted } = await space.put({ kind: "chunk", body: { n: 1 } });
+      const rec = await space.getRecord(defaulted);
+      assert(rec?.retentionUntil, "the default is stamped INTO the record, self-describing");
+      const now = await space.now();
+      assert(rec!.retentionUntil! > now, "…in the future");
+
+      const { id: explicit } = await space.put({ kind: "chunk", body: { n: 2 }, retentionUntil: FUTURE });
+      assertEquals((await space.getRecord(explicit))?.retentionUntil, FUTURE, "an explicit stamp always wins");
+
+      const { id: plain } = await space.put({ kind: "note", body: { n: 3 } });
+      assertEquals((await space.getRecord(plain))?.retentionUntil, undefined, "no default declared = permanent, as before");
+
+      // Materialized-at-commit is what makes a redeclaration prospective: records written under
+      // the old default keep their stamp, so changing the kind_def is never a mass-deletion of
+      // history. The stamped value IS the contract; the def is only the pen.
+      space.registerKind({
+        kind: "chunk",
+        indexedPaths: [{ path: "n", type: "integer" }],
+        claimable: false,
+        defaultRetentionSeconds: 7200,
+      });
+      assertEquals((await space.getRecord(defaulted))?.retentionUntil, rec!.retentionUntil, "a redeclared default changes only future records");
+
+      // An ack-emitted result is a put with a lease attached, and gets the default too: skipping
+      // that path would make every WORKER-written record of an ephemera kind permanent.
+      space.registerKind({ kind: "task", indexedPaths: [] });
+      const { id: taskId } = await space.put({ kind: "task", body: {} });
+      const claim = await space.take({ recordId: taskId });
+      const acked = await space.ack(claim!.lease, { kind: "chunk", body: { n: 9 } });
+      assert(acked.status === "ok" && acked.resultId, "ack emitted a result");
+      assert((await space.getRecord(acked.resultId!))?.retentionUntil, "the ack-result path stamps the kind default too");
+    },
+  },
+  {
+    // The amortized half: every `gcEveryWrites` commits, the writing call runs one small retention
+    // batch inline — the lazy-lease-expiry shape, so an ACTIVE space pays for its own housekeeping
+    // and an idle one runs nothing. Without this, GC is an operator discipline: the measured litter
+    // grows per turn and the remedy ran only when somebody remembered.
+    name: "gc runs itself amortized on the write path",
+    run: async (adapter) => {
+      const space = new Space(adapter, { gcEveryWrites: 5 });
+      space.registerKind({ kind: "note", indexedPaths: [{ path: "n", type: "integer" }], claimable: false });
+      const { id: litter } = await space.put({ kind: "note", body: { n: 0 }, retentionUntil: PAST });
+      // Four more commits reach the threshold; the fifth write pays for the sweep.
+      for (let i = 1; i <= 4; i++) await space.put({ kind: "note", body: { n: i } });
+      assertEquals(await space.getRecord(litter), null, "the expired record went without anyone calling gc");
+
+      // Disabled is disabled: 0 means no amortized pass, ever.
+      const off = new Space(adapter, { gcEveryWrites: 0 });
+      off.registerKind({ kind: "note", indexedPaths: [{ path: "n", type: "integer" }], claimable: false });
+      const { id: kept } = await off.put({ kind: "note", body: { n: 10 }, retentionUntil: PAST });
+      for (let i = 11; i <= 30; i++) await off.put({ kind: "note", body: { n: i } });
+      assert(await off.getRecord(kept), "gcEveryWrites: 0 disables the amortized pass");
+
+      // Housekeeping must never fail the write that happened to trigger it: the Nth put is an
+      // ordinary put that drew the short straw, and a space whose storage cannot sweep (a
+      // permissions change, a wedged table) must degrade to "the backlog waits", not to every
+      // thousandth write failing with an error about a feature the writer never invoked.
+      const broken = new Proxy(adapter, {
+        get(target, prop, receiver) {
+          if (prop === "sweepExpired") return () => Promise.reject(new Error("sweep exploded"));
+          const v = Reflect.get(target, prop, receiver);
+          return typeof v === "function" ? v.bind(target) : v;
+        },
+      }) as StorageAdapter;
+      const fragile = new Space(broken, { gcEveryWrites: 3 });
+      fragile.registerKind({ kind: "note", indexedPaths: [{ path: "n", type: "integer" }], claimable: false });
+      for (let i = 100; i < 110; i++) {
+        const { id } = await fragile.put({ kind: "note", body: { n: i } });
+        assert(id, "every put succeeds while the sweep behind it throws");
+      }
+    },
+  },
+  {
     // COMPACTION (plan-gc.md phase 2). The failure mode is resurrection, so the central case here
     // is the tombstone: the newest entry per key survives even when it is `retired: true`, or a
     // withdrawal silently un-happens. Everything is checked through the same projection the
@@ -198,6 +323,38 @@ export const gcSuites: Suite[] = [
 
       // Idempotent: the survivors are each the newest of their key.
       assertEquals((await space.gc()).compaction?.compacted, 0);
+    },
+  },
+  {
+    // The `seen` set carried ACROSS pages is the whole of keep-newest once a registry outgrows one
+    // page (PAGE = 500), and no other case crosses that boundary: every fixture elsewhere is under
+    // ten records, so a compactor that forgot its memory between pages — keeping one "newest" per
+    // PAGE per key — would pass the entire suite while resurrecting at scale.
+    name: "gc compaction remembers what it saw across page boundaries",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({
+        kind: "cap",
+        indexedPaths: [{ path: "tool", type: "keyword" }],
+        claimable: false,
+        contentKey: ["tool"],
+      });
+      // Key "b": its OLD record first, so it lands at the far end of the newest-first walk (the
+      // last page), with its newest among the first page. Only a seen-set that survives the page
+      // turn dooms the old one.
+      const { id: bOld } = await space.put({ kind: "cap", body: { tool: "b", v: 1 } });
+      const ids: string[] = [];
+      for (let i = 0; i < 510; i++) ids.push((await space.put({ kind: "cap", body: { tool: "a", v: i } })).id);
+      const aNewest = ids[ids.length - 1];
+      const { id: bNew } = await space.put({ kind: "cap", body: { tool: "b", v: 2 } });
+
+      const r = await space.gc();
+      // 512 records, two keys: everything but the two newest goes — 509 of "a" and b's old one.
+      assertEquals(r.compaction?.compacted, 510, "509 superseded a's and the cross-page b");
+      assert(await space.getRecord(aNewest), "a's newest survives");
+      assert(await space.getRecord(bNew), "b's newest survives");
+      assertEquals(await space.getRecord(bOld), null, "b's OLD record, met two pages after its newest, still goes");
+      assertEquals((await space.query({ kind: "cap" }, 600)).length, 2);
     },
   },
   {

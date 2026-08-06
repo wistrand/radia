@@ -73,6 +73,10 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   await client.registerKind({
     kind: "llm_call",
     indexedPaths: [{ path: "tier", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
+    // The BYTE hog: each body carries the tool list, and nothing reads it after the result lands
+    // (context assembly reads `message` records, which carry no retention and stay). Measured
+    // live: 747 llm_calls held 8 MB of the 10 MB of all bodies. A week covers any debugging.
+    defaultRetentionSeconds: 7 * 24 * 3600,
   });
   // `contentKey: tier` matches `liveModels`' own projection (activeByKey on body.tier), so what
   // compaction keeps is exactly what the router reads.
@@ -99,6 +103,11 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     ],
     sortablePaths: ["index"],
     claimable: false,
+    // Ephemera BY DECLARATION, not by every writer remembering: a chunk's job ends with its turn
+    // (the result carries the full text; the watermark replay only matters mid-turn), and the
+    // kind is the COUNT hog — ~8 records per call at the stream cadence, ~400 for a one-minute
+    // answer. The runtime stamps this into each record at commit; a writer may still override.
+    defaultRetentionSeconds: 24 * 3600,
   });
   await client.registerKind({
     kind: "tool_call",
@@ -193,5 +202,8 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     kind: "progress",
     indexedPaths: [{ path: "callId", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
     claimable: false,
+    // A status line's usefulness ends when the turn does. This kind stamped its own retention per
+    // put for a month before anything swept it; the declaration replaces that call-site memory.
+    defaultRetentionSeconds: 3600,
   });
 }

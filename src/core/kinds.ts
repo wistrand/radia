@@ -496,6 +496,15 @@ export function validateKindDef(def: KindDef): void {
   if (def.contentKey !== undefined && def.contentKey.length === 0) {
     throw new RadiaError("invalid_kind", "contentKey must be omitted or non-empty: an empty key would make every record one identity");
   }
+  if (def.defaultRetentionSeconds !== undefined) {
+    const n = def.defaultRetentionSeconds;
+    // A zero or negative default would stamp every record already-expired at commit: not a
+    // retention policy, a kind whose records exist only until somebody sweeps. Refused rather than
+    // supported, because nothing honest wants it and everything confused produces it.
+    if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) {
+      throw new RadiaError("invalid_kind", `defaultRetentionSeconds must be a positive finite number, got '${n}'`);
+    }
+  }
 }
 
 export class KindRegistry {
@@ -512,6 +521,7 @@ export class KindRegistry {
       // of it is silently dropped from every registered kind — which is how `contentKey` would
       // have vanished between declaration and compaction.
       ...(def.contentKey !== undefined ? { contentKey: [...def.contentKey] } : {}),
+      ...(def.defaultRetentionSeconds !== undefined ? { defaultRetentionSeconds: def.defaultRetentionSeconds } : {}),
     });
   }
 

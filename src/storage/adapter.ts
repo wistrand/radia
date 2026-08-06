@@ -185,6 +185,11 @@ export interface SweepSelector {
   dryRun?: boolean;
   /** Who asked, stamped on the `gc` events. */
   runId: string;
+  /** Also sweep IDEMPOTENCY rows stamped before this cutoff (the third append-only store).
+   *  Rows whose `created_at` is `''` (written before the column was stamped) never sweep: an
+   *  unknown age must not read as an old one. Replaying a swept key re-executes, which is the
+   *  ordinary at-least-once posture past any honest retry window. */
+  idempotencyBefore?: string;
 }
 
 export interface SweepResult {
@@ -192,6 +197,8 @@ export interface SweepResult {
   swept: number;
   /** Rows that matched eligibility (== swept unless dryRun). */
   eligible: number;
+  /** Idempotency rows swept (or eligible, on dryRun). */
+  idempotency: number;
   byKind: Record<string, number>;
   /** The batch filled `limit`: run again for the rest. NEVER read a capped result as the total —
    *  that is this codebase's most repeated bug, stated here because a GC backlog is exactly the
