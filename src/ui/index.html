@@ -664,8 +664,11 @@ async function loadStats() {
 function doctorLinks(sample, key) {
   return (sample || []).slice(0, 5).map((s) => {
     const id = String((s || {})[key] || "");
+    // Two links per sample: the record itself, and its thread as a waterfall — where a stall is
+    // VISIBLE as the last bar nothing was derived from.
     return id
       ? `<button class="btn ghost" style="padding:1px 6px;font-size:11px" onclick="selectRecord('${esc(id)}')">${esc(id.slice(-8))}</button>`
+        + `<button class="btn ghost" style="padding:1px 6px;font-size:11px" onclick="openWaterfall('${esc(id)}')" title="this record's thread with time as the axis">thread</button>`
       : "";
   }).join(" ");
 }
@@ -951,9 +954,10 @@ async function showDetail(id, target = "rec-detail") {
   }
   const m = rec.runtimeMeta || {};
   const dc = m.delegationContext;
+  const tl = taintLabels(m);
   const authHtml =
     `<b>Authority &amp; taint</b><div class="mono" style="margin:6px 0 10px">`
-    + `<div>taint: ${m.taint ? `<span class="tag tag-taint">tainted</span> <span class="muted">untrusted data lineage</span>` : `<span class="muted">clean</span>`}</div>`
+    + `<div>taint: ${tl.length ? tl.map((l) => `<span class="tag tag-taint">${esc(l)}</span>`).join(" ") + ` <span class="muted">barrier labels; clearing needs declassify</span>` : `<span class="muted">none</span>`}</div>`
     + `<div>delegation: ${dc ? `<span class="tag tag-deleg">${esc(dc.chain.join(" → "))}</span> <span class="muted">from lease ${esc((dc.origin || "").slice(-8))}</span>` : `<span class="muted">none (root / operator authority)</span>`}</div>`
     + `<div>created_by: <span class="muted">${esc(m.createdBy || "")}</span></div></div>`;
   // An artifact record describes bytes held outside it. Preview them inline, and note HOW: the
@@ -974,7 +978,9 @@ async function showDetail(id, target = "rec-detail") {
     }
   }
   $(target).innerHTML =
-    `<div style="margin-bottom:8px">${e ? stateBadge(e.state) : ""} <span class="mono">${esc(id)}</span> <span class="mono muted">${esc(rec.kind)}</span></div>`
+    `<div style="margin-bottom:8px">${e ? stateBadge(e.state) : ""} <span class="mono">${esc(id)}</span> <span class="mono muted">${esc(rec.kind)}</span>`
+    + ` <button class="btn ghost" style="padding:1px 8px;font-size:11px" onclick="openWaterfall('${esc(id)}')" title="this record's thread with time as the axis">waterfall</button>`
+    + ` <button class="btn ghost" style="padding:1px 8px;font-size:11px" onclick="navigate('graph','${esc(id)}')" title="this record's relationship graph">graph</button></div>`
     + authHtml
     + artifactHtml
     + `<b>Body</b><pre>${esc(JSON.stringify(rec.body, null, 2))}</pre>`
@@ -1054,15 +1060,16 @@ async function loadFlows() {
   const notes = (d.notes || []).map((n) => `<div class="note err">${esc(n)}</div>`).join("");
   $("fl-msg").innerHTML = `<div class="muted" style="margin-top:8px">${esc(scanned)}</div>${notes}`;
   if (!d.flows.length) { $("fl-list").innerHTML = `<div class="empty">${esc(d.note || "no shapes mined")}</div>`; return; }
+  FLOWS_LAST = d.flows;
   const top = d.flows[0].occurrences;
-  $("fl-list").innerHTML = d.flows.map((f) => {
+  $("fl-list").innerHTML = d.flows.map((f, i) => {
     const pct = Math.round(f.successRate * 100);
     const bar = Math.max(2, Math.round((f.occurrences / top) * 100));
     const segs = f.signature.split(" → ").map((s) => `<span class="tag mono">${esc(s)}</span>`).join(
       `<span class="muted" style="margin:0 4px">→</span>`,
     );
     const ex = f.exemplars.map((id) =>
-      `<button class="btn ghost" style="padding:1px 6px;font-size:11px" onclick="openFromFlow('${esc(id)}')">${esc(id.slice(-8))}</button>`
+      `<button class="btn ghost" style="padding:1px 6px;font-size:11px" onclick="openFromFlow('${esc(id)}')" title="open this occurrence as a waterfall">${esc(id.slice(-8))}</button>`
     ).join(" ");
     return `<div class="panel" style="background:var(--bg);margin-bottom:8px">
       <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
@@ -1070,12 +1077,95 @@ async function loadFlows() {
         <span class="badge ${pct === 100 ? "st-consumed" : pct === 0 ? "st-dead_letter" : "st-leased"}">${pct}% complete</span>
         <span class="muted">${f.outcomes.complete} done · ${f.outcomes.open} open · ${f.outcomes.failed} failed</span>
         <span class="muted">median ${f.medianRecords} records, ${fmtMs(f.medianDurationMs)}</span>
+        <button class="btn ghost" style="padding:1px 8px;font-size:11px" onclick="flowTiming(${i})" title="where the median duration goes: one waterfall aggregated across this shape's exemplars">timing</button>
       </div>
       <div style="height:3px;background:var(--accent);width:${bar}%;margin:6px 0 8px;border-radius:2px"></div>
       <div style="line-height:2">${segs}</div>
       <div class="muted" style="margin-top:6px;font-size:12px">exemplars: ${ex}</div>
+      <div id="fl-wf-${esc(i)}"></div>
     </div>`;
   }).join("");
+}
+let FLOWS_LAST = [];
+function median(xs) {
+  const s = [...xs].sort((a, b) => a - b);
+  return s.length ? s[Math.floor((s.length - 1) / 2)] : 0;
+}
+/**
+ * The aggregate waterfall: where one SHAPE's median duration goes, computed across its exemplar
+ * graphs, client-side, from reads that already exist. Steps align by (causal depth, kind) — the
+ * same abstraction the signature uses, which is what makes occurrences of one shape comparable
+ * at all. Exemplars are a SAMPLE, and the caption says so rather than letting a tidy chart read
+ * as the population.
+ */
+async function flowTiming(i) {
+  const f = FLOWS_LAST[i];
+  const el = $("fl-wf-" + i);
+  if (!f || !el) return;
+  el.innerHTML = `<div class="empty">fetching ${f.exemplars.length} exemplar graph(s)…</div>`;
+  const graphs = [];
+  for (const id of f.exemplars.slice(0, 5)) {
+    const r = await api("GET", "/v0/ops/records/" + encodeURIComponent(id) + "/graph");
+    if (r.ok) graphs.push(r.data);
+  }
+  if (!graphs.length) { el.innerHTML = `<div class="note err">no exemplar graph could be fetched</div>`; return; }
+  el.innerHTML = renderShapeWaterfall(graphs);
+}
+function renderShapeWaterfall(graphs) {
+  const steps = new Map(); // "depth|kind" -> offsets per exemplar
+  for (const g of graphs) {
+    if (!g.nodes.length) continue;
+    const gen = generations(g.nodes, g.edges);
+    const lastChild = lastDerived(g.nodes, g.edges);
+    const t0 = Math.min(...g.nodes.map((n) => Date.parse(n.createdAt)));
+    const per = new Map(); // this exemplar's step spans: min start, max end, instance count
+    for (const n of g.nodes) {
+      const key = `${gen.get(n.id) || 0}|${n.kind}`;
+      const start = Date.parse(n.createdAt) - t0;
+      const end = Date.parse(lastChild.get(n.id) || n.createdAt) - t0;
+      const s = per.get(key) || { start: Infinity, end: 0, n: 0 };
+      s.start = Math.min(s.start, start);
+      s.end = Math.max(s.end, end);
+      s.n++;
+      per.set(key, s);
+    }
+    for (const [key, s] of per) {
+      if (!steps.has(key)) steps.set(key, { starts: [], ends: [], ns: [] });
+      const t = steps.get(key);
+      t.starts.push(s.start);
+      t.ends.push(s.end);
+      t.ns.push(s.n);
+    }
+  }
+  const rows = [...steps.entries()].map(([key, t]) => ({
+    depth: Number(key.split("|")[0]),
+    kind: key.split("|").slice(1).join("|"),
+    start: median(t.starts),
+    end: median(t.ends),
+    n: median(t.ns),
+    seen: t.starts.length,
+  })).sort((a, b) => a.depth - b.depth || a.start - b.start);
+  const total = Math.max(1, ...rows.map((r) => r.end));
+  const gutter = 180, plotW = 460, rowH = 22, padY = 24, barH = 11;
+  const X = (t) => gutter + (t / total) * plotW;
+  const height = padY + rows.length * rowH + 8;
+  let s = `<svg viewBox="0 0 ${gutter + plotW + 40} ${height}" width="${gutter + plotW + 40}" height="${height}">`;
+  for (let i = 0; i <= 4; i++) {
+    const t = (total * i) / 4;
+    s += `<line x1="${X(t)}" y1="${padY - 10}" x2="${X(t)}" y2="${height - 4}" stroke="var(--line)" stroke-width="1"/>`
+      + `<text x="${X(t) + 3}" y="${padY - 12}" font-size="10" fill="var(--muted)">+${esc(fmtMs(Math.round(t)))}</text>`;
+  }
+  rows.forEach((r, i) => {
+    const y = padY + i * rowH;
+    const x0 = X(r.start), x1 = Math.max(x0 + 3, X(r.end));
+    const c = graphColor(r.kind);
+    s += `<text x="${8 + Math.min(r.depth, 10) * 10}" y="${y + barH - 1}" font-size="11" fill="var(--ink)">${esc(r.kind).slice(0, 20)}${r.n > 1 ? ` ×~${r.n}` : ""}</text>`
+      + `<rect x="${x0}" y="${y}" width="${x1 - x0}" height="${barH}" rx="3" fill="${c}" fill-opacity="0.55" stroke="${c}" stroke-width="1">`
+      + `<title>${esc(r.kind)} at depth ${r.depth}\nmedian +${esc(fmtMs(r.start))} → +${esc(fmtMs(r.end))} (${esc(fmtMs(r.end - r.start))} of the shape's time)\nin ${r.seen} of ${graphs.length} exemplar graph(s)</title></rect>`;
+  });
+  s += `</svg>`;
+  return `<div style="overflow:auto;margin-top:8px">${s}</div>`
+    + `<div class="muted">median offsets across ${graphs.length} exemplar graph(s) — a sample, not the population; bars are creation → last derived record, aligned by causal depth and kind</div>`;
 }
 function fmtMs(ms) {
   if (ms < 1000) return `${ms}ms`;
@@ -1083,17 +1173,22 @@ function fmtMs(ms) {
   if (ms < 3600000) return `${Math.round(ms / 60000)}m`;
   return `${(ms / 3600000).toFixed(1)}h`;
 }
-/** A mined shape is a claim; its exemplars are the evidence. One click gets from one to the other,
- *  and because it is a navigation the evidence has a URL somebody can be sent. */
+/** The waterfall is the drill-down for every "why did this take so long": one navigation, so the
+ *  answer has a URL somebody can be sent. */
+function openWaterfall(id) {
+  navigate("graph", id, new URLSearchParams({ view: "waterfall" }));
+}
+/** A mined shape is a claim; its exemplars are the evidence. A shape already reports a median
+ *  DURATION, so the exemplar click opens the view that explains that number: the waterfall. */
 function openFromFlow(id) {
-  navigate("graph", id);
+  openWaterfall(id);
 }
 
-function renderGraph(el, data) {
-  const { nodes, edges } = data;
-  if (!nodes.length) { $(el).innerHTML = `<div class="empty">empty</div>`; return; }
+/** Causal generation per node (longest path from a root, relaxed over parent→child edges):
+ *  the depth every time- and layer-view aligns on, and the same abstraction the flow signature
+ *  uses, which is what lets exemplars of one shape be aggregated. */
+function generations(nodes, edges) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  // generation = longest path from a root; relax over parent->child edges.
   const gen = new Map(nodes.map((n) => [n.id, 0]));
   for (let iter = 0; iter < nodes.length; iter++) {
     let changed = false;
@@ -1105,6 +1200,24 @@ function renderGraph(el, data) {
     }
     if (!changed) break;
   }
+  return gen;
+}
+/** A node's window closes when its last direct derivative is created. */
+function lastDerived(nodes, edges) {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const last = new Map();
+  for (const e of edges) {
+    const c = byId.get(e.to);
+    if (!c || !byId.has(e.from)) continue;
+    const prev = last.get(e.from);
+    if (!prev || c.createdAt > prev) last.set(e.from, c.createdAt);
+  }
+  return last;
+}
+function renderGraph(el, data) {
+  const { nodes, edges } = data;
+  if (!nodes.length) { $(el).innerHTML = `<div class="empty">empty</div>`; return; }
+  const gen = generations(nodes, edges);
   const rows = {};
   nodes.forEach((n) => { (rows[gen.get(n.id)] ??= []).push(n); });
   const maxGen = Math.max(...Object.keys(rows).map(Number));
@@ -1169,27 +1282,8 @@ function renderGraph(el, data) {
 function renderWaterfall(el, data) {
   const { nodes, edges } = data;
   if (!nodes.length) { $(el).innerHTML = `<div class="empty">empty</div>`; return; }
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  // Causal depth for the indent: same relaxation as the layered view.
-  const gen = new Map(nodes.map((n) => [n.id, 0]));
-  for (let iter = 0; iter < nodes.length; iter++) {
-    let changed = false;
-    for (const e of edges) {
-      if (byId.has(e.from) && byId.has(e.to) && gen.get(e.from) + 1 > gen.get(e.to)) {
-        gen.set(e.to, gen.get(e.from) + 1);
-        changed = true;
-      }
-    }
-    if (!changed) break;
-  }
-  // A node's window closes when its last direct derivative is created.
-  const lastChild = new Map();
-  for (const e of edges) {
-    const c = byId.get(e.to);
-    if (!c || !byId.has(e.from)) continue;
-    const prev = lastChild.get(e.from);
-    if (!prev || c.createdAt > prev) lastChild.set(e.from, c.createdAt);
-  }
+  const gen = generations(nodes, edges);
+  const lastChild = lastDerived(nodes, edges);
   const sorted = [...nodes].sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
   const t0 = Date.parse(sorted[0].createdAt);
   const t1 = Math.max(t0 + 1, ...sorted.map((n) => Date.parse(lastChild.get(n.id) || n.createdAt)));
@@ -1387,7 +1481,7 @@ function renderFeed() {
     }
     const head = root === "ops"
       ? `<b>operational events</b> <span class="muted">(no record)</span>`
-      : `<span class="click" onclick="navigate('graph','${esc(root)}')" title="open this thread's graph"><b>${esc(feedRootKinds.get(root) || "thread")}</b> <span class="mono">…${esc(root.slice(-8))}</span></span> <span class="muted">· ${evs.length} event${evs.length === 1 ? "" : "s"}</span>`;
+      : `<span class="click" onclick="openWaterfall('${esc(root)}')" title="open this thread as a waterfall (the graph tab's view toggle has the layered view)"><b>${esc(feedRootKinds.get(root) || "thread")}</b> <span class="mono">…${esc(root.slice(-8))}</span></span> <span class="muted">· ${evs.length} event${evs.length === 1 ? "" : "s"}</span>`;
     return `<div class="panel" style="background:var(--bg);margin-bottom:8px"><div style="margin-bottom:6px">${head}</div>`
       + `<table><tbody>` + runs.map((x) => `<tr>${feedCells(x.e, x.n)}</tr>`).join("") + `</tbody></table></div>`;
   }).join("");
