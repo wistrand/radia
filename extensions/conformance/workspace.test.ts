@@ -1764,3 +1764,70 @@ Deno.test("sandbox: the jail does not read configuration written by its prisoner
     await Deno.remove(outside, { recursive: true });
   }
 });
+
+Deno.test({
+  name: "sandbox: a CONFINED Deno jail closes the import hole, and its record says which confiner",
+  ...needsBwrap,
+  async fn() {
+    // The fix for package T. Same permission jail, same flags, inside a mount namespace: the file
+    // is not forbidden, it is absent. Filesystem only, so "no network" stays a property of Deno's
+    // flags rather than of `--unshare-net`, which is the flag that fails on hosted CI.
+    const secret = await Deno.makeTempDir({ prefix: "SECRET-" });
+    const tree = await Deno.makeTempDir({ prefix: "tree-" });
+    try {
+      await Deno.writeTextFile(`${secret}/kek.json`, JSON.stringify({ kek: "BLOB-KEY" }));
+      const src =
+        `try { const m = await import("file://${secret}/kek.json", { with: { type: "json" } }); console.log("REACHED " + JSON.stringify(m.default)); }
+         catch (e) { console.log("blocked"); }
+         try { await fetch("http://127.0.0.1:1/"); console.log("NET"); } catch { console.log("no net"); }`;
+
+      const open = await runCode(src, { readRoots: [tree], cwd: tree, timeoutMs: 30_000 });
+      assertStringIncludes(open.stdout, "REACHED", "the unconfined jail should still be open; the finding changed");
+
+      const shut = await runCode(src, { readRoots: [tree], cwd: tree, confine: "bubblewrap", timeoutMs: 30_000 });
+      assertStringIncludes(shut.stdout, "blocked", `the confiner did not hold: ${shut.stdout} ${shut.stderr.slice(0, 200)}`);
+      // Net is still denied, by the permission model rather than by a namespace.
+      assertStringIncludes(shut.stdout, "no net");
+
+      // The record distinguishes the two, and names WHAT confines it: the confiners are not
+      // equivalent, so a policy that cares binds this rather than the boolean.
+      assertEquals(denoSandbox({}).confiner, "none");
+      assertEquals(denoSandbox({}).importsConfined, false);
+      assertEquals(denoSandbox({ confine: "bubblewrap" }).confiner, "bubblewrap");
+      assertEquals(denoSandbox({ confine: "bubblewrap" }).importsConfined, true);
+    } finally {
+      await Deno.remove(secret, { recursive: true });
+      await Deno.remove(tree, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name: "sandbox: a confined Deno jail is PROBED in JavaScript, not in the backend's language",
+  ...needsBwrap,
+  async fn() {
+    // The trap this phase existed to clear. The probe used to pick its language from `isolation`,
+    // so anything bubblewrap-shaped was probed in Python. A Deno jail under a mount namespace is
+    // the first spec where backend and language differ: probed in Python it would run nothing,
+    // find nothing, and report the jail verified.
+    const tree = await Deno.makeTempDir({ prefix: "tree-" });
+    try {
+      const spec = denoSandbox({ confine: "bubblewrap", readRoots: [tree] });
+      const results = await probeSandbox(spec, { readRoots: [tree], cwd: tree, timeoutMs: 30_000, networkTarget: "127.0.0.1:1" });
+      const byClaim = new Map(results.map((r) => [r.claim, r]));
+
+      // It claims confined imports, so the probe must TEST that claim and it must hold.
+      const imports = byClaim.get("imports");
+      assert(imports, `the imports claim was not tested: ${JSON.stringify([...byClaim.keys()])}`);
+      assertEquals(imports.held, true, `a confined jail failed its own import probe: ${JSON.stringify(imports)}`);
+
+      // And every other claim still holds, which is what proves the probe RAN rather than skipped:
+      // a probe in the wrong language reports "did not complete" for all of them.
+      for (const [claim, r] of byClaim) {
+        assertEquals(r.held, true, `${claim}: ${JSON.stringify(r)}`);
+      }
+    } finally {
+      await Deno.remove(tree, { recursive: true });
+    }
+  },
+});

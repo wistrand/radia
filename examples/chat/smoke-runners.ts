@@ -307,10 +307,31 @@ if (!haveBwrap) {
   const specs = new Map(
     (await admin.queryAll({ kind: "sandbox" })).map((r) => [
       (r.body as { name: string }).name,
-      r.body as { isolation: string; processes: boolean; readonlyPaths?: string[] },
+      r.body as { isolation: string; processes: boolean; readonlyPaths?: string[]; confiner?: string; importsConfined?: boolean },
     ]),
   );
-  check("both jails are declared", specs.has("deno") && specs.has("python"), [...specs.keys()].sort().join(", "));
+  check(
+    "both jails are declared",
+    (specs.has("deno") || specs.has("deno-confined")) && specs.has("python"),
+    [...specs.keys()].sort().join(", "),
+  );
+
+  // WHICH JAIL RAN IS A RECORD, not a log line. This worker was launched with a bare `--allow-run`,
+  // so it can spawn `bwrap` and should have chosen the CONFINED Deno jail: the permission model
+  // does not bound module loading, and a mount namespace is what closes it. The js-only worker
+  // above could not spawn `bwrap` and fell back, which is the posture a host without it keeps.
+  const confined = specs.get("deno-confined") as { confiner?: string; importsConfined?: boolean } | undefined;
+  check(
+    "the JS jail this worker serves is CONFINED, and the record says by what",
+    confined?.confiner === "bubblewrap" && confined?.importsConfined === true,
+    `deno-confined=${JSON.stringify(confined)} (declared: ${[...specs.keys()].sort().join(", ")})`,
+  );
+  const plain = specs.get("deno") as { confiner?: string; importsConfined?: boolean } | undefined;
+  check(
+    "…and the fallback jail does not pretend to be one",
+    plain === undefined || (plain.confiner === "none" && plain.importsConfined === false),
+    JSON.stringify(plain),
+  );
   check(
     "…and they differ on what they guarantee, which is why one record cannot cover both",
     specs.get("deno")?.processes === false && specs.get("python")?.processes === true,

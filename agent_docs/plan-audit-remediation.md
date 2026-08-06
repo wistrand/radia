@@ -45,7 +45,7 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~Q~~ | ~~Designed features unreachable~~     | ~~P2~~   | **CLOSED 2026-08-04**                 |
 | ~~R~~ | ~~Dead taint parameter; half-tested guard~~ | ~~P2~~ | **CLOSED 2026-08-04**                 |
 | ~~S~~ | ~~Round-two reports, re-derived~~     | ~~P1/P2~~ | **CLOSED 2026-08-04** (11 of 12 reproduced) |
-| **T** | **Module loading escapes the Deno jail's read permission** | **P1** | **OPEN** (documented + probed, not closed) |
+| **T** | **Module loading escapes the Deno jail's read permission** | **P1** | **OPEN on macOS/Windows; CLOSED on Linux 2026-08-06** |
 
 Every package is closed (A–S); **T is open**. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and

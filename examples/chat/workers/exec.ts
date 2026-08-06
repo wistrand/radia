@@ -509,13 +509,37 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
 // A backend that fails is not served, and its tool is never published: the model cannot call what
 // nobody advertises. On a host without bwrap that means Python is simply absent, which is the
 // honest outcome rather than a tool that fails on first use.
+/** The confiner in force for every run this worker performs, decided once at boot. */
+let confine: "bubblewrap" | undefined;
+
 {
-  const js = denoSandbox({ name: "deno", readRoots, timeoutMs });
+  // PREFER THE CONFINED JAIL. The permission model does not bound module loading, so an unconfined
+  // Deno jail reads any JSON its user can read, this space's blob KEK and operator credential
+  // included (package T). A mount namespace closes it. Filesystem only: net stays denied by Deno's
+  // flags, so nothing here passes `--unshare-net`.
+  //
+  // Fall back rather than refuse. A host without bubblewrap keeps the jail it has always had and
+  // the RECORD says which one ran, which is the same posture `run_python` already takes: publish
+  // what probes clean, and never claim more than was verified.
+  const confined = denoSandbox({ name: "deno-confined", readRoots, timeoutMs, confine: "bubblewrap" });
+  const confinedFailed = await verifySandbox(confined, {
+    readRoots,
+    timeoutMs,
+    networkTarget: new URL(url).host,
+    // This worker may write to its workspace root and nowhere else, and the probe needs somewhere
+    // OUTSIDE the jail's read roots to put its canary. Without it the import claim reports
+    // unverified, the jail is refused, and confinement silently never happens.
+    ...(workspaceRoot ? { scratchDir: workspaceRoot } : {}),
+  })
+    .catch((e) => [{ claim: "backend", held: false, detail: String(e) }]);
+  if (confinedFailed.length === 0) confine = "bubblewrap";
+
+  const js = confine ? confined : denoSandbox({ name: "deno", readRoots, timeoutMs });
   // The SPACE's own address as the network probe target: this worker can already reach it (that is
   // its one `--allow-net` grant), it is always listening, and it needs no outbound connection. A
   // probe with no target reports the claim UNVERIFIED, which refuses the jail.
   const networkTarget = new URL(url).host;
-  const failed = await verifySandbox(js, { readRoots, timeoutMs, networkTarget });
+  const failed = confine ? [] : await verifySandbox(js, { readRoots, timeoutMs, networkTarget });
   if (failed.length > 0) {
     console.error(
       "exec worker: refusing to serve. The Deno jail does not match its declaration: " +
@@ -527,6 +551,13 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
   // that never lands in the registry leaves that reference dangling and "which of my sandboxes has
   // a filesystem" silently omits the default one.
   await declareSandbox(client, js);
+  console.error(
+    confine
+      ? "exec worker: JavaScript runs CONFINED (bubblewrap over the Deno jail); module loading is bounded"
+      : "exec worker: JavaScript runs UNCONFINED (no usable bubblewrap). Module loading is not bounded by " +
+        "the read permission, so any JSON this user can read is reachable from the sandbox: " +
+        `${confinedFailed.map((f) => f.claim).join(", ")}. See agent_docs/plan-jail-confinement.md`,
+  );
 
   const py = bwrapSandbox({ command: ["python3", "-"], language: "python", name: "python", timeoutMs });
   const pyFailed = await verifySandbox(py, { timeoutMs, networkTarget, bwrap: { command: ["python3", "-"], timeoutMs } })
@@ -799,7 +830,7 @@ async function runProcedure(tree: Tree, entrypoint: string, args: unknown) {
     const roots = [...tree.roots, bootDir];
     return jail === "python"
       ? await runBwrap(null, { timeoutMs, readRoots: roots, cwd: tree.root, command: ["python3", bootPath] })
-      : await runEntry(bootPath, { timeoutMs, readRoots: roots, denyRead, cwd: tree.root });
+      : await runEntry(bootPath, { timeoutMs, readRoots: roots, denyRead, cwd: tree.root, ...(confine ? { confine } : {}) });
   } finally {
     await Deno.remove(bootDir, { recursive: true }).catch(() => {});
   }
@@ -810,7 +841,7 @@ function runProgram(code: string, jail: "python" | "javascript", tree: Tree, ent
   // The tree, and ONLY the tree: a run that may write gets it for exactly the directory it was
   // given, never the workspace root shared with other calls.
   const writeRoots = tree.write && tree.root ? [tree.root] : [];
-  const opts = { timeoutMs, readRoots: tree.roots, writeRoots, cwd: tree.root };
+  const opts = { timeoutMs, readRoots: tree.roots, writeRoots, cwd: tree.root, ...(confine ? { confine } : {}) };
   // A FILE when the tree says how it is run: it carries its own extension, so a `.ts` entrypoint is
   // TypeScript without anything having to guess a dialect, and stdin stays free. A bare `code`
   // argument keeps the stdin path, because a throwaway should not have to become a file first.
@@ -1006,6 +1037,8 @@ await agentLoop(client, {
         timeoutMs,
         // This worker may write to its workspace root and nowhere else.
         ...(workspaceRoot ? { bootRoot: workspaceRoot } : {}),
+        // A rehearsal runs in the same jail a real claim would, confiner included.
+        ...(confine ? { run: { confine } } : {}),
         ...(jail === "python" ? { spec: { name: "dry", language: "python", isolation: "bubblewrap" } as never } : {}),
       });
       await captureTree(c, tree, { stdout: "", stderr: "", ok: true, exitCode: 0, timedOut: false, truncated: false, ms: 0 });

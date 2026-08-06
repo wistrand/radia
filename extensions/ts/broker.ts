@@ -145,7 +145,7 @@ export interface BrokerOptions {
   stamp?: Record<string, unknown>;
   /** Extra jail permissions. Net is never grantable here: the whole point is that the only way
    *  out is the broker. */
-  run?: Pick<RunOptions, "readRoots" | "writeRoots" | "denyRead" | "memoryMb">;
+  run?: Pick<RunOptions, "readRoots" | "writeRoots" | "denyRead" | "memoryMb" | "confine">;
   timeoutMs?: number;
   /** What a frame DOES. Defaults to performing it as the agent; a dry run swaps in a recorder, so a
    *  rehearsal and a real claim differ in this one function and in nothing else. */
@@ -336,6 +336,24 @@ async function runBrokered(
             writeRoots: opts.run?.writeRoots,
             cwd: root,
             ...(spec.network ? { unshare: ["--unshare-pid", "--unshare-ipc", "--unshare-uts"] } : {}),
+          }),
+          stdin: "piped",
+          stdout: "piped",
+          stderr: "piped",
+          clearEnv: true,
+          env: { HOME: "/tmp", PATH: "/usr/bin:/bin" },
+        }).spawn()
+        : opts.run?.confine === "bubblewrap"
+        // The jail inside a mount namespace, for the reason `RunOptions.confine` states: the
+        // permission model does not bound module loading, and this is the code path that runs
+        // model-written entrypoints against real data.
+        ? new Deno.Command("bwrap", {
+          args: bwrapArgs({
+            command: [Deno.execPath(), ...jailArgs({ ...opts.run, readRoots }, opts.run?.memoryMb ?? 256, bootPath)],
+            readRoots: [...readRoots, Deno.execPath().slice(0, Deno.execPath().lastIndexOf("/")) || "/usr/bin"],
+            ...(opts.run?.writeRoots?.length ? { writeRoots: opts.run.writeRoots } : {}),
+            cwd: root,
+            unshare: ["--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup"],
           }),
           stdin: "piped",
           stdout: "piped",

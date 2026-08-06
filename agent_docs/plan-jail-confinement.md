@@ -1,6 +1,6 @@
 # Plan: confining the filesystem, per platform
 
-> Status: phase 1 BUILT (2026-08-06); 3 and 4 researched and ready; 2 REJECTED; 5 is a posture. The defect is package
+> Status: phases 1 and 3 BUILT (2026-08-06); 4 researched and ready; 2 REJECTED; 5 is a posture. The defect is package
 > T in [plan-audit-remediation.md](plan-audit-remediation.md); this is the plan to close it.
 > Everything below marked "measured" was run against the real jail on Linux, except phase 4:
 > `sandbox-exec` was verified on a real Mac 2026-08-06 (macOS 26.4.1, Deno 2.9.5, arm64). Read
@@ -131,9 +131,26 @@ JSON on that machine readable, which is a better-looking report rather than a sa
 Windows answer is the record saying `importsConfined: false`, and not running untrusted code on a
 host where that matters.
 
-**3. Filesystem-only bubblewrap on Linux.** A `confine` option on `denoSandbox`, the split above,
-and the probe taught to test a JS jail under a non-JS-implying backend. CI will say whether the
-runner can use it, which is the question today's backend answers with "no".
+**3. BUILT (2026-08-06): filesystem-only bubblewrap on Linux.** `RunOptions.confine` wraps the
+unchanged permission jail in a mount namespace (`sandbox.ts`), `SandboxSpec.confiner` records which
+one bounds it, and the chat PREFERS the confined jail, falling back with the record naming what
+actually ran. The broker takes it through `BrokerOptions.run.confine`, so a workspace agent's
+entrypoint is confined on the same terms.
+The probe trap is cleared: language now follows `spec.language`, spawn follows the backend, and an
+unnamed language still defaults to the backend's runtime so existing bubblewrap specs keep their
+Python probes. An existing guard caught the first attempt at that rule, which had turned
+`language: "unknown"` into a JavaScript probe fed to a Python interpreter.
+Three cases in `extensions/conformance/workspace.test.ts` (the confiner holds while net stays denied
+by Deno's flags; a confined jail is probed in JavaScript and every claim holds; the records differ
+and say which confiner), plus two in `smoke-runners.ts` asserting the chat serves the confined jail
+and that the fallback does not pretend to be one.
+
+**What building it taught, and it is the third time this session:** a component that needs a
+temporary file cannot assume the system temp directory. The import probe writes a canary, the chat's
+exec worker holds `--allow-write=<workspace root>` and nothing else, so the probe could not write,
+correctly reported the claim UNVERIFIED, and confinement silently never happened. The failure was
+right and the cause was invisible; `probeSandbox` takes a `scratchDir` now. The same shape produced
+`bootRoot` in the broker and the empty-`--workspace-root` bug in `openTree`.
 
 **4. `sandbox-exec` on macOS.** VERIFIED on a real Mac (macOS 26.4.1, Deno 2.9.5, arm64): the
 module-loading hole reproduces there, and a filesystem-only SBPL profile closes it while
@@ -172,10 +189,10 @@ Traps for the implementer, all hit during verification:
 
 ## Open questions
 
-1. **Does filesystem-only bwrap actually work on the CI runner?** Measured locally, reasoned about
-   for CI. The AppArmor failure was specific to configuring loopback inside a new net namespace, and
-   this variant never creates one. CI prints whether bubblewrap coverage is on; phase 3 turns that
-   into an answer.
+1. **Does filesystem-only bwrap actually work on the CI runner?** STILL OPEN, and now answerable:
+   phase 3 is built and its cases skip where bubblewrap is unusable, so the next CI run reports it.
+   The reasoning is unchanged (the AppArmor failure was specific to configuring loopback inside a
+   new net namespace, and this variant never creates one), but reasoning is not a measurement.
 2. **ANSWERED (2026-08-06): `sandbox-exec` works.** Verified on macOS 26.4.1; see phase 4 for the
    profile, the measurement and the traps. The maintainability worry is largely retired by
    `(import "dyld-support.sb")`, which moves the version-sensitive part onto Apple.

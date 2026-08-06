@@ -61,6 +61,20 @@ export interface RunOptions {
    *  is the posture every run had until workspaces: the only reason to grant this is a tree whose
    *  changes are about to be captured, and it should name that tree and nothing else. */
   writeRoots?: string[];
+  /**
+   * Wrap the jail in a filesystem CONFINER.
+   *
+   * The permission model still runs the code and still denies net, env, run, ffi and write. This
+   * bounds only what the process can SEE, which is the one channel permissions do not cover:
+   * module loading ignores `--allow-read` and `--deny-read` entirely
+   * (plan-jail-confinement.md). A mount namespace closes it by making the file absent rather than
+   * forbidden.
+   *
+   * Filesystem ONLY, deliberately: net is left to Deno's flags, so the confiner never passes
+   * `--unshare-net`. That is the flag which fails on hosted CI, and leaving it out keeps "no
+   * network" safe-by-absence instead of moving it to safe-by-presence.
+   */
+  confine?: "bubblewrap";
 }
 
 export interface RunResult {
@@ -164,9 +178,32 @@ function spawnDeno(entry: string, opts: RunOptions, memoryMb: number): Deno.Chil
   // insecure, which is the confusing way round. The second is the one to keep: a jail must not
   // resolve its own interpreter through a search path, or the flags below are enforced by
   // whichever binary that path happens to find.
+  const args = jailArgs(opts, memoryMb, entry);
+  if (opts.confine === "bubblewrap") {
+    // The jail, unchanged, inside a mount namespace. Deno's own directory has to be bound or the
+    // interpreter is not there to start; everything else the program may read is already in
+    // `readRoots`, and anything not bound simply does not exist.
+    const denoDir = Deno.execPath().slice(0, Deno.execPath().lastIndexOf("/")) || "/usr/bin";
+    return new Deno.Command("bwrap", {
+      args: bwrapArgs({
+        command: [Deno.execPath(), ...args],
+        readRoots: [...(opts.readRoots ?? []), denoDir],
+        ...(opts.writeRoots?.length ? { writeRoots: opts.writeRoots } : {}),
+        ...(opts.cwd ? { cwd: opts.cwd } : {}),
+        // Everything except net, which Deno already denies. Unsharing net is what breaks on hosted
+        // CI, and it would buy nothing here.
+        unshare: ["--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup"],
+      }),
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+      clearEnv: true,
+      env: { HOME: "/tmp", PATH: "/usr/bin:/bin" },
+    }).spawn();
+  }
   return new Deno.Command(Deno.execPath(), {
     ...(opts.cwd ? { cwd: opts.cwd } : {}),
-    args: jailArgs(opts, memoryMb, entry),
+    args,
 
     // Nothing else is granted: net, env, run, ffi and sys are all denied, and so is write unless
     // the caller named a workspace directory above.
@@ -311,6 +348,19 @@ export interface SandboxSpec {
    * guarantee.
    */
   importsConfined?: boolean;
+  /**
+   * What bounds the filesystem, which is a DIFFERENT question from `isolation`.
+   *
+   * `isolation` says which permission model runs the code; this says what stops it seeing files,
+   * and the two are independent: a Deno jail confined by a mount namespace is `deno-permissions`
+   * plus `bubblewrap`. Keeping them apart is what lets the permission model stay safe-by-absence
+   * while the filesystem gets a boundary it cannot express.
+   *
+   * The confiners are not equivalent, and a policy that cares should bind THIS rather than
+   * `importsConfined`: a mount namespace hides a file entirely, while a macOS SBPL profile hides
+   * its contents and still leaks existence through metadata.
+   */
+  confiner?: "none" | "bubblewrap" | "sandbox-exec";
   /** Absolute paths it may write; empty means it cannot write. */
   writablePaths: string[];
   processes: boolean;
@@ -388,6 +438,7 @@ export function bwrapSandbox(
     // A mount namespace bounds every read, module loading included: an unbound path does not exist
     // to open. Measured against the same canary the probe uses.
     importsConfined: true,
+    confiner: "bubblewrap",
     language: opts.language ?? "unknown",
     isolation: "bubblewrap",
     network: false,
@@ -409,11 +460,14 @@ export function bwrapSandbox(
 /** The jail `runCode` actually builds, for a given configuration. */
 export function denoSandbox(opts: RunOptions & { name?: string } = {}): SandboxSpec {
   const { timeoutMs, memoryMb } = { ...DEFAULTS, ...opts };
+  const confined = opts.confine === "bubblewrap";
   return {
-    name: opts.name ?? "deno",
-    // MEASURED, not assumed: `import(…, {with:{type:"json"}})` reaches any JSON the process user
-    // can read, past the roots and past `--deny-read`. Saying so is the point of the field.
-    importsConfined: false,
+    name: opts.name ?? (confined ? "deno-confined" : "deno"),
+    // MEASURED, not assumed: unconfined, `import(…, {with:{type:"json"}})` reaches any JSON the
+    // process user can read, past the roots and past `--deny-read`. A mount namespace closes it,
+    // which is the whole reason `confine` exists.
+    importsConfined: confined,
+    confiner: confined ? "bubblewrap" : "none",
     language: "javascript",
     isolation: "deno-permissions",
     network: false,
@@ -447,7 +501,16 @@ export interface ProbeResult {
  */
 export async function probeSandbox(
   spec: SandboxSpec,
-  opts: RunOptions & { bwrap?: BwrapOptions; networkTarget?: string } = {},
+  opts: RunOptions & {
+    bwrap?: BwrapOptions;
+    networkTarget?: string;
+    /** Where the import probe may write its canary. The system temp directory by default, which a
+     *  caller confined to one writable directory does not have: a worker holding
+     *  `--allow-write=<workspace root>` cannot create one anywhere else, and the claim then reports
+     *  UNVERIFIED rather than passing. Must be OUTSIDE the jail's read roots, or a confined jail
+     *  would be able to read it and fail its own probe. */
+    scratchDir?: string;
+  } = {},
 ): Promise<ProbeResult[]> {
   // The escape attempts, once per backend, because a probe written in the wrong language proves
   // nothing. Each is a real operation, and each PASSES only when it fails inside the jail.
@@ -474,10 +537,23 @@ export async function probeSandbox(
     // writable directory, and a prober that needs a temp file cannot run there.
     imports: `open("/etc/hostname").read()`,
   };
+  // THE LANGUAGE OF THE PROBE FOLLOWS THE SPEC'S LANGUAGE, and the SPAWN follows its backend. These
+  // used to be one decision (`isolation === "bubblewrap"` meant Python), which was the
+  // backend/language conflation design-execution.md warns about and which held only while every
+  // bubblewrap jail happened to run Python. A Deno jail confined by a mount namespace is the first
+  // spec where they differ: probing it in Python would run no probe at all and report a jail as
+  // verified.
   const bwrap = spec.isolation === "bubblewrap";
-  const src = bwrap ? py : js;
+  // The language, with the BACKEND's default when the spec does not name one: a bubblewrap jail
+  // runs `spec.runtime` (python3 unless told otherwise), so a spec left at `language: "unknown"`
+  // still gets Python probes and keeps working. What changed is that an explicit language WINS, so
+  // a JavaScript jail is probed in JavaScript wherever it runs. Probing it in the other language is
+  // not a wrong answer, it is NO answer: the program is a syntax error, the probe never completes,
+  // and the claim reports unverified.
+  const python = spec.language === "python" || (bwrap && spec.language !== "javascript");
+  const src = python ? py : js;
   const wrap = (body: string) =>
-    bwrap
+    python
       ? `try:\n    ${body}\n    print("ESCAPED")\nexcept Exception:\n    print("held")\n`
       : `try { ${body}; console.log("ESCAPED") } catch { console.log("held") }`;
 
@@ -506,9 +582,9 @@ export async function probeSandbox(
   let canary: string | undefined;
   let canaryDir: string | undefined;
   let canaryProblem: string | undefined;
-  if (!bwrap && attempts.some((a) => a.claim === "imports" && a.onlyIf)) {
+  if (!python && attempts.some((a) => a.claim === "imports" && a.onlyIf)) {
     try {
-      canaryDir = await Deno.makeTempDir({ prefix: "radia-canary-" });
+      canaryDir = await Deno.makeTempDir({ dir: opts.scratchDir || undefined, prefix: "radia-canary-" });
       canary = `${canaryDir}/canary.json`;
       await Deno.writeTextFile(canary, JSON.stringify({ reached: true }));
     } catch (e) {
@@ -551,11 +627,17 @@ export async function probeSandbox(
     const program = wrap(src[a.claim].replace("__CANARY__", canary ?? "/nonexistent"));
     const r = bwrap
       ? await runBwrap(program, {
-        command: ["python3", "-"],
+        command: [spec.runtime || "python3", "-"],
         ...(opts.bwrap ?? {}),
         timeoutMs: opts.timeoutMs ?? PROBE_TIMEOUT_MS,
       })
-      : await runCode(program, { ...opts, timeoutMs: opts.timeoutMs ?? PROBE_TIMEOUT_MS });
+      // `confine` carried from the SPEC, so the probe runs in the jail the record describes rather
+      // than in an unconfined one that would pass for it.
+      : await runCode(program, {
+        ...opts,
+        ...(spec.confiner === "bubblewrap" ? { confine: "bubblewrap" as const } : {}),
+        timeoutMs: opts.timeoutMs ?? PROBE_TIMEOUT_MS,
+      });
 
     // THREE outcomes, and reading them as two was a fail-open bug. A denied operation is caught and
     // reports "held"; an escape reports "ESCAPED"; and a probe that never finished — a cold
