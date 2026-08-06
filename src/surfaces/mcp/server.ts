@@ -5,7 +5,7 @@
 //
 // 1. **Credentials stay outside the model context.** The adapter resolves a credential itself
 //    (src/credentials.ts) and attaches it to every request: the OBSERVER by default (ops reads
-//    only, plan-ops-tiers.md), `RADIA_TOKEN` as the explicit override, the operator token only
+//    only, architecture-ops-tiers.md), `RADIA_TOKEN` as the explicit override, the operator token only
 //    as a legacy fallback. No token appears in a tool schema, a tool result, or an error, so a
 //    model driving this cannot read, log, or leak the credential it is acting under.
 //
@@ -48,7 +48,7 @@ interface Claim {
 
 export async function runMcp(argv: string[]): Promise<void> {
   const base = flag(argv, "--url") ?? defaultBase();
-  // The OBSERVER is the default (plan-ops-tiers.md phase 5): the model behind this adapter gets
+  // The OBSERVER is the default (architecture-ops-tiers.md phase 5): the model behind this adapter gets
   // unscoped ops READS and nothing else, so it can inspect the space and cannot write grants,
   // coordinate ungranted, or destroy anything. `RADIA_TOKEN` stays the explicit override for a
   // caller that WANTS a differently-scoped session (a login, a worker run, or the operator);

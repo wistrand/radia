@@ -95,7 +95,7 @@ interface Ctx {
   token: boolean;
 }
 
-/** Verbs that only READ the ops plane ride the OBSERVER credential when one exists (plan-ops-tiers.md
+/** Verbs that only READ the ops plane ride the OBSERVER credential when one exists (architecture-ops-tiers.md
  *  phase 5): the operator token stays for coordination verbs and everything destructive, so a
  *  routine `radia doctor` is not a process holding the whole operator bit. An explicit
  *  `RADIA_TOKEN` still wins for every verb (resolveToken precedence). */

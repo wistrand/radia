@@ -596,7 +596,7 @@ async function loadHealth() {
       subject: who.data.subject,
       privileged: !!who.data.privileged,
       kinds: who.data.kinds || [],
-      // Ops powers (plan-ops-tiers.md): `observe` opens the plane's READS unscoped, so "scoped ⇒
+      // Ops powers (architecture-ops-tiers.md): `observe` opens the plane's READS unscoped, so "scoped ⇒
       // the ops plane will 403" stopped being true and this copy must not keep saying it.
       powers: who.data.opsPowers || [],
     }

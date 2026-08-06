@@ -9,7 +9,8 @@ digest as the identity of a PRINCIPAL rather than of a document, promotion as a 
 pinned to that digest, and a generic host that runs any binding under the hosted agent's own run
 token. Designed, nothing built, and it opens with the three enforcement gaps its own review found.
 
-> **Status: Phases 0-11 DONE.** Phase 11 (serving a tree) was built earlier and VERIFIED on
+> **Status: Phases 0-12 DONE** (12 is `git clone` over HTTP, `radia git-serve`). Phase 11
+> (serving a tree) was built earlier and VERIFIED on
 > 2026-08-04: 11.0 decided (single-process capabilities), 11.1 and 11.2 shipped
 > (`Space.mintPathCapability`, `POST /v0/capabilities`, `GET /v0/w/<cap>/<path>` on the isolated
 > origin, media types), 11.3 is deliberately SNAPSHOT-only (the name-following half is the one that

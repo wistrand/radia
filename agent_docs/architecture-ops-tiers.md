@@ -1,22 +1,24 @@
-# Plan: ops-plane tiers (powers as grant records)
+# Ops-plane tiers: powers as grant records (architecture)
 
-> Status: ALL PHASES BUILT (2026-08-06): the `ops_grant` kind, the five powers, the three-way
-> gate, reporting through `effectivePermissions`, the supervisor demotion, and the observer
-> credential the MCP adapter defaults to. Decided: ops powers are RECORDS (a
-> reserved `ops_grant` kind) assigned by config operators. Rejected: a second config list (breeds
-> a third, and dodges "express it through the substrate") and discipline-only (`radia login` for
-> daily work; already possible, structurally weak). The powers being split are named in
+> Status: BUILT (2026-08-06), all five phases: the `ops_grant` kind, the five powers, the
+> three-way gate, reporting through `effectivePermissions`, the supervisor demotion, and the
+> observer credential the MCP adapter defaults to. Source: `OPS_GRANT` + `validateOpsGrantDef`
+> (`src/core/kinds.ts`), `Space.opsPowers` (`src/core/space.ts`), `requiredOpsPower` and the gate
+> (`src/server/http.ts`), `provisionObserver` (`src/credentials.ts`). Decided: ops powers are
+> RECORDS assigned by config operators. Rejected: a second config list (breeds a third, and dodges
+> "express it through the substrate") and discipline-only (`radia login` for daily work; already
+> possible, structurally weak). The powers being split are named in
 > [design-auth.md](design-auth.md) "The operator bit: a power taxonomy". Read
 > [gotchas.md](gotchas.md#grants-scopes-and-narrowed-answers) before touching enforcement.
 
-## The problem
+## The problem it solves
 
-`Space.isPrivileged` is one bit and the deployment default hands it out ambiently: the
+`Space.isPrivileged` was one bit, and the deployment default handed it out ambiently: the
 auto-provisioned credential is read by the CLI, the console and the MCP adapter, so "can run
 `radia stats`" and "can shred payloads, clear taint, truncate the audit log and mint identities"
-are the same authorization. Between self-scoped reads (`opsScope`) and everything there is
+were the same authorization. Between self-scoped reads (`opsScope`) and everything there was
 nothing, so the common middle roles (a dashboard, an auditor, an LLM debugging a space, an
-on-call remediator) all get the top tier.
+on-call remediator) all got the top tier.
 
 ## Decision: powers are grant records
 
@@ -61,25 +63,38 @@ or query records; that stays kind-scoped ordinary grants.
 
 ## Enforcement
 
-One place: the ops gate in `src/server/http.ts` becomes a three-way instead of a binary.
-Privileged passes as today; otherwise the gate resolves the caller's `ops_grant` operations
+One place: the ops gate in `src/server/http.ts`, a three-way instead of a binary.
+
+```mermaid
+flowchart TB
+    R["request to /v0/ops/*"] --> P{"privileged?<br/>ctx.operators or the space itself"}
+    P -->|yes| A["allowed: full tier"]
+    P -->|no| G{"ops_grant covers<br/>this route's power?"}
+    G -->|"readRegistry to exhaustion<br/>complete: false denies"| G
+    G -->|yes| A
+    G -->|no| S{"self-scoped read?<br/>opsScope: own records, reads only"}
+    S -->|yes| A
+    S -->|no| D["403, naming the MISSING POWER"]
+```
+
+Privileged passes as before; otherwise the gate resolves the caller's `ops_grant` operations
 (`readRegistry` to exhaustion; `complete: false` denies) and matches the route against the table
 above; otherwise the existing `opsScope` self-scope path runs unchanged (it stays the tier below
 `observe`: kind-scoped, own records, reads only). A refusal names the missing power in the 403
 detail, because "forbidden" alone sends the caller to request a kind grant that cannot help,
 which is the exhaustion loop the events endpoint's `withheldNote` already documents.
 
-Reporting lands BEFORE enforcement: `effectivePermissions` / `GET /v0/ops/permissions` carry the
-resolved powers first, so every later plant can assert promise == enforcement through the same
-surface an operator would check.
+Reporting landed BEFORE enforcement: `effectivePermissions` / `GET /v0/ops/permissions` carry the
+resolved powers first, so every plant asserts promise == enforcement through the same surface an
+operator would check.
 
-## The privileged set after phase 5 (BUILT; decisions recorded)
+## The privileged set today
 
 - `ctx.operators` and the space's in-process identity: unchanged, full tier.
-- The supervisor: demoted out of `isPrivileged`. DECIDED kept set: `grant`/`signal` puts only
+- The supervisor: demoted out of `isPrivileged`. Kept set: `grant`/`signal` puts only
   (the carve-out in `Space.authorize`); powers arrive like anyone's, as `ops_grant` records an
   operator assigns. It lost purge, declassify, minting, `ops_grant`/`agent_*` writes and the
-  coordination bypass — and GAINED bootability: it was fully privileged AND unmintable (a
+  coordination bypass, and GAINED bootability: it was fully privileged AND unmintable (a
   definition may not name a privileged principal), a god role nobody could authenticate as. Its
   grant-writes stay escalation-adjacent by design; the difference from the bit is that each one
   is a record in the audit trail.
@@ -89,35 +104,36 @@ surface an operator would check.
   MINT, and two metadata `query` grants carried on the definition itself: `agent_run` (a run
   principal is `run:<ulid>` and carries no agent name, so without this the OTLP exporter's
   services were raw run ids) and `kind_def` (which kinds are reference data). Reads only; an
-  observer from before these grants upgrades by `radia revoke agent:local-observer` + restart. DECIDED: `radia
-  mcp` defaults to it (`RADIA_TOKEN` overrides; the operator token is only the fallback for a
-  pre-observer file), so coordination through MCP 403s until an operator grants kinds — the
+  observer from before these grants upgrades by `radia revoke agent:local-observer` + restart.
+  `radia mcp` defaults to it (`RADIA_TOKEN` overrides; the operator token is only the fallback for
+  a pre-observer file), so coordination through MCP 403s until an operator grants kinds: the
   chat's `grant_request` discipline, made the default posture. The CLI's read-only verbs
   (`OBSERVER_VERBS` in `cli.ts`) ride it too; coordination and destructive verbs keep the
   operator token.
 
-## Build order
+## How it was built
 
-1. **Taxonomy** in design-auth.md: DONE.
-2. **The kind** — BUILT: `OPS_GRANT` + `validateOpsGrantDef` (`core/kinds.ts`, vocabulary closed
+Phase numbers are kept because other docs cite them.
+
+1. **Taxonomy** in design-auth.md.
+2. **The kind**: `OPS_GRANT` + `validateOpsGrantDef` (`core/kinds.ts`, vocabulary closed
    at write), `opsGrantKey` (`sdk/ts/registry.ts`), `Space.opsPowers` (fail-closed on an
    incomplete view), the privileged-principal refusal in `validateReservedBody`, `NEVER_COMPACT`
    membership, `opsPowers` on `effectivePermissions`. Plants: `suites/auth.ts` (closed bodies,
    union + retire, privileged short-circuit), `suites/gc.ts` (compaction refusal).
-3. **`observe`** at the gate — BUILT: the three-way in `http.ts` (`requiredOpsPower` + the gc
+3. **`observe` at the gate**: the three-way in `http.ts` (`requiredOpsPower` + the gc
    either/or), self-scope path untouched.
-4. **The write half** — BUILT: `remediate`/`sweep`/`declassify`/`purge` per route; the live/dry
+4. **The write half**: `remediate`/`sweep`/`declassify`/`purge` per route; the live/dry
    gc split decided in `handleGc` where the body is parsed. Plants for 3+4:
    `http.test.ts` "each ops power opens exactly its verbs": the observe read table,
    refusals naming the power, declassify-cannot-shred and the reverse, sweep-opens-no-reads, no
    grant/ops_grant writes below full, no coordination bypass, retire-closes-next-request, and
    the permissions report equal to what the gate resolved.
-5. **Defaults** — BUILT: the supervisor demotion (`isPrivileged` shrinks; the `grant`/`signal`
+5. **Defaults**: the supervisor demotion (`isPrivileged` shrinks; the `grant`/`signal`
    carve-out in `authorize`; plants in `suites/auth.ts` incl. "the demoted supervisor is a usable
    role") and the observer credential (`main.ts` provisioning, `#observer` in `credentials.ts`,
    the MCP default in `mcp/server.ts`, `OBSERVER_VERBS` in `cli.ts`; pinned by the source-read
-   test in `defaults.test.ts`, like the `--auth` default). CLAUDE.md invariant and design-auth
-   updated in the same change.
+   test in `defaults.test.ts`, like the `--auth` default).
 
 ## Non-goals
 
@@ -129,11 +145,13 @@ surface an operator would check.
 ## Risks
 
 - **Promise vs. enforcement drift** is the named history of every grant defect here, which is why
-  phase 2 ships reporting before phase 3 ships enforcement, and why the plants assert through
+  phase 2 shipped reporting before phase 3 shipped enforcement, and why the plants assert through
   `GET /v0/ops/permissions` rather than only through the gate.
 - **Additive semantics**: `ops_grant` entries union like grants; retiring one entry must not
   resurrect an older same-content one (the `activeSet` tombstone rule; a planted regression, as
-  compaction's was).
-- **Pins that move** (all moved with the build): `defaults.test.ts`, `http.test.ts` gate cases,
-  `suites/selfscope.ts`, `suites/auth.ts`, the OpenAPI ops-plane descriptions (now power-worded),
-  and the docs site's authorization page ("Running the space is not one job").
+  compaction's was). The observer credential is the worked example of the corollary: assign at
+  identity creation, never republish on a schedule, or a re-put outranks the tombstone once the
+  idempotency window closes.
+- **Pins that move**: `defaults.test.ts`, `http.test.ts` gate cases, `suites/selfscope.ts`,
+  `suites/auth.ts`, the OpenAPI ops-plane descriptions (power-worded), and the docs site's
+  authorization page ("Running the space is not one job").

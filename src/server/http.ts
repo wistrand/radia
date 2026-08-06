@@ -65,7 +65,7 @@ function loadVendor(name: string): string {
 const READ_ONLY_OPS =
   /^\/v0\/ops\/(stats|events|diagnostics|digest|flows|records(\/[^/]+(\/(envelope|lineage|children|graph|thread))?)?)$/;
 
-/** The ops WRITE half, each verb mapped to the power it demands (plan-ops-tiers.md). Everything
+/** The ops WRITE half, each verb mapped to the power it demands (architecture-ops-tiers.md). Everything
  *  unmapped is a read and needs `observe` (or falls to the self-scope tier). `POST /v0/ops/gc` is
  *  deliberately absent: its dry run is a read, so the live/dry split is decided in `handleGc`
  *  after the body is parsed. `POST /v0/ops/dry-run` is a read despite the method. */
@@ -326,7 +326,7 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     const asksAboutSelf = url.pathname === "/v0/ops/permissions" &&
       [principal, space.grantSubject(principal)].includes(url.searchParams.get("principal") ?? "");
 
-    // The observe-and-operate plane is a THREE-WAY gate (plan-ops-tiers.md). A privileged
+    // The observe-and-operate plane is a THREE-WAY gate (architecture-ops-tiers.md). A privileged
     // principal holds every power. Anyone else holds exactly the powers its `ops_grant` records
     // assign: `observe` opens every READ unscoped, and each write verb demands its own power
     // (`remediate`/`sweep`/`declassify`/`purge`), refused BY NAME so the caller is not sent off

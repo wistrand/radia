@@ -154,7 +154,7 @@ export function saveLogin(
 
 // ---- the observer credential, the safe default for the MCP adapter ----
 //
-// A third identity in the file (plan-ops-tiers.md phase 5): `radia dev` provisions an
+// A third identity in the file (architecture-ops-tiers.md phase 5): `radia dev` provisions an
 // `agent:local-observer` definition holding the `observe` ops power and nothing else. The MCP
 // adapter prefers it, so the model behind a harness inspects the space and cannot write grants,
 // coordinate ungranted, or destroy anything. What is stored is the DEFINITION token: mint-only,

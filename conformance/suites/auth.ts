@@ -164,7 +164,7 @@ export const authSuites: Suite[] = [
     run: async (adapter) => {
       const space = newSpace(adapter);
       assert(space.isPrivileged("human:local"), "the no-header dev identity is an operator");
-      // The supervisor is DEMOTED (plan-ops-tiers.md phase 5): grant/signal writes are its whole
+      // The supervisor is DEMOTED (architecture-ops-tiers.md phase 5): grant/signal writes are its whole
       // carve-out, and it is otherwise ordinary — no coordination bypass, no ops powers by right.
       assert(!space.isPrivileged("agent:supervisor"), "the supervisor no longer holds the operator bit");
       assert(!space.isPrivileged("agent:worker"));
@@ -718,7 +718,7 @@ export const authSuites: Suite[] = [
   {
     name: "ops_grant bodies are closed: unknown powers, empty sets and privileged principals are refused",
     run: async (adapter) => {
-      // The vocabulary is the security boundary (plan-ops-tiers.md): the identity root and the
+      // The vocabulary is the security boundary (architecture-ops-tiers.md): the identity root and the
       // coordination bypass are never powers, so an unknown word must be a write error, not a
       // grant that quietly opens nothing or, worse, something later.
       const space = newSpace(adapter);

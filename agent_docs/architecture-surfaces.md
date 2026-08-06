@@ -96,7 +96,7 @@ at `<base>#observer` (`storedObserver`/`saveObserver`): an `agent:local-observer
 mint-only and revocable, whose `ops_grant` holds `observe`, plus two metadata `query` grants on
 the definition — `agent_run` (a run principal carries no agent name; the OTLP exporter resolves
 services through these records) and `kind_def`
-([plan-ops-tiers.md](plan-ops-tiers.md) phase 5). One key for all of them
+([architecture-ops-tiers.md](architecture-ops-tiers.md) phase 5). One key for all of them
 means a login would replace the operator entry, and the CLI's remediation verbs, the chat's
 bootstrap and the MCP adapter would all start acting as whoever signed in last.
 
@@ -247,7 +247,7 @@ means "bad credential".
 `radia mcp` serves the space to an MCP-capable harness over stdio: newline-delimited JSON-RPC 2.0,
 15 tools. `server.ts` is the transport and dispatch; `tools.ts` is the tool definitions.
 
-**It runs as the OBSERVER by default** ([plan-ops-tiers.md](plan-ops-tiers.md) phase 5): the
+**It runs as the OBSERVER by default** ([architecture-ops-tiers.md](architecture-ops-tiers.md) phase 5): the
 stored `#observer` credential, holding the `observe` ops power and no coordination grants, so the
 model inspects the space and a `space_put`/`space_take` 403s until an operator grants kinds.
 `RADIA_TOKEN` overrides for a caller that wants a differently-scoped session; the operator token

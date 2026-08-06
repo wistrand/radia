@@ -165,7 +165,7 @@ One of these is enforcement and the rest are vocabulary, which the list used to 
 `agent_definition`, `agent_run`, `artifact`, `interest`, `shred`, `ops_grant`. Of those, `grant`,
 `signal`, `agent_*`, `shred` and `ops_grant` are additionally WRITE-PROTECTED, meaning an operator
 only, whatever grants say — with one carve-out: the supervisor may put `grant`/`signal`, its entire
-remaining privilege ([plan-ops-tiers.md](plan-ops-tiers.md)).
+remaining privilege ([architecture-ops-tiers.md](architecture-ops-tiers.md)).
 
 **Suggested names, which the runtime has never heard of:** `task` · `fact` / `hypothesis` ·
 `request` / `bid` / `award` (see [design-marketplace.md](design-marketplace.md)) · `result`. These

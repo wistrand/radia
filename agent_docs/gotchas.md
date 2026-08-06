@@ -779,7 +779,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   different moments in an incident. Revoke first, then stop the runs that matter.
 - **Privilege is a NAMED SET, not a name prefix, and `human:` is a namespace.** `isPrivileged`
   (`src/core/space.ts`) checks `ctx.operators` (default `["human:local"]`) and the
-  space's own identity — the supervisor is NOT in it (demoted, plan-ops-tiers.md phase 5: it keeps
+  space's own identity — the supervisor is NOT in it (demoted, architecture-ops-tiers.md phase 5: it keeps
   exactly `grant`/`signal` puts as a carve-out in `authorize` and is otherwise ordinary, which is
   also what made it mintable). It used to treat every `human:*` as an operator, which meant a space could
   not have ordinary people on it: a definition principal had to be `agent:`, so the only human

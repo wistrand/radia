@@ -229,7 +229,7 @@ export const AGENT_RUN = "agent_run";
 export const ARTIFACT = "artifact";
 export const SHRED = "shred";
 export const INTEREST = "interest";
-/** Ops-plane powers as records (plan-ops-tiers.md): `{principal, operations}` over a closed
+/** Ops-plane powers as records (architecture-ops-tiers.md): `{principal, operations}` over a closed
  *  power vocabulary, assigned by a config operator, additive, retired to revoke. */
 export const OPS_GRANT = "ops_grant";
 export const RESERVED_KINDS = [KIND_DEF, GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, ARTIFACT, INTEREST, SHRED, OPS_GRANT];

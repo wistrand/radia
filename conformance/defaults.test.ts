@@ -23,7 +23,7 @@ Deno.test("dev: --auth defaults to required", async () => {
 });
 
 Deno.test("dev: an observer credential is provisioned, and the MCP adapter defaults to it", async () => {
-  // The posture (plan-ops-tiers.md phase 5): the model behind `radia mcp` holds `observe`, not
+  // The posture (architecture-ops-tiers.md phase 5): the model behind `radia mcp` holds `observe`, not
   // the operator bit. Three literals keep it wired: dev provisions through `provisionObserver`,
   // the MCP adapter prefers the stored observer, and the CLI's read-only verbs ride it too.
   // Source-read like the --auth default above, and each half must fail alone.

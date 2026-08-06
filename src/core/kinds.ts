@@ -85,7 +85,7 @@ export const SHRED = WIRE_SHRED;
 export const INTEREST = WIRE_INTEREST;
 
 /** Reserved kind: an ops-plane power assignment (body = an OpsGrantDef). The tier between
- *  self-scoped reads and the full operator bit; see plan-ops-tiers.md and design-auth.md
+ *  self-scoped reads and the full operator bit; see architecture-ops-tiers.md and design-auth.md
  *  "The operator bit". Assigned by a config operator, additive, retired to revoke. */
 export const OPS_GRANT = WIRE_OPS_GRANT;
 

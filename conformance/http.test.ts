@@ -1172,7 +1172,7 @@ Deno.test("http: an ops events read below the horizon says where the log begins"
 });
 
 // ---------------------------------------------------------------------------
-// Ops tiers (plan-ops-tiers.md): powers as ops_grant records, the three-way gate.
+// Ops tiers (architecture-ops-tiers.md): powers as ops_grant records, the three-way gate.
 // The matrix below is the plan's plants: each power reaches exactly its verbs and
 // none of its neighbours', and nothing below the full tier holds the identity
 // root (grant/ops_grant writes) or the coordination bypass.

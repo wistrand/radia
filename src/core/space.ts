@@ -508,7 +508,7 @@ export class Space {
    * who, and everyone else is ordinary however they are named. The space's own runtime identity
    * stays privileged: it is the in-process plane that unauthenticated dev requests resolve to.
    *
-   * The SUPERVISOR is deliberately NOT here (plan-ops-tiers.md phase 5). It keeps exactly one
+   * The SUPERVISOR is deliberately NOT here (architecture-ops-tiers.md phase 5). It keeps exactly one
    * carve-out, `grant`/`signal` writes in `authorize`, and is otherwise an ordinary principal:
    * grantable ops powers, mintable definitions, no coordination bypass, no purge/declassify. It
    * held the whole bit while ALSO being unmintable (a definition may not name a privileged
@@ -539,7 +539,7 @@ export class Space {
     if (this.isPrivileged(principal)) return null;
     const subject = this.grantSubject(principal);
     if ((op === "put" || op === "take") && WRITE_PROTECTED_KINDS.has(kind)) {
-      // The supervisor's ENTIRE remaining privilege (plan-ops-tiers.md phase 5): it assigns
+      // The supervisor's ENTIRE remaining privilege (architecture-ops-tiers.md phase 5): it assigns
       // grants and writes signals, which is the role's designed purpose, and nothing else rides
       // along. Never `ops_grant` (a power-granter can grant itself powers), never `agent_*`
       // (identity), never `shred`. Its grant-writes remain escalation-adjacent by design, and
@@ -1306,7 +1306,7 @@ export class Space {
       validateGrantDef(def);
       this.checkGrantPattern(def);
     }
-    // An ops_grant IS an ops-plane power assignment (plan-ops-tiers.md). Two refusals beyond the
+    // An ops_grant IS an ops-plane power assignment (architecture-ops-tiers.md). Two refusals beyond the
     // shape check: a privileged principal already holds every power, so granting it one only
     // manufactures a record that looks load-bearing and is not; and the vocabulary is closed at
     // validate (identity and grant writes are never a power).
@@ -1530,7 +1530,7 @@ export class Space {
    * the same agent's earlier work. Throws `forbidden` when nothing is scoped to it.
    */
   /**
-   * The ops-plane powers a principal holds (plan-ops-tiers.md): the union of its active
+   * The ops-plane powers a principal holds (architecture-ops-tiers.md): the union of its active
    * `ops_grant` records' operations. Privileged principals hold every power; everyone else holds
    * exactly what an operator assigned, resolved per request and never cached (the same rule as
    * credentials: a revocation is discovered, not remembered). FAIL-CLOSED twice over: no records

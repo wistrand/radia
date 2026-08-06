@@ -8,7 +8,7 @@ Origin: outline §8.
 wildcard; `src/core/kinds.ts`). `Space.authorize(principal, op, kind)` enforces them and
 `Space.isPrivileged` marks operators: a principal NAMED in `SpaceContext.operators` (default
 `["human:local"]`, the no-header dev identity) or the space's own identity. The SUPERVISOR is no
-longer in that set (demoted, [plan-ops-tiers.md](plan-ops-tiers.md) phase 5): it keeps exactly
+longer in that set (demoted, [architecture-ops-tiers.md](architecture-ops-tiers.md) phase 5): it keeps exactly
 `grant`/`signal` writes as a carve-out in `authorize` and is otherwise ordinary, which also makes
 it MINTABLE (a definition may not name a privileged principal, and it no longer is one). It is a
 named set, not a name shape: `human:` is a namespace, not a privilege. That was the earlier rule, and it
@@ -360,7 +360,7 @@ flowchart TD
 
 `Space.isPrivileged` is ONE bit (`ctx.operators` + the supervisor + the space's own identity), and
 that bit bundles seven separable powers. Named here so tiers can be discussed at all.
-**Powers 1–5 are now grantable individually** ([plan-ops-tiers.md](plan-ops-tiers.md), built
+**Powers 1–5 are now grantable individually** ([architecture-ops-tiers.md](architecture-ops-tiers.md), built
 2026-08-06): a reserved `ops_grant` record `{principal, operations}` over the closed vocabulary
 `observe`/`remediate`/`sweep`/`declassify`/`purge`, written only by an operator, resolved
 per-request and fail-closed (`Space.opsPowers`), enforced as a three-way gate in
@@ -659,4 +659,4 @@ Boundary signing and agent-held keys (federation-time; rationale in
 [design-observability.md](design-observability.md) and [gotchas.md](gotchas.md)) ·
 recipient-keyed encryption as a runtime feature · field-level ACLs · multi-tenancy (one
 space per team for now) · ops-plane tiers (decided and planned, not built:
-[plan-ops-tiers.md](plan-ops-tiers.md)).
+[architecture-ops-tiers.md](architecture-ops-tiers.md)).

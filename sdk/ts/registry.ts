@@ -146,7 +146,7 @@ export function grantKey(body: unknown): string | undefined {
   return JSON.stringify(["g2", g.principal, g.kind, ops, g.pattern ?? null]);
 }
 
-/** The logical identity of an ops grant (plan-ops-tiers.md): principal plus its sorted power set,
+/** The logical identity of an ops grant (architecture-ops-tiers.md): principal plus its sorted power set,
  *  so re-assigning the same powers dedups and a retraction targets exactly one entry. Same
  *  versioned-tag rule as `grantKey`: bump the tag whenever the body's shape changes. */
 export function opsGrantKey(body: unknown): string | undefined {

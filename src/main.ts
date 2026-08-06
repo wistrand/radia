@@ -155,7 +155,7 @@ async function dev(args: string[]): Promise<void> {
   const saved = saveCredential(base, { token: operatorToken, mintedAt: new Date().toISOString(), storage: storage.name });
   if (saved.ok) console.log(`radia dev: operator credential provisioned at ${saved.path} (destructive radia verbs use it)`);
   else console.log(`radia dev: could not write ${saved.path} (${saved.error}). Set RADIA_TOKEN to use the CLI`);
-  // The OBSERVER credential (plan-ops-tiers.md phase 5): an `agent:local-observer` definition
+  // The OBSERVER credential (architecture-ops-tiers.md phase 5): an `agent:local-observer` definition
   // holding the `observe` ops power. The MCP adapter and read-only CLI verbs prefer it, so a
   // model harness inspects the space without holding the operator bit; coordination through MCP
   // 403s until an operator grants kinds. The DEFINITION token is what lands on disk (mint-only,
