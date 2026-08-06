@@ -12,12 +12,12 @@
 // data waits for this phase rather than the one before it.
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { RadiaClient } from "../../sdk/ts/client.ts";
+import { RadiaClient, type RadiaRecord } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../../examples/operator.ts";
-import { brokeredInvoker, labelsForJail } from "../ts/broker.ts";
+import { brokeredInvoker, dryRunEntrypoint, labelsForJail } from "../ts/broker.ts";
 import { BINDING, declareBinding, treeCache, type TreeCache, WorkspaceHost } from "../ts/host.ts";
 import { declareExecRequest, EXEC_REQUEST, promote } from "../ts/promotion.ts";
-import { writeWorkspace } from "../ts/workspace.ts";
+import { materialize, writeWorkspace } from "../ts/workspace.ts";
 import { declareSandbox } from "../ts/sandbox-registry.ts";
 
 const PORT = 7823;
@@ -457,5 +457,90 @@ Deno.test("[broker] an entrypoint that floods STDERR is capped too", async () =>
     assertEquals(outcomes.map((o) => o.status), ["failed"]);
     const failed = outcomes[0] as { error: string };
     assertStringIncludes(failed.error, "done flooding");
+  });
+});
+
+Deno.test("[broker] a DRY RUN rehearses the real thing and writes nothing", async () => {
+  await withSpace(async ({ operator, hostFor }) => {
+    // Same entrypoint, run twice: once as a rehearsal, once for real. The rehearsal has to show
+    // what the real one WOULD write, including the parts the code never said, or a reviewer
+    // reading it is checking a different thing than the one that will run.
+    const entry = `
+      export default async (record, space) => {
+        await space.put({ kind: "note", body: { tag: "from-jail" } });
+        return { kind: "exec_result", body: { tag: "job:" + record.body.job } };
+      };
+    `;
+    const host = await hostFor(entry, { stamp: { compartment: "trial" }, labels: ["file"] });
+
+    // The tree the host would run, materialised the same way.
+    const ws = await operator.query({ kind: "workspace" }, 1, { dir: "desc" });
+    const root = await Deno.makeTempDir({ prefix: "dry-" });
+    try {
+      // deno-lint-ignore no-explicit-any
+      await materialize(operator, ws[0].body as any, root);
+      const record = { id: "01TESTRECORD", kind: EXEC_REQUEST, body: { job: "rehearsal" } } as unknown as RadiaRecord;
+
+      const dry = await dryRunEntrypoint({
+        root,
+        entrypoint: "main.ts",
+        record,
+        stamp: { compartment: "trial" },
+        labels: ["file"],
+      });
+
+      assertEquals(dry.result.kind, "exec_result");
+      assertEquals((dry.result.body as { tag: string }).tag, "job:rehearsal");
+      assertEquals(dry.proposals.length, 1);
+      const p = dry.proposals[0];
+      assertEquals(p.kind, "note");
+      // The host's contributions, present in the rehearsal because they are the point.
+      assertEquals((p.body as { compartment?: string }).compartment, "trial", "the stamp the code never wrote");
+      assertEquals(p.parentIds, ["01TESTRECORD"], "the claimed record, which the code cannot omit");
+      assertEquals(p.taint, ["file"], "the jail's labels, which the code cannot withhold");
+      assertEquals(p.idempotencyKey, "broker:01TESTRECORD:1");
+
+      // NOTHING was written. This is the assertion the whole feature rests on.
+      assertEquals((await operator.query({ kind: "note" }, 10)).length, 0, "a dry run must not write");
+      assertEquals((await operator.query({ kind: "exec_result" }, 10)).length, 0);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+
+    // …and the real claim, for the same code, does write, with the same shape.
+    const outcomes = await host.tick();
+    assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
+    const notes = await operator.query({ kind: "note" }, 10, { dir: "desc" });
+    assertEquals(notes.length, 1);
+    assertEquals((notes[0].body as { compartment?: string }).compartment, "trial");
+  });
+});
+
+Deno.test("[broker] a dry run refuses reads rather than borrowing a credential", async () => {
+  await withSpace(async ({ operator, hostFor }) => {
+    // The rehearsal has no principal of its own. Answering a query from whatever client is nearby
+    // would hand jailed code that principal's reach, which is the failure the broker exists to
+    // prevent, reintroduced by the thing meant to test it.
+    await hostFor(`
+      export default async (record, space) => {
+        let err = "none";
+        try { await space.query({ kind: "note" }); } catch (e) { err = e.message; }
+        return { kind: "exec_result", body: { err } };
+      };
+    `);
+    const ws = await operator.query({ kind: "workspace" }, 1, { dir: "desc" });
+    const root = await Deno.makeTempDir({ prefix: "dry-read-" });
+    try {
+      // deno-lint-ignore no-explicit-any
+      await materialize(operator, ws[0].body as any, root);
+      const dry = await dryRunEntrypoint({
+        root,
+        entrypoint: "main.ts",
+        record: { id: "01TESTRECORD", kind: EXEC_REQUEST, body: {} } as unknown as RadiaRecord,
+      });
+      assertStringIncludes((dry.result.body as { err: string }).err, "does not read the space");
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
   });
 });

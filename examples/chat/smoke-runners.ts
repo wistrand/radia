@@ -323,6 +323,48 @@ if (!haveBwrap) {
   } catch { /* already gone */ }
 }
 
+// ── rehearsing an AGENT entrypoint from the chat ─────────────────────────────────────────────────
+//
+// The gap this closes: the chat's jail has no broker, so an entrypoint written as
+// `default(record, space)` could only ever be tested against a hand-written stub of `space`, which
+// is exactly where "passes in chat, fails in prod" lives. A rehearsal runs the real shim, the real
+// frames and the real jail, and records what would have been written instead of writing it.
+{
+  const js = await startWorker("rehearsal", "--allow-run=deno");
+  await writeWorkspace(admin, {
+    name: "agentish",
+    owner: "agent:chat-user",
+    conversationId: js.conv,
+    files: {
+      "main.ts": "export default async (record: any, space: any) => {\n" +
+        "  await space.put({ kind: 'note', body: { seen: record.body.job } });\n" +
+        "  return { kind: 'exec_result', body: { tag: 'did:' + record.body.job } };\n" +
+        "};\n",
+    },
+    entrypoint: "main.ts",
+  });
+
+  const dry = await call(js.conv, "run_javascript", { workspace: "agentish", record: { job: "alpha" } });
+  const out = dry.output as {
+    rehearsal?: boolean;
+    result?: { kind: string; body: { tag?: string } };
+    wouldWrite?: { kind: string; body: Record<string, unknown>; parentIds: string[] }[];
+  };
+  check("an entrypoint can be rehearsed as an agent would run it", out.rehearsal === true && out.result?.kind === "exec_result", JSON.stringify(out).slice(0, 120));
+  check("…and it is TypeScript, called with the record", out.result?.body?.tag === "did:alpha", JSON.stringify(out.result));
+  check("…and what it would WRITE comes back", out.wouldWrite?.length === 1 && out.wouldWrite[0].kind === "note", JSON.stringify(out.wouldWrite));
+  check(
+    "…carrying the claimed record as a parent, which the code never wrote",
+    (out.wouldWrite?.[0].parentIds ?? []).length === 1,
+    JSON.stringify(out.wouldWrite?.[0].parentIds),
+  );
+  // The assertion the feature rests on: a rehearsal is not a run.
+  const notes = await admin.query({ kind: "note" }, 10);
+  check("…and NOTHING was written", notes.length === 0, `${notes.length} notes`);
+  js.proc.kill();
+  await js.proc.status;
+}
+
 space.kill();
 await space.status;
 await Deno.remove(wsRoot, { recursive: true }).catch(() => {});

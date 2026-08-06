@@ -227,3 +227,73 @@ async function withTimeout(p: Promise<void>, ms: number, what: string): Promise<
   const got = await Promise.race([p.then(() => "done" as const).catch(() => "done" as const), timer]);
   assertEquals(got, "done", what);
 }
+
+Deno.test("loop: a handler that throws is never swallowed, even with no log configured", async () => {
+  // THE DEFECT THIS PINS. `log` defaulted to a no-op and the nack path used it, so a handler that
+  // threw retried invisibly: the record was claimed, nacked, reclaimed and nacked again while
+  // nothing anywhere said why. Every caller saw the same thing, "the work never completed", which
+  // is indistinguishable from a worker that is not running at all. Three defects in one afternoon
+  // presented that way before the loop was made to speak.
+  const s = await newWorkerSpace();
+  const lines: string[] = [];
+  const err = console.error;
+  console.error = (...a: unknown[]) => lines.push(a.map(String).join(" "));
+  const stop = new AbortController();
+  try {
+    await s.space.put({ kind: "task", body: { tag: "boom" } });
+    const finished = agentLoop(s.client, {
+      name: "w",
+      patterns: [{ kind: "task" }],
+      leaseSeconds: 3,
+      signal: stop.signal,
+      // NO `log`: that is the whole point. A library may be quiet about success and must not be
+      // quiet about an exception.
+      handle: () => {
+        throw new Error("deliberate handler failure");
+      },
+    });
+    for (let i = 0; i < 100 && lines.length === 0; i++) await new Promise((r) => setTimeout(r, 50));
+    stop.abort();
+    await finished;
+  } finally {
+    console.error = err;
+    await s.close();
+  }
+  assert(lines.length > 0, "a handler exception reached nobody");
+  assert(
+    lines.some((l) => l.includes("deliberate handler failure") && l.includes("nack")),
+    `the report must name the cause and say it nacked: ${JSON.stringify(lines.slice(0, 3))}`,
+  );
+});
+
+Deno.test("loop: a configured log still receives the failure, and stderr stays clean", async () => {
+  // The other half: passing a `log` ROUTES the failure, it does not duplicate it. A worker that
+  // ships its own logging must not also spray stderr.
+  const s = await newWorkerSpace();
+  const mine: string[] = [];
+  const lines: string[] = [];
+  const err = console.error;
+  console.error = (...a: unknown[]) => lines.push(a.map(String).join(" "));
+  const stop = new AbortController();
+  try {
+    await s.space.put({ kind: "task", body: { tag: "boom" } });
+    const finished = agentLoop(s.client, {
+      name: "w",
+      patterns: [{ kind: "task" }],
+      leaseSeconds: 3,
+      signal: stop.signal,
+      log: (m) => mine.push(m),
+      handle: () => {
+        throw new Error("deliberate handler failure");
+      },
+    });
+    for (let i = 0; i < 100 && mine.length === 0; i++) await new Promise((r) => setTimeout(r, 50));
+    stop.abort();
+    await finished;
+  } finally {
+    console.error = err;
+    await s.close();
+  }
+  assert(mine.some((l) => l.includes("deliberate handler failure")), JSON.stringify(mine.slice(0, 3)));
+  assertEquals(lines, [], "a caller that gave a log must not also get stderr");
+});

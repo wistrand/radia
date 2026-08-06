@@ -55,13 +55,20 @@ const OWNER = "agent:chat-user";
 // The exec-worker, running for real: it is what judges a run, and the point of this suite is that
 // the verdict comes from the process that executed the code.
 const tokens = await bootstrap(admin, { conversationId: conv });
+const wsRoot = Deno.makeTempDirSync({ prefix: "radia-ws-" });
 const worker = new Deno.Command(Deno.execPath(), {
   args: [
     "run",
     `--allow-net=127.0.0.1:${PORT}`,
     "--allow-run=deno",
     "--allow-env=HOME",
+    // A procedure is a WORKSPACE now, so every call materialises a tree and the worker needs
+    // somewhere to put it. fleet.ts has always done this; these launchers predate the change.
+    `--allow-write=${wsRoot}`,
+    `--allow-read=${wsRoot}`,
     "examples/chat/workers/exec.ts",
+    "--workspace-root",
+    wsRoot,
     "--url",
     url,
     "--token",

@@ -210,6 +210,13 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
           owner: ctx?.owner ?? "",
           conversationId: ctx?.conversationId,
           files: contents,
+          // Carried forward when this save does not restate it: a wholesale replace should not
+          // silently drop how the project is run.
+          ...(typeof a.entrypoint === "string" && a.entrypoint.trim()
+            ? { entrypoint: a.entrypoint.trim() }
+            : prev?.entrypoint && prev.entrypoint in contents
+            ? { entrypoint: prev.entrypoint }
+            : {}),
           basedOn: prev?.id,
         });
         const paths = w.files.map((f) => f.path);
@@ -218,6 +225,7 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
           treeDigest: w.treeDigest,
           files: paths,
           unchanged: w.deduped,
+          ...(w.entrypoint ? { entrypoint: w.entrypoint } : {}),
           ...siteHint(paths),
           // A fork is REPORTED, never silently resolved. Two writers on one base both succeed and
           // both versions survive; saying so is the difference between divergence and one of them
@@ -278,7 +286,8 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
         : undefined;
       const remove = Array.isArray(a.remove) ? (a.remove as unknown[]).map(String) : undefined;
       try {
-        const r = await editWorkspace(client, { name, conversationId: ctx?.conversationId, edits, add, attach, remove });
+        const entrypoint = typeof a.entrypoint === "string" && a.entrypoint.trim() ? a.entrypoint.trim() : undefined;
+        const r = await editWorkspace(client, { name, conversationId: ctx?.conversationId, edits, add, attach, remove, entrypoint });
         const touched = new Set([...r.changed, ...r.added]);
         return {
           workspace: name,
@@ -481,6 +490,12 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
               "week. A path that already exists is refused; remove it first.",
           },
           remove: { type: "array", items: { type: "string" }, description: "Paths to delete from the tree." },
+          entrypoint: {
+            type: "string",
+            description:
+              "Set or change the file this project RUNS as. Omit to keep whatever it already " +
+              "declares. Must name a file the tree has after this edit.",
+          },
         },
         required: ["workspace"],
       },
@@ -605,6 +620,14 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
           files: {
             type: "object",
             description: "Path -> file contents. Relative paths only, e.g. {\"src/main.ts\": \"...\"}.",
+          },
+          entrypoint: {
+            type: "string",
+            description:
+              "The file this project RUNS as, e.g. 'src/main.ts'. Set it for anything meant to be " +
+              "run rather than only read: a code runner can then execute the tree with no `code` " +
+              "at all, and it is the same file an agent bound to this tree would run. Must be one " +
+              "of the paths in `files`.",
           },
         },
         required: ["name", "files"],

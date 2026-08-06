@@ -26,6 +26,16 @@ export interface LoopOptions {
    * delivery is at-least-once either way, so effects still need idempotency at their boundary.
    */
   handle: (record: RadiaRecord, client: RadiaClient, signal: AbortSignal) => Promise<PutRequest | void>;
+  /**
+   * Where the loop narrates itself. Absent means SILENT for routine trace (took, acked, fenced),
+   * which is the right default for a library.
+   *
+   * It is never silent for a FAILURE. A handler that throws, a take that errors, a watch refused
+   * and an interest that could not be published all reach `console.error` when no `log` is given,
+   * because a swallowed exception is indistinguishable from a hang: the caller sees a record that
+   * was claimed, nacked, reclaimed and nacked again, with nothing anywhere saying why. Pass a `log`
+   * to route those somewhere else; there is no way to turn them off, deliberately.
+   */
   log?: (msg: string) => void;
 }
 
@@ -35,6 +45,10 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
   const leaseSeconds = o.leaseSeconds ?? 30;
   const fallbackMs = Math.max(o.pollMs ?? 250, 1000);
   const log = o.log ?? (() => {});
+  // Failures go to the caller's `log` when it gave one, and to stderr when it did not. Never
+  // nowhere: this loop swallowed handler exceptions by default, and three separate defects in one
+  // afternoon each presented as "the tool call timed out" with an empty log.
+  const report = o.log ?? ((msg: string) => console.error(msg));
   const kinds = [...new Set(o.patterns.map((t) => t.kind))];
 
   // Keep this run's credential alive for as long as the loop runs. Run tokens are short (15 min) so
@@ -60,7 +74,7 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
     try {
       await client.publishInterest(pattern);
     } catch (e) {
-      log(`[${o.name}] could not publish interest in '${pattern.kind}': ${e}`);
+      report(`[${o.name}] could not publish interest in '${pattern.kind}': ${e}`);
       break; // one failure means no grant; stop trying for the rest
     }
   }
@@ -95,7 +109,7 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
         // can't change that. Log it loudly ONCE and stop watching; the poll fallback keeps the loop
         // correct, just without wakeups. "Silently slow" becomes "loudly wrong", so fix the grant.
         if (e instanceof RadiaClientError && e.status === 403) {
-          log(`[${o.name}] watch on '${kind}' FORBIDDEN (${e.code}): no grant to watch it; using the poll fallback. Grant this run a '${kind}' grant to get wakeups.`);
+          report(`[${o.name}] watch on '${kind}' FORBIDDEN (${e.code}): no grant to watch it; using the poll fallback. Grant this run a '${kind}' grant to get wakeups.`);
           return;
         }
         // Transient (network / server hiccup at watch creation): retry after a short backoff rather
@@ -117,7 +131,7 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
         if (claimed) break;
       }
     } catch (e) {
-      log(`[${o.name}] take error: ${e}`);
+      report(`[${o.name}] take error: ${e}`);
     }
 
     if (!claimed) {
@@ -173,7 +187,7 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
         log(`[${o.name}] ${short(claimed.record.id)} stopped on the fence: ${e}`);
       } else {
         await client.nack(claimed.lease).catch(() => {});
-        log(`[${o.name}] ${short(claimed.record.id)} -> nack: ${e}`);
+        report(`[${o.name}] ${short(claimed.record.id)} -> nack: ${e}`);
       }
     } finally {
       hb.stop();

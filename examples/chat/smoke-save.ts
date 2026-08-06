@@ -65,13 +65,20 @@ function check(name: string, ok: boolean, detail = "") {
 // comes from the exec-worker PROCESS, launched here exactly as the chat launches it.
 for (const def of SAVE_SCHEMAS) await publishCapability(admin, def);
 const tokens = await bootstrap(admin);
+const wsRoot = Deno.makeTempDirSync({ prefix: "radia-ws-" });
 const worker = new Deno.Command(Deno.execPath(), {
   args: [
     "run",
     `--allow-net=127.0.0.1:${PORT}`,
     "--allow-run=deno",
     "--allow-env=HOME",
+    // A procedure is a WORKSPACE now, so every call materialises a tree and the worker needs
+    // somewhere to put it. fleet.ts has always done this; these launchers predate the change.
+    `--allow-write=${wsRoot}`,
+    `--allow-read=${wsRoot}`,
     "examples/chat/workers/exec.ts",
+    "--workspace-root",
+    wsRoot,
     "--url",
     url,
     "--token",

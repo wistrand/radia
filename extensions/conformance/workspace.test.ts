@@ -32,7 +32,7 @@ import {
   type WorkspaceManifest,
   writeWorkspace,
 } from "../ts/workspace.ts";
-import { bwrapSandbox, denoSandbox, probeSandbox, runBwrap, runCode } from "../ts/sandbox.ts";
+import { bwrapSandbox, denoSandbox, probeSandbox, runBwrap, runCode, runEntry } from "../ts/sandbox.ts";
 import { declareSandbox, listSandboxes, readSandbox, SANDBOX_KIND, verifySandbox } from "../ts/sandbox-registry.ts";
 
 const PORT = 7815;
@@ -1564,5 +1564,111 @@ Deno.test("workspace: attaching says PERMISSION when that is the problem, not 'n
       /grant|permission/i.test(message),
       `the failure must point at the grant rather than at the id: ${message}`,
     );
+  });
+});
+
+// ── the entrypoint: a tree that says how it is run ───────────────────────────────────────────────
+
+Deno.test("workspace: a tree declares the file it runs as, and refuses one it does not contain", async () => {
+  await withSpace(async (c) => {
+    await assertRejects(
+      () =>
+        writeWorkspace(c, {
+          name: "ep-bad",
+          owner: OWNER,
+          files: { "src/main.ts": "export default () => 1;\n" },
+          entrypoint: "src/missing.ts",
+        }),
+      Error,
+      "is not a file in this workspace",
+    );
+    // Refused BEFORE the manifest: a tree whose entry points at nothing must not exist at all.
+    assertEquals(await readWorkspace(c, "ep-bad"), null);
+
+    const w = await writeWorkspace(c, {
+      name: "ep",
+      owner: OWNER,
+      files: { "src/main.ts": "export default () => 1;\n", "README.md": "hi\n" },
+      entrypoint: "src/main.ts",
+    });
+    assertEquals(w.entrypoint, "src/main.ts");
+    assertEquals((await readWorkspace(c, "ep"))?.entrypoint, "src/main.ts");
+  });
+});
+
+Deno.test("workspace: re-pointing the entrypoint is a VERSION, not a deduplicated no-op", async () => {
+  await withSpace(async (c) => {
+    const files = { "a.ts": "export default () => 'a';\n", "b.ts": "export default () => 'b';\n" };
+    const first = await writeWorkspace(c, { name: "repoint", owner: OWNER, files, entrypoint: "a.ts" });
+
+    // Same bytes, different entry. The entrypoint is deliberately outside the tree digest, so the
+    // content key and the dedupe check both have to carry it or this silently does nothing and
+    // reports success.
+    const second = await writeWorkspace(c, { name: "repoint", owner: OWNER, files, entrypoint: "b.ts", basedOn: first.id });
+    assertEquals(second.deduped, false, "changing only the entrypoint must still write a version");
+    assertEquals(second.treeDigest, first.treeDigest, "…and must NOT change the tree digest");
+    assertEquals((await readWorkspace(c, "repoint"))?.entrypoint, "b.ts");
+
+    // Identical tree AND identical entry is still a no-op, which is the property that keeps a
+    // re-save from growing the registry.
+    const again = await writeWorkspace(c, { name: "repoint", owner: OWNER, files, entrypoint: "b.ts" });
+    assertEquals(again.deduped, true);
+  });
+});
+
+Deno.test("workspace: an edit may set the entrypoint, and may not orphan it", async () => {
+  await withSpace(async (c) => {
+    await writeWorkspace(c, { name: "ep-edit", owner: OWNER, files: { "main.ts": "export default () => 1;\n", "old.ts": "export default () => 2;\n" } });
+
+    const set = await editWorkspace(c, { name: "ep-edit", entrypoint: "main.ts" });
+    assertEquals(set.files.length, 2);
+    assertEquals((await readWorkspace(c, "ep-edit"))?.entrypoint, "main.ts");
+
+    // Carried forward by an unrelated edit rather than dropped.
+    await editWorkspace(c, { name: "ep-edit", add: { "extra.ts": "export default () => 3;\n" } });
+    assertEquals((await readWorkspace(c, "ep-edit"))?.entrypoint, "main.ts");
+
+    // Removing the file the tree runs as is refused HERE, not later inside a jail as a module that
+    // is not there.
+    await assertRejects(
+      () => editWorkspace(c, { name: "ep-edit", remove: ["main.ts"] }),
+      Error,
+      "is not a file in this workspace",
+    );
+    assertEquals((await readWorkspace(c, "ep-edit"))?.entrypoint, "main.ts");
+  });
+});
+
+Deno.test("workspace: running the ENTRYPOINT does what a program on stdin cannot", async () => {
+  await withSpace(async (c) => {
+    // TypeScript, and a relative import of a sibling module. Both are the point: a stdin program
+    // carries `--ext=js`, so a type annotation in it is a SyntaxError, and this is the shape an
+    // agent's entrypoint has.
+    await writeWorkspace(c, {
+      name: "runnable",
+      owner: OWNER,
+      files: {
+        "lib/greet.ts": "export function greet(who: string): string {\n  return `hello ${who}`;\n}\n",
+        "main.ts": "import { greet } from './lib/greet.ts';\nconst who: string = 'tree';\nconsole.log(greet(who));\n",
+      },
+      entrypoint: "main.ts",
+    });
+    const manifest = await readWorkspace(c, "runnable");
+    assert(manifest);
+
+    const root = await Deno.makeTempDir({ prefix: "ep-run-" });
+    try {
+      await materialize(c, manifest, root);
+      const r = await runEntry(`${root}/${manifest.entrypoint}`, { readRoots: [root], cwd: root, timeoutMs: 20_000 });
+      assertEquals(r.stdout.trim(), "hello tree", r.stderr);
+      assert(r.ok);
+
+      // The same program through the stdin path fails on the type annotation, which is why the
+      // entrypoint has to be a file rather than a driver the caller pastes.
+      const viaStdin = await runCode("const who: string = 'x'; console.log(who);", { readRoots: [root], cwd: root, timeoutMs: 20_000 });
+      assert(!viaStdin.ok, "a stdin program is JavaScript, so this must not have run");
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
   });
 });

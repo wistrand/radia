@@ -120,6 +120,14 @@ export interface BrokerCall {
   args: Record<string, unknown>;
 }
 
+/** What the host does with a frame. The seam a dry run replaces. */
+export type Performer = (
+  call: BrokerCall,
+  ctx: InvokeContext,
+  opts: BrokerOptions,
+  nextOrdinal: () => number,
+) => Promise<BrokerReply>;
+
 /** Host to jail, one line of JSON per call. */
 export interface BrokerReply {
   id: number;
@@ -139,6 +147,13 @@ export interface BrokerOptions {
    *  out is the broker. */
   run?: Pick<RunOptions, "readRoots" | "writeRoots" | "denyRead" | "memoryMb">;
   timeoutMs?: number;
+  /** What a frame DOES. Defaults to performing it as the agent; a dry run swaps in a recorder, so a
+   *  rehearsal and a real claim differ in this one function and in nothing else. */
+  perform?: Performer;
+  /** Where the generated boot program is written. The system temp directory by default, which is
+   *  right for a standalone host and wrong for a caller confined to one writable directory: the
+   *  chat's exec worker holds write access to its workspace root and nowhere else. */
+  bootRoot?: string;
   /** Materialised trees, shared across claims and keyed by digest (phase 6). Safe because a warm
    *  entry cannot be stale: different code is a different digest. Pass one cache to a whole host
    *  so every agent on the same digest shares the fetch. */
@@ -280,15 +295,34 @@ export function brokeredInvoker(reader: RadiaClient, opts: BrokerOptions = {}): 
   return async (ctx: InvokeContext) => {
     const root = await cache.root(ctx.binding.workspaceDigest);
     const spec = await resolveSandbox(reader, ctx.binding.sandboxPattern);
+    return await runBrokered(root, ctx.binding.entrypoint, spec, ctx, opts);
+  };
+}
+
+/**
+ * Spawn the jail over a materialised tree and serve its frames.
+ *
+ * The ONE place the backend is chosen and the boot is written, shared by a real claim and by a DRY
+ * RUN. Sharing it is the point: a rehearsal that spawned its own way would be testing something
+ * other than what a host does, which is the whole reason a dry run exists.
+ */
+async function runBrokered(
+  root: string,
+  entrypoint: string,
+  spec: SandboxSpec | null,
+  ctx: InvokeContext,
+  opts: BrokerOptions,
+): Promise<{ kind: string; body: unknown }> {
+  {
     const runtime = RUNTIMES[spec?.language ?? "javascript"];
     if (!runtime) throw new Error(`no broker shim for language '${spec?.language}': add one to RUNTIMES`);
     // The boot program is PER RECORD (it carries the claimed record), so it cannot live in the
     // tree: that directory is shared between claims and two of them would clobber each other's.
     // Its own directory, added to the read roots, and removed after the run.
-    const bootDir = await Deno.makeTempDir({ prefix: "radia-boot-" });
+    const bootDir = await Deno.makeTempDir({ dir: opts.bootRoot || undefined, prefix: "radia-boot-" });
     const bootPath = `${bootDir}/${runtime.bootFile}`;
     try {
-      await Deno.writeTextFile(bootPath, runtime.boot(`${root}/${ctx.binding.entrypoint}`, ctx.record));
+      await Deno.writeTextFile(bootPath, runtime.boot(`${root}/${entrypoint}`, ctx.record));
       const readRoots = [root, bootDir, ...(opts.run?.readRoots ?? []), ...(spec?.readonlyPaths ?? [])];
       // The BACKEND is chosen by the sandbox's declared isolation, never by the language: the two
       // are independent, and conflating them is how "python means bubblewrap" becomes a rule
@@ -322,7 +356,7 @@ export function brokeredInvoker(reader: RadiaClient, opts: BrokerOptions = {}): 
     } finally {
       await Deno.remove(bootDir, { recursive: true }).catch(() => {});
     }
-  };
+  }
 }
 
 /** The host side of the channel: read frames, perform them as the agent, answer, and collect the
@@ -378,7 +412,7 @@ async function serve(
         if (line.startsWith(BROKER_MARK)) {
           const call = parse<BrokerCall>(line, BROKER_MARK);
           if (!call) break outer;
-          const reply = await perform(call, ctx, opts, () => ++ordinal);
+          const reply = await (opts.perform ?? perform)(call, ctx, opts, () => ++ordinal);
           await writer.write(enc.encode(JSON.stringify(reply) + "\n"));
         } else if (line.startsWith(RESULT_MARK)) {
           result = parse<{ kind: string; body: unknown }>(line, RESULT_MARK);
@@ -472,4 +506,97 @@ async function perform(
     // never dies on the jail's behalf, and a 403 reads as a 403 rather than as a crash.
     return { id: call.id, ok: false, error: String(e instanceof Error ? e.message : e).slice(0, 300) };
   }
+}
+
+// ── the dry run: the same rehearsal a host would give, writing nothing ───────────────────────────
+
+/** One write the entrypoint proposed, with every host-side rule already applied. */
+export interface Proposal {
+  ordinal: number;
+  kind: string;
+  body: Record<string, unknown>;
+  /** Including the claimed record, which the code does not get to omit. */
+  parentIds: string[];
+  /** Including the labels the JAIL implies, which the code does not get to withhold. */
+  taint: string[];
+  /** The key the real performer would have used, so "would this replay?" is answerable. */
+  idempotencyKey: string;
+}
+
+/**
+ * A performer that writes NOTHING and records what would have been written.
+ *
+ * It applies the host's rules first (stamp, labels, the forced parent, the ordinal key), because a
+ * rehearsal that showed only what the code SAID would hide the half that makes the real thing safe:
+ * the compartment stamp and the claimed record as a parent are exactly what a reviewer is checking.
+ *
+ * Reads are REFUSED rather than served. A dry run has no credential of its own, and answering a
+ * query from whatever client happened to be nearby would hand jailed code that principal's reach.
+ */
+export function recordingPerformer(into: Proposal[]): Performer {
+  return (call, ctx, opts, nextOrdinal) => {
+    if (call.op === "put") {
+      const req = call.args as { kind?: unknown; body?: unknown; parentIds?: unknown; taint?: unknown };
+      if (typeof req.kind !== "string") {
+        return Promise.resolve({ id: call.id, ok: false, error: "put needs a kind" });
+      }
+      const ordinal = nextOrdinal();
+      const proposal: Proposal = {
+        ordinal,
+        kind: req.kind,
+        body: { ...(req.body as Record<string, unknown> ?? {}), ...(opts.stamp ?? {}) },
+        parentIds: [ctx.record.id, ...(Array.isArray(req.parentIds) ? req.parentIds.map(String) : []).filter((p) => p !== ctx.record.id)],
+        taint: [...new Set([...(Array.isArray(req.taint) ? req.taint.map(String) : []), ...(opts.labels ?? [])])],
+        idempotencyKey: `broker:${ctx.record.id}:${ordinal}`,
+      };
+      into.push(proposal);
+      // A recognisably fake id. Code that stores one and looks it up later should fail in the
+      // rehearsal rather than appear to work and then fail for real.
+      return Promise.resolve({ id: call.id, ok: true, result: { id: `dry-run:${ordinal}`, dryRun: true } });
+    }
+    return Promise.resolve({
+      id: call.id,
+      ok: false,
+      error: `a dry run does not read the space, so '${call.op}' is refused here; it will work when this runs as the agent`,
+    });
+  };
+}
+
+/**
+ * Run a tree's entrypoint the way a HOST would, and write nothing.
+ *
+ * The point is fidelity on the parts that are easy to get wrong: the same shim, the same frames,
+ * the same jail, the same host-side rules. What comes back is the entrypoint's declared result plus
+ * the transcript of everything it would have written, which is the evidence a promotion review
+ * wants before anything is bound.
+ *
+ * The caller materialises the tree, because it usually has one already; taking a digest here would
+ * fetch a second copy.
+ */
+export async function dryRunEntrypoint(
+  opts: BrokerOptions & {
+    root: string;
+    entrypoint: string;
+    record: RadiaRecord;
+    spec?: SandboxSpec | null;
+  },
+): Promise<{ result: { kind: string; body: unknown }; proposals: Proposal[] }> {
+  const proposals: Proposal[] = [];
+  // Provably unused rather than merely unused: a dry run holds no credential, and anything that
+  // reaches for one fails loudly here instead of quietly borrowing the caller's.
+  const client = new Proxy({} as RadiaClient, {
+    get(_t, prop) {
+      throw new Error(`a dry run has no space access (tried to use client.${String(prop)})`);
+    },
+  });
+  const ctx: InvokeContext = {
+    binding: { agent: "dry-run", workspaceDigest: "", entrypoint: opts.entrypoint },
+    record: opts.record,
+    client,
+  };
+  const result = await runBrokered(opts.root, opts.entrypoint, opts.spec ?? null, ctx, {
+    ...opts,
+    perform: recordingPerformer(proposals),
+  });
+  return { result, proposals };
 }

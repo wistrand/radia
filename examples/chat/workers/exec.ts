@@ -24,8 +24,9 @@
 
 import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { activeByKey, newestByKey, RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
-import { runCode } from "../../../extensions/ts/sandbox.ts";
-import { captureWorkspace, commitWorkspace, materialize, readWorkspace } from "../../../extensions/ts/workspace.ts";
+import { dryRunEntrypoint } from "../../../extensions/ts/broker.ts";
+import { runCode, runEntry } from "../../../extensions/ts/sandbox.ts";
+import { captureWorkspace, commitWorkspace, materialize, readWorkspace, validateEntrypoint, writeWorkspace } from "../../../extensions/ts/workspace.ts";
 import { bwrapSandbox, denoSandbox, runBwrap } from "../../../extensions/ts/sandbox.ts";
 import { declareSandbox, verifySandbox } from "../../../extensions/ts/sandbox-registry.ts";
 import { progress } from "../space/progress.ts";
@@ -118,12 +119,31 @@ function runJavascriptDef(pythonServed: boolean): ToolDef {
           type: "string",
           description:
             "Run against a saved workspace instead of a bare snippet. Your program runs INSIDE the " +
-            "tree, so relative paths work: Deno.readTextFileSync('src/main.ts') reads that file. " +
-            "Save it first with save_workspace. The tree is READ-ONLY and discarded after the run, " +
-            "so a file your program writes does not persist and is NOT how you change the project: " +
-            "call save_workspace again with the new contents. Note your `code` runs from stdin and " +
-            "has no path of its own, so it can READ the tree's files but cannot import them; read " +
-            "and eval, or keep the logic in `code` and the data in files.",
+            "tree, so relative paths work: Deno.readTextFileSync('src/main.ts') reads that file, " +
+            "and await import('./src/main.ts') imports it. Save it first with save_workspace. The " +
+            "tree is READ-ONLY and discarded after the run, so a file your program writes does not " +
+            "persist and is NOT how you change the project: call save_workspace again with the new " +
+            "contents. Your `code` is JavaScript, never TypeScript, because it arrives on stdin and " +
+            "has no extension to state a dialect: a type annotation in it is a SyntaxError. The " +
+            "files it imports may be TypeScript. To run the tree AS ITSELF rather than probing it, " +
+            "omit `code` and let the workspace's entrypoint run.",
+        },
+        record: {
+          type: "object",
+          description:
+            "REHEARSE the workspace's entrypoint the way an AGENT would run it: it is called as " +
+            "default(record, space), where this object becomes record.body. Everything it writes " +
+            "through `space` is RECORDED, not written, and comes back as `wouldWrite` with the " +
+            "parts the host adds (the claimed record as a parent, the jail's labels). Reads are " +
+            "refused in a rehearsal. Use this to check an entrypoint before anything is bound to " +
+            "it; use the plain call to run the tree as a program.",
+        },
+        entrypoint: {
+          type: "string",
+          description:
+            "Run this file from the workspace instead of sending a program. Omit it and the " +
+            "workspace's own declared entrypoint runs, which is the same file an agent bound to " +
+            "this tree would run. Needs `workspace`, and must name a file that is in it.",
         },
         write: {
           type: "boolean",
@@ -156,7 +176,8 @@ function runJavascriptDef(pythonServed: boolean): ToolDef {
         media_type: { type: "string", description: "Override the stored artifact's media type, e.g. 'text/csv'." },
         encoding: { type: "string", enum: ["utf8", "base64"], description: "How stdout encodes the artifact's bytes. Use 'base64' for binary formats (PNG, zip)." },
       },
-      required: ["code"],
+      // No `required`: either `code` or a workspace with an entrypoint.
+
     },
   },
   };
@@ -173,14 +194,27 @@ const SAVE_PROCEDURE: ToolDef = {
       "code you expect to run more than once: a calculation you will repeat with different " +
       "inputs, a parser, a checker. Saving costs one call; re-pasting the same program every " +
       "time costs its full length in every message that follows. The code runs in the SAME " +
-      "sandbox as run_javascript, with the same limits. Re-saving the same name replaces it. Returns " +
-      "{name, artifactId, size}.",
+      "sandbox as run_javascript, with the same limits. Re-saving the same name replaces it. " +
+      "It is stored as a WORKSPACE named proc-<name>, so you can read it with read_workspace, " +
+      "change one line with edit_workspace instead of re-sending the whole program, and every " +
+      "version is kept. Returns {name, workspace, entrypoint, treeDigest}.",
     parameters: {
       type: "object",
       properties: {
         name: { type: "string", description: "Tool name to save it under: lowercase letters, digits and underscores, e.g. 'hash_text'." },
         description: { type: "string", description: "What it does and what `args` it expects. This becomes the tool description you will see later, so write it for your future self." },
-        code: { type: "string", description: "The JavaScript program. Read inputs from the `args` object; print results with console.log." },
+        code: {
+          type: "string",
+          description:
+            "The program. Read inputs from the `args` object, which is in scope; print results with " +
+            "console.log (or print, in Python). It may instead `export default (args) => …` and " +
+            "RETURN its answer, which is the same shape an agent's entrypoint has.",
+        },
+        language: {
+          type: "string",
+          enum: ["javascript", "python"],
+          description: "Which language `code` is. Default javascript. The saved file's extension decides the jail, so a Python procedure really runs in the Python one.",
+        },
         parameters: { type: "object", description: "Optional JSON Schema for `args`, same shape as any tool's parameters. Omit for a procedure that takes no input." },
       },
       required: ["name", "description", "code"],
@@ -354,12 +388,28 @@ const RUN_PYTHON: ToolDef = {
           type: "string",
           description:
             "Run against a saved workspace: your program runs INSIDE the tree, so relative paths " +
-            "work and open('src/main.py') reads that file. Save it first with save_workspace. Your " +
-            "`code` arrives on stdin and has no path of its own, so it cannot be imported by the " +
-            "tree's files; to RUN a file you saved, pass code that executes it, e.g. " +
-            "import runpy; runpy.run_path('src/main.py', run_name='__main__'). The tree is read-only unless you " +
-            "pass write, and it is discarded after the run, so a file your program writes does not " +
-            "persist by itself.",
+            "work and open('src/main.py') reads that file. Save it first with save_workspace. To " +
+            "run the tree AS ITSELF, omit `code` and let its entrypoint run. To probe it instead, " +
+            "send `code` and reach the tree's files from there (importlib, or runpy.run_path). The " +
+            "tree is read-only unless you pass write, and it is discarded after the run, so a file " +
+            "your program writes does not persist by itself.",
+        },
+        record: {
+          type: "object",
+          description:
+            "REHEARSE the workspace's entrypoint the way an AGENT would run it: it is called as " +
+            "default(record, space), where this object becomes record.body. Everything it writes " +
+            "through `space` is RECORDED, not written, and comes back as `wouldWrite` with the " +
+            "parts the host adds (the claimed record as a parent, the jail's labels). Reads are " +
+            "refused in a rehearsal. Use this to check an entrypoint before anything is bound to " +
+            "it; use the plain call to run the tree as a program.",
+        },
+        entrypoint: {
+          type: "string",
+          description:
+            "Run this file from the workspace instead of sending a program. Omit it and the " +
+            "workspace's own declared entrypoint runs, which is the same file an agent bound to " +
+            "this tree would run. Needs `workspace`, and must name a file that is in it.",
         },
         write: { type: "boolean", description: "Let the program change the workspace; changes become a new version." },
         save_as: { type: "string", description: "Filename to store COMPUTED stdout under as an artifact." },
@@ -375,7 +425,8 @@ const RUN_PYTHON: ToolDef = {
           },
         },
       },
-      required: ["code"],
+      // No `required`: either `code` or a workspace with an entrypoint.
+
     },
   },
 };
@@ -425,7 +476,17 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
   // The RECORD, not just its body: a caller has to be able to name the exact version it used.
   // Re-saving a name is a successor, so "the procedure called X" is not a stable referent; only
   // a record id is.
-  return { id: latest.id, ...(latest.body as { name: string; artifactId: string; description?: string; retired?: boolean }) };
+  return {
+    id: latest.id,
+    ...(latest.body as {
+      name: string;
+      artifactId?: string;
+      workspace?: string;
+      entrypoint?: string;
+      description?: string;
+      retired?: boolean;
+    }),
+  };
 }
 
 // PROVE THE JAIL BEFORE SERVING ANYTHING. The operator declared what this environment guarantees;
@@ -488,7 +549,7 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
 /** The `tool_call` body this worker claims. */
 interface Call {
   tool?: string;
-  args?: { code?: string; workspace?: string; write?: boolean; save_as?: string; media_type?: string; encoding?: string; expect?: unknown };
+  args?: { code?: string; workspace?: string; entrypoint?: string; record?: unknown; write?: boolean; save_as?: string; media_type?: string; encoding?: string; expect?: unknown };
   conversationId?: string;
   owner?: string;
 }
@@ -496,6 +557,9 @@ interface Call {
 /** What ran, and where the code came from. */
 interface Program {
   code: string;
+  /** Set for a procedure saved as a TREE: the code is the workspace's entrypoint, not `code`. */
+  workspace?: string;
+  entrypoint?: string;
   /** Set only for a saved procedure: for a builtin runner the program is in the call body. */
   provenance?: { name: string; recordId: string; artifactId: string };
 }
@@ -561,6 +625,20 @@ async function resolveProgram(c: RadiaClient, b: Call): Promise<Program | Refuse
         : `no procedure '${b.tool}' saved in this conversation`,
     );
   }
+  // A procedure saved as a TREE runs its entrypoint, which is what makes it multi-file, able to be
+  // TypeScript or Python, readable with read_workspace and exportable like any other project.
+  if (proc.workspace) {
+    return {
+      code: "",
+      workspace: proc.workspace,
+      entrypoint: proc.entrypoint ?? "main.js",
+      provenance: { name: proc.name, recordId: proc.id, artifactId: proc.artifactId ?? "" },
+    };
+  }
+  // LEGACY: a procedure saved as a lone artifact, before they were trees. Still resolved, because
+  // the registry is latest-wins over records that already exist and re-saving is the only migration
+  // anyone should have to do.
+  if (!proc.artifactId) return refuse(`procedure '${b.tool}' has neither a workspace nor stored code; save it again`);
   const source = new TextDecoder().decode(await c.getArtifact(proc.artifactId));
   return {
     // `args` is injected as a literal rather than passed on argv: the sandbox takes its program on
@@ -570,8 +648,53 @@ async function resolveProgram(c: RadiaClient, b: Call): Promise<Program | Refuse
     code: `const args = ${JSON.stringify(b.args ?? {})};\n${source}`,
     // PROVENANCE. The code lives elsewhere and can be re-saved, so without this the result could
     // never be attributed to the version that produced it.
-    provenance: { name: proc.name, recordId: proc.id, artifactId: proc.artifactId },
+    provenance: { name: proc.name, recordId: proc.id, artifactId: proc.artifactId ?? "" },
   };
+}
+
+/**
+ * The program a PROCEDURE actually runs: arguments, then the tree's entrypoint.
+ *
+ * Generated into its own directory, never into the tree, for the reason the broker's boot has the
+ * same rule: a tree is content-addressed, so a per-call file inside it would change the digest that
+ * identifies the code, and phase 6 shares one materialised root between calls.
+ *
+ * `args` is a GLOBAL rather than a parameter, because that is the contract every procedure written
+ * so far was saved against (the old runner prepended `const args = …` to the source). A procedure
+ * that instead exports a default function gets called with the same object and may RETURN its
+ * answer, which is the shape an agent entrypoint has.
+ */
+function procedureBoot(entryPath: string, args: unknown, language: "javascript" | "python"): string {
+  const json = JSON.stringify(args ?? {});
+  if (language === "python") {
+    return [
+      "import builtins, json, importlib.util",
+      `builtins.args = json.loads(${JSON.stringify(json)})`,
+      `spec = importlib.util.spec_from_file_location("procedure", ${JSON.stringify(entryPath)})`,
+      "m = importlib.util.module_from_spec(spec)",
+      "spec.loader.exec_module(m)",
+      "if hasattr(m, 'main'):",
+      "    out = m.main(builtins.args)",
+      "    if out is not None:",
+      "        print(out if isinstance(out, str) else json.dumps(out))",
+      "",
+    ].join("\n");
+  }
+  return [
+    `globalThis.args = ${json};`,
+    `const mod = await import(${JSON.stringify(`file://${entryPath}`)});`,
+    "if (mod && typeof mod.default === 'function') {",
+    "  const out = await mod.default(globalThis.args);",
+    "  if (out !== undefined) console.log(typeof out === 'string' ? out : JSON.stringify(out));",
+    "}",
+    "",
+  ].join("\n");
+}
+
+/** The jail an entrypoint implies. The FILE says which language it is, which is the honest signal:
+ *  choosing from the tool name is what made every saved procedure JavaScript whatever it contained. */
+function jailFor(entrypoint: string): "python" | "javascript" {
+  return entrypoint.toLowerCase().endsWith(".py") ? "python" : "javascript";
 }
 
 /**
@@ -581,17 +704,32 @@ async function resolveProgram(c: RadiaClient, b: Call): Promise<Program | Refuse
  * laundering its labels through the filesystem: the substrate cannot see a disk, so the edge is the
  * only thing that carries the classification.
  */
-async function openTree(c: RadiaClient, b: Call, callId: string): Promise<Tree | Refused> {
-  const name = typeof b.args?.workspace === "string" ? b.args.workspace : undefined;
+async function openTree(c: RadiaClient, b: Call, callId: string, named?: string): Promise<Tree | Refused> {
+  // `named` is the PROCEDURE's tree, which the caller does not get to choose: a tool call carries
+  // arguments, never the code that serves it.
+  const name = named ?? (typeof b.args?.workspace === "string" ? b.args.workspace : undefined);
   // WRITE is opt-in per call. Reading is the common case and must not carry the capability to
   // change the tree: a run that only inspects should not be able to produce a version.
-  const write = b.args?.write === true;
+  const write = named ? false : b.args?.write === true;
   if (!name) return { roots: readRoots, manifest: null, write };
 
   const manifest = await readWorkspace(c, name, b.conversationId);
   if (!manifest) return refuse(`no workspace '${name}' saved in this conversation; save_workspace first`);
 
-  const root = await Deno.makeTempDir({ dir: workspaceRoot, prefix: `${name}-` });
+  // `|| undefined`, because an EMPTY `--workspace-root` is not a directory: `{dir: ""}` throws
+  // "Empty path is not allowed" rather than falling back to the system temp dir. Latent until
+  // procedures became trees, since nothing else materialised one in a fleet launched without it.
+  let root: string;
+  try {
+    root = await Deno.makeTempDir({ dir: workspaceRoot || undefined, prefix: `${name}-` });
+  } catch (e) {
+    // The failure a launcher causes, said once and plainly. Without this it is a silent nack loop
+    // and a tool call that times out, which is the least diagnosable shape a defect can take.
+    return refuse(
+      `this worker cannot materialise a workspace: it has no writable directory (${(e as Error).message}). ` +
+        `Launch it with --workspace-root <dir> and --allow-write for that directory.`,
+    );
+  }
   // `materialize` VERIFIES on the way in: every artifact is hashed against the entry that names it,
   // and the tree digest is recomputed from the entries. A manifest that lies about either is
   // refused here rather than silently attested to later.
@@ -617,14 +755,66 @@ async function openTree(c: RadiaClient, b: Call, callId: string): Promise<Tree |
   };
 }
 
+/**
+ * Which file the tree runs as, for a call that sent no program of its own.
+ *
+ * An explicit `entrypoint` beats the manifest's, so a probe can run any file in the tree without
+ * re-pointing the workspace. Either way it must BE in the tree: a name that is not is refused here,
+ * where the caller can read why, rather than inside a jail as "module not found".
+ */
+function entrypointFor(b: Call, tree: Tree): string | undefined | Refused {
+  const asked = typeof b.args?.entrypoint === "string" ? b.args.entrypoint.trim() : "";
+  const name = asked || tree.manifest?.entrypoint;
+  if (!name) return undefined;
+  if (!tree.root || !tree.manifest) return refuse(`\`entrypoint\` names a file in a workspace, so pass \`workspace\` too`);
+  try {
+    validateEntrypoint(name, tree.manifest.files);
+  } catch (e) {
+    return refuse((e as Error).message);
+  }
+  return name;
+}
+
+/**
+ * RUN a procedure: its tree, its entrypoint, and its arguments, through a generated boot.
+ *
+ * The boot lives in its own directory and that directory is added to the read roots, because it
+ * cannot live in the tree: a per-call file inside a content-addressed directory would change the
+ * digest and collide with any other call sharing the same materialised root.
+ */
+async function runProcedure(tree: Tree, entrypoint: string, args: unknown) {
+  const jail = jailFor(entrypoint);
+  const bootDir = await Deno.makeTempDir({ dir: workspaceRoot || undefined, prefix: "proc-boot-" });
+  try {
+    const bootPath = `${bootDir}/${jail === "python" ? "boot.py" : "boot.mjs"}`;
+    await Deno.writeTextFile(bootPath, procedureBoot(`${tree.root}/${entrypoint}`, args, jail));
+    const roots = [...tree.roots, bootDir];
+    return jail === "python"
+      ? await runBwrap(null, { timeoutMs, readRoots: roots, cwd: tree.root, command: ["python3", bootPath] })
+      : await runEntry(bootPath, { timeoutMs, readRoots: roots, denyRead, cwd: tree.root });
+  } finally {
+    await Deno.remove(bootDir, { recursive: true }).catch(() => {});
+  }
+}
+
 /** RUN: in the tree when there is one, so relative paths resolve as they would in a checkout. */
-function runProgram(code: string, jail: "python" | "javascript", tree: Tree) {
+function runProgram(code: string, jail: "python" | "javascript", tree: Tree, entry?: string) {
   // The tree, and ONLY the tree: a run that may write gets it for exactly the directory it was
   // given, never the workspace root shared with other calls.
   const writeRoots = tree.write && tree.root ? [tree.root] : [];
+  const opts = { timeoutMs, readRoots: tree.roots, writeRoots, cwd: tree.root };
+  // A FILE when the tree says how it is run: it carries its own extension, so a `.ts` entrypoint is
+  // TypeScript without anything having to guess a dialect, and stdin stays free. A bare `code`
+  // argument keeps the stdin path, because a throwaway should not have to become a file first.
+  if (entry) {
+    const path = `${tree.root}/${entry}`;
+    return jail === "python"
+      ? runBwrap(null, { ...opts, command: ["python3", path] })
+      : runEntry(path, { ...opts, denyRead });
+  }
   return jail === "python"
-    ? runBwrap(code, { command: ["python3", "-"], timeoutMs, readRoots: tree.roots, writeRoots, cwd: tree.root })
-    : runCode(code, { timeoutMs, readRoots: tree.roots, denyRead, cwd: tree.root, writeRoots });
+    ? runBwrap(code, { ...opts, command: ["python3", "-"] })
+    : runCode(code, { ...opts, denyRead });
 }
 
 type Run = Awaited<ReturnType<typeof runProgram>>;
@@ -757,17 +947,86 @@ await agentLoop(client, {
     const program = await resolveProgram(c, b);
     if (isRefused(program)) return refusal(b, callId, program.refused);
 
+    // A PROCEDURE brings its own tree, so the call's `workspace` argument is not consulted: a tool
+    // call carries arguments, never the code that serves it.
+    const tree = await openTree(c, b, callId, program.workspace);
+    if (isRefused(tree)) return refusal(b, callId, tree.refused);
+
+    // WHICH FILE RUNS, and it is only a question when no program was sent. A `code` argument is a
+    // throwaway and keeps the stdin path; a tree that declares an entrypoint is run AS ITSELF, from
+    // a file, which is what lets the same tree be run by an agent later.
+    const entry = program.workspace ? program.entrypoint : program.code.trim() ? undefined : entrypointFor(b, tree);
+    if (isRefused(entry)) return refusal(b, callId, entry.refused);
+    if (!entry && !program.code.trim()) {
+      return refusal(
+        b,
+        callId,
+        `${b.tool} needs a \`code\` argument, or a \`workspace\` whose manifest declares an entrypoint ` +
+          `(set one with save_workspace/edit_workspace, or name a file here with \`entrypoint\`)`,
+      );
+    }
+
     // The source is already in the tool_call record, so every program the model ever ran is
     // auditable by query: `{kind: tool_call, tool: "run_javascript"}` is the execution log, with the
     // result and any artifact as its children.
-    await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "executing", by: ME, note: `${program.code.length} chars` }, [callId]);
-    if (!program.code.trim()) return refusal(b, callId, `${b.tool} needs a \`code\` argument`);
+    await progress(c, {
+      conversationId: b.conversationId,
+      owner: b.owner,
+      callId,
+      stage: "executing",
+      by: ME,
+      note: entry ? `${tree.name}/${entry}` : `${program.code.length} chars`,
+    }, [callId]);
 
-    const tree = await openTree(c, b, callId);
-    if (isRefused(tree)) return refusal(b, callId, tree.refused);
+    // The LANGUAGE follows the file for anything running from a tree, and the tool name only for a
+    // stdin snippet. That is what makes a Python procedure possible at all: it used to be decided
+    // by which tool was called, so a procedure was JavaScript whatever it contained.
+    const jail = entry ? jailFor(entry) : b.tool === "run_python" ? "python" : "javascript";
 
-    const jail = b.tool === "run_python" ? "python" : "javascript";
-    const r = await runProgram(program.code, jail, tree);
+    // A REHEARSAL: called `(record, space)` the way a host calls a bound agent, with everything it
+    // would write recorded instead of written. This is the only way to exercise an agent's
+    // entrypoint from here, because the chat's jail has no broker and a hand-written stub of
+    // `space` is exactly where "passes in chat, fails in prod" comes from.
+    if (b.args?.record !== undefined) {
+      if (!entry || !tree.root) {
+        return refusal(b, callId, "`record` runs a workspace's ENTRYPOINT, so pass `workspace` (and give the tree an entrypoint)");
+      }
+      const dry = await dryRunEntrypoint({
+        root: tree.root,
+        entrypoint: entry,
+        record: { id: `dry-run:${callId}`, kind: "exec_request", body: b.args.record } as unknown as RadiaRecord,
+        timeoutMs,
+        // This worker may write to its workspace root and nowhere else.
+        ...(workspaceRoot ? { bootRoot: workspaceRoot } : {}),
+        ...(jail === "python" ? { spec: { name: "dry", language: "python", isolation: "bubblewrap" } as never } : {}),
+      });
+      await captureTree(c, tree, { stdout: "", stderr: "", ok: true, exitCode: 0, timedOut: false, truncated: false, ms: 0 });
+      return {
+        kind: "tool_result",
+        body: {
+          callId,
+          conversationId: b.conversationId,
+          owner: b.owner,
+          ok: true,
+          output: {
+            rehearsal: true,
+            workspace: tree.name,
+            entrypoint: entry,
+            result: dry.result,
+            // What it WOULD have written, host rules included: the stamp, the forced parent and the
+            // labels are the half a reviewer is actually checking.
+            wouldWrite: dry.proposals,
+            note: "nothing was written. Reads are refused in a rehearsal; they work when this runs as the agent.",
+          },
+        },
+        ...(tree.parent ? { parentIds: [tree.parent] } : {}),
+        taint: readRoots.length > 0 ? ["file"] : [],
+      };
+    }
+
+    const r = program.workspace
+      ? await runProcedure(tree, entry as string, b.args ?? {})
+      : await runProgram(program.code, jail, tree, entry);
 
     const { committed, changed } = await captureTree(c, tree, r);
     const stored = await storeStdout(c, b, callId, r);
@@ -842,21 +1101,36 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
   if (!b.conversationId) return fail("save_procedure needs a conversation to belong to");
 
   await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "saving", by: ME, note: name }, [callId]);
-  const art = await c.putArtifact(new TextEncoder().encode(code), {
-    mediaType: "text/javascript",
-    filename: `${name}.js`,
-    parentIds: [callId],
-    taint: [],
-    meta: { conversationId: b.conversationId ?? "", owner: b.owner ?? "" }, // what a grant pattern can bind
+
+  // A PROCEDURE IS A WORKSPACE. It used to be a lone code artifact, which is a shape that cannot
+  // grow: single file, JavaScript whatever it contained (the jail came from the tool name), no
+  // versions to read back, no export, and nothing an agent could ever be bound to. As a tree it
+  // inherits all of that, and "promote a script to a tool" stops being a rewrite.
+  const language: "javascript" | "python" = a.language === "python" ? "python" : "javascript";
+  const entry = language === "python" ? "main.py" : "main.js";
+  const ws = `proc-${name}`;
+  const prev = await readWorkspace(c, ws, b.conversationId);
+  const w = await writeWorkspace(c, {
+    name: ws,
+    owner: b.owner ?? "",
+    conversationId: b.conversationId,
+    files: { [entry]: code },
+    entrypoint: entry,
+    basedOn: prev?.id,
   });
-  const key = await shortHash(`${description}\n${code}`);
+
+  const key = await shortHash(`${description}\n${ws}\n${w.treeDigest}`);
   await c.put({
     kind: "procedure",
     body: {
       name,
       description,
       parameters: a.parameters ?? { type: "object", properties: {} },
-      artifactId: art.id,
+      // The tree, by NAME: re-saving is a new version and a procedure runs the current one, the
+      // same way `read_workspace` reads the current one. A digest here would pin the procedure to
+      // the version it was saved at, which is promotion's job and not this call's.
+      workspace: ws,
+      entrypoint: entry,
       conversationId: b.conversationId, owner: b.owner,
     },
     parentIds: [callId],
@@ -887,7 +1161,7 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
       callId,
       conversationId: b.conversationId, owner: b.owner,
       ok: true,
-      output: { name, artifactId: art.id, size: art.size, saved: true, ...(note ? { note } : {}) },
+      output: { name, workspace: ws, entrypoint: entry, treeDigest: w.treeDigest, size: code.length, saved: true, ...(note ? { note } : {}) },
     },
   };
 }
@@ -917,8 +1191,37 @@ async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
     };
   }
   const latest = newestByKey<{ name?: string }>(rows, (bb) => bb?.name).get(name)!;
-  const body = latest.body as { name: string; description: string; artifactId: string };
-  const code = new TextDecoder().decode(await c.getArtifact(body.artifactId));
+  const body = latest.body as { name: string; description: string; artifactId?: string; workspace?: string; entrypoint?: string };
+  // A procedure is a TREE now, so its source is a file in it. The artifact path stays for the ones
+  // saved before that, which is the whole migration: nothing to run, nothing to rewrite.
+  let code: string;
+  if (body.workspace) {
+    const manifest = await readWorkspace(c, body.workspace, b.conversationId);
+    const entry = body.entrypoint ?? manifest?.entrypoint;
+    const file = manifest?.files.find((f) => f.path === entry);
+    if (!file) {
+      return {
+        kind: "tool_result",
+        body: {
+          callId,
+          conversationId: b.conversationId,
+          owner: b.owner,
+          ok: false,
+          output: `procedure '${name}' points at ${body.workspace}/${entry}, which is not in that workspace any more`,
+        },
+        taint: [],
+      };
+    }
+    code = new TextDecoder().decode(await c.getArtifact(file.artifactId));
+  } else if (body.artifactId) {
+    code = new TextDecoder().decode(await c.getArtifact(body.artifactId));
+  } else {
+    return {
+      kind: "tool_result",
+      body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: `procedure '${name}' has no stored code` },
+      taint: [],
+    };
+  }
   return {
     kind: "tool_result",
     body: {

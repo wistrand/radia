@@ -89,6 +89,15 @@ export interface WorkspaceManifest {
   /** Paths a run may produce that are not part of the tree (`.gitignore` by another name). Stored
    *  so write-back has a rule, and so it travels with the tree it belongs to. */
   ignore?: string[];
+  /**
+   * The file this tree is RUN as, when it is run without one being named.
+   *
+   * A tree that says how it is run can be executed by anything holding it, which is what lets the
+   * chat exercise the same file a host would rather than a driver the model improvised. Outside the
+   * digest (see `validateEntrypoint`), a default rather than an authority: a `binding` names its own
+   * and wins for an agent.
+   */
+  entrypoint?: string;
   files: WorkspaceFile[];
   retired?: boolean;
 }
@@ -120,6 +129,25 @@ export function validatePath(path: string): void {
     // file while the manifest believes they are two.
     if (/[. ]$/.test(seg)) bad("a segment ending in a dot or space");
     if (seg.toLowerCase() === ".git") bad("reserved: it would collide with an exported repository");
+  }
+}
+
+/**
+ * Reject an entrypoint that is not a file this tree actually contains.
+ *
+ * A manifest that names a missing entry is the same class of lie as one whose digests do not match
+ * its artifacts, and it fails LATER: at run time, in a jail, as "module not found" from a program
+ * nobody wrote. Checked on every write path, including a write-back that deleted the file.
+ *
+ * NOT part of the tree digest, deliberately. The digest attests WHICH FILES, and re-pointing an
+ * entry would otherwise be a new digest and therefore a new promotion. A `binding` carries its own
+ * entrypoint and stays authoritative for an agent; this is the tree's own default.
+ */
+export function validateEntrypoint(entrypoint: string, files: { path: string }[]): void {
+  validatePath(entrypoint);
+  if (!files.some((f) => f.path === entrypoint)) {
+    const near = files.map((f) => f.path).slice(0, 8).join(", ");
+    throw new Error(`entrypoint ${JSON.stringify(entrypoint)} is not a file in this workspace (has: ${near}${files.length > 8 ? ", …" : ""})`);
   }
 }
 
@@ -177,6 +205,8 @@ export interface WriteInput {
   attach?: Record<string, string>;
   modes?: Record<string, "100644" | "100755">;
   ignore?: string[];
+  /** The file this tree runs as. Must be one of `files` or `attach`. */
+  entrypoint?: string;
   /** The manifest being superseded. Omit for a new workspace. */
   basedOn?: string;
   /**
@@ -201,7 +231,7 @@ export interface WriteInput {
 export async function writeWorkspace(
   client: RadiaClient,
   input: WriteInput,
-): Promise<{ id: string; treeDigest: string; files: WorkspaceFile[]; deduped: boolean; forked: boolean }> {
+): Promise<{ id: string; treeDigest: string; files: WorkspaceFile[]; deduped: boolean; forked: boolean; entrypoint?: string }> {
   // Validate EVERY path before writing ANY bytes. A tree with one bad path must not leave half its
   // artifacts behind: the manifest is what makes them reachable, and there will be no manifest.
   const entries = Object.entries(input.files);
@@ -250,13 +280,17 @@ export async function writeWorkspace(
   }
 
   files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  if (input.entrypoint) validateEntrypoint(input.entrypoint, files);
   const treeDigest = await treeDigestOf(files);
 
   const before = await readWorkspace(client, input.name, input.conversationId);
-  if (before?.treeDigest === treeDigest) {
+  // The entrypoint is part of the comparison, and it has to be: it is deliberately OUTSIDE the tree
+  // digest, so "same files, different entry" is a real change that this would otherwise dedupe into
+  // doing nothing. Re-pointing a tree at another file is a version, not a no-op.
+  if (before?.treeDigest === treeDigest && before.entrypoint === input.entrypoint) {
     // Identical tree: the manifest that exists already says this. Writing another would grow the
     // registry for no new information, which is the growth that makes reads expensive.
-    return { id: before.id, treeDigest, files, deduped: true, forked: false };
+    return { id: before.id, treeDigest, files, deduped: true, forked: false, entrypoint: before.entrypoint };
   }
 
   const body: WorkspaceManifest = {
@@ -266,14 +300,29 @@ export async function writeWorkspace(
     treeDigest,
     ...(input.basedOn ? { basedOn: input.basedOn } : {}),
     ...(input.ignore?.length ? { ignore: input.ignore } : {}),
+    ...(input.entrypoint ? { entrypoint: input.entrypoint } : {}),
     files,
   };
   // The tree digest is the content key. A REVIVE (writing a tree that a retirement superseded)
   // needs a key that differs from the record being revived, or the write replays the retirement:
   // the same `:after:` suffix the other registries use.
+  // The entrypoint joins the key, or a re-point would collide with the record it is superseding and
+  // be deduplicated by the idempotency row instead of written. Absent for a tree that declares none,
+  // so keys for those are exactly what they were.
+  const entry = input.entrypoint ? `:@${input.entrypoint}` : "";
+  // The CONVERSATION is part of the key, because a manifest is scoped to one and two conversations
+  // may hold the same tree under the same name. Without it their keys collide while their bodies
+  // differ, which the space reports as `idempotency_conflict` on the second writer: a workspace
+  // that simply cannot be created because somebody elsewhere created one like it.
+  const scope = input.conversationId ? `:${input.conversationId}` : "";
+  // …and so is the PREDECESSOR, because it lands in the body as `basedOn`. Editing a tree and then
+  // editing it back returns to a digest that was written before, under a different base: same key,
+  // different content, refused as `idempotency_conflict`. An identical re-save still deduplicates,
+  // through the early return above rather than through this key.
+  const on = input.basedOn ? `:on:${input.basedOn}` : "";
   const key = before?.retired
-    ? `workspace:${input.name}:${treeDigest}:after:${before.id}`
-    : `workspace:${input.name}:${treeDigest}`;
+    ? `workspace:${input.name}${scope}:${treeDigest}${entry}${on}:after:${before.id}`
+    : `workspace:${input.name}${scope}:${treeDigest}${entry}${on}`;
   const { id } = await client.put(
     {
       kind: "workspace",
@@ -294,7 +343,14 @@ export async function writeWorkspace(
   );
   // Asked AFTER the write, so the answer includes this version: one indexed query, and the honest
   // reading of "is this workspace forked" rather than "did I cause it".
-  return { id, treeDigest, files, deduped: false, forked: await isForked(client, input.name, input.conversationId) };
+  return {
+    id,
+    treeDigest,
+    files,
+    deduped: false,
+    forked: await isForked(client, input.name, input.conversationId),
+    ...(input.entrypoint ? { entrypoint: input.entrypoint } : {}),
+  };
 }
 
 /**
@@ -536,6 +592,8 @@ export interface EditInput {
   modes?: Record<string, "100644" | "100755">;
   /** Paths to drop. A path that is not there is a refusal, not a no-op. */
   remove?: string[];
+  /** Set or change the file this tree runs as. Omit to keep whatever the head declared. */
+  entrypoint?: string;
 }
 
 /**
@@ -585,8 +643,10 @@ export async function editWorkspace(
   const adds = Object.entries(input.add ?? {});
   const attached = Object.entries(input.attach ?? {});
   const removes = input.remove ?? [];
-  if (edits.length === 0 && adds.length === 0 && attached.length === 0 && removes.length === 0) {
-    throw new Error("editWorkspace needs at least one of `edits`, `add`, `attach` or `remove`");
+  // Setting the entrypoint alone is a real change, because it is outside the tree digest: the files
+  // stay identical and the manifest says something different about how they run.
+  if (edits.length === 0 && adds.length === 0 && attached.length === 0 && removes.length === 0 && !input.entrypoint) {
+    throw new Error("editWorkspace needs at least one of `edits`, `add`, `attach`, `remove` or `entrypoint`");
   }
 
   const byPath = new Map(head.files.map((f) => [f.path, f]));
@@ -905,7 +965,11 @@ export async function editWorkspace(
   files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
   const treeDigest = await treeDigestOf(files);
-  const body: WorkspaceManifest = { ...head, treeDigest, basedOn: head.id, files };
+  // An edit may SET the entrypoint, and an edit that removes the file the tree runs as must not
+  // leave a manifest pointing at nothing: `...head` would carry the stale name forward silently.
+  const entrypoint = input.entrypoint ?? head.entrypoint;
+  if (entrypoint) validateEntrypoint(entrypoint, files);
+  const body: WorkspaceManifest = { ...head, treeDigest, basedOn: head.id, files, ...(entrypoint ? { entrypoint } : {}) };
   delete (body as { id?: string }).id;
   const { id } = await client.put(
     {
@@ -1181,6 +1245,9 @@ export async function commitWorkspace(
 ): Promise<{ id: string; treeDigest: string; forked: boolean } | null> {
   if (captured.unchanged) return null;
   const treeDigest = await treeDigestOf(captured.files);
+  // A run that deleted the file its tree runs as: the spread below would carry the name forward and
+  // the next run would fail inside a jail instead of here, where the cause is still visible.
+  if (manifest.entrypoint) validateEntrypoint(manifest.entrypoint, captured.files);
   const body: WorkspaceManifest = {
     ...manifest,
     treeDigest,

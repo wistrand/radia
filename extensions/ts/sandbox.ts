@@ -144,9 +144,7 @@ export function jailArgs(opts: RunOptions, memoryMb: number, entry: string): str
   ];
 }
 
-export async function runCode(source: string, opts: RunOptions = {}): Promise<RunResult> {
-  const { timeoutMs, maxOutputBytes, memoryMb } = { ...DEFAULTS, ...opts };
-  const started = Date.now();
+function spawnDeno(entry: string, opts: RunOptions, memoryMb: number): Deno.ChildProcess {
   // The RUNNING runtime, by absolute path, not the name `deno` resolved against the PATH this
   // command itself invents (`/usr/bin:/bin` below). Two reasons, and CI found the first: on a
   // machine where Deno is installed anywhere else — a GitHub runner puts it in the tool cache —
@@ -154,9 +152,9 @@ export async function runCode(source: string, opts: RunOptions = {}): Promise<Ru
   // insecure, which is the confusing way round. The second is the one to keep: a jail must not
   // resolve its own interpreter through a search path, or the flags below are enforced by
   // whichever binary that path happens to find.
-  const child = new Deno.Command(Deno.execPath(), {
+  return new Deno.Command(Deno.execPath(), {
     ...(opts.cwd ? { cwd: opts.cwd } : {}),
-    args: jailArgs(opts, memoryMb, "-"), // the program comes from stdin: no file needs to be readable
+    args: jailArgs(opts, memoryMb, entry),
 
     // Nothing else is granted: net, env, run, ffi and sys are all denied, and so is write unless
     // the caller named a workspace directory above.
@@ -168,8 +166,29 @@ export async function runCode(source: string, opts: RunOptions = {}): Promise<Ru
     clearEnv: true,
     env: { HOME: Deno.env.get("HOME") ?? "/tmp", PATH: "/usr/bin:/bin" },
   }).spawn();
+}
 
-  return await drive(child, source, timeoutMs, maxOutputBytes, started);
+export async function runCode(source: string, opts: RunOptions = {}): Promise<RunResult> {
+  const { timeoutMs, maxOutputBytes, memoryMb } = { ...DEFAULTS, ...opts };
+  const started = Date.now();
+  // `-`: the program comes from stdin, so no file needs to be readable.
+  return await drive(spawnDeno("-", opts, memoryMb), source, timeoutMs, maxOutputBytes, started);
+}
+
+/**
+ * Run a FILE, rather than a program on stdin.
+ *
+ * The difference is not stylistic. A file has an extension, so `.ts` is TypeScript and no
+ * `--ext=js` has to be guessed for it: the stdin path must state one dialect for every program,
+ * which is why a type annotation in a stdin program is a syntax error while the modules it imports
+ * may be TypeScript. A file also leaves stdin free, which is what a brokered channel needs.
+ *
+ * `cwd` decides what the entry's relative imports resolve against; pass the tree root.
+ */
+export async function runEntry(entry: string, opts: RunOptions = {}): Promise<RunResult> {
+  const { timeoutMs, maxOutputBytes, memoryMb } = { ...DEFAULTS, ...opts };
+  const started = Date.now();
+  return await drive(spawnDeno(entry, opts, memoryMb), null, timeoutMs, maxOutputBytes, started);
 }
 
 /** Spawn a jailer, feed it a program on stdin, capture capped output. Shared by every backend so
@@ -177,7 +196,7 @@ export async function runCode(source: string, opts: RunOptions = {}): Promise<Ru
 async function spawnCaptured(
   bin: string,
   args: string[],
-  source: string,
+  source: string | null,
   timeoutMs: number,
   maxOutputBytes: number,
   cwd?: string,
@@ -198,7 +217,9 @@ async function spawnCaptured(
 /** The half every backend shares: write the program, kill on timeout, read both streams capped. */
 async function drive(
   child: Deno.ChildProcess,
-  source: string,
+  /** The program, or null when the jail runs a FILE: stdin is then closed rather than left open,
+   *  since a program that reads it would otherwise wait for input nobody is going to send. */
+  source: string | null,
   timeoutMs: number,
   maxOutputBytes: number,
   started: number,
@@ -213,7 +234,7 @@ async function drive(
 
   try {
     const w = child.stdin.getWriter();
-    await w.write(new TextEncoder().encode(source));
+    if (source !== null) await w.write(new TextEncoder().encode(source));
     await w.close();
   } catch { /* child exited before reading its program */ }
 
@@ -322,7 +343,7 @@ export function bwrapArgs(opts: BwrapOptions): string[] {
   return args;
 }
 
-export async function runBwrap(source: string, opts: BwrapOptions): Promise<RunResult> {
+export async function runBwrap(source: string | null, opts: BwrapOptions): Promise<RunResult> {
   const { timeoutMs, maxOutputBytes } = { ...DEFAULTS, ...opts };
   return await spawnCaptured("bwrap", bwrapArgs(opts), source, timeoutMs, maxOutputBytes, opts.cwd);
 }

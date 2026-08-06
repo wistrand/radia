@@ -13,6 +13,7 @@ import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { bootstrap } from "./space/roles.ts";
 import { ToolSet } from "./client/turn.ts";
+import { readWorkspace } from "../../extensions/ts/workspace.ts";
 
 const PORT = 7799;
 const url = `http://127.0.0.1:${PORT}`;
@@ -37,13 +38,20 @@ admin = new RadiaClient(url, { token: operatorToken(url) });
 await registerChatKinds(admin);
 const { execToken } = await bootstrap(admin);
 
+const wsRoot = Deno.makeTempDirSync({ prefix: "radia-ws-" });
 const worker = new Deno.Command(Deno.execPath(), {
   args: [
     "run",
     `--allow-net=127.0.0.1:${PORT}`,
     "--allow-run=deno",
     "--allow-env=HOME",
+    // A procedure is a WORKSPACE now, so every call materialises a tree and the worker needs
+    // somewhere to put it. fleet.ts has always done this; these launchers predate the change.
+    `--allow-write=${wsRoot}`,
+    `--allow-read=${wsRoot}`,
     "examples/chat/workers/exec.ts",
+    "--workspace-root",
+    wsRoot,
     "--url",
     url,
     "--token",
@@ -80,12 +88,18 @@ const saved = await callTool("save_procedure", {
 }, convA);
 check("save_procedure succeeds", saved.ok, JSON.stringify(saved.output).slice(0, 90));
 
-// 2. The code is an artifact, and the record points at it.
+// 2. The code is a WORKSPACE, and the record points at it by name and entrypoint. It used to be a
+// lone artifact, which is a shape that could not grow: one file, JavaScript whatever it contained,
+// no versions to read back, nothing an agent could be bound to.
 const procs = await admin.query({ kind: "procedure", match: { name: "add_nums", conversationId: convA } }, 10);
-const body = procs[0]?.body as { artifactId?: string } | undefined;
+const body = procs[0]?.body as { workspace?: string; entrypoint?: string } | undefined;
 check("a procedure record exists, scoped to the conversation", procs.length === 1);
-const source = body?.artifactId ? new TextDecoder().decode(await admin.getArtifact(body.artifactId)) : "";
-check("its code is stored as an artifact", source.includes("console.log(args.a + args.b)"));
+check("it points at a workspace, not an artifact", body?.workspace === "proc-add_nums" && body?.entrypoint === "main.js", JSON.stringify(body));
+const manifest = await readWorkspace(admin, "proc-add_nums", convA);
+const entryFile = manifest?.files.find((f) => f.path === "main.js");
+const source = entryFile ? new TextDecoder().decode(await admin.getArtifact(entryFile.artifactId)) : "";
+check("its code is the tree's entrypoint", source.includes("console.log(args.a + args.b)"));
+check("…and the tree declares that entrypoint itself", manifest?.entrypoint === "main.js", String(manifest?.entrypoint));
 
 // 3. Call it by name: the args reach the code.
 const ran = await callTool("add_nums", { a: 2, b: 40 }, convA);

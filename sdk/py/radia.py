@@ -24,6 +24,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import sys
 import threading
 import time
 import urllib.error
@@ -765,6 +766,10 @@ def agent_loop(
     final ack, i.e. after the work was already done. A two-parameter handler still works unchanged.
     """
     say = log or (lambda _m: None)
+    # Failures go to the caller's ``log`` when it gave one, and to stderr when it did not. Never
+    # nowhere: a swallowed handler exception is indistinguishable from a hang, since the record is
+    # claimed, nacked, reclaimed and nacked again with nothing saying why. Matches `sdk/ts/loop.ts`.
+    report = log or (lambda m: print(m, file=sys.stderr))
     stop = stop or threading.Event()
     wake = threading.Event()
     # Keep this run's credential alive for as long as the loop runs. Without it a Python worker
@@ -798,7 +803,7 @@ def agent_loop(
                 if e.status == 403:
                     # Permanent: this run has no grant to watch the kind. Say so loudly once and
                     # fall back to polling. "Silently slow" would be worse than "loudly wrong".
-                    say(f"[{name}] watch on '{kind}' FORBIDDEN ({e.code}): using the poll fallback")
+                    report(f"[{name}] watch on '{kind}' FORBIDDEN ({e.code}): using the poll fallback")
                     return
                 say(f"[{name}] watch on '{kind}' dropped: {e}. Retrying")
                 stop.wait(1.0)
@@ -817,7 +822,7 @@ def agent_loop(
                 if claimed:
                     break
         except RadiaError as e:
-            say(f"[{name}] take error: {e}")
+            report(f"[{name}] take error: {e}")
 
         if not claimed:
             wake.wait(poll_seconds)
@@ -852,7 +857,7 @@ def agent_loop(
                     client.nack(lease)
                 except RadiaError:
                     pass
-                say(f"[{name}] {record['id'][-6:]} -> nack: {e}")
+                report(f"[{name}] {record['id'][-6:]} -> nack: {e}")
         finally:
             beat.stop()
         if beat.reason == "credential":
