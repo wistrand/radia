@@ -1,8 +1,7 @@
 # Plan: workspace agents, and promotion as grant rotation
 
-> Status: phases 1 to 5 BUILT (2026-08-06), so the containment is structural rather than
-> attested and the line about real protected data is cleared; phase 6 (warm pools) is an
-> optimization and unbuilt. Origin:
+> Status: ALL PHASES BUILT (2026-08-06). Containment is structural rather than attested, and the
+> line about real protected data is cleared for the Deno jail. Origin:
 > a speculation about running LLM-written
 > code over protected data, plus the review that found several of its guarantees weaker than the
 > enforcement behind them. That is the claim ledger below, and it is why this file exists before
@@ -293,10 +292,31 @@ put does more than preserve labels: the runtime then computes `foreign` itself, 
 output is derived from a record another principal wrote. Lineage the code cannot omit is what
 lets the space label on its own.
 
-**6. Warm pools per promoted digest.**
-Ships: a digest-keyed pool in `host.ts`.
-Done when: cold and warm start are measured and the difference is recorded here. No correctness
-risk: different code is a different digest, so a warm entry cannot be stale.
+**6. Warm pools per promoted digest. BUILT (2026-08-06).**
+Shipped: `treeCache` in `extensions/ts/host.ts`, used by both invokers, keyed by digest and
+caching the PROMISE so two claims for one digest share a materialisation rather than racing to
+write the same files. LRU, four entries by default, which covers a rotation, a rollback and a
+spare.
+Measured (in-process, one small file per entry, artifacts over HTTP):
+
+| tree | cold materialise | warm |
+|---|---|---|
+| 1 file    | 5ms   | 0.00ms |
+| 20 files  | 34ms  | 0.00ms |
+| 100 files | 143ms | 0.00ms |
+
+So the saving is the whole materialisation and scales with the tree, while the jail spawn (~25ms)
+is unchanged: end to end, a one-file entrypoint went 41ms cold to 29ms warm, and a hundred-file
+tree would save an order of magnitude more. A one-file benchmark would have made this look
+pointless, which is why the table has three rows.
+**What is NOT pooled, deliberately: the process.** "Different code is a different digest" covers
+CODE, not STATE, and a jail reused between claims carries globals, open handles and whatever the
+last run left in memory. A pool of live interpreters is a different proposition with a different
+safety case, and it does not get to borrow this one.
+The correctness claim is tested as the thing that would break it: promote different code and the
+SAME host runs the new version (`hits: 1, misses: 2`), because the digest is part of the key.
+Building it moved one thing: the per-record boot program now lives in its own temp directory
+rather than in the tree, since a shared tree cannot hold a file that differs per claim.
 
 **Never put real protected data in before phase 5 is built and its plants pass.** Before that a
 jailed process can reach the API with whatever credential it can read, and the compartment binds
