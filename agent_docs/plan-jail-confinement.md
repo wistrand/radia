@@ -196,6 +196,13 @@ Traps for the implementer, all hit during verification:
 - SBPL `(trace ...)` is dead on modern macOS; iterate via the crash reports in
   `~/Library/Logs/DiagnosticReports` instead.
 - `DENO_DIR` is not needed under `--no-remote`; only the binary's own directory is.
+- The profile above bounds READS ONLY, and that is not enough on its own: a jailed Deno still
+  WRITES its global caches (`~/Library/Caches/deno/*_cache_v2`, written regardless of
+  `--no-remote`), and writable-but-unreadable SQLite corrupts them for the whole machine
+  (`SQLITE_IOERR_SHORT_READ` 522 on every later `deno` invocation; Deno's own recovery deletes the
+  main db but not the `-wal`/`-shm` siblings, so it never heals). Happened during this
+  verification. The real jail must also point `DENO_DIR`/cache at a throwaway dir inside the
+  workspace or deny writes outside it; recovery is deleting the full db triples.
 
 **PYTHON IS LINUX-ONLY, and stays that way (decided 2026-08-06).** `run_python` is served only where
 `bwrapSandbox` verifies, and bubblewrap is a Linux tool, so a Mac publishes no `run_python` at all:
