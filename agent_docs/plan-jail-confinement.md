@@ -167,6 +167,12 @@ and skips elsewhere. The builder is where a regression would land; the run is wh
 is, and only a Mac can report it. Three plants proved the pure cases (drop the dyld import, drop the
 realpath, accept an injecting path).
 
+**A Mac has now reported it (2026-08-06, same day).** `deno task extensions` on macOS 26.4.1: 109
+passed, 0 failed, the darwin-gated case included ("the Seatbelt profile actually closes the import
+hole", 28ms). The `HOME: "/tmp"` in `spawnDeno` also held up: jailed runs put Deno's own cache
+churn under `/tmp/Library/Caches/deno` and the machine's real `~/Library/Caches/deno` was verified
+untouched, which matters because the by-hand verification had corrupted it (see the trap below).
+
 VERIFIED on a real Mac (macOS 26.4.1, Deno 2.9.5, arm64): the
 module-loading hole reproduces there, and a filesystem-only SBPL profile closes it while
 workspace-relative imports keep working. Overhead is ~6ms (bare jail 10.3ms median, confined
@@ -198,13 +204,20 @@ Traps for the implementer, all hit during verification:
 - SBPL `(trace ...)` is dead on modern macOS; iterate via the crash reports in
   `~/Library/Logs/DiagnosticReports` instead.
 - `DENO_DIR` is not needed under `--no-remote`; only the binary's own directory is.
-- The profile above bounds READS ONLY, and that is not enough on its own: a jailed Deno still
-  WRITES its global caches (`~/Library/Caches/deno/*_cache_v2`, written regardless of
-  `--no-remote`), and writable-but-unreadable SQLite corrupts them for the whole machine
-  (`SQLITE_IOERR_SHORT_READ` 522 on every later `deno` invocation; Deno's own recovery deletes the
-  main db but not the `-wal`/`-shm` siblings, so it never heals). Happened during this
-  verification. The real jail must also point `DENO_DIR`/cache at a throwaway dir inside the
-  workspace or deny writes outside it; recovery is deleting the full db triples.
+- A confined child MUST get a cwd inside the profile's roots. It inherits the spawner's cwd
+  otherwise, and Deno dies at startup on getcwd before any code runs; every probe then reports
+  unverified and the worker silently falls back to the unconfined jail, which is how the first
+  real exec-worker boot on a Mac ran unconfined while the conformance case (which passes a cwd)
+  stayed green. `spawnDeno` now defaults the cwd to the Deno binary's directory.
+- The profile above bounds READS ONLY, so a jailed Deno still WRITES its global caches
+  (`~/Library/Caches/deno/*_cache_v2`, written regardless of `--no-remote`), and
+  writable-but-unreadable SQLite corrupts them for the whole machine (`SQLITE_IOERR_SHORT_READ`
+  522 on every later `deno` invocation; Deno's own recovery deletes the main db but not the
+  `-wal`/`-shm` siblings, so it never heals). Happened during the by-hand verification, which
+  inherited the real `$HOME`; recovery is deleting the full db triples. The built code avoids it
+  by construction (`clearEnv` + `HOME: "/tmp"` in `spawnDeno` moves the churn to
+  `/tmp/Library/Caches/deno`), so this trap now binds anyone running the profile by hand or
+  changing that env line, not the shipped path.
   FIXED in the implementation: `RunOptions.cacheDir` gives a confined jail a directory it can BOTH
   read and write (the chat puts it under its workspace root), the Seatbelt profile read-allows it,
   and the bubblewrap jail points `DENO_DIR` inside its own tmpfs. With no writable directory

@@ -1063,12 +1063,16 @@ export async function materialize(
   manifest: WorkspaceManifest,
   root: string,
 ): Promise<{ root: string; written: number; bytes: number; treeDigest: string }> {
+  // Resolved for the escape COMPARISON below, never for the writes: the caller's write grant names
+  // the path it was GIVEN (`--allow-write=<root>`), and on macOS the temp root is behind a symlink
+  // (`/var/folders` -> `/private/var/folders`), so writing through the resolved form is a
+  // permission error against the very grant the doc comment above asks the caller to hold.
   const realRoot = await Deno.realPath(root);
   let written = 0;
   let bytes = 0;
   for (const file of [...manifest.files].sort((a, b) => (a.path < b.path ? -1 : 1))) {
     validatePath(file.path);
-    const target = `${realRoot}/${file.path}`;
+    const target = `${root}/${file.path}`;
     const dir = target.slice(0, target.lastIndexOf("/"));
     await Deno.mkdir(dir, { recursive: true });
     // Resolve AFTER creating the directory: a symlink planted by an earlier entry resolves here,

@@ -286,8 +286,15 @@ function spawnDeno(entry: string, opts: RunOptions, memoryMb: number): Deno.Chil
   if (opts.confine === "sandbox-exec") {
     // The jail, unchanged, under a Seatbelt profile. `-p` takes the profile as one argument, so
     // nothing goes through a shell.
+    //
+    // A cwd is NOT optional here the way it is for the other backends: the child inherits this
+    // process's cwd otherwise, that directory is outside the profile's read roots, and Deno then
+    // dies at startup on getcwd ("could not read current working directory") before any code runs.
+    // That is exactly how the probe failed on the first real Mac boot: every claim reported
+    // unverified and the worker silently fell back to the unconfined jail. The Deno binary's own
+    // directory is the one path the profile always grants.
     return new Deno.Command("/usr/bin/sandbox-exec", {
-      ...(opts.cwd ? { cwd: opts.cwd } : {}),
+      cwd: opts.cwd ?? denoDir,
       args: [
         "-p",
         sandboxExecProfile({ readRoots: opts.readRoots, denoDir, cwd: opts.cwd, cacheDir }),
