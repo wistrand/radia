@@ -1245,6 +1245,16 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   PRINTS whether bubblewrap coverage is ON or OFF. That is the rule worth keeping: the fix for a
   silent skip is to make the skip loud, not to fail the build over an environment nobody chose.
   Real coverage for this backend needs a machine with unprivileged user namespaces.
+- **A read permission does not necessarily cover MODULE LOADING, and in Deno it does not.** Measured
+  2026-08-06: inside the permission jail, `import("file:///x.json", {with:{type:"json"}})` returns
+  the file past both `--allow-read` and `--deny-read`, while `Deno.readTextFileSync` on the same
+  path is refused. Any `.ts`/`.js` is importable too, which reads its exports and runs it. Non-module
+  text does not leak, so this reaches JSON and code rather than arbitrary bytes. No flag closes it
+  (`--allow-import` is remote-only), and a textual ban on `import` is not a control because dynamic
+  import works from `eval`. A mount namespace does close it, for 7ms. The lesson generalises past
+  Deno: when a sandbox grants "read these paths", ask which CHANNELS that covers, and probe the ones
+  it does not name. See package T in [plan-audit-remediation.md](plan-audit-remediation.md) and
+  `SandboxSpec.importsConfined`.
 - **Prefer a guarantee that holds by ABSENCE over one that holds by presence.** Deno's sandbox is
   safe because nothing was granted: forget every flag, get the safe answer. A bwrap or container
   jail is safe because `--unshare-net` was passed: forget one, get the unsafe answer silently. That

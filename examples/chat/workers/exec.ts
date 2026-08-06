@@ -51,8 +51,16 @@ const readRoots = argAll("--dir").filter(Boolean);
  *  unreadable by the process meant to read it. */
 const workspaceRoot = arg("--workspace-root") ?? "";
 // Denied even if a root would otherwise cover them: the space's blob key and its operator
-// credential. `--deny-read` beats `--allow-read`, so pointing `--dir` at a directory containing
-// them still does not expose them.
+// credential. `--deny-read` beats `--allow-read` for the FILE APIS, so pointing `--dir` at a
+// directory containing them does not expose them to `Deno.readTextFile`.
+//
+// IT DOES NOT COVER MODULE LOADING, and both of those files are JSON. Measured: inside this jail
+// `import("file:///…/kek.json", { with: { type: "json" } })` returns the file, past the roots and
+// past this deny list, while the same path through a file API is refused. There is no Deno flag
+// that closes it (`--allow-import` gates remote hosts only); only a mount namespace does, which is
+// why `bwrapSandbox` carries `importsConfined: true` and `denoSandbox` carries false. Until this
+// worker runs under a confining jail, treat "unreadable by the sandbox" as false for any JSON the
+// worker's own user can read. See extensions/ts/sandbox.ts `importsConfined`.
 const denyRead = argAll("--deny-dir").filter(Boolean);
 const client = new RadiaClient(url, token ? { token } : {});
 

@@ -45,10 +45,57 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~Q~~ | ~~Designed features unreachable~~     | ~~P2~~   | **CLOSED 2026-08-04**                 |
 | ~~R~~ | ~~Dead taint parameter; half-tested guard~~ | ~~P2~~ | **CLOSED 2026-08-04**                 |
 | ~~S~~ | ~~Round-two reports, re-derived~~     | ~~P1/P2~~ | **CLOSED 2026-08-04** (11 of 12 reproduced) |
+| **T** | **Module loading escapes the Deno jail's read permission** | **P1** | **OPEN** (documented + probed, not closed) |
 
-Every package is closed (A–S). Their lessons are rules in
+Every package is closed (A–S); **T is open**. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
+
+## Package T: module loading escapes the read permission (P1) — OPEN
+
+**The defect, measured 2026-08-06.** Inside the `deno-permissions` jail,
+`import("file:///anywhere.json", { with: { type: "json" } })` returns the file. It is bounded by
+neither `--allow-read` roots nor `--deny-read`, while `Deno.readTextFileSync` on the same path is
+correctly refused. Any `.ts`/`.js` module can also be imported, which exposes its exports and RUNS
+its top-level code inside the jail.
+
+**Blast radius.** `examples/chat/workers/exec.ts` passes `--deny-dir` for the space's blob KEK and
+the operator credential. Both are JSON, so that protection does not hold. Reaching them needs an
+absolute path, which is a real obstacle and not a defence: the runner's own tool description hands
+the model its read roots verbatim, `.radia/` sits under a project root by convention, and
+`Deno.cwd()`, `import.meta.url` and `Deno.execPath()` all work unpermissioned, so jailed code can
+locate itself.
+
+**Bounded, deliberately stated.** Non-module text does NOT leak: importing a `.txt` or `.yaml`
+fails with "Expected a JavaScript or TypeScript module" and no file contents in the message. So
+this reaches JSON and JS/TS, not arbitrary bytes. Distinct error messages do make file EXISTENCE
+probeable anywhere, which is an enumeration oracle.
+
+**No flag closes it.** `--allow-import` / `--deny-import` gate remote hosts only (Deno 2.9.2). A
+source-level ban on `import` is not a control: dynamic import works from `eval`.
+
+**What is done.** The record no longer lies: `SandboxSpec.importsConfined` states whether the read
+restriction covers module loading (`denoSandbox` false, `bwrapSandbox` true), absent reads as
+unconfined, and `probeSandbox` breaks out of any spec CLAIMING confinement it does not have. Two
+cases in `extensions/conformance/workspace.test.ts`, both proved against plants; the second plant is
+the one worth knowing, since a probe without a real canary reports `held: true` for a wide-open
+jail.
+
+**What is not done: the fix.** A mount namespace closes it, because an unbound path does not exist
+to open. Measured, same jail and same flags, wrapped in bubblewrap: the KEK import goes from
+`REACHED` to `Module not found`, for 7ms (50ms to 57ms). The remedy is therefore a bwrap-confined
+Deno sandbox, selected where bwrap probes clean, exactly as `run_python` already is. It is not
+wired in because it needs a decision this doc should not make alone: bubblewrap is Linux-only and
+unavailable on hosted CI runners (see gotchas.md), so either JS execution falls back to the
+unconfined jail on those machines with the record saying so, or it refuses to serve at all. The
+fallback matches the existing "publish only what probes clean" doctrine and is the recommendation.
+
+**One caveat for whoever wires it.** `probeSandbox` picks its probe LANGUAGE from `isolation`
+(bubblewrap implies Python), which is the backend/language conflation `design-execution.md` warns
+about. A bwrap-confined Deno jail is the first spec where those differ, and the probe has to learn
+the difference before it can verify one.
+
+---
 
 **Downstream dependencies, now satisfied.** Both gates on
 [plan-inspection.md](plan-inspection.md) are cleared: B gave the inspection backlog a scoped-read

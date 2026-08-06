@@ -11,7 +11,7 @@
 // The rest answers Phase 1 of agent_docs/plan-workspaces.md: does a churning tree-as-records hold
 // up, and where does the record body limit bite. No execution, no sandbox, no materialisation.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../../examples/operator.ts";
 import {
@@ -1671,4 +1671,65 @@ Deno.test("workspace: running the ENTRYPOINT does what a program on stdin cannot
       await Deno.remove(root, { recursive: true });
     }
   });
+});
+
+// ── module loading is not bounded by the read permission ─────────────────────────────────────────
+
+Deno.test("sandbox: the Deno jail cannot confine IMPORTS, and its record says so", async () => {
+  // The finding this pins, measured rather than argued: inside the permission jail,
+  // `import(…, {with:{type:"json"}})` returns any JSON the process user can read, past the
+  // `--allow-read` roots AND past `--deny-read`, while `Deno.readTextFileSync` on the same path is
+  // refused. `--allow-import` gates remote hosts only, so there is no flag that closes it.
+  //
+  // The test asserts the WEAKNESS because the record has to keep matching reality: if a future Deno
+  // starts gating this, `importsConfined: false` becomes a lie in the other direction and somebody
+  // should be told.
+  const secret = await Deno.makeTempDir({ prefix: "SECRET-" });
+  const tree = await Deno.makeTempDir({ prefix: "tree-" });
+  try {
+    await Deno.writeTextFile(`${secret}/kek.json`, JSON.stringify({ kek: "BLOB-KEY" }));
+
+    const viaImport = await runCode(
+      `const m = await import("file://${secret}/kek.json", { with: { type: "json" } }); console.log(JSON.stringify(m.default));`,
+      { readRoots: [tree], denyRead: [secret], cwd: tree, timeoutMs: 20_000 },
+    );
+    assertStringIncludes(viaImport.stdout, "BLOB-KEY", "the finding changed; update denoSandbox and the docs");
+
+    // The control: the SAME path through a file API is correctly refused, which is what makes this
+    // a hole in one channel rather than a jail that does not work.
+    const viaRead = await runCode(`console.log(Deno.readTextFileSync("${secret}/kek.json"));`, {
+      readRoots: [tree],
+      denyRead: [secret],
+      cwd: tree,
+      timeoutMs: 20_000,
+    });
+    assert(!viaRead.ok, "the file API must still be denied");
+
+    // And the record does not pretend otherwise.
+    assertEquals(denoSandbox({}).importsConfined, false);
+  } finally {
+    await Deno.remove(secret, { recursive: true });
+    await Deno.remove(tree, { recursive: true });
+  }
+});
+
+Deno.test("sandbox: a spec CLAIMING confined imports is caught by the probe", async () => {
+  // The guard that matters going forward. A backend may not advertise a confinement it cannot
+  // deliver, and this is the direction the whole record shape exists to prevent: structured data
+  // looks authoritative. Claimed falsely on the permission jail, the probe must break out.
+  const tree = await Deno.makeTempDir({ prefix: "tree-" });
+  try {
+    const lying = { ...denoSandbox({ readRoots: [tree] }), importsConfined: true };
+    const results = await probeSandbox(lying, { readRoots: [tree], cwd: tree, timeoutMs: 20_000 });
+    const imports = results.find((r) => r.claim === "imports");
+    assert(imports, `the probe did not test the claim: ${JSON.stringify(results.map((r) => r.claim))}`);
+    assertEquals(imports.held, false, `a false claim of confined imports must not pass: ${JSON.stringify(imports)}`);
+
+    // …and the honest spec is not asked the question at all, because a stated weakness needs no
+    // disproof.
+    const honest = await probeSandbox(denoSandbox({ readRoots: [tree] }), { readRoots: [tree], cwd: tree, timeoutMs: 20_000 });
+    assertEquals(honest.find((r) => r.claim === "imports"), undefined);
+  } finally {
+    await Deno.remove(tree, { recursive: true });
+  }
 });

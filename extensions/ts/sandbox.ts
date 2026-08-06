@@ -280,8 +280,25 @@ export interface SandboxSpec {
    *  the jail is silently open). That flip is why every backend is probed before it is served. */
   isolation: "deno-permissions" | "bubblewrap";
   network: boolean;
-  /** Absolute paths the program may read; empty means no filesystem at all. */
+  /** Absolute paths the program may read; empty means no filesystem at all. See `importsConfined`
+   *  before believing that: on the Deno backend it bounds file APIS and not module loading. */
   readonlyPaths: string[];
+  /**
+   * Whether `readonlyPaths` also bounds MODULE LOADING, not only the file APIs.
+   *
+   * FALSE for `deno-permissions`, measured rather than assumed: inside that jail
+   * `import("file:///anywhere.json", { with: { type: "json" } })` returns the file, past the
+   * `--allow-read` roots AND past `--deny-read`, while `Deno.readTextFileSync` on the same path is
+   * refused. Any `.ts`/`.js` module can likewise be imported, which reads its exports and RUNS its
+   * top-level code. Non-module text does not leak (the parse fails without echoing the file), but
+   * every JSON secret the process user can read does.
+   *
+   * There is no Deno flag for it: `--allow-import` gates remote hosts only. A mount namespace is
+   * the only thing that closes it, so `bubblewrap` has this true and the permission jail does not.
+   * Absent means UNCONFINED, because a security property that was never stated must not read as a
+   * guarantee.
+   */
+  importsConfined?: boolean;
   /** Absolute paths it may write; empty means it cannot write. */
   writablePaths: string[];
   processes: boolean;
@@ -356,6 +373,9 @@ export function bwrapSandbox(
   const { timeoutMs, memoryMb } = { ...DEFAULTS, ...opts };
   return {
     name: opts.name ?? "bwrap",
+    // A mount namespace bounds every read, module loading included: an unbound path does not exist
+    // to open. Measured against the same canary the probe uses.
+    importsConfined: true,
     language: opts.language ?? "unknown",
     isolation: "bubblewrap",
     network: false,
@@ -379,6 +399,9 @@ export function denoSandbox(opts: RunOptions & { name?: string } = {}): SandboxS
   const { timeoutMs, memoryMb } = { ...DEFAULTS, ...opts };
   return {
     name: opts.name ?? "deno",
+    // MEASURED, not assumed: `import(…, {with:{type:"json"}})` reaches any JSON the process user
+    // can read, past the roots and past `--deny-read`. Saying so is the point of the field.
+    importsConfined: false,
     language: "javascript",
     isolation: "deno-permissions",
     network: false,
@@ -424,6 +447,9 @@ export async function probeSandbox(
     env: `Deno.env.get("HOME")`,
     filesystem: `Deno.readTextFileSync("/etc/hostname")`,
     writable: `Deno.writeTextFileSync("/tmp/radia-probe-should-not-exist", "escaped")`,
+    // The one a permission flag cannot answer. Filled in per run: the canary is written outside
+    // every root, so reaching it proves module loading is not bounded by them.
+    imports: `await import("file://__CANARY__", { with: { type: "json" } })`,
   };
   const py = {
     network: `import socket; socket.create_connection(("${host}",${port}),timeout=2)`,
@@ -431,6 +457,10 @@ export async function probeSandbox(
     env: `import os; assert os.environ["HOME"]`,
     filesystem: `open("/etc/hostname").read()`,
     writable: `open("/radia-probe-should-not-exist","w").write("escaped")`,
+    // Python reaches a module through an ordinary file read, so an unbound path that ALREADY exists
+    // is the evidence and nothing has to be created. That matters: a worker often holds exactly one
+    // writable directory, and a prober that needs a temp file cannot run there.
+    imports: `open("/etc/hostname").read()`,
   };
   const bwrap = spec.isolation === "bubblewrap";
   const src = bwrap ? py : js;
@@ -450,9 +480,34 @@ export async function probeSandbox(
     // one, so there is nothing to disprove; the claim is then carried by the record for a policy to
     // read, not by a probe.
     { claim: "writable", onlyIf: spec.writablePaths.length === 0 },
+    // Only when the spec CLAIMS imports are bounded. The permission jail says they are not, and a
+    // stated weakness needs no disproof; what must never pass unchallenged is a record claiming a
+    // confinement the backend cannot deliver.
+    { claim: "imports", onlyIf: spec.importsConfined === true },
   ];
 
+  // The JS probe needs a real JSON file outside every root: importing a path that does NOT exist
+  // fails for the wrong reason and would report "held" from a jail that is wide open. Nothing
+  // portable guarantees one, so it is created. Only for the JS backend, and only when confinement
+  // is claimed: the bwrap probe uses `/etc/hostname`, which exists already, because a worker
+  // confined to a single writable directory cannot make a temp file at all.
+  let canary: string | undefined;
+  let canaryDir: string | undefined;
+  let canaryProblem: string | undefined;
+  if (!bwrap && attempts.some((a) => a.claim === "imports" && a.onlyIf)) {
+    try {
+      canaryDir = await Deno.makeTempDir({ prefix: "radia-canary-" });
+      canary = `${canaryDir}/canary.json`;
+      await Deno.writeTextFile(canary, JSON.stringify({ reached: true }));
+    } catch (e) {
+      // Unverified is a FAILED claim, never a pass: the same rule the network probe follows.
+      canaryProblem = `the probe could not write its canary (${(e as Error).message}), so ` +
+        `'imports are confined' could not be tested; give this process a writable directory`;
+    }
+  }
+
   const out: ProbeResult[] = [];
+  try {
   for (const a of attempts) {
     if (!a.onlyIf) continue; // nothing claimed, nothing to disprove
 
@@ -477,7 +532,11 @@ export async function probeSandbox(
       continue;
     }
 
-    const program = wrap(src[a.claim]);
+    if (a.claim === "imports" && canaryProblem) {
+      out.push({ claim: "imports", held: false, detail: canaryProblem });
+      continue;
+    }
+    const program = wrap(src[a.claim].replace("__CANARY__", canary ?? "/nonexistent"));
     const r = bwrap
       ? await runBwrap(program, {
         command: ["python3", "-"],
@@ -507,4 +566,7 @@ export async function probeSandbox(
     out.push({ claim: a.claim, held: !escaped, ...(escaped ? { detail: "the operation succeeded inside the jail" } : {}) });
   }
   return out;
+  } finally {
+    if (canaryDir) await Deno.remove(canaryDir, { recursive: true }).catch(() => {});
+  }
 }
