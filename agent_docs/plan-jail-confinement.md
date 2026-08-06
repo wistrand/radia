@@ -2,9 +2,10 @@
 
 > Status: RESEARCH DONE (2026-08-06), nothing built beyond the honest record. The defect is package
 > T in [plan-audit-remediation.md](plan-audit-remediation.md); this is the plan to close it.
-> Everything below marked "measured" was run against the real jail on Linux. The macOS row is NOT
-> measured and says so. Read [design-execution.md](design-execution.md) first: the language question
-> is an isolation question, and this is the isolation half.
+> Everything below marked "measured" was run against the real jail on Linux, except phase 4:
+> `sandbox-exec` was verified on a real Mac 2026-08-06 (macOS 26.4.1, Deno 2.9.5, arm64). Read
+> [design-execution.md](design-execution.md) first: the language question is an isolation question,
+> and this is the isolation half.
 
 ## Contents
 - The one hole, and why that simplifies the fix
@@ -107,12 +108,37 @@ compatibility question (read the old name, write the new one) rather than a rena
 and the probe taught to test a JS jail under a non-JS-implying backend. CI will say whether the
 runner can use it, which is the question today's backend answers with "no".
 
-**4. `sandbox-exec` on macOS.** `/usr/bin/sandbox-exec -p '<SBPL profile>'`, filesystem-only. It is
-built in, needs no dependency, and is what Chrome, Bazel and Nix use. Deprecated by Apple in 10.8
-and still present and working since. The profile has to permit everything Deno itself reads (its
-binary, the dyld shared cache, `DENO_DIR`, `/dev/urandom`), which is fiddly and version-sensitive.
-NOT VERIFIED: the research above was done on Linux, and nobody has run this on a Mac. The probe
-machinery would answer it in one run.
+**4. `sandbox-exec` on macOS.** VERIFIED on a real Mac (macOS 26.4.1, Deno 2.9.5, arm64): the
+module-loading hole reproduces there, and a filesystem-only SBPL profile closes it while
+workspace-relative imports keep working. Overhead is ~6ms (bare jail 10.3ms median, confined
+16.0ms). The "fiddly and version-sensitive" part has an Apple-maintained answer: a naive
+deny-by-default-reads profile SIGABRTs every binary, because dyld's bootstrap (libignition) needs
+`file-read*` on the literal `/` and `file-map-executable` on the cryptex graft points, and
+`(import "dyld-support.sb")` supplies exactly that, revved by Apple with the OS. The working shape:
+
+```scheme
+(version 1)
+(allow default)                     ; net/env/run/write stay denied by Deno's flags
+(deny file-read*)
+(import "dyld-support.sb")          ; dyld/libignition bootstrap, Apple-maintained
+(allow file-read-metadata)
+(allow file-read*
+  (subpath "/usr/lib") (subpath "/usr/share") (subpath "/System")
+  (subpath "<deno binary dir>")
+  (subpath "<workspace, realpath'd>")
+  (subpath "/dev"))
+```
+
+Traps for the implementer, all hit during verification:
+- Profile paths must be RESOLVED paths: the sandbox matches on vnodes, `/tmp` is a symlink to
+  `/private/tmp`, so an un-realpath'd workspace path silently misses.
+- `dyld-support.sb` is labeled Apple System Private Interface; importing it by name is still the
+  right call, since the hardcoded-cryptex-paths alternative already broke during this test.
+- The global `(allow file-read-metadata)` leaks file EXISTENCE everywhere. Acceptable, but weaker
+  than bwrap's mount namespace, which hides everything; the sandbox record must say so.
+- SBPL `(trace ...)` is dead on modern macOS; iterate via the crash reports in
+  `~/Library/Logs/DiagnosticReports` instead.
+- `DENO_DIR` is not needed under `--no-remote`; only the binary's own directory is.
 
 **5. Windows stays unconfined, and the record says so.** No equivalent that is worth the dependency.
 `importsConfined: false` is the honest answer, and the operator sees it.
@@ -123,9 +149,9 @@ machinery would answer it in one run.
    for CI. The AppArmor failure was specific to configuring loopback inside a new net namespace, and
    this variant never creates one. CI prints whether bubblewrap coverage is on; phase 3 turns that
    into an answer.
-2. **Is `sandbox-exec` workable in practice?** Needs a Mac. If the profile turns out to be
-   unmaintainable across macOS releases, the honest fallback is phase 5's posture plus phase 2's
-   narrowing.
+2. **ANSWERED (2026-08-06): `sandbox-exec` works.** Verified on macOS 26.4.1; see phase 4 for the
+   profile, the measurement and the traps. The maintainability worry is largely retired by
+   `(import "dyld-support.sb")`, which moves the version-sensitive part onto Apple.
 3. **Should a confined jail be REQUIRED for anything?** Nothing requires it today. The natural first
    customer is the compartment story: a grant could bind `importsConfined: true` for work over
    protected data, which is a policy question for
