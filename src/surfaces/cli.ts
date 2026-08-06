@@ -13,6 +13,10 @@ import { exportWorkspaceGit } from "../../extensions/ts/git.ts";
 import { buildThreadSpans, postTraces, recordSpans, toResourceSpans, traceIdOf } from "../../extensions/ts/otlp.ts";
 import { basicPassword, gitHandler } from "../../extensions/ts/git-http.ts";
 import { summarizeWorkspaces } from "../../extensions/ts/workspace.ts";
+import { declareExecRequest, pinnedDigests, promote } from "../../extensions/ts/promotion.ts";
+import { BINDING, type Binding, declareBinding, type Outcome, readBindings, sandboxInvoker, WorkspaceHost } from "../../extensions/ts/host.ts";
+import { brokeredInvoker } from "../../extensions/ts/broker.ts";
+import { auditCompartment } from "../../extensions/ts/compartment.ts";
 import { defaultBase, resolveDefinitionToken, resolveToken, saveLogin, storedObserver } from "../credentials.ts";
 import { flag, flags, has, positional } from "../flags.ts";
 import { env, onShutdown, serve, stdin, UsageError } from "../platform.ts";
@@ -79,6 +83,29 @@ Workspaces (a convention, not a runtime concept: see extensions/)
                                       Read-only; push is refused. Authenticate with a
                                       definition token as the HTTP password, so a clone reads
                                       what that principal can and \`radia revoke\` stops it
+
+Workspace agents (a workspace digest as a principal's code; also a convention, see extensions/)
+  promote <digest> --tier <t> --pin <principal>:<op,op>…  [--kind <k>]
+                                      what a tier may run, as a grant rotation pinned to the
+                                      digest. Grants the new one, then retires the old
+  rollback <digest> --tier <t> --pin <principal>:<op,op>…  promotion pointed backwards
+  pins <principal> --tier <t>         what that principal is pinned to, read from the grants
+                                      that enforce it: "what is prod running"
+  bind <agent> --digest <d> --entrypoint <p> [--sandbox <json>]
+  bind <agent> --retire               which code an agent runs. THE ESCALATION ROOT, and inert
+                                      without a matching pin: both locks must agree
+  bindings                            every live binding
+  host --agent <principal>=<token>… [--agents -] [--once] [--interval <ms>]
+       [--no-broker] [--timeout <ms>] [--lease <s>] [--request-kind <k>]
+                                      run bound agents' code AS them: holds each definition
+                                      token, mints each run, claims under it. Brokered by
+                                      default, so the jailed code reaches the space only
+                                      through the host. \`--agents -\` takes a JSON map on
+                                      stdin, which keeps tokens out of \`ps\`
+  compartment --inside <kind,kind> [--field <f>] [--expect <p,p>]
+                                      who can get data OUT: crossers granted both sides, plus
+                                      the two doors that are not grants (unscoped artifact
+                                      access, and \`observe\`). Run it at promotion
 
 \`take\` prints the claimed record together with its lease; pass that lease object straight back
 to \`ack\`/\`nack\`/\`release\` (as a JSON string, or - to read it from stdin).
@@ -1078,9 +1105,243 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       return 0;
     }
 
+    // ---- workspace agents (architecture-workspace-agents.md) ----
+    //
+    // These are CLIENT verbs like `workspace-git`: promotion is a grant rotation and a binding is a
+    // record, so the runtime gains nothing and the wire contract gains no entry. Until they existed
+    // the only way to promote or host was to write TypeScript against `extensions/ts/`, which meant
+    // the enforcement path had no operator surface at all.
+
+    case "promote":
+    case "rollback": {
+      // One implementation, two names, because `rollback` is `promote` pointed backwards and the
+      // audit trail reads better when the intent is in the verb.
+      const [digest] = positional(argv, 1);
+      const tier = flag(argv, "--tier");
+      const pins = parsePins(argv);
+      if (!digest || !tier || pins.length === 0) {
+        return usage(`${cmd} <tree-digest> --tier <tier> --pin <principal>:<op,op> [--pin …] [--kind <k>]`);
+      }
+      // A grant pattern may only name DECLARED indexed paths, so an undeclared `exec_request`
+      // makes every pin fail to compile. Declare the default kind here (idempotent, content-keyed)
+      // rather than leaving a first promotion to fail on a rule nobody reads until it bites. A
+      // custom `--kind` is the caller's to declare: its indexed paths are not ours to invent.
+      if (!flag(argv, "--kind")) await declareExecRequest(client);
+      const r = await promote(client, { digest, tier, pins, ...(flag(argv, "--kind") ? { kind: flag(argv, "--kind") } : {}) });
+      return out(ctx, r, () => {
+        const lines = [`${cmd} ${digest.slice(0, 20)}… on tier '${tier}'`];
+        for (const g of r.granted) lines.push(`  grant   ${g.principal} -> this digest`);
+        for (const x of r.retired) lines.push(`  retire  ${x.principal} -> ${x.digest.slice(0, 20)}… (was live)`);
+        // Grant-then-retire means a rotation that half-ran leaves BOTH live, which over-permits
+        // rather than stalling. Say so: it is the state `pins` will report and nobody should have
+        // to infer it from a count.
+        if (r.granted.length > 0 && r.retired.length === 0) {
+          lines.push(`  nothing retired: either this is the first promotion on '${tier}', or the previous pin is still live`);
+        }
+        lines.push(`  radia pins ${r.granted[0]?.principal ?? "<principal>"} --tier ${tier}   confirms from the enforcement path`);
+        return lines.join("\n");
+      });
+    }
+
+    case "pins": {
+      // "What is prod running", answered from the grants that enforce it rather than a deploy log.
+      const [principal] = positional(argv, 1);
+      const tier = flag(argv, "--tier");
+      if (!principal || !tier) return usage("pins <principal> --tier <tier> [--kind <k>]");
+      const digests = await pinnedDigests(client, { principal, tier, ...(flag(argv, "--kind") ? { kind: flag(argv, "--kind") } : {}) });
+      return out(ctx, { principal, tier, digests }, () => {
+        if (digests.length === 0) return `${principal} is pinned to nothing on '${tier}' (it can claim no work there)`;
+        // Two is not an error and not a tie: it is a rotation in flight or one that half-finished,
+        // and hiding it behind a "current" that picks one is how a half-promotion goes unnoticed.
+        if (digests.length > 1) {
+          return [`${principal} on '${tier}' is pinned to ${digests.length} digests (a rotation in flight, or one that half-finished):`, ...digests.map((d) => `  ${d}`)].join("\n");
+        }
+        return `${principal} on '${tier}': ${digests[0]}`;
+      });
+    }
+
+    case "bind": {
+      // THE ESCALATION ROOT. Whoever writes one of these chooses which code runs under an
+      // identity's authority, which is why the kind is operator-only and why this prints what it
+      // just decided rather than "ok".
+      const [agent] = positional(argv, 1);
+      if (!agent) return usage("bind <agent> --digest <tree-digest> --entrypoint <path> [--sandbox <json>] | bind <agent> --retire");
+      await declareBinding(client);
+      if (has(argv, "--retire")) {
+        const current = (await readBindings(client)).find((b) => b.agent === agent);
+        if (!current) return usage(`bind: ${agent} has no live binding to retire`);
+        await client.put({ kind: BINDING, body: { ...current, retired: true } as unknown as Record<string, unknown> });
+        return out(ctx, { agent, retired: true, was: current }, () => `${agent}: binding retired. It claims nothing until bound again (the grant is untouched; retire that too to close both locks)`);
+      }
+      const digest = flag(argv, "--digest"), entrypoint = flag(argv, "--entrypoint");
+      if (!digest || !entrypoint) return usage("bind <agent> --digest <tree-digest> --entrypoint <path> [--sandbox <json>]");
+      const sandboxPattern = flag(argv, "--sandbox") ? json(flag(argv, "--sandbox")!, "sandbox") : undefined;
+      const body: Binding = { agent, workspaceDigest: digest, entrypoint, ...(sandboxPattern ? { sandboxPattern } : {}) };
+      const rec = await client.put({ kind: BINDING, body: body as unknown as Record<string, unknown> });
+      // The second lock is a different record, and a binding alone is inert. Saying so here is
+      // cheaper than the silence a reader would otherwise read as "deployed".
+      const pinned = await pinnedDigests(client, { principal: agent, tier: flag(argv, "--tier") ?? "prod" }).catch(() => [] as string[]);
+      return out(ctx, { id: rec.id, ...body, pinnedDigests: pinned }, () => {
+        const lines = [`${agent} now runs ${entrypoint} from ${digest.slice(0, 20)}…`];
+        if (pinned.includes(digest)) lines.push(`  grant agrees: pinned to this digest, so a host will run it`);
+        else if (pinned.length === 0) lines.push(`  INERT: ${agent} holds no pin, so it can claim nothing. radia promote ${digest} --tier <t> --pin ${agent}:take`);
+        else lines.push(`  MISMATCH: the grant pins ${pinned.map((d) => d.slice(0, 20) + "…").join(", ")}. A host refuses this pairing (digest_mismatch) rather than running it`);
+        return lines.join("\n");
+      });
+    }
+
+    case "bindings": {
+      const bindings = await readBindings(client);
+      return out(ctx, bindings, () => {
+        if (bindings.length === 0) return "no bindings";
+        return table(
+          ["AGENT", "ENTRYPOINT", "TREE", "SANDBOX"],
+          bindings.map((b) => [b.agent, b.entrypoint, b.workspaceDigest.slice(0, 14) + "…", b.sandboxPattern ? JSON.stringify(b.sandboxPattern) : "deno (default)"]),
+        );
+      });
+    }
+
+    case "host": {
+      // A CLIENT that happens to run other people's code, the way `git-serve` is a client that
+      // happens to listen. It holds each agent's DEFINITION token (mint-only: it cannot read, write
+      // or claim) and claims under a run minted from it, so one host serving ten agents needs none
+      // of their authority.
+      const credentials = parseAgentTokens(argv, await hostTokensFromStdin(argv));
+      if (Object.keys(credentials).length === 0) {
+        return usage("host --agent <principal>=<definition-token> [--agent …] | host --agents - (a JSON map on stdin)");
+      }
+      const timeoutMs = Number(flag(argv, "--timeout") ?? 15_000);
+      // Brokered by default: it is the invoker that leaves the entrypoint no way to reach the API,
+      // which is what makes containment structural rather than this process's discipline.
+      const invoke = has(argv, "--no-broker") ? sandboxInvoker(client, { timeoutMs }) : brokeredInvoker(client, { timeoutMs });
+      const host = new WorkspaceHost({
+        base: client.base,
+        credentials,
+        reader: client,
+        invoke,
+        ...(flag(argv, "--request-kind") ? { requestKind: flag(argv, "--request-kind") } : {}),
+        ...(flag(argv, "--lease") ? { leaseSeconds: Number(flag(argv, "--lease")) } : {}),
+      });
+      const once = has(argv, "--once");
+      const interval = Number(flag(argv, "--interval") ?? 1000);
+      const agents = Object.keys(credentials);
+      if (!ctx.json) {
+        console.log(`host: ${agents.length} agent${agents.length === 1 ? "" : "s"} (${agents.join(", ")}), ${has(argv, "--no-broker") ? "plain jail, no space access" : "brokered"}`);
+        console.log(`  reading ${client.base}. A bound agent with no matching pin claims nothing; radia bindings, radia pins <a> --tier <t>`);
+      }
+      let stopping = false;
+      const unlisten = onShutdown(() => {
+        stopping = true;
+      });
+      const totals = { acked: 0, failed: 0, refused: 0, digest_mismatch: 0 };
+      try {
+        for (;;) {
+          const outcomes = await host.tick();
+          for (const o of outcomes) {
+            if (o.status === "idle") continue;
+            if (o.status in totals) totals[o.status as keyof typeof totals]++;
+            console.log(ctx.json ? JSON.stringify(o) : `  ${describeOutcome(o)}`);
+          }
+          if (once || stopping) break;
+          // Only sleep when there was nothing to do: a busy host should not pace itself.
+          if (outcomes.every((o) => o.status === "idle")) await new Promise((r) => setTimeout(r, interval));
+        }
+      } finally {
+        unlisten();
+      }
+      if (!ctx.json) console.log(`stopped: ${totals.acked} acked, ${totals.failed} failed, ${totals.refused} refused, ${totals.digest_mismatch} digest_mismatch`);
+      return 0;
+    }
+
+    case "compartment": {
+      // The promotion checklist. Crossing out is reserved to a principal granted BOTH sides and
+      // nothing enforces that but the grants themselves, so the audit is how a mis-written grant is
+      // found before it is trusted.
+      const inside = (flag(argv, "--inside") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+      if (inside.length === 0) return usage("compartment --inside <kind,kind> [--field <f>] [--expect <principal,principal>]");
+      const expected = new Set((flag(argv, "--expect") ?? "").split(",").map((s) => s.trim()).filter(Boolean));
+      const audit = await auditCompartment(client, { inside, ...(flag(argv, "--field") ? { field: flag(argv, "--field") } : {}) });
+      const unexpected = audit.crossers.filter((c) => !expected.has(c.principal));
+      return out(ctx, { ...audit, unexpected: unexpected.map((c) => c.principal) }, () => {
+        const lines = [`compartment ${inside.join(", ")}`];
+        if (audit.crossers.length === 0) lines.push("  crossers: none");
+        for (const c of audit.crossers) {
+          const mark = expected.has(c.principal) ? "expected" : "UNEXPECTED";
+          lines.push(`  crosser ${c.principal} (${mark}): reads ${c.reads.join(",")} -> writes ${c.writes.join(",")}`);
+        }
+        // The two doors that are not grants on the compartment's kinds, which is exactly why an
+        // audit that only read those would report a clean boundary.
+        for (const a of audit.unscopedArtifact) lines.push(`  artifact ${a.principal}: ${a.operations.join(",")} with NO ${flag(argv, "--field") ?? "compartment"} pattern (artifact is reserved: scoped by pattern or not at all)`);
+        for (const p of audit.opsPowers) lines.push(`  ops     ${p.principal}: ${p.powers.join(",")}${p.powers.includes("observe") ? "  (observe reads every body, and is no grant)" : ""}`);
+        for (const c of audit.caveats) lines.push(`  caveat: ${c}`);
+        if (expected.size > 0) lines.push(unexpected.length === 0 ? `  OK: no crosser outside --expect` : `  FINDING: ${unexpected.length} crosser(s) outside --expect`);
+        return lines.join("\n");
+      });
+    }
+
     default:
       console.error(`unknown command: ${cmd}\n\n${HELP}`);
       return 1;
+  }
+}
+
+/** `--pin <principal>:<op,op>`. Split at the LAST colon, since a principal carries one of its own
+ *  (`agent:prod-runner:take`), and validate the verbs so `--pin agent:foo` cannot silently parse as
+ *  principal `agent` with an operation `foo`. */
+function parsePins(argv: string[]): { principal: string; operations: string[] }[] {
+  const VERBS = new Set(["put", "query", "read_one", "take"]);
+  return flags(argv, "--pin").map((p) => {
+    const i = p.lastIndexOf(":");
+    if (i <= 0) throw new UsageError(`--pin wants <principal>:<op,op>, got '${p}'`);
+    const operations = p.slice(i + 1).split(",").map((s) => s.trim()).filter(Boolean);
+    const bad = operations.filter((o) => !VERBS.has(o));
+    if (operations.length === 0 || bad.length > 0) {
+      throw new UsageError(`--pin wants <principal>:<op,op> where each op is one of ${[...VERBS].join("/")}, got '${p}'`);
+    }
+    return { principal: p.slice(0, i), operations };
+  });
+}
+
+/** `--agent <principal>=<definition-token>`, repeatable, merged over whatever `--agents` supplied. */
+function parseAgentTokens(argv: string[], base: Record<string, string>): Record<string, string> {
+  const creds = { ...base };
+  for (const a of flags(argv, "--agent")) {
+    const i = a.indexOf("=");
+    if (i <= 0) throw new UsageError(`--agent wants <principal>=<definition-token>, got '${a.slice(0, 40)}'`);
+    creds[a.slice(0, i)] = a.slice(i + 1);
+  }
+  return creds;
+}
+
+/** `--agents -` reads `{"agent:x": "<definition-token>"}` from stdin. A token passed as an argument
+ *  is visible in `ps` to every user on the box, so the stdin form is the one to use anywhere shared. */
+async function hostTokensFromStdin(argv: string[]): Promise<Record<string, string>> {
+  const spec = flag(argv, "--agents");
+  if (!spec) return {};
+  const text = spec === "-" ? new TextDecoder().decode(await readAll(stdin())) : spec;
+  const parsed = json(text, "agents");
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(parsed)) {
+    if (typeof v !== "string") throw new UsageError(`--agents wants {"<principal>": "<definition-token>"}; ${k} is not a string`);
+    out[k] = v;
+  }
+  return out;
+}
+
+function describeOutcome(o: Outcome): string {
+  switch (o.status) {
+    case "acked":
+      return `${o.agent} acked ${o.recordId.slice(-8)}${o.resultId ? ` -> ${o.resultId.slice(-8)}` : ""}`;
+    case "failed":
+      return `${o.agent} FAILED ${o.recordId.slice(-8)}: ${o.error}`;
+    case "refused":
+      // Not an error: an agent with no grant is the design working. Named so it is not mistaken
+      // for a crash, and so the missing half is obvious.
+      return `${o.agent} refused (${o.reason}) — it holds no pin for this work`;
+    case "digest_mismatch":
+      return `${o.agent} DIGEST MISMATCH on ${o.recordId.slice(-8)}: grant pins ${o.wanted.slice(0, 16)}…, binding says ${o.bound.slice(0, 16)}…. Claim released; fix one of the two locks`;
+    default:
+      return `${o.agent} idle`;
   }
 }
 

@@ -30,6 +30,9 @@ export const VALUELESS = new Set([
   "--compact-definition",
   "--anonymous",
   "--follow",
+  "--retire",
+  "--once",
+  "--no-broker",
 ]);
 
 /** The value of `--name`, or undefined. First occurrence wins, not last, which keeps

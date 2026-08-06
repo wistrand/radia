@@ -220,6 +220,22 @@ leaves a server only SIGKILL can stop; use the abort-signal shape `radia dev` al
 `exit` outside `src/main.ts` is not allowed. And a space binds TWO ports (`--port` and the artifact
 origin at `port + 1`), so the obvious neighbouring default collided with it every time.
 
+The **workspace-agent verbs** (`promote`/`rollback`/`pins`/`bind`/`bindings`/`host`/`compartment`)
+are the same move a third time, and the best illustration of what "a surface may import a
+convention" buys: promotion is a grant rotation and a binding is a record, so all seven compose
+`/v0` through `extensions/ts/` and the runtime gains nothing.
+[architecture-workspace-agents.md](architecture-workspace-agents.md) has the table. `host` is the
+long-running one, and it is a client that happens to run other people's code: it holds each
+hosted agent's DEFINITION token (mint-only, so it cannot read, write or claim), mints each run,
+and claims under that run, which is why one host serving ten agents needs none of their authority.
+Two choices worth knowing. It is BROKERED by default, because that is the invoker leaving the jail
+no way to reach the API, and a default that is merely convenient would be the wrong one here. And
+`--agents -` reads the token map from stdin, since a credential passed as an argument is visible
+in `ps` to every user on the box.
+Building them also found a defect the layering guard catches by construction: three new valueless
+switches (`--retire`, `--once`, `--no-broker`) were missing from `VALUELESS`, which would have made
+`radia bind --retire <agent>` lose the agent while `radia bind <agent> --retire` worked.
+
 `erasures [--undone]` reports every shred and whether its payload is still gone, and `doctor`
 carries the same finding with the remedy attached. Both exist because shredding destroys the
 runtime's copy rather than the ability to store those bytes, so an erasure can silently stop

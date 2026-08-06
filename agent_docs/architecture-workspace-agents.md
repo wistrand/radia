@@ -246,6 +246,32 @@ side never learns which language asked. The jail comes from the `sandbox` RECORD
 PRESENCE of them and runs any interpreter. Conflating the two is how "python means bubblewrap"
 becomes a rule nobody wrote down.
 
+## The operator surface
+
+Seven CLI verbs, all of them CLIENTS composing `/v0` the way `workspace-git` does, so the runtime
+gains nothing and the wire contract gains no entry:
+
+| verb | what it does |
+|---|---|
+| `promote <digest> --tier <t> --pin <p>:<ops>` | the grant rotation. Declares `exec_request` first, since a pattern may only name declared paths and an undeclared kind makes every pin fail to compile |
+| `rollback` | the same call, named for the intent |
+| `pins <principal> --tier <t>` | what that principal is pinned to, read from the grants. Two digests is reported as a rotation in flight, never collapsed to a "current" |
+| `bind <agent> --digest --entrypoint` | the escalation root. Prints whether the grant AGREES, so an inert binding or a `digest_mismatch` is visible at write time rather than at claim time |
+| `bind <agent> --retire` | the off switch |
+| `bindings` | every live binding |
+| `host --agent <p>=<token>` | runs bound agents' code as them. BROKERED by default, since that is the invoker that leaves the jail no way to reach the API. `--agents -` takes the token map on stdin, keeping it out of `ps` |
+| `compartment --inside <kinds>` | the audit, including the two doors that are not grants |
+
+The deferral this replaced ("the extension is the contract, the verb would be convenience") was
+wrong in one specific way: with no verb, the only way to promote or host was to write TypeScript
+against `extensions/ts/`, so the enforcement path had no operator surface at all and the chat
+could reach none of it.
+
+Verified end to end against a live space (18 checks: rotation, both locks agreeing and
+disagreeing, the brokered write attributed to the agent, retire, stdin tokens, malformed pins).
+NOT covered by an automated test, in common with every other CLI verb: nothing under
+`conformance/` drives `runCli`.
+
 ## How it was built, phase by phase
 
 Ordered by MODEL RISK, the [plan-workspaces.md](plan-workspaces.md) rule: the question most
@@ -273,8 +299,7 @@ name declared paths and `artifact` cannot be replaced.
 Shipped: `extensions/ts/promotion.ts` (`EXEC_REQUEST_KIND` with `workspace` and `tier` indexed,
 `promote`, `rollback`, `pinnedDigests`) and `extensions/conformance/promotion.test.ts`, five
 cases against a real space, because a pin is tested by trying to submit and claim at an
-unpromoted digest and only a running space can be asked. A `radia promote` verb stays deferred:
-the extension is the contract, the verb would be convenience.
+unpromoted digest and only a running space can be asked.
 Answered: an unpromoted digest is refused at the WRITE (the submitter's pattern) and yields
 nothing at the CLAIM (the runner's), while the operator can see the record so the test cannot
 pass by having written nothing; rotation closes the old digest on both sides; rollback to a
