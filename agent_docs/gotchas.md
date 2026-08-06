@@ -195,11 +195,23 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Registries, and reads that must not truncate
 
-- **`listKinds()` does not list every kind.** It reads `kind_def` RECORDS, and EIGHT kinds are
+- **`listKinds()` does not list every kind.** It reads `kind_def` RECORDS, and NINE kinds are
   defined in code instead (`kind_def`, `grant`, `signal`, `agent_definition`, `agent_run`,
-  `artifact`, `interest`, `shred`; see `RESERVED_KINDS`, which is the list — this entry said six
-  until two more were added without it). Anything answering "does this kind exist" must add them, or it will report that
+  `artifact`, `interest`, `shred`, `ops_grant`; see `RESERVED_KINDS`, which is the list — this
+  entry said six, then eight, each time updated only after drifting). Anything answering "does
+  this kind exist" must add them, or it will report that
   `artifact` is not a kind while the caller is successfully counting artifacts.
+- **Content-key idempotency dedupes for a WINDOW, and a re-put outranks a tombstone.** "Registry
+  writes are content-keyed so restarts don't append" is implemented as content-key-as-idempotency-key
+  (`kindDefKey`, `opsGrantKey`), and idempotency rows sweep after `idempotencyRetentionSeconds`
+  (7 days). Past the window a boot-time re-put appends a FRESH record: for keep-newest registries
+  compaction sweeps the surplus; for NEVER_COMPACT kinds it accumulates per boot (`kind_def` does
+  this today, slowly); and for an AUTHORIZATION registry the fresh record is newer than any
+  `retired: true` tombstone, so a scheduled republish silently un-retires what an operator
+  withdrew — invisible in any test shorter than the window. Never republish an authorization
+  entry on a schedule; assign it once, when the identity is created (`provisionObserver`), and
+  let a retirement stand until an explicit revoke re-creates the identity. Found 2026-08-06 in
+  review, before it shipped; planted in `defaults.test.ts`.
 - **Filtering a cursor-paged endpoint breaks paging unless the cursor is reported separately.** An
   empty page is how every caller detects the end of a log, so a page whose events were all withheld
   reads as "nothing further", and a scoped caller could never page PAST foreign events to reach its

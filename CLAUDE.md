@@ -175,8 +175,13 @@ a stopped run's token kept resolving after a restart. So:
   `query(kind, N)`. It pages to exhaustion and reports `complete: false` rather than returning a
   plausible prefix. A bounded read whose result is treated as a population is the single most
   repeated bug in this codebase.
-- Registry writes are CONTENT-KEYED, so restarting a fleet does not append a duplicate per entry.
-  Unbounded growth is what makes bounded reads dangerous in the first place. Content-keying only
+- Registry writes are CONTENT-KEYED, so restarting a fleet does not append a duplicate per entry —
+  within the idempotency window (`idempotencyRetentionSeconds`, 7 days): the dedup is the
+  idempotency row, and past it a re-put appends a fresh record. Compaction sweeps the surplus for
+  keep-newest registries; for NEVER_COMPACT kinds it accumulates, and a re-put OUTRANKS a
+  `retired: true` tombstone, so never republish an authorization registry entry on a schedule —
+  assign at identity creation (`provisionObserver` is the worked example; gotchas.md).
+  Content-keying also only
   bounds a fleet that republishes the SAME entry, so a registry whose size is somebody else's read
   cost also needs a per-principal ceiling (`maxInterestsPerPrincipal`, `429 too_many_interests`).
 - Authorization has a canonical, inspectable form: `Space.effectivePermissions` /

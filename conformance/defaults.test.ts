@@ -24,18 +24,61 @@ Deno.test("dev: --auth defaults to required", async () => {
 
 Deno.test("dev: an observer credential is provisioned, and the MCP adapter defaults to it", async () => {
   // The posture (plan-ops-tiers.md phase 5): the model behind `radia mcp` holds `observe`, not
-  // the operator bit. Three literals keep it wired: dev provisions the observer definition with
-  // its ops_grant, the MCP adapter prefers the stored observer, and the CLI's read-only verbs
-  // ride it too. Source-read like the --auth default above, and each half must fail alone.
+  // the operator bit. Three literals keep it wired: dev provisions through `provisionObserver`,
+  // the MCP adapter prefers the stored observer, and the CLI's read-only verbs ride it too.
+  // Source-read like the --auth default above, and each half must fail alone.
   const main = await Deno.readTextFile(new URL("../src/main.ts", import.meta.url));
-  assert(/agent:local-observer/.test(main), "dev no longer provisions the observer identity");
-  assert(/operations: \["observe"\]/.test(main), "…or no longer assigns it exactly the observe power");
-  assert(/saveObserver\(/.test(main), "…or no longer stores its definition token");
+  assert(/provisionObserver\(space, base/.test(main), "dev no longer provisions the observer identity");
+  const creds = await Deno.readTextFile(new URL("../src/credentials.ts", import.meta.url));
+  assert(/operations: \["observe"\]/.test(creds), "…or the observer no longer gets exactly the observe power");
   const mcp = await Deno.readTextFile(new URL("../src/surfaces/mcp/server.ts", import.meta.url));
   assert(/storedObserver\(base\)/.test(mcp), "the MCP adapter no longer reads the observer credential");
   assert(/definitionToken: observer/.test(mcp), "…or no longer prefers it as its default auth");
   const cli = await Deno.readTextFile(new URL("../src/surfaces/cli.ts", import.meta.url));
   assert(/OBSERVER_VERBS/.test(cli), "the CLI's read-only verbs no longer ride the observer");
+});
+
+Deno.test("dev: the observer's power is assigned at mint, and a RETIREMENT stands across restarts", async () => {
+  // The resurrection class, planted (gotchas.md "Content-key idempotency dedupes for a window"):
+  // a provisioning pass that re-put the ops_grant on every boot would outrank an operator's
+  // `retired: true` tombstone once the idempotency row that dedupes it is swept (7 days), so a
+  // deliberately revoked observer power would silently return. Assign-at-mint is the fix, and
+  // this is the test that fails if a re-put ever creeps back in.
+  const dir = await Deno.makeTempDir({ prefix: "radia-observer-" });
+  Deno.env.set("RADIA_CREDENTIALS", `${dir}/credentials.json`);
+  const { provisionObserver, OBSERVER_PRINCIPAL } = await import("../src/credentials.ts");
+  const { Space } = await import("../src/core/space.ts");
+  const { SqliteAdapter } = await import("../src/storage/sqlite.ts");
+  const { rawExec } = await import("./suites/integrity.ts");
+  const adapter = new SqliteAdapter(":memory:");
+  await adapter.init();
+  try {
+    const space = new Space(adapter);
+    const base = "http://127.0.0.1:59999";
+    const first = await provisionObserver(space, base, "test");
+    assertEquals(first.created, true);
+    assertEquals([...await space.opsPowers(OBSERVER_PRINCIPAL)], ["observe"]);
+
+    // The operator retires the power. Every later "restart" must reuse the live definition and
+    // must NOT re-assign what was deliberately withdrawn.
+    await space.put({ kind: "ops_grant", body: { principal: OBSERVER_PRINCIPAL, operations: ["observe"], retired: true } });
+    // Simulate the aged idempotency window (the sweep deletes these rows after 7 days). Without
+    // this the row still dedupes a re-put and the buggy shape PASSES here for a week: the exact
+    // blindness that made the bug worth a plant. With it, a provisioning pass that re-puts on
+    // reuse writes a fresh record that outranks the tombstone, and the next assert fails.
+    await rawExec(adapter, "delete from idempotency", []);
+    const again = await provisionObserver(space, base, "test");
+    assertEquals(again.created, false, "a live stored definition is reused");
+    assertEquals((await space.opsPowers(OBSERVER_PRINCIPAL)).size, 0, "the retirement stands");
+
+    // The documented recovery path: revoke the identity, and the next start re-creates it.
+    await space.revokeDefinition(OBSERVER_PRINCIPAL);
+    assertEquals((await provisionObserver(space, base, "test")).created, true);
+  } finally {
+    await adapter.close();
+    Deno.env.delete("RADIA_CREDENTIALS");
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("paths: every runtime default lives under one directory", async () => {

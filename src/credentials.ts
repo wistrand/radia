@@ -13,6 +13,8 @@
 
 import { dirname, join } from "@std/path";
 import { env, mkdirp, readTextFile, removeFile, restrictToOwner, writeTextFile } from "./platform.ts";
+import { OPS_GRANT } from "../sdk/ts/wire.ts";
+import { opsGrantKey } from "../sdk/ts/registry.ts";
 
 export interface StoredCredential {
   token: string;
@@ -161,6 +163,11 @@ export function saveLogin(
 
 const OBSERVER = "#observer";
 
+/** The observer identity `radia dev` provisions. One well-known name, so an operator can
+ *  `radia revoke agent:local-observer` or `radia permissions agent:local-observer` without
+ *  looking anything up. */
+export const OBSERVER_PRINCIPAL = "agent:local-observer";
+
 /** The observer credential `radia dev` provisioned for this space, if any. */
 export function storedObserver(base: string): StoredCredential | undefined {
   return read(credentialsPath())[baseKey(base) + OBSERVER];
@@ -169,6 +176,48 @@ export function storedObserver(base: string): StoredCredential | undefined {
 /** Record the observer credential (the definition token is the piece that matters). */
 export function saveObserver(base: string, cred: StoredCredential): { path: string; ok: boolean; error?: string } {
   return writeEntry(baseKey(base) + OBSERVER, cred);
+}
+
+/** What provisioning needs from the space: structural on purpose, so this file imports no
+ *  runtime value from `src/core` and the surfaces that import IT stay clean under the layering
+ *  rule. `Space` satisfies it as-is. */
+interface ObserverHost {
+  resolveToken(token: string): Promise<{ ok: boolean }>;
+  createAgentDefinition(agent: string, grants: never[]): Promise<{ definitionToken: string }>;
+  put(req: { kind: string; body: unknown }, idempotencyKey?: string): Promise<unknown>;
+}
+
+/**
+ * Ensure the observer credential exists: an `agent:local-observer` definition whose token lands
+ * under `#observer` (mint-only, revocable), with the `observe` ops power assigned ONCE, at mint.
+ *
+ * The power is deliberately NOT re-assigned on a boot that reuses the stored definition. The
+ * content-key idempotency that makes a re-put safe only lasts `idempotencyRetentionSeconds`;
+ * past it a boot's re-put is a FRESH record that outranks a `retired: true` tombstone, so an
+ * operator's deliberate retirement of the observer's power would silently un-happen on the next
+ * restart (the resurrection class; see gotchas.md "Content-key idempotency dedupes for a
+ * window"). Assign-at-mint means a retirement stands until an explicit
+ * `radia revoke agent:local-observer` plus a restart re-creates the identity.
+ */
+export async function provisionObserver(
+  space: ObserverHost,
+  base: string,
+  storageName?: string,
+): Promise<{ created: boolean; saved?: { path: string; ok: boolean; error?: string } }> {
+  const stored = storedObserver(base);
+  const alive = stored?.definitionToken !== undefined &&
+    (await space.resolveToken(stored.definitionToken)).ok;
+  if (alive) return { created: false };
+  const { definitionToken } = await space.createAgentDefinition(OBSERVER_PRINCIPAL, []);
+  const power = { principal: OBSERVER_PRINCIPAL, operations: ["observe"] };
+  await space.put({ kind: OPS_GRANT, body: power }, opsGrantKey(power));
+  const saved = saveObserver(base, {
+    token: "",
+    mintedAt: new Date().toISOString(),
+    definitionToken,
+    ...(storageName ? { storage: storageName } : {}),
+  });
+  return { created: true, saved };
 }
 
 /** Default base URL for clients: `RADIA_URL`, else the `radia dev` default. */

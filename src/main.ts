@@ -12,9 +12,7 @@ import { BlobCipher, loadKek } from "./storage/crypto.ts";
 import { loadSealKey } from "./core/seal.ts";
 import { Space } from "./core/space.ts";
 import { startServer } from "./server/http.ts";
-import { clearCredential, saveCredential, saveObserver, storedObserver } from "./credentials.ts";
-import { OPS_GRANT } from "./core/kinds.ts";
-import { opsGrantKey } from "./core/registry.ts";
+import { clearCredential, OBSERVER_PRINCIPAL, provisionObserver, saveCredential } from "./credentials.ts";
 import { runCli } from "./surfaces/cli.ts";
 import { runMcp } from "./surfaces/mcp/server.ts";
 import { flag, optionalFlag } from "./flags.ts";
@@ -161,23 +159,12 @@ async function dev(args: string[]): Promise<void> {
   // holding the `observe` ops power. The MCP adapter and read-only CLI verbs prefer it, so a
   // model harness inspects the space without holding the operator bit; coordination through MCP
   // 403s until an operator grants kinds. The DEFINITION token is what lands on disk (mint-only,
-  // revocable via `radia revoke agent:local-observer`), reused across restarts and re-minted
-  // only when missing or no longer resolving.
-  const OBSERVER = "agent:local-observer";
+  // revocable via `radia revoke agent:local-observer`), reused across restarts. The power is
+  // assigned at mint and never re-put on reuse; see `provisionObserver` for why a re-put would
+  // eventually resurrect a retired power.
   try {
-    const stored = storedObserver(base);
-    const alive = stored?.definitionToken !== undefined &&
-      (await space.resolveToken(stored.definitionToken)).ok;
-    let definitionToken = alive ? stored!.definitionToken! : undefined;
-    if (!definitionToken) {
-      definitionToken = (await space.createAgentDefinition(OBSERVER, [])).definitionToken;
-      saveObserver(base, { token: "", mintedAt: new Date().toISOString(), definitionToken, storage: storage.name });
-    }
-    // Content-keyed via the idempotency key, so every restart replays the same write instead of
-    // appending a duplicate assignment.
-    const power = { principal: OBSERVER, operations: ["observe"] };
-    await space.put({ kind: OPS_GRANT, body: power }, opsGrantKey(power));
-    console.log(`radia dev: observer credential provisioned (${OBSERVER}: ops reads only; radia mcp defaults to it)`);
+    const r = await provisionObserver(space, base, storage.name);
+    console.log(`radia dev: observer credential ${r.created ? "provisioned" : "reused"} (${OBSERVER_PRINCIPAL}: ops reads only; radia mcp defaults to it)`);
   } catch (e) {
     console.log(`radia dev: could not provision the observer credential (${(e as Error).message}); radia mcp will fall back to the operator token`);
   }
