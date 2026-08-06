@@ -1913,3 +1913,54 @@ Deno.test({
     }
   },
 });
+
+Deno.test("sandbox: a confined jail's cache is READABLE as well as writable, or it corrupts", () => {
+  // THE TRAP THIS PINS, hit on a real Mac. The profile bounds reads; Deno writes its global caches
+  // whatever `--no-remote` says. A cache the jail can WRITE and cannot READ corrupts the SQLite
+  // databases for the whole machine (`SQLITE_IOERR` 522 on every later `deno`), and Deno's recovery
+  // deletes the main db without its `-wal`/`-shm` siblings, so it never heals. The asymmetry is the
+  // defect, so the cache directory has to appear in the READ allowlist.
+  const cacheDir = Deno.makeTempDirSync({ prefix: "jail-cache-" });
+  try {
+    const p = sandboxExecProfile({ readRoots: [], denoDir: "/usr/local/bin", cacheDir });
+    assertStringIncludes(p, `(subpath "${Deno.realPathSync(cacheDir)}")`);
+
+    // And the HOST's cache is never what a confined jail is pointed at. Naming a home-derived path
+    // here would put the machine's own `deno` back in the blast radius.
+    const home = Deno.env.get("HOME");
+    if (home) assert(!p.includes(`${home}/Library/Caches`), `the host cache is in the profile:\n${p}`);
+  } finally {
+    Deno.removeSync(cacheDir, { recursive: true });
+  }
+});
+
+Deno.test({
+  name: "sandbox: a confined run writes its cache where it was told, and not to the host's",
+  ...needsBwrap,
+  async fn() {
+    // Observable from outside on Linux too: under bubblewrap the host's cache is not bound, so it
+    // cannot be written even by accident. The assertion is about the DIRECTION of the guarantee,
+    // which is what regressed on macOS.
+    //
+    // HONEST LIMIT: on this backend the property holds by construction, because `/tmp` inside the
+    // namespace is a fresh tmpfs. Deleting the explicit `DENO_DIR` does NOT fail this case, so that
+    // line is belt-and-braces rather than load-bearing here. The mechanism that IS load-bearing is
+    // the macOS one, and it is covered by the profile case above, which does fail when the cache
+    // stops being read-allowed.
+    const tree = await Deno.makeTempDir({ prefix: "tree-" });
+    const hostCache = `${Deno.env.get("HOME") ?? "/tmp"}/.cache/deno`;
+    let before = "";
+    try {
+      before = (await Deno.stat(hostCache).catch(() => ({ mtime: null }))).mtime?.toISOString() ?? "absent";
+      const r = await runCode(`console.log(1 + 1)`, { readRoots: [tree], cwd: tree, confine: "bubblewrap", timeoutMs: 30_000 });
+      assertEquals(r.stdout.trim(), "2", r.stderr.slice(0, 300));
+      // No cache warnings: a jail whose cache is unusable prints on every run, and that stderr ends
+      // up in a tool_result and therefore in a model's context.
+      assert(!/cache/i.test(r.stderr), `the jail complained about its cache: ${r.stderr.slice(0, 300)}`);
+      const after = (await Deno.stat(hostCache).catch(() => ({ mtime: null }))).mtime?.toISOString() ?? "absent";
+      assertEquals(after, before, "a confined run touched the host's Deno cache");
+    } finally {
+      await Deno.remove(tree, { recursive: true });
+    }
+  },
+});

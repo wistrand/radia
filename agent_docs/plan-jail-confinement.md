@@ -205,6 +205,11 @@ Traps for the implementer, all hit during verification:
   main db but not the `-wal`/`-shm` siblings, so it never heals). Happened during this
   verification. The real jail must also point `DENO_DIR`/cache at a throwaway dir inside the
   workspace or deny writes outside it; recovery is deleting the full db triples.
+  FIXED in the implementation: `RunOptions.cacheDir` gives a confined jail a directory it can BOTH
+  read and write (the chat puts it under its workspace root), the Seatbelt profile read-allows it,
+  and the bubblewrap jail points `DENO_DIR` inside its own tmpfs. With no writable directory
+  available the cache is disabled rather than pointed at the host's, which is slower and safe.
+  Guarded by "a confined jail's cache is READABLE as well as writable, or it corrupts".
 
 **PYTHON IS LINUX-ONLY, and stays that way (decided 2026-08-06).** `run_python` is served only where
 `bwrapSandbox` verifies, and bubblewrap is a Linux tool, so a Mac publishes no `run_python` at all:

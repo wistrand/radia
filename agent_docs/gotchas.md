@@ -1245,6 +1245,15 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   PRINTS whether bubblewrap coverage is ON or OFF. That is the rule worth keeping: the fix for a
   silent skip is to make the skip loud, not to fail the build over an environment nobody chose.
   Real coverage for this backend needs a machine with unprivileged user namespaces.
+- **A confiner that bounds READS only, plus a runtime that writes caches, corrupts those caches.**
+  Measured on macOS while verifying the Seatbelt jail: Deno writes its global SQLite caches whatever
+  `--no-remote` says, a read-bounding profile leaves them WRITABLE BUT UNREADABLE, and that is the
+  one combination SQLite cannot survive. It fails machine-wide (`SQLITE_IOERR` 522 on every later
+  `deno`) and does not heal, because Deno's recovery deletes the main db and leaves the `-wal`/
+  `-shm` siblings; recovery is deleting the full triples by hand. The rule generalises past Deno:
+  when you confine one axis of a runtime, ask what that runtime writes WITHOUT being asked, and give
+  it somewhere it can both read and write, private to the jail. Bubblewrap avoids this by accident
+  rather than by design, since its `/tmp` is a fresh tmpfs. See `RunOptions.cacheDir`.
 - **A read permission does not necessarily cover MODULE LOADING, and in Deno it does not.** Measured
   2026-08-06: inside the permission jail, `import("file:///x.json", {with:{type:"json"}})` returns
   the file past both `--allow-read` and `--deny-read`, while `Deno.readTextFileSync` on the same

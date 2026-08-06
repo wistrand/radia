@@ -75,6 +75,20 @@ export interface RunOptions {
    * network" safe-by-absence instead of moving it to safe-by-presence.
    */
   confine?: "bubblewrap" | "sandbox-exec";
+  /**
+   * Where a CONFINED jail keeps Deno's own caches.
+   *
+   * Not an optimisation. Deno writes its global caches whatever `--no-remote` says, and a
+   * read-bounding confiner leaves them WRITABLE BUT UNREADABLE, which corrupts the SQLite databases
+   * for the whole machine: `SQLITE_IOERR` 522 on every later `deno`, and Deno's recovery deletes
+   * the main db without the `-wal`/`-shm` siblings, so it never heals. Recovery is deleting the
+   * full triples by hand. This happened on a real Mac while verifying the profile.
+   *
+   * So a confined jail always gets a cache directory it can BOTH read and write, private to the
+   * caller and never the host's. Absent, one is made per process; if even that is impossible the
+   * cache is disabled, which is safe and noisy rather than silent and destructive.
+   */
+  cacheDir?: string;
 }
 
 export interface RunResult {
@@ -197,7 +211,7 @@ export function jailArgs(opts: RunOptions, memoryMb: number, entry: string): str
  * Debugging note for whoever changes this: SBPL `(trace …)` is dead on modern macOS. Iterate
  * through the crash reports in `~/Library/Logs/DiagnosticReports`.
  */
-export function sandboxExecProfile(opts: { readRoots?: string[]; denoDir: string; cwd?: string }): string {
+export function sandboxExecProfile(opts: { readRoots?: string[]; denoDir: string; cwd?: string; cacheDir?: string }): string {
   // A path is interpolated into a quoted SBPL string, so anything that could close that string is
   // refused rather than escaped: no legitimate jail root contains one, and a profile that parses
   // differently than it reads is the worst possible failure here.
@@ -215,7 +229,11 @@ export function sandboxExecProfile(opts: { readRoots?: string[]; denoDir: string
       return p;
     }
   };
-  const roots = [...new Set([opts.denoDir, ...(opts.readRoots ?? []), ...(opts.cwd ? [opts.cwd] : [])].map(resolve))];
+  // The cache directory is READ-ALLOWED as well as written (writes ride `(allow default)`). Allowing
+  // only writes is what corrupts it, so the two must not be split.
+  const roots = [...new Set(
+    [opts.denoDir, ...(opts.readRoots ?? []), ...(opts.cwd ? [opts.cwd] : []), ...(opts.cacheDir ? [opts.cacheDir] : [])].map(resolve),
+  )];
   return [
     "(version 1)",
     // Net, env, run and write are denied by Deno's own flags, so this profile only has to bound
@@ -230,6 +248,30 @@ export function sandboxExecProfile(opts: { readRoots?: string[]; denoDir: string
   ].join("\n");
 }
 
+/**
+ * A cache directory a CONFINED jail may both read and write, or undefined if none can be made.
+ *
+ * Per process, not per run: the cache is the point, and remaking it every call would throw away
+ * the compile it exists to keep. Never the host's, because a confined jail corrupts a cache it can
+ * write and cannot read (see `RunOptions.cacheDir`).
+ *
+ * Returning undefined is a real outcome, not a failure to handle later: a worker holding write
+ * access to exactly one directory cannot make a temp dir anywhere else, and the caller then runs
+ * with the cache disabled rather than with a corrupting one.
+ */
+let processCacheDir: string | null | undefined;
+function jailCacheDir(given?: string): string | undefined {
+  if (given) return given;
+  if (processCacheDir === undefined) {
+    try {
+      processCacheDir = Deno.makeTempDirSync({ prefix: "radia-jail-cache-" });
+    } catch {
+      processCacheDir = null; // no writable temp: run without a cache rather than against the host's
+    }
+  }
+  return processCacheDir ?? undefined;
+}
+
 function spawnDeno(entry: string, opts: RunOptions, memoryMb: number): Deno.ChildProcess {
   // The RUNNING runtime, by absolute path, not the name `deno` resolved against the PATH this
   // command itself invents (`/usr/bin:/bin` below). Two reasons, and CI found the first: on a
@@ -240,17 +282,27 @@ function spawnDeno(entry: string, opts: RunOptions, memoryMb: number): Deno.Chil
   // whichever binary that path happens to find.
   const args = jailArgs(opts, memoryMb, entry);
   const denoDir = Deno.execPath().slice(0, Deno.execPath().lastIndexOf("/")) || "/usr/bin";
+  const cacheDir = opts.confine ? jailCacheDir(opts.cacheDir) : undefined;
   if (opts.confine === "sandbox-exec") {
     // The jail, unchanged, under a Seatbelt profile. `-p` takes the profile as one argument, so
     // nothing goes through a shell.
     return new Deno.Command("/usr/bin/sandbox-exec", {
       ...(opts.cwd ? { cwd: opts.cwd } : {}),
-      args: ["-p", sandboxExecProfile({ readRoots: opts.readRoots, denoDir, cwd: opts.cwd }), Deno.execPath(), ...args],
+      args: [
+        "-p",
+        sandboxExecProfile({ readRoots: opts.readRoots, denoDir, cwd: opts.cwd, cacheDir }),
+        Deno.execPath(),
+        ...args,
+      ],
       stdin: "piped",
       stdout: "piped",
       stderr: "piped",
       clearEnv: true,
-      env: { HOME: "/tmp", PATH: "/usr/bin:/bin" },
+      // DENO_DIR explicitly, never a HOME-derived path: `$HOME/Library/Caches/deno` would be
+      // outside the read allowlist and writes ride `(allow default)`, which is exactly the
+      // asymmetry that corrupts. With no cache dir the variable points nowhere usable and Deno
+      // falls back to memory, which is slower and safe.
+      env: { HOME: "/tmp", PATH: "/usr/bin:/bin", ...(cacheDir ? { DENO_DIR: cacheDir } : {}) },
     }).spawn();
   }
   if (opts.confine === "bubblewrap") {
@@ -271,7 +323,9 @@ function spawnDeno(entry: string, opts: RunOptions, memoryMb: number): Deno.Chil
       stdout: "piped",
       stderr: "piped",
       clearEnv: true,
-      env: { HOME: "/tmp", PATH: "/usr/bin:/bin" },
+      // Inside the namespace `/tmp` is a fresh tmpfs, so this cache is private to the run and
+      // vanishes with it. Named explicitly rather than left to HOME so the guarantee is visible.
+      env: { HOME: "/tmp", PATH: "/usr/bin:/bin", DENO_DIR: "/tmp/deno-cache" },
     }).spawn();
   }
   return new Deno.Command(Deno.execPath(), {

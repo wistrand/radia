@@ -834,10 +834,22 @@ async function runProcedure(tree: Tree, entrypoint: string, args: unknown) {
     const roots = [...tree.roots, bootDir];
     return jail === "python"
       ? await runBwrap(null, { timeoutMs, readRoots: roots, cwd: tree.root, command: ["python3", bootPath] })
-      : await runEntry(bootPath, { timeoutMs, readRoots: roots, denyRead, cwd: tree.root, ...(confine ? { confine } : {}) });
+      : await runEntry(bootPath, { timeoutMs, readRoots: roots, denyRead, cwd: tree.root, ...(confine ? { confine, ...jailCache() } : {}) });
   } finally {
     await Deno.remove(bootDir, { recursive: true }).catch(() => {});
   }
+}
+
+/**
+ * Where a confined jail keeps Deno's caches: inside this worker's own writable directory.
+ *
+ * A confiner bounds READS, and Deno writes its caches regardless, so a jail pointed at the host's
+ * cache leaves it writable-but-unreadable and CORRUPTS IT for the whole machine (plan-jail-
+ * confinement.md phase 4). This worker holds write access to exactly one directory, which is also
+ * the only place it can put one.
+ */
+function jailCache(): { cacheDir?: string } {
+  return workspaceRoot ? { cacheDir: `${workspaceRoot}/deno-cache` } : {};
 }
 
 /** RUN: in the tree when there is one, so relative paths resolve as they would in a checkout. */
@@ -845,7 +857,7 @@ function runProgram(code: string, jail: "python" | "javascript", tree: Tree, ent
   // The tree, and ONLY the tree: a run that may write gets it for exactly the directory it was
   // given, never the workspace root shared with other calls.
   const writeRoots = tree.write && tree.root ? [tree.root] : [];
-  const opts = { timeoutMs, readRoots: tree.roots, writeRoots, cwd: tree.root, ...(confine ? { confine } : {}) };
+  const opts = { timeoutMs, readRoots: tree.roots, writeRoots, cwd: tree.root, ...(confine ? { confine, ...jailCache() } : {}) };
   // A FILE when the tree says how it is run: it carries its own extension, so a `.ts` entrypoint is
   // TypeScript without anything having to guess a dialect, and stdin stays free. A bare `code`
   // argument keeps the stdin path, because a throwaway should not have to become a file first.
@@ -1042,7 +1054,7 @@ await agentLoop(client, {
         // This worker may write to its workspace root and nowhere else.
         ...(workspaceRoot ? { bootRoot: workspaceRoot } : {}),
         // A rehearsal runs in the same jail a real claim would, confiner included.
-        ...(confine ? { run: { confine } } : {}),
+        ...(confine ? { run: { confine, ...jailCache() } } : {}),
         ...(jail === "python" ? { spec: { name: "dry", language: "python", isolation: "bubblewrap" } as never } : {}),
       });
       await captureTree(c, tree, { stdout: "", stderr: "", ok: true, exitCode: 0, timedOut: false, truncated: false, ms: 0 });
