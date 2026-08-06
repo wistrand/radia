@@ -1258,6 +1258,18 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Surfaces: HTTP, console, CLI and the SDKs
 
+- **Three rules the OTLP exporter learned from live Jaeger, for any second exporter or binding**
+  (2026-08-06, each found by an operator reading a real trace, none by the design pass).
+  A `run:<ulid>` principal carries NO agent name: the first exporter parsed a fictional format
+  out of it and showed one "service" per 15-minute run remint; the mapping lives in `agent_run`
+  RECORDS and arrives as a resolver, never string surgery (the same rule design-auth states for
+  `created_by`). A `parentSpanId` naming a span the collector never received is rendered as
+  tampering-adjacent ("not in the trace", an Incomplete badge), so a parent outside the export
+  LINKS instead, and the follower backfills ancestry. And a deterministic span id may be sent
+  ONCE, which makes premature emission permanent: a child settling during its ancestor's open
+  attempt froze the ancestor at zero-duration `radia.open` forever, so the follower defers the
+  family until the attempt settles (30s cap). Collaterally: collectors refuse `end == start`, so
+  point spans carry a deliberate 1ns floor rather than a per-span sanitizer warning.
 - **A 401 is the first move of HTTP Basic, not a failure.** A server that logs every one reports a
   successful authenticated clone as a wall of errors, and (because only failures were logged) says
   nothing at all when it works: loudest precisely when nothing is wrong. Distinguish the CHALLENGE

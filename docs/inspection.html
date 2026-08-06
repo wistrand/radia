@@ -267,6 +267,14 @@ event chain: 39112 links, UNSIGNED (detects corruption, not a rewrite; set RADIA
       it. Permission travels a separate chain, derived from the claimed lease, and the two are kept
       apart on purpose: the alternative is a system where reading a secret quietly makes you trusted.
     </p>
+
+    <p>
+      If your team already lives in a tracing tool, the same picture exports as OpenTelemetry:
+      <code>radia otlp --to http://localhost:4318 --follow</code> streams threads into
+      Jaeger or Tempo as traces, with each work attempt as a span, the claiming agent as the
+      service, and the labels and delegation chain as searchable attributes. Nothing is installed
+      on either side; it is one command talking plain OTLP over HTTP.
+    </p>
   </div>
 </section>
 
