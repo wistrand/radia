@@ -187,10 +187,11 @@ env), a real but out-of-band isolation layer, complementary to grants.
 - Bootstrap
 - Grants
 - Authorization flow (the request path)
+- The operator bit: a power taxonomy
 - Delegation
 - Taint
 - Revocation semantics
-- Self-scoped ops grants (specified, unbuilt)
+- Self-scoped ops grants (built, except `leaseOwner`)
 - Budgets
 - Deferred
 
@@ -343,6 +344,40 @@ flowchart TD
     Grant -->|"yes, with pattern"| AllowT(["allow, AND grant ∧ request"])
 ```
 
+## The operator bit: a power taxonomy
+
+`Space.isPrivileged` is ONE bit (`ctx.operators` + the supervisor + the space's own identity), and
+that bit bundles seven separable powers. Named here so tiers can be discussed at all;
+[plan-ops-tiers.md](plan-ops-tiers.md) is the decided build plan for splitting them (ops powers as
+grant records).
+
+| # | Power               | What it reaches                                                                                                        | Blast radius |
+|---|---------------------|------------------------------------------------------------------------------------------------------------------------|--------------|
+| 1 | observe             | every ops read, unscoped: stats/events/diagnostics/digest/flows, any record + envelope/lineage/children/graph/thread, integrity, erasures, dry-run, anyone's permissions | reads every principal's content; exfiltration-grade |
+| 2 | remediate           | reclaim/dead-letter/requeue, `remediate --all`                                                                           | recoverable, state-guarded |
+| 3 | sweep               | live `gc` (records, compaction, event truncation)                                                                       | deletes only what DECLARED policy allows |
+| 4 | declassify          | clears taint labels                                                                                                      | removes a security barrier |
+| 5 | purge               | `shred`, incl. `--shared`                                                                                                | irreversible content destruction on demand |
+| 6 | identity root       | `grant`/`signal`/`agent_*` writes, mint definitions, `login`, revoke                                                     | ESCALATION ROOT: can grant itself everything above |
+| 7 | coordination bypass | `authorize` returns null: any put/take/query on any kind, reserved kinds included                                        | not an ops verb at all; rides the same bit invisibly |
+
+Rules any tiering must hold:
+
+- A tier holding power 6 IS the full tier, whatever it is called: it can mint the rest. 6 never
+  appears below full.
+- Power 7 never travels below full either: an "observer" that can also write ungranted is not one.
+- Always fail-closed: no ops grant means no access, and an incomplete registry read denies.
+- Every tier is inspectable through `effectivePermissions` / `GET /v0/ops/permissions` before it
+  is believed; every grant defect so far was a promise that did not match the enforcement.
+
+Who holds the whole bit today, and why that is too many: the auto-provisioned local credential
+(`radia dev` writes it; the CLI, the console sign-in and the MCP adapter read it, so in a dev
+space the MODEL behind MCP holds power 7 and can write `grant` records through `space_put`); the
+supervisor agent, an LLM-driven principal holding shred and mint; and every person in
+`ctx.operators`, however little of the list they need day to day. The tiers below full that exist
+today are the two extremes: self-scoped ops reads (`opsScope`, own records of granted kinds) and
+nothing.
+
 ## Delegation
 
 `delegation_context` (see [design-data-model.md](design-data-model.md)) is server-derived
@@ -450,7 +485,11 @@ stateDiagram-v2
 - **Token expiry mid-task:** the run refreshes via its definition credential; refresh
   failure degrades to "run stopped".
 
-## Self-scoped ops grants: SPECIFIED, UNBUILT
+## Self-scoped ops grants (built, except `leaseOwner`)
+
+> Status: BUILT (`Space.opsScope`/`authorScope`, `READ_ONLY_OPS` in `src/server/http.ts`,
+> `conformance/suites/selfscope.ts`), except `leaseOwner`, which stays refused at grant-write time
+> exactly as specified below. The section predates the build and remains the rationale.
 
 The asymmetry this closes: **every reflexive capability is currently reserved to the outside.**
 Reading your own process state needs operator privilege, so a participant can be observed and
@@ -600,4 +639,5 @@ not both spend it.
 Boundary signing and agent-held keys (federation-time; rationale in
 [design-observability.md](design-observability.md) and [gotchas.md](gotchas.md)) ·
 recipient-keyed encryption as a runtime feature · field-level ACLs · multi-tenancy (one
-space per team for now).
+space per team for now) · ops-plane tiers (decided and planned, not built:
+[plan-ops-tiers.md](plan-ops-tiers.md)).

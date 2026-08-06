@@ -1,0 +1,121 @@
+# Plan: ops-plane tiers (powers as grant records)
+
+> Status: designed 2026-08-06, not built. Decided: ops powers become RECORDS (a reserved
+> `ops_grant` kind) assigned by config operators. Rejected: a second config list (breeds a third,
+> and dodges "express it through the substrate") and discipline-only (`radia login` for daily
+> work; already possible, structurally weak). The powers being split are named in
+> [design-auth.md](design-auth.md) "The operator bit: a power taxonomy". Read
+> [gotchas.md](gotchas.md#grants-scopes-and-narrowed-answers) before touching enforcement.
+
+## The problem
+
+`Space.isPrivileged` is one bit and the deployment default hands it out ambiently: the
+auto-provisioned credential is read by the CLI, the console and the MCP adapter, so "can run
+`radia stats`" and "can shred payloads, clear taint, truncate the audit log and mint identities"
+are the same authorization. Between self-scoped reads (`opsScope`) and everything there is
+nothing, so the common middle roles (a dashboard, an auditor, an LLM debugging a space, an
+on-call remediator) all get the top tier.
+
+## Decision: powers are grant records
+
+- Grants are already records here: revocation is a `retired: true` successor, assignment leaves
+  an audit trail, state is watchable, and `effectivePermissions` reports it. A config list has
+  none of that.
+- The direction is fail-closed, which is what makes the stopping rule's bounded-read hazard
+  benign: a lost or stale registry read DENIES an ops power, never keeps one alive.
+- Bootstrap stays config. `ctx.operators` remains the root that writes `ops_grant` records,
+  exactly as it is the root that mints agent definitions: records answer "who may act", config
+  answers "who may create actors".
+
+## The shape
+
+A reserved `ops_grant` record: `{principal, operations}`, additive registry per principal
+(`activeSet`, like `grant`), retire to revoke, resolved per request and never cached.
+
+- **Not the `grant` kind wearing `kind: "ops"`.** design-auth already rejected an ops pseudo-kind,
+  and none of `grant`'s machinery applies: no record kind, no `pattern`, no `combineMatch`, no
+  write-side body check. Overloading would put a plane-word into every kind-scoped authorize path.
+- **Write-protected like the other authorization kinds**: joins `WRITE_PROTECTED_KINDS` (which
+  also puts it in `AUTHORIZATION_KINDS`, so watch revalidation re-checks on it; over-inclusion is
+  the safe direction there). Only a config operator writes one, and it may not name a privileged
+  principal, the same rule definitions enforce.
+- **Never compacted, never swept**: joins `NEVER_COMPACT` in `core/gc.ts` (security-load-bearing,
+  like `grant`), and reserved kinds are already outside retention.
+
+The vocabulary, CLOSED, extended only when a real failure names the next entry:
+
+| operation    | reaches                                                                                   |
+|--------------|-------------------------------------------------------------------------------------------|
+| `observe`    | every ops READ, unscoped: `READ_ONLY_OPS` plus integrity, erasures, dry-run, thread, anyone's permissions |
+| `remediate`  | `POST /v0/ops/remediate`, the per-record reclaim/dead-letter/requeue transitions            |
+| `sweep`      | live `POST /v0/ops/gc` (records, compaction, event truncation; dry-run is `observe`)        |
+| `declassify` | `POST /v0/ops/records/{id}/declassify`                                                      |
+| `purge`      | `POST /v0/ops/records/{id}/shred`                                                           |
+
+NEVER in the vocabulary: `grant`/`signal`/`agent_*` writes, minting, `login`, revoke (power 6,
+the escalation root) and the coordination bypass (power 7). Those stay config-operator, full tier
+only. An `ops_grant` also grants NOTHING on the coordination plane: `observe` does not put, take
+or query records; that stays kind-scoped ordinary grants.
+
+## Enforcement
+
+One place: the ops gate in `src/server/http.ts` becomes a three-way instead of a binary.
+Privileged passes as today; otherwise the gate resolves the caller's `ops_grant` operations
+(`readRegistry` to exhaustion; `complete: false` denies) and matches the route against the table
+above; otherwise the existing `opsScope` self-scope path runs unchanged (it stays the tier below
+`observe`: kind-scoped, own records, reads only). A refusal names the missing power in the 403
+detail, because "forbidden" alone sends the caller to request a kind grant that cannot help,
+which is the exhaustion loop the events endpoint's `withheldNote` already documents.
+
+Reporting lands BEFORE enforcement: `effectivePermissions` / `GET /v0/ops/permissions` carry the
+resolved powers first, so every later plant can assert promise == enforcement through the same
+surface an operator would check.
+
+## Target state for today's privileged set
+
+- `ctx.operators`: unchanged, full tier.
+- The supervisor agent: demoted out of `isPrivileged`. It keeps `grant`/`signal` writes (the
+  CLAUDE.md invariant names it beside operators there) and gets `observe` + `remediate` as
+  ordinary `ops_grant` records; it loses purge, declassify, minting and the coordination bypass.
+  The exact kept set is the one OPEN decision in this plan, settled when phase 5 builds; the
+  invariant text moves in the same change.
+- The dev/MCP default: `radia dev` provisions an OBSERVER credential beside the root one; the MCP
+  adapter and the CLI read verbs prefer it, and only explicitly-destructive CLI verbs reach for
+  the root credential. The model behind MCP then holds `observe`, not power 7.
+
+## Build order
+
+1. **Taxonomy** in design-auth.md: DONE with this plan.
+2. **The kind**: `ops_grant` reserved kind, registry read, write protection, refuse naming a
+   privileged principal, `effectivePermissions` reporting. Plants: a non-operator's write is
+   refused; a retire closes access on the next request; an incomplete registry read denies; gc
+   compaction refuses it (the `NEVER_COMPACT` plant, like `agent_definition`'s).
+3. **`observe`** at the gate. Plants: an observer reads everything on the table including
+   integrity and erasures; every ops WRITE 403s naming the power; a put/take without an ordinary
+   grant still 403s (no power 7); the selfscope suite stays green untouched.
+4. **The write half**: `remediate`, `sweep`, `declassify`, `purge`, per-route. Plants: each power
+   reaches exactly its verbs and none of its neighbours' (declassify-cannot-shred above all); a
+   holder of all four still cannot write a `grant` record.
+5. **Defaults**: supervisor demotion, then the dev/MCP observer credential. Each moves a shipped
+   default, so each carries its own doc edit (the CLAUDE.md invariant; architecture-surfaces.md
+   for credentials) and a `defaults.test.ts` pin in the same change.
+
+## Non-goals
+
+- No change to the coordination plane's grant model or the reserved-kind write rule.
+- No sub-splitting of `observe` (metadata vs. bodies) until a real deployment names the failure;
+  the three-views warning in [design-inspection.md](design-inspection.md) applies.
+- No OIDC and no federation; the root stays the local config operator set.
+
+## Risks
+
+- **Promise vs. enforcement drift** is the named history of every grant defect here, which is why
+  phase 2 ships reporting before phase 3 ships enforcement, and why the plants assert through
+  `GET /v0/ops/permissions` rather than only through the gate.
+- **Additive semantics**: `ops_grant` entries union like grants; retiring one entry must not
+  resurrect an older same-content one (the `activeSet` tombstone rule; a planted regression, as
+  compaction's was).
+- **Pins that move**: `defaults.test.ts` (the unconfigured posture stays "operators only"),
+  `http.test.ts` gate cases, `suites/selfscope.ts`, `suites/auth.ts`, the OpenAPI ops-plane
+  descriptions that currently say "operator-only" per endpoint, and `docs/` where the console
+  copy says an ops token means operator.
