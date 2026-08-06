@@ -76,6 +76,10 @@ export interface InvokeContext {
   binding: Binding;
   /** The claimed request. An entrypoint sees this and nothing else. */
   record: RadiaRecord;
+  /** The AGENT's client, never the host's. An invoker that performs work on the entrypoint's
+   *  behalf (the broker, phase 5) does it through this, so a proposal from inside the jail is
+   *  attributed exactly like the ack: to the agent, under the agent's grants. */
+  client: RadiaClient;
   /** The materialised tree, when the invoker was given one. */
   root?: string;
 }
@@ -191,7 +195,7 @@ export class WorkspaceHost {
         continue;
       }
       try {
-        const result = await invoke({ binding, record: claimed.record });
+        const result = await invoke({ binding, record: claimed.record, client });
         const acked = await client.ack(claimed.lease, result);
         out.push({
           agent: binding.agent,

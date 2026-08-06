@@ -47,9 +47,13 @@ they cross a trust boundary:
   identical everywhere, or two exports of one workspace are not comparable and `git log` across them
   is meaningless. It is pinned by known-answer vectors taken from the real `git` binary, plus a
   round trip through `git fsck` and `git clone` where one is installed.
+- **The broker frame format** (`ts/broker.ts`) crosses the biggest trust boundary here:
+  model-written code against an agent's authority. A second implementation that speaks it
+  differently is not a variant, it is a hole, so the escape probe and the host-side rules (labels,
+  the compartment stamp, the forced parent, the idempotency key) are a contract.
 
-Both are specified by `extensions/conformance/`, which is the contract any implementation has to
-meet, in any language.
+All of them are specified by `extensions/conformance/`, which is the contract any implementation
+has to meet, in any language.
 
 ## Layout
 
@@ -66,6 +70,7 @@ meet, in any language.
 | `ts/promotion.ts` | which CODE a tier may run, as a grant rotation: a pattern-scoped grant pins `exec_request` to a workspace digest, promotion writes the new pin and retires the old, rollback is promotion pointed backwards. The promotion state IS the grant registry, so the event chain covers it and `radia permissions <runner>` answers "what is prod running" from the enforcement path. Two footguns it exists to hold: GRANT before retire (retire-first leaves a window claiming nothing, and only a test on the ORDER OF WRITES can see it), and revive a retired identity through `RadiaClient.grant`'s `:after:` anchor or a rollback reports success and grants nothing |
 | `ts/compartment.ts` | who can get data OUT of a compartment, from the grants that decide it. Crossing is reserved to a principal granted BOTH sides, and nothing enforces that but the grants themselves, so `auditCompartment` finds the ones who hold both, plus the two doors that are not grants (`observe` reads every body, `declassify` clears labels) and the one kind that cannot be partitioned (`artifact` is reserved: scoped by pattern or not at all). `unexpectedCrossers` is the promotion checklist as a function. Its caveats name what it cannot see, starting with privileged principals |
 | `ts/host.ts` | a generic host that runs a workspace's code AS the agent it belongs to: a `binding` record names the digest and entrypoint, the host mints that agent's run and CLAIMS UNDER IT, so `created_by`, `lease_owner` and delegation are the agent's and one host serving ten agents needs none of their authority. Two locks (binding + pattern-scoped grant) are each inert alone, and building it found they must also AGREE: a binding at one digest while the grant pins another is refused (`digest_mismatch`) rather than run. The invoker is pluggable; the default materialises the tree and runs the entrypoint in the Deno jail |
+| `ts/broker.ts` | how jailed code participates without ever holding a credential: the entrypoint gets `(record, space)`, `space` writes PROPOSALS to stdout, and the host performs them under the AGENT's run token. NORMATIVE (the frame format), because this is the boundary between model-written code and an agent's authority. Three properties follow: the host stamps labels and the compartment field from the jail's DECLARED powers, so the code cannot lie about what it touched; every brokered put carries the claimed record as a parent, so it cannot launder lineage either (and the runtime then computes `foreign` on its own); and idempotency keyed on `(claimed record, output ordinal)` makes a retried attempt's writes a replay |
 | `conformance/` | the contract an implementation must meet (`deno task extensions`) |
 
 Two isolation backends ship: `deno-permissions` (JS, safe by ABSENCE of flags) and `bubblewrap`

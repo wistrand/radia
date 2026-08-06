@@ -1,7 +1,8 @@
 # Plan: workspace agents, and promotion as grant rotation
 
-> Status: phases 1 to 4 BUILT (2026-08-06); phases 5 and 6 (the broker, warm pools) designed.
-> Origin:
+> Status: phases 1 to 5 BUILT (2026-08-06), so the containment is structural rather than
+> attested and the line about real protected data is cleared; phase 6 (warm pools) is an
+> optimization and unbuilt. Origin:
 > a speculation about running LLM-written
 > code over protected data, plus the review that found several of its guarantees weaker than the
 > enforcement behind them. That is the claim ledger below, and it is why this file exists before
@@ -271,13 +272,26 @@ misconfiguration. The host now refuses that pairing, releases the claim so a cor
 can take it, and reports `digest_mismatch`. Two locks are necessary and not sufficient: they must
 also agree.
 
-**5. Can the jail be denied the token?**
-Ships: `extensions/ts/broker.ts` (the protocol, NORMATIVE), the shim the entrypoint imports, the
-host-side executor that performs proposals under the agent's token and stamps labels and the
-compartment field, and `extensions/conformance/broker.test.ts` as its contract.
-Done when: a probe from inside the jail cannot reach the API (the shape the sandbox suite already
-uses for escape); a filesystem-capable sandbox's output carries `file` without the code saying
-so; a retried attempt's puts dedupe.
+**5. Can the jail be denied the token? BUILT (2026-08-06), and it can. The line above is cleared.**
+Shipped: `extensions/ts/broker.ts` (the frame protocol, NORMATIVE) with
+`extensions/conformance/broker.test.ts` as its contract. The entrypoint takes `(record, space)`,
+where `space` writes PROPOSALS to stdout and the host performs them under the AGENT's run token.
+No shim is imported and none is materialised: the boot program is generated, because the tree is
+content-addressed and adding a file to it would change the digest that identifies the code.
+Answered: from inside the jail, `fetch`, `Deno.env`, reading the credentials file and spawning a
+process are all permission-denied while the broker works; a brokered write is authored by the
+agent; a filesystem-capable jail's output carries `file` and the host's compartment stamp,
+neither of which the code said; a retried attempt's writes dedupe on
+`(claimed record, output ordinal)`.
+Plant: opening the jail with `--allow-net --allow-env` fails the probe with "the jail reached the
+space through fetch".
+Two things building it settled. The jail's flags now live in ONE place (`jailArgs` in
+`sandbox.ts`): `runCode` feeds a program through stdin, which the broker cannot do because stdin
+is its response channel, and a second copy of the permission flags would have been a second
+security boundary to keep in step. And forcing the claimed record as a parent on every brokered
+put does more than preserve labels: the runtime then computes `foreign` itself, because the
+output is derived from a record another principal wrote. Lineage the code cannot omit is what
+lets the space label on its own.
 
 **6. Warm pools per promoted digest.**
 Ships: a digest-keyed pool in `host.ts`.
@@ -286,8 +300,10 @@ risk: different code is a different digest, so a warm entry cannot be stale.
 
 **Never put real protected data in before phase 5 is built and its plants pass.** Before that a
 jailed process can reach the API with whatever credential it can read, and the compartment binds
-only the grants that credential holds. Phases 1 to 4 are developed against synthetic data that
-nobody would mind leaking.
+only the grants that credential holds. CLEARED on 2026-08-06: the probe passes and the plant
+fails it. The line stays written down because it applies again to any NEW runner: a second
+backend (bubblewrap, another language) is not covered by the Deno jail's probe, and it inherits
+this rule rather than the conclusion.
 
 ## Mechanical footnotes
 

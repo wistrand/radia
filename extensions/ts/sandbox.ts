@@ -115,10 +115,37 @@ async function readCapped(stream: ReadableStream<Uint8Array>, cap: number): Prom
   return { text, truncated };
 }
 
-export async function runCode(source: string, opts: RunOptions = {}): Promise<RunResult> {
-  const { timeoutMs, maxOutputBytes, memoryMb } = { ...DEFAULTS, ...opts };
+/**
+ * The jail's flags, in ONE place.
+ *
+ * `runCode` runs a program from stdin (`entry: "-"`); the BROKER runs one from a file, because it
+ * needs stdin free as a response channel. That is the only difference between them, and a second
+ * copy of these flags would be a second security boundary to keep in step: the same reasoning
+ * `drive` below is shared for.
+ *
+ * READ is the one capability that can be granted, and only to explicit roots. Write is granted
+ * only when a caller names a directory. NET, ENV, RUN, FFI and SYS are denied whatever any caller
+ * passes, which is what makes a brokered channel the only way out of the jail.
+ */
+export function jailArgs(opts: RunOptions, memoryMb: number, entry: string): string[] {
   const readRoots = opts.readRoots ?? [];
   const denyRead = opts.denyRead ?? [];
+  return [
+    "run",
+    "--no-prompt", // a denied permission fails; it never waits for a human that isn't there
+    "--no-remote", // `import("https://…")` cannot even be attempted
+    "--quiet",
+    ...(entry === "-" ? ["--ext=js"] : []), // stdin has no filename, so the dialect must be stated
+    `--v8-flags=--max-old-space-size=${memoryMb}`,
+    ...(readRoots.length ? [`--allow-read=${readRoots.join(",")}`] : []),
+    ...(opts.writeRoots?.length ? [`--allow-write=${opts.writeRoots.join(",")}`] : []),
+    ...(denyRead.length ? [`--deny-read=${denyRead.join(",")}`] : []),
+    entry,
+  ];
+}
+
+export async function runCode(source: string, opts: RunOptions = {}): Promise<RunResult> {
+  const { timeoutMs, maxOutputBytes, memoryMb } = { ...DEFAULTS, ...opts };
   const started = Date.now();
   // The RUNNING runtime, by absolute path, not the name `deno` resolved against the PATH this
   // command itself invents (`/usr/bin:/bin` below). Two reasons, and CI found the first: on a
@@ -129,24 +156,8 @@ export async function runCode(source: string, opts: RunOptions = {}): Promise<Ru
   // whichever binary that path happens to find.
   const child = new Deno.Command(Deno.execPath(), {
     ...(opts.cwd ? { cwd: opts.cwd } : {}),
-    args: [
-      "run",
-      "--no-prompt", // a denied permission fails; it never waits for a human that isn't there
-      "--no-remote", // `import("https://…")` cannot even be attempted
-      "--quiet",
-      "--ext=js", // stdin has no filename, so the dialect must be stated
-      `--v8-flags=--max-old-space-size=${memoryMb}`,
-      // READ is the one capability that can be granted, and only to explicit roots. Write, net,
-      // env and run stay denied whatever happens here. Reading data is a different risk from
-      // being able to change it or send it anywhere.
-      ...(readRoots.length ? [`--allow-read=${readRoots.join(",")}`] : []),
-      // WRITE stays denied unless a caller names a directory. Net, env and run are denied whatever
-      // happens here: being able to change a file the caller is about to read back is a different
-      // risk from being able to reach the network with it.
-      ...(opts.writeRoots?.length ? [`--allow-write=${opts.writeRoots.join(",")}`] : []),
-      ...(denyRead.length ? [`--deny-read=${denyRead.join(",")}`] : []),
-      "-", // the program comes from stdin: no file needs to be readable
-    ],
+    args: jailArgs(opts, memoryMb, "-"), // the program comes from stdin: no file needs to be readable
+
     // Nothing else is granted: net, env, run, ffi and sys are all denied, and so is write unless
     // the caller named a workspace directory above.
     stdin: "piped",
