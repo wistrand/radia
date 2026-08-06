@@ -82,18 +82,11 @@ the one worth knowing, since a probe without a real canary reports `held: true` 
 jail.
 
 **What is not done: the fix.** A mount namespace closes it, because an unbound path does not exist
-to open. Measured, same jail and same flags, wrapped in bubblewrap: the KEK import goes from
-`REACHED` to `Module not found`, for 7ms (50ms to 57ms). The remedy is therefore a bwrap-confined
-Deno sandbox, selected where bwrap probes clean, exactly as `run_python` already is. It is not
-wired in because it needs a decision this doc should not make alone: bubblewrap is Linux-only and
-unavailable on hosted CI runners (see gotchas.md), so either JS execution falls back to the
-unconfined jail on those machines with the record saying so, or it refuses to serve at all. The
-fallback matches the existing "publish only what probes clean" doctrine and is the recommendation.
-
-**One caveat for whoever wires it.** `probeSandbox` picks its probe LANGUAGE from `isolation`
-(bubblewrap implies Python), which is the backend/language conflation `design-execution.md` warns
-about. A bwrap-confined Deno jail is the first spec where those differ, and the probe has to learn
-the difference before it can verify one.
+to open. The plan, with the measurements behind it and a per-platform story, is
+[plan-jail-confinement.md](plan-jail-confinement.md). Its two cheapest phases are worth knowing
+here because they need no jail at all: the jail currently HONOURS a `deno.json` written into the
+model's own workspace (`--no-config` closes that), and the import vector is decided by file
+EXTENSION, so this space's own secrets stop being reachable the moment they stop being `.json`.
 
 ---
 

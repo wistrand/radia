@@ -153,6 +153,14 @@ ms}` out, plus the optional `expect` that produces a `check`. Nothing in it ment
 
 ## Isolation: the option space
 
+> A CHANNEL this section did not consider, found 2026-08-06: a read permission bounds file APIs and
+> not module loading, so the Deno jail's "no filesystem" is false for `.json` and for any `.ts`/`.js`
+> it can name. The option space below is therefore incomplete in one direction: what the Deno jail
+> needs is not a different runtime but a filesystem CONFINER underneath it, which is a smaller and
+> composable change. See [plan-jail-confinement.md](plan-jail-confinement.md) and package T in
+> [plan-audit-remediation.md](plan-audit-remediation.md).
+
+
 Measured on this machine, since startup cost decides what a tight loop can afford. A model round is
 1-10 SECONDS, so everything here is small by comparison; the numbers matter for how many attempts
 fit in a turn, not for whether the substrate can keep up.
