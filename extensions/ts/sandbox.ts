@@ -134,6 +134,18 @@ export function jailArgs(opts: RunOptions, memoryMb: number, entry: string): str
     "run",
     "--no-prompt", // a denied permission fails; it never waits for a human that isn't there
     "--no-remote", // `import("https://…")` cannot even be attempted
+    // A JAIL MUST NOT READ CONFIGURATION WRITTEN BY ITS PRISONER. The child's cwd is the
+    // materialised tree, which is model-written, and Deno discovers `deno.json` from cwd: measured,
+    // a workspace shipping one had its import map honoured inside the jail. Neither file has a
+    // legitimate use here (there is no network to fetch from and no npm), so both discoveries are
+    // off. The visible cost is that an import map inside a workspace stops working, loudly.
+    "--no-config",
+    "--no-lock",
+    // `npm:` was already unreachable, but ACCIDENTALLY: it failed on an env permission
+    // (`TF_BUILD`) before it ever tried to resolve, which is a block that disappears the day Deno
+    // stops reading that variable. The runner's own tool description has always promised "no npm";
+    // this is that promise enforced rather than observed. `jsr:` is already covered by --no-remote.
+    "--no-npm",
     "--quiet",
     ...(entry === "-" ? ["--ext=js"] : []), // stdin has no filename, so the dialect must be stated
     `--v8-flags=--max-old-space-size=${memoryMb}`,

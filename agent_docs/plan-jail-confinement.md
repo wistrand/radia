@@ -1,6 +1,6 @@
 # Plan: confining the filesystem, per platform
 
-> Status: RESEARCH DONE (2026-08-06), nothing built beyond the honest record. The defect is package
+> Status: phase 1 BUILT (2026-08-06); 3 and 4 researched and ready; 2 REJECTED; 5 is a posture. The defect is package
 > T in [plan-audit-remediation.md](plan-audit-remediation.md); this is the plan to close it.
 > Everything below marked "measured" was run against the real jail on Linux, except phase 4:
 > `sandbox-exec` was verified on a real Mac 2026-08-06 (macOS 26.4.1, Deno 2.9.5, arm64). Read
@@ -48,13 +48,13 @@ safe-by-absence direction rather than the safe-by-presence one.
 | `c.txt` | base64 text     | refused                                   |
 | `e.bin` | raw bytes       | refused                                   |
 
-Deno will not parse a non-`.json` file as JSON however it is asked. So storing this space's own
-secrets under a non-module extension puts them out of reach on EVERY platform with no jail at all.
-That is the portable half of the macOS answer, and it is worth doing even if every phase below
-ships.
-What it does NOT do: protect the operator's OTHER json. A developer machine has plenty that
-matters (browser `logins.json`, assorted `~/.config/**/*.json`), so this bounds our blast radius
-and leaves the general hole to a real confiner.
+Deno will not parse a non-`.json` file as JSON however it is asked. This BOUNDS the vector, which
+is why it is recorded: the hole reaches JSON and code, not arbitrary bytes, so a non-module secret
+is unreadable through it today.
+
+It is NOT a mitigation, and was rejected as one (phase 2 below). The bound is a property of Deno's
+file-type resolution rather than of the jail, so it holds until an upstream release decides
+otherwise, and nothing would tell us when that happened.
 
 ## A second finding: the jail obeys its prisoner's config
 
@@ -93,16 +93,43 @@ learn the difference before it can verify one.
 
 ## Phases
 
-Ordered cheapest first, and 1 and 2 are worth doing whatever happens to the rest.
+Ordered cheapest first. Phase 1 is worth doing whatever happens to the rest; phase 2 is kept as a
+REJECTED option, because it reads like an obvious cheap win and is not.
 
-**1. `--no-config --no-lock` in `jailArgs`.** One line, every platform, closes the config finding
-above. No behaviour to trade: nothing legitimate in a jail wants a config file it found in the
-tree.
+**1. BUILT (2026-08-06): the jail stops reading its prisoner's configuration.** `--no-config`,
+`--no-lock` and `--no-npm` in `jailArgs`, so every Deno spawn gets them (`runCode`, `runEntry`, the
+broker). Guarded by "the jail does not read configuration written by its prisoner" in
+`extensions/conformance/workspace.test.ts`, which drives a real tree-local `deno.json` and also
+asserts the flag list, since a refactor is how one of these goes missing. Plant: removing the flags
+restores `MAP HONOURED`.
+`--no-npm` was not in the original phase and earned its way in: `npm:` was already unreachable, but
+ACCIDENTALLY, failing on an env permission (`TF_BUILD`) before it ever tried to resolve. That is a
+block that disappears the day Deno stops reading that variable, and the runner's tool description
+has always promised "no npm". `jsr:` was already covered by `--no-remote`.
+The cost, such as it is: an import map inside a workspace stops working, loudly ("Import X not a
+dependency"). Nothing in the jail can fetch anything, so a map there had no legitimate use.
 
-**2. Radia's own secrets stop being `.json`.** The blob KEK (`src/paths.ts` `defaultKekPath`) and the
-credentials file. Renaming is not the whole job: both are read by name in more than one place, and
-the credentials file is shared with the CLI, the MCP adapter and the Python SDK, so this is a
-compatibility question (read the old name, write the new one) rather than a rename.
+**2. REJECTED (2026-08-06): renaming Radia's own secrets off `.json`.** Proposed when macOS had no
+confiner and this looked like the only portable protection. Two reasons it is not worth doing now
+that phases 3 and 4 are both real:
+
+- **It is not a guarantee, it is an upstream behaviour.** The protection is Deno declining to parse
+  a non-`.json` file as JSON. That is a file-type heuristic, not a boundary: a release that adds
+  content sniffing, or a second runtime with a different table, removes the protection silently and
+  no probe here would notice. A security property nothing can verify is one nobody should rely on.
+- **The cost is permanent and the benefit was temporary.** The KEK and the credentials file are read
+  by name from the CLI, the MCP adapter and the Python SDK, so this is a compatibility shim (read
+  the old name, write the new one) that outlives the problem it was working around.
+
+It also never protected the operator's OTHER json (browser `logins.json`, assorted
+`~/.config/**/*.json`), so it narrowed our blast radius without closing the hole. A confiner closes
+it for every file at once, which is the thing to build.
+
+**The residual, stated rather than discovered later:** on Windows (phase 5) there is no confiner, so
+this space's own secrets stay reachable there. Renaming would have hidden ours and left every other
+JSON on that machine readable, which is a better-looking report rather than a safer jail. The honest
+Windows answer is the record saying `importsConfined: false`, and not running untrusted code on a
+host where that matters.
 
 **3. Filesystem-only bubblewrap on Linux.** A `confine` option on `denoSandbox`, the split above,
 and the probe taught to test a JS jail under a non-JS-implying backend. CI will say whether the

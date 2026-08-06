@@ -74,6 +74,9 @@ probeable anywhere, which is an enumeration oracle.
 **No flag closes it.** `--allow-import` / `--deny-import` gate remote hosts only (Deno 2.9.2). A
 source-level ban on `import` is not a control: dynamic import works from `eval`.
 
+**Not Linux-specific.** Reproduced on macOS 26.4.1 with Deno 2.9.5 (arm64) while verifying the
+remedy, so this is the permission model rather than one platform's filesystem.
+
 **What is done.** The record no longer lies: `SandboxSpec.importsConfined` states whether the read
 restriction covers module loading (`denoSandbox` false, `bwrapSandbox` true), absent reads as
 unconfined, and `probeSandbox` breaks out of any spec CLAIMING confinement it does not have. Two
@@ -83,10 +86,16 @@ jail.
 
 **What is not done: the fix.** A mount namespace closes it, because an unbound path does not exist
 to open. The plan, with the measurements behind it and a per-platform story, is
-[plan-jail-confinement.md](plan-jail-confinement.md). Its two cheapest phases are worth knowing
-here because they need no jail at all: the jail currently HONOURS a `deno.json` written into the
-model's own workspace (`--no-config` closes that), and the import vector is decided by file
-EXTENSION, so this space's own secrets stop being reachable the moment they stop being `.json`.
+[plan-jail-confinement.md](plan-jail-confinement.md): a filesystem-only confiner under the
+unchanged permission jail, bubblewrap on Linux and `sandbox-exec` on macOS, both measured. One
+finding there needed no jail and is CLOSED (2026-08-06): the jail honoured a `deno.json` written
+into the model's own workspace, and now runs with `--no-config --no-lock --no-npm`.
+
+Do NOT reach for the obvious cheap mitigation. The vector is decided by file EXTENSION, so renaming
+this space's secrets off `.json` looks like a free fix; it was proposed, and rejected, because the
+protection is Deno's file-type heuristic rather than a boundary, nothing here could detect it
+changing, and the compatibility shim across the CLI, the MCP adapter and the Python SDK would
+outlive the problem. See phase 2 of the plan.
 
 ---
 

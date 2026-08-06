@@ -32,7 +32,7 @@ import {
   type WorkspaceManifest,
   writeWorkspace,
 } from "../ts/workspace.ts";
-import { bwrapSandbox, denoSandbox, probeSandbox, runBwrap, runCode, runEntry } from "../ts/sandbox.ts";
+import { bwrapSandbox, denoSandbox, jailArgs, probeSandbox, runBwrap, runCode, runEntry } from "../ts/sandbox.ts";
 import { declareSandbox, listSandboxes, readSandbox, SANDBOX_KIND, verifySandbox } from "../ts/sandbox-registry.ts";
 
 const PORT = 7815;
@@ -1731,5 +1731,36 @@ Deno.test("sandbox: a spec CLAIMING confined imports is caught by the probe", as
     assertEquals(honest.find((r) => r.claim === "imports"), undefined);
   } finally {
     await Deno.remove(tree, { recursive: true });
+  }
+});
+
+Deno.test("sandbox: the jail does not read configuration written by its prisoner", async () => {
+  // The jail's cwd is the materialised tree, which is MODEL-WRITTEN, and Deno discovers `deno.json`
+  // from cwd. So a workspace could ship one and have its import map honoured inside the jail: a
+  // sandbox taking configuration from the code it is sandboxing. Measured before the flags went in,
+  // where this printed the mapped module's contents.
+  const tree = await Deno.makeTempDir({ prefix: "tree-" });
+  const outside = await Deno.makeTempDir({ prefix: "OUTSIDE-" });
+  try {
+    await Deno.writeTextFile(`${outside}/target.json`, JSON.stringify({ mapped: true }));
+    await Deno.writeTextFile(`${tree}/deno.json`, JSON.stringify({ imports: { "sneaky": `file://${outside}/target.json` } }));
+    await Deno.writeTextFile(
+      `${tree}/main.js`,
+      `try { const m = await import("sneaky", { with: { type: "json" } }); console.log("MAP HONOURED " + JSON.stringify(m.default)); }
+       catch (e) { console.log("no map: " + String(e.message).split("\\n")[0]); }`,
+    );
+    const r = await runEntry(`${tree}/main.js`, { readRoots: [tree], cwd: tree, timeoutMs: 20_000 });
+    assert(!r.stdout.includes("MAP HONOURED"), `the tree's own deno.json configured the jail: ${r.stdout.trim()}`);
+    assertStringIncludes(r.stdout, "no map:");
+
+    // The flags are stated here as well as in `jailArgs`, because this is the guard that would
+    // notice one being dropped in a refactor.
+    const args = jailArgs({ readRoots: [tree] }, 128, `${tree}/main.js`);
+    for (const flag of ["--no-config", "--no-lock", "--no-npm", "--no-remote"]) {
+      assert(args.includes(flag), `${flag} is missing from the jail: ${args.join(" ")}`);
+    }
+  } finally {
+    await Deno.remove(tree, { recursive: true });
+    await Deno.remove(outside, { recursive: true });
   }
 });
