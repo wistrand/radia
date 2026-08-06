@@ -65,16 +65,27 @@ export function spanIdOf(recordId: string, attempt?: number): Promise<string> {
   return hex("radia:span:" + recordId + (attempt !== undefined ? "#" + attempt : ""), 16);
 }
 
-/** `run:agent:x:01J…` acted for `agent:x`; anything else is its own service. */
+/**
+ * The NO-LOOKUP fallback for a service name: the principal, unchanged. A run principal is
+ * `run:<ulid>` and carries NO agent name — the run → agent mapping lives in `agent_run` RECORDS
+ * (design-auth.md: never parse authority out of a name shape). Callers that can read those
+ * records pass a real resolver via `serviceOf`; this fallback means an exporter without that
+ * access shows run ids honestly instead of a parsed fiction.
+ */
 export function agentOf(principal: string): string {
-  const p = String(principal || "unknown").split(":");
-  if (p[0] === "run" && p.length > 2) return p.slice(1, -1).join(":");
   return String(principal || "unknown");
 }
 
 function nanos(iso: string): string {
   const ms = Date.parse(iso);
   return Number.isFinite(ms) ? String(ms) + "000000" : "0";
+}
+/** Collectors require end > start (Jaeger v2 sanitizes end == start to +1ns and WARNS about it,
+ *  once per point-span). A record with no duration is still a point in time, so emit the same
+ *  1ns floor deliberately and quietly; the honesty lives in the `radia.open` attribute and the
+ *  zero-length bar, not in a fabricated end. */
+function endAfter(startNs: string, endNs: string): string {
+  return BigInt(endNs) > BigInt(startNs) ? endNs : String(BigInt(startNs) + 1n);
 }
 function attr(key: string, value: string | number | boolean | string[]): OtlpAttr {
   if (Array.isArray(value)) return { key, value: { arrayValue: { values: value.map((v) => ({ stringValue: String(v) })) } } };
@@ -92,8 +103,21 @@ export async function recordSpans(
   record: RadiaRecord,
   events: SpaceEvent[],
   rootId: string,
-  opts: { claimable?: boolean } = {},
+  opts: {
+    claimable?: boolean;
+    serviceOf?: (principal: string) => string;
+    /** Whether a parent id's span is part of THIS export. A parent outside it becomes a LINK
+     *  rather than a tree-parent: a parentSpanId pointing at a span the collector never received
+     *  is exactly Jaeger's "parent span ID is not in the trace" warning and its Incomplete badge. */
+    inTrace?: (id: string) => boolean;
+    /** False emits only the attempt spans: the follower uses it when a record's zero-duration
+     *  span was already backfilled as somebody's ancestor, because two spans with one
+     *  deterministic id and different contents is the one thing the id scheme must never do. */
+    emitRecordSpan?: boolean;
+  } = {},
 ): Promise<{ service: string; span: OtlpSpan }[]> {
+  const serviceOf = opts.serviceOf ?? agentOf;
+  const inTrace = opts.inTrace ?? (() => true);
   const traceId = await traceIdOf(rootId);
   const recSpanId = await spanIdOf(record.id);
   const meta = record.runtimeMeta;
@@ -109,7 +133,7 @@ export async function recordSpans(
   for (const e of mine) {
     if (e.operation === "take") {
       attempt++;
-      open = { n: attempt, start: e.ts, agent: agentOf(e.runId) };
+      open = { n: attempt, start: e.ts, agent: serviceOf(e.runId) };
     } else if (open && (e.operation === "ack" || e.operation === "nack" || e.operation === "release")) {
       const status = e.operation === "ack"
         ? { code: 1 }
@@ -126,7 +150,7 @@ export async function recordSpans(
           name: `${record.kind} attempt ${open.n}`,
           kind: 1,
           startTimeUnixNano: nanos(open.start),
-          endTimeUnixNano: nanos(e.ts),
+          endTimeUnixNano: endAfter(nanos(open.start), nanos(e.ts)),
           attributes: [attr("radia.record.id", record.id), attr("radia.attempt", open.n), attr("radia.settle", e.operation)],
           status,
         },
@@ -135,22 +159,29 @@ export async function recordSpans(
     }
   }
 
+  if (opts.emitRecordSpan === false) return out;
+
   // The record span: creation to its terminal ack. Never worked (or not settled inside the
-  // window this export saw) stays zero-duration and says so, instead of inventing an end.
+  // window this export saw) stays zero-duration and says so, instead of inventing an end. The
+  // FIRST in-trace parent nests; parents outside the export and every additional parent LINK.
   const parents = meta.parentIds || [];
   const settled = lastAck !== undefined;
+  const primary = parents.length && inTrace(parents[0]) ? parents[0] : undefined;
   const links: { traceId: string; spanId: string }[] = [];
-  for (const p of parents.slice(1)) links.push({ traceId, spanId: await spanIdOf(p) });
+  for (const p of parents) {
+    if (p === primary) continue;
+    links.push({ traceId, spanId: await spanIdOf(p) });
+  }
   out.push({
-    service: agentOf(meta.createdBy),
+    service: serviceOf(meta.createdBy),
     span: {
       traceId,
       spanId: recSpanId,
-      ...(parents.length ? { parentSpanId: await spanIdOf(parents[0]) } : {}),
+      ...(primary ? { parentSpanId: await spanIdOf(primary) } : {}),
       name: record.kind,
       kind: 1,
       startTimeUnixNano: nanos(meta.createdAt),
-      endTimeUnixNano: nanos(settled ? lastAck! : meta.createdAt),
+      endTimeUnixNano: endAfter(nanos(meta.createdAt), nanos(settled ? lastAck! : meta.createdAt)),
       attributes: [
         attr("radia.record.id", record.id),
         attr("radia.record.kind", record.kind),
@@ -184,11 +215,19 @@ export async function buildThreadSpans(
   records: RadiaRecord[],
   events: SpaceEvent[],
   rootId: string,
-  opts: { claimableOf?: (kind: string) => boolean } = {},
+  opts: {
+    claimableOf?: (kind: string) => boolean;
+    serviceOf?: (principal: string) => string;
+    inTrace?: (id: string) => boolean;
+  } = {},
 ): Promise<OtlpResourceSpans[]> {
   const all: { service: string; span: OtlpSpan }[] = [];
   for (const r of records) {
-    all.push(...await recordSpans(r, events, rootId, { claimable: opts.claimableOf ? opts.claimableOf(r.kind) : true }));
+    all.push(...await recordSpans(r, events, rootId, {
+      claimable: opts.claimableOf ? opts.claimableOf(r.kind) : true,
+      serviceOf: opts.serviceOf,
+      inTrace: opts.inTrace,
+    }));
   }
   return toResourceSpans(all);
 }

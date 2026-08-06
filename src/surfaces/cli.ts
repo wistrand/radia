@@ -645,11 +645,41 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         }
       } catch { /* scoped session: default everything claimable */ }
       const claimableOf = (k: string) => claimable.get(k) !== false;
+      // Service names. A run principal is `run:<ulid>` and its AGENT lives in agent_run records:
+      // the string carries no name and must never be parsed for one (design-auth.md). Resolve
+      // through the records when this credential can read them; the observer cannot, so services
+      // fall back to raw run ids — said once, not silently.
+      const agents = new Map<string, string>();
+      let runReadDenied = false;
+      const resolveService = async (principal: string): Promise<string> => {
+        if (!principal || !principal.startsWith("run:")) return principal;
+        const hit = agents.get(principal);
+        if (hit !== undefined) return hit;
+        let name = principal;
+        if (!runReadDenied) {
+          try {
+            const recs = await client.query({ kind: "agent_run", match: { run: principal } }, 1, { dir: "desc" });
+            const agent = (recs[0]?.body as { agent?: unknown } | undefined)?.agent;
+            if (typeof agent === "string" && agent) name = agent;
+          } catch {
+            runReadDenied = true;
+            console.error("otlp: this credential cannot read agent_run records, so services are raw run ids (an operator token resolves them to agent names)");
+          }
+        }
+        agents.set(principal, name);
+        return name;
+      };
+      const serviceOf = (p: string) => agents.get(p) ?? p;
       // The trace boundary. Default: the lineage root. `--trace-root <kind>` cuts at the nearest
       // ancestor of that kind instead — the hub problem flows already hit: a conversation-rooted
       // trace is a whole multi-day chat, and `--trace-root message` makes the TURN the trace.
+      // The lineage read that resolves a root also carries the full ANCESTRY records; the
+      // follower backfills them into the trace, or every span in a turn points at a parent the
+      // collector never received (Jaeger: "parent span ID is not in the trace" + Incomplete).
+      const lineages = new Map<string, Awaited<ReturnType<typeof client.getLineage>>>();
       const rootOf = async (id: string) => {
         const lin = await client.getLineage(id);
+        lineages.set(id, lin);
         if (traceRootKind) {
           let best: { record: { id: string; kind: string }; depth: number } | null = null;
           for (const n of lin) if (n.record.kind === traceRootKind && (!best || n.depth < best.depth)) best = n;
@@ -686,7 +716,15 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           if (!p.events.length || !p.nextAfter) break;
           after = p.nextAfter;
         }
-        const rs = await buildThreadSpans([...members.values()], evs, root, { claimableOf });
+        for (const rec of members.values()) await resolveService(rec.runtimeMeta.createdBy);
+        for (const e of evs) await resolveService(e.runId);
+        const rs = await buildThreadSpans([...members.values()], evs, root, {
+          claimableOf,
+          serviceOf,
+          // A member whose first parent sits OUTSIDE this membership (a cross-thread parent, or
+          // above a --trace-root cut) gets a LINK, never a dangling tree-parent.
+          inTrace: (id: string) => members.has(id),
+        });
         await postTraces(to, rs);
         const spans = rs.reduce((n, r) => n + r.scopeSpans[0].spans.length, 0);
         console.log(`exported ${spans} span(s) across ${rs.length} service(s), trace ${await traceIdOf(root)}`);
@@ -700,6 +738,14 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       const seed = await client.getEventsPage("0", 1, { tail: 1 });
       let cursor = String(seed.nextAfter ?? "0");
       const roots = new Map<string, string>(), recs = new Map<string, Awaited<ReturnType<typeof client.getRecord>> | null>(), buf = new Map<string, Parameters<typeof recordSpans>[1]>();
+      const emitted = new Set<string>(); // record ids whose record span was sent: never send one twice
+      // Terminals deferred because an ancestor is mid-attempt: emitting them would backfill the
+      // ancestor's record span as zero-duration OPEN, and the dedupe rule would then pin it that
+      // way forever even after its ack (observed live: an acked llm_call stuck at `radia.open`,
+      // duration 0, because its progress child settled first). Key = the open ancestor;
+      // flushed when it settles, or after HOLD_MS if it never does.
+      const held = new Map<string, { rid: string; at: number }[]>();
+      const HOLD_MS = 30_000;
       let pending: Parameters<typeof toResourceSpans>[0] = [], sent = 0, stopping = false;
       const unlisten = onShutdown(() => { stopping = true; });
       const flush = async () => {
@@ -709,6 +755,73 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         await postTraces(to, toResourceSpans(batch));
         sent += batch.length;
         console.error(`otlp: ${sent} span(s) exported`);
+      };
+      /** An ancestor currently mid-attempt (a take buffered with no settle yet), nearest first. */
+      const openAncestorOf = (rid: string): string | undefined => {
+        for (const n of [...(lineages.get(rid) ?? [])].sort((a, b) => a.depth - b.depth)) {
+          if (n.record.id === rid || emitted.has(n.record.id)) continue;
+          const evs = buf.get(n.record.id);
+          if (!evs) continue;
+          const takes = evs.filter((e) => e.operation === "take").length;
+          const settles = evs.filter((e) => e.operation === "ack" || e.operation === "nack" || e.operation === "release").length;
+          if (takes > settles) return n.record.id;
+        }
+        return undefined;
+      };
+      const emitTerminal = async (rid: string, force = false): Promise<void> => {
+        const rec = recs.get(rid);
+        const transitions = buf.get(rid);
+        if (!rec || !transitions) return;
+        // Defer while an ancestor is mid-attempt: its record span would otherwise backfill as
+        // zero-duration OPEN and stay that way (one deterministic id, one send).
+        if (!force) {
+          const anc = openAncestorOf(rid);
+          if (anc) {
+            if (!held.has(anc)) held.set(anc, []);
+            held.get(anc)!.push({ rid, at: Date.now() });
+            return;
+          }
+        }
+        await resolveService(rec.runtimeMeta.createdBy);
+        for (const be of transitions) await resolveService(be.runId);
+        const rootId = roots.get(rid) ?? rid;
+        // Backfill ancestry, root first, so no span names a parent the collector never saw:
+        // ancestors created before this follower started never settle in its window, so they
+        // enter as zero-duration record spans. If one settles later, only its attempt spans
+        // are added (emitRecordSpan: false) — one deterministic id is never sent twice.
+        const lin = lineages.get(rid) ?? [];
+        const inSet = new Set(lin.map((n) => n.record.id));
+        inSet.add(rid);
+        for (const n of [...lin].sort((a, b) => b.depth - a.depth)) {
+          if (n.record.id === rid || emitted.has(n.record.id)) continue;
+          await resolveService(n.record.runtimeMeta.createdBy);
+          pending.push(...await recordSpans(n.record, [], rootId, {
+            claimable: claimableOf(n.record.kind),
+            serviceOf,
+            inTrace: (id: string) => inSet.has(id),
+          }));
+          emitted.add(n.record.id);
+        }
+        pending.push(...await recordSpans(rec, transitions, rootId, {
+          claimable: claimableOf(rec.kind),
+          serviceOf,
+          inTrace: (id: string) => inSet.has(id) || emitted.has(id),
+          emitRecordSpan: !emitted.has(rid),
+        }));
+        emitted.add(rid);
+        buf.delete(rid);
+        // A settled record is done: keep only the emitted-marker, or a long follow leaks a
+        // record, a lineage and a root per thing the space ever did.
+        lineages.delete(rid);
+        roots.delete(rid);
+        recs.delete(rid);
+        // Everything that was waiting on THIS record's attempt can now emit, nested under a
+        // record span that carries its real duration.
+        const waiting = held.get(rid);
+        if (waiting) {
+          held.delete(rid);
+          for (const h of waiting) await emitTerminal(h.rid);
+        }
       };
       console.error(`otlp: following ${client.base ?? ""} -> ${to} (Ctrl-C to stop)`);
       while (!stopping) {
@@ -722,13 +835,30 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           if (!roots.has(rid)) roots.set(rid, await rootOf(rid).catch(() => rid));
           const rec = recs.get(rid);
           if (!rec) continue;
+          // A kind declared after this follower started is not in the map yet; look it up once,
+          // or a new reference kind's records would never read as terminal for the whole session.
+          if (!claimable.has(rec.kind)) {
+            try {
+              const kd = await client.query({ kind: "kind_def", match: { kind: rec.kind } }, 1, { dir: "desc" });
+              claimable.set(rec.kind, kd.length ? (kd[0].body as { claimable?: unknown }).claimable !== false : true);
+            } catch {
+              claimable.set(rec.kind, true);
+            }
+          }
           const terminal = e.operation === "ack" || e.operation === "release" ||
             (e.operation === "nack" && e.state === "dead_letter") ||
             (e.operation === "put" && !claimableOf(rec.kind));
-          if (terminal) {
-            pending.push(...await recordSpans(rec, buf.get(rid)!, roots.get(rid) ?? rid, { claimable: claimableOf(rec.kind) }));
-            buf.delete(rid);
-          }
+          if (terminal) await emitTerminal(rid);
+        }
+        // A held record whose ancestor never settled (crashed worker, an expired lease waiting
+        // for a re-take) must not wait forever: past HOLD_MS it emits with the old backfill
+        // behavior, which is the session-boundary posture anyway.
+        const now = Date.now();
+        for (const [anc, list] of held) {
+          const due = list.filter((h) => now - h.at >= HOLD_MS);
+          if (!due.length) continue;
+          held.set(anc, list.filter((h) => now - h.at < HOLD_MS));
+          for (const h of due) await emitTerminal(h.rid, true);
         }
         if (p.events.length && p.nextAfter) cursor = p.nextAfter;
         await flush();

@@ -84,35 +84,73 @@ Deno.test("[otlp] a trace is a tree with links: the first parent nests, every ot
 
 Deno.test("[otlp] attempts are the spans: take→settle under the record span, status from the verb", async () => {
   const t = rec("01T", "task");
+  // REAL run principals: `run:<ulid>`, no agent name in the string. The resolver the CLI builds
+  // from agent_run records arrives as `serviceOf`; the mapping never parses the principal.
   const events = [
-    ev("01T", "take", "2026-08-06T10:00:01.000Z"),
-    ev("01T", "nack", "2026-08-06T10:00:02.000Z", { state: "available" }),
-    ev("01T", "take", "2026-08-06T10:00:05.000Z", { runId: "run:agent:other:01J0000000000000000000000C" }),
-    ev("01T", "ack", "2026-08-06T10:00:09.000Z"),
+    ev("01T", "take", "2026-08-06T10:00:01.000Z", { runId: "run:01J0000000000000000000000B" }),
+    ev("01T", "nack", "2026-08-06T10:00:02.000Z", { state: "available", runId: "run:01J0000000000000000000000B" }),
+    ev("01T", "take", "2026-08-06T10:00:05.000Z", { runId: "run:01J0000000000000000000000C" }),
+    ev("01T", "ack", "2026-08-06T10:00:09.000Z", { runId: "run:01J0000000000000000000000C" }),
   ];
-  const spans = await recordSpans(t, events, "01T");
+  const names = new Map([
+    ["run:01J0000000000000000000000B", "agent:worker"],
+    ["run:01J0000000000000000000000C", "agent:other"],
+  ]);
+  const spans = await recordSpans(t, events, "01T", { serviceOf: (p) => names.get(p) ?? p });
   const attempts = spans.filter((s) => s.span.name.includes("attempt"));
   assertEquals(attempts.length, 2);
   assertEquals(attempts[0].span.status?.code, 2, "a nack is a failed attempt");
   assertEquals(attempts[1].span.status?.code, 1, "an ack succeeds");
   assertEquals(attempts[0].span.parentSpanId, await spanIdOf("01T"), "attempts nest under their record");
   assertEquals(attempts[0].service, "agent:worker");
-  assertEquals(attempts[1].service, "agent:other", "the service is the CLAIMING agent, per attempt");
+  assertEquals(attempts[1].service, "agent:other", "the service is the CLAIMING agent, per attempt, via the resolver");
   const recSpan = spans.find((s) => s.span.name === "task")!.span;
   assertEquals(recSpan.endTimeUnixNano, String(Date.parse("2026-08-06T10:00:09.000Z")) + "000000", "the record span closes at its terminal ack");
   assert(!recSpan.attributes.some((x) => x.key === "radia.open"));
 });
 
+Deno.test("[otlp] a parent outside the export LINKS instead of dangling, and a backfilled record's span is never re-sent", async () => {
+  // The Jaeger symptom this pins: "parent span ID … is not in the trace" plus the Incomplete
+  // badge, produced by a parentSpanId naming a span the collector never received (an ancestor
+  // created before a follower started, or above a --trace-root cut).
+  const c = rec("01C", "llm_call", { parents: ["01MSG", "01EXTRA"] });
+  const spans = await recordSpans(c, [], "01ROOT", { inTrace: (id) => id !== "01MSG" && id !== "01EXTRA" });
+  const s = spans[0].span;
+  assertEquals(s.parentSpanId, undefined, "an absent parent must not be named as one");
+  assertEquals(s.links?.length, 2, "both out-of-export parents become links");
+  // …and when the parent IS in the export, it nests and only the others link.
+  const nested = (await recordSpans(c, [], "01ROOT", { inTrace: (id) => id === "01MSG" }))[0].span;
+  assertEquals(nested.parentSpanId, await spanIdOf("01MSG"));
+  assertEquals(nested.links?.length, 1);
+
+  // The follower's dedupe: a record whose zero-duration span was already backfilled contributes
+  // only its attempt spans later — one deterministic id, one span, ever.
+  const later = await recordSpans(c, [
+    ev("01C", "take", "2026-08-06T10:00:01.000Z"),
+    ev("01C", "ack", "2026-08-06T10:00:02.000Z"),
+  ], "01ROOT", { emitRecordSpan: false });
+  assertEquals(later.length, 1);
+  assert(later[0].span.name.includes("attempt"));
+});
+
 Deno.test("[otlp] honesty: unsettled claimable work is OPEN; reference data never is", async () => {
   const open = (await recordSpans(rec("01O", "task"), [], "01O"))[0].span;
   assert(open.attributes.some((x) => x.key === "radia.open"), "claimable and unsettled says so");
-  assertEquals(open.startTimeUnixNano, open.endTimeUnixNano, "no invented end: zero duration");
+  // A point in time, not an invented duration: collectors require end > start (Jaeger sanitizes
+  // end == start to +1ns and WARNS per span), so the 1ns floor is emitted deliberately and the
+  // honesty lives in the attribute.
+  assertEquals(BigInt(open.endTimeUnixNano) - BigInt(open.startTimeUnixNano), 1n);
   const ref = (await recordSpans(rec("01R", "fact"), [], "01R", { claimable: false }))[0].span;
   assert(!ref.attributes.some((x) => x.key === "radia.open"), "reference data sits available by design");
+  assertEquals(BigInt(ref.endTimeUnixNano) - BigInt(ref.startTimeUnixNano), 1n);
 });
 
-Deno.test("[otlp] agentOf strips the run instance and keeps the agent", () => {
-  assertEquals(agentOf("run:agent:tools:01J0000000000000000000000D"), "agent:tools");
+Deno.test("[otlp] a run principal is never parsed into an agent: the string carries none", () => {
+  // `run:<ulid>` has NO agent name inside it; the mapping lives in agent_run RECORDS and arrives
+  // via `serviceOf`. The first version of this exporter parsed a fictional format and showed one
+  // "service" per 15-minute run remint — the trap design-auth.md names (authority and identity
+  // are never read off a name shape). The fallback is the honest raw principal.
+  assertEquals(agentOf("run:01J0000000000000000000000D"), "run:01J0000000000000000000000D");
   assertEquals(agentOf("human:local"), "human:local");
   assertEquals(agentOf("agent:x"), "agent:x");
 });

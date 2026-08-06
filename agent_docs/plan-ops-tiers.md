@@ -85,8 +85,11 @@ surface an operator would check.
   is a record in the audit trail.
 - The dev/MCP default: `radia dev` provisions `agent:local-observer` (a definition whose token is
   stored under the `#observer` key, mint-only and revocable via `radia revoke`, reused across
-  restarts and re-minted only when it stops resolving) plus an `observe` ops_grant written with
-  `opsGrantKey` as the idempotency key, so restarts replay instead of append. DECIDED: `radia
+  restarts and re-minted only when it stops resolving) plus an `observe` ops_grant assigned AT
+  MINT, and two metadata `query` grants carried on the definition itself: `agent_run` (a run
+  principal is `run:<ulid>` and carries no agent name, so without this the OTLP exporter's
+  services were raw run ids) and `kind_def` (which kinds are reference data). Reads only; an
+  observer from before these grants upgrades by `radia revoke agent:local-observer` + restart. DECIDED: `radia
   mcp` defaults to it (`RADIA_TOKEN` overrides; the operator token is only the fallback for a
   pre-observer file), so coordination through MCP 403s until an operator grants kinds — the
   chat's `grant_request` discipline, made the default posture. The CLI's read-only verbs

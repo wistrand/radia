@@ -58,6 +58,14 @@ Deno.test("dev: the observer's power is assigned at mint, and a RETIREMENT stand
     const first = await provisionObserver(space, base, "test");
     assertEquals(first.created, true);
     assertEquals([...await space.opsPowers(OBSERVER_PRINCIPAL)], ["observe"]);
+    // Beside the power, exactly two metadata reads: agent_run (a run principal carries no agent
+    // name; without this the OTLP exporter's services were raw run ids) and kind_def. Query only,
+    // and nothing else rides along.
+    const perms = await space.effectivePermissions(OBSERVER_PRINCIPAL);
+    assertEquals(
+      perms.kinds.map((k) => `${k.kind}:${k.operations.join(",")}`).sort(),
+      ["agent_run:query", "kind_def:query"],
+    );
 
     // The operator retires the power. Every later "restart" must reuse the live definition and
     // must NOT re-assign what was deliberately withdrawn.

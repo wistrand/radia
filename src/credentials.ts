@@ -183,7 +183,12 @@ export function saveObserver(base: string, cred: StoredCredential): { path: stri
  *  rule. `Space` satisfies it as-is. */
 interface ObserverHost {
   resolveToken(token: string): Promise<{ ok: boolean }>;
-  createAgentDefinition(agent: string, grants: never[]): Promise<{ definitionToken: string }>;
+  createAgentDefinition(
+    agent: string,
+    // Narrowed to the one operation the observer's metadata grants use, so `Space`'s
+    // GrantDef-typed method stays a structural supertype under strict function types.
+    grants: { principal: string; kind: string; operations: "query"[] }[],
+  ): Promise<{ definitionToken: string }>;
   put(req: { kind: string; body: unknown }, idempotencyKey?: string): Promise<unknown>;
 }
 
@@ -208,7 +213,15 @@ export async function provisionObserver(
   const alive = stored?.definitionToken !== undefined &&
     (await space.resolveToken(stored.definitionToken)).ok;
   if (alive) return { created: false };
-  const { definitionToken } = await space.createAgentDefinition(OBSERVER_PRINCIPAL, []);
+  // Beside the power, two narrow METADATA reads observability genuinely needs, assigned at mint
+  // like the power itself: `agent_run` is what resolves a run principal to its agent (the string
+  // never carries the name; the OTLP exporter's services were raw run ids without this), and
+  // `kind_def` is what says which kinds are reference data. Reads only, no record bodies beyond
+  // those two registries, and a retirement of either stands the same way the power's does.
+  const { definitionToken } = await space.createAgentDefinition(OBSERVER_PRINCIPAL, [
+    { principal: OBSERVER_PRINCIPAL, kind: "agent_run", operations: ["query"] },
+    { principal: OBSERVER_PRINCIPAL, kind: "kind_def", operations: ["query"] },
+  ]);
   const power = { principal: OBSERVER_PRINCIPAL, operations: ["observe"] };
   await space.put({ kind: OPS_GRANT, body: power }, opsGrantKey(power));
   const saved = saveObserver(base, {

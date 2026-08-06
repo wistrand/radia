@@ -93,7 +93,9 @@ which is a `401` unless the space was started with `--auth open`.
 **Three identities share the file, under separate keys.** The operator credential sits at the base
 URL; a person's `radia login` sits at `<base>#login` (`storedLogin`/`saveLogin`); the OBSERVER sits
 at `<base>#observer` (`storedObserver`/`saveObserver`): an `agent:local-observer` definition token,
-mint-only and revocable, whose `ops_grant` holds exactly `observe`
+mint-only and revocable, whose `ops_grant` holds `observe`, plus two metadata `query` grants on
+the definition — `agent_run` (a run principal carries no agent name; the OTLP exporter resolves
+services through these records) and `kind_def`
 ([plan-ops-tiers.md](plan-ops-tiers.md) phase 5). One key for all of them
 means a login would replace the operator entry, and the CLI's remediation verbs, the chat's
 bootstrap and the MCP adapter would all start acting as whoever signed in last.

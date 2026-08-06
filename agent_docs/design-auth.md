@@ -391,7 +391,8 @@ Who holds the whole bit now (phase 5 built, 2026-08-06): `ctx.operators` and the
 in-process identity, nobody else. The supervisor is DEMOTED to its `grant`/`signal` carve-out and
 is otherwise ordinary — which also made it mintable for the first time, since a definition may
 not name a privileged principal and it no longer is one. The MCP adapter defaults to the
-OBSERVER credential (`agent:local-observer`, an `ops_grant` with `observe`, provisioned by
+OBSERVER credential (`agent:local-observer`, an `ops_grant` with `observe` plus `query` grants on
+`agent_run` and `kind_def` — metadata reads only, provisioned by
 `radia dev` as a revocable definition token), so the model behind a harness inspects the space
 and holds neither power 6 nor 7; the CLI's read-only verbs ride the same credential, and only
 coordination and destructive verbs reach the operator token.
