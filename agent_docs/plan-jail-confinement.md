@@ -1,7 +1,9 @@
 # Plan: confining the filesystem, per platform
 
 > Status: phases 1, 3 and 4 BUILT (2026-08-06); 2 REJECTED; 5 is a posture. Phase 4's macOS run
-> has never executed in this repo's CI or on the implementer's machine: see its note. The defect is package
+> EXECUTED later the same day on a real Mac (macOS 26.4.1, Deno 2.9.5, arm64): the full
+> `deno task extensions` suite passed, darwin-gated case included, with the machine's own Deno
+> cache verified untouched afterwards. Still never run in this repo's CI. The defect is package
 > T in [plan-audit-remediation.md](plan-audit-remediation.md); this is the plan to close it.
 > Everything below marked "measured" was run against the real jail on Linux, except phase 4:
 > `sandbox-exec` was verified on a real Mac 2026-08-06 (macOS 26.4.1, Deno 2.9.5, arm64). Read
