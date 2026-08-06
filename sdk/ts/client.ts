@@ -535,9 +535,29 @@ export class RadiaClient {
   async getEventsPage(
     after = "0",
     limit = 200,
-  ): Promise<{ events: SpaceEvent[]; nextAfter?: string; scope?: unknown; withheld?: number; withheldNote?: string }> {
+  ): Promise<
+    {
+      events: SpaceEvent[];
+      nextAfter?: string;
+      scope?: unknown;
+      withheld?: number;
+      withheldNote?: string;
+      /** Present when the page started below the event-GC horizon: the log is complete only
+       *  after this cursor; `sweptBefore` events were removed below it. */
+      logBeginsAfter?: string;
+      sweptBefore?: number;
+    }
+  > {
     const r = await this.req("GET", `/v0/ops/events?after=${encodeURIComponent(after)}&limit=${limit}`);
-    return { events: r.events, nextAfter: r.nextAfter, scope: r.scope, withheld: r.withheld, withheldNote: r.withheldNote };
+    return {
+      events: r.events,
+      nextAfter: r.nextAfter,
+      scope: r.scope,
+      withheld: r.withheld,
+      withheldNote: r.withheldNote,
+      logBeginsAfter: r.logBeginsAfter,
+      sweptBefore: r.sweptBefore,
+    };
   }
 
   async getEvents(after = "0", limit = 200): Promise<SpaceEvent[]> {

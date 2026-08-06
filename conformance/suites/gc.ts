@@ -11,6 +11,7 @@ import type { StorageAdapter } from "../../src/storage/adapter.ts";
 import { Space } from "../../src/core/space.ts";
 import { RadiaError } from "../../src/core/errors.ts";
 import { activeByKey } from "../../sdk/ts/registry.ts";
+import { rawExec } from "./integrity.ts";
 
 const PAST = "2020-01-01T00:00:00.000Z";
 const FUTURE = "2999-01-01T00:00:00.000Z";
@@ -414,6 +415,79 @@ export const gcSuites: Suite[] = [
       assert(before >= 2, "a definition and its revocation are separate records");
       await space.gc();
       assertEquals((await space.query({ kind: "agent_definition" }, 50)).length, before, "agent_definition never compacts, whatever key anyone declares: revocation history is the audit");
+    },
+  },
+  {
+    name: "eventHorizon: a complete log has no horizon, sealed or not",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      await space.put({ kind: "note", body: { tag: "a" } });
+      await space.put({ kind: "note", body: { tag: "b" } });
+
+      // Unsealed log: no seals means nothing was ever swept (the sweep is seal-first by contract).
+      assertEquals(await adapter.eventHorizon("0"), { expired: false, horizon: null });
+
+      // Sealed from genesis with every event present: still complete, whatever cursor is asked.
+      await space.sealEvents();
+      assertEquals(await adapter.eventHorizon("0"), { expired: false, horizon: null });
+      const [ev] = await space.getEvents();
+      assertEquals((await adapter.eventHorizon(ev.cursor)).expired, false);
+    },
+  },
+  {
+    name: "eventHorizon: the anchor state expires stale cursors exactly; sentinel policy stays with the caller",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      for (const tag of ["a", "b", "c", "d", "e"]) await space.put({ kind: "note", body: { tag } });
+      await space.sealEvents();
+      const seals = await adapter.getSeals(-1, 100);
+      assert(seals.length >= 5, "expected one seal per put");
+
+      // The state the M2 sweep leaves behind: events and seals below the horizon gone, the newest
+      // pre-horizon seal kept as the anchor, its own event swept with the rest.
+      const anchor = seals[2];
+      await rawExec(adapter, "delete from events where seq <= ?", [anchor.seq]);
+      await rawExec(adapter, "delete from event_seal where idx < ?", [anchor.idx]);
+
+      // The sentinel reads as expired ON PURPOSE: the watch handler exempts it, the ops read
+      // annotates it. The adapter reports the truth and does not choose for them.
+      const fromZero = await adapter.eventHorizon("0");
+      assertEquals(fromZero.expired, true);
+      assertEquals(fromZero.horizon, { cursor: anchor.cursor, swept: anchor.idx + 1 });
+
+      // Resuming exactly at the horizon is gap-free; below it is not; a retained cursor is fine.
+      assertEquals((await adapter.eventHorizon(anchor.cursor)).expired, false);
+      assertEquals((await adapter.eventHorizon(seals[0].cursor)).expired, true);
+      assertEquals((await adapter.eventHorizon(seals[4].cursor)).expired, false);
+      // An unparseable cursor keeps today's behavior (getEvents decides), even under truncation.
+      assertEquals((await adapter.eventHorizon("not-a-cursor")).expired, false);
+
+      // The clamp is mechanical: a from-zero read starts at the oldest retained event.
+      const events = await space.getEvents("0");
+      assert(events.length > 0 && events.every((e) => e.seq > anchor.seq), "getEvents must serve only retained events");
+    },
+  },
+  {
+    name: "eventHorizon: a sweep in flight floors just below the oldest survivor",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      for (const tag of ["a", "b", "c", "d"]) await space.put({ kind: "note", body: { tag } });
+      await space.sealEvents();
+      const seals = await adapter.getSeals(-1, 100);
+
+      // Mid-sweep: pairs below idx 2 deleted, seal 2 and its event both still present. The exact
+      // newest-swept cursor is unknowable here, so the floor over-refuses by at most one position:
+      // refusing a safe cursor costs a re-sync, admitting an unsafe one costs a silent gap.
+      const survivor = seals[2];
+      await rawExec(adapter, "delete from events where seq < ?", [survivor.seq]);
+      await rawExec(adapter, "delete from event_seal where idx < ?", [survivor.idx]);
+
+      const h = await adapter.eventHorizon("0");
+      assertEquals(h.expired, true);
+      assertEquals(h.horizon, { cursor: (BigInt(survivor.cursor) - 1n).toString(), swept: survivor.idx });
+      assertEquals((await adapter.eventHorizon(survivor.cursor)).expired, false);
+      assertEquals((await adapter.eventHorizon(h.horizon!.cursor)).expired, false);
+      assertEquals((await adapter.eventHorizon(seals[0].cursor)).expired, true);
     },
   },
 ];

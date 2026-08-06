@@ -73,6 +73,47 @@ export interface EventSeal {
   sig?: string;
 }
 
+/** The event log's truncation floor. Everything at or below `cursor` may have been swept;
+ *  `getEvents(cursor)` is gap-free. `swept` is exact because seal idx is dense from 0. */
+export interface EventHorizon {
+  cursor: string;
+  swept: number;
+}
+
+export interface EventHorizonCheck {
+  /** True when `getEvents(after)` would silently skip swept events. The sentinel "0"/"" reads as
+   *  expired on a truncated log by design; the caller decides whether that clamps or refuses. */
+  expired: boolean;
+  horizon: EventHorizon | null;
+}
+
+/**
+ * Shared horizon derivation both adapters bind to their dialect: the oldest retained seal plus
+ * whether its event still exists decides the floor. Oldest idx 0 with its event present = complete
+ * from genesis. Event missing = the anchor state (its event was the newest swept one). Idx > 0
+ * with the event present = a sweep in flight, floored just below it: over-refusing a cursor that
+ * sits exactly on the unknowable newest-swept position is safe, silently under-refusing is not.
+ * Cursors are decimal strings in every adapter (seq or xid8), so the comparison is numeric here
+ * rather than re-implemented per dialect; an unparseable cursor keeps today's behavior.
+ */
+export function resolveEventHorizon(
+  oldest: EventSeal | null,
+  oldestEventExists: boolean,
+  after: string,
+): EventHorizonCheck {
+  let horizon: EventHorizon | null = null;
+  if (oldest && !oldestEventExists) horizon = { cursor: oldest.cursor, swept: oldest.idx + 1 };
+  else if (oldest && oldest.idx > 0) horizon = { cursor: (BigInt(oldest.cursor) - 1n).toString(), swept: oldest.idx };
+  if (!horizon) return { expired: false, horizon: null };
+  let expired = false;
+  try {
+    expired = BigInt(after.length > 0 ? after : "0") < BigInt(horizon.cursor);
+  } catch {
+    expired = false;
+  }
+  return { expired, horizon };
+}
+
 /** Mutable claim-state envelope. One row per record. */
 export interface Envelope {
   recordId: Ulid;
@@ -453,6 +494,17 @@ export interface StorageAdapter {
 
   /** Seal rows after `afterIdx`, ascending, for verification. (M1) */
   getSeals(afterIdx: number, limit: number): Promise<EventSeal[]>;
+
+  /**
+   * The event log's truncation floor, and whether resuming from `after` would silently skip
+   * swept events. Event-log GC (M2) deletes a PREFIX of events with their seals and keeps the
+   * newest pre-horizon seal as the anchor; this reads that state back (`resolveEventHorizon`).
+   * `horizon` is null while the log is complete from genesis. Sentinel policy is the CALLER's:
+   * "0"/"" reads as expired on a truncated log, and the watch handler exempts it (410 only a
+   * non-sentinel cursor) while the ops read annotates it. The check is live before the sweep
+   * exists; it just never finds a horizon.
+   */
+  eventHorizon(after: string): Promise<EventHorizonCheck>;
 
   // Kind declarations are NOT a storage concern: they are kind_def records, written via put()
   // and read via query() like any record (see core/space.ts loadKinds). No kinds table.

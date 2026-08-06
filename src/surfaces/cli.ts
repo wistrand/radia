@@ -567,17 +567,23 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
     }
 
     case "events": {
-      const evs = await client.getEvents(flag(argv, "--after") ?? "0", Number(flag(argv, "--limit") ?? "50"));
-      return out(ctx, evs, () =>
+      const page = await client.getEventsPage(flag(argv, "--after") ?? "0", Number(flag(argv, "--limit") ?? "50"));
+      const evs = page.events;
+      // A read below the event-GC horizon is served from the oldest retained event; say so, or
+      // the table reads as the whole log.
+      const note = page.logBeginsAfter !== undefined
+        ? `(log begins after cursor ${page.logBeginsAfter}; ${page.sweptBefore} events swept before it)\n`
+        : "";
+      return out(ctx, page, () =>
         evs.length
-          ? table(["SEQ", "OP", "KIND", "RECORD", "STATE"], evs.map((e) => [
+          ? note + table(["SEQ", "OP", "KIND", "RECORD", "STATE"], evs.map((e) => [
             String(e.seq),
             e.operation,
             e.kind ?? "-",
             (e.recordId ?? "-").slice(-8),
             e.state ?? "-",
           ]))
-          : "(no events)"
+          : note + "(no events)"
       );
     }
 

@@ -35,6 +35,8 @@ import {
   type TakeSelector,
   type SweepResult,
   type SweepSelector,
+  type EventHorizonCheck,
+  resolveEventHorizon,
   scanChunkSize,
   yieldToEventLoop,
 } from "./adapter.ts";
@@ -876,6 +878,16 @@ export class SqliteAdapter implements StorageAdapter {
       "select idx, event_id, cursor, seq, hash, prev_hash, sig from event_seal where idx > ? order by idx asc limit ?",
     ).all(afterIdx, limit) as RawRow[];
     return Promise.resolve(rows.map(rowToSeal));
+  }
+
+  eventHorizon(after: string): Promise<EventHorizonCheck> {
+    const row = this.db.prepare(
+      "select idx, event_id, cursor, seq, hash, prev_hash, sig from event_seal order by idx asc limit 1",
+    ).get() as RawRow | undefined;
+    if (!row) return Promise.resolve({ expired: false, horizon: null });
+    const oldest = rowToSeal(row);
+    const exists = this.db.prepare("select 1 from events where seq = ?").get(oldest.seq) !== undefined;
+    return Promise.resolve(resolveEventHorizon(oldest, exists, after));
   }
 
   /**

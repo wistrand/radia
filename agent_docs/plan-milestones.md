@@ -105,16 +105,16 @@ two-terminal demo works.
   holder that is awake inside the window. **Python renews and does not
   exchange**, so a Python `agent_loop` still ends at the ceiling: the one real parity gap, marked as
   such in [sdk/README.md](../sdk/README.md).
-- [x] watches (SSE, cursors, 410 semantics): `POST /v0/watches` + `GET /v0/watches/{id}/events` (SSE, `Last-Event-ID`/`?cursor=` resumption, 410 `cursor_expired` path); backed by the event log + an in-process `Notifier` (LISTEN/NOTIFY-equivalent wakeup); wakeup-by-kind (+ predicate) matching in `Space.matchesEvent`; **grant-gated** (`Space.authorizeWatch`: any grant on the kind, pattern AND-ed into the watch scope). SDK `client.watch()` async generator; `agentLoop` is event-driven (watch wakeups + poll fallback). 410/GC dormant until event-log retention (M2).
+- [x] watches (SSE, cursors, 410 semantics): `POST /v0/watches` + `GET /v0/watches/{id}/events` (SSE, `Last-Event-ID`/`?cursor=` resumption, 410 `cursor_expired` path); backed by the event log + an in-process `Notifier` (LISTEN/NOTIFY-equivalent wakeup); wakeup-by-kind (+ predicate) matching in `Space.matchesEvent`; **grant-gated** (`Space.authorizeWatch`: any grant on the kind, pattern AND-ed into the watch scope). SDK `client.watch()` async generator; `agentLoop` is event-driven (watch wakeups + poll fallback). The 410 check is live and sentinel-exempt (`Space.eventHorizon`, 2026-08-06); it fires once the M2 event sweep creates a horizon.
 - [x] artifact service: the `BlobStore` port (content-addressed, memory + filesystem impls) + reserved `artifact` records + short-lived download capabilities + **optional encryption at rest** (per-blob AES-GCM DEK, AES-KW-wrapped under a space KEK). See [design-data-model.md](design-data-model.md) §2.4. Open: reference-aware GC and KEK rotation.
 - [x] orphan/starvation diagnostics: a derived report + remediation (`GET /v0/ops/diagnostics`; reclaim/dead-letter/requeue per record OR by envelope selector via `POST /v0/ops/remediate`, so draining a backlog is one call per page rather than one per record). `staleAvailable.split` now separates the two failures age alone conflates, by running the PATTERN match against the live interest registry: **orphaned** (no live interest matches, so waiting never helps) versus **starving** (a listener matches and is not claiming). The registry is read once per KIND, not per record. It refuses to answer when nothing was ever declared, since every record would then look orphaned, but it does answer when the declarations exist and their runs are gone: that is a dead fleet, not an absence of evidence. Guarded by `conformance/suites/starvation.ts`.
 
 **Verify:** the same suite green against Postgres *and* embedded: **PASSED**, 213/213 via
 `scripts/pg-conformance.sh` (sqlite, pglite, and a live Postgres 16). Watch resumption and 410
 `cursor_expired` per [design-api.md](design-api.md) are only partly covered: `createWatch`,
-`matchesEvent`, and start-cursor semantics are in the suite, but SSE reconnection and the 410
-path are exercised by an HTTP smoke rather than conformance, and 410 stays dormant until
-event-log retention lands (M2).
+`matchesEvent`, and start-cursor semantics are in the suite; the 410 + sentinel-clamp boundary is
+pinned in `conformance/http.test.ts` and the horizon derivation per adapter in
+`conformance/suites/gc.ts` (planted truncation; the sweep that creates one honestly is M2).
 
 ### M2: coordination protocols
 

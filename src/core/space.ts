@@ -7,6 +7,7 @@ import type {
   CompiledMatch,
   DelegationContext,
   Envelope,
+  EventHorizonCheck,
   IdempotencyKey,
   KindStateCount,
   Lease,
@@ -1819,6 +1820,12 @@ export class Space {
   /** Append-only event log after the opaque `afterCursor` ("0"/"" = from the start). */
   getEvents(afterCursor = "0", limit = 200): Promise<SpaceEvent[]> {
     return this.storage.getEvents(afterCursor, limit);
+  }
+
+  /** The event log's truncation floor, and whether `after` resumes below it (see
+   *  `StorageAdapter.eventHorizon` for the contract, including sentinel policy). */
+  eventHorizon(after: string): Promise<EventHorizonCheck> {
+    return this.storage.eventHorizon(after);
   }
 
   /**

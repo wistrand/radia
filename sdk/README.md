@@ -20,7 +20,7 @@ imports.
 | Watches     | `client.watch()` async generator | `client.watch()` generator |
 | Artifacts   | `putArtifact` / `getArtifact` / `artifactMeta` (HEAD: digest and size, no bytes) / `artifactCapability` | `put_artifact` / `get_artifact` / `artifact_capability` |
 | Remediation | `admin(action, id)` / `remediate(action, selector)` | `admin(action, id)` / `remediate(action, state=…, expired=…)` |
-| Ops queries | `queryEnvelopes` / `diagnostics` / `erasures` / `getStats` / `getEvents` | `query_envelopes` / `diagnostics` / `erasures` / `get_stats` / `get_events` |
+| Ops queries | `queryEnvelopes` / `diagnostics` / `erasures` / `getStats` / `getEvents` / `getEventsPage` | `query_envelopes` / `diagnostics` / `erasures` / `get_stats` / `get_events` / `get_events_page` |
 | Bootstrap   | `grant` / `createAgentDefinition` / `createRun` / `stopRun` | `grant` / `create_agent_definition` / `create_run` / `stop_run` |
 | Credential  | `{definitionToken}` exchanges on expiry; `keepAlive(signal, onLost)` renews at half-life | `keep_alive(stop, on_lost)`, renewal only (see below) |
 | Children    | `getChildren` / `getChildrenPage` (paged) | `get_children` / `get_children_page` (paged) |

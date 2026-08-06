@@ -215,9 +215,11 @@ export const integritySuites: Suite[] = [
  *
  * Every other suite in this directory asserts through the port on purpose. This one has to reach
  * past it, because the threat being modelled is exactly someone who does: an edit made through
- * `Space` would append an event and be a legitimate history rather than a forged one.
+ * `Space` would append an event and be a legitimate history rather than a forged one. Exported
+ * for the gc suite, which plants event-truncation states the same way (the sweep that would
+ * create them honestly is M2, not built).
  */
-async function rawExec(adapter: StorageAdapter, sqlite: string, params: unknown[]): Promise<void> {
+export async function rawExec(adapter: StorageAdapter, sqlite: string, params: unknown[]): Promise<void> {
   const a = adapter as unknown as {
     db?: { prepare: (s: string) => { run: (...p: unknown[]) => unknown } };
     sql?: { query: (text: string, params?: unknown[]) => Promise<unknown> };

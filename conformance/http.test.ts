@@ -18,6 +18,7 @@ import { makeArtifactHandler, makeHandler } from "../src/server/http.ts";
 import { Space } from "../src/core/space.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
 import { RadiaError } from "../src/core/errors.ts";
+import { rawExec } from "./suites/integrity.ts";
 
 type Handler = (req: Request) => Promise<Response>;
 
@@ -1084,6 +1085,87 @@ Deno.test("http: an undecidable pattern over a large kind is a 429, not a stalle
     // undecidable work rather than a cap on how large a kind may be.
     const ok = await handler(post("/v0/records/query", { kind: "task", match: { tags: { $any: "a" } }, limit: 5 }));
     assertEquals(ok.status, 200);
+  } finally {
+    await adapter.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Event-log truncation at the boundary: the watch 410 and the ops annotation.
+// The truncated state is planted (the M2 sweep is not built); what these pin is
+// the boundary contract that must already hold when it lands.
+// ---------------------------------------------------------------------------
+
+Deno.test("http: a stale watch cursor is 410 cursor_expired; the sentinel clamps, because the SDKs recover with it", async () => {
+  const adapter = new SqliteAdapter(":memory:");
+  await adapter.init();
+  const space = new Space(adapter);
+  space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
+  const handler = makeHandler(space, "<html>console</html>", false);
+  try {
+    for (const tag of ["a", "b", "c", "d", "e"]) await space.put({ kind: "task", body: { tag } });
+    await space.sealEvents();
+    const seals = await adapter.getSeals(-1, 100);
+    const anchor = seals[2];
+    // What the sweep leaves: events and seals below the horizon gone, the anchor seal kept.
+    await rawExec(adapter, "delete from events where seq <= ?", [anchor.seq]);
+    await rawExec(adapter, "delete from event_seal where idx < ?", [anchor.idx]);
+
+    const { watchId } = await (await handler(post("/v0/watches", { kind: "task" }))).json();
+
+    // An explicit cursor below the horizon is refused, with the horizon in the body, so a real
+    // client can catch up by query before it reconnects.
+    const stale = await handler(get(`/v0/watches/${watchId}/events`, { "Last-Event-ID": seals[0].cursor }));
+    assertEquals(stale.status, 410);
+    const body = await stale.json();
+    assertEquals(body.type, "about:radia/cursor_expired");
+    assertEquals(body.horizon, anchor.cursor);
+    assertEquals(body.swept, anchor.idx + 1);
+
+    // The sentinel is how both SDKs RECOVER from that 410 (reset to "0", reconnect immediately),
+    // so refusing it would hot-loop every shipped client. It connects, clamped to the retained log.
+    const zero = await handler(get(`/v0/watches/${watchId}/events`, { "Last-Event-ID": "0" }));
+    assertEquals(zero.status, 200, "the sentinel must never 410");
+    await zero.body?.cancel();
+    // Resuming exactly at the horizon is gap-free and must also connect.
+    const atHorizon = await handler(get(`/v0/watches/${watchId}/events`, { "Last-Event-ID": anchor.cursor }));
+    assertEquals(atHorizon.status, 200);
+    await atHorizon.body?.cancel();
+    // A cancelled stream's loop may still be parked on waitForEvents; one mutation wakes and ends
+    // it, so no keepalive timer outlives the test.
+    await space.put({ kind: "task", body: { tag: "wake" } });
+  } finally {
+    await adapter.close();
+  }
+});
+
+Deno.test("http: an ops events read below the horizon says where the log begins", async () => {
+  const adapter = new SqliteAdapter(":memory:");
+  await adapter.init();
+  const space = new Space(adapter);
+  space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
+  const handler = makeHandler(space, "<html>console</html>", false);
+  try {
+    for (const tag of ["a", "b", "c", "d"]) await space.put({ kind: "task", body: { tag } });
+    await space.sealEvents();
+    const seals = await adapter.getSeals(-1, 100);
+    const anchor = seals[1];
+    await rawExec(adapter, "delete from events where seq <= ?", [anchor.seq]);
+    await rawExec(adapter, "delete from event_seal where idx < ?", [anchor.idx]);
+
+    // From zero the read mechanically starts at the oldest retained event (the clamp is free);
+    // the annotation is what keeps that from reading as "the whole log". No 410 here, ever: a
+    // unified refusal would permanently break every from-zero ops read on the first sweep.
+    const zero = await (await handler(get("/v0/ops/events"))).json();
+    assertEquals(zero.logBeginsAfter, anchor.cursor);
+    assertEquals(zero.sweptBefore, anchor.idx + 1);
+    assert(zero.events.length > 0, "retained events must still be served");
+    assert(zero.events.every((e: { seq: number }) => e.seq > anchor.seq));
+
+    // From at-or-above the horizon the page is complete, so there is nothing to annotate.
+    const clean = await (await handler(get(`/v0/ops/events?after=${anchor.cursor}`))).json();
+    assertEquals(clean.logBeginsAfter, undefined);
+    assertEquals(clean.sweptBefore, undefined);
   } finally {
     await adapter.close();
   }

@@ -159,7 +159,8 @@ the one-liner is an index on `created_at where created_at <> ''`.
 Facts verified against the code and a live space before any of this is trusted.
 
 **The consumers, and what each one's contract becomes.** Watch streams (SSE resume via
-`Last-Event-ID`; the 410 path is dormant at `watches.ts`, "returns with event-log GC"); ops reads
+`Last-Event-ID`; the 410 path is live at `watches.ts` since step 1 below, firing only once a
+horizon exists); ops reads
 (`GET /v0/ops/events`, `space_events`, `radia events` — which page from cursor `"0"` BY DESIGN);
 the seal chain (`event_seal`, one row per event, dense idx from 0); `verifyIntegrity` (re-fetches
 each sealed event and recomputes its hash); the notifier (`latestCursor`, head-only, unaffected);
@@ -179,20 +180,40 @@ lost, so the DEPTH of removal is provable even though content is not. This is al
 `verifyIntegrity` hard-fails on exactly the states event GC creates: a chain starting past idx 0 is
 `gap`, a swept sealed event is `missing_event` — both written as tamper verdicts, and they must
 STAY tamper verdicts for anything not honestly anchored. The mechanism: the event sweep emits a
-`gc` event naming the horizon, sealed into the retained suffix; verify cross-checks that the anchor
-matches the newest sealed horizon statement. Unforgeable without the seal key; a deeper truncation
+`gc` event naming the horizon, sealed into the retained suffix; verify checks the anchor against
+the newest sealed horizon statement. Unforgeable without the seal key; a deeper truncation
 that deletes the statement leaves an anchor with no attestation, reportable as exactly that. On an
 UNSIGNED space none of this holds — event GC there makes truncation undetectable, extending the
 stated posture ("unsigned detects corruption, not a rewrite"), and the report must say so. Report
-grades: "N verified in full" / "M attested by anchor only (content swept)" / "begins at idx K".
+grades: "N verified in full" / "M attested by anchor only (content swept)" / "begins at idx K"
+(on an unsigned space: "begins at idx K, unattested").
 
-**410 is a prerequisite, not a follow-up.** `getEvents` is `where seq > ?`: a cursor below the
-horizon silently jumps the gap, so a watcher resuming after sleep misses swept events and never
-learns — the one failure worse than deletion. Both SDK halves are already built (TS and Python
-restart on 410); only the server-side horizon check is missing. And it is TWO behaviors: watch
-resumption gets the 410 (the client must re-sync by query), while the ops read CLAMPS and
-annotates ("log begins at X; N swept before it") — a unified 410 would permanently break every
-from-zero ops read on the first sweep.
+**Ordering is what keeps an honest crash from reading as tamper.**
+- Always write AND seal the horizon statement before the first delete: a crash between delete and
+  statement would otherwise fabricate the unattested-anchor state on an honest sweep.
+- Always delete an event and its seal together, oldest-first, per batch transaction, so every
+  intermediate state is a clean prefix truncation. Delete events ahead of their seals and a
+  mid-sweep verify hits `missing_event`, a tamper verdict, on honestly swept links.
+- The cross-check is therefore "chain begins at idx J and the newest sealed statement attests a
+  horizon >= J-1", never anchor-equals-statement: a crashed-and-resumed sweep, or a verify racing
+  a live one, must still pass.
+
+**410 is a prerequisite, not a follow-up.** A cursor below the horizon silently jumps the gap
+(`getEvents` is `seq > ?` on sqlite, `xid > ?` on pg), so a watcher resuming after sleep misses
+swept events and never learns — the one failure worse than deletion. It is TWO behaviors: watch
+resumption gets the 410, whose body names the horizon (the client must re-sync by query), while
+the ops read CLAMPS and annotates ("log begins at X; N swept before it") — a unified 410 would
+permanently break every from-zero ops read on the first sweep. Two constraints found by reading
+the consumers:
+- Never 410 the sentinel: `"0"` and an absent cursor mean "from the beginning" and CLAMP instead.
+  Both SDKs recover from 410 by resetting the cursor to the literal `"0"` and reconnecting with no
+  sleep, so a uniform `cursor < horizon → 410` hot-loops every shipped client forever. With the
+  sentinel exempt the shipped SDKs are correct as-is: 410, reset to `"0"`, clamp, resume.
+- The check is a STORAGE-PORT change, not a handler check: cursors are opaque to the transport by
+  design (`watches.ts`), so it lands on the port in both adapters plus conformance (built:
+  `eventHorizon`; both dialects issue decimal-string cursors, so the comparison itself is shared,
+  `resolveEventHorizon`). No new state: the horizon IS the anchor (the oldest retained seal whose
+  event is gone), and the swept count is `anchor.idx + 1`.
 
 **Policy.** Events carry no `retention_until`; the horizon is `eventRetentionSeconds` (weeks, not
 hours — it must dwarf any reconnect gap) intersected with the sealed head: never sweep unsealed
@@ -200,7 +221,10 @@ events, for the chain and because that range is the watch hot tail. Which collid
 finding: a real space held 12,331 events and ZERO seals, because sealing is on-demand and only
 verify/doctor triggers it — so the sweep must seal first, as verify already does, or a
 never-doctored space sweeps nothing forever. Verb-only, never amortized: sealing on the write path
-is exactly the background work the on-demand rule refuses.
+is exactly the background work the on-demand rule refuses. Seal-first makes the FIRST gc on a
+never-doctored space O(history): all of it seals, `SEAL_BATCH` at a time, before anything sweeps.
+Bounded batches and resumable, but doctor must report "must seal first" separately from the
+sweepable backlog, or the first run looks hung.
 
 **The evidence horizon.** This phase makes record GC's promise two-tiered: records go at the
 retention horizon leaving events as residue; the residue goes at the event horizon leaving only the
@@ -208,11 +232,19 @@ anchor and its idx-count. The CLAUDE.md invariant, this file's own evidence sect
 OpenAPI text state the promise unqualified and need the two-horizon framing when this lands.
 Unaffected, verified: erasure detection reads `shred` RECORDS plus blob stat, never events.
 
-**Build order and the plants that matter.** (1) 410 + clamp — standalone, activates a dormant
-designed path, closes the silent-gap hazard before any deletion exists. (2) Anchored verify + the
+**Build order and the plants that matter.** (1) 410 + clamp — BUILT (2026-08-06):
+`eventHorizon` on the port (`resolveEventHorizon` in `adapter.ts` is the shared derivation over
+the oldest seal + whether its event survives, covering the anchor state AND a sweep in flight),
+implemented in `sqlite.ts`/`pgbase.ts`, the sentinel-exempt 410 in `watches.ts`, the
+`logBeginsAfter`/`sweptBefore` annotation in `ops.ts`; planted truncations pinned in
+`conformance/suites/gc.ts` and the boundary in `http.test.ts`. (2) Anchored verify + the
 sealed horizon statement, with plants: a REAL mid-chain gap must still fail; a deleted horizon
 statement must be flagged. (3) The sweep itself: seal-first, window ∩ sealed-only, events and
-seals below horizon, anchor retained; plant: never-sweep-unsealed.
+seals below horizon, anchor retained, never splitting events that share a cursor (an xid groups
+siblings; a split would put retained events below the horizon); plants: never-sweep-unsealed, and
+a sweep killed mid-batch leaves a chain verify still passes. Plus one end-to-end check: an SDK
+watch survives a sweep under its resume cursor without spinning (the sentinel rule, exercised
+through a real client).
 
 ## Rejected
 

@@ -31,6 +31,8 @@ import {
   type TakeSelector,
   type SweepResult,
   type SweepSelector,
+  type EventHorizonCheck,
+  resolveEventHorizon,
   scanChunkSize,
   yieldToEventLoop,
 } from "./adapter.ts";
@@ -1133,6 +1135,16 @@ export class PgSqlAdapter implements StorageAdapter {
       [afterIdx, limit],
     );
     return res.rows.map(rowToSeal);
+  }
+
+  async eventHorizon(after: string): Promise<EventHorizonCheck> {
+    const res = await this.sql.query<Record<string, unknown>>(
+      "select idx, event_id, cursor, seq, hash, prev_hash, sig from event_seal order by idx asc limit 1",
+    );
+    if (res.rows.length === 0) return { expired: false, horizon: null };
+    const oldest = rowToSeal(res.rows[0]);
+    const exists = (await this.sql.query("select 1 from events where seq = $1", [oldest.seq])).rows.length > 0;
+    return resolveEventHorizon(oldest, exists, after);
   }
 
   private async fetchCandidates(

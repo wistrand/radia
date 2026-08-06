@@ -187,7 +187,9 @@ async function call(
       return pretty(await client.getChildren(str(a, "recordId")));
 
     case "space_events":
-      return pretty(await client.getEvents(a.after ? String(a.after) : "0", num(a, "limit") ?? 50));
+      // The page, not the bare array: it carries the event-GC truncation annotation
+      // (logBeginsAfter/sweptBefore) and nextAfter, which the model needs to page honestly.
+      return pretty(await client.getEventsPage(a.after ? String(a.after) : "0", num(a, "limit") ?? 50));
 
     case "space_take": {
       const leaseSeconds = num(a, "leaseSeconds") ?? 60;

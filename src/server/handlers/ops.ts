@@ -120,9 +120,15 @@ const EVENT_SCAN_PAGES = 20;
 export async function handleEvents(space: Space, url: URL, scope?: StatsScope | null): Promise<Response> {
   const after = url.searchParams.get("after") ?? "0"; // opaque cursor, passed through
   const limit = Math.min(Number(url.searchParams.get("limit") ?? "200") || 200, 500);
+  // A read starting below the event-GC horizon mechanically begins at the oldest retained event;
+  // the clamp is free. What must not be free is the caller believing it read from genesis, so the
+  // response says where the log now begins. Unlike the watch's 410, the sentinel is INCLUDED:
+  // "after=0" is exactly the read that needs the note.
+  const h = await space.eventHorizon(after);
+  const truncated = h.expired && h.horizon ? { logBeginsAfter: h.horizon.cursor, sweptBefore: h.horizon.swept } : {};
   if (!scope) {
     const events = await space.getEvents(after, limit);
-    return Response.json({ events, nextAfter: events[events.length - 1]?.cursor });
+    return Response.json({ events, nextAfter: events[events.length - 1]?.cursor, ...truncated });
   }
 
   // A scoped caller sees only events IT CAUSED, on the kinds it is scoped to. The `runId` filter
@@ -154,6 +160,7 @@ export async function handleEvents(space: Space, url: URL, scope?: StatsScope | 
     events: mine,
     nextAfter: cursor === after ? undefined : cursor,
     scope: describeScope(scope),
+    ...truncated,
     ...(mine.length < scanned
       ? {
         withheld: scanned - mine.length,

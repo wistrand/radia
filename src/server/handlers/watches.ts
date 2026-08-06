@@ -1,9 +1,11 @@
 // Watch endpoints (M1). POST /v0/watches creates an ephemeral, pattern-scoped watch;
 // GET /v0/watches/{id}/events is an SSE stream of wakeups for matching records that are
 // available. Resumption: reconnect with `Last-Event-ID` (or ?cursor=) and delivery
-// continues after that seq. A cursor older than the retained log → 410 cursor_expired
-// (dormant until event-log GC lands in M2; the floor is 0 for now). The event log is the
-// source of truth; the Notifier is only a wakeup.
+// continues after that seq. An explicit cursor below the event-GC horizon → 410
+// cursor_expired; the "0"/absent sentinel never 410s (see the check below for why). The
+// horizon stays null until the M2 event sweep exists, so the check is live but finds
+// nothing to refuse today. The event log is the source of truth; the Notifier is only a
+// wakeup.
 
 import type { Space, Watch } from "../../core/space.ts";
 import type { Pattern } from "../../core/matching.ts";
@@ -79,8 +81,23 @@ export async function handleWatchEvents(
   const url = new URL(req.url);
   const raw = req.headers.get("Last-Event-ID") ?? url.searchParams.get("cursor");
   // The cursor is an opaque, adapter-issued token (a seq or an xid watermark). The transport
-  // only echoes it, never interprets it. Resume from it verbatim, else the watch's start cursor.
-  // Cursor-expiry (410 cursor_expired) validation returns with event-log GC (M2).
+  // echoes it to the adapter, the only side that can compare it: a cursor below the event-GC
+  // horizon would silently jump the swept gap, which is the one failure worse than deletion.
+  // Never 410 the sentinel: "0" and absent mean "from the beginning", and both SDKs recover from
+  // a 410 by resetting to "0" and reconnecting immediately, so refusing it would hot-loop every
+  // shipped client. A sentinel on a truncated log starts at the oldest retained event, which is
+  // what the resetting client asked for; the 410 already told it to re-sync by query.
+  if (raw != null && raw.length > 0 && raw !== "0") {
+    const h = await space.eventHorizon(raw);
+    if (h.expired && h.horizon) {
+      return problem(
+        410,
+        "cursor_expired",
+        `cursor ${raw} predates the retained event log (${h.horizon.swept} events swept; the log resumes after ${h.horizon.cursor}); re-sync by query, then reconnect`,
+        { horizon: h.horizon.cursor, swept: h.horizon.swept },
+      );
+    }
+  }
   let cursor = raw != null && raw.length > 0 ? raw : watch.cursor0;
 
   const enc = new TextEncoder();

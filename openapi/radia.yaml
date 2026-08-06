@@ -49,8 +49,8 @@ info:
 
     Implemented through M0 (Phases 0-6) plus M1 watches + grants + the auth bootstrap chain / run
     tokens + artifacts (blob storage, unencrypted in v1). Not implemented yet: OIDC,
-    scheduler admission, request/bid/award, keyset query cursor, event-log retention/GC (so 410
-    cursor_expired is dormant).
+    scheduler admission, request/bid/award, keyset query cursor, the event-log sweep itself (the
+    410 cursor_expired check is live but never fires until a sweep creates a horizon).
 
 servers:
   - url: /v0
@@ -679,8 +679,11 @@ paths:
       description: >
         text/event-stream. Each wakeup: `id: <seq>` and `data: {seq, recordId, kind}`.
         Resume with `Last-Event-ID` (or `?cursor=`); delivery continues after that seq.
-        A cursor older than the retained event log returns 410 cursor_expired (dormant
-        until event-log GC lands in M2).
+        An explicit cursor older than the retained event log returns 410 cursor_expired,
+        with `horizon` (resume from it after re-syncing by query) and `swept` in the
+        problem body. The sentinel `0` (or no cursor) NEVER 410s: it starts from the
+        oldest retained event, which is how a client recovers after a 410. The event
+        sweep that creates a horizon is M2; until then the check finds nothing to refuse.
 
 
         AUTHORIZATION IS RE-CHECKED FOR AS LONG AS THE STREAM RUNS, not only when it opens:
@@ -1334,13 +1337,19 @@ paths:
         - { name: limit, in: query, required: false, schema: { type: integer, default: 200, maximum: 500 } }
       responses:
         "200":
-          description: events
+          description: >
+            events. A page starting below the event-GC horizon begins at the oldest retained
+            event (never a 410 here, unlike the watch stream: a refusal would permanently break
+            every from-zero read after the first sweep) and carries `logBeginsAfter` +
+            `sweptBefore` so the truncation is visible rather than silent.
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   events: { type: array, items: { $ref: "#/components/schemas/Event" } }
+                  logBeginsAfter: { type: string, description: The truncation horizon cursor; the log is complete after it. }
+                  sweptBefore: { type: integer, description: How many events event-log GC removed below the horizon. }
 
   /ops/records/{recordId}/envelope:
     get:
