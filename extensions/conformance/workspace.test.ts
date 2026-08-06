@@ -11,7 +11,7 @@
 // The rest answers Phase 1 of agent_docs/plan-workspaces.md: does a churning tree-as-records hold
 // up, and where does the record body limit bite. No execution, no sandbox, no materialisation.
 
-import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertStringIncludes, assertThrows } from "@std/assert";
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../../examples/operator.ts";
 import {
@@ -32,7 +32,7 @@ import {
   type WorkspaceManifest,
   writeWorkspace,
 } from "../ts/workspace.ts";
-import { bwrapSandbox, denoSandbox, jailArgs, probeSandbox, runBwrap, runCode, runEntry } from "../ts/sandbox.ts";
+import { bwrapSandbox, defaultConfiner, denoSandbox, jailArgs, probeSandbox, runBwrap, runCode, runEntry, sandboxExecProfile } from "../ts/sandbox.ts";
 import { declareSandbox, listSandboxes, readSandbox, SANDBOX_KIND, verifySandbox } from "../ts/sandbox-registry.ts";
 
 const PORT = 7815;
@@ -1827,6 +1827,88 @@ Deno.test({
         assertEquals(r.held, true, `${claim}: ${JSON.stringify(r)}`);
       }
     } finally {
+      await Deno.remove(tree, { recursive: true });
+    }
+  },
+});
+
+// ── the macOS confiner ───────────────────────────────────────────────────────────────────────────
+//
+// The profile BUILDER is a pure function, so it is checked on every platform: the parts most likely
+// to be got wrong (a missing dyld import, an unresolved path, a root that never made it in) are
+// string facts. Actually RUNNING it needs a Mac, so that case is gated and skips elsewhere. Both
+// halves matter: the builder is where a regression would land, the run is where the guarantee is.
+
+Deno.test("sandbox: the macOS profile keeps the line dyld needs, and resolves its paths", () => {
+  // A REAL symlink, so the resolution is observable on every platform. Asserting against `/tmp`
+  // alone would have proved nothing off macOS, where it already resolves to itself: the test would
+  // pass with the resolution deleted, which is the shape of guard this repo keeps finding.
+  const target = Deno.makeTempDirSync({ prefix: "target-" });
+  const link = `${Deno.makeTempDirSync({ prefix: "link-" })}/via`;
+  Deno.symlinkSync(target, link);
+  const p = sandboxExecProfile({ readRoots: [link], denoDir: "/usr/local/bin", cwd: "/tmp" });
+
+  // The load-bearing import. Without it a deny-reads profile SIGABRTs every binary, because dyld's
+  // bootstrap needs `file-read*` on `/` and `file-map-executable` on the cryptex grafts. Apple revs
+  // this file with the OS, which is the point of importing it instead of hardcoding those paths.
+  assertStringIncludes(p, '(import "dyld-support.sb")');
+  assertStringIncludes(p, "(deny file-read*)");
+  // Reads are the only axis this profile bounds; net, env, run and write stay with Deno's flags.
+  assertStringIncludes(p, "(allow default)");
+  for (const required of ["/usr/lib", "/System", "/dev", "/usr/local/bin"]) {
+    assertStringIncludes(p, `(subpath "${required}")`);
+  }
+
+  // PATHS ARE RESOLVED. The sandbox matches vnodes, and on macOS `/tmp` is a symlink to
+  // `/private/tmp`, so an un-realpath'd root silently matches nothing and the jail denies the tree
+  // it was meant to allow.
+  assertStringIncludes(p, `(subpath "${Deno.realPathSync(target)}")`);
+  assert(!p.includes(`(subpath "${link}")`), `the symlink went in unresolved:\n${p}`);
+  Deno.removeSync(target, { recursive: true });
+  Deno.removeSync(link);
+});
+
+Deno.test("sandbox: a path that could break out of the profile is refused, not escaped", () => {
+  // The profile is text and the paths are interpolated into quoted strings. A path containing a
+  // quote could close one and change what the profile MEANS, which is a worse failure than any
+  // read: it would parse fine and grant something nobody wrote. No real jail root contains one.
+  assertThrows(() => sandboxExecProfile({ denoDir: '/usr/bin", (allow file-read*) ; "' }), Error, "cannot go in a sandbox profile");
+  assertThrows(() => sandboxExecProfile({ denoDir: "/usr/bin", readRoots: ["/tmp/a\nb"] }), Error, "cannot go in a sandbox profile");
+});
+
+Deno.test("sandbox: the confiner is chosen by platform, and Windows honestly has none", () => {
+  const c = defaultConfiner();
+  const expected = Deno.build.os === "darwin" ? "sandbox-exec" : Deno.build.os === "linux" ? "bubblewrap" : undefined;
+  assertEquals(c, expected, `defaultConfiner() on ${Deno.build.os}`);
+  // A guess, not a verdict: the probe decides whether it actually holds, and a caller falls back.
+  if (c) assertEquals(denoSandbox({ confine: c }).importsConfined, true);
+});
+
+Deno.test({
+  name: "sandbox: on macOS, the Seatbelt profile actually closes the import hole",
+  ignore: Deno.build.os !== "darwin",
+  async fn() {
+    // The half that cannot be checked from Linux. Verified by hand on macOS 26.4.1 / Deno 2.9.5
+    // (arm64) before this shipped; this is that verification as a guard.
+    const secret = await Deno.makeTempDir({ prefix: "SECRET-" });
+    const tree = await Deno.makeTempDir({ prefix: "tree-" });
+    try {
+      await Deno.writeTextFile(`${secret}/kek.json`, JSON.stringify({ kek: "BLOB-KEY" }));
+      await Deno.writeTextFile(`${tree}/lib.ts`, "export const n: number = 7;\n");
+      const src =
+        `try { const m = await import("file://${secret}/kek.json", { with: { type: "json" } }); console.log("REACHED"); }
+         catch { console.log("blocked"); }
+         const lib = await import("./lib.ts"); console.log("tree import ok: " + lib.n);`;
+
+      const open = await runCode(src, { readRoots: [tree], cwd: tree, timeoutMs: 30_000 });
+      assertStringIncludes(open.stdout, "REACHED", "the unconfined jail should still be open");
+
+      const shut = await runCode(src, { readRoots: [tree], cwd: tree, confine: "sandbox-exec", timeoutMs: 30_000 });
+      assertStringIncludes(shut.stdout, "blocked", `the profile did not hold: ${shut.stdout} ${shut.stderr.slice(0, 300)}`);
+      // The jail still has to WORK: a profile that blocks everything is easy and useless.
+      assertStringIncludes(shut.stdout, "tree import ok: 7");
+    } finally {
+      await Deno.remove(secret, { recursive: true });
       await Deno.remove(tree, { recursive: true });
     }
   },

@@ -1,6 +1,7 @@
 # Plan: confining the filesystem, per platform
 
-> Status: phases 1 and 3 BUILT (2026-08-06); 4 researched and ready; 2 REJECTED; 5 is a posture. The defect is package
+> Status: phases 1, 3 and 4 BUILT (2026-08-06); 2 REJECTED; 5 is a posture. Phase 4's macOS run
+> has never executed in this repo's CI or on the implementer's machine: see its note. The defect is package
 > T in [plan-audit-remediation.md](plan-audit-remediation.md); this is the plan to close it.
 > Everything below marked "measured" was run against the real jail on Linux, except phase 4:
 > `sandbox-exec` was verified on a real Mac 2026-08-06 (macOS 26.4.1, Deno 2.9.5, arm64). Read
@@ -152,7 +153,19 @@ correctly reported the claim UNVERIFIED, and confinement silently never happened
 right and the cause was invisible; `probeSandbox` takes a `scratchDir` now. The same shape produced
 `bootRoot` in the broker and the empty-`--workspace-root` bug in `openTree`.
 
-**4. `sandbox-exec` on macOS.** VERIFIED on a real Mac (macOS 26.4.1, Deno 2.9.5, arm64): the
+**4. BUILT (2026-08-06), and NOT executed by its author.** `sandboxExecProfile` builds the profile,
+`RunOptions.confine: "sandbox-exec"` runs the jail under it, and `defaultConfiner()` picks by
+platform so the chat reaches for Seatbelt on macOS and bubblewrap on Linux. Everything below was
+verified by hand on a Mac first; the code is that verification transcribed.
+**The implementer was on Linux and could not run it.** So the tests split deliberately: the profile
+BUILDER is a pure function checked on every platform (the dyld import is present, paths are
+resolved through a real symlink, a path that could close an SBPL string is REFUSED rather than
+escaped), while the case that actually runs a confined jail is gated on `Deno.build.os === "darwin"`
+and skips elsewhere. The builder is where a regression would land; the run is where the guarantee
+is, and only a Mac can report it. Three plants proved the pure cases (drop the dyld import, drop the
+realpath, accept an injecting path).
+
+VERIFIED on a real Mac (macOS 26.4.1, Deno 2.9.5, arm64): the
 module-loading hole reproduces there, and a filesystem-only SBPL profile closes it while
 workspace-relative imports keep working. Overhead is ~6ms (bare jail 10.3ms median, confined
 16.0ms). The "fiddly and version-sensitive" part has an Apple-maintained answer: a naive
@@ -183,6 +196,28 @@ Traps for the implementer, all hit during verification:
 - SBPL `(trace ...)` is dead on modern macOS; iterate via the crash reports in
   `~/Library/Logs/DiagnosticReports` instead.
 - `DENO_DIR` is not needed under `--no-remote`; only the binary's own directory is.
+
+**PYTHON IS LINUX-ONLY, and stays that way (decided 2026-08-06).** `run_python` is served only where
+`bwrapSandbox` verifies, and bubblewrap is a Linux tool, so a Mac publishes no `run_python` at all:
+the language is ABSENT rather than broken, which is what the capability-name design is for.
+
+Phase 4 does not carry over, and the reason is the whole point of the confiner/runtime split. The
+Deno profile is `(allow default)` plus `(deny file-read*)`, and that is safe ONLY because Deno's
+flags already deny net, env, run, ffi and write: the profile had one job, closing the single channel
+the permission model missed. Python has no permission model, so the same profile around `python3` is
+an interpreter with `(allow default)` — full network, full spawn, full write. A macOS Python jail
+would need `(deny default)` with an explicit allowlist across reads, writes, network, process-exec,
+mach lookups and sysctls: a different kind of profile, in exactly the territory where one reads
+correctly and is not. On Linux bwrap covers every axis with one flag set, which is the asymmetry.
+
+Two things that would make it tractable IF it is ever wanted, recorded so the next person does not
+re-derive them: `probeSandbox` already tests those axes in Python (network, processes, env,
+filesystem, writable), so a candidate profile would be verified rather than trusted and a wrong one
+would refuse to serve; and the spec split already accommodates it, as a new spec with
+`confiner: "sandbox-exec"` and its own probed claims. There is also a second gate before any of that
+matters: stock macOS ships no usable `python3` (since 12.3 `/usr/bin/python3` is a stub that prompts
+for Command Line Tools), so it would depend on CLT or Homebrew as well as on the profile. NOT
+verified here; a `python3 -c 'print(1)'` on a clean Mac settles it.
 
 **5. Windows stays unconfined, and the record says so.** No equivalent that is worth the dependency.
 `importsConfined: false` is the honest answer, and the operator sees it.

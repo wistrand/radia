@@ -80,6 +80,19 @@ successor, discovered by query. What changes by making it data rather than a wor
 - **Discovery is uniform.** The chat already learns its tools from `capability` records and its
   models from `model` records. Environments were the one thing it would have had to be told.
 
+### Which languages a PLATFORM can offer
+
+Built, and asymmetric: JavaScript runs everywhere, Python runs on Linux only. `run_python` is served
+where `bwrapSandbox` verifies and bubblewrap is Linux-only, so a Mac publishes no `run_python` and
+the language is simply absent. That is this section's own rule working rather than a gap.
+
+It is not an accident of packaging, and it will not be closed by adding a macOS confiner. A
+filesystem confiner is enough for the DENO jail because its permission flags already deny net, env,
+run, ffi and write, leaving one channel to close. Python has no such flags, so confining it means
+bounding every axis in the profile itself. See
+[plan-jail-confinement.md](plan-jail-confinement.md), which records the decision and what it would
+take to revisit.
+
 ### Selection: the capability name is the answer
 
 **BUILT, and it superseded the router below.** The reasoning is kept because the router argument is

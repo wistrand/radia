@@ -74,7 +74,7 @@ export interface RunOptions {
    * `--unshare-net`. That is the flag which fails on hosted CI, and leaving it out keeps "no
    * network" safe-by-absence instead of moving it to safe-by-presence.
    */
-  confine?: "bubblewrap";
+  confine?: "bubblewrap" | "sandbox-exec";
 }
 
 export interface RunResult {
@@ -170,6 +170,66 @@ export function jailArgs(opts: RunOptions, memoryMb: number, entry: string): str
   ];
 }
 
+/**
+ * The macOS filesystem confiner: a Seatbelt profile that denies reads and allows back what Deno
+ * itself needs plus the roots the caller granted.
+ *
+ * VERIFIED on macOS 26.4.1 with Deno 2.9.5 (arm64): the module-loading hole reproduces there, this
+ * closes it, and workspace-relative imports keep working. ~6ms (bare jail 10.3ms median, confined
+ * 16.0ms). See plan-jail-confinement.md phase 4 for the session that produced it.
+ *
+ * Four things that are not obvious and were each hit while verifying:
+ *
+ *   - `(import "dyld-support.sb")` IS THE LOAD-BEARING LINE. A naive deny-reads profile SIGABRTs
+ *     every binary, because dyld's bootstrap (libignition) needs `file-read*` on the literal `/`
+ *     and `file-map-executable` on the cryptex graft points. Apple revs that file with the OS, so
+ *     importing it by name puts the version-sensitive part on their side. It is labelled Apple
+ *     System Private Interface; the alternative, hardcoding cryptex paths, already broke once
+ *     during the verification.
+ *   - PATHS MUST BE RESOLVED. The sandbox matches on vnodes and `/tmp` is a symlink to
+ *     `/private/tmp`, so an un-realpath'd workspace path silently matches nothing and the jail
+ *     denies the tree it was supposed to allow.
+ *   - `(allow file-read-metadata)` globally is what makes the rest work, and it LEAKS EXISTENCE
+ *     everywhere. That is why `confiner` is an enum rather than a boolean: this hides contents, a
+ *     mount namespace hides the file. A policy that needs the stronger one binds `bubblewrap`.
+ *   - `DENO_DIR` is not needed under `--no-remote`; only the binary's own directory is.
+ *
+ * Debugging note for whoever changes this: SBPL `(trace …)` is dead on modern macOS. Iterate
+ * through the crash reports in `~/Library/Logs/DiagnosticReports`.
+ */
+export function sandboxExecProfile(opts: { readRoots?: string[]; denoDir: string; cwd?: string }): string {
+  // A path is interpolated into a quoted SBPL string, so anything that could close that string is
+  // refused rather than escaped: no legitimate jail root contains one, and a profile that parses
+  // differently than it reads is the worst possible failure here.
+  const clean = (p: string) => {
+    if (/["\\\n]/.test(p)) throw new Error(`path cannot go in a sandbox profile: ${JSON.stringify(p)}`);
+    return p;
+  };
+  // Resolved, per the trap above. A path that cannot be resolved is kept as given: it is either
+  // absent (so it grants nothing) or unreadable by this process, and failing the whole jail over
+  // it would be worse than a root that matches nothing.
+  const resolve = (p: string) => {
+    try {
+      return Deno.realPathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  const roots = [...new Set([opts.denoDir, ...(opts.readRoots ?? []), ...(opts.cwd ? [opts.cwd] : [])].map(resolve))];
+  return [
+    "(version 1)",
+    // Net, env, run and write are denied by Deno's own flags, so this profile only has to bound
+    // reads. Confining one axis is the whole design: see `RunOptions.confine`.
+    "(allow default)",
+    "(deny file-read*)",
+    '(import "dyld-support.sb")',
+    "(allow file-read-metadata)",
+    "(allow file-read*",
+    ...['/usr/lib', '/usr/share', '/System', '/dev', ...roots].map((p) => `  (subpath "${clean(p)}")`),
+    ")",
+  ].join("\n");
+}
+
 function spawnDeno(entry: string, opts: RunOptions, memoryMb: number): Deno.ChildProcess {
   // The RUNNING runtime, by absolute path, not the name `deno` resolved against the PATH this
   // command itself invents (`/usr/bin:/bin` below). Two reasons, and CI found the first: on a
@@ -179,11 +239,24 @@ function spawnDeno(entry: string, opts: RunOptions, memoryMb: number): Deno.Chil
   // resolve its own interpreter through a search path, or the flags below are enforced by
   // whichever binary that path happens to find.
   const args = jailArgs(opts, memoryMb, entry);
+  const denoDir = Deno.execPath().slice(0, Deno.execPath().lastIndexOf("/")) || "/usr/bin";
+  if (opts.confine === "sandbox-exec") {
+    // The jail, unchanged, under a Seatbelt profile. `-p` takes the profile as one argument, so
+    // nothing goes through a shell.
+    return new Deno.Command("/usr/bin/sandbox-exec", {
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
+      args: ["-p", sandboxExecProfile({ readRoots: opts.readRoots, denoDir, cwd: opts.cwd }), Deno.execPath(), ...args],
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+      clearEnv: true,
+      env: { HOME: "/tmp", PATH: "/usr/bin:/bin" },
+    }).spawn();
+  }
   if (opts.confine === "bubblewrap") {
     // The jail, unchanged, inside a mount namespace. Deno's own directory has to be bound or the
     // interpreter is not there to start; everything else the program may read is already in
     // `readRoots`, and anything not bound simply does not exist.
-    const denoDir = Deno.execPath().slice(0, Deno.execPath().lastIndexOf("/")) || "/usr/bin";
     return new Deno.Command("bwrap", {
       args: bwrapArgs({
         command: [Deno.execPath(), ...args],
@@ -460,14 +533,14 @@ export function bwrapSandbox(
 /** The jail `runCode` actually builds, for a given configuration. */
 export function denoSandbox(opts: RunOptions & { name?: string } = {}): SandboxSpec {
   const { timeoutMs, memoryMb } = { ...DEFAULTS, ...opts };
-  const confined = opts.confine === "bubblewrap";
+  const confined = opts.confine === "bubblewrap" || opts.confine === "sandbox-exec";
   return {
     name: opts.name ?? (confined ? "deno-confined" : "deno"),
     // MEASURED, not assumed: unconfined, `import(…, {with:{type:"json"}})` reaches any JSON the
     // process user can read, past the roots and past `--deny-read`. A mount namespace closes it,
     // which is the whole reason `confine` exists.
     importsConfined: confined,
-    confiner: confined ? "bubblewrap" : "none",
+    confiner: opts.confine ?? "none",
     language: "javascript",
     isolation: "deno-permissions",
     network: false,
@@ -482,6 +555,20 @@ export function denoSandbox(opts: RunOptions & { name?: string } = {}): SandboxS
 }
 
 /** One thing a probe tried, and whether the jail held. */
+/**
+ * The confiner worth TRYING on this host, or none.
+ *
+ * A guess by platform, not a verdict: whether it works is what the probe answers, and a caller
+ * that gets this wrong falls back rather than failing. Linux gets bubblewrap (which may not be
+ * installed or permitted), macOS gets Seatbelt (built in since forever). Windows has no equivalent
+ * worth the dependency, so the honest answer there is an unconfined jail that says so.
+ */
+export function defaultConfiner(): "bubblewrap" | "sandbox-exec" | undefined {
+  if (Deno.build.os === "darwin") return "sandbox-exec";
+  if (Deno.build.os === "linux") return "bubblewrap";
+  return undefined;
+}
+
 export interface ProbeResult {
   claim: string;
   held: boolean;
@@ -635,7 +722,7 @@ export async function probeSandbox(
       // than in an unconfined one that would pass for it.
       : await runCode(program, {
         ...opts,
-        ...(spec.confiner === "bubblewrap" ? { confine: "bubblewrap" as const } : {}),
+        ...(spec.confiner === "bubblewrap" || spec.confiner === "sandbox-exec" ? { confine: spec.confiner } : {}),
         timeoutMs: opts.timeoutMs ?? PROBE_TIMEOUT_MS,
       });
 

@@ -82,6 +82,12 @@ Two isolation backends ship: `deno-permissions` (JS, safe by ABSENCE of flags) a
 before it is served — verified directly, a bwrap jail missing `--unshare-all` reaches the network
 while its record still claims it cannot.
 
+Separately from the backend, a `confiner` bounds the FILESYSTEM: bubblewrap on Linux, `sandbox-exec`
+on macOS, none on Windows. It exists because a read permission does not cover module loading, so a
+Deno jail without one reads any JSON its user can read (agent_docs/plan-jail-confinement.md).
+Consequence for languages: JavaScript runs everywhere, PYTHON IS LINUX-ONLY, because a confiner is
+all the Deno jail needs and a whole permission model is what Python would need.
+
 The backend and the LANGUAGE are independent, and neither implies the other. A language
 contributes a broker shim and nothing else (`RUNTIMES`, ~30 lines each for JavaScript and
 Python); the jail comes from the `sandbox` record a binding's `sandboxPattern` resolves to

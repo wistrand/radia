@@ -27,7 +27,7 @@ import { activeByKey, newestByKey, RadiaClient, type RadiaRecord } from "../../.
 import { dryRunEntrypoint } from "../../../extensions/ts/broker.ts";
 import { runCode, runEntry } from "../../../extensions/ts/sandbox.ts";
 import { captureWorkspace, commitWorkspace, materialize, readWorkspace, validateEntrypoint, writeWorkspace } from "../../../extensions/ts/workspace.ts";
-import { bwrapSandbox, denoSandbox, runBwrap } from "../../../extensions/ts/sandbox.ts";
+import { bwrapSandbox, defaultConfiner, denoSandbox, runBwrap } from "../../../extensions/ts/sandbox.ts";
 import { declareSandbox, verifySandbox } from "../../../extensions/ts/sandbox-registry.ts";
 import { progress } from "../space/progress.ts";
 import { arg, argAll } from "../util.ts";
@@ -510,7 +510,7 @@ async function lookupProcedure(c: RadiaClient, name: string, conversationId?: st
 // nobody advertises. On a host without bwrap that means Python is simply absent, which is the
 // honest outcome rather than a tool that fails on first use.
 /** The confiner in force for every run this worker performs, decided once at boot. */
-let confine: "bubblewrap" | undefined;
+let confine: "bubblewrap" | "sandbox-exec" | undefined;
 
 {
   // PREFER THE CONFINED JAIL. The permission model does not bound module loading, so an unconfined
@@ -521,20 +521,24 @@ let confine: "bubblewrap" | undefined;
   // Fall back rather than refuse. A host without bubblewrap keeps the jail it has always had and
   // the RECORD says which one ran, which is the same posture `run_python` already takes: publish
   // what probes clean, and never claim more than was verified.
-  const confined = denoSandbox({ name: "deno-confined", readRoots, timeoutMs, confine: "bubblewrap" });
-  const confinedFailed = await verifySandbox(confined, {
-    readRoots,
-    timeoutMs,
-    networkTarget: new URL(url).host,
-    // This worker may write to its workspace root and nowhere else, and the probe needs somewhere
-    // OUTSIDE the jail's read roots to put its canary. Without it the import claim reports
-    // unverified, the jail is refused, and confinement silently never happens.
-    ...(workspaceRoot ? { scratchDir: workspaceRoot } : {}),
-  })
-    .catch((e) => [{ claim: "backend", held: false, detail: String(e) }]);
-  if (confinedFailed.length === 0) confine = "bubblewrap";
+  // WHICH confiner is a platform guess (`defaultConfiner`); WHETHER it works is the probe's answer.
+  // A host with neither keeps the jail it has always had.
+  const candidate = defaultConfiner();
+  const confined = candidate ? denoSandbox({ name: "deno-confined", readRoots, timeoutMs, confine: candidate }) : undefined;
+  const confinedFailed = confined
+    ? await verifySandbox(confined, {
+      readRoots,
+      timeoutMs,
+      networkTarget: new URL(url).host,
+      // This worker may write to its workspace root and nowhere else, and the probe needs somewhere
+      // OUTSIDE the jail's read roots to put its canary. Without it the import claim reports
+      // unverified, the jail is refused, and confinement silently never happens.
+      ...(workspaceRoot ? { scratchDir: workspaceRoot } : {}),
+    }).catch((e) => [{ claim: "backend", held: false, detail: String(e) }])
+    : [{ claim: "backend", held: false, detail: `no confiner for ${Deno.build.os}` }];
+  if (confinedFailed.length === 0) confine = candidate;
 
-  const js = confine ? confined : denoSandbox({ name: "deno", readRoots, timeoutMs });
+  const js = confine && confined ? confined : denoSandbox({ name: "deno", readRoots, timeoutMs });
   // The SPACE's own address as the network probe target: this worker can already reach it (that is
   // its one `--allow-net` grant), it is always listening, and it needs no outbound connection. A
   // probe with no target reports the claim UNVERIFIED, which refuses the jail.
@@ -553,8 +557,8 @@ let confine: "bubblewrap" | undefined;
   await declareSandbox(client, js);
   console.error(
     confine
-      ? "exec worker: JavaScript runs CONFINED (bubblewrap over the Deno jail); module loading is bounded"
-      : "exec worker: JavaScript runs UNCONFINED (no usable bubblewrap). Module loading is not bounded by " +
+      ? `exec worker: JavaScript runs CONFINED (${confine} over the Deno jail); module loading is bounded`
+      : "exec worker: JavaScript runs UNCONFINED (no usable confiner). Module loading is not bounded by " +
         "the read permission, so any JSON this user can read is reachable from the sandbox: " +
         `${confinedFailed.map((f) => f.claim).join(", ")}. See agent_docs/plan-jail-confinement.md`,
   );
