@@ -1,6 +1,6 @@
 // Promotion as a grant rotation: which CODE a tier is allowed to run, pinned by content address.
 //
-// The mechanism is agent_docs/plan-workspace-agents.md phase 2, and the reason it is here rather
+// The mechanism is agent_docs/architecture-workspace-agents.md phase 2, and the reason it is here rather
 // than in the runtime is that there is nothing to add: a candidate is a workspace tree digest,
 // and "prod runs this digest" is a pattern-scoped grant naming it. Promotion writes a grant and
 // retires the one it replaces. Rollback is promotion pointed at the previous digest. The

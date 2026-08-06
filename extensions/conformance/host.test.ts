@@ -1,4 +1,4 @@
-// The workspace-agent host contract (agent_docs/plan-workspace-agents.md phase 4).
+// The workspace-agent host contract (agent_docs/architecture-workspace-agents.md phase 4).
 //
 //   deno task extensions
 //

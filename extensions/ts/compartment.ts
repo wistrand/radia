@@ -1,6 +1,6 @@
 // Who can get data OUT of a compartment, answered from the grants that decide it.
 //
-// A compartment (agent_docs/plan-workspace-agents.md D1) is a dedicated kind plus pattern-scoped
+// A compartment (agent_docs/architecture-workspace-agents.md D1) is a dedicated kind plus pattern-scoped
 // grants. Agents join it by being granted, work inside it freely, and the only way across is a
 // principal deliberately granted BOTH sides: read inside, write outside. Phase 1 proved the
 // runtime enforces that. What was missing is the other half of any rule like it: a way to FIND

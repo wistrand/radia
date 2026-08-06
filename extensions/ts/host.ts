@@ -1,6 +1,6 @@
 // A generic host that runs a workspace's code AS the agent that workspace belongs to.
 //
-// agent_docs/plan-workspace-agents.md phase 4. An agent stops being a deployed process and
+// agent_docs/architecture-workspace-agents.md phase 4. An agent stops being a deployed process and
 // becomes three records: an `agent_definition` (identity and grants, unchanged), a BINDING naming
 // the code, and whatever it writes. This file is the one process, and it is a CLIENT like
 // `git-serve`, not runtime: it composes `/v0` and the runtime knows nothing about it.

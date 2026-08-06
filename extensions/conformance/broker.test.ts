@@ -1,4 +1,4 @@
-// The broker's contract (agent_docs/plan-workspace-agents.md phase 5).
+// The broker's contract (agent_docs/architecture-workspace-agents.md phase 5).
 //
 //   deno task extensions
 //
@@ -8,7 +8,7 @@
 //
 // The cases are the three properties the phase claims plus the one that makes them worth
 // claiming: that the jail cannot simply go around the broker. That last one is the escape probe,
-// the shape `sandbox.ts` already uses, and it is the reason the plan's line about real protected
+// the shape `sandbox.ts` already uses, and it is the reason the line about real protected
 // data waits for this phase rather than the one before it.
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";

@@ -117,7 +117,7 @@ pipeline over restricted data and rejected: a dedicated kind plus pattern-scoped
 it better, because `bodyMatchesGrant` refuses a scoped agent's write outside its compartment on
 every path, while a label bars claims but not reads, is off unless every applicable grant carries
 an allowlist, and unions only the DECLARED parents. A label answers what a record TOUCHED; a
-grant decides where it may go. See [plan-workspace-agents.md](plan-workspace-agents.md) D1.
+grant decides where it may go. See [architecture-workspace-agents.md](architecture-workspace-agents.md) D1.
 
 ### What "tainted" now means
 

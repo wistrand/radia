@@ -1,6 +1,6 @@
 // The broker: how jailed code participates in the space without ever holding a credential.
 //
-// agent_docs/plan-workspace-agents.md phase 5, and the phase the plan's one hard line waits on:
+// agent_docs/architecture-workspace-agents.md phase 5, and the phase the one hard line waited on:
 // until this exists, containment is the runner's discipline, because a jailed process that can
 // reach the API acts as whatever credential it can read.
 //

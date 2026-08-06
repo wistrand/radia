@@ -4,7 +4,7 @@ Sequence and status. The reasoning lives in [design-workspaces.md](design-worksp
 working tree is, and the git relationship) and [design-execution.md](design-execution.md) (why the
 language question is an isolation question). Read those first; this file assumes them.
 
-**What comes after this plan** is [plan-workspace-agents.md](plan-workspace-agents.md): a tree
+**What comes after this plan** is [architecture-workspace-agents.md](architecture-workspace-agents.md): a tree
 digest as the identity of a PRINCIPAL rather than of a document, promotion as a grant rotation
 pinned to that digest, and a generic host that runs any binding under the hosted agent's own run
 token. Designed, nothing built, and it opens with the three enforcement gaps its own review found.

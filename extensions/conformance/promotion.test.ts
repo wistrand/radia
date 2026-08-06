@@ -1,4 +1,4 @@
-// The promotion contract (agent_docs/plan-workspace-agents.md phase 2).
+// The promotion contract (agent_docs/architecture-workspace-agents.md phase 2).
 //
 //   deno task extensions
 //

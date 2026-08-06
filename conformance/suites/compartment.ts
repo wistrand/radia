@@ -1,4 +1,4 @@
-// The COMPARTMENT contract (agent_docs/plan-workspace-agents.md phase 1).
+// The COMPARTMENT contract (agent_docs/architecture-workspace-agents.md phase 1).
 //
 // A compartment is how a class of data is contained without adding anything to the runtime: a
 // DEDICATED KIND, which no pre-existing grant can name, plus pattern-scoped grants inside it. The

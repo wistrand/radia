@@ -1,44 +1,24 @@
-# Plan: workspace agents, and promotion as grant rotation
+# Workspace agents, and promotion as grant rotation (architecture)
 
-> Status: ALL PHASES BUILT (2026-08-06). Containment is structural rather than attested, and the
-> line about real protected data is cleared for the Deno jail. Origin:
-> a speculation about running LLM-written
-> code over protected data, plus the review that found several of its guarantees weaker than the
-> enforcement behind them. That is the claim ledger below, and it is why this file exists before
-> any code. Containment needs no runtime change. Read [design-auth.md](design-auth.md) (grants,
-> pattern scoping in both directions), [design-execution.md](design-execution.md),
+> Status: BUILT (2026-08-06), all six phases. Every line of it is `extensions/` tier and a CLIENT:
+> containment needed no runtime change. Source: `extensions/ts/promotion.ts`, `host.ts`,
+> `broker.ts`, `compartment.ts`; contracts in `extensions/conformance/` plus
+> `conformance/suites/compartment.ts`. Read [design-auth.md](design-auth.md) (grants, pattern
+> scoping in both directions), [design-execution.md](design-execution.md),
 > [design-workspaces.md](design-workspaces.md) and [plan-workspaces.md](plan-workspaces.md)
 > first: this composes them and adds almost nothing.
 
 ## Contents
-- The claim ledger
 - What this is
-- Decided
+- What is enforced, and by what
+- Decisions
 - Promotion is a grant rotation
-- What containment actually means
-- Workspace agents: binding, host, broker
-- Build order, and the line not to cross
+- The compartment
+- Binding, host, broker
+- How it was built, phase by phase
 - Mechanical footnotes
 - Risks
 - Rejected
-
-## The claim ledger
-
-First section on purpose. Every row is a promise the design made that the enforcement does not
-keep, which is the defect class this codebase produces most often (see
-[plan-audit-remediation.md](plan-audit-remediation.md): "every grant bug so far was a promise
-that did not match the enforcement"). Checked against `src/` on 2026-08-06.
-
-| The claim | What the code does | Answer |
-|---|---|---|
-| a taint label contains the data, and needs one runtime change to do it | Grants contain it better and need nothing: taint bars claims but not reads, is opt-in per grant, and unions only the DECLARED parents | D1, and Rejected |
-| the runner attests containment on its output | With a grant pattern it is structural, not attested: `bodyMatchesGrant` binds the put handler (`handlers/records.ts`), artifact writes (`handlers/artifacts.ts`) and ack-emitted results (`space.ts`) | D1 covers every write path; phase 5 covers a jailed process acting as another principal |
-| outputs are "quarantined" | Wrong word: it implies a human-only gate. A COMPARTMENT, which agents join by grant | D2 |
-| workspace agents need ZERO runtime changes | `WRITE_PROTECTED_KINDS` and `NEVER_COMPACT` are code sets, so joining either is a runtime change | zero-change equivalents exist (D3); prod tier takes the code change |
-| the digest pin is enforced | Enforced for SUBMITTING and CLAIMING. That the runner then executes those bytes is host discipline: the runtime executes nothing, by design | state it in the binding contract, never imply more |
-
-**The bill is zero runtime surface for containment**, plus the conventions in "Decided", plus an
-extensions-tier host and broker.
 
 ## What this is
 
@@ -51,18 +31,46 @@ they read, claim and build on the work, while a producer inside can write nowher
 anything OUT takes a principal deliberately granted both sides. A review promotes the digest, and
 prod runs it. Promotion, rollback and kill are record writes.
 
-**Workspace agents.** An agent stops being a deployed process and becomes an `agent_definition`
-plus a **binding** (`{agent, workspaceDigest, entrypoint, sandboxPattern}`) plus a generic host
-fleet that runs any binding. Defining an agent becomes a `put`. This is the last dogfooding gap:
-today a worker's CODE is the one part of an agent that lives outside the substrate.
+```mermaid
+flowchart LR
+    W["workspace<br/>LLM-written code"] -->|"tree digest"| C["candidate"]
+    C -->|"grant pinned to digest<br/>tier: experiment"| E["experiment run"]
+    E -->|"outputs"| K["compartment"]
+    K -->|"review, audit crossers"| P["promote:<br/>grant rotation"]
+    P -->|"grant pinned to digest<br/>tier: prod"| D["prod run"]
+    P -.->|"rollback: re-grant the previous digest"| C
+```
+
+**Workspace agents.** An agent is not a deployed process. It is an `agent_definition` plus a
+**binding** (`{agent, workspaceDigest, entrypoint, sandboxPattern}`) plus a generic host fleet
+that runs any binding, so defining an agent is a `put`. This closes the last dogfooding gap: a
+worker's CODE was the one part of an agent living outside the substrate.
 
 The dependency runs one way and must not be forgotten. Grants contain whatever the CREDENTIAL
 does, so the compartment is only as good as the jailed code's inability to act under some other
-credential. The broker (phase 5) is what makes that structural, by leaving the entrypoint no way
-to reach the API at all. Until then the boundary is the runner's discipline, which is why real
-protected data waits for it.
+credential. The broker is what makes that structural, by leaving the entrypoint no way to reach
+the API at all.
 
-## Decided
+## What is enforced, and by what
+
+This began as a CLAIM LEDGER: every row a promise the design made that the enforcement did not
+keep, which is the defect class this codebase produces most often (see
+[plan-audit-remediation.md](plan-audit-remediation.md): "every grant bug so far was a promise
+that did not match the enforcement"). Kept in its resolved form, because the reason a mechanism
+is the one it is reads better beside the claim that failed:
+
+| The claim as first written | What actually enforces it |
+|---|---|
+| a taint label contains the data | Nothing: it bars claims but not reads, is opt-in per grant, and unions only the DECLARED parents. Grants contain it better and need no runtime change (D1) |
+| the runner attests containment on its output | Structural, not attested: `bodyMatchesGrant` binds the put handler (`handlers/records.ts`), artifact writes (`handlers/artifacts.ts`) and ack-emitted results (`space.ts`) |
+| outputs are "quarantined" | Wrong word, since it implies a human-only gate. A COMPARTMENT, which agents join by grant (D2) |
+| zero runtime changes | True for containment. `WRITE_PROTECTED_KINDS` and `NEVER_COMPACT` are code sets, so joining either is a runtime change; zero-change equivalents cover everything below prod tier (D3) |
+| the digest pin is enforced | Enforced for SUBMITTING and CLAIMING. That the host then executes those bytes is host discipline: the runtime executes nothing, by design |
+
+The bill came to zero runtime surface for containment, plus the conventions below, plus an
+extensions-tier host and broker.
+
+## Decisions
 
 - **D1. The compartment is KINDS plus GRANT PATTERNS, never a taint label.** A dedicated kind per
   compartment record type is default-deny by construction: no pre-existing grant can name a kind
@@ -81,7 +89,7 @@ protected data waits for it.
   is ever granted `put` on it, and it declares no `contentKey` (so `core/gc.ts` never compacts
   it: compaction only touches keyed kinds). Both properties hold with no runtime change. Before
   anything PROD-tier depends on a binding, it joins `WRITE_PROTECTED_KINDS`, because grant
-  absence is a policy an operator can reverse and write-protection is a guard.
+  absence is a policy an operator can reverse and write protection is a guard.
 - **D4. The host claims under each hosted agent's own run token, never its own.** The rejected
   alternative (host claims as itself, dispatches internally) needs the union of every hosted
   agent's grants, which is a mini-operator, and flattens `created_by`, `lease_owner` and
@@ -108,35 +116,60 @@ requester's grant to write requests is scoped the same way:
  "pattern": {"workspace": "sha256:abc…", "tier": "prod"}}
 ```
 
-Promotion writes a grant naming the new digest and retires the old one. Rollback re-grants the
-previous digest. Both are successor records, so the promotion history is audited, watchable,
-revocable, and inspectable through `effectivePermissions` before it is trusted. `radia
-permissions agent:prod-runner` answers "what is prod running right now" from the enforcement
-path rather than from a deploy log.
+Promotion writes a grant naming the new digest and retires the old one, in that order (D6):
+
+```mermaid
+sequenceDiagram
+    participant O as operator
+    participant S as space
+    O->>S: put grant, pattern pinned to the NEW digest
+    Note over S: both digests live here.<br/>Grants union, so this window over-permits<br/>rather than stalling every claim
+    O->>S: put successor retiring the OLD grant
+    Note over S: prod is the new digest, and<br/>radia permissions can say so
+```
+
+Both are successor records, so the promotion history is audited, watchable, revocable, and
+inspectable through `effectivePermissions` before it is trusted. `radia permissions
+agent:prod-runner` answers "what is prod running right now" from the enforcement path rather
+than from a deploy log.
 
 No deploy endpoint, no environment config, no CI state: the promotion state IS the grant
 registry, so the event chain and the seal cover it for free.
 
-**Two locks, and each is inert alone** (this is the part worth keeping):
+**Two locks, each inert alone, and they must also AGREE:**
 
 ```mermaid
 flowchart LR
-    B["binding record<br/>agent → digest + entrypoint"] --> R{host runs it?}
-    G["grant record<br/>pattern-pinned to digest"] --> C{work claimable?}
-    R -->|no binding: nothing to run| X1[inert]
-    C -->|no grant: nothing to claim| X2[inert]
-    R --> Y[executes]
-    C --> Y
+    B["binding record<br/>agent → digest + entrypoint"] --> Q{"compare the pins"}
+    G["grant record<br/>pattern pinned to a digest"] --> Q
+    Q -->|"binding, no grant"| I1["inert:<br/>nothing claimable"]
+    Q -->|"grant, no binding"| I2["inert:<br/>nothing runs"]
+    Q -->|"pins disagree"| M["refused: digest_mismatch<br/>claim released"]
+    Q -->|"same digest"| X["executes"]
 ```
 
 A hijacked binding without a matching grant claims nothing. A granted digest without a binding
-runs nothing. The binding is the escalation root, so the grant-side pin is the second lock.
+runs nothing. The binding is the escalation root, so the grant-side pin is the second lock. The
+disagreement case was not predicted by the design and is the hijack the two locks exist to
+prevent, wearing the shape of a misconfiguration.
 
-## What containment actually means
+## The compartment
 
 A COMPARTMENT, not a quarantine: the agents doing the work are inside it. An inspector that has
 to be a person is the failure [design-inspection.md](design-inspection.md) names, and it would be
 the wrong answer here too.
+
+```mermaid
+flowchart TB
+    subgraph IN["compartment: dedicated kinds + pattern-scoped grants"]
+        P["producer<br/>put, scoped"] --> E["evaluator<br/>take + put, scoped"] --> R["reader<br/>read grant only"]
+    end
+    X["crosser: granted BOTH sides"]
+    OUT["the rest of the space"]
+    IN -->|"the one sanctioned exit"| X --> OUT
+    A["artifact grant with no compartment pattern"] -.->|"reads the bytes"| IN
+    O["observe ops power"] -.->|"reads every body"| IN
+```
 
 - **Inside, work composes normally.** An evaluator claims a result, an aggregator summarizes
   several, a checker validates them. Each holds a take grant on the compartment's kinds and a put
@@ -148,10 +181,11 @@ the wrong answer here too.
   can only narrow further.
 - **Leaving takes a principal granted BOTH sides, and that is the whole gate.** Never grant one
   principal both sides except the one whose job that is. There is no second mechanism behind that
-  rule, so a mis-written grant is the leak; `effectivePermissions` names every principal holding
+  rule, so a mis-written grant is the leak; `auditCompartment` names every principal holding
   both, which is the audit to run at promotion.
-- **Attestation is the weak link until phase 5.** A jailed process that reaches the API acts as
-  whatever principal its credential names, so the compartment binds only what those grants bind.
+- **The two dotted doors are not grants on the compartment's kinds**, which is why an audit that
+  only reads those misses them: an unscoped `artifact` grant reaches the bytes, and `observe`
+  reads every body in the space.
 - **Protected bytes are artifacts, never record bodies.** Already the erasure invariant, and it
   earns its keep twice here: bytes are encryptable with a destroyable key, and an accidental copy
   can be shredded with `erasures` detecting a return. The scoping rule bites: a shredded
@@ -159,7 +193,7 @@ the wrong answer here too.
   name, an identifier) must never become artifacts at all. That is a convention the runtime
   cannot check.
 
-## Workspace agents: binding, host, broker
+## Binding, host, broker
 
 - **Binding**: a latest-wins registry entry `{agent, workspaceDigest, entrypoint,
   sandboxPattern}`. Cutover is per claim; in-flight leases finish under the digest pinned when
@@ -169,32 +203,57 @@ the wrong answer here too.
   mints each run, claims under that run (D4), materializes the digest into the jail its
   `sandboxPattern` selects (a sandbox is a record matched by properties, per
   [design-execution.md](design-execution.md)), and invokes the entrypoint with the claimed record.
-- **Broker**: the entrypoint's only way out. Proposals over a pipe; the host performs them under
-  the agent's token. Two properties follow, and they are the reason this is not "FaaS on a tuple
-  space":
-  - **The code cannot lie about what it touched.** The host knows the jail's declared properties,
-    so it raises the existing labels mechanically (filesystem-capable ⇒ `file`, network ⇒ `net`)
-    and stamps the compartment field on everything the entrypoint emits. The writer never gets to
-    say.
-  - **Effectively-once, by construction.** With no egress but the broker, the host derives
-    idempotency keys from `(claimed record id, output ordinal)`, so a retried attempt's puts
-    dedupe. Bounded by `idempotencyRetentionSeconds` (7 days), not forever. An entrypoint whose
-    sandbox permits outside effects is exactly where a reviewer should look, and the sandbox
-    pattern makes that visible in the grant.
+- **Broker**: the entrypoint's only way out.
+
+```mermaid
+sequenceDiagram
+    participant J as jailed entrypoint
+    participant H as host
+    participant S as space
+    Note over J: no net, no env, no run.<br/>It cannot reach the space at all
+    J->>H: stdout frame: put {kind, body}
+    Note over H: host-side, and the code never sees it:<br/>raise labels from the JAIL's powers,<br/>stamp the compartment,<br/>force the claimed record as a parent,<br/>key idempotency on record + ordinal
+    H->>S: put, as the AGENT's run token
+    S-->>H: record id
+    H-->>J: stdin reply: {id, ok, result}
+    J->>H: stdout frame: result {kind, body}
+    H->>S: ack, as the agent
+```
+
+Two properties follow, and they are the reason this is not "FaaS on a tuple space":
+
+- **The code cannot lie about what it touched.** The host knows the jail's declared properties,
+  so it raises the existing labels mechanically (filesystem-capable ⇒ `file`, network ⇒ `net`)
+  and stamps the compartment field on everything the entrypoint emits. The writer never gets to
+  say. Forcing the claimed record as a parent does more than preserve labels: the runtime then
+  computes `foreign` itself, because the output is derived from a record another principal wrote.
+- **Effectively-once, by construction.** With no egress but the broker, the host derives
+  idempotency keys from `(claimed record id, output ordinal)`, so a retried attempt's puts
+  dedupe. Bounded by `idempotencyRetentionSeconds` (7 days), not forever. An entrypoint whose
+  sandbox permits outside effects is exactly where a reviewer should look, and the sandbox
+  pattern makes that visible in the grant.
 
 The broker protocol crosses the project's biggest trust boundary (model-written code against
 agent authority), so by this repo's own rule it is a NORMATIVE surface with a conformance
-contract in `extensions/conformance/`, not a regression net.
+contract in `extensions/conformance/`, not a regression net. The channel itself is UNTRUSTED and
+nothing depends on otherwise: jailed code can print a forged frame and gains nothing, because
+every rule above is applied host-side.
 
-## Build order, and the line not to cross
+**Any language, any backend, and the two are INDEPENDENT.** A language contributes a SHIM
+(`RUNTIMES`, about thirty lines each for JavaScript and Python) and nothing else, since the host
+side never learns which language asked. The jail comes from the `sandbox` RECORD a binding's
+`sandboxPattern` resolves to (`resolveSandbox`): Deno is safe by ABSENCE of flags, bubblewrap by
+PRESENCE of them and runs any interpreter. Conflating the two is how "python means bubblewrap"
+becomes a rule nobody wrote down.
+
+## How it was built, phase by phase
 
 Ordered by MODEL RISK, the [plan-workspaces.md](plan-workspaces.md) rule: the question most
-likely to be answered "no" comes first. Phases 1 to 3 write NO runtime code and little of any
-kind (they are conventions and the tests that prove them); 4 to 6 are the build, all of it in
-`extensions/` and all of it a client. Dependencies: 1 gates everything, 2 and 3 are independent
-of each other, 4 needs 2, 5 needs 4, 6 needs 5.
+likely to be answered "no" comes first. Phases 1 to 3 wrote NO runtime code and little of any
+kind (conventions, and the tests that prove them); 4 to 6 are the build. The numbering is kept
+because eight source files cite it, and because the plants are the part worth re-reading.
 
-**1. Does the compartment hold, with nothing new? BUILT (2026-08-06), and it does.**
+**1. Does the compartment hold, with nothing new? It does.**
 Shipped: `conformance/suites/compartment.ts`, five cases on both adapters, driving the HANDLERS
 because enforcement is at the HTTP boundary and only there (a test calling `space.put` would pass
 while the boundary leaked). Answered: a kind nobody was granted is closed for query, take and put
@@ -210,7 +269,7 @@ are grants pattern-scoped on a `compartment` field, and artifacts join by REDECL
 reserved `artifact` kind with `compartment` added to its indexed paths, since a pattern may only
 name declared paths and `artifact` cannot be replaced.
 
-**2. Does digest-pinned promotion work? BUILT (2026-08-06), and it does.**
+**2. Does digest-pinned promotion work? It does.**
 Shipped: `extensions/ts/promotion.ts` (`EXEC_REQUEST_KIND` with `workspace` and `tier` indexed,
 `promote`, `rollback`, `pinnedDigests`) and `extensions/conformance/promotion.test.ts`, five
 cases against a real space, because a pin is tested by trying to submit and claim at an
@@ -227,7 +286,7 @@ after the call passes either way, and the suite did. The window is inside the ca
 test asserts is the ORDER OF WRITES, through a recording client. Written the natural way, this
 phase would have shipped a guard that could never fail.
 
-**3. Does the exit gate compose? BUILT (2026-08-06), and the phase changed shape on contact.**
+**3. Does the exit gate compose? It does, and the phase changed shape on contact.**
 As written, its "done when" was already true: phase 1 proved the enforcement (a member cannot
 write outside, a principal granted both sides can). What was missing is the other half any rule
 like this needs, and the half that makes it more than a sentence: a way to FIND the principals
@@ -250,7 +309,7 @@ space, so a real deployment starts with a principal that reads every body in eve
 That is D7 stated as a rule; the audit puts it on the first line of the answer, and the test
 asserts it rather than treating it as a fixture.
 
-**4. Can a generic host run someone else's code as that someone? BUILT (2026-08-06), and it can.**
+**4. Can a generic host run someone else's code as that someone? It can.**
 Shipped: the `binding` kind (D3: no `contentKey`, so it never compacts) and
 `extensions/ts/host.ts` (`readBindings`, `WorkspaceHost.tick`, `sandboxInvoker`), with
 `extensions/conformance/host.test.ts`. The invoker is PLUGGABLE, which is both how the identity
@@ -264,17 +323,13 @@ no grant reports `refused` and leaves the work claimable; a granted digest with 
 nothing, and writing the binding later makes the same space run.
 Plant: making the host claim as ITSELF fails the attribution case and the refusal case, and
 nothing else.
-**A fourth case the plan did not predict.** Both locks can be present and DISAGREE: a binding at
-digest B while the grant pins A means the agent legitimately claims A's work and the host would
-run B's code, which is the hijack the two locks exist to prevent, wearing the shape of a
-misconfiguration. The host now refuses that pairing, releases the claim so a correctly bound host
-can take it, and reports `digest_mismatch`. Two locks are necessary and not sufficient: they must
-also agree.
+**A fourth case the plan did not predict**, and the one drawn above: both locks present and
+DISAGREEING. The host refuses that pairing, releases the claim so a correctly bound host can take
+it, and reports `digest_mismatch`. Two locks are necessary and not sufficient.
 
-**5. Can the jail be denied the token? BUILT (2026-08-06), and it can. The line above is cleared.**
+**5. Can the jail be denied the token? It can, and the line below is cleared.**
 Shipped: `extensions/ts/broker.ts` (the frame protocol, NORMATIVE) with
-`extensions/conformance/broker.test.ts` as its contract. The entrypoint takes `(record, space)`,
-where `space` writes PROPOSALS to stdout and the host performs them under the AGENT's run token.
+`extensions/conformance/broker.test.ts` as its contract, twelve cases.
 No shim is imported and none is materialised: the boot program is generated, because the tree is
 content-addressed and adding a file to it would change the digest that identifies the code.
 Answered: from inside the jail, `fetch`, `Deno.env`, reading the credentials file and spawning a
@@ -284,23 +339,16 @@ neither of which the code said; a retried attempt's writes dedupe on
 `(claimed record, output ordinal)`.
 Plant: opening the jail with `--allow-net --allow-env` fails the probe with "the jail reached the
 space through fetch".
-Two things building it settled. The jail's flags now live in ONE place (`jailArgs` in
-`sandbox.ts`): `runCode` feeds a program through stdin, which the broker cannot do because stdin
-is its response channel, and a second copy of the permission flags would have been a second
-security boundary to keep in step. And forcing the claimed record as a parent on every brokered
-put does more than preserve labels: the runtime then computes `foreign` itself, because the
-output is derived from a record another principal wrote. Lineage the code cannot omit is what
-lets the space label on its own.
+One thing building it settled: the jail's flags now live in ONE place (`jailArgs` in
+`sandbox.ts`), because `runCode` feeds a program through stdin, which the broker cannot do since
+stdin is its response channel, and a second copy of the permission flags would have been a second
+security boundary to keep in step.
 
-**5a. Any language, any backend, and the two are INDEPENDENT.** The first cut ran JavaScript in
-the Deno jail and nothing else, which reads as a protocol limit and is not one: the host side
-never learns which language asked. A language now contributes only a SHIM (`RUNTIMES` in
-`broker.ts`, ~30 lines each for JavaScript and Python); the jail is chosen separately, from the
-`sandbox` RECORD a binding's `sandboxPattern` resolves to (`resolveSandbox`). Deno is safe by
-ABSENCE of flags, bubblewrap by PRESENCE of them and runs any interpreter, so "python means
-bubblewrap" never becomes a rule nobody wrote down. EVERY BACKEND NEEDS ITS OWN ESCAPE PROBE: the
-Deno probe proves nothing about bwrap, one forgotten `--unshare-all` from an open jail. Both are
-in the contract and both were proved against a plant.
+**5a. Any language, any backend.** The first cut ran JavaScript in the Deno jail and nothing else,
+which reads as a protocol limit and is not one. Language and jail are now chosen independently
+(see "Binding, host, broker"). EVERY BACKEND NEEDS ITS OWN ESCAPE PROBE: the Deno probe proves
+nothing about bwrap, one forgotten `--unshare-all` from an open jail. Both are in the contract
+and both were proved against a plant.
 
 **5b. Sharing stdout with the protocol, done so it survives an entrypoint that logs.** An
 entrypoint that prints is NORMAL, and the MCP-stdio experience is that code writes to stdio by
@@ -313,11 +361,8 @@ ordinary logging does not emit; and a marker found MID-line is diagnosed as defi
 instead of ignored. Plus a 4MB output cap, since untrusted code printing in a loop must not take
 the host with it. Plants: dropping the leading newline fails the partial-write case, and dropping
 the cap turns the flood case into that same mystery 15s timeout.
-The channel is UNTRUSTED and nothing depends on otherwise. Jailed code can print a forged frame
-and gains nothing: the stamp, the labels, the forced parent, the idempotency key and the agent's
-grants are all applied host-side, so a forged call is exactly as constrained as a real one. A
-dedicated fd would end the sharing and is the honest ideal, declined because `Command` exposes no
-portable extra fd, which would push the transport back into the per-language shim.
+A dedicated fd would end the sharing and is the honest ideal, declined because `Command` exposes
+no portable extra fd, which would push the transport back into the per-language shim.
 
 **5c. The other half of the stream: stderr and exit codes.** Asked directly, and neither was
 really handled. Stderr was buffered UNBOUNDED, so the stdout cap guarded one stream while the
@@ -334,18 +379,18 @@ The bug found on the way is the one worth remembering: `WorkspaceHost` truncated
 its FIRST 300 characters, cutting off the tail the broker had gone to trouble to keep. Two caps,
 both defensible alone, opposite ends, no cause left between them.
 
-**6. Warm pools per promoted digest. BUILT (2026-08-06).**
+**6. Warm pools per promoted digest.**
 Shipped: `treeCache` in `extensions/ts/host.ts`, used by both invokers, keyed by digest and
 caching the PROMISE so two claims for one digest share a materialisation rather than racing to
 write the same files. LRU, four entries by default, which covers a rotation, a rollback and a
 spare.
 Measured (in-process, one small file per entry, artifacts over HTTP):
 
-| tree | cold materialise | warm |
-|---|---|---|
-| 1 file    | 5ms   | 0.00ms |
-| 20 files  | 34ms  | 0.00ms |
-| 100 files | 143ms | 0.00ms |
+| tree      | cold materialise | warm   |
+|-----------|------------------|--------|
+| 1 file    | 5ms              | 0.00ms |
+| 20 files  | 34ms             | 0.00ms |
+| 100 files | 143ms            | 0.00ms |
 
 So the saving is the whole materialisation and scales with the tree, while the jail spawn (~25ms)
 is unchanged: end to end, a one-file entrypoint went 41ms cold to 29ms warm, and a hundred-file
@@ -360,12 +405,11 @@ SAME host runs the new version (`hits: 1, misses: 2`), because the digest is par
 Building it moved one thing: the per-record boot program now lives in its own temp directory
 rather than in the tree, since a shared tree cannot hold a file that differs per claim.
 
-**Never put real protected data in before phase 5 is built and its plants pass.** Before that a
-jailed process can reach the API with whatever credential it can read, and the compartment binds
-only the grants that credential holds. CLEARED on 2026-08-06: the probe passes and the plant
-fails it. The line stays written down because it applies again to any NEW runner: a second
-backend (bubblewrap, another language) is not covered by the Deno jail's probe, and it inherits
-this rule rather than the conclusion.
+**The line that gated real protected data, kept because it applies again.** Before phase 5 a
+jailed process could reach the API with whatever credential it could read, and the compartment
+bound only the grants that credential held. CLEARED on 2026-08-06 for the Deno jail: the probe
+passes and the plant fails it. Any NEW runner inherits the rule rather than the conclusion, since
+a second backend is not covered by another backend's probe.
 
 ## Mechanical footnotes
 
@@ -401,8 +445,8 @@ this rule rather than the conclusion.
   where the no-retrofit property of dedicated kinds does not apply, and it is the most likely way
   this design leaks in practice.
 - **A dual-grant principal is the whole exit, so a mis-written grant IS the leak.** There is no
-  second mechanism behind it now (see "what is LOST"). `effectivePermissions` naming both sides
-  is the check; run it as part of promotion rather than trusting the grant that was written.
+  second mechanism behind it. `auditCompartment` naming both sides is the check; run it as part
+  of promotion rather than trusting the grant that was written.
 - **An exporter or declassifier may be an agent, and that is where to be careful.** Nothing in
   the substrate requires a person, and a deterministic aggregator that provably cannot emit rows
   is a better exit gate than a tired human. An LLM-DRIVEN one is different, because prompt
@@ -426,6 +470,7 @@ this rule rather than the conclusion.
   one out of an existing kind.
 - **The host claiming as itself and dispatching.** D4.
 - **Protected bytes in record bodies.** No erasure path, and `observe` reads bodies.
+- **A dedicated file descriptor for the broker channel.** 5b.
 - **Git as the storage of record for candidates.** Already rejected in
   [design-workspaces.md](design-workspaces.md); restated because a promotion pipeline invites it.
   Export stays one way, and the sha256 digest stays authoritative.

@@ -1,4 +1,4 @@
-// The compartment AUDIT contract (agent_docs/plan-workspace-agents.md phase 3).
+// The compartment AUDIT contract (agent_docs/architecture-workspace-agents.md phase 3).
 //
 //   deno task extensions
 //
