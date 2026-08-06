@@ -84,7 +84,8 @@ They share the deletion mechanics and nothing else.
   (`parent_not_found`). That is the retention contract read back: stamping a retention promises
   nothing will reference the record after it. Pinned in conformance, stated here.
 - The seal chain is over EVENTS and events carry their own `body_sha256`, so record GC breaks no
-  integrity property. Event GC (phase 3) is where the chain work lives.
+  integrity property. Event GC is where the chain work lives — see "Phase 3" below, including why
+  the obvious design (keep seals, drop events) measurably fails to change the asymptote.
 - One recordless `gc` event per sweep batch (kind, cutoff, count) — audit without per-record
   events, which would trade 1.1 KB of record for 200 bytes of event forever.
 - Idempotency rows sweep by `created_at` age (`idempotencyRetentionSeconds`, default 7 days); rows
@@ -124,15 +125,94 @@ walks whole registries, its litter grows per session not per write, and it stays
 live `gc` call restarts the amortized clock; a DRY one deliberately does not, or doctor's own
 backlog report would forever postpone the sweep it reports on.
 
+**What it costs, measured** (in-process, 2026-08-06; the per-write counter itself is unmeasurable):
+
+| the Nth write pays          | sqlite  | pglite |
+|-----------------------------|---------|--------|
+| trigger, nothing to sweep   | +0.36ms | +1.7ms |
+| trigger, full 256-row batch | +5.0ms  | +9.2ms |
+
+Amortized that is 0.4–9µs per write (<1% of a put); p50 and p99 are untouched, since 1-in-1000 is
+p99.9. Two shapes behind the numbers. On SQLite the batch delete is SYNCHRONOUS, so it blocks the
+whole process for its ~5ms — bounded by `AMORTIZED_BATCH` by construction, and far under the 48ms
+neighbour-wait the scan-budget chunking accepted; the pg dialects await, and their 9ms is mostly
+GIN maintenance for the deleted bodies. And a backlog never stacks onto one write: 256 rows per
+trigger means 100k expired records cost ~390 unlucky writes across 390k, or one `radia gc`, which
+is the intended split — the verb drains backlogs, the amortized pass keeps a space that keeps up.
+The idempotency age scan is the one un-indexed predicate, O(table) per trigger: +0.2ms (sqlite) /
++1ms (pglite) at 20k rows, left un-indexed on purpose — the table is self-bounding once swept, and
+a partial index would tax every keyed write to speed up noise. Revisit only if a profile shows it:
+the one-liner is an index on `created_at where created_at <> ''`.
+
 ## Phases
 
 1. **Retention sweep** — port method + both adapters, `core/gc.ts`, ops verb, doctor row, chat
    stamps `llm_chunk`/`progress` (24h) and `llm_call` (7d), boot-time sweep in the chat launcher.
 2. **Registry compaction** — `contentKey` on `KindDef`, keep-newest compactor, dead-run interest
    sweep, resurrection guard.
-3. **Event-log retention** — seal checkpointing, `verifyIntegrity` reporting "verified in full" vs
-   "attested by chain only", 410 `cursor_expired` activation. This is where the design weight is.
+3. **Event-log retention** — designed below ("Phase 3"), not built. This is where the design
+   weight is: a wrong deletion here loses the audit, not litter.
 4. **Reference-aware blob GC** — artifacts join retention.
+
+## Phase 3: event GC, analyzed (2026-08-06; not built)
+
+Facts verified against the code and a live space before any of this is trusted.
+
+**The consumers, and what each one's contract becomes.** Watch streams (SSE resume via
+`Last-Event-ID`; the 410 path is dormant at `watches.ts`, "returns with event-log GC"); ops reads
+(`GET /v0/ops/events`, `space_events`, `radia events` — which page from cursor `"0"` BY DESIGN);
+the seal chain (`event_seal`, one row per event, dense idx from 0); `verifyIntegrity` (re-fetches
+each sealed event and recomputes its hash); the notifier (`latestCursor`, head-only, unaffected);
+and record GC's own evidence promise, which this phase puts an expiry on.
+
+**The earlier sketch here was WRONG, by measurement.** "Keep the signed seal rows, drop event
+bodies" does not change the asymptote: an event row is 259 bytes all-in (measured, 3,120 kB over
+12,331) and a seal row is ~230 (two 64-hex hashes, a sig, ids, PK index). Per-event seals retained
+forever keep ~90% of the growth. The correct shape is ANCHOR-BASED: delete events AND seals below
+the horizon, keep the newest pre-horizon seal as the anchor — each seal is self-contained
+(idx, hash, prev_hash, sig), so the retained suffix verifies in full from the anchor forward. Dense
+idx buys truncation visibility for free: the anchor's idx states exactly how many links history
+lost, so the DEPTH of removal is provable even though content is not. This is also where the M2
+"signed, externally-anchored checkpoints" row converges with GC: one design, not two.
+
+**Honest GC is currently indistinguishable from tampering, and must not become so by weakening.**
+`verifyIntegrity` hard-fails on exactly the states event GC creates: a chain starting past idx 0 is
+`gap`, a swept sealed event is `missing_event` — both written as tamper verdicts, and they must
+STAY tamper verdicts for anything not honestly anchored. The mechanism: the event sweep emits a
+`gc` event naming the horizon, sealed into the retained suffix; verify cross-checks that the anchor
+matches the newest sealed horizon statement. Unforgeable without the seal key; a deeper truncation
+that deletes the statement leaves an anchor with no attestation, reportable as exactly that. On an
+UNSIGNED space none of this holds — event GC there makes truncation undetectable, extending the
+stated posture ("unsigned detects corruption, not a rewrite"), and the report must say so. Report
+grades: "N verified in full" / "M attested by anchor only (content swept)" / "begins at idx K".
+
+**410 is a prerequisite, not a follow-up.** `getEvents` is `where seq > ?`: a cursor below the
+horizon silently jumps the gap, so a watcher resuming after sleep misses swept events and never
+learns — the one failure worse than deletion. Both SDK halves are already built (TS and Python
+restart on 410); only the server-side horizon check is missing. And it is TWO behaviors: watch
+resumption gets the 410 (the client must re-sync by query), while the ops read CLAMPS and
+annotates ("log begins at X; N swept before it") — a unified 410 would permanently break every
+from-zero ops read on the first sweep.
+
+**Policy.** Events carry no `retention_until`; the horizon is `eventRetentionSeconds` (weeks, not
+hours — it must dwarf any reconnect gap) intersected with the sealed head: never sweep unsealed
+events, for the chain and because that range is the watch hot tail. Which collides with a live
+finding: a real space held 12,331 events and ZERO seals, because sealing is on-demand and only
+verify/doctor triggers it — so the sweep must seal first, as verify already does, or a
+never-doctored space sweeps nothing forever. Verb-only, never amortized: sealing on the write path
+is exactly the background work the on-demand rule refuses.
+
+**The evidence horizon.** This phase makes record GC's promise two-tiered: records go at the
+retention horizon leaving events as residue; the residue goes at the event horizon leaving only the
+anchor and its idx-count. The CLAUDE.md invariant, this file's own evidence section, and the
+OpenAPI text state the promise unqualified and need the two-horizon framing when this lands.
+Unaffected, verified: erasure detection reads `shred` RECORDS plus blob stat, never events.
+
+**Build order and the plants that matter.** (1) 410 + clamp — standalone, activates a dormant
+designed path, closes the silent-gap hazard before any deletion exists. (2) Anchored verify + the
+sealed horizon statement, with plants: a REAL mid-chain gap must still fail; a deleted horizon
+statement must be flagged. (3) The sweep itself: seal-first, window ∩ sealed-only, events and
+seals below horizon, anchor retained; plant: never-sweep-unsealed.
 
 ## Rejected
 

@@ -2221,7 +2221,9 @@ export class Space {
    * The lazy-lease-expiry shape, deliberately: no timer (an idle space runs nothing and does not
    * grow), and the cost lands on the principal generating the litter, which is the fair place for
    * it. Awaited rather than fire-and-forget, so the Nth writer pays a bounded few milliseconds
-   * (one indexed batch) and tests are deterministic; the guard keeps a slow sweep from stacking.
+   * and tests are deterministic; the guard keeps a slow sweep from stacking. Measured (plan-gc.md
+   * carries the table): an empty trigger costs 0.36ms (sqlite) / 1.7ms (pglite), a full 256-row
+   * batch 5–9ms, which amortizes to under 1% of a put and lands at p99.9, not p99.
    * Retention only — compaction walks whole registries and stays with the explicit verb, because
    * registry litter grows per session, not per write.
    *
