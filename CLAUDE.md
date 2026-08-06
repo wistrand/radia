@@ -70,8 +70,10 @@ content, not by addressing.
 | `notes/radia-runtime-outline-v0.3.md`   | origin design outline; provenance, not maintained doc      |
 
 Build/run: `deno task dev` (no build step; bare `--db` persists under `./.radia`, `--db <path>` to a
-SQLite file or PGlite dir of your choosing, in-memory otherwise), `deno task conformance` (both
-adapters), `deno task extensions` (the extension contract), `deno task workspace-git` (a workspace as a git repo), `deno task chat-test` (the chat example, no API key), `deno task bench` (hotspots + scaling), `deno task demo`
+SQLite file or PGlite dir of your choosing, in-memory otherwise), `deno task quick` (the
+structural guards: layering, docs, openapi, console, defaults, registry, HTTP boundary, flows,
+tree — ~1s, and what a doc/page/flag/route/literal edit needs; nothing under `agent_docs/` is
+covered by any test), `deno task conformance` (both adapters, and what any `src/` change takes), `deno task extensions` (the extension contract), `deno task workspace-git` (a workspace as a git repo), `deno task chat-test` (the chat example, no API key), `deno task bench` (hotspots + scaling), `deno task demo`
 (end-to-end agent demo over HTTP), `deno task compile` (single binary), `deno task release`
 (per-OS binaries + npm/pip launcher packages). All of M0 is built;
 [agent_docs/plan-m0-implementation.md](agent_docs/plan-m0-implementation.md) holds the
@@ -101,6 +103,7 @@ key), [examples/stress/](examples/stress/) (load, for the Space tab), [examples/
 - [agent_docs/design-storage.md](agent_docs/design-storage.md): Postgres mapping, deployment modes, distribution strategy (§10).
 - [agent_docs/design-execution.md](agent_docs/design-execution.md): running model-written code in more than one language. The language question is an isolation question: Deno's permission flags ARE the sandbox today, and nothing about that generalises. A sandbox is a **record**, matched by pattern, so a grant binds the property that matters rather than a language name standing in for it; selection follows the `llm_call` tier-router precedent. Carries the measured finding that bwrap-over-host-`/usr` is faster than the Deno jail and three orders of magnitude weaker on filesystem. Read before adding a runner.
 - [agent_docs/plan-workspaces.md](agent_docs/plan-workspaces.md): the build sequence for workspaces + execution, ordered by MODEL RISK rather than feature value. Phases 0-5 need no new isolation mechanism; each phase answers a question. Start here before touching either design doc.
+- [agent_docs/plan-workspace-agents.md](agent_docs/plan-workspace-agents.md): the arc's terminal state, DESIGNED and unbuilt: a workspace digest as a principal's code (a `binding` record plus a generic host that claims under the hosted agent's OWN run token), and promotion to prod as a pattern-scoped grant rotation pinned to that digest, with rollback and kill as record writes. Its founding use case is LLM-written code over protected data. It opens with a CLAIM LEDGER of the promise-vs-enforcement gaps its review found. Two rules from it are worth knowing before designing anything similar: contain a class of data with a dedicated KIND plus pattern-scoped grants (default-deny by construction, refused on every write path by `bodyMatchesGrant`), never with a taint label; and containment is a COMPARTMENT that agents join by grant, never a human-only gate, with crossing out reserved to a principal deliberately granted both sides. Read before adding a taint label, before treating `scope.taint` as a default, or before building anything that runs model-written code as a named principal.
 - [agent_docs/design-workspaces.md](agent_docs/design-workspaces.md): multi-file working trees for code generation, and the relationship to git. Decided (store Radia-native, shape git-compatible, export git-real, sha256 authoritative, export only). BUILT: manifests, materialisation, write-back, fork detection, serving a tree over one path capability, git export, and `git clone` over HTTP (`radia git-serve`). Read before proposing git as a storage format, or push.
 
 Research and planning:

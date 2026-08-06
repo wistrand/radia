@@ -23,10 +23,19 @@ flowchart LR
 ```
 
 ```bash
+deno task quick                           # the structural guards only        (102 tests, ~1s)
 deno task conformance                     # sqlite + pglite + the blob port   (554 tests, ~25s)
 scripts/pg-conformance.sh                 # + a live Postgres
 RADIA_PG_URL=postgres://… scripts/pg-conformance.sh   # against your own server
 ```
+
+**`quick` is for the edits that cannot break a port contract**: a doc, a page, a flag, a route, a
+literal. It runs the standalone files that boot no PGlite, bind no socket and wait on no timer,
+which is the whole rule for what belongs in it, so a new test file joins the list only if it meets
+all three. It is 18x faster than the full run and it is not a substitute: anything touching `src/`
+takes `conformance`. Nothing at all is needed for a change under `agent_docs/`, which no test
+reads (`docs/` is the published site and IS checked, by `docs.test.ts`, against `cli.ts` and the
+npm exports map).
 
 Without `RADIA_PG_URL`, `pg-conformance.sh` starts a throwaway Docker Postgres and removes it
 afterwards, on a host port docker picks (it used to hardcode 55432, which is inside Linux's

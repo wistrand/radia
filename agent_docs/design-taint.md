@@ -112,6 +112,13 @@ real, but the dangerous path is what the model RETRIEVES, which `file`, `net` an
 
 Workspaces need no new label: a materialised file carries `file`, and the run's output inherits it.
 
+**Deliberately absent: a label for a class of DATA.** A `protected` label was proposed for a
+pipeline over restricted data and rejected: a dedicated kind plus pattern-scoped grants contains
+it better, because `bodyMatchesGrant` refuses a scoped agent's write outside its compartment on
+every path, while a label bars claims but not reads, is off unless every applicable grant carries
+an allowlist, and unions only the DECLARED parents. A label answers what a record TOUCHED; a
+grant decides where it may go. See [plan-workspace-agents.md](plan-workspace-agents.md) D1.
+
 ### What "tainted" now means
 
 Narrower, and more honest. It stops meaning "derived from anything untrusted", which was true of
@@ -155,9 +162,15 @@ scope: {taint: "file"}          may carry file, nothing else bars the claim
 ```
 
 This is the one non-obvious choice here, and it is fail-closed by construction. If a fourth label is
-introduced next year, every existing grant automatically bars it, because it is not on their
-allowlist. A blocklist would silently permit it, and the grant would keep looking correct while
-admitting a class of data nobody considered when it was written.
+introduced next year, every existing grant that CARRIES an allowlist automatically bars it, because
+it is not on that list. A blocklist would silently permit it, and the grant would keep looking
+correct while admitting a class of data nobody considered when it was written.
+
+**True of SCOPED grants only, which the union rule below makes precise.** A grant stating no
+allowlist turns the barrier off entirely (`Space.barrierFrom` returns undefined unless every
+applicable grant carries one). That is fine for what labels are for, since a policy that cares
+about `file` writes the scope that says so, and it is why a label cannot contain a class of data:
+there the default must hold for grants nobody revisited.
 
 It also composes with the union rule properly. Grants union, so the barrier binds only when EVERY
 applicable grant carries one (already true today). With an allowlist, two grants with different
