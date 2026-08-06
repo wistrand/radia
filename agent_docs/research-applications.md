@@ -259,12 +259,13 @@ Note that the first item outranks the tamper-evident log, which is the intuitive
    reads tainted content and writes a fresh record without naming the parent produces an untainted
    record. Only `ack` force-prepends the leased record. Containment holds for lease-mediated work,
    not arbitrary writes.
-3. **The execution log is incomplete and operator-only.** Saved-procedure invocations carry only
+3. **The execution log is incomplete and gated.** Saved-procedure invocations carry only
    `{tool, args}`, with no code in the body, so a `{kind:tool_call, tool:run_javascript}` query misses
    them.
    The executed text is synthesized (the worker prepends an `args` line), so what ran is never
    exactly what is stored. The scoped session holds no `query` grant on `tool_call`, so the audit
-   query is operator-only.
+   query needs an operator, a `tool_call` grant, or (since ops tiers, 2026-08-06) the `observe`
+   ops power through the ops plane.
 4. **Clearance cannot lapse.** `GrantDef` has no TTL field and there is no sweeper; expiry is
    evaluated lazily at claim/resolve time. Time-based lapse waits on durable timers (M2). The
    workaround that works today is a `retired: true` successor.

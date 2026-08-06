@@ -162,9 +162,10 @@ flows down **data parents** (taint), and neither leaks into the other.
 One of these is enforcement and the rest are vocabulary, which the list used to obscure.
 
 **Reserved by the runtime** (`RESERVED_KINDS`, `src/core/kinds.ts`): `kind_def`, `grant`, `signal`,
-`agent_definition`, `agent_run`, `artifact`, `interest`, `shred`. Of those, `grant`, `signal`,
-`agent_*` and `shred` are additionally WRITE-PROTECTED, meaning an operator or the supervisor only,
-whatever grants say.
+`agent_definition`, `agent_run`, `artifact`, `interest`, `shred`, `ops_grant`. Of those, `grant`,
+`signal`, `agent_*`, `shred` and `ops_grant` are additionally WRITE-PROTECTED, meaning an operator
+only, whatever grants say — with one carve-out: the supervisor may put `grant`/`signal`, its entire
+remaining privilege ([plan-ops-tiers.md](plan-ops-tiers.md)).
 
 **Suggested names, which the runtime has never heard of:** `task` · `fact` / `hypothesis` ·
 `request` / `bid` / `award` (see [design-marketplace.md](design-marketplace.md)) · `result`. These
@@ -317,7 +318,7 @@ committed by mistake, a retention deadline. The collision is resolved at ONE bou
 boundary is the one that already existed.
 
 **A payload is out of line, so it can be destroyed. A body is not, so it cannot.**
-`Space.shredArtifact` (operator-only, `POST /v0/ops/records/{id}/shred`) deletes the blob and writes
+`Space.shredArtifact` (gated by the `purge` ops power, `POST /v0/ops/records/{id}/shred`) deletes the blob and writes
 a `shred` record. What survives: the artifact record, its id, its `digest`, its lineage, and every
 event. What is gone: the bytes. Because the digest is over PLAINTEXT, the content address stays
 valid after the payload is destroyed, so the chain still verifies and the space can still say "an

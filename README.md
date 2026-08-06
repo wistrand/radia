@@ -146,8 +146,10 @@ Tables are created on first connect (no migration step). `docker compose down` k
 **Auth is required by default.** Every request needs `Authorization: Bearer <token>`; without one
 it is `401`. `GET /` (the console) and `GET /v0/health` stay public so the console can bootstrap and
 a client can tell "no space here" from "not allowed". `radia dev` prints an operator token at
-startup and writes it to your credential file, so the CLI, the MCP adapter and the bundled examples
-authenticate with no extra step.
+startup and writes it to your credential file, so the CLI and the bundled examples authenticate
+with no extra step. It also provisions a revocable OBSERVER credential (read-only ops access),
+which `radia mcp` and the CLI's read-only verbs use by default: a model plugged in over MCP can
+inspect the space and cannot write grants, coordinate ungranted, or destroy anything.
 
 The server also binds loopback (`127.0.0.1`) by default. To expose it, pass `--host 0.0.0.0`.
 

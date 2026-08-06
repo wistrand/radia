@@ -138,7 +138,8 @@ The one place the trade is stated whole; the sections below carry the mechanics.
 ## Surface
 
 On demand, never a timer — the lesson `Notifier`, `sweepWatches` and sealing already carry.
-`POST /v0/ops/gc` (operator-only, ops plane, so no frozen-contract change) runs sweep + compaction
+`POST /v0/ops/gc` (the `sweep` ops power live, `observe` for dryRun; ops plane, so no
+frozen-contract change) runs sweep + compaction
 and reports per-kind counts; `radia gc` wraps it; `radia doctor` reports the sweepable backlog so
 the operator learns there is something to run. Batched keyset deletes, per-batch transactions,
 idempotent, safe to run concurrently (a lost race deletes zero rows).

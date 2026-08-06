@@ -766,8 +766,10 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   authority" also mean "kill the work in flight", which have different blast radii and belong to
   different moments in an incident. Revoke first, then stop the runs that matter.
 - **Privilege is a NAMED SET, not a name prefix, and `human:` is a namespace.** `isPrivileged`
-  (`src/core/space.ts`) checks `ctx.operators` (default `["human:local"]`), the supervisor, and the
-  space's own identity. It used to treat every `human:*` as an operator, which meant a space could
+  (`src/core/space.ts`) checks `ctx.operators` (default `["human:local"]`) and the
+  space's own identity — the supervisor is NOT in it (demoted, plan-ops-tiers.md phase 5: it keeps
+  exactly `grant`/`signal` puts as a carve-out in `authorize` and is otherwise ordinary, which is
+  also what made it mintable). It used to treat every `human:*` as an operator, which meant a space could
   not have ordinary people on it: a definition principal had to be `agent:`, so the only human
   credential obtainable was god-mode, and a console holding one held everything. `radia login
   human:alice` and the console's Auth tab depend on this being a set. Two consequences that read as
@@ -955,7 +957,8 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   Observed: a session granted precisely what it requested retried an unrelated failing call, saw no
   change, and told its user the request must still be pending. The self-read is checked BEFORE the
   plane's gate (`asksAboutSelf` in `http.ts`, matching the principal or its grant subject, since a
-  run token asking about its agent asks about itself); anyone else's stays operator-only.
+  run token asking about its agent asks about itself); anyone else's needs the `observe` ops power
+  or an operator.
 - **An escalation protocol that cannot express WHOSE records are needed keeps producing grants that
   authorize nothing.** `request_grant` carried kind and operations only, so an assistant needing to
   read a registry written by others said it in prose while the human answered a narrower prompt:

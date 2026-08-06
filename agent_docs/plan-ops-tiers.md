@@ -131,7 +131,6 @@ surface an operator would check.
 - **Additive semantics**: `ops_grant` entries union like grants; retiring one entry must not
   resurrect an older same-content one (the `activeSet` tombstone rule; a planted regression, as
   compaction's was).
-- **Pins that move**: `defaults.test.ts` (the unconfigured posture stays "operators only"),
-  `http.test.ts` gate cases, `suites/selfscope.ts`, `suites/auth.ts`, the OpenAPI ops-plane
-  descriptions that currently say "operator-only" per endpoint, and `docs/` where the console
-  copy says an ops token means operator.
+- **Pins that move** (all moved with the build): `defaults.test.ts`, `http.test.ts` gate cases,
+  `suites/selfscope.ts`, `suites/auth.ts`, the OpenAPI ops-plane descriptions (now power-worded),
+  and the docs site's authorization page ("Running the space is not one job").

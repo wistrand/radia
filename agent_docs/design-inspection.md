@@ -108,7 +108,8 @@ It is a linear pass over the interests targeting that kind, O(interests on the k
 while interests are per-worker. Never assume it holds if interests ever become per-record; it is not
 the deferred inverted-index work.
 
-`POST /v0/ops/dry-run` is operator-gated and deliberately absent from the self-scoped read
+`POST /v0/ops/dry-run` is gated by the `observe` ops power (operators hold it implicitly) and
+deliberately absent from the self-scoped read
 allowlist: it reports what every principal is listening for, which is the routing table rather than
 a self-scoped fact. A principal reading its OWN interests uses an ordinary self-scoped query on the
 kind.

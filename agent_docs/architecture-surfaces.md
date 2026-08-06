@@ -245,6 +245,12 @@ means "bad credential".
 `radia mcp` serves the space to an MCP-capable harness over stdio: newline-delimited JSON-RPC 2.0,
 15 tools. `server.ts` is the transport and dispatch; `tools.ts` is the tool definitions.
 
+**It runs as the OBSERVER by default** ([plan-ops-tiers.md](plan-ops-tiers.md) phase 5): the
+stored `#observer` credential, holding the `observe` ops power and no coordination grants, so the
+model inspects the space and a `space_put`/`space_take` 403s until an operator grants kinds.
+`RADIA_TOKEN` overrides for a caller that wants a differently-scoped session; the operator token
+is only the fallback for a credentials file written before observers existed.
+
 Two properties carry the design:
 
 **Credentials stay outside the model context.** The adapter attaches the token itself. None

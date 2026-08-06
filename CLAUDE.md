@@ -184,8 +184,8 @@ a stopped run's token kept resolving after a restart. So:
   Every grant bug so far was a promise that did not match the enforcement; this is how you check
   before believing. **Any principal may read its OWN permissions**, including one with no grants at
   all. That is the caller most likely to need the answer, and gating it behind the ops plane left
-  an agent unable to tell an approved grant from a pending one. Reading anyone else's stays
-  operator-only.
+  an agent unable to tell an approved grant from a pending one. Reading anyone else's needs the
+  `observe` ops power or an operator.
 - State that is high-churn AND security-critical (credentials) is a poor fit for this shape. Prefer
   bounded relevance (only what can still be presented) over replaying history.
 
@@ -283,7 +283,8 @@ live at the top of the relevant `agent_docs/` file, not here.
   the content address stays valid. A record BODY has no erasure path, because bodies must stay
   plaintext JSON for matching. So the existing "artifact bytes never travel inside a record" rule is
   also the erasure boundary: extend it from "too large for a body" to "erasable, whatever its size".
-  Erasure is by CONTENT (identical payloads are one blob) and operator-only. **It protects
+  Erasure is by CONTENT (identical payloads are one blob) and gated: an operator, or the `purge`
+  ops power (plan-ops-tiers.md). **It protects
   HIGH-ENTROPY payloads only.** The plaintext sha256 stays in the artifact record's body, which has
   no erasure path, so anyone holding a candidate can hash it and confirm the content was here: a
   destroyed document is gone in every practical sense, a destroyed password or short piece of PII is

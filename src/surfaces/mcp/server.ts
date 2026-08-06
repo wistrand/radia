@@ -3,9 +3,10 @@
 //
 // Two properties the plan calls for, and why they matter:
 //
-// 1. **Credentials stay outside the model context.** The adapter resolves a token from the
-//    environment or the file `radia dev` provisioned (src/credentials.ts) and attaches it to
-//    every request itself. No token appears in a tool schema, a tool result, or an error, so a
+// 1. **Credentials stay outside the model context.** The adapter resolves a credential itself
+//    (src/credentials.ts) and attaches it to every request: the OBSERVER by default (ops reads
+//    only, plan-ops-tiers.md), `RADIA_TOKEN` as the explicit override, the operator token only
+//    as a legacy fallback. No token appears in a tool schema, a tool result, or an error, so a
 //    model driving this cannot read, log, or leak the credential it is acting under.
 //
 // 2. **Leases heartbeat internally.** `space_take` hands the model an opaque `claimId`, never

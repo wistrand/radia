@@ -17,9 +17,10 @@ lease, the dimension the content-routing query language deliberately omits) is q
 *composition* of those envelope queries (counts, dead-letters, expired-but-stuck leases, and
 stale-available records), and **remediation** (`adminTransition`,
 `POST /v0/ops/records/{id}/{reclaim|dead-letter|requeue}`) can act on them. The taint-clearing
-**declassify** (`POST /v0/ops/records/{id}/declassify`, operator-gated; see
-[design-auth.md](design-auth.md)) is the other operator action on this plane. All `/v0/ops/*` is
-grant-gated to operator principals (enforced). The **hash-chained log is built** (M1: `src/core/seal.ts`, `GET /v0/ops/integrity`); external
+**declassify** (`POST /v0/ops/records/{id}/declassify`, gated by the `declassify` ops power; see
+[design-auth.md](design-auth.md)) is the other interrupt on this plane. All `/v0/ops/*` is
+power-gated (enforced): operators hold every power, anyone else holds what its `ops_grant`
+records assign ([plan-ops-tiers.md](plan-ops-tiers.md)). The **hash-chained log is built** (M1: `src/core/seal.ts`, `GET /v0/ops/integrity`); external
 anchoring of checkpoints stays M2. **Event-log retention is built** (an M2 slice, 2026-08-06):
 opt-in `eventRetentionSeconds` truncates the log to an attested anchor via the `gc` verb, so audit
 and re-execution reach the HORIZON, not genesis, on a space that enables it; won/lost is stated in

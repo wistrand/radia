@@ -343,7 +343,35 @@ summary    put                 own records only</code></pre>
       Agents can ask this about themselves, which is more useful than it sounds. An agent that has
       just been refused something can find out whether it is waiting on a human to approve a request
       or whether the approval already happened and it should try again. Asking about anyone else
-      needs operator access.
+      needs the observe power below, or an operator.
+    </p>
+  </div>
+</section>
+
+<section id="powers">
+  <div class="container">
+    <h2>Running the space is not one job</h2>
+    <p>
+      There is a second plane of verbs for whoever operates the space: read everything, unstick
+      work, run garbage collection, clear a data-handling flag, destroy a payload. For a while,
+      holding any of that meant holding all of it, plus the right to mint identities and write
+      permissions. One credential that a dashboard, an auditor and a break-glass incident all had
+      to share.
+    </p>
+    <p>
+      These are now separate powers, and a power is granted the way everything else here is
+      granted: as a record, written by an operator, revocable, and visible in the same
+      permissions answer above. <em>observe</em> reads everything and
+      touches nothing. <em>remediate</em> unsticks work. <em>sweep</em> runs garbage collection.
+      <em>declassify</em> clears the labels from the section on following data. <em>purge</em>
+      destroys payloads. Two things are deliberately never powers: writing permissions themselves,
+      and acting on records without a grant. Whoever can hand out authority holds every other
+      power one step later, so that stays with the space's named operators.
+    </p>
+    <p>
+      The model you plug in over MCP holds the observe power by default and nothing else. It can
+      look at anything, change nothing, and the credential behind it can be revoked like any
+      agent's.
     </p>
   </div>
 </section>

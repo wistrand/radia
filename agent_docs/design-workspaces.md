@@ -137,7 +137,8 @@ negotiation) and is not needed for export.
   audit story must withstand. Git's SHA-256 mode exists and almost nothing interoperates with it,
   which forfeits the only reason to use the format.
 - **Mutability.** `gc` deletes unreachable objects, rebase rewrites history, refs move. Records are
-  immutable after commit and the one erasure path is deliberate, recorded and operator-only. A store
+  immutable after commit and the one erasure path is deliberate, recorded and gated (the `purge`
+  ops power). A store
   whose history can be rewritten cannot back that.
 
 **BUILT**, as described: `extensions/ts/git.ts` (`exportWorkspaceGit`), run with
