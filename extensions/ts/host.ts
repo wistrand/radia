@@ -41,8 +41,14 @@ export interface Binding {
   workspaceDigest: string;
   /** Module path inside the tree, default-exporting `(record) => result`. */
   entrypoint: string;
-  /** Which sandbox the tree runs in. Reserved for the runner selection design-execution.md
-   *  describes; the default invoker below uses the Deno jail. */
+  /**
+   * The PROPERTIES this code needs from its jail, matched against `sandbox` records:
+   * `{language: "python", network: false}`. Never an interpreter name, per
+   * design-execution.md: a policy binds the property that matters rather than a language
+   * standing in for it. Resolved by `resolveSandbox` (broker.ts), which refuses rather than
+   * guessing when nothing declared satisfies it. Absent means the Deno jail, which is the
+   * posture with no external dependency.
+   */
   sandboxPattern?: Record<string, unknown>;
 }
 
@@ -187,7 +193,9 @@ export function sandboxInvoker(reader: RadiaClient, opts: { timeoutMs?: number; 
         `const out = await mod.default(record);\n` +
         `console.log("\\u0001radia:" + JSON.stringify(out ?? null));\n`;
       const run = await runCode(boot, { cwd: root, readRoots: [root], timeoutMs: opts.timeoutMs ?? 10_000 });
-      if (!run.ok) throw new Error(`entrypoint failed (exit ${run.exitCode}): ${run.stderr.slice(0, 400)}`);
+      // The TAIL of stderr: the useful line of a stack trace is its last, and a program that
+      // logged before it died pushes the cause off the front.
+      if (!run.ok) throw new Error(`entrypoint failed (exit ${run.exitCode}): ${run.stderr.slice(-400)}`);
       // A marker, not "the last line": an entrypoint that logs is normal, and picking its chatter
       // as the result is the kind of bug that only shows up on the day something logs.
       const line = run.stdout.split("\n").find((l) => l.startsWith("radia:"));
@@ -266,7 +274,10 @@ export class WorkspaceHost {
         // expiry: at-least-once is the contract, and a crashed entrypoint is exactly the retry
         // case it exists for.
         await client.nack(claimed.lease, { backoffSeconds: 5 }).catch(() => {});
-        out.push({ agent: binding.agent, status: "failed", recordId: claimed.record.id, error: String(e).slice(0, 300) });
+        // Roomy enough to carry a diagnosis the invoker already bounded. At 300 it silently ate
+        // the stderr tail the broker had gone to the trouble of keeping: two caps, opposite ends,
+        // and the cause lost between them.
+        out.push({ agent: binding.agent, status: "failed", recordId: claimed.record.id, error: String(e).slice(0, 1200) });
       }
     }
     return out;

@@ -1163,6 +1163,35 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   permissions and talks over pipes. The sandbox never gets a credential "so code can query" (the
   worker fetches and pipes data in), and that emptiness is what makes lease RETRY sound: a
   permissionless child has no side effect to double.
+- **A stdio protocol shared with code that logs needs a LEADING newline, not just a marker.**
+  Verified against `extensions/ts/broker.ts` before it was fixed: an entrypoint writing without a
+  trailing newline (`print(..., end="")`, a progress bar, a library flushing mid-line) prepends
+  itself to the next frame, which no longer starts its line, is read as chatter, and leaves the
+  jail blocked on an answer that never comes until a timeout naming the wrong cause. Three parts,
+  all cheap: write `"\n"` before every frame, lead the marker with a control character (`\x01`,
+  which ordinary logging does not emit), and treat a marker found MID-line as definite
+  interleaving rather than something to skip. Cap the buffered output too, or code printing in a
+  loop takes the host down with it. A dedicated fd would end the sharing, but `Deno.Command`
+  exposes no portable extra one, so it would push the transport into the per-language shim.
+- **A frame channel from a jail is UNTRUSTED, and should be built so that costs nothing.** Jailed
+  code can forge any frame; it gains nothing when the labels, the compartment stamp, the forced
+  parent, the idempotency key and the agent's grants are all applied HOST-side. Check this
+  property holds before adding a field the jail gets to state.
+- **Two truncations at opposite ends destroy the diagnosis between them.** The broker keeps the
+  TAIL of stderr (a stack trace's last line is the useful one); `WorkspaceHost` then kept the first
+  300 characters of the failure, so a program that logged before it died reported only its
+  chatter. Both caps were individually defensible and together they threw away every cause. Pick
+  ONE end and one place: bound it where the text is produced, and let the reporting cap be a
+  backstop wide enough to pass a bounded message through. The same rule applies to
+  `runCode`'s stderr, which had the same head-first slice.
+- **Cap stderr as well as stdout, and keep DRAINING past the cap.** A flood guard on one stream is
+  no guard: the other one buffers just as unboundedly. And a reader that stops at the cap blocks
+  the child on a full pipe instead of killing it, which converts a flood into a hang.
+- **An exit code survives a kill only if the process already exited** (verified: `kill` after a
+  clean exit still reports the real code, so only a live process loses it to the signal). A host
+  that SIGKILLs its child at teardown therefore has to wait briefly for a natural exit before it
+  can report the code at all. Worth doing: a result frame followed by a non-zero exit is code
+  contradicting itself, and it used to ack clean.
 - **Read access for executed code is granted separately from the file tools' roots.** Both bound
   "which files", but a tool returns one file per call, visibly, while a program can fold a whole
   tree into one line of output — so widening the tools (`RADIA_CHAT_DIRS`) must not widen the

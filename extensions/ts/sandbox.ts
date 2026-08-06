@@ -303,8 +303,14 @@ const BWRAP_BASE = [
 ];
 
 /** Run under bubblewrap. Same contract as `runCode`: source on stdin, output captured and capped. */
-export async function runBwrap(source: string, opts: BwrapOptions): Promise<RunResult> {
-  const { timeoutMs, maxOutputBytes } = { ...DEFAULTS, ...opts };
+/**
+ * The bubblewrap jail's arguments, in ONE place, for the same reason `jailArgs` exists: `runBwrap`
+ * feeds a program through stdin, the BROKER cannot (stdin is its response channel) and runs one
+ * from a file instead. A second copy of these binds would be a second security boundary, and this
+ * backend is the one that is safe by PRESENCE: forget `--unshare-net` and the jail is silently
+ * open, which is exactly what a drifted copy would do.
+ */
+export function bwrapArgs(opts: BwrapOptions): string[] {
   const binds = (opts.bind ?? ["/usr", "/lib", "/lib64", "/bin", "/etc/alternatives"])
     .flatMap((b) => ["--ro-bind-try", b, b]);
   const roots = (opts.readRoots ?? []).flatMap((r) => ["--ro-bind-try", r, r]);
@@ -313,7 +319,12 @@ export async function runBwrap(source: string, opts: BwrapOptions): Promise<RunR
   const args = [...base, ...binds, ...roots, ...writable];
   if (opts.cwd) args.push("--chdir", opts.cwd);
   args.push("--", ...opts.command);
-  return await spawnCaptured("bwrap", args, source, timeoutMs, maxOutputBytes, opts.cwd);
+  return args;
+}
+
+export async function runBwrap(source: string, opts: BwrapOptions): Promise<RunResult> {
+  const { timeoutMs, maxOutputBytes } = { ...DEFAULTS, ...opts };
+  return await spawnCaptured("bwrap", bwrapArgs(opts), source, timeoutMs, maxOutputBytes, opts.cwd);
 }
 
 /** The jail `runBwrap` builds, described honestly: the binds a program needs to exist ARE its

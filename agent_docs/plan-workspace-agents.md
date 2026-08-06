@@ -292,6 +292,48 @@ put does more than preserve labels: the runtime then computes `foreign` itself, 
 output is derived from a record another principal wrote. Lineage the code cannot omit is what
 lets the space label on its own.
 
+**5a. Any language, any backend, and the two are INDEPENDENT.** The first cut ran JavaScript in
+the Deno jail and nothing else, which reads as a protocol limit and is not one: the host side
+never learns which language asked. A language now contributes only a SHIM (`RUNTIMES` in
+`broker.ts`, ~30 lines each for JavaScript and Python); the jail is chosen separately, from the
+`sandbox` RECORD a binding's `sandboxPattern` resolves to (`resolveSandbox`). Deno is safe by
+ABSENCE of flags, bubblewrap by PRESENCE of them and runs any interpreter, so "python means
+bubblewrap" never becomes a rule nobody wrote down. EVERY BACKEND NEEDS ITS OWN ESCAPE PROBE: the
+Deno probe proves nothing about bwrap, one forgotten `--unshare-all` from an open jail. Both are
+in the contract and both were proved against a plant.
+
+**5b. Sharing stdout with the protocol, done so it survives an entrypoint that logs.** An
+entrypoint that prints is NORMAL, and the MCP-stdio experience is that code writes to stdio by
+accident constantly. Reproduced against this code before fixing it: output with no trailing
+newline (`print(..., end="")`, a progress bar) prepends itself to the next frame, which then no
+longer starts its line, is read as chatter, and the jail blocks on an answer that never comes
+until a timeout naming the wrong cause. Three changes, each with a contract case: every frame is
+written with a LEADING newline; the markers begin with a control character (`\x01`), which
+ordinary logging does not emit; and a marker found MID-line is diagnosed as definite interleaving
+instead of ignored. Plus a 4MB output cap, since untrusted code printing in a loop must not take
+the host with it. Plants: dropping the leading newline fails the partial-write case, and dropping
+the cap turns the flood case into that same mystery 15s timeout.
+The channel is UNTRUSTED and nothing depends on otherwise. Jailed code can print a forged frame
+and gains nothing: the stamp, the labels, the forced parent, the idempotency key and the agent's
+grants are all applied host-side, so a forged call is exactly as constrained as a real one. A
+dedicated fd would end the sharing and is the honest ideal, declined because `Command` exposes no
+portable extra fd, which would push the transport back into the per-language shim.
+
+**5c. The other half of the stream: stderr and exit codes.** Asked directly, and neither was
+really handled. Stderr was buffered UNBOUNDED, so the stdout cap guarded one stream while the
+other stayed open, and it reached exactly one failure message: the empty-result one. Timeout,
+channel corruption and flood all reported the symptom with the traceback discarded, on the paths
+that need a diagnosis most. The exit code was never read at all, so a result frame followed by a
+non-zero exit acked clean. Now: stderr is capped at 64KB kept from the TAIL (a stack trace's last
+line is the useful one) and drained past the cap, since a reader that stops blocks the child on a
+full pipe instead of killing it; every failure carries it; and the exit code is reported after a
+250ms grace for a natural exit, which is needed because a kill only erases the code of a process
+still running. A result plus a failing exit is now a failure, and retry is safe since the writes
+it already made replay on their ordinal key.
+The bug found on the way is the one worth remembering: `WorkspaceHost` truncated the failure to
+its FIRST 300 characters, cutting off the tail the broker had gone to trouble to keep. Two caps,
+both defensible alone, opposite ends, no cause left between them.
+
 **6. Warm pools per promoted digest. BUILT (2026-08-06).**
 Shipped: `treeCache` in `extensions/ts/host.ts`, used by both invokers, keyed by digest and
 caching the PROMISE so two claims for one digest share a materialisation rather than racing to

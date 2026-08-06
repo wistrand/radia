@@ -1,8 +1,9 @@
 # Running model-written code, in more than one language (design)
 
 Why the language question is really an isolation question, how a space gains a language, and what
-stops being true when it does. Nothing here is built beyond the JS runner that exists today
-(`examples/chat/workers/exec.ts` dispatches; `extensions/ts/sandbox.ts` is the jail).
+stops being true when it does. The single-file path is built (`examples/chat/workers/exec.ts`
+dispatches; `extensions/ts/sandbox.ts` is the jail), and so is the workspace path
+(`extensions/ts/broker.ts`).
 
 > **Status: BUILT for TWO backends** (Deno permissions and bubblewrap), with the operator declaring,
 > the worker refusing to serve a jail whose claims do not hold, and the probe testing each backend
@@ -322,6 +323,14 @@ It also sharpens the dependency question in
 for Python, so a second language moves vendored-dependencies-as-artifacts from an option toward a
 requirement. The upside stands: a vendored dependency set is part of the audited content, and
 "exactly what was in scope when this ran" is a question no package manager answers.
+
+**BUILT, and the entrypoint declaration turned out to be two independent choices, not one.** A
+`binding` record names the workspace digest and entrypoint; the LANGUAGE is a shim in `RUNTIMES`
+(`extensions/ts/broker.ts`), and the BACKEND comes from the `sandbox` record the binding's
+`sandboxPattern` resolves to. So `{runner, entrypoint}` would have been wrong: `runner` collapses
+"which interpreter" into "which jail", and a Python entrypoint under the Deno jail or a JS one
+under bwrap are both legitimate. What the host never learns is which language asked, which is why
+adding one is ~30 lines and no change to the frame protocol.
 
 ## Settled by the arguments above
 
