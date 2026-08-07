@@ -21,7 +21,7 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../../examples/operator.ts";
 import { BINDING, declareBinding, sandboxInvoker, WorkspaceHost } from "../ts/host.ts";
 import { declareExecRequest, EXEC_REQUEST, promote } from "../ts/promotion.ts";
-import { writeWorkspace } from "../ts/workspace.ts";
+import { materialize, readWorkspace, writeWorkspace } from "../ts/workspace.ts";
 
 const PORT = 7821;
 const url = `http://127.0.0.1:${PORT}`;
@@ -190,5 +190,149 @@ Deno.test("[host] the default invoker runs the workspace's entrypoint in the jai
     assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
     const results = await operator.query({ kind: "exec_result" }, 10, { dir: "desc" });
     assertEquals((results[0].body as { tag: string }).tag, "ran:seven", "the entrypoint's return value is the result");
+  });
+});
+
+Deno.test("[host] a run's OUTPUT FILES land in a workspace, binary included", async () => {
+  await withSpace(async ({ operator, credential }) => {
+    // Why files rather than a payload in the result body: bytes never travel inside a record, and a
+    // file is binary, named, versioned and erasable for free. The entrypoint writes to its CWD and
+    // needs to know nothing about workspaces.
+    const ws = await writeWorkspace(operator, {
+      name: "plotter",
+      owner: "human:alice",
+      files: {
+        "main.ts": `export default async (record) => {
+          await Deno.writeFile("chart.png", new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]));
+          await Deno.writeTextFile("notes.txt", "job " + record.body.job);
+          return { kind: "exec_result", body: { tag: "wrote" } };
+        };\n`,
+      },
+    });
+    const digest = ws.treeDigest;
+    const credentials = { "agent:plotter": await credential("agent:plotter") };
+    await promote(operator, { digest, tier: "prod", pins: [{ principal: "agent:plotter", operations: ["take"] }] });
+    await operator.grant("agent:plotter", "exec_result", ["put"]);
+    // `query` as well as `put`: capturing a version means finding the one it is based on.
+    await operator.grant("agent:plotter", "workspace", ["put", "query"]);
+    await operator.grant("agent:plotter", "artifact", ["put", "query"]);
+    await operator.put({
+      kind: BINDING,
+      body: { agent: "agent:plotter", workspaceDigest: digest, entrypoint: "main.ts", outputWorkspace: "plotter-out" },
+    });
+    const req = await operator.put({ kind: EXEC_REQUEST, body: { workspace: digest, tier: "prod", job: "nine" } });
+
+    const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: sandboxInvoker(operator) });
+    const [outcome] = await host.tick();
+    assertEquals(outcome.status, "acked", JSON.stringify(outcome));
+    const outputId = (outcome as { outputId?: string }).outputId;
+    assert(outputId, "the acked outcome names the version it produced");
+
+    const out = await readWorkspace(operator, "plotter-out");
+    assertEquals(out?.id, outputId);
+    assertEquals(out?.files.map((f) => f.path).sort(), ["chart.png", "notes.txt"]);
+    // The BYTES, not just the name: an output path that reads back as something else is the whole
+    // failure this feature exists to avoid.
+    const dir = await Deno.makeTempDir({ prefix: "radia-check-" });
+    try {
+      await materialize(operator, out!, dir);
+      assertEquals(await Deno.readFile(`${dir}/chart.png`), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]));
+      assertEquals(await Deno.readTextFile(`${dir}/notes.txt`), "job nine");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+    // Lineage, so "what did this request produce" is a query and not a naming convention.
+    const kids = await operator.getChildren(req.id);
+    assert(kids.some((k) => k.id === outputId), "the output version hangs off the claimed request");
+    // Attribution: the AGENT wrote it, not the host.
+    assertEquals(out!.owner, "agent:plotter");
+  });
+});
+
+Deno.test("[host] the CODE tree stays read-only, even with an output tree open", async () => {
+  await withSpace(async ({ operator, credential }) => {
+    // The separation is the point of a second tree: the code tree is shared between concurrent
+    // claims and pinned by the digest promotion rotates, so a run that could write into it would
+    // race its neighbours and change the identity the pin refers to.
+    const ws = await writeWorkspace(operator, {
+      name: "vandal",
+      owner: "human:alice",
+      files: {
+        "main.ts": `export default async () => {
+          const here = new URL(".", import.meta.url).pathname;
+          let reached = false;
+          try { await Deno.writeTextFile(here + "main.ts", "OWNED"); reached = true; } catch { /* expected */ }
+          return { kind: "exec_result", body: { tag: reached ? "WROTE-ITS-OWN-CODE" : "refused" } };
+        };\n`,
+      },
+    });
+    const digest = ws.treeDigest;
+    const credentials = { "agent:vandal": await credential("agent:vandal") };
+    await promote(operator, { digest, tier: "prod", pins: [{ principal: "agent:vandal", operations: ["take"] }] });
+    await operator.grant("agent:vandal", "exec_result", ["put"]);
+    // `query` as well as `put`: capturing a version means finding the one it is based on.
+    await operator.grant("agent:vandal", "workspace", ["put", "query"]);
+    await operator.grant("agent:vandal", "artifact", ["put", "query"]);
+    await operator.put({
+      kind: BINDING,
+      body: { agent: "agent:vandal", workspaceDigest: digest, entrypoint: "main.ts", outputWorkspace: "vandal-out" },
+    });
+    await operator.put({ kind: EXEC_REQUEST, body: { workspace: digest, tier: "prod", job: "x" } });
+
+    const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: sandboxInvoker(operator) });
+    const [outcome] = await host.tick();
+    assertEquals(outcome.status, "acked", JSON.stringify(outcome));
+    const results = await operator.query({ kind: "exec_result" }, 10, { dir: "desc" });
+    assertEquals((results[0].body as { tag: string }).tag, "refused");
+    // And the tree it ran from is untouched on disk, not merely un-rewritten in the space.
+    assertEquals((await readWorkspace(operator, "vandal"))!.treeDigest, digest);
+  });
+});
+
+Deno.test("[host] each version is THAT run's outputs, and a run that writes nothing makes none", async () => {
+  await withSpace(async ({ operator, credential }) => {
+    // Replace, not accumulate: the directory starts empty every run, so version N answers "what did
+    // run N produce" and the chain carries the history. An accumulating tree would answer neither
+    // question well, and nothing prunes it.
+    const ws = await writeWorkspace(operator, {
+      name: "stepper",
+      owner: "human:alice",
+      files: {
+        "main.ts": `export default async (record) => {
+          const job = record.body.job;
+          if (job !== "none") await Deno.writeTextFile(job + ".txt", job);
+          return { kind: "exec_result", body: { tag: job } };
+        };\n`,
+      },
+    });
+    const digest = ws.treeDigest;
+    const credentials = { "agent:stepper": await credential("agent:stepper") };
+    await promote(operator, { digest, tier: "prod", pins: [{ principal: "agent:stepper", operations: ["take"] }] });
+    await operator.grant("agent:stepper", "exec_result", ["put"]);
+    await operator.grant("agent:stepper", "workspace", ["put", "query"]);
+    await operator.grant("agent:stepper", "artifact", ["put", "query"]);
+    await operator.put({
+      kind: BINDING,
+      body: { agent: "agent:stepper", workspaceDigest: digest, entrypoint: "main.ts", outputWorkspace: "stepper-out" },
+    });
+    const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: sandboxInvoker(operator) });
+
+    const run = async (job: string) => {
+      await operator.put({ kind: EXEC_REQUEST, body: { workspace: digest, tier: "prod", job } });
+      const [o] = await host.tick();
+      assertEquals(o.status, "acked", JSON.stringify(o));
+      return o as { outputId?: string };
+    };
+
+    const first = await run("alpha");
+    assertEquals((await readWorkspace(operator, "stepper-out"))!.files.map((f) => f.path), ["alpha.txt"]);
+    const second = await run("beta");
+    const after = await readWorkspace(operator, "stepper-out");
+    assertEquals(after!.files.map((f) => f.path), ["beta.txt"], "alpha's output is history, not content");
+    assertEquals(after!.basedOn, first.outputId, "and the chain still reaches it");
+
+    const third = await run("none");
+    assertEquals(third.outputId, undefined, "no files written, so no version and no empty record");
+    assertEquals((await readWorkspace(operator, "stepper-out"))!.id, second.outputId);
   });
 });

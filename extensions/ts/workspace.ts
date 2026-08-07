@@ -1245,7 +1245,7 @@ export async function commitWorkspace(
   /** A RAISE, never inheritance: labels the caller knows about and the graph does not (the run
    *  reached the network). Inheritance from the predecessor happens through `parentIds` below and
    *  needs nothing here. */
-  opts: { taint?: string[] } = {},
+  opts: { taint?: string[]; parentIds?: string[] } = {},
 ): Promise<{ id: string; treeDigest: string; forked: boolean } | null> {
   if (captured.unchanged) return null;
   const treeDigest = await treeDigestOf(captured.files);
@@ -1263,7 +1263,10 @@ export async function commitWorkspace(
     {
       kind: "workspace",
       body: body as unknown as Record<string, unknown>,
-      parentIds: [manifest.id],
+      // The predecessor ALWAYS, plus whatever caused this version (the host passes the claimed
+      // record). Lineage is how "what produced these bytes" is answered, and a version whose only
+      // parent is the version before it can only answer "the one before that".
+      parentIds: [manifest.id, ...(opts.parentIds ?? []).filter((p) => p !== manifest.id)],
       ...(opts.taint?.length ? { taint: opts.taint } : {}),
     },
     `workspace:${manifest.name}:${treeDigest}:after:${manifest.id}`,

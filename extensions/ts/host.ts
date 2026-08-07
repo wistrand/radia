@@ -29,7 +29,14 @@
 import type { KindDef, Lease, RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
 import { RadiaClient as Client, RadiaClientError } from "../../sdk/ts/client.ts";
 import { activeByKey } from "../../sdk/ts/registry.ts";
-import { materialize } from "./workspace.ts";
+import {
+  captureWorkspace,
+  commitWorkspace,
+  materialize,
+  readWorkspace,
+  type WorkspaceManifest,
+  writeWorkspace,
+} from "./workspace.ts";
 import { runCode } from "./sandbox.ts";
 import { EXEC_REQUEST } from "./promotion.ts";
 
@@ -50,7 +57,31 @@ export interface Binding {
    * posture with no external dependency.
    */
   sandboxPattern?: Record<string, unknown>;
+  /**
+   * The workspace a run's OUTPUT FILES land in, and the only way an entrypoint gets a writable path.
+   *
+   * A run writes to a different tree than it runs from. The tree it runs from is this binding's
+   * code: shared between concurrent claims (`treeCache`) and pinned by the digest promotion
+   * rotates, so writing into it would race a neighbour and change the identity the pin refers to.
+   * Absent means NO writable path at all, which is the posture with no capability to reason about.
+   *
+   * Each run is a VERSION, not an accumulation: the tree is captured from an empty directory, so
+   * version N holds run N's outputs and the chain holds the history. Bytes are files here rather
+   * than a payload in the result body, per the invariant: artifact bytes never travel inside a
+   * record, and a file is binary, named, versioned and erasable for free.
+   */
+  outputWorkspace?: string;
 }
+
+/**
+ * The result marker this invoker's boot program prints.
+ *
+ * The same string `broker.ts` uses, and duplicated rather than imported because the dependency runs
+ * the other way (broker imports host). Printable and versioned for the reasons that file states: a
+ * raw control byte is invisible in the diagnostics meant to explain a confusing failure, and it does
+ * not survive anything that sanitises control characters. A contract case asserts the two agree.
+ */
+export const RESULT_MARK = "RADIA-RESULT/1:";
 
 export const BINDING = "binding";
 
@@ -151,6 +182,9 @@ export interface InvokeContext {
   client: RadiaClient;
   /** The materialised tree, when the invoker was given one. */
   root?: string;
+  /** An empty directory the run may WRITE to, when the binding named an output workspace. The
+   *  invoker's job is to make it the jail's only writable path; the host captures it afterwards. */
+  outDir?: string;
 }
 
 /** How the entrypoint is run. Pluggable because the identity properties above are independent of
@@ -161,8 +195,36 @@ export type Outcome =
   | { agent: string; status: "idle" }
   | { agent: string; status: "refused"; reason: string }
   | { agent: string; status: "digest_mismatch"; wanted: string; bound: string; recordId: string }
-  | { agent: string; status: "acked"; recordId: string; resultId?: string }
+  | { agent: string; status: "acked"; recordId: string; resultId?: string; outputId?: string }
   | { agent: string; status: "failed"; recordId: string; error: string };
+
+/**
+ * Store what the run wrote, as the next version of the binding's output workspace.
+ *
+ * BEFORE the ack: a run whose outputs could not be stored has not finished, so it nacks and retries
+ * under the at-least-once contract the entrypoint already lives under. Diffed against an EMPTY file
+ * list rather than the previous version, which is what makes a version this run's outputs instead of
+ * an accumulation nothing prunes. Written with the AGENT's client, and carrying the claimed record
+ * as a parent, so `children(request)` answers "what bytes did this produce".
+ */
+async function captureOutput(
+  client: RadiaClient,
+  name: string,
+  owner: string,
+  dir: string,
+  cause: string,
+): Promise<string | undefined> {
+  let prev = await readWorkspace(client, name);
+  if (!prev) {
+    // An empty v0 so the versions below it have a predecessor to be based on. One record, once per
+    // output workspace, and honest: before the first run there were no outputs.
+    const created = await writeWorkspace(client, { name, owner, files: {} });
+    prev = { id: created.id, name, owner, treeDigest: created.treeDigest, files: [] };
+  }
+  const captured = await captureWorkspace(client, { ...prev, files: [] }, dir);
+  const committed = await commitWorkspace(client, prev, captured, { parentIds: [cause] });
+  return committed?.id;
+}
 
 export interface HostOptions {
   base: string;
@@ -175,6 +237,10 @@ export interface HostOptions {
   requestKind?: string;
   invoke?: Invoker;
   leaseSeconds?: number;
+  /** Where output directories are made. Needed when the host itself runs confined: the default is
+   *  the system temp dir, which a confined process cannot write. Empty string means the default,
+   *  never the empty PATH (`makeTempDir({dir: ""})` throws). */
+  outRoot?: string;
 }
 
 /**
@@ -189,18 +255,30 @@ export function sandboxInvoker(reader: RadiaClient, opts: { timeoutMs?: number; 
     const root = await cache.root(ctx.binding.workspaceDigest);
     {
       const boot = `const record = ${JSON.stringify(ctx.record)};\n` +
-        `const mod = await import(${JSON.stringify(`./${ctx.binding.entrypoint}`)});\n` +
+        // ABSOLUTE, not `./`: a program fed on stdin resolves a relative import against the CWD,
+        // and the cwd is the output tree whenever there is one.
+        `const mod = await import(${JSON.stringify(`file://${root}/${ctx.binding.entrypoint}`)});\n` +
         `const out = await mod.default(record);\n` +
-        `console.log("\\u0001radia:" + JSON.stringify(out ?? null));\n`;
-      const run = await runCode(boot, { cwd: root, readRoots: [root], timeoutMs: opts.timeoutMs ?? 10_000 });
+        `console.log(${JSON.stringify(RESULT_MARK)} + JSON.stringify(out ?? null));\n`;
+      const run = await runCode(boot, {
+        // The OUTPUT tree is the working directory when there is one, so `writeFile("chart.png")`
+        // lands in it with nothing passed to the entrypoint and nothing language-specific. The code
+        // tree is reached by absolute path (`import.meta.dirname`), which is how a module should
+        // find its own data anyway.
+        cwd: ctx.outDir ?? root,
+        readRoots: [root, ...(ctx.outDir ? [ctx.outDir] : [])],
+        // Writable, and `root` never is: see `Binding.outputWorkspace`.
+        ...(ctx.outDir ? { writeRoots: [ctx.outDir] } : {}),
+        timeoutMs: opts.timeoutMs ?? 10_000,
+      });
       // The TAIL of stderr: the useful line of a stack trace is its last, and a program that
       // logged before it died pushes the cause off the front.
       if (!run.ok) throw new Error(`entrypoint failed (exit ${run.exitCode}): ${run.stderr.slice(-400)}`);
       // A marker, not "the last line": an entrypoint that logs is normal, and picking its chatter
       // as the result is the kind of bug that only shows up on the day something logs.
-      const line = run.stdout.split("\n").find((l) => l.startsWith("radia:"));
+      const line = run.stdout.split("\n").find((l) => l.startsWith(RESULT_MARK));
       if (!line) throw new Error("entrypoint produced no result");
-      return JSON.parse(line.slice("radia:".length)) as { kind: string; body: unknown };
+      return JSON.parse(line.slice(RESULT_MARK.length)) as { kind: string; body: unknown };
     }
   };
 }
@@ -260,14 +338,22 @@ export class WorkspaceHost {
         out.push({ agent: binding.agent, status: "digest_mismatch", wanted, bound: binding.workspaceDigest, recordId: claimed.record.id });
         continue;
       }
+      // Made before the run and EMPTY, which is what makes each version that run's outputs.
+      const outDir = binding.outputWorkspace
+        ? await Deno.makeTempDir({ dir: this.#opts.outRoot || undefined, prefix: "radia-out-" })
+        : undefined;
       try {
-        const result = await invoke({ binding, record: claimed.record, client });
+        const result = await invoke({ binding, record: claimed.record, client, ...(outDir ? { outDir } : {}) });
+        const outputId = outDir
+          ? await captureOutput(client, binding.outputWorkspace!, binding.agent, outDir, claimed.record.id)
+          : undefined;
         const acked = await client.ack(claimed.lease, result);
         out.push({
           agent: binding.agent,
           status: "acked",
           recordId: claimed.record.id,
           ...(acked.status === "ok" && acked.resultId ? { resultId: acked.resultId } : {}),
+          ...(outputId ? { outputId } : {}),
         });
       } catch (e) {
         // The work goes back with an attempt against it rather than being lost or held to lease
@@ -278,6 +364,8 @@ export class WorkspaceHost {
         // the stderr tail the broker had gone to the trouble of keeping: two caps, opposite ends,
         // and the cause lost between them.
         out.push({ agent: binding.agent, status: "failed", recordId: claimed.record.id, error: String(e).slice(0, 1200) });
+      } finally {
+        if (outDir) await Deno.remove(outDir, { recursive: true }).catch(() => {});
       }
     }
     return out;

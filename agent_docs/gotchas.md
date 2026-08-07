@@ -1177,11 +1177,16 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   trailing newline (`print(..., end="")`, a progress bar, a library flushing mid-line) prepends
   itself to the next frame, which no longer starts its line, is read as chatter, and leaves the
   jail blocked on an answer that never comes until a timeout naming the wrong cause. Three parts,
-  all cheap: write `"\n"` before every frame, lead the marker with a control character (`\x01`,
-  which ordinary logging does not emit), and treat a marker found MID-line as definite
-  interleaving rather than something to skip. Cap the buffered output too, or code printing in a
+  all cheap: write `"\n"` before every frame, lead the line with a marker nothing emits by accident,
+  and treat one found MID-line as definite interleaving rather than something to skip. Cap the buffered output too, or code printing in a
   loop takes the host down with it. A dedicated fd would end the sharing, but `Deno.Command`
   exposes no portable extra one, so it would push the transport into the per-language shim.
+- **Make that marker LONG AND PRINTABLE, not a control character.** `\x01broker:` was the first
+  answer and was wrong for a normative surface: a contract that asks another implementation to emit
+  a raw control byte is a bad contract, the byte is invisible in exactly the diagnostics meant to
+  explain a confusing failure (the interleaving error rendered it `\u0001broker:`), and anything in
+  the pipeline that strips control characters breaks framing silently. `RADIA-BROKER/1:` collides no
+  more often, can be said out loud, and carries the version the old marker had nowhere to put.
 - **A frame channel from a jail is UNTRUSTED, and should be built so that costs nothing.** Jailed
   code can forge any frame; it gains nothing when the labels, the compartment stamp, the forced
   parent, the idempotency key and the agent's grants are all applied HOST-side. Check this

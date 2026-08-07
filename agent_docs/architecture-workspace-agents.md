@@ -195,15 +195,17 @@ flowchart TB
 
 ## Binding, host, broker
 
-- **Binding**: a latest-wins registry entry `{agent, workspaceDigest, entrypoint,
-  sandboxPattern}`. Cutover is per claim; in-flight leases finish under the digest pinned when
+- **Binding**: a latest-wins registry entry `{agent, workspaceDigest, entrypoint, sandboxPattern,
+  outputWorkspace}`. `outputWorkspace` is where a run's FILES land, and its absence means the run
+  gets no writable path at all (5d). Cutover is per claim; in-flight leases finish under the digest pinned when
   they were claimed; retirement is the off switch.
 - **Host**: an `extensions/` client like `git-serve`, not runtime. It holds the definition tokens
   of its assigned agents (setup, the same category as the chat launcher spawning its fleet),
   mints each run, claims under that run (D4), materializes the digest into the jail its
   `sandboxPattern` selects (a sandbox is a record matched by properties, per
   [design-execution.md](design-execution.md)), and invokes the entrypoint with the claimed record.
-- **Broker**: the entrypoint's only way out.
+- **Broker**: the entrypoint's only way out for RECORDS. Bytes leave the other way, as files in the
+  output tree, so nothing binary is ever encoded into a frame or a body (5d).
 
 ```mermaid
 sequenceDiagram
@@ -381,9 +383,12 @@ accident constantly. Reproduced against this code before fixing it: output with 
 newline (`print(..., end="")`, a progress bar) prepends itself to the next frame, which then no
 longer starts its line, is read as chatter, and the jail blocks on an answer that never comes
 until a timeout naming the wrong cause. Three changes, each with a contract case: every frame is
-written with a LEADING newline; the markers begin with a control character (`\x01`), which
-ordinary logging does not emit; and a marker found MID-line is diagnosed as definite interleaving
-instead of ignored. Plus a 4MB output cap, since untrusted code printing in a loop must not take
+written with a LEADING newline; a line is a frame only when it STARTS with a long printable marker
+(`RADIA-BROKER/1:`, `RADIA-RESULT/1:`); and a marker found MID-line is diagnosed as definite
+interleaving instead of ignored. The marker was `\x01broker:` first, and a control byte is the wrong
+contract to hand another implementation: invisible in the diagnostics that exist to explain a
+confusing failure, destroyed silently by anything that strips control characters, and awkward to
+ask a person to emit. The `/1` carries the version the old one had nowhere to put. Plus a 4MB output cap, since untrusted code printing in a loop must not take
 the host with it. Plants: dropping the leading newline fails the partial-write case, and dropping
 the cap turns the flood case into that same mystery 15s timeout.
 A dedicated fd would end the sharing and is the honest ideal, declined because `Command` exposes
@@ -403,6 +408,40 @@ it already made replay on their ordinal key.
 The bug found on the way is the one worth remembering: `WorkspaceHost` truncated the failure to
 its FIRST 300 characters, cutting off the tail the broker had gone to trouble to keep. Two caps,
 both defensible alone, opposite ends, no cause left between them.
+
+**5d. Where a run's BYTES go: a second tree, never the one it runs from.** The frame channel is
+lines of JSON, so binary output had no path at all, and the obvious fixes were both wrong: base64 in
+a result body breaks the invariant that artifact bytes never travel inside a record, and a
+length-prefixed binary frame makes every future shim implement a second parser. The answer is that a
+run SAVES A FILE, which is binary, named, versioned, erasable and git-exportable for free, and needs
+nothing added to the protocol. What building it clarified is that the file cannot go in the tree the
+run was materialised from: that directory is the agent's CODE, shared between concurrent claims by
+`treeCache` and pinned by the digest promotion rotates, so writing into it races a neighbour and
+changes the identity the pin refers to. So a run writes to a DIFFERENT tree than it runs from.
+
+```mermaid
+flowchart LR
+    W[workspace @digest<br/>code, shared, read-only] -->|materialise| J[jail]
+    R[exec_request] -->|claimed record| J
+    J -->|frames: put/query| S[(space)]
+    J -->|files, cwd| O[output dir<br/>empty, writable]
+    O -->|capture as the agent| V[output workspace<br/>version N = run N]
+    V -.->|parent| R
+```
+
+`Binding.outputWorkspace` names it, and its ABSENCE means no writable path at all, which is the
+posture with no capability to reason about. The output tree is the run's CWD, so saving a file is
+`writeFile("chart.png", …)` or `open("chart.png","wb")` with nothing added to the entrypoint
+signature and nothing per-language; the code tree is reached by absolute path (`import.meta.dirname`,
+`__file__`), which is how a module should find its own data anyway. Capture runs BEFORE the ack, so a
+run whose outputs could not be stored nacks and retries under the at-least-once contract it already
+lives under, and it writes as the AGENT with the claimed record as a parent, so `children(request)`
+answers "what bytes did this produce". Each version is that run's outputs rather than an
+accumulation: the directory starts empty, so version N answers "what did run N produce" and the chain
+carries the history. A run that writes nothing produces no version, not an empty one. Contract cases:
+the binary round-trip (0x00 and 0xff, the bytes a line channel would mangle), the three-run replace
+sequence, and the plant that matters, an entrypoint trying to overwrite its own `main.ts` and
+reporting whether it got away with it.
 
 **6. Warm pools per promoted digest.**
 Shipped: `treeCache` in `extensions/ts/host.ts`, used by both invokers, keyed by digest and

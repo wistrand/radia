@@ -350,6 +350,22 @@ viewing an image and wrong for a link somebody pastes to somebody else. That was
 rather than deferred: persisting them collides with the stopping rule in [CLAUDE.md](../CLAUDE.md),
 since high-churn and security-critical state is a poor fit for records.
 
+## A tree as a run's OUTPUT, not only its input
+
+BUILT (`Binding.outputWorkspace`, `extensions/ts/host.ts`). A workspace-agent's binary output had
+nowhere to go: the broker channel is lines of JSON, and the two obvious fixes are both wrong. Base64
+in a result body breaks the invariant that artifact bytes never travel inside a record; a binary
+frame makes every future language shim implement a second parser. A run SAVES A FILE instead, which
+is binary, named, versioned, erasable and git-exportable with nothing added to the protocol.
+
+The constraint that shapes it: the tree a run was materialised FROM is the agent's code, shared
+between concurrent claims and pinned by the digest promotion rotates, so a run writing into it would
+race a neighbour and change the identity the pin refers to. So a run writes to a different tree than
+it runs from. The output tree is the run's CWD (saving a file is language-neutral and needs nothing
+in the entrypoint signature), starts EMPTY each run so version N is run N's outputs rather than an
+accumulation nothing prunes, and is captured as the agent with the claimed record as a parent, so
+`children(request)` answers "what bytes did this produce".
+
 ## What this buys that git does not
 
 **Lead with per-file erasure.** Anyone who has run `git filter-repo` or BFG to purge a leaked

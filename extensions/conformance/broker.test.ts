@@ -14,10 +14,10 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { RadiaClient, type RadiaRecord } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../../examples/operator.ts";
-import { brokeredInvoker, dryRunEntrypoint, labelsForJail } from "../ts/broker.ts";
-import { BINDING, declareBinding, treeCache, type TreeCache, WorkspaceHost } from "../ts/host.ts";
+import { brokeredInvoker, dryRunEntrypoint, labelsForJail, RESULT_MARK } from "../ts/broker.ts";
+import { BINDING, declareBinding, RESULT_MARK as HOST_RESULT_MARK, treeCache, type TreeCache, WorkspaceHost } from "../ts/host.ts";
 import { declareExecRequest, EXEC_REQUEST, promote } from "../ts/promotion.ts";
-import { materialize, writeWorkspace } from "../ts/workspace.ts";
+import { materialize, readWorkspace, writeWorkspace } from "../ts/workspace.ts";
 import { declareSandbox } from "../ts/sandbox-registry.ts";
 
 const PORT = 7823;
@@ -35,6 +35,7 @@ interface Ctx {
       cache?: TreeCache;
       sandbox?: Record<string, unknown>;
       timeoutMs?: number;
+      outputWorkspace?: string;
     },
   ) => Promise<WorkspaceHost>;
   /** Another request at the digest currently bound: a second claim for the same code. */
@@ -74,12 +75,19 @@ async function withSpace<T>(fn: (ctx: Ctx) => Promise<T>): Promise<T> {
    *  `rebind`, because a promotion that forgot either lock is a different test than these. */
   let sandboxPattern: Record<string, unknown> | undefined;
   let file = "main.ts";
+  let outputWorkspace: string | undefined;
   const install = async (entry: string): Promise<string> => {
     const ws = await writeWorkspace(operator, { name: `ws${++n}`, owner: "human:alice", files: { [file]: entry } });
     await promote(operator, { digest: ws.treeDigest, tier: "prod", pins: [{ principal: AGENT, operations: ["take"] }] });
     await operator.put({
       kind: BINDING,
-      body: { agent: AGENT, workspaceDigest: ws.treeDigest, entrypoint: file, ...(sandboxPattern ? { sandboxPattern } : {}) },
+      body: {
+        agent: AGENT,
+        workspaceDigest: ws.treeDigest,
+        entrypoint: file,
+        ...(sandboxPattern ? { sandboxPattern } : {}),
+        ...(outputWorkspace ? { outputWorkspace } : {}),
+      },
     });
     await operator.put({ kind: EXEC_REQUEST, body: { workspace: ws.treeDigest, tier: "prod", job: "j" } });
     current = ws.treeDigest;
@@ -92,6 +100,11 @@ async function withSpace<T>(fn: (ctx: Ctx) => Promise<T>): Promise<T> {
         const { definitionToken } = await operator.createAgentDefinition(AGENT, []);
         await operator.grant(AGENT, "exec_result", ["put"]);
         await operator.grant(AGENT, "note", ["put"]);
+        if (o.outputWorkspace) {
+          outputWorkspace = o.outputWorkspace;
+          await operator.grant(AGENT, "workspace", ["put", "query"]);
+          await operator.grant(AGENT, "artifact", ["put", "query"]);
+        }
         if (o.sandbox) {
           sandboxPattern = o.sandbox;
           file = "main.py";
@@ -543,4 +556,44 @@ Deno.test("[broker] a dry run refuses reads rather than borrowing a credential",
       await Deno.remove(root, { recursive: true });
     }
   });
+});
+
+Deno.test("[broker] a brokered run writes FILES to its output tree and records to the space", async () => {
+  await withSpace(async ({ operator, hostFor }) => {
+    // The two halves of what a run produces, and they travel differently on purpose: coordination
+    // goes through the broker as records, bytes go to the output tree as files. Neither is base64
+    // in the other, which is the invariant (bytes never travel inside a record) holding at the one
+    // place a jailed program could break it.
+    const host = await hostFor(
+      `export default async (record, space) => {
+        await space.put({ kind: "note", body: { via: "broker" } });
+        await Deno.writeFile("out.bin", new Uint8Array([0, 1, 2, 253, 254, 255]));
+        return { kind: "exec_result", body: { tag: "both" } };
+      };\n`,
+      { outputWorkspace: "brokered-out" },
+    );
+    const [outcome] = await host.tick();
+    assertEquals(outcome.status, "acked", JSON.stringify(outcome));
+
+    const notes = await operator.query({ kind: "note" }, 10, { dir: "desc" });
+    assertEquals((notes[0].body as { via: string }).via, "broker");
+
+    const out = await readWorkspace(operator, "brokered-out");
+    assertEquals(out!.files.map((f) => f.path), ["out.bin"]);
+    const dir = await Deno.makeTempDir({ prefix: "radia-check-" });
+    try {
+      await materialize(operator, out!, dir);
+      // The exact bytes: 0x00 and 0xff are what a line-oriented channel would have mangled.
+      assertEquals(await Deno.readFile(`${dir}/out.bin`), new Uint8Array([0, 1, 2, 253, 254, 255]));
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
+});
+
+Deno.test("[broker] the host's own result marker agrees with this one", () => {
+  // `host.ts` duplicates the string rather than importing it (the dependency runs the other way).
+  // Duplication is fine; drifting is not, and only this line would notice.
+  assertEquals(HOST_RESULT_MARK, RESULT_MARK);
+  assert(/^[\x20-\x7e]+$/.test(RESULT_MARK), "printable: a control byte is invisible in a diagnostic");
 });

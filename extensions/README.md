@@ -52,8 +52,9 @@ they cross a trust boundary:
   differently is not a variant, it is a hole, so the escape probe and the host-side rules (labels,
   the compartment stamp, the forced parent, the idempotency key) are a contract. The framing
   details are part of it, because a shim that gets them wrong hangs rather than fails: a leading
-  newline before every frame, a control character (`\x01`) leading both markers, and a marker
-  found mid-line reported as interleaving. A new LANGUAGE is a shim against this spec, not a
+  newline before every frame, a long printable marker (`RADIA-BROKER/1:`) starting the line, and a
+  marker found mid-line reported as interleaving. BYTES never travel in a frame: a run's binary
+  output is a FILE in its output workspace (`Binding.outputWorkspace`). A new LANGUAGE is a shim against this spec, not a
   second broker.
 
 All of them are specified by `extensions/conformance/`, which is the contract any implementation

@@ -50,8 +50,13 @@ import { type InvokeContext, type Invoker, treeCache, type TreeCache } from "./h
  * be parsed as protocol. Three things keep them apart, and two were added after a plain word
  * prefix was shown to fail:
  *
- *   - A CONTROL CHARACTER leads the marker. Ordinary logging does not emit `\x01`, so a collision
- *     is not something a program does by accident.
+ *   - The marker is LONG, DISTINCTIVE AND PRINTABLE. `\x01broker:` came first and was wrong for a
+ *     normative surface: a contract that asks another implementation to emit a raw control byte is
+ *     a bad contract, the byte is invisible in exactly the diagnostics that exist to explain a
+ *     confusing failure (the interleaving error rendered it as `\u0001broker:`), and anything in the
+ *     pipeline that sanitises control characters destroys framing silently. `RADIA-BROKER/1:` at
+ *     the start of a line is as unlikely as a control byte and can be said out loud. The `/1`
+ *     carries the version the old marker had nowhere to put.
  *   - Every frame is written with a LEADING NEWLINE. Without it, output lacking a trailing newline
  *     (`print(..., end="")`, a progress bar, any library that flushes mid-line) prepends itself to
  *     the frame, which then no longer starts its line and is read as chatter. The call is never
@@ -69,12 +74,11 @@ import { type InvokeContext, type Invoker, treeCache, type TreeCache } from "./h
  * idempotency key and the agent's own grants are applied HOST-side, so a forged call is exactly as
  * constrained as a legitimate one.
  */
-export const BROKER_MARK = "broker:";
-export const RESULT_MARK = "result:";
+export const BROKER_MARK = "RADIA-BROKER/1:";
+export const RESULT_MARK = "RADIA-RESULT/1:";
 
-/** The control character both markers begin with. Its presence anywhere OTHER than the start of a
- *  line is the interleaving signal, since nothing else on stdout has a reason to emit it. */
-const MARK = "\x01";
+/** A marker found anywhere OTHER than the start of a line is the interleaving signal. */
+const marks = (line: string) => line.includes(BROKER_MARK) || line.includes(RESULT_MARK);
 
 /** Jail output the host will buffer before killing the run. Untrusted code that prints in a loop
  *  must not take the host with it, which `runCode` caps for the same reason. */
@@ -323,7 +327,16 @@ async function runBrokered(
     const bootPath = `${bootDir}/${runtime.bootFile}`;
     try {
       await Deno.writeTextFile(bootPath, runtime.boot(`${root}/${entrypoint}`, ctx.record));
-      const readRoots = [root, bootDir, ...(opts.run?.readRoots ?? []), ...(spec?.readonlyPaths ?? [])];
+      const readRoots = [root, bootDir, ...(ctx.outDir ? [ctx.outDir] : []), ...(opts.run?.readRoots ?? []), ...(spec?.readonlyPaths ?? [])];
+      // The OUTPUT tree, per claim, and the only writable path an entrypoint gets. Never `root`:
+      // that directory is the agent's CODE, shared between concurrent claims and pinned by the
+      // digest the grant promotes, so a run writing into it races its neighbours and changes the
+      // identity the pin refers to. Absent unless the binding asked for one (host.ts).
+      const writeRoots = [...(opts.run?.writeRoots ?? []), ...(ctx.outDir ? [ctx.outDir] : [])];
+      // The output tree is the CWD when there is one, so saving a file is `open("chart.png", "wb")`
+      // in any language, with nothing added to the entrypoint signature. The boot program imports
+      // the entrypoint by absolute path, so nothing here depends on the cwd being the code tree.
+      const cwd = ctx.outDir ?? root;
       // The BACKEND is chosen by the sandbox's declared isolation, never by the language: the two
       // are independent, and conflating them is how "python means bubblewrap" becomes a rule
       // nobody wrote down. Both spawns leave stdin free, which is what the broker needs and what
@@ -333,8 +346,8 @@ async function runBrokered(
           args: bwrapArgs({
             command: [spec.runtime || "python3", bootPath],
             readRoots,
-            writeRoots: opts.run?.writeRoots,
-            cwd: root,
+            writeRoots,
+            cwd,
             ...(spec.network ? { unshare: ["--unshare-pid", "--unshare-ipc", "--unshare-uts"] } : {}),
           }),
           stdin: "piped",
@@ -349,10 +362,10 @@ async function runBrokered(
         // model-written entrypoints against real data.
         ? new Deno.Command("bwrap", {
           args: bwrapArgs({
-            command: [Deno.execPath(), ...jailArgs({ ...opts.run, readRoots }, opts.run?.memoryMb ?? 256, bootPath)],
+            command: [Deno.execPath(), ...jailArgs({ ...opts.run, readRoots, writeRoots }, opts.run?.memoryMb ?? 256, bootPath)],
             readRoots: [...readRoots, Deno.execPath().slice(0, Deno.execPath().lastIndexOf("/")) || "/usr/bin"],
-            ...(opts.run?.writeRoots?.length ? { writeRoots: opts.run.writeRoots } : {}),
-            cwd: root,
+            ...(writeRoots.length ? { writeRoots } : {}),
+            cwd,
             unshare: ["--unshare-pid", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup"],
           }),
           stdin: "piped",
@@ -362,8 +375,8 @@ async function runBrokered(
           env: { HOME: "/tmp", PATH: "/usr/bin:/bin" },
         }).spawn()
         : new Deno.Command(Deno.execPath(), {
-          cwd: root,
-          args: jailArgs({ ...opts.run, readRoots }, opts.run?.memoryMb ?? 256, bootPath),
+          cwd,
+          args: jailArgs({ ...opts.run, readRoots, writeRoots }, opts.run?.memoryMb ?? 256, bootPath),
           stdin: "piped",
           stdout: "piped",
           stderr: "piped",
@@ -435,7 +448,7 @@ async function serve(
         } else if (line.startsWith(RESULT_MARK)) {
           result = parse<{ kind: string; body: unknown }>(line, RESULT_MARK);
           break outer;
-        } else if (line.includes(MARK)) {
+        } else if (marks(line)) {
           // A marker that is not at the start of its line can only mean the entrypoint's own
           // output interleaved with a frame. Diagnosed here rather than left to the timeout,
           // which would blame the wrong thing fifteen seconds later.
