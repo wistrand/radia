@@ -209,6 +209,16 @@ Traps for the implementer, all hit during verification:
   unverified and the worker silently falls back to the unconfined jail, which is how the first
   real exec-worker boot on a Mac ran unconfined while the conformance case (which passes a cwd)
   stayed green. `spawnDeno` now defaults the cwd to the Deno binary's directory.
+- A cwd is NOT optional under `sandbox-exec`, unlike the other two backends. Guarded by "a confined
+  jail with NO cwd still starts", macOS-gated, so it reports on a Mac rather than in CI: the failure
+  is a jail that never starts, every probe claim then reads UNVERIFIED, and the worker falls back
+  silently.
+- `materialize` must write to the root it was GIVEN, never the resolved one: a caller's
+  `--allow-write=<root>` names the literal path, and on macOS every temp dir sits behind a symlink.
+  This broke every workspace run there, confined or not. Guarded by "materialising writes to the
+  root it was GIVEN", which runs a real subprocess under that grant and FAILS ON LINUX TOO, because
+  Deno checks the literal path on both platforms. A macOS-discovered bug with a cross-platform
+  guard, which is the shape to aim for.
 - The profile above bounds READS ONLY, so a jailed Deno still WRITES its global caches
   (`~/Library/Caches/deno/*_cache_v2`, written regardless of `--no-remote`), and
   writable-but-unreadable SQLite corrupts them for the whole machine (`SQLITE_IOERR_SHORT_READ`

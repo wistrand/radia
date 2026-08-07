@@ -1964,3 +1964,75 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name: "sandbox: a confined jail with NO cwd still starts",
+  ignore: Deno.build.os !== "darwin",
+  async fn() {
+    // The bug this pins, found on the first real Mac boot. Without an explicit cwd the child
+    // inherits this process's, that directory is outside the profile's read roots, and Deno dies on
+    // `getcwd` before running a line. Every probe claim then reports UNVERIFIED and the worker falls
+    // back to the unconfined jail: confinement silently never happens, and the only signal reads
+    // like an ordinary absent-backend notice. The other two backends tolerate a missing cwd, which
+    // is why the shape was copied from them.
+    const r = await runCode(`console.log("ran")`, { confine: "sandbox-exec", timeoutMs: 30_000 });
+    assertEquals(r.stdout.trim(), "ran", `a confined jail with no cwd did not start: ${r.stderr.slice(0, 300)}`);
+  },
+});
+
+Deno.test("workspace: materialising writes to the root it was GIVEN, not the resolved one", async () => {
+  // A caller's write grant names the path it was HANDED (`--allow-write=<root>`), and Deno checks
+  // the literal path: writing through the resolved form is `NotCapable` against the very grant the
+  // caller was told to hold. It bit on macOS, where every temp dir is behind a symlink
+  // (`/var/folders` -> `/private/var/folders`), and it would have broken EVERY workspace run there,
+  // confined or not, since the chat's exec worker holds exactly that grant.
+  //
+  // A SUBPROCESS, because the permission is the thing under test and this suite runs with all of
+  // them. Cross-platform: verified that Linux resolves the check the same way, so this fails here
+  // too rather than only on the machine that found it.
+  await withSpace(async (c) => {
+    await writeWorkspace(c, { name: "symlinked", owner: OWNER, files: { "a.txt": "hi\n", "d/b.txt": "there\n" } });
+
+    const real = await Deno.makeTempDir({ prefix: "real-" });
+    const parent = await Deno.makeTempDir({ prefix: "linkparent-" });
+    const link = `${parent}/root`;
+    await Deno.symlink(real, link);
+    const child = `${parent}/child.ts`;
+    await Deno.writeTextFile(
+      child,
+      `import { RadiaClient } from ${JSON.stringify(new URL("../../sdk/ts/client.ts", import.meta.url).href)};\n` +
+        `import { materialize, readWorkspace } from ${JSON.stringify(new URL("../ts/workspace.ts", import.meta.url).href)};\n` +
+        `const [base, token, root] = Deno.args;\n` +
+        `const c = new RadiaClient(base, { token });\n` +
+        `const m = await readWorkspace(c, "symlinked");\n` +
+        `await materialize(c, m!, root);\n` +
+        `console.log("materialised ok");\n`,
+    );
+    try {
+      // Exactly the worker's shape: write access to the root it was given, and nothing else.
+      const proc = new Deno.Command(Deno.execPath(), {
+        args: [
+          "run",
+          `--allow-net=127.0.0.1:${PORT}`,
+          `--allow-read=${link}`,
+          `--allow-write=${link}`,
+          child,
+          url,
+          operatorToken(url),
+          link,
+        ],
+        stdout: "piped",
+        stderr: "piped",
+      });
+      const out = await proc.output();
+      const text = new TextDecoder().decode(out.stdout) + new TextDecoder().decode(out.stderr);
+      assertStringIncludes(text, "materialised ok", `materialise failed under a grant on the given root: ${text.slice(0, 400)}`);
+      // …and the bytes really landed, reachable through the path the caller handed over.
+      assertEquals((await Deno.readTextFile(`${link}/a.txt`)).trim(), "hi");
+      assertEquals((await Deno.readTextFile(`${link}/d/b.txt`)).trim(), "there");
+    } finally {
+      await Deno.remove(parent, { recursive: true });
+      await Deno.remove(real, { recursive: true });
+    }
+  });
+});
