@@ -13,6 +13,7 @@
 // `lineReader` at the bottom, over the same test seam `smoke-input.ts` uses.
 
 import { decodeKey, History, LineBuffer, loadHistory, renderLine, saveHistory } from "./client/edit.ts";
+import { staging } from "./client/attachments.ts";
 import { __captureOutput, __useTestInput, lineReader } from "./client/terminal.ts";
 
 Deno.env.set("RADIA_CHAT_HISTORY", await Deno.makeTempFile({ prefix: "radia-edit-history-" }));
@@ -299,6 +300,69 @@ cap.stop();
     const mode = Deno.statSync(path).mode! & 0o777;
     check("…and is not readable by anyone else", mode === 0o600, mode.toString(8));
   }
+}
+
+// ── Ctrl-V stages, Enter writes ──────────────────────────────────────────────────────────────────
+//
+// The property under test is what does NOT happen: pasting must not put anything in the space until
+// the line is sent. It used to upload on the keystroke, and an `artifact` record is never swept, so
+// a mis-paste was permanent.
+{
+  const bytes = new Uint8Array(2048);
+  const item = { bytes, mediaType: "image/png", filename: "shot.png" };
+  const uploads: string[] = [];
+  const fake = (i: { filename: string }) => {
+    uploads.push(i.filename);
+    return Promise.resolve(`[attached ${i.filename}]`);
+  };
+
+  const a = staging(fake);
+  const mark = a.stage(item);
+  check("staging writes NOTHING", uploads.length === 0 && a.size === 1, `uploads=${uploads.length}`);
+  check("…and the marker says it is not stored yet", mark.startsWith("[attach 1:") && mark.includes("shot.png") && mark.includes("2 KB"), mark);
+
+  const sent = await a.commit(`look at this ${mark} please`);
+  check("sending the line is what stores it", uploads.length === 1, `uploads=${JSON.stringify(uploads)}`);
+  check("…and the marker becomes the stored one", sent === "look at this [attached shot.png] please", sent);
+  check("…and nothing stays pending", a.size === 0);
+
+  // THE CASE THIS EXISTS FOR. Paste, change your mind, delete the marker, send: nothing stored.
+  const b = staging(fake);
+  uploads.length = 0;
+  b.stage(item);
+  const withoutIt = await b.commit("actually never mind");
+  check("a marker deleted before Enter stores nothing", uploads.length === 0 && withoutIt === "actually never mind");
+
+  // Edited into something unrecognisable: also nothing. Failing closed is right, because the
+  // alternative is storing bytes the person can no longer see in their own line.
+  const c = staging(fake);
+  uploads.length = 0;
+  const cm = c.stage(item);
+  const mangled = await c.commit(cm.slice(0, -1));
+  check("a mangled marker stores nothing", uploads.length === 0 && mangled === cm.slice(0, -1));
+
+  // Abandoning the line (Ctrl-C / Ctrl-D) drops what was staged into it.
+  const d = staging(fake);
+  uploads.length = 0;
+  d.stage(item);
+  d.clear();
+  check("clearing drops the staged bytes", d.size === 0 && uploads.length === 0);
+
+  // Two attachments keep their places, in order.
+  const e = staging(fake);
+  uploads.length = 0;
+  const m1 = e.stage({ ...item, filename: "one.png" });
+  const m2 = e.stage({ ...item, filename: "two.png" });
+  const both = await e.commit(`${m1} and ${m2}`);
+  check("two markers commit in place", both === "[attached one.png] and [attached two.png]", both);
+  check("…in the order they were staged", uploads.join(",") === "one.png,two.png", uploads.join(","));
+
+  // A failed upload costs the attachment, never the line: the marker goes rather than lying.
+  const f = staging(() => Promise.reject(new Error("413 too large")));
+  const notes: string[] = [];
+  const survived = await f.commit(`text ${f.stage(item)} more`, (m) => notes.push(m));
+  check("a failed upload still sends the line, without the marker", survived === "text  more", JSON.stringify(survived));
+  check("…and says why", notes.length === 1 && notes[0].includes("413 too large"), notes.join("|"));
 }
 
 console.log(failed === 0 ? "\nok" : `\nFAILED (${failed})`);

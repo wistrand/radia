@@ -66,10 +66,16 @@ draw used, and getting that wrong leaves fragments the erase cannot reach.
 **`Ctrl-V` attaches whatever is on the clipboard**, because the terminal cannot. A TTY carries text,
 so when the clipboard holds a picture the emulator's own paste shortcut has nothing to send and
 sends NOTHING: no character, no error, a key that looks broken. This one asks the desktop instead.
-Text is inserted as an ordinary paste would be, so the key is never the wrong one to press. An image
-or a PDF becomes an artifact and leaves `[attached … artifactId …]` in the message, which is what
-`analyze_image` takes. A file COPIED in a file manager arrives as a path rather than as bytes
-(`text/uri-list`) and is read from disk.
+Text is inserted as an ordinary paste would be, so the key is never the wrong one to press. A file
+COPIED in a file manager arrives as a path rather than as bytes (`text/uri-list`) and is read from
+disk.
+
+**The keystroke STAGES; Enter writes.** An image or a PDF puts `[attach 1: name · type · size]` in
+the line and nothing in the space; sending the line turns it into an artifact and the marker becomes
+`[attached … artifactId …]`, which is what `analyze_image` takes. Delete the marker before pressing
+Enter, or abandon the line, and nothing is stored. Uploading on the keystroke was the first shape
+and it was wrong in one direction that matters: an `artifact` record is never swept, so a mis-paste
+was permanent. See `client/attachments.ts`.
 
 | host | tool | text | image / PDF | file copied in a file manager |
 |---|---|---|---|---|

@@ -52,6 +52,7 @@ import { watchWakeups } from "./client/waiting.ts";
 import { dim, endStatus, lineReader, notice, releaseTerminal, showStatus, watchCancel, write } from "./client/terminal.ts";
 import { reviewGrantRequests } from "./client/grants.ts";
 import { clipboardReader, missingClipboardTool, readClipboard } from "./client/clipboard.ts";
+import { staging } from "./client/attachments.ts";
 import { mediaTypeFor } from "./util.ts";
 import { sleep } from "./util.ts";
 
@@ -311,6 +312,12 @@ async function attach(bytes: Uint8Array, mediaType: string, filename: string): P
   return `[attached ${filename} · ${mediaType} · ${size >= 1024 * 1024 ? `${Math.round(size / 1024 / 1024)} MB` : `${Math.round(size / 1024)} KB`} · artifactId ${id}]`;
 }
 
+/**
+ * Ctrl-V stages; Enter writes. See `client/attachments.ts` for why: an artifact is never swept, so
+ * uploading on the keystroke made a mis-paste permanent.
+ */
+const attachments = staging(({ bytes, mediaType, filename }) => attach(bytes, mediaType, filename));
+
 const nextLine = lineReader({
   onClipboard: async () => {
     const clip = await readClipboard();
@@ -326,14 +333,15 @@ const nextLine = lineReader({
     try {
       if (clip.kind === "bytes") {
         const ext = clip.mediaType.split("/")[1]?.replace("+xml", "") ?? "bin";
-        return await attach(clip.bytes, clip.mediaType, `pasted-${Date.now()}.${ext}`);
+        return attachments.stage({ bytes: clip.bytes, mediaType: clip.mediaType, filename: `pasted-${Date.now()}.${ext}` });
       }
-      // A file copied in a file manager: a path, so the bytes come off disk.
+      // A file copied in a file manager: a path, so the bytes come off disk. Read now (the path may
+      // be gone by the time the line is sent) but stored only on Enter.
       const marks: string[] = [];
       for (const path of clip.paths.slice(0, 4)) {
         const bytes = await Deno.readFile(path);
         const name = path.split("/").pop() || "file";
-        marks.push(await attach(bytes, mediaTypeFor(name), name));
+        marks.push(attachments.stage({ bytes, mediaType: mediaTypeFor(name), filename: name }));
       }
       if (clip.paths.length > marks.length) notice(dim(`clipboard: ${clip.paths.length - marks.length} more file(s) not attached`));
       return marks.join(" ");
@@ -348,9 +356,18 @@ while (true) {
   write("\n");
   // The PROMPT is passed in rather than printed first, because the editor redraws the whole line on
   // every keystroke and has to know what precedes the cursor.
-  const line = await nextLine("you> ");
-  if (line === null) break; // EOF / Ctrl-D, or Ctrl-C on an empty line
-  if (!line.trim()) continue;
+  const staged = await nextLine("you> ");
+  if (staged === null) {
+    attachments.clear(); // abandoning the line abandons what was staged into it
+    break; // EOF / Ctrl-D, or Ctrl-C on an empty line
+  }
+  if (!staged.trim()) {
+    attachments.clear();
+    continue;
+  }
+  // ENTER is what writes the bytes. Everything staged by Ctrl-V and still visible in the line
+  // becomes an artifact here, and nothing else does.
+  const line = await attachments.commit(staged, (m) => notice(dim(m)));
   // A session that cannot be renewed (stopped, or past its maximum lifetime) is over. Say so and
   // stop rather than letting the next write throw: an uncaught `token_expired` killed the REPL and
   // took the conversation's context with it, and the stack trace named the SDK rather than the
