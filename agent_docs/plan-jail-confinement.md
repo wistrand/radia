@@ -128,11 +128,11 @@ It also never protected the operator's OTHER json (browser `logins.json`, assort
 `~/.config/**/*.json`), so it narrowed our blast radius without closing the hole. A confiner closes
 it for every file at once, which is the thing to build.
 
-**The residual, stated rather than discovered later:** on Windows (phase 5) there is no confiner, so
+**The residual, stated rather than discovered later:** on native Windows there is no confiner, so
 this space's own secrets stay reachable there. Renaming would have hidden ours and left every other
 JSON on that machine readable, which is a better-looking report rather than a safer jail. The honest
-Windows answer is the record saying `importsConfined: false`, and not running untrusted code on a
-host where that matters.
+answers are the record saying `importsConfined: false`, and running under WSL2 instead (phase 5),
+where the Linux confiner applies unchanged.
 
 **3. BUILT (2026-08-06): filesystem-only bubblewrap on Linux.** `RunOptions.confine` wraps the
 unchanged permission jail in a mount namespace (`sandbox.ts`), `SandboxSpec.confiner` records which
@@ -256,15 +256,60 @@ matters: stock macOS ships no usable `python3` (since 12.3 `/usr/bin/python3` is
 for Command Line Tools), so it would depend on CLT or Homebrew as well as on the profile. NOT
 verified here; a `python3 -c 'print(1)'` on a clean Mac settles it.
 
-**5. Windows stays unconfined, and the record says so.** No equivalent that is worth the dependency.
-`importsConfined: false` is the honest answer, and the operator sees it.
+**5. Windows: WSL2 is the supported path, and native Windows says it is unconfined.**
+
+WSL2 is not a new platform to support. It IS Linux: Deno reports `Deno.build.os === "linux"`, so
+`defaultConfiner()` already returns `bubblewrap`, the probe already verifies it, and the record
+already says `confiner: "bubblewrap"`. There is nothing to build, which is the whole reason to
+prefer it over a Windows-native confiner: AppContainer or a restricted token would need a helper
+binary, and that is a dependency this project would rather not carry for one platform.
+
+NOT VERIFIED. Nobody has run it, which is exactly where macOS stood before someone did, and that
+run turned up two bugs that "should work" had not predicted. One `deno task extensions` under WSL2
+settles it. The failure mode is safe either way: the confined cases skip, the worker prints
+UNCONFINED at boot, and the record says `importsConfined: false`, so a WSL2 that cannot run
+bubblewrap is reported rather than assumed. WSL**1** has no real kernel and degrades down the same
+path.
+One nuance worth stating, because it decides which answer you get: it is the LINUX `deno` inside
+WSL that reports `linux`. Running `deno.exe` from a WSL shell is still Windows, and still
+unconfined.
+
+**Native Windows keeps the honest posture**: no confiner, `importsConfined: false`, and the boot
+line says so. Declaring WSL2 the supported path changes the RECOMMENDATION, not the behaviour: a
+native Windows host still runs code, still runs it unconfined, and its own secrets stay reachable
+from the jail (see the residual under phase 2). Saying "only WSL2 is supported" is not a mechanism,
+and a doc that implied otherwise would be the same class of claim as a sandbox record that overstates
+its jail.
+
+**BUILT (2026-08-07), and NOT a Windows question: `--require-confinement`.** The exec worker refuses
+to serve at all when no confiner holds. The temptation was to special-case Windows, but the same gap
+exists on a Linux box with no bubblewrap and on a Mac whose profile fails; Windows is only the
+platform where the answer is always no. This is the enforcement half that makes `importsConfined`
+actionable.
+Default OFF, because an unconfined jail is what every host had until the confiners existed and
+turning it off silently would break working setups. Forwarded by `fleet.ts` from
+`RADIA_CHAT_REQUIRE_CONFINEMENT`, so it is the operator's call and the worker is the only thing that
+has to find out whether a confiner actually holds.
+It refuses EVERYTHING rather than declining one tool: a procedure is code execution too, so serving
+those while withholding `run_javascript` would honour the letter of the flag and none of its intent.
+Guarded in `smoke-runners.ts`, with the failing condition made honestly (a worker launched
+`--allow-run=deno` cannot spawn `bwrap`, so nothing can confine however capable the host is).
+The guard is BOUNDED on purpose. The regression it exists for is a flag that is read and never acted
+on, and that shape leaves the worker RUNNING: waiting on it would hang the suite rather than fail
+it, which is the least useful way for a test to be right. Planted, it now fails in 20s saying "the
+flag was read and ignored".
 
 ## Open questions
 
-1. **Does filesystem-only bwrap actually work on the CI runner?** STILL OPEN, and now answerable:
-   phase 3 is built and its cases skip where bubblewrap is unusable, so the next CI run reports it.
-   The reasoning is unchanged (the AppArmor failure was specific to configuring loopback inside a
-   new net namespace, and this variant never creates one), but reasoning is not a measurement.
+1. **Does filesystem-only bwrap work on the CI runner? ANSWERED YES (2026-08-07).** On
+   `ubuntu-24.04`, hosted, the confined cases RAN rather than skipped and passed: the confined jail
+   closes the import hole (59ms), it is probed in JavaScript, and its cache lands where it was told.
+   READ THE CAVEAT before citing this as "filesystem-only is more portable than the full jail". CI
+   relaxes `kernel.apparmor_restrict_unprivileged_userns` first, and with that relaxation the FULL
+   `--unshare-all` also works (the boot check passes). So this run measures "the confined jail works
+   in CI" and does NOT isolate filesystem-only from full: the portability argument for dropping
+   `--unshare-net` rests on the earlier failure and on reasoning, not on this run. A runner without
+   the relaxation would settle it.
 2. **ANSWERED (2026-08-06): `sandbox-exec` works.** Verified on macOS 26.4.1; see phase 4 for the
    profile, the measurement and the traps. The maintainability worry is largely retired by
    `(import "dyld-support.sb")`, which moves the version-sensitive part onto Apple.

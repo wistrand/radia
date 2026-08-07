@@ -622,7 +622,8 @@ export function denoSandbox(opts: RunOptions & { name?: string } = {}): SandboxS
  * A guess by platform, not a verdict: whether it works is what the probe answers, and a caller
  * that gets this wrong falls back rather than failing. Linux gets bubblewrap (which may not be
  * installed or permitted), macOS gets Seatbelt (built in since forever). Windows has no equivalent
- * worth the dependency, so the honest answer there is an unconfined jail that says so.
+ * worth the dependency, so the honest answer there is an unconfined jail that says so, and WSL2 is
+ * the supported path: it reports `linux`, so it takes the bubblewrap branch with nothing added.
  */
 export function defaultConfiner(): "bubblewrap" | "sandbox-exec" | undefined {
   if (Deno.build.os === "darwin") return "sandbox-exec";

@@ -171,6 +171,11 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
     "--token", execToken,
     "--timeout-ms", EXEC_TIMEOUT_MS,
     ...execRoots.flatMap((r) => ["--dir", r]),
+    // Forwarded, not decided here: whether an unconfined jail is acceptable is the operator's call,
+    // and the worker is the only thing that can find out whether a confiner holds. With this set
+    // and no confiner, the worker refuses to serve rather than running code in a jail that does not
+    // bound module loading.
+    ...(Deno.env.get("RADIA_CHAT_REQUIRE_CONFINEMENT") ? ["--require-confinement"] : []),
     // Never readable, whatever the roots say. One entry covers the lot now that a space writes to a
     // single directory: the KEK decrypts every artifact, and the database beside it holds the whole
     // conversation. The per-user credential file is a separate `.radia` under HOME.

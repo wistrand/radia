@@ -13,6 +13,11 @@ export function arg(name: string): string | undefined {
   return i >= 0 ? Deno.args[i + 1] : undefined;
 }
 
+/** A switch with no value: present or absent. */
+export function argOn(name: string): boolean {
+  return Deno.args.includes(name);
+}
+
 /** Every value for a repeatable flag: `--dir a --dir b` -> ["a", "b"]. */
 export function argAll(name: string): string[] {
   const out: string[] = [];

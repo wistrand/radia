@@ -30,7 +30,7 @@ import { captureWorkspace, commitWorkspace, materialize, readWorkspace, validate
 import { bwrapSandbox, defaultConfiner, denoSandbox, runBwrap } from "../../../extensions/ts/sandbox.ts";
 import { declareSandbox, verifySandbox } from "../../../extensions/ts/sandbox-registry.ts";
 import { progress } from "../space/progress.ts";
-import { arg, argAll } from "../util.ts";
+import { arg, argAll, argOn } from "../util.ts";
 import { type CapabilityBody, capabilityKey, publishCapability } from "../space/capability.ts";
 import { bytesFrom, mediaTypeFor } from "../util.ts";
 import type { ToolDef } from "../provider/openrouter.ts";
@@ -62,6 +62,17 @@ const workspaceRoot = arg("--workspace-root") ?? "";
 // worker runs under a confining jail, treat "unreadable by the sandbox" as false for any JSON the
 // worker's own user can read. See extensions/ts/sandbox.ts `importsConfined`.
 const denyRead = argAll("--deny-dir").filter(Boolean);
+/**
+ * Refuse to run code at all unless the jail CONFINES the filesystem.
+ *
+ * Not a Windows switch, though that is the platform where the answer is always no: the same gap
+ * exists on a Linux host without bubblewrap and on a Mac whose profile fails. A read permission
+ * does not bound module loading (agent_docs/plan-jail-confinement.md), so an unconfined jail reads
+ * any JSON its user can read. Off by default, because that unconfined jail is what every host had
+ * until the confiners existed and turning it off silently would break working setups; on, for a
+ * space where model-written code runs anywhere near something that matters.
+ */
+const requireConfinement = argOn("--require-confinement");
 const client = new RadiaClient(url, token ? { token } : {});
 
 /** Stdout longer than this is stored rather than inlined: a large payload in a `tool_result` lands
@@ -537,6 +548,18 @@ let confine: "bubblewrap" | "sandbox-exec" | undefined;
     }).catch((e) => [{ claim: "backend", held: false, detail: String(e) }])
     : [{ claim: "backend", held: false, detail: `no confiner for ${Deno.build.os}` }];
   if (confinedFailed.length === 0) confine = candidate;
+
+  if (!confine && requireConfinement) {
+    // Refusing is the whole point of the flag, and it refuses EVERYTHING: procedures are code
+    // execution too, so serving them while declining `run_javascript` would honour the letter of
+    // this and none of its intent.
+    console.error(
+      "exec worker: REFUSING to serve. --require-confinement is set and no confiner holds on this " +
+        `host (${confinedFailed.map((f) => `${f.claim}: ${f.detail}`).join("; ")}). ` +
+        "Install bubblewrap (Linux, WSL2), run on macOS, or drop the flag to accept an unconfined jail.",
+    );
+    Deno.exit(1);
+  }
 
   const js = confine && confined ? confined : denoSandbox({ name: "deno", readRoots, timeoutMs });
   // The SPACE's own address as the network probe target: this worker can already reach it (that is

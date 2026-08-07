@@ -386,6 +386,62 @@ if (!haveBwrap) {
   await js.proc.status;
 }
 
+// ── --require-confinement ────────────────────────────────────────────────────────────────────────
+//
+// A read permission does not bound module loading, so an unconfined jail reads any JSON its user
+// can read. Off by default (that jail is what every host had until the confiners existed), but a
+// space where model-written code runs near anything that matters can refuse it. The failing
+// condition is made honestly: a worker launched with `--allow-run=deno` cannot spawn `bwrap`, so no
+// confiner can hold however good the host is.
+{
+  const conv = (await admin.put({ kind: "conversation", body: { title: "require confinement" } })).id;
+  const tokens = await bootstrap(admin, { conversationId: conv });
+  const proc = new Deno.Command(Deno.execPath(), {
+    args: [
+      "run",
+      `--allow-net=127.0.0.1:${PORT}`,
+      "--allow-run=deno", // NOT bwrap: nothing here can confine
+      "--allow-env=HOME",
+      `--allow-read=${wsRoot}`,
+      `--allow-write=${wsRoot}`,
+      "examples/chat/workers/exec.ts",
+      "--url",
+      url,
+      "--token",
+      tokens.execToken,
+      "--workspace-root",
+      wsRoot,
+      "--require-confinement",
+    ],
+    stdout: "null",
+    stderr: "piped",
+    stdin: "null",
+  }).spawn();
+  // BOUNDED, because the failure this guards against is a flag that is read and never acted on, and
+  // that shape makes the worker keep RUNNING. Waiting on it would hang the suite instead of failing
+  // it, which is the least useful way for a test to be right.
+  const done = await Promise.race([
+    proc.output().then((o) => o),
+    new Promise<null>((r) => setTimeout(() => r(null), 20_000)),
+  ]);
+  if (!done) {
+    try {
+      proc.kill("SIGKILL");
+    } catch { /* already gone */ }
+    await proc.status;
+  }
+  const err = done ? new TextDecoder().decode(done.stderr) : "";
+  check("--require-confinement refuses to serve when nothing confines", done !== null && done.code !== 0, done ? `exit=${done.code}` : "still running after 20s: the flag was read and ignored");
+  check("…and says what would fix it", /REFUSING to serve/.test(err) && /bubblewrap/.test(err), err.split("\n")[0]?.slice(0, 140));
+  // It refuses EVERYTHING rather than declining one tool: a procedure is code execution too.
+  const served = await admin.query({ kind: "capability", match: { tool: "run_javascript" } }, 50);
+  check(
+    "…and publishes no runner for that conversation",
+    !served.some((r) => (r.body as { by?: string; conversationId?: string }).conversationId === conv),
+    `${served.length} run_javascript capabilities in the space`,
+  );
+}
+
 space.kill();
 await space.status;
 await Deno.remove(wsRoot, { recursive: true }).catch(() => {});
