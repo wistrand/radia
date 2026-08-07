@@ -183,8 +183,31 @@ const results = await admin.query({ kind: "tool_result" }, 200);
 const withProc = results.filter((r) => (r.body as { procedure?: unknown }).procedure);
 check("a procedure call records which procedure served it", withProc.length > 0);
 const lastRun = withProc[withProc.length - 1];
-const cited = (lastRun.body as { procedure: { name: string; recordId: string; artifactId: string } }).procedure;
+const cited = (lastRun.body as { procedure: { name: string; recordId: string; treeDigest?: string } }).procedure;
 check("it cites a record id, not just a name", Boolean(cited.recordId) && cited.name === "add_nums");
+
+// …and the TREE DIGEST, which is the question the record id does not answer. A procedure is a
+// workspace now, so its record names a tree by NAME and that tree keeps changing: without the
+// digest, "which code produced this?" is answerable only until the next edit. This is the
+// tree-shaped replacement for the artifact id a single-artifact procedure used to pin.
+check("…and the DIGEST of the tree that actually ran", Boolean(cited.treeDigest), JSON.stringify(cited));
+const ranTree = await readWorkspace(admin, "proc-add_nums", convA);
+check("…which is the workspace's current head", cited.treeDigest === ranTree?.treeDigest, `${cited.treeDigest} vs ${ranTree?.treeDigest}`);
+
+// THE PROPERTY, not just the field: edit the procedure and the digest MOVES. A stamp that never
+// changes would pass every check above and pin nothing.
+const beforeDigest = cited.treeDigest;
+await callTool("save_procedure", {
+  name: "add_nums",
+  description: "Add args.a and args.b, print the sum, tripled.",
+  code: "console.log((args.a + args.b) * 3);",
+}, convA);
+const after = await callTool("add_nums", { a: 1, b: 1 }, convA);
+check("the edited procedure runs the NEW code", (after.output as { stdout?: string }).stdout?.trim() === "6", JSON.stringify(after.output));
+const afterResults = await admin.query({ kind: "tool_result" }, 200);
+const afterProc = afterResults.filter((r) => (r.body as { procedure?: unknown }).procedure);
+const afterCited = (afterProc[afterProc.length - 1].body as { procedure: { treeDigest?: string } }).procedure;
+check("…and the pinned digest MOVED with the edit", Boolean(afterCited.treeDigest) && afterCited.treeDigest !== beforeDigest, `${beforeDigest} -> ${afterCited.treeDigest}`);
 
 const citedRec = await admin.getRecord(cited.recordId);
 check("the cited record exists and is a procedure", citedRec?.kind === "procedure");

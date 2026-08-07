@@ -428,10 +428,12 @@ Six details carry the weight:
   serving the name later.
 - **A result names the procedure version that produced it.** For `run_javascript` the program is in the
   `tool_call` body, so "what exactly ran" is a query; a procedure call carries only `{tool, args}`
-  and the code can be re-saved, so the `tool_result` records `{procedure: {name, recordId}}` and takes
-  the procedure record as a PARENT. KNOWN GAP since procedures became trees: the record identifies
-  the procedure VERSION but not the tree version it ran, where the old artifact id pinned exact
-  bytes. Recording the digest would close it (plan-executors.md, phase 2). "Which code produced this?" is then a
+  and the code can be re-saved, so the `tool_result` records
+  `{procedure: {name, recordId, treeDigest}}` and takes the procedure record as a PARENT. The DIGEST
+  is the part that pins the code: a procedure is a workspace, its record names that tree by name,
+  and the tree keeps changing, so the record id alone answers "which procedure" and not "which
+  code". It is stamped after materialisation, which has already verified the digest against the
+  bytes on disk. "Which code produced this?" is then a
   lineage walk. It is on the record and not in `output`, because only `output` is serialized back into the
   thread, so provenance costs no context tokens. This exists because a model, asked whether it had
   used a saved procedure, said yes, had not, and invented a reason for the mismatch.

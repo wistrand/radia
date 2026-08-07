@@ -637,7 +637,15 @@ interface Program {
   workspace?: string;
   entrypoint?: string;
   /** Set only for a saved procedure: for a builtin runner the program is in the call body. */
-  provenance?: { name: string; recordId: string; artifactId: string };
+  /**
+   * What produced a result, pinned to the exact code.
+   *
+   * `recordId` names the PROCEDURE version, which is not the same question: a tree-backed procedure
+   * runs whatever its workspace currently holds, so the record alone would leave "which code ran"
+   * one edit away from unanswerable. `treeDigest` is stamped once the tree is materialised, and it
+   * is the tree-shaped equivalent of the `artifactId` a single-artifact procedure pinned.
+   */
+  provenance?: { name: string; recordId: string; artifactId?: string; treeDigest?: string };
 }
 
 /** The materialised tree a run sees, or the absence of one. */
@@ -708,7 +716,9 @@ async function resolveProgram(c: RadiaClient, b: Call): Promise<Program | Refuse
       code: "",
       workspace: proc.workspace,
       entrypoint: proc.entrypoint ?? "main.js",
-      provenance: { name: proc.name, recordId: proc.id, artifactId: proc.artifactId ?? "" },
+      // No `artifactId`: this procedure IS a tree. The digest is stamped below, once the tree is
+      // materialised, rather than read again here.
+      provenance: { name: proc.name, recordId: proc.id },
     };
   }
   // LEGACY: a procedure saved as a lone artifact, before they were trees. Still resolved, because
@@ -1057,6 +1067,11 @@ await agentLoop(client, {
     // call carries arguments, never the code that serves it.
     const tree = await openTree(c, b, callId, program.workspace);
     if (isRefused(tree)) return refusal(b, callId, tree.refused);
+
+    // PIN THE CODE, not just its name. `materialize` verified this digest against the bytes it
+    // wrote, so stamping it here records what actually ran rather than what the registry pointed at
+    // when somebody later goes looking.
+    if (program.provenance && program.workspace && tree.digest) program.provenance.treeDigest = tree.digest;
 
     // WHICH FILE RUNS, and it is only a question when no program was sent. A `code` argument is a
     // throwaway and keeps the stdin path; a tree that declares an entrypoint is run AS ITSELF, from

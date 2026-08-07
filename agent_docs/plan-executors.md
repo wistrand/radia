@@ -83,10 +83,16 @@ resolves. `language: "python"` now genuinely runs in the Python jail (D4).
 Answered: a procedure can be multi-file, can be Python, can be read and edited a line at a time
 with `edit_workspace` instead of re-sent whole, keeps every version, and is a tree an agent could
 later be bound to.
-KNOWN GAP, introduced by this phase and not yet closed: a `tool_result`'s provenance used to carry
-the code's ARTIFACT ID, which pinned exact bytes. A tree-backed procedure records the procedure
-record id, which identifies the procedure version but not which version of the tree ran. Recording
-the manifest's `treeDigest` at resolve time would close it.
+PROVENANCE, and the gap this phase opened before closing it (2026-08-07). A `tool_result` used to
+carry the code's ARTIFACT ID, which pinned exact bytes; a tree-backed procedure's record names a
+workspace by NAME, so the record alone answers "which procedure" and not "which code", and it stops
+answering the moment the tree is edited. The `treeDigest` is now stamped once the tree is
+MATERIALISED rather than read again at resolve time: `materialize` has already verified that digest
+against the bytes it wrote, so what is recorded is what ran.
+Guarded in `smoke-procedures.ts`, and the guard asserts the PROPERTY rather than the field: it edits
+the procedure and requires the pinned digest to MOVE. Planted both ways, since a stamp that is never
+written and a stamp that never changes are different bugs and only the second survives a
+field-exists check.
 Cost, and it is real: a procedure call now materialises a tree, so the exec worker needs a writable
 directory it did not need before. `fleet.ts` always passed one; three standalone smoke launchers
 did not, and now do. A worker without one refuses in words rather than nacking in silence.
