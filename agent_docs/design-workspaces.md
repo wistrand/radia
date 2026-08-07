@@ -16,6 +16,12 @@ How a multi-file working tree lives in a space, and the relationship to git.
 >
 > A workspace and a second LANGUAGE are the same project: a multi-file tree needs an entrypoint
 > declaration, and that is per-language. Read [design-execution.md](design-execution.md) with this.
+>
+> BUILT since: the manifest declares `entrypoint`, and it turned out to be TWO independent choices
+> rather than one, so `{runner, entrypoint}` would have been wrong. The language is a shim and the
+> jail is a `sandbox` record, chosen separately. The entrypoint sits OUTSIDE the tree digest, so the
+> digest attests which FILES and never which one runs; a `binding` carries its own and wins for an
+> agent. See [plan-executors.md](plan-executors.md).
 
 ## Contents
 - Why a workspace at all

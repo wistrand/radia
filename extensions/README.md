@@ -63,8 +63,8 @@ has to meet, in any language.
 
 | Path | Role |
 |--------------------------|--------------------------------------------------------------|
-| `ts/workspace.ts` | multi-file working trees: manifest, tree digest, path safety, materialisation, and `attach` (an artifact that already exists becomes a file in a tree, moving no bytes and becoming a data parent so its labels follow) |
-| `ts/sandbox.ts` | running untrusted code in a permissionless subprocess, plus the spec describing that jail and the probe that tries to escape it. Imports nothing |
+| `ts/workspace.ts` | multi-file working trees: manifest, tree digest, path safety, materialisation, an `entrypoint` the tree declares (OUTSIDE the digest, so re-pointing is not a new promotion, which also means it must join the dedupe check and the content key or changing it is a silent no-op), and `attach` (an artifact that already exists becomes a file in a tree, moving no bytes and becoming a data parent so its labels follow) |
+| `ts/sandbox.ts` | running untrusted code in a jail, plus the spec describing it and the probe that tries to escape. Three backends and, separately, a filesystem CONFINER: a read permission does not bound MODULE LOADING, so an unconfined Deno jail reads any JSON its user can read, and only a mount namespace (bubblewrap) or a Seatbelt profile closes it. `runCode`/`runEntry` are the Deno jail (stdin or a FILE, and a file states its own dialect), `runBwrap` and `runSeatbelt` the other two. Python's Seatbelt profile must `(deny default)` while Deno's may `(allow default)`, because only Deno denies the other axes itself. Imports nothing |
 | `ts/sandbox-registry.ts` | a sandbox as a RECORD: the operator declares, the worker verifies before serving |
 | `ts/git.ts` | a workspace's version history projected into a real git repository. Export only, no dependency, no `git` binary. `buildWorkspaceRepo` returns the objects in memory; the disk export and the HTTP server are two SINKS for one builder, so neither reimplements the correspondence |
 | `ts/git-http.ts` | that history served for `git clone`: routes, the repo cache, and authorization as the CALLER, re-checked when a fetch starts. Both protocols, since the dumb routes cost two `if`s and are what anything without a git client can read. Read-only; push is refused in words |
@@ -77,10 +77,11 @@ has to meet, in any language.
 | `ts/broker.ts` | how jailed code participates without ever holding a credential: the entrypoint gets `(record, space)`, `space` writes PROPOSALS to stdout, and the host performs them under the AGENT's run token. NORMATIVE (the frame format), because this is the boundary between model-written code and an agent's authority. Three properties follow: the host stamps labels and the compartment field from the jail's DECLARED powers, so the code cannot lie about what it touched; every brokered put carries the claimed record as a parent, so it cannot launder lineage either (and the runtime then computes `foreign` on its own); and idempotency keyed on `(claimed record, output ordinal)` makes a retried attempt's writes a replay. `dryRunEntrypoint` rehearses all of that and writes NOTHING: same shim, same frames, same jail, proposals recorded with the host's rules already applied, reads refused because a rehearsal holds no credential. ANY language (a shim in `RUNTIMES`; the host never learns which asked) and ANY backend (`resolveSandbox` reads the binding's `sandboxPattern`), chosen independently. Sharing stdout with an entrypoint that logs is the hard part and is why the framing is normative: a write with no trailing newline used to swallow the next frame and hang the jail until a timeout naming the wrong cause. Both streams are capped and every failure names the exit code and carries the TAIL of stderr, which is where a stack trace keeps its point |
 | `conformance/` | the contract an implementation must meet (`deno task extensions`) |
 
-Two isolation backends ship: `deno-permissions` (JS, safe by ABSENCE of flags) and `bubblewrap`
-(any interpreter, safe by PRESENCE of them). That difference is why every declaration is PROBED
-before it is served — verified directly, a bwrap jail missing `--unshare-all` reaches the network
-while its record still claims it cannot.
+Three isolation backends ship: `deno-permissions` (JS, safe by ABSENCE of flags), `bubblewrap` (any
+interpreter, safe by PRESENCE of them) and `sandbox-exec` (macOS Python, where a Seatbelt profile is
+the whole boundary because Python brings no permission model). Safe-by-presence is why every
+declaration is PROBED before it is served: verified directly, a bwrap jail missing `--unshare-all`
+reaches the network while its record still claims it cannot.
 
 Separately from the backend, a `confiner` bounds the FILESYSTEM: bubblewrap on Linux, `sandbox-exec`
 on macOS, none on Windows. It exists because a read permission does not cover module loading, so a

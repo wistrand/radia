@@ -83,6 +83,10 @@ resolves. `language: "python"` now genuinely runs in the Python jail (D4).
 Answered: a procedure can be multi-file, can be Python, can be read and edited a line at a time
 with `edit_workspace` instead of re-sent whole, keeps every version, and is a tree an agent could
 later be bound to.
+KNOWN GAP, introduced by this phase and not yet closed: a `tool_result`'s provenance used to carry
+the code's ARTIFACT ID, which pinned exact bytes. A tree-backed procedure records the procedure
+record id, which identifies the procedure version but not which version of the tree ran. Recording
+the manifest's `treeDigest` at resolve time would close it.
 Cost, and it is real: a procedure call now materialises a tree, so the exec worker needs a writable
 directory it did not need before. `fleet.ts` always passed one; three standalone smoke launchers
 did not, and now do. A worker without one refuses in words rather than nacking in silence.

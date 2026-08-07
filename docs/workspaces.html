@@ -217,6 +217,13 @@ scraper           9        22  t1:07b3e5c918&#8230;  human:alice</code></pre>
       jails can start two specific binaries and reach the space, and nothing else. The child it
       spawns gets no permissions and no token, so compromising the dangerous half yields a process
       that can print bytes to its parent.
+      <br><br>
+      One caveat, found by measurement rather than reasoning: a permission model bounds the calls a
+      program makes, and in Deno it does <em>not</em> bound what the module loader reads. A jail with
+      no filesystem grant can still <code>import</code> any JSON or JavaScript its user can read. So
+      the filesystem boundary is a second mechanism underneath the permission one, a mount namespace
+      on Linux and a Seatbelt profile on macOS, and each jail record says which one bounds it rather
+      than leaving a reader to assume.
     </div>
   </div>
 </section>

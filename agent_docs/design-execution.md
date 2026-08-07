@@ -5,7 +5,9 @@ stops being true when it does. The single-file path is built (`examples/chat/wor
 dispatches; `extensions/ts/sandbox.ts` is the jail), and so is the workspace path
 (`extensions/ts/broker.ts`).
 
-> **Status: BUILT for TWO backends** (Deno permissions and bubblewrap), with the operator declaring,
+> **Status: BUILT for THREE backends** (Deno permissions, bubblewrap, and a macOS Seatbelt profile
+> for Python), plus a filesystem CONFINER that can sit under the Deno jail on Linux and macOS alike,
+> with the operator declaring,
 > the worker refusing to serve a jail whose claims do not hold, and the probe testing each backend
 > in the language that jail actually runs. `SandboxSpec` and `probeSandbox` are in
 > `extensions/ts/sandbox.ts`, the registry in `extensions/ts/sandbox-registry.ts`.

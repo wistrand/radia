@@ -238,9 +238,9 @@ Traps for the implementer, all hit during verification:
   available the cache is disabled rather than pointed at the host's, which is slower and safe.
   Guarded by "a confined jail's cache is READABLE as well as writable, or it corrupts".
 
-**PYTHON RUNS EVERYWHERE THERE IS A CONFINER (was Linux-only until 2026-08-07).** `run_python` is served only where
-`bwrapSandbox` verifies, and bubblewrap is a Linux tool, so a Mac publishes no `run_python` at all:
-the language is ABSENT rather than broken, which is what the capability-name design is for.
+**PYTHON RUNS EVERYWHERE THERE IS A CONFINER (was Linux-only until 2026-08-07).** `run_python` is
+served where its jail PROBES CLEAN: bubblewrap on Linux, a Seatbelt profile on macOS. On a host with
+neither, the language is ABSENT rather than broken, which is what the capability-name design is for.
 
 Phase 4 does not carry over, and the reason is the whole point of the confiner/runtime split. The
 Deno profile is `(allow default)` plus `(deny file-read*)`, and that is safe ONLY because Deno's

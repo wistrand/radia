@@ -390,7 +390,8 @@ process spawn, remote import, infinite loop, allocation storm, output flood, unc
 **The assistant can give a program a name and keep it** (`save_procedure` / `read_procedure`).
 Without that, reuse means re-typing the whole program into every call, which is what made a
 "hash both files" turn re-transcribe the files into its own source. A saved procedure stores the
-code as an **artifact** and its name/description/schema as a `procedure` record, and then behaves
+code as a **workspace** (`proc-<name>`, with an entrypoint) and its name/description/schema as a
+`procedure` record pointing at it, and then behaves
 exactly like any other tool: it shows up in the tool list on the next turn, is dispatched by
 content (`tool_call{tool: <its name>}`, one claim pattern per name), and its arguments arrive
 inside the sandbox as `args`. Adding a procedure adds a tool with no code change anywhere. That is
@@ -427,8 +428,10 @@ Six details carry the weight:
   serving the name later.
 - **A result names the procedure version that produced it.** For `run_javascript` the program is in the
   `tool_call` body, so "what exactly ran" is a query; a procedure call carries only `{tool, args}`
-  and the code can be re-saved, so the `tool_result` records `{procedure: {name, recordId,
-  artifactId}}` and takes the procedure record as a PARENT. "Which code produced this?" is then a
+  and the code can be re-saved, so the `tool_result` records `{procedure: {name, recordId}}` and takes
+  the procedure record as a PARENT. KNOWN GAP since procedures became trees: the record identifies
+  the procedure VERSION but not the tree version it ran, where the old artifact id pinned exact
+  bytes. Recording the digest would close it (plan-executors.md, phase 2). "Which code produced this?" is then a
   lineage walk. It is on the record and not in `output`, because only `output` is serialized back into the
   thread, so provenance costs no context tokens. This exists because a model, asked whether it had
   used a saved procedure, said yes, had not, and invented a reason for the mismatch.
