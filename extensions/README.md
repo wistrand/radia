@@ -85,8 +85,9 @@ while its record still claims it cannot.
 Separately from the backend, a `confiner` bounds the FILESYSTEM: bubblewrap on Linux, `sandbox-exec`
 on macOS, none on Windows. It exists because a read permission does not cover module loading, so a
 Deno jail without one reads any JSON its user can read (agent_docs/plan-jail-confinement.md).
-Consequence for languages: JavaScript runs everywhere, PYTHON IS LINUX-ONLY, because a confiner is
-all the Deno jail needs and a whole permission model is what Python would need.
+Consequence for languages: both run on Linux and macOS, but not behind the same shape of profile.
+The Deno jail's Seatbelt profile may `(allow default)` because its flags deny every other axis;
+Python's must `(deny default)` and grant upward, because it has no flags at all.
 
 The backend and the LANGUAGE are independent, and neither implies the other. A language
 contributes a broker shim and nothing else (`RUNTIMES`, ~30 lines each for JavaScript and

@@ -461,7 +461,7 @@ export interface SandboxSpec {
    *  that matters more than the name: `deno-permissions` is safe by ABSENCE (forget every flag and
    *  you get the safe answer), while `bubblewrap` is safe by PRESENCE (forget `--unshare-net` and
    *  the jail is silently open). That flip is why every backend is probed before it is served. */
-  isolation: "deno-permissions" | "bubblewrap";
+  isolation: "deno-permissions" | "bubblewrap" | "sandbox-exec";
   network: boolean;
   /** Absolute paths the program may read; empty means no filesystem at all. See `importsConfined`
    *  before believing that: on the Deno backend it bounds file APIS and not module loading. */
@@ -631,6 +631,143 @@ export function defaultConfiner(): "bubblewrap" | "sandbox-exec" | undefined {
   return undefined;
 }
 
+/** Where a macOS Python usually lives. Read AND exec are granted here, because the framework
+ *  interpreter re-execs itself; anything outside stays unreachable. */
+const MACOS_PYTHON_ROOTS = ["/Library/Developer/CommandLineTools", "/opt/homebrew", "/usr/local"];
+
+/**
+ * A Seatbelt profile for PYTHON, which is a different shape from the one for Deno and has to be.
+ *
+ * The Deno profile opens `(allow default)` and denies reads, which is safe ONLY because Deno's own
+ * flags already deny net, env, run, ffi and write. Python has no permission model, so the same shape
+ * would leave everything nobody thought to name (mach lookups, sysctl, IPC, ptrace) allowed. This
+ * one opens `(deny default)` and grants upward, which also means NETWORK IS DENIED FOR FREE: there
+ * is no `(deny network*)` line because nothing allows it.
+ *
+ * The operation list is the part worth stealing rather than rediscovering, and it was: mindsdb's
+ * vsbox enumerates what CPython needs to boot under deny-default (process-fork, signal, sysctl-read,
+ * mach-lookup/register, the POSIX shm quartet). Their threat model is a venv's filesystem rather
+ * than untrusted code, so their `(allow network-outbound)` is exactly what is NOT copied.
+ *
+ * MEASURED on macOS 26.4.1 with CommandLineTools python 3.9.6: it starts, imports the stdlib, reads
+ * its tree and runs an entrypoint, while a path outside the tree, the network, `subprocess` and
+ * writes outside are all refused. Four things that are not obvious:
+ *
+ *   - `(import "dyld-support.sb")` is load-bearing. Without it, scoping the reads at all kills the
+ *     process before Python starts, and SILENTLY: under `(deny default)` even the error path is
+ *     denied, so a broken profile produces no output and no exit code worth reading.
+ *   - The interpreter must be RESOLVED. `/usr/bin/python3` is the xcrun shim, which needs
+ *     `$TMPDIR/xcrun_db` and dies first; and the resolved path is inside a framework that RE-EXECS
+ *     itself through `Resources/Python.app`, which is why exec is allowed for the python roots
+ *     rather than for one literal binary.
+ *   - `cwd` must be inside a readable root. `sys.path[0]` is `''`, meaning the cwd, and Python stats
+ *     it on every import: a cwd outside the allowlist fails every import with a bare
+ *     `PermissionError` naming nothing.
+ *   - `file-map-executable` is NOT needed, though the first attempt carried it. Loading C extensions
+ *     works without it once the cwd is right; it was covering for that bug.
+ */
+export function seatbeltPythonProfile(
+  opts: { readRoots?: string[]; writeRoots?: string[]; cwd?: string; pythonRoots?: string[] },
+): string {
+  const quote = (p: string) => {
+    if (/["\\\n]/.test(p)) throw new Error(`path cannot go in a sandbox profile: ${JSON.stringify(p)}`);
+    return p;
+  };
+  const resolve = (p: string) => {
+    try {
+      return Deno.realPathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  const pythonRoots = (opts.pythonRoots ?? MACOS_PYTHON_ROOTS).map(resolve);
+  const reads = [...new Set([
+    "/usr/lib",
+    "/usr/share",
+    "/System",
+    "/dev",
+    ...pythonRoots,
+    ...(opts.readRoots ?? []).map(resolve),
+    ...(opts.cwd ? [resolve(opts.cwd)] : []),
+  ])];
+  const writes = [...new Set((opts.writeRoots ?? []).map(resolve))];
+  return [
+    "(version 1)",
+    // Everything not named below is refused, network included.
+    "(deny default)",
+    '(import "dyld-support.sb")',
+    "(allow process-fork)",
+    "(allow process-info*)",
+    // Scoped to the python installs: the framework re-execs itself, and nothing else may be started.
+    `(allow process-exec ${pythonRoots.map((p) => `(subpath "${quote(p)}")`).join(" ")})`,
+    "(allow signal)",
+    "(allow sysctl-read)",
+    "(allow mach-lookup)",
+    "(allow mach-register)",
+    "(allow ipc-posix-shm-read-data)",
+    "(allow ipc-posix-shm-write-data)",
+    "(allow ipc-posix-shm-read-metadata)",
+    "(allow ipc-posix-shm-write-create)",
+    // Metadata everywhere, for the path resolution every import performs. It leaks EXISTENCE, which
+    // is the same limitation the Deno profile carries and the reason `confiner` is an enum.
+    "(allow file-read-metadata)",
+    `(allow file-read* ${reads.map((p) => `(subpath "${quote(p)}")`).join(" ")})`,
+    ...(writes.length ? [`(allow file-write* ${writes.map((p) => `(subpath "${quote(p)}")`).join(" ")})`] : []),
+  ].join("\n");
+}
+
+/** Run a program under `sandbox-exec`. `source` is fed on stdin when the command reads it. */
+export async function runSeatbelt(
+  source: string | null,
+  opts: RunOptions & { command: string[]; pythonRoots?: string[] },
+): Promise<RunResult> {
+  const { timeoutMs, maxOutputBytes } = { ...DEFAULTS, ...opts };
+  const profile = seatbeltPythonProfile(opts);
+  return await spawnCaptured("/usr/bin/sandbox-exec", ["-p", profile, ...opts.command], source, timeoutMs, maxOutputBytes, opts.cwd);
+}
+
+/** The interpreter a Seatbelt jail must actually run: `/usr/bin/python3` is the xcrun shim, which
+ *  needs a temp file the profile denies. Resolved once, because it is a filesystem walk. */
+let resolvedPython: string | null | undefined;
+export function macosPython(): string | undefined {
+  if (resolvedPython === undefined) {
+    try {
+      const out = new Deno.Command("/usr/bin/python3", {
+        args: ["-c", "import sys,os;print(os.path.realpath(sys.executable))"],
+        stdout: "piped",
+        stderr: "null",
+      }).outputSync();
+      resolvedPython = out.success ? new TextDecoder().decode(out.stdout).trim() : null;
+    } catch {
+      resolvedPython = null;
+    }
+  }
+  return resolvedPython ?? undefined;
+}
+
+/** A Python jail on macOS: Seatbelt IS the isolation here, because Python brings no permission
+ *  model of its own for it to sit under. */
+export function seatbeltPythonSandbox(
+  opts: RunOptions & { name?: string; interpreter?: string } = {},
+): SandboxSpec {
+  const { timeoutMs, memoryMb } = { ...DEFAULTS, ...opts };
+  return {
+    name: opts.name ?? "python-seatbelt",
+    language: "python",
+    isolation: "sandbox-exec",
+    importsConfined: true,
+    confiner: "sandbox-exec",
+    network: false,
+    readonlyPaths: [...MACOS_PYTHON_ROOTS, "/usr/lib", "/usr/share", "/System", ...(opts.readRoots ?? [])],
+    writablePaths: opts.writeRoots ?? [],
+    processes: false,
+    env: false,
+    memoryMb,
+    timeoutMsMax: timeoutMs,
+    runtime: opts.interpreter ?? macosPython() ?? "python3",
+  };
+}
+
 export interface ProbeResult {
   claim: string;
   held: boolean;
@@ -699,6 +836,7 @@ export async function probeSandbox(
   // a JavaScript jail is probed in JavaScript wherever it runs. Probing it in the other language is
   // not a wrong answer, it is NO answer: the program is a syntax error, the probe never completes,
   // and the claim reports unverified.
+  const seatbeltPython = spec.isolation === "sandbox-exec" && spec.language === "python";
   const python = spec.language === "python" || (bwrap && spec.language !== "javascript");
   const src = python ? py : js;
   const wrap = (body: string) =>
@@ -774,7 +912,15 @@ export async function probeSandbox(
       continue;
     }
     const program = wrap(src[a.claim].replace("__CANARY__", canary ?? "/nonexistent"));
-    const r = bwrap
+    const r = seatbeltPython
+      // The third backend: Seatbelt IS the isolation, so the probe runs Python under the same
+      // profile the runner would build rather than under a jail that merely resembles it.
+      ? await runSeatbelt(program, {
+        ...opts,
+        command: [spec.runtime || "python3", "-"],
+        timeoutMs: opts.timeoutMs ?? PROBE_TIMEOUT_MS,
+      })
+      : bwrap
       ? await runBwrap(program, {
         command: [spec.runtime || "python3", "-"],
         ...(opts.bwrap ?? {}),

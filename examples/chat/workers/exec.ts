@@ -27,7 +27,7 @@ import { activeByKey, newestByKey, RadiaClient, type RadiaRecord } from "../../.
 import { dryRunEntrypoint } from "../../../extensions/ts/broker.ts";
 import { runCode, runEntry } from "../../../extensions/ts/sandbox.ts";
 import { captureWorkspace, commitWorkspace, materialize, readWorkspace, validateEntrypoint, writeWorkspace } from "../../../extensions/ts/workspace.ts";
-import { bwrapSandbox, defaultConfiner, denoSandbox, runBwrap } from "../../../extensions/ts/sandbox.ts";
+import { bwrapSandbox, defaultConfiner, denoSandbox, macosPython, runBwrap, runSeatbelt, seatbeltPythonSandbox } from "../../../extensions/ts/sandbox.ts";
 import { declareSandbox, verifySandbox } from "../../../extensions/ts/sandbox-registry.ts";
 import { progress } from "../space/progress.ts";
 import { arg, argAll, argOn } from "../util.ts";
@@ -586,9 +586,19 @@ let confine: "bubblewrap" | "sandbox-exec" | undefined;
         `${confinedFailed.map((f) => f.claim).join(", ")}. See agent_docs/plan-jail-confinement.md`,
   );
 
-  const py = bwrapSandbox({ command: ["python3", "-"], language: "python", name: "python", timeoutMs });
-  const pyFailed = await verifySandbox(py, { timeoutMs, networkTarget, bwrap: { command: ["python3", "-"], timeoutMs } })
-    .catch((e) => [{ claim: "backend", held: false, detail: String(e) }]);
+  // PYTHON, per platform. Linux confines it with a mount namespace; macOS with a Seatbelt profile,
+  // which has to be `(deny default)` because Python brings no permission model for a filesystem
+  // confiner to sit under. Neither is assumed: whichever the platform suggests is PROBED, and a host
+  // where it does not hold simply has no Python (agent_docs/plan-jail-confinement.md).
+  const macPython = Deno.build.os === "darwin" ? macosPython() : undefined;
+  const py = macPython
+    ? seatbeltPythonSandbox({ name: "python", interpreter: macPython, timeoutMs })
+    : bwrapSandbox({ command: ["python3", "-"], language: "python", name: "python", timeoutMs });
+  const pyFailed = await verifySandbox(py, {
+    timeoutMs,
+    networkTarget,
+    ...(macPython ? {} : { bwrap: { command: ["python3", "-"], timeoutMs } }),
+  }).catch((e) => [{ claim: "backend", held: false, detail: String(e) }]);
   if (pyFailed.length === 0) {
     patterns.push({ kind: "tool_call", match: { tool: "run_python" } });
     await publishCapability(client, RUN_PYTHON, ME);
@@ -856,7 +866,13 @@ async function runProcedure(tree: Tree, entrypoint: string, args: unknown) {
     await Deno.writeTextFile(bootPath, procedureBoot(`${tree.root}/${entrypoint}`, args, jail));
     const roots = [...tree.roots, bootDir];
     return jail === "python"
-      ? await runBwrap(null, { timeoutMs, readRoots: roots, cwd: tree.root, command: ["python3", bootPath] })
+      ? await (() => {
+        // A PROCEDURE in Python takes the same per-platform jail as any other Python run: the boot
+        // directory joins the read roots either way, so the generated program is reachable.
+        const py = pythonCommand();
+        const o = { timeoutMs, readRoots: roots, cwd: tree.root, command: [py.bin, bootPath] };
+        return py.seatbelt ? runSeatbelt(null, o) : runBwrap(null, o);
+      })()
       : await runEntry(bootPath, { timeoutMs, readRoots: roots, denyRead, cwd: tree.root, ...(confine ? { confine, ...jailCache() } : {}) });
   } finally {
     await Deno.remove(bootDir, { recursive: true }).catch(() => {});
@@ -875,6 +891,13 @@ function jailCache(): { cacheDir?: string } {
   return workspaceRoot ? { cacheDir: `${workspaceRoot}/deno-cache` } : {};
 }
 
+/** Which interpreter runs Python here, and whether Seatbelt is what jails it. `/usr/bin/python3` is
+ *  never the answer on macOS: it is the xcrun shim, and the profile denies the temp file it needs. */
+function pythonCommand(): { bin: string; seatbelt: boolean } {
+  const mac = Deno.build.os === "darwin" ? macosPython() : undefined;
+  return mac ? { bin: mac, seatbelt: true } : { bin: "python3", seatbelt: false };
+}
+
 /** RUN: in the tree when there is one, so relative paths resolve as they would in a checkout. */
 function runProgram(code: string, jail: "python" | "javascript", tree: Tree, entry?: string) {
   // The tree, and ONLY the tree: a run that may write gets it for exactly the directory it was
@@ -884,14 +907,19 @@ function runProgram(code: string, jail: "python" | "javascript", tree: Tree, ent
   // A FILE when the tree says how it is run: it carries its own extension, so a `.ts` entrypoint is
   // TypeScript without anything having to guess a dialect, and stdin stays free. A bare `code`
   // argument keeps the stdin path, because a throwaway should not have to become a file first.
+  const py = pythonCommand();
   if (entry) {
     const path = `${tree.root}/${entry}`;
     return jail === "python"
-      ? runBwrap(null, { ...opts, command: ["python3", path] })
+      ? py.seatbelt
+        ? runSeatbelt(null, { ...opts, command: [py.bin, path] })
+        : runBwrap(null, { ...opts, command: [py.bin, path] })
       : runEntry(path, { ...opts, denyRead });
   }
   return jail === "python"
-    ? runBwrap(code, { ...opts, command: ["python3", "-"] })
+    ? py.seatbelt
+      ? runSeatbelt(code, { ...opts, command: [py.bin, "-"] })
+      : runBwrap(code, { ...opts, command: [py.bin, "-"] })
     : runCode(code, { ...opts, denyRead });
 }
 

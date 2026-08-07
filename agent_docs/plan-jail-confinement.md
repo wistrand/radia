@@ -159,6 +159,10 @@ right and the cause was invisible; `probeSandbox` takes a `scratchDir` now. The 
 `RunOptions.confine: "sandbox-exec"` runs the jail under it, and `defaultConfiner()` picks by
 platform so the chat reaches for Seatbelt on macOS and bubblewrap on Linux. Everything below was
 verified by hand on a Mac first; the code is that verification transcribed.
+**VERIFIED BY ITS OWN GUARD on a real Mac (2026-08-07, macOS 26.4.1 arm64):** "on macOS, the
+Seatbelt profile actually closes the import hole" passes in 28ms. Until then only a hand-run session
+had exercised it and the guard had never executed anywhere.
+
 **The implementer was on Linux and could not run it.** So the tests split deliberately: the profile
 BUILDER is a pure function checked on every platform (the dyld import is present, paths are
 resolved through a real symlink, a path that could close an SBPL string is REFUSED rather than
@@ -234,7 +238,7 @@ Traps for the implementer, all hit during verification:
   available the cache is disabled rather than pointed at the host's, which is slower and safe.
   Guarded by "a confined jail's cache is READABLE as well as writable, or it corrupts".
 
-**PYTHON IS LINUX-ONLY, and stays that way (decided 2026-08-06).** `run_python` is served only where
+**PYTHON RUNS EVERYWHERE THERE IS A CONFINER (was Linux-only until 2026-08-07).** `run_python` is served only where
 `bwrapSandbox` verifies, and bubblewrap is a Linux tool, so a Mac publishes no `run_python` at all:
 the language is ABSENT rather than broken, which is what the capability-name design is for.
 
@@ -247,14 +251,55 @@ would need `(deny default)` with an explicit allowlist across reads, writes, net
 mach lookups and sysctls: a different kind of profile, in exactly the territory where one reads
 correctly and is not. On Linux bwrap covers every axis with one flag set, which is the asymmetry.
 
-Two things that would make it tractable IF it is ever wanted, recorded so the next person does not
-re-derive them: `probeSandbox` already tests those axes in Python (network, processes, env,
-filesystem, writable), so a candidate profile would be verified rather than trusted and a wrong one
-would refuse to serve; and the spec split already accommodates it, as a new spec with
-`confiner: "sandbox-exec"` and its own probed claims. There is also a second gate before any of that
-matters: stock macOS ships no usable `python3` (since 12.3 `/usr/bin/python3` is a stub that prompts
-for Command Line Tools), so it would depend on CLT or Homebrew as well as on the profile. NOT
-verified here; a `python3 -c 'print(1)'` on a clean Mac settles it.
+**MEASURED 2026-08-07 on macOS 26.4.1 (arm64, CLT python 3.9.6), and the prediction was half right.**
+A strict profile DOES confine Python: it starts, imports the stdlib, reads its own tree and runs an
+entrypoint, while a path outside the tree, the network, `subprocess` and writes outside are all
+refused. So "not feasible" is not the reason to keep Python on Linux; the reason is what it took.
+
+Five traps, none of them guessable, all hit in one session:
+
+- `/usr/bin/python3` IS THE XCRUN SHIM, not the interpreter, and it needs `$TMPDIR/xcrun_db`, which
+  a read-bounding profile denies: every run dies before Python starts. A runner must resolve to the
+  real interpreter (`os.path.realpath(sys.executable)`).
+- Paths must be RESOLVED, the same trap as phase 4's, hit again by the same author who wrote it down.
+- `file-map-executable` is needed on the framework, SEPARATELY from `file-read*`, or every C
+  extension in the stdlib fails to import.
+- The framework interpreter RE-EXECS ITSELF through `Resources/Python.app`, so `(deny process-exec*)`
+  kills startup. Exec has to be allowed for the framework subpath, which also means the confinement
+  against spawning is "nothing outside this framework" rather than "nothing".
+- `sys.path[0]` is `''`, meaning the CWD, which Python stats on every import. A cwd outside the
+  allowlist fails every import with a bare `PermissionError`. Same class as phase 4's cwd bug.
+
+Also measured: `(deny file-write*)` blocks writing INSIDE the tree too, so a write-back run would
+need its own allow. And the paths above are specific to CLT's framework layout; a Homebrew
+`python3.12` is the same shape with different paths, unverified.
+
+**DECISION REVERSED, and BUILT (2026-08-07). Python runs on macOS, confined.**
+`seatbeltPythonProfile` + `runSeatbelt` + `seatbeltPythonSandbox` in `extensions/ts/sandbox.ts`; the
+chat picks the jail by platform and probes it like any other. Verified on the Mac: the confinement
+case passes, and the whole matrix holds (it reads its tree and imports the stdlib, while a path
+outside, the network, `subprocess` and outside writes are all refused).
+
+What changed the answer was reading prior art (mindsdb/vsbox) instead of grinding the profile out.
+The structural lesson is the one worth keeping, because the first attempt had it backwards:
+
+**A Python profile must `(deny default)`; the Deno one must not.** `(allow default)` plus targeted
+denies is right for Deno ONLY because its flags already deny net, env, run, ffi and write, leaving
+the profile one job. Carrying that shape to Python passes every axis anyone thinks to test and
+leaves the rest (mach lookups, sysctl, IPC, ptrace) open. Deny-default also means the network is
+refused with NO line saying so, which is why the guard asserts the ABSENCE of an allow.
+
+Taken from vsbox: the operation list CPython needs to boot under deny-default (`process-fork`,
+`signal`, `sysctl-read`, `mach-lookup`/`register`, the POSIX shm quartet). NOT taken: their
+`(allow network-outbound)`, since their threat model is a venv's filesystem rather than untrusted
+code; their venv wrapper; and their `sys.addaudithook` guard, which their own README says C
+extensions bypass, making it the same non-boundary as a textual ban on `import`.
+
+Of the five traps predicted earlier, four were real and one was not: `file-map-executable` turned out
+to be UNNECESSARY, and had been covering for the cwd bug. vsbox omits it, which is how the
+discrepancy got noticed. The `(trace)` being dead matters more under deny-default than anywhere
+else, because a broken profile then denies its own error path: the failure is empty output and an
+exit code worth nothing.
 
 **5. Windows: WSL2 is the supported path, and native Windows says it is unconfined.**
 

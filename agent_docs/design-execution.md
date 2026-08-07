@@ -82,16 +82,18 @@ successor, discovered by query. What changes by making it data rather than a wor
 
 ### Which languages a PLATFORM can offer
 
-Built, and asymmetric: JavaScript runs everywhere, Python runs on Linux only. `run_python` is served
-where `bwrapSandbox` verifies and bubblewrap is Linux-only, so a Mac publishes no `run_python` and
-the language is simply absent. That is this section's own rule working rather than a gap.
+Built: JavaScript and Python both run on Linux and macOS, each behind a jail its platform can
+actually enforce, and each PROBED before it is served. Windows has no confiner, so it publishes
+neither under `--require-confinement` and publishes an unconfined JavaScript otherwise.
 
-It is not an accident of packaging, and it will not be closed by adding a macOS confiner. A
+The jails are not the same shape, and the difference is the substance rather than a detail. A
 filesystem confiner is enough for the DENO jail because its permission flags already deny net, env,
-run, ffi and write, leaving one channel to close. Python has no such flags, so confining it means
-bounding every axis in the profile itself. See
-[plan-jail-confinement.md](plan-jail-confinement.md), which records the decision and what it would
-take to revisit.
+run, ffi and write, leaving one channel to close, so its Seatbelt profile can `(allow default)`.
+Python has no such flags, so its profile must `(deny default)` and grant upward: the same shape
+applied to Python would pass every axis anyone tests and leave the rest open. An earlier revision of
+this section concluded from that asymmetry that Python could not be offered on macOS at all. It can;
+the asymmetry is in the PROFILE, not in the platform. See
+[plan-jail-confinement.md](plan-jail-confinement.md).
 
 ### Selection: the capability name is the answer
 

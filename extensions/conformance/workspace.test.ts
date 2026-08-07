@@ -32,7 +32,7 @@ import {
   type WorkspaceManifest,
   writeWorkspace,
 } from "../ts/workspace.ts";
-import { bwrapSandbox, defaultConfiner, denoSandbox, jailArgs, probeSandbox, runBwrap, runCode, runEntry, sandboxExecProfile } from "../ts/sandbox.ts";
+import { bwrapSandbox, defaultConfiner, denoSandbox, jailArgs, macosPython, probeSandbox, runBwrap, runCode, runEntry, runSeatbelt, sandboxExecProfile, seatbeltPythonProfile, seatbeltPythonSandbox } from "../ts/sandbox.ts";
 import { declareSandbox, listSandboxes, readSandbox, SANDBOX_KIND, verifySandbox } from "../ts/sandbox-registry.ts";
 
 const PORT = 7815;
@@ -2035,4 +2035,94 @@ Deno.test("workspace: materialising writes to the root it was GIVEN, not the res
       await Deno.remove(real, { recursive: true });
     }
   });
+});
+
+// ── Python on macOS ──────────────────────────────────────────────────────────────────────────────
+
+Deno.test("sandbox: the Python profile denies by DEFAULT, unlike the one for Deno", () => {
+  // The shape is the whole point, and getting it wrong is silent. The Deno profile opens
+  // `(allow default)` and denies reads, which is safe only because Deno's flags already deny net,
+  // env, run, ffi and write. Python has no permission model, so that shape would leave everything
+  // nobody thought to name allowed. Deny-default also means NETWORK IS REFUSED WITH NO LINE SAYING
+  // SO, which is why this asserts the absence of a deny rather than its presence.
+  const p = seatbeltPythonProfile({ readRoots: ["/tmp"], cwd: "/tmp" });
+  assertStringIncludes(p, "(deny default)");
+  assert(!p.includes("(allow default)"), `the Python profile must not allow by default:\n${p}`);
+  assert(!/\(allow network/.test(p), "nothing may allow the network");
+
+  // The operation list CPython needs to boot under deny-default. Taken from mindsdb/vsbox rather
+  // than rediscovered one crash report at a time, since `(trace)` is dead on modern macOS.
+  for (const op of [
+    "(allow process-fork)",
+    "(allow signal)",
+    "(allow sysctl-read)",
+    "(allow mach-lookup)",
+    "(allow mach-register)",
+    "(allow ipc-posix-shm-read-data)",
+    "(allow ipc-posix-shm-write-create)",
+    "(allow file-read-metadata)",
+  ]) assertStringIncludes(p, op);
+
+  // Load-bearing: without it, scoping the reads kills the process before Python starts, and does it
+  // silently, because under deny-default the error path is denied too.
+  assertStringIncludes(p, '(import "dyld-support.sb")');
+  // Exec is scoped to the python installs, because the framework interpreter re-execs ITSELF.
+  assertStringIncludes(p, "(allow process-exec ");
+  assert(!/\(allow process-exec\)/.test(p), "exec must be scoped, never blanket");
+  // Measured NOT to be needed once the cwd is right; carrying it would be cargo.
+  assert(!p.includes("file-map-executable"), "file-map-executable was covering for the cwd bug");
+  // Resolved, for the same vnode reason as the Deno profile.
+  assertStringIncludes(p, `(subpath "${Deno.realPathSync("/tmp")}")`);
+  // No writes unless asked.
+  assert(!p.includes("(allow file-write*"), "a run that was granted no write root may not write");
+  assertStringIncludes(seatbeltPythonProfile({ writeRoots: ["/tmp"] }), "(allow file-write*");
+});
+
+Deno.test("sandbox: the Python spec says Seatbelt IS its isolation, not a confiner over one", () => {
+  // Deno + Seatbelt is a permission model with a confiner under it. Python + Seatbelt has no
+  // permission model at all, so the profile is the whole boundary and the record has to say that
+  // rather than implying a second layer that is not there.
+  const spec = seatbeltPythonSandbox({ name: "python", interpreter: "/x/python3" });
+  assertEquals(spec.isolation, "sandbox-exec");
+  assertEquals(spec.confiner, "sandbox-exec");
+  assertEquals(spec.importsConfined, true);
+  assertEquals(spec.language, "python");
+  assertEquals(spec.network, false);
+  assertEquals(spec.processes, false);
+});
+
+Deno.test({
+  name: "sandbox: on macOS, Python is confined for real",
+  ignore: Deno.build.os !== "darwin",
+  async fn() {
+    const py = macosPython();
+    assert(py, "no python3 on this Mac; Command Line Tools or Homebrew is the gate");
+    // Never `/usr/bin/python3`: that is the xcrun shim, which needs a temp file the profile denies.
+    assert(!py.startsWith("/usr/bin/python3"), `the interpreter must be resolved, got ${py}`);
+
+    const tree = await Deno.makeTempDir({ prefix: "pytree-" });
+    const secret = await Deno.makeTempDir({ prefix: "pysecret-" });
+    try {
+      await Deno.writeTextFile(`${secret}/creds.txt`, "topsecret");
+      await Deno.writeTextFile(`${tree}/data.txt`, "in-tree");
+      const run = (src: string) =>
+        runSeatbelt(src, { command: [py, "-"], readRoots: [tree], cwd: tree, timeoutMs: 30_000 });
+
+      // It has to WORK, or a jail that refuses everything would pass this by accident.
+      assertStringIncludes((await run('import hashlib,json,socket\nprint(open("data.txt").read().strip())')).stdout, "in-tree");
+
+      for (const [what, src] of [
+        ["a path outside its tree", `print(open("${secret}/creds.txt").read())`],
+        ["the network", 'import socket;socket.create_connection(("1.1.1.1",80),timeout=3);print("NET")'],
+        ["spawning a process", 'import subprocess;subprocess.run(["/bin/echo","S"],check=True)'],
+        ["writing outside", 'open("/tmp/py-escape.txt","w").write("x");print("WROTE")'],
+      ] as [string, string][]) {
+        const r = await run(src);
+        assert(!r.ok, `${what} was NOT refused: ${r.stdout} ${r.stderr.slice(0, 200)}`);
+      }
+    } finally {
+      await Deno.remove(tree, { recursive: true });
+      await Deno.remove(secret, { recursive: true });
+    }
+  },
 });
