@@ -44,49 +44,48 @@ import { listSandboxes } from "./sandbox-registry.ts";
 import { type InvokeContext, type Invoker, treeCache, type TreeCache } from "./host.ts";
 
 /**
- * Frame markers, and why they look like this.
+ * The channel: a PRIVATE pipe pair, not stdout.
  *
- * An entrypoint that logs is NORMAL, so its chatter shares stdout with the protocol and must never
- * be parsed as protocol. Three things keep them apart, and two were added after a plain word
- * prefix was shown to fail:
+ * The host makes two FIFOs in a control directory and passes their paths to the shim: the run
+ * writes requests to `req`, reads replies from `resp`, and a frame is one line of JSON. That is the
+ * whole format. There is no marker, no leading newline and no interleaving rule, because nothing
+ * else writes to these pipes.
  *
- *   - The marker is LONG, DISTINCTIVE AND PRINTABLE. `\x01broker:` came first and was wrong for a
- *     normative surface: a contract that asks another implementation to emit a raw control byte is
- *     a bad contract, the byte is invisible in exactly the diagnostics that exist to explain a
- *     confusing failure (the interleaving error rendered it as `\u0001broker:`), and anything in the
- *     pipeline that sanitises control characters destroys framing silently. `RADIA-BROKER/1:` at
- *     the start of a line is as unlikely as a control byte and can be said out loud. The `/1`
- *     carries the version the old marker had nowhere to put.
- *   - Every frame is written with a LEADING NEWLINE. Without it, output lacking a trailing newline
- *     (`print(..., end="")`, a progress bar, any library that flushes mid-line) prepends itself to
- *     the frame, which then no longer starts its line and is read as chatter. The call is never
- *     answered, the jail blocks on stdin, and the run dies at the timeout naming the wrong cause.
- *     That is the MCP-stdio failure, reproduced against this code before it was fixed.
- *   - A marker found MID-LINE is definite corruption rather than something to ignore: it can only
- *     mean the streams interleaved, and saying so instantly beats a mystery timeout.
+ * IT USED TO BE STDOUT, and the framing rules that needed were the cost. An entrypoint that logs is
+ * NORMAL, so protocol shared a stream with chatter: output lacking a trailing newline
+ * (`print(..., end="")`, a progress bar) prepended itself to the next frame, which no longer started
+ * its line, was read as chatter, and left the jail blocked on an answer that never came until a
+ * timeout naming the wrong cause. Three rules held that off (a long printable marker starting the
+ * line, a leading newline before every frame, a mid-line marker diagnosed as corruption) and all
+ * three were things another implementation had to get exactly right on a NORMATIVE surface.
  *
- * A dedicated file descriptor would end the sharing entirely and is the honest ideal. Not taken:
- * Deno's `Command` exposes no portable extra fd, so it would have to be per backend, which puts
- * the transport back inside the per-language shim that the frame format exists to keep it out of.
+ * A dedicated fd was the honest ideal and was declined because `Command` exposes no portable extra
+ * one. That reasoning missed the filesystem: a FIFO is the extra fd, reached by path. It costs NO
+ * new capability, which is the property that decided it over a unix socket. Measured: Deno gates
+ * unix sockets behind `--allow-net` (scopable to one path, but the jail's no-network posture is
+ * proved by that flag's ABSENCE, and safe-by-absence is worth more than a narrow allow), while a
+ * FIFO needs only read and write on one directory, which a run with an output tree already has.
  *
- * THE CHANNEL IS UNTRUSTED and nothing depends on it being otherwise. Jailed code can print a
- * forged frame and gains nothing by it: the compartment stamp, the labels, the forced parent, the
+ * Deadlock, which is what a pipe gets wrong: opening a FIFO blocks until the other end opens. The
+ * host opens BOTH ends of BOTH pipes (`read: true, write: true`, i.e. O_RDWR) before spawning, which
+ * never blocks, so the child's opens never block either. The cost is that the host never sees EOF,
+ * so the read loop ends on the RESULT frame, or on the child exiting plus a quiet window.
+ *
+ * STDOUT AND STDERR ARE NOW ONLY DIAGNOSTICS, which is what people use them as anyway. A flood is
+ * absorbed rather than fatal: both are drained to a bounded tail.
+ *
+ * THE CHANNEL IS UNTRUSTED and nothing depends on it being otherwise. Jailed code can write a forged
+ * frame and gains nothing by it: the compartment stamp, the labels, the forced parent, the
  * idempotency key and the agent's own grants are applied HOST-side, so a forged call is exactly as
  * constrained as a legitimate one.
  */
-export const BROKER_MARK = "RADIA-BROKER/1:";
-export const RESULT_MARK = "RADIA-RESULT/1:";
 
-/** A marker found anywhere OTHER than the start of a line is the interleaving signal. */
-const marks = (line: string) => line.includes(BROKER_MARK) || line.includes(RESULT_MARK);
-
-/** Jail output the host will buffer before killing the run. Untrusted code that prints in a loop
- *  must not take the host with it, which `runCode` caps for the same reason. */
+/** Frames the host will read from one run before giving up. Untrusted code can write in a loop, and
+ *  the pipe is the one place that still costs the host memory. */
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 
-/** Stderr kept for diagnostics. The TAIL, because the useful line of a stack trace is the last
- *  one, and a cap because the flood protection on stdout is worth nothing if the other stream is
- *  unbounded. Draining continues past the cap: stop reading and the child blocks on a full pipe. */
+/** Diagnostic output kept per stream. The TAIL, because the useful line of a stack trace is the
+ *  last one. Draining continues past the cap: stop reading and the child blocks on a full pipe. */
 const MAX_STDERR_BYTES = 64 * 1024;
 
 /** How long a child that already delivered its result may take to exit on its own. Long enough
@@ -94,9 +93,9 @@ const MAX_STDERR_BYTES = 64 * 1024;
  *  for: a kill only erases the code of a process still running (verified). */
 const EXIT_GRACE_MS = 250;
 
-/** Stderr, bounded and never rejecting. Reached only on paths that are already failing, so a
- *  rejection here would replace a real diagnosis with a stream error. */
-async function drainStderr(stream: ReadableStream<Uint8Array>): Promise<string> {
+/** One diagnostic stream, bounded and never rejecting. A rejection here would replace a real
+ *  diagnosis with a stream error, and both streams are now only ever diagnostics. */
+async function drainStream(stream: ReadableStream<Uint8Array>): Promise<string> {
   const reader = stream.getReader(), dec = new TextDecoder();
   let text = "";
   try {
@@ -123,6 +122,10 @@ export interface BrokerCall {
   op: "put" | "query" | "read_one";
   args: Record<string, unknown>;
 }
+
+/** Everything a shim writes to `req`: a call, or the one terminal frame. `op` is the discriminator,
+ *  so a reader switches on one field and "the run is done" is not a separate shape to parse. */
+export type Frame = BrokerCall | { op: "result"; value: { kind: string; body: unknown } | null };
 
 /** What the host does with a frame. The seam a dry run replaces. */
 export type Performer = (
@@ -181,64 +184,83 @@ export function labelsForJail(opts: { readRoots?: string[]; net?: boolean } = {}
  * a shim, not a second broker, and the host side (perform as the agent, stamp, force the parent,
  * derive the key) never learns which language asked.
  */
+/** The two pipe paths a shim talks over. Absolute, inside a directory the jail can read and write. */
+export interface Channel {
+  /** Requests, child to host. */
+  req: string;
+  /** Replies, host to child. */
+  resp: string;
+}
+
 export interface Runtime {
   /** Matches `SandboxSpec.language`, which is how a sandbox RECORD selects this shim. */
   language: string;
   bootFile: string;
   /** `entrypoint` is an absolute path inside the materialised tree. */
-  boot(entrypoint: string, record: RadiaRecord): string;
+  boot(entrypoint: string, record: RadiaRecord, chan: Channel): string;
 }
 
 /** The program the jail actually runs. Generated, never materialised into the tree: the tree is
  *  content-addressed and adding a file to it would change the digest that identifies the code,
  *  and since phase 6 that directory is shared between claims. */
-function jsBoot(entrypoint: string, record: RadiaRecord): string {
+function jsBoot(entrypoint: string, record: RadiaRecord, chan: Channel): string {
   return `
 const enc = new TextEncoder(), dec = new TextDecoder();
-const reader = Deno.stdin.readable.getReader();
+// Neither open blocks: the host holds both ends of both pipes before this process starts.
+const req = await Deno.open(${JSON.stringify(chan.req)}, { write: true });
+const resp = await Deno.open(${JSON.stringify(chan.resp)}, { read: true });
+const rbuf = new Uint8Array(65536);
 let buf = "";
 async function nextLine() {
   for (;;) {
     const nl = buf.indexOf("\\n");
     if (nl >= 0) { const line = buf.slice(0, nl); buf = buf.slice(nl + 1); return line; }
-    const { value, done } = await reader.read();
-    if (done) throw new Error("broker channel closed");
-    buf += dec.decode(value, { stream: true });
+    const n = await resp.read(rbuf);
+    if (n === null) throw new Error("broker channel closed");
+    buf += dec.decode(rbuf.subarray(0, n), { stream: true });
   }
 }
+async function send(msg) { await req.write(enc.encode(JSON.stringify(msg) + "\\n")); }
 let seq = 0;
 async function call(op, args) {
   const id = ++seq;
-  await Deno.stdout.write(enc.encode("\\n" + ${JSON.stringify(BROKER_MARK)} + JSON.stringify({ id, op, args }) + "\\n"));
+  await send({ id, op, args });
   const reply = JSON.parse(await nextLine());
   if (!reply.ok) throw new Error(reply.error ?? "broker refused");
   return reply.result;
 }
 const space = {
-  put: (req) => call("put", req),
+  put: (r) => call("put", r),
   query: (pattern, limit) => call("query", { pattern, limit }),
   readOne: (pattern) => call("read_one", { pattern }),
 };
 const record = ${JSON.stringify(record)};
 const mod = await import(${JSON.stringify(`file://${entrypoint}`)});
 const out = await mod.default(record, space);
-await Deno.stdout.write(enc.encode("\\n" + ${JSON.stringify(RESULT_MARK)} + JSON.stringify(out ?? null) + "\\n"));
+await send({ op: "result", value: out ?? null });
 `;
 }
 
 /** The same frames from Python. A worker in any language is this file plus a spawn, which is what
  *  "the protocol is the contract" has to mean if it means anything. */
-function pyBoot(entrypoint: string, record: RadiaRecord): string {
+function pyBoot(entrypoint: string, record: RadiaRecord, chan: Channel): string {
   return `
-import json, sys, importlib.util
+import json, importlib.util
+
+# Neither open blocks: the host holds both ends of both pipes before this process starts.
+_req = open(${JSON.stringify(chan.req)}, "w")
+_resp = open(${JSON.stringify(chan.resp)}, "r")
+
+def _send(msg):
+    _req.write(json.dumps(msg) + "\\n")
+    _req.flush()
 
 _seq = 0
 def _call(op, args):
     global _seq
     _seq += 1
-    sys.stdout.write("\\n" + ${JSON.stringify(BROKER_MARK)} + json.dumps({"id": _seq, "op": op, "args": args}) + "\\n")
-    sys.stdout.flush()
-    reply = json.loads(sys.stdin.readline())
+    _send({"id": _seq, "op": op, "args": args})
+    reply = json.loads(_resp.readline())
     if not reply.get("ok"):
         raise RuntimeError(reply.get("error") or "broker refused")
     return reply.get("result")
@@ -252,9 +274,7 @@ record = json.loads(${JSON.stringify(JSON.stringify(record))})
 spec = importlib.util.spec_from_file_location("entrypoint", ${JSON.stringify(entrypoint)})
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-out = mod.main(record, _Space())
-sys.stdout.write("\\n" + ${JSON.stringify(RESULT_MARK)} + json.dumps(out) + "\\n")
-sys.stdout.flush()
+_send({"op": "result", "value": mod.main(record, _Space())})
 `;
 }
 
@@ -304,6 +324,31 @@ export function brokeredInvoker(reader: RadiaClient, opts: BrokerOptions = {}): 
 }
 
 /**
+ * Two named pipes.
+ *
+ * There is no Deno API for this, so it is coreutils, and that is the channel's ONE cost: a host
+ * that brokers needs `--allow-run` to cover `mkfifo` as well as its interpreter. Paid on the HOST
+ * side deliberately. The alternative was a unix socket, which costs the CHILD `--allow-net`, and
+ * the jail's no-network posture is proved by that flag's absence: a capability on the untrusted
+ * side is worth more than one on the trusted side. Found the hard way, by a worker launched
+ * `--allow-run=deno` failing with nothing to read, which is why this names the flag.
+ */
+async function mkfifo(...paths: string[]): Promise<void> {
+  let out: Deno.CommandOutput;
+  try {
+    out = await new Deno.Command("mkfifo", { args: paths, stderr: "piped" }).output();
+  } catch (e) {
+    throw new Error(
+      `the broker could not create its channel: ${e instanceof Error ? e.message : e}. ` +
+        "A host that brokers needs --allow-run to include mkfifo.",
+    );
+  }
+  if (!out.success) {
+    throw new Error(`mkfifo failed (is this a POSIX host?): ${new TextDecoder().decode(out.stderr).trim()}`);
+  }
+}
+
+/**
  * Spawn the jail over a materialised tree and serve its frames.
  *
  * The ONE place the backend is chosen and the boot is written, shared by a real claim and by a DRY
@@ -325,14 +370,29 @@ async function runBrokered(
     // Its own directory, added to the read roots, and removed after the run.
     const bootDir = await Deno.makeTempDir({ dir: opts.bootRoot || undefined, prefix: "radia-boot-" });
     const bootPath = `${bootDir}/${runtime.bootFile}`;
+    // The control directory is SEPARATE from both the boot directory (which stays read-only) and the
+    // output tree (whose walk would try to store a FIFO as a file). It holds two pipes and nothing
+    // else, which is the whole write surface the channel costs.
+    const ctlDir = await Deno.makeTempDir({ dir: opts.bootRoot || undefined, prefix: "radia-ctl-" });
+    const chan: Channel = { req: `${ctlDir}/req`, resp: `${ctlDir}/resp` };
+    let pipes: { req: Deno.FsFile; resp: Deno.FsFile } | undefined;
     try {
-      await Deno.writeTextFile(bootPath, runtime.boot(`${root}/${entrypoint}`, ctx.record));
-      const readRoots = [root, bootDir, ...(ctx.outDir ? [ctx.outDir] : []), ...(opts.run?.readRoots ?? []), ...(spec?.readonlyPaths ?? [])];
+      await mkfifo(chan.req, chan.resp);
+      // O_RDWR on BOTH, before the spawn: opening a FIFO otherwise blocks until the other end opens,
+      // so the host would hang HERE, before spawning anything and ahead of any run timeout. Verified
+      // by planting it, and the plant hangs every case in the suite rather than one. Holding a write
+      // end also means the host never sees EOF, which `serve` handles with a quiet window.
+      pipes = {
+        req: await Deno.open(chan.req, { read: true, write: true }),
+        resp: await Deno.open(chan.resp, { read: true, write: true }),
+      };
+      await Deno.writeTextFile(bootPath, runtime.boot(`${root}/${entrypoint}`, ctx.record, chan));
+      const readRoots = [root, bootDir, ctlDir, ...(ctx.outDir ? [ctx.outDir] : []), ...(opts.run?.readRoots ?? []), ...(spec?.readonlyPaths ?? [])];
       // The OUTPUT tree, per claim, and the only writable path an entrypoint gets. Never `root`:
       // that directory is the agent's CODE, shared between concurrent claims and pinned by the
       // digest the grant promotes, so a run writing into it races its neighbours and changes the
       // identity the pin refers to. Absent unless the binding asked for one (host.ts).
-      const writeRoots = [...(opts.run?.writeRoots ?? []), ...(ctx.outDir ? [ctx.outDir] : [])];
+      const writeRoots = [ctlDir, ...(opts.run?.writeRoots ?? []), ...(ctx.outDir ? [ctx.outDir] : [])];
       // The output tree is the CWD when there is one, so saving a file is `open("chart.png", "wb")`
       // in any language, with nothing added to the entrypoint signature. The boot program imports
       // the entrypoint by absolute path, so nothing here depends on the cwd being the code tree.
@@ -383,24 +443,51 @@ async function runBrokered(
           clearEnv: true,
           env: { HOME: Deno.env.get("HOME") ?? "/tmp", PATH: "/usr/bin:/bin" },
         }).spawn();
-      return await serve(child, ctx, opts);
+      return await serve(child, pipes, ctx, opts);
     } finally {
+      pipes?.req.close();
+      pipes?.resp.close();
       await Deno.remove(bootDir, { recursive: true }).catch(() => {});
+      await Deno.remove(ctlDir, { recursive: true }).catch(() => {});
     }
   }
 }
+
+/**
+ * Keep BOTH ENDS of a diagnostic, because which end carries the message depends on the language.
+ *
+ * A tail-only clip was the first answer and it is right for Python, where the exception message is
+ * the LAST line of a traceback. It is wrong for JavaScript, where `error: Uncaught ...` is the FIRST
+ * line and the frames below it are the part nobody needs: 600 characters of `file:///tmp/...`
+ * stack pushed the real cause off the front, and the failure read as an exit code with no reason.
+ * That is the same shape as the bug where two caps at opposite ends lost the cause between them.
+ * The two ends are sized for what each has to catch, not split evenly: the head only needs a first
+ * line, the tail needs a message that sits ABOVE a stack (an even split starved it and dropped the
+ * cause of a flood).
+ */
+function clip(text: string, head = 300, tail = 700): string {
+  if (text.length <= head + tail) return text;
+  return `${text.slice(0, head)}\n…\n${text.slice(-tail)}`;
+}
+
+/** How long the host keeps reading a quiet pipe after the child has exited. The host holds a write
+ *  end, so there is no EOF to wait for: a window with nothing arriving is the drained signal. Only
+ *  ever paid on the failure path, since a run that delivered a result stops at the frame. */
+const DRAIN_QUIET_MS = 50;
 
 /** The host side of the channel: read frames, perform them as the agent, answer, and collect the
  *  entrypoint's return value. */
 async function serve(
   child: Deno.ChildProcess,
+  pipes: { req: Deno.FsFile; resp: Deno.FsFile },
   ctx: InvokeContext,
   opts: BrokerOptions,
 ): Promise<{ kind: string; body: unknown }> {
   const enc = new TextEncoder(), dec = new TextDecoder();
-  const writer = child.stdin.getWriter();
-  const reader = child.stdout.getReader();
-  const stderr = drainStderr(child.stderr);
+  // Both streams are diagnostics now, so both are absorbed rather than parsed: a flood costs a
+  // bounded tail instead of killing the run, and neither can corrupt the channel.
+  const stderr = drainStream(child.stderr);
+  const stdout = drainStream(child.stdout);
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
@@ -409,66 +496,55 @@ async function serve(
     } catch { /* already gone */ }
   }, opts.timeoutMs ?? 15_000);
 
+  const exited = child.status.then((st) => st).catch(() => undefined);
+  const rbuf = new Uint8Array(64 * 1024);
   let buf = "";
   let bytes = 0;
   let result: { kind: string; body: unknown } | undefined;
   let ordinal = 0;
   let failure: string | undefined;
   let status: Deno.CommandStatus | undefined;
-  const chatter: string[] = [];
-  /** A frame's payload, or a failure naming the frame rather than a parse offset inside it. */
-  const parse = <T>(line: string, mark: string): T | undefined => {
-    try {
-      return JSON.parse(line.slice(mark.length)) as T;
-    } catch {
-      failure = `malformed frame from the entrypoint: ${line.slice(0, 200)}`;
-      return undefined;
-    }
-  };
   try {
     outer: for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      bytes += value.byteLength;
+      // The read never settles on an idle pipe, so it races a quiet window that only opens once the
+      // child is gone. Read FIRST in the array: with both already settled, a frame still in the
+      // pipe wins over the window, which is what stops a result being dropped by a fast exit.
+      const n = await Promise.race([
+        pipes.req.read(rbuf),
+        exited.then(() => new Promise<"drained">((r) => setTimeout(() => r("drained"), DRAIN_QUIET_MS))),
+      ]);
+      if (n === "drained" || n === null) break;
+      bytes += n;
       if (bytes > MAX_OUTPUT_BYTES) {
-        failure = `the entrypoint wrote more than ${MAX_OUTPUT_BYTES} bytes to stdout`;
+        failure = `the entrypoint wrote more than ${MAX_OUTPUT_BYTES} bytes of frames`;
         break;
       }
-      buf += dec.decode(value, { stream: true });
+      buf += dec.decode(rbuf.subarray(0, n), { stream: true });
       for (;;) {
         const nl = buf.indexOf("\n");
         if (nl < 0) break;
         const line = buf.slice(0, nl);
         buf = buf.slice(nl + 1);
-        if (line.startsWith(BROKER_MARK)) {
-          const call = parse<BrokerCall>(line, BROKER_MARK);
-          if (!call) break outer;
-          const reply = await (opts.perform ?? perform)(call, ctx, opts, () => ++ordinal);
-          await writer.write(enc.encode(JSON.stringify(reply) + "\n"));
-        } else if (line.startsWith(RESULT_MARK)) {
-          result = parse<{ kind: string; body: unknown }>(line, RESULT_MARK);
+        if (line.length === 0) continue;
+        let frame: Frame;
+        try {
+          frame = JSON.parse(line);
+        } catch {
+          // Nothing but the shim writes here, so this is a broken shim rather than interleaving,
+          // and naming the line beats a parse offset inside it.
+          failure = `malformed frame from the entrypoint: ${line.slice(0, 200)}`;
           break outer;
-        } else if (marks(line)) {
-          // A marker that is not at the start of its line can only mean the entrypoint's own
-          // output interleaved with a frame. Diagnosed here rather than left to the timeout,
-          // which would blame the wrong thing fifteen seconds later.
-          failure = "the entrypoint's stdout interleaved with the broker channel " +
-            `(a write with no trailing newline, just before a call): ${line.slice(0, 200)}`;
-          break outer;
-        } else if (line.length > 0) {
-          if (chatter.length < 50) chatter.push(line);
         }
+        if (frame.op === "result") {
+          result = frame.value ?? undefined;
+          break outer;
+        }
+        const reply = await (opts.perform ?? perform)(frame, ctx, opts, () => ++ordinal);
+        await pipes.resp.write(enc.encode(JSON.stringify(reply) + "\n"));
       }
     }
   } finally {
     clearTimeout(timer);
-    await writer.close().catch(() => {});
-    // Keep draining stdout while the child winds down. Cancelling here instead would break its
-    // pipe, and a runtime that logs one line after the result (Python raises BrokenPipeError)
-    // would exit non-zero for a fault the host caused.
-    const rest = (async () => {
-      for (;;) if ((await reader.read()).done) return;
-    })().catch(() => {});
     status = await Promise.race([
       child.status,
       new Promise<undefined>((r) => setTimeout(() => r(undefined), result ? EXIT_GRACE_MS : 0)),
@@ -479,13 +555,11 @@ async function serve(
       } catch { /* already exited */ }
       status = await child.status.catch(() => undefined);
     }
-    await rest;
-    reader.cancel().catch(() => {});
   }
   // Stderr goes on EVERY failure, not just the empty one. A traceback is the whole diagnosis and
   // it used to be dropped on exactly the paths that needed it: timeout, corruption, flood.
-  const why = (await stderr).trim() || chatter.join(" | ");
-  const detail = why ? `: ${why.slice(-600)}` : "";
+  const why = (await stderr).trim() || (await stdout).trim();
+  const detail = why ? `: ${clip(why)}` : "";
   // A channel failure is reported BEFORE the timeout, because a corrupted channel usually causes
   // one: the jail waits on an answer that can never come. Naming the cause is the whole point.
   if (failure) throw new Error(failure + detail);
@@ -500,6 +574,25 @@ async function serve(
   return result;
 }
 
+/**
+ * Why a put was refused, in terms of the CALL the code made rather than the field the host wanted.
+ *
+ * "put needs a kind" was the whole message, and a model that had written `space.put("result", out)`
+ * got no hint that the problem was positional arguments. The signature is the thing to restate: it
+ * is the one part of the contract a shim's author cannot see from inside the jail.
+ */
+function whyNotAPut(args: unknown): string | undefined {
+  if (typeof args !== "object" || args === null || Array.isArray(args)) {
+    return `space.put takes ONE object, space.put({kind, body}), and received ${
+      Array.isArray(args) ? "an array" : typeof args
+    }. Positional arguments (space.put("kind", body)) are not the shape.`;
+  }
+  if (typeof (args as { kind?: unknown }).kind !== "string") {
+    return "space.put({kind, body}) needs a string `kind`, which is what routes the record.";
+  }
+  return undefined;
+}
+
 /** One proposal, performed as the AGENT. Every host-side rule lives here, because this is the one
  *  place the jail's output becomes a write. */
 async function perform(
@@ -510,8 +603,9 @@ async function perform(
 ): Promise<BrokerReply> {
   try {
     if (call.op === "put") {
-      const req = call.args as { kind?: unknown; body?: unknown; parentIds?: unknown; taint?: unknown };
-      if (typeof req.kind !== "string") throw new Error("put needs a kind");
+      const bad = whyNotAPut(call.args);
+      if (bad) throw new Error(bad);
+      const req = call.args as { kind: string; body?: unknown; parentIds?: unknown; taint?: unknown };
       const body = { ...(req.body as Record<string, unknown> ?? {}), ...(opts.stamp ?? {}) };
       const declared = Array.isArray(req.taint) ? req.taint.map(String) : [];
       // Lineage the code does not get to omit, labels it does not get to withhold.
@@ -567,10 +661,9 @@ export interface Proposal {
 export function recordingPerformer(into: Proposal[]): Performer {
   return (call, ctx, opts, nextOrdinal) => {
     if (call.op === "put") {
-      const req = call.args as { kind?: unknown; body?: unknown; parentIds?: unknown; taint?: unknown };
-      if (typeof req.kind !== "string") {
-        return Promise.resolve({ id: call.id, ok: false, error: "put needs a kind" });
-      }
+      const bad = whyNotAPut(call.args);
+      if (bad) return Promise.resolve({ id: call.id, ok: false, error: bad });
+      const req = call.args as { kind: string; body?: unknown; parentIds?: unknown; taint?: unknown };
       const ordinal = nextOrdinal();
       const proposal: Proposal = {
         ordinal,

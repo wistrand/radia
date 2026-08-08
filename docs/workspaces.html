@@ -225,6 +225,17 @@ scraper           9        22  t1:07b3e5c918&#8230;  human:alice</code></pre>
       on Linux and a Seatbelt profile on macOS, and each jail record says which one bounds it rather
       than leaving a reader to assume.
     </div>
+
+    <p>
+      Code that runs this way still has to produce something, and the answer is the same tree idea
+      pointed the other way: a run saves <em>files</em>, into a directory that becomes a new version
+      of an output workspace when the run ends. That is what makes a chart, a PDF or a compiled
+      binary expressible at all, since a record holds JSON and the channel back to the space carries
+      lines of text. It also explains a rule that looks arbitrary until you hit it: a run never
+      writes into the tree it runs <em>from</em>. That tree is the code, shared between everything
+      running the same version and named by its own digest, so a program editing it would change
+      what that name refers to while its neighbours were still reading it.
+    </p>
   </div>
 </section>
 

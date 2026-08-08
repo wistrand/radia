@@ -118,6 +118,19 @@ The residual seam stays visible and was NOT papered over: a tool call carries ar
 agent handles a record, so `default(args)` and `default(record, space)` are still two signatures.
 A single file serves both only if it ignores the second argument.
 
+Three things a live session then found, all of them about what the CALLER is told (2026-08-08):
+- A REHEARSAL'S FAILURE IS ITS ANSWER. It used to throw, so the loop nacked, at-least-once ran the
+  same doomed code six more times, and the caller got a timeout while the diagnosis went to the
+  terminal. Two bugs hid this way for a session each. Infrastructure faults return the same way on
+  purpose: a jail the worker cannot start is something the caller needs told.
+- `write` WITH `record` is REFUSED, not ignored. The flags mean different things (`write` lets a
+  program change its TREE; a rehearsal never writes RECORDS by design), and silence sent a model
+  looking for another way to run the tree "for real": it added an `import.meta.main` guard, so the
+  code ran as a PROGRAM rather than as the agent, which is the one thing the rehearsal checks.
+- The `space` API belongs in the TOOL DESCRIPTION. It said the entrypoint is called as
+  `default(record, space)` and stopped, so a model guessed `space.put("result", out)`. The host now
+  names the signature in the refusal, and the description names all three methods and the await.
+
 **4. Scratch snippets as workspaces. CLOSED, not built (2026-08-06).** It contradicts D1, which is
 the later decision and the right one: a throwaway has no identity, and giving every arithmetic
 question a manifest and a permanent blob buys nothing. Kept here as a REJECTED option rather than

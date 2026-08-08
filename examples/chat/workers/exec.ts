@@ -151,7 +151,11 @@ function runJavascriptDef(pythonServed: boolean): ToolDef {
           type: "object",
           description:
             "REHEARSE the workspace's entrypoint the way an AGENT would run it: it is called as " +
-            "default(record, space), where this object becomes record.body. Everything it writes " +
+            "default(record, space), where this object becomes record.body. `space` has exactly " +
+            "three methods, each taking ONE argument and returning a promise you must AWAIT: " +
+            "space.put({kind, body}) (positional arguments are not the shape, and an un-awaited " +
+            "put fails AFTER your result, which is reported as the run failing), " +
+            "space.query(pattern, limit) and space.readOne(pattern). Everything it writes " +
             "through `space` is RECORDED, not written, and comes back as `wouldWrite` with the " +
             "parts the host adds (the claimed record as a parent, the jail's labels). Reads are " +
             "refused in a rehearsal. Use this to check an entrypoint before anything is bound to " +
@@ -430,7 +434,13 @@ const RUN_PYTHON: ToolDef = {
             "workspace's own declared entrypoint runs, which is the same file an agent bound to " +
             "this tree would run. Needs `workspace`, and must name a file that is in it.",
         },
-        write: { type: "boolean", description: "Let the program change the workspace; changes become a new version." },
+        write: {
+          type: "boolean",
+          description:
+            "Let the program change the workspace; changes become a new version. This is about the " +
+            "TREE, not the space: it does not make a rehearsal write records, and passing it with " +
+            "`record` is refused rather than ignored.",
+        },
         save_as: { type: "string", description: "Filename to store COMPUTED stdout under as an artifact." },
         media_type: { type: "string" },
         encoding: { type: "string", enum: ["utf8", "base64"] },
@@ -1112,7 +1122,31 @@ await agentLoop(client, {
       if (!entry || !tree.root) {
         return refusal(b, callId, "`record` runs a workspace's ENTRYPOINT, so pass `workspace` (and give the tree an entrypoint)");
       }
-      const dry = await dryRunEntrypoint({
+      // Silently ignoring this sent a model looking for another way to "really" run the tree, and
+      // what it found was adding an `import.meta.main` guard so a plain run would execute: the code
+      // then ran as a PROGRAM rather than as the agent, which is the one thing a rehearsal exists to
+      // check. The two flags also mean different things, so neither reading was going to happen.
+      if (b.args?.write) {
+        return refusal(
+          b,
+          callId,
+          "`write` and `record` cannot be combined. A rehearsal writes NOTHING by design: the records " +
+            "an entrypoint proposes have to be written by the agent the code is bound to, under its own " +
+            "grants, and `wouldWrite` shows you exactly what that run would produce. (`write` means " +
+            "something else again: letting a program change its own workspace tree.) For a real run, " +
+            "bind the tree to an agent and let a host claim its work.",
+        );
+      }
+      // A REHEARSAL'S FAILURE IS ITS ANSWER, never a fault to retry. Letting this throw nacks, and
+      // at-least-once then runs the same doomed code five more times while the model waits for a
+      // tool result that never arrives: the diagnosis reaches the terminal and nobody else. Both
+      // bugs found this way (a channel the host could not create, a put with positional arguments)
+      // were fully explained in a message the model never saw. Infrastructure faults are returned
+      // here too, deliberately: a jail this worker cannot start is something the person asking
+      // needs told, and a silent retry loop is how the last one hid for a whole session.
+      let dry: Awaited<ReturnType<typeof dryRunEntrypoint>>;
+      try {
+        dry = await dryRunEntrypoint({
         root: tree.root,
         entrypoint: entry,
         record: { id: `dry-run:${callId}`, kind: "exec_request", body: b.args.record } as unknown as RadiaRecord,
@@ -1122,7 +1156,15 @@ await agentLoop(client, {
         // A rehearsal runs in the same jail a real claim would, confiner included.
         ...(confine ? { run: { confine, ...jailCache() } } : {}),
         ...(jail === "python" ? { spec: { name: "dry", language: "python", isolation: "bubblewrap" } as never } : {}),
-      });
+        });
+      } catch (e) {
+        await captureTree(c, tree, { stdout: "", stderr: "", ok: false, exitCode: 1, timedOut: false, truncated: false, ms: 0 });
+        return refusal(
+          b,
+          callId,
+          `the rehearsal of ${tree.name}/${entry} failed, and nothing was written: ${String(e instanceof Error ? e.message : e).slice(0, 2000)}`,
+        );
+      }
       await captureTree(c, tree, { stdout: "", stderr: "", ok: true, exitCode: 0, timedOut: false, truncated: false, ms: 0 });
       return {
         kind: "tool_result",

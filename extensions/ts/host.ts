@@ -74,12 +74,14 @@ export interface Binding {
 }
 
 /**
- * The result marker this invoker's boot program prints.
+ * The result marker this invoker's boot program prints on stdout.
  *
- * The same string `broker.ts` uses, and duplicated rather than imported because the dependency runs
- * the other way (broker imports host). Printable and versioned for the reasons that file states: a
- * raw control byte is invisible in the diagnostics meant to explain a confusing failure, and it does
- * not survive anything that sanitises control characters. A contract case asserts the two agree.
+ * The LAST marker in the codebase, and it survives for a reason the broker's did not: this invoker
+ * is ONE-WAY. It sends nothing to the child and reads one value at the end, so the failure the
+ * broker's pipe channel exists to prevent (a partial write swallowing a frame, then a deadlock
+ * waiting on a reply that can never come) has no reply to wait on here. The worst case is a
+ * corrupted result line, reported as "produced no result". Printable and versioned so a person can
+ * read it in a diagnostic and say it out loud; `\x01radia:` was neither.
  */
 export const RESULT_MARK = "RADIA-RESULT/1:";
 

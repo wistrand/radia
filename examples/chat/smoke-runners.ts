@@ -113,7 +113,10 @@ async function call(conv: string, tool: string, args: Record<string, unknown>) {
   });
   for (let i = 0; i < 200; i++) {
     const r = await admin.readOne({ kind: "tool_result", match: { callId: id } });
-    if (r) return { id, output: (r.body as { output: Record<string, unknown> }).output };
+    if (r) {
+      const body = r.body as { output: Record<string, unknown>; ok?: boolean };
+      return { id, output: body.output, ok: body.ok !== false };
+    }
     await new Promise((res) => setTimeout(res, 200));
   }
   throw new Error(`no tool_result for ${tool}`);
@@ -351,7 +354,21 @@ if (!haveBwrap) {
 // is exactly where "passes in chat, fails in prod" lives. A rehearsal runs the real shim, the real
 // frames and the real jail, and records what would have been written instead of writing it.
 {
-  const js = await startWorker("rehearsal", "--allow-run=deno");
+  // `mkfifo` alongside `deno`: the broker's channel is a pipe pair on the filesystem, so a host
+  // that rehearses an entrypoint spawns one coreutils binary as well as its interpreter.
+  const js = await startWorker("rehearsal", "--allow-run=deno,mkfifo");
+
+  // THE REAL LAUNCHER, checked as text, because this suite passing says nothing about the fleet the
+  // chat actually starts: the same missing name shipped there and only surfaced in a live session,
+  // as six nacks and a tool timeout. A permission list out of sync with what the code spawns is not
+  // something a run of this file can notice.
+  const fleet = await Deno.readTextFile(new URL("./client/fleet.ts", import.meta.url));
+  const allowRun = fleet.match(/"--allow-run=([^"]*)"/)?.[1] ?? "";
+  check(
+    "the fleet's exec worker may spawn the broker's mkfifo, not only its jails",
+    allowRun.split(",").includes("mkfifo"),
+    `--allow-run=${allowRun}`,
+  );
   await writeWorkspace(admin, {
     name: "agentish",
     owner: "agent:chat-user",
@@ -379,6 +396,33 @@ if (!haveBwrap) {
     (out.wouldWrite?.[0].parentIds ?? []).length === 1,
     JSON.stringify(out.wouldWrite?.[0].parentIds),
   );
+  // A REHEARSAL THAT FAILS ANSWERS ANYWAY. The failure used to nack, so at-least-once ran the same
+  // doomed code six times and the model got a timeout instead of the diagnosis, which is how two
+  // separate bugs stayed invisible to everyone except whoever was watching the terminal.
+  await writeWorkspace(admin, {
+    name: "agentish-broken",
+    owner: "agent:chat-user",
+    conversationId: js.conv,
+    files: {
+      "main.ts": "export default async (record: any, space: any) => {\n" +
+        "  await space.put('note', { tag: 'positional' });\n" +
+        "  return { kind: 'exec_result', body: {} };\n" +
+        "};\n",
+    },
+    entrypoint: "main.ts",
+  });
+  const broke = await call(js.conv, "run_javascript", { workspace: "agentish-broken", record: { job: "x" } });
+  check("a rehearsal that FAILS still answers, rather than nacking until the call times out", broke.ok === false, JSON.stringify(broke).slice(0, 100));
+  check("…and the answer carries the diagnosis the model needs to fix its code", String(broke.output).includes("space.put({kind, body})"), String(broke.output).slice(0, 160));
+
+  // `write` WITH `record` used to be ignored in silence, and a model that wanted a real run went
+  // looking for another way: it added an `import.meta.main` guard so a plain call would execute,
+  // which runs the tree as a PROGRAM rather than as the agent. A refusal that names the two
+  // meanings costs one turn; a silent no-op cost a redesign of the file.
+  const combined = await call(js.conv, "run_javascript", { workspace: "agentish", record: { job: "x" }, write: true });
+  check("`write` with `record` is refused, not quietly ignored", combined.ok === false, JSON.stringify(combined).slice(0, 90));
+  check("…and the refusal says where a real run comes from", String(combined.output).includes("bind the tree to an agent"), String(combined.output).slice(-60));
+
   // The assertion the feature rests on: a rehearsal is not a run.
   const notes = await admin.query({ kind: "note" }, 10);
   check("…and NOTHING was written", notes.length === 0, `${notes.length} notes`);

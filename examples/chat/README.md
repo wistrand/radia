@@ -167,8 +167,8 @@ flowchart TB
     SP -->|"take {tool_call, tool}"| T["tools<br/>agent:chat-tools<br/>sandboxed reads, no env"]
     SP -->|"take {tool_call, generate_image · analyze_image}"| G["images<br/>agent:chat-images<br/>API key, no files"]
     SP -->|"take {tool_call, run_javascript · run_python · save_procedure · &lt;saved name&gt;}"| X["exec<br/>agent:chat-exec<br/>--allow-run, no key, no files"]
-    X -->|"program on stdin"| SB["deno run -<br/>NO permissions at all"]
-    SB -->|"stdout / stderr"| X
+    X -->|"snippet on stdin · or a workspace tree"| SB["deno run<br/>jailed, confined"]
+    SB -->|"stdout / stderr · broker frames on a pipe"| X
     T -->|"tool_result · artifact (save_content)"| SP
     G -->|"artifact + tool_result (a reference)"| SP
     X -->|"tool_result (labelled) · artifact (save_as)"| SP
@@ -264,7 +264,7 @@ narrowest set that lets it do its job, and no two dangerous capabilities meet in
 | **router** | `--allow-net --allow-env` | none | dispatches; never calls a model directly |
 | **images** | `--allow-net --allow-env` | `OPENROUTER_API_KEY` | no file access |
 | **tools** | `--allow-read=<sandbox dirs>`, `--allow-net=127.0.0.1:<port>` | none | **no `--allow-env`** |
-| **exec** | `--allow-run=deno`, `--allow-net=127.0.0.1:<port>`, `--allow-env=HOME` | run token | never executes anything itself |
+| **exec** | `--allow-run=deno,bwrap,mkfifo`, `--allow-net=127.0.0.1:<port>`, `--allow-env=HOME`, `--allow-{read,write}=<workspace root>` | run token | never executes anything itself. Three names, and only two are jails: `mkfifo` is the broker's channel (a pipe pair on the filesystem), needed to rehearse an entrypoint |
 | ↳ **the sandbox** | *nothing* (optionally `--allow-read=<exec dirs>`) | none | spawned per call, killed on timeout |
 
 The two that matter most: the process that can read files (**tools**) cannot reach the network

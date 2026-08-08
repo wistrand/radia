@@ -146,8 +146,12 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
   // Exec: may spawn `deno` and `bwrap` and reach the space, nothing else. The child it spawns gets no
   // permissions at all (extensions/ts/sandbox.ts), so the dangerous half of the pair holds no credential.
   //
-  // TWO NAMES, because a language is a capability name and each one has its own jail: `deno` runs
-  // `run_javascript`, `bwrap` runs `run_python`. Naming both is not the same as granting both, since
+  // THREE NAMES. Two are jails, because a language is a capability name and each one has its own:
+  // `deno` runs `run_javascript`, `bwrap` runs `run_python`. The third is `mkfifo`, which is not a
+  // jail: rehearsing an entrypoint goes through the BROKER, whose channel is a pipe pair on the
+  // filesystem, and there is no Deno API for making one. That cost was accepted deliberately over a
+  // unix socket, which would have needed `--allow-net` in the JAIL rather than one coreutils binary
+  // out here (extensions/ts/broker.ts). Naming both jails is not the same as granting both, since
   // the worker PROBES each jail at boot and publishes nothing for one that fails. On a host without
   // bubblewrap the permission is simply unused and Python is absent, which is the honest outcome.
   // Listing the binaries rather than passing a bare `--allow-run` matters: bare means ANY executable,
@@ -161,7 +165,7 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
   // very process meant to read it.
   procs.push(spawn("exec", [
     `--allow-net=127.0.0.1:${port}`,
-    "--allow-run=deno,bwrap",
+    "--allow-run=deno,bwrap,mkfifo",
     "--allow-env=HOME", // only to give the sandboxed child a module-cache home
     `--allow-write=${workspaceRoot}`,
     `--allow-read=${workspaceRoot}`, // to read back what it just wrote, and nothing else

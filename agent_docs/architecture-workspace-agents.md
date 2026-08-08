@@ -377,30 +377,48 @@ which reads as a protocol limit and is not one. Language and jail are now chosen
 nothing about bwrap, one forgotten `--unshare-all` from an open jail. Both are in the contract
 and both were proved against a plant.
 
-**5b. Sharing stdout with the protocol, done so it survives an entrypoint that logs.** An
-entrypoint that prints is NORMAL, and the MCP-stdio experience is that code writes to stdio by
-accident constantly. Reproduced against this code before fixing it: output with no trailing
-newline (`print(..., end="")`, a progress bar) prepends itself to the next frame, which then no
-longer starts its line, is read as chatter, and the jail blocks on an answer that never comes
-until a timeout naming the wrong cause. Three changes, each with a contract case: every frame is
-written with a LEADING newline; a line is a frame only when it STARTS with a long printable marker
-(`RADIA-BROKER/1:`, `RADIA-RESULT/1:`); and a marker found MID-line is diagnosed as definite
-interleaving instead of ignored. The marker was `\x01broker:` first, and a control byte is the wrong
-contract to hand another implementation: invisible in the diagnostics that exist to explain a
-confusing failure, destroyed silently by anything that strips control characters, and awkward to
-ask a person to emit. The `/1` carries the version the old one had nowhere to put. Plus a 4MB output cap, since untrusted code printing in a loop must not take
-the host with it. Plants: dropping the leading newline fails the partial-write case, and dropping
-the cap turns the flood case into that same mystery 15s timeout.
-A dedicated fd would end the sharing and is the honest ideal, declined because `Command` exposes
-no portable extra fd, which would push the transport back into the per-language shim.
+**5b. The channel: a private pipe pair, arrived at in two steps.** Stdout was the only channel
+`Command` offered, so the protocol shared a stream with the entrypoint's own printing, and an
+entrypoint that prints is NORMAL. Reproduced against this code before fixing it: output with no
+trailing newline (`print(..., end="")`, a progress bar) prepends itself to the next frame, which then
+no longer starts its line, is read as chatter, and the jail blocks on an answer that never comes
+until a timeout naming the wrong cause. The first fix was three framing rules, each with a contract
+case: a leading newline before every frame, a long printable marker starting the line
+(`RADIA-BROKER/1:`, after `\x01broker:` proved to be the wrong thing to ask another implementation
+to emit), and a marker found MID-line diagnosed as definite interleaving.
+
+The second fix removed the sharing instead of managing it, and the question that got there was "why
+do we need stdout at all". A dedicated fd was always the honest ideal and had been declined because
+`Command` exposes no portable extra one. That reasoning missed the filesystem: **a FIFO is the extra
+fd, reached by path.** The host makes two pipes in a control directory, passes the paths to the shim,
+and a frame is one line of JSON with no marker and no rules, because nothing else writes there. All
+three framing rules were deleted rather than ported, which is the check that it was the right
+direction.
+
+What decided it over a unix socket is WHICH SIDE PAYS. Measured: Deno gates unix sockets behind
+`--allow-net` (scopable to one path, verified not to restore TCP), but the jail's no-network posture
+is proved by that flag's ABSENCE, and a capability on the untrusted side costs more than one on the
+trusted side. A FIFO needs only read and write on one directory, which a run with an output tree
+already has. The cost lands on the HOST instead: there is no Deno API for `mkfifo`, so a host that
+brokers needs `--allow-run` to cover one coreutils binary. Found the hard way, by a chat worker
+launched `--allow-run=deno` failing with nothing to read.
+
+Deadlock is what a pipe gets wrong, and it is handled at the open: a FIFO open blocks until the other
+end opens, so the host opens both ends of both pipes (O_RDWR) BEFORE spawning, which never blocks and
+means the child's opens never block either. Planting the naive open hangs every case in the suite,
+not one. The price is that the host never sees EOF, so the read loop ends on the result frame, or on
+the child exiting plus a 50ms quiet window (paid only on the failure path). Stdout and stderr are now
+purely diagnostics, each drained to a bounded tail, so a flood is absorbed rather than fatal; the 4MB
+cap moved onto the pipe, which is the one stream the host must still buffer.
 
 **5c. The other half of the stream: stderr and exit codes.** Asked directly, and neither was
 really handled. Stderr was buffered UNBOUNDED, so the stdout cap guarded one stream while the
 other stayed open, and it reached exactly one failure message: the empty-result one. Timeout,
 channel corruption and flood all reported the symptom with the traceback discarded, on the paths
 that need a diagnosis most. The exit code was never read at all, so a result frame followed by a
-non-zero exit acked clean. Now: stderr is capped at 64KB kept from the TAIL (a stack trace's last
-line is the useful one) and drained past the cap, since a reader that stops blocks the child on a
+non-zero exit acked clean. Now: stderr is capped at 64KB kept from the TAIL (a Python traceback's last
+line is the useful one; the clip into the failure message keeps BOTH ends, because a JavaScript
+uncaught error puts its message FIRST and 600 characters of stack pushed it off the front) and drained past the cap, since a reader that stops blocks the child on a
 full pipe instead of killing it; every failure carries it; and the exit code is reported after a
 250ms grace for a natural exit, which is needed because a kill only erases the code of a process
 still running. A result plus a failing exit is now a failure, and retry is safe since the writes

@@ -1172,21 +1172,33 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   permissions and talks over pipes. The sandbox never gets a credential "so code can query" (the
   worker fetches and pipes data in), and that emptiness is what makes lease RETRY sound: a
   permissionless child has no side effect to double.
-- **A stdio protocol shared with code that logs needs a LEADING newline, not just a marker.**
-  Verified against `extensions/ts/broker.ts` before it was fixed: an entrypoint writing without a
-  trailing newline (`print(..., end="")`, a progress bar, a library flushing mid-line) prepends
-  itself to the next frame, which no longer starts its line, is read as chatter, and leaves the
-  jail blocked on an answer that never comes until a timeout naming the wrong cause. Three parts,
-  all cheap: write `"\n"` before every frame, lead the line with a marker nothing emits by accident,
-  and treat one found MID-line as definite interleaving rather than something to skip. Cap the buffered output too, or code printing in a
-  loop takes the host down with it. A dedicated fd would end the sharing, but `Deno.Command`
-  exposes no portable extra one, so it would push the transport into the per-language shim.
-- **Make that marker LONG AND PRINTABLE, not a control character.** `\x01broker:` was the first
-  answer and was wrong for a normative surface: a contract that asks another implementation to emit
-  a raw control byte is a bad contract, the byte is invisible in exactly the diagnostics meant to
-  explain a confusing failure (the interleaving error rendered it `\u0001broker:`), and anything in
-  the pipeline that strips control characters breaks framing silently. `RADIA-BROKER/1:` collides no
-  more often, can be said out loud, and carries the version the old marker had nowhere to put.
+- **Do not share stdout with a protocol. Use a FIFO pair; it is the portable extra fd.** Verified
+  against `extensions/ts/broker.ts`: an entrypoint writing without a trailing newline
+  (`print(..., end="")`, a progress bar) prepends itself to the next frame, which no longer starts
+  its line, is read as chatter, and leaves the jail blocked on an answer that never comes until a
+  timeout naming the wrong cause. Framing rules (leading newline, a long printable marker, mid-line
+  detection) manage that; a private channel removes it. `Command` exposes no extra fd, but a named
+  pipe is one reached by path, and the run already has a writable directory. Costs on the untrusted
+  side are what to compare: a unix socket needs `--allow-net` in the JAIL (measured: scopable to one
+  path, but no-network is proved by that flag's absence), a FIFO needs `--allow-run=mkfifo` on the
+  HOST. Prefer the host paying.
+- **Open both ends of a FIFO yourself (O_RDWR) before spawning the child.** A FIFO open blocks until
+  the other end opens, so the naive open hangs the host before it spawns anything and ahead of any
+  run timeout. The cost is no EOF, so end the read loop on a terminal frame plus an exit-and-quiet
+  window. Planting the naive open hangs every case in the broker suite.
+- **Which end of a diagnostic carries the message depends on the language, so keep both.** A
+  Python traceback ends with the exception; a JavaScript uncaught error STARTS with it and the
+  frames below are noise. A tail-only clip is right for one and drops the cause of the other, which
+  is how a fully diagnosed failure reached a test as an exit code and nothing else. Size the ends
+  for what each must catch rather than splitting evenly: the head needs one line, the tail needs a
+  message sitting ABOVE a stack (`clip` in `extensions/ts/broker.ts`).
+- **A DIAGNOSTIC tool's failure is its answer, never a nack.** The chat's entrypoint rehearsal threw
+  on any failure, so the agent loop nacked, at-least-once ran the same doomed code six more times,
+  and the caller got a timeout while the diagnosis went to the terminal. TWO separate bugs hid this
+  way for a session each (a channel the host lacked permission to create, and a `put` with
+  positional arguments), both fully explained in a message nobody who could act on it ever saw.
+  Return infrastructure faults through the same path deliberately: a jail the worker cannot start is
+  something the caller needs told, and a silent retry loop is what hid it.
 - **A frame channel from a jail is UNTRUSTED, and should be built so that costs nothing.** Jailed
   code can forge any frame; it gains nothing when the labels, the compartment stamp, the forced
   parent, the idempotency key and the agent's grants are all applied HOST-side. Check this

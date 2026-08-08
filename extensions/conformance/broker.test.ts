@@ -14,8 +14,8 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { RadiaClient, type RadiaRecord } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../../examples/operator.ts";
-import { brokeredInvoker, dryRunEntrypoint, labelsForJail, RESULT_MARK } from "../ts/broker.ts";
-import { BINDING, declareBinding, RESULT_MARK as HOST_RESULT_MARK, treeCache, type TreeCache, WorkspaceHost } from "../ts/host.ts";
+import { brokeredInvoker, dryRunEntrypoint, labelsForJail } from "../ts/broker.ts";
+import { BINDING, declareBinding, treeCache, type TreeCache, WorkspaceHost } from "../ts/host.ts";
 import { declareExecRequest, EXEC_REQUEST, promote } from "../ts/promotion.ts";
 import { materialize, readWorkspace, writeWorkspace } from "../ts/workspace.ts";
 import { declareSandbox } from "../ts/sandbox-registry.ts";
@@ -348,10 +348,11 @@ Deno.test({
 
 Deno.test("[broker] an entrypoint that writes WITHOUT a newline does not break the channel", async () => {
   await withSpace(async ({ operator, hostFor }) => {
-    // The MCP-stdio failure, as a contract. A partial write immediately before a call used to
-    // prepend itself to the frame, which then no longer started its line: the call was read as
-    // chatter, the jail blocked on stdin, and the run died at the timeout blaming the wrong
-    // thing. Every frame now carries a leading newline, so ordinary output cannot swallow one.
+    // The MCP-stdio failure, kept as a contract after the fix that made it structural. A partial
+    // write immediately before a call used to prepend itself to the frame, which then no longer
+    // started its line: the call was read as chatter, the jail blocked, and the run died at the
+    // timeout blaming the wrong thing. Frames travel on their own pipe now, so stdout cannot reach
+    // them at all. The case stays because a future transport must not reintroduce the sharing.
     const host = await hostFor(`
       export default async (record, space) => {
         const enc = new TextEncoder();
@@ -369,21 +370,40 @@ Deno.test("[broker] an entrypoint that writes WITHOUT a newline does not break t
   });
 });
 
-Deno.test("[broker] an entrypoint that floods stdout is killed, and does not take the host with it", async () => {
+Deno.test("[broker] an entrypoint that floods stdout is ABSORBED, not fatal", async () => {
   await withSpace(async ({ operator, hostFor }) => {
-    // Untrusted code printing in a loop is a containment question of a different kind from the
-    // escape probe: it does not leave the jail, it exhausts the process reading it. The host
-    // caps what it will buffer and says so, rather than growing until the machine complains.
+    // This used to kill the run, because stdout carried the protocol and an unbounded flood was
+    // the host's problem. It is diagnostics now: drained to a bounded tail, so a chatty entrypoint
+    // costs memory that does not grow and still delivers its result.
     const host = await hostFor(`
       export default async (record, space) => {
         const enc = new TextEncoder(), line = "x".repeat(64 * 1024) + "\\n";
-        for (;;) await Deno.stdout.write(enc.encode(line));
+        for (let i = 0; i < 200; i++) await Deno.stdout.write(enc.encode(line));
+        await space.put({ kind: "note", body: { tag: "after-flood" } });
+        return { kind: "exec_result", body: { tag: "survived" } };
       };
     `);
     const outcomes = await host.tick();
-    assertEquals(outcomes.map((o) => o.status), ["failed"]);
-    const failed = outcomes[0] as { error: string };
-    assertStringIncludes(failed.error, "wrote more than");
+    assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
+    assertEquals((await operator.query({ kind: "note" }, 5)).length, 1, "12MB of chatter, and the call still lands");
+  });
+});
+
+Deno.test("[broker] a frame too big for the CHANNEL is refused", async () => {
+  await withSpace(async ({ operator, hostFor }) => {
+    // The cap moved with the protocol. The pipe is the one stream the host must still buffer, so an
+    // oversized frame is refused before it is parsed or performed, rather than growing until the
+    // machine complains. Reached the only way jailed code can: an enormous body on a real call.
+    const host = await hostFor(`
+      export default async (record, space) => {
+        await space.put({ kind: "note", body: { blob: "x".repeat(5 * 1024 * 1024) } });
+        return { kind: "exec_result", body: { tag: "unreachable" } };
+      };
+    `);
+    const outcomes = await host.tick();
+    assertEquals(outcomes.map((o) => o.status), ["failed"], JSON.stringify(outcomes));
+    assertStringIncludes((outcomes[0] as { error: string }).error, "wrote more than");
+    assertEquals((await operator.query({ kind: "note" }, 5)).length, 0, "and it never became a record");
     // The work is not lost: a flood is a failure like any other, so it nacks and can be retried.
     const env = await operator.queryEnvelopes({ state: "available", limit: 50 });
     assert(env.some((r) => r.record?.kind === EXEC_REQUEST), "the request goes back for another attempt");
@@ -591,9 +611,27 @@ Deno.test("[broker] a brokered run writes FILES to its output tree and records t
   });
 });
 
-Deno.test("[broker] the host's own result marker agrees with this one", () => {
-  // `host.ts` duplicates the string rather than importing it (the dependency runs the other way).
-  // Duplication is fine; drifting is not, and only this line would notice.
-  assertEquals(HOST_RESULT_MARK, RESULT_MARK);
-  assert(/^[\x20-\x7e]+$/.test(RESULT_MARK), "printable: a control byte is invisible in a diagnostic");
+Deno.test("[broker] a put made with POSITIONAL arguments is told the signature", async () => {
+  await withSpace(async ({ operator, hostFor }) => {
+    // What a model actually wrote: `space.put("result", out)`. The old refusal was "put needs a
+    // kind", which names the field the host wanted and not the mistake the code made, and the
+    // signature is the one part of the contract that cannot be seen from inside the jail.
+    const host = await hostFor(`
+      export default async (record, space) => {
+        try {
+          await space.put("note", { tag: "positional" });
+          return { kind: "exec_result", body: { tag: "ACCEPTED" } };
+        } catch (e) {
+          return { kind: "exec_result", body: { tag: e.message } };
+        }
+      };
+    `);
+    const [outcome] = await host.tick();
+    assertEquals(outcome.status, "acked", JSON.stringify(outcome));
+    const results = await operator.query({ kind: "exec_result" }, 5, { dir: "desc" });
+    const tag = (results[0].body as { tag: string }).tag;
+    assertStringIncludes(tag, "space.put({kind, body})");
+    assertStringIncludes(tag, "Positional arguments");
+    assertEquals((await operator.query({ kind: "note" }, 5)).length, 0, "and nothing was written");
+  });
 });
