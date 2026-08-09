@@ -42,6 +42,15 @@ export function cancelTurn(): void {
 }
 
 const INFERENCE_DEADLINE_MS = 120_000;
+/**
+ * How long a whole turn stays worth finishing, stamped on the seed as the record's `deadlineAt`.
+ *
+ * The turn worker resumes a turn only while this is in the future, so it is what separates "the
+ * REPL died thirty seconds ago, finish the work" from "this conversation ended in March". Declared
+ * HERE because the client is the one waiting: eight rounds of inference plus their tools, with a
+ * `request_grant` able to sit five minutes on a person, so the bound is generous on purpose.
+ */
+const TURN_BUDGET_MS = 15 * 60_000;
 const TOOL_DEADLINE_MS = 30_000;
 /** `request_grant` waits on a PERSON, so it gets a human deadline rather than a worker one, and a
  *  longer one than the tool's own wait, or the REPL would give up on a decision still being made. */
@@ -63,78 +72,129 @@ export async function runTurn(
   tools: ToolSet,
   onToolWait?: ToolWaitHook,
 ): Promise<void> {
-  // The last result each tool produced in THIS turn, so a second call to the same tool is recorded
-  // as what it is: another attempt at the same thing. Code generation is an iterative loop (write,
-  // run, read the error, fix, rerun) and every attempt used to parent to the conversation, which
-  // made eight tries eight siblings with no ordering and no causality. Lineage from the final
-  // attempt now walks back through the ones it replaced, so "how did this end up working" is a
-  // query rather than a reconstruction from the transcript.
-  const priorAttempt = new Map<string, { id: string; n: number }>();
   cancel = new AbortController();
+  // OUTSIDE the try, because the catch needs it: by then the cursor has advanced past everything
+  // rendered, and a cancel naming that index would name a turn that never started.
+  const turnAt = thread.upToIndex;
   // The turn owns the line from here until the `finally` below, so anything a background watcher
   // produces waits rather than splicing itself into the answer.
   holdLine(true);
   try {
-
-  for (let round = 0; round < MAX_ROUNDS; round++) {
-    write("\nassistant> ");
-    // The chat picks no model. It references the thread by (conversationId, upToIndex) and lets
-    // the substrate decide who serves it.
-    const { id: callId } = await client.put({
+    // THE SEED, and the only record this client writes in a turn unless it is cancelled. The tool list is session state (a
+    // scoped view of what is advertised, plus conversation-scoped procedures), so no worker can
+    // invent it. Everything after this is a worker reacting to a record: the model call, the tool
+    // calls, the next round and the terminus all belong to `workers/turn.ts`. What is left here is
+    // a RENDER loop, which decides nothing and only waits for records and prints them.
+    let callId: string | null = (await client.put({
       kind: "llm_call",
       // `owner` rides along so a worker can copy it onto the result and chunks. That is what lets
       // a grant bind records the SESSION did not write but that were produced for it.
-      // Retention comes from the KIND (space/kinds.ts declares it), stamped at commit.
-      body: { conversationId: thread.id, owner: sessionOwner(), upToIndex: thread.upToIndex, tools: tools.all() },
+      // `turnAt` names which turn this is, so the worker can scope a tool's retry chain to it.
+      body: { conversationId: thread.id, owner: sessionOwner(), upToIndex: turnAt, turnAt, tools: tools.all() },
+      // A CLIENT-SUBMITTED claim, which is what `deadline_at` is for: how long the caller will care
+      // about this turn. The worker compares it against the DB clock, never against this one.
+      deadlineAt: new Date(Date.now() + TURN_BUDGET_MS).toISOString(),
       parentIds: [thread.id],
-    });
-    const { message, finishReason, streamed, tier, context, announced } = await streamResult(client, callId);
+    })).id;
 
-    // Show the context window only when it actually dropped something; otherwise it is noise. It is
-    // reported by the inference-worker, so unlike the tier it cannot be known up front. As a
-    // fraction rather than a sentence: this line is printed on every turn of a long conversation,
-    // and "38 msgs, 178 older not sent" spends eight words on two numbers.
-    const win = context && context.hidden > 0 ? ` · ${context.sent}/${context.sent + context.hidden} msgs` : "";
-    // The label normally went up before the first token (see streamResult). This is the fallback
-    // for when it could not: no progress record was visible (the session may lack a grant to read
-    // them), so the tier is only knowable from the result. `ensureLine` because it follows an
-    // ANSWER, whose last character is the model's, not ours: without it the label was appended to
-    // the final sentence, which is where it was noticed.
-    if (!announced && tier) {
-      ensureLine();
-      write(`  ${dim(`[${tier}${win}]`)}\n`);
-    } else if (win) {
-      ensureLine();
-      write(`${dim(`[${win.slice(3)}]`)}\n`);
-    }
-    await thread.append({ role: "assistant", content: message.content ?? null, tool_calls: message.tool_calls }, [callId]);
+    for (;;) {
+      write("\nassistant> ");
+      const { message, finishReason, streamed, tier, context, announced, index } = await streamResult(client, callId);
 
-    if (message.tool_calls?.length) {
-      write("\n");
-      for (const call of message.tool_calls) {
-        await runToolCall(client, thread, call, tools, onToolWait, priorAttempt);
+      // Show the context window only when it actually dropped something; otherwise it is noise. It is
+      // reported by the inference-worker, so unlike the tier it cannot be known up front. As a
+      // fraction rather than a sentence: this line is printed on every turn of a long conversation,
+      // and "38 msgs, 178 older not sent" spends eight words on two numbers.
+      const win = context && context.hidden > 0 ? ` · ${context.sent}/${context.sent + context.hidden} msgs` : "";
+      // The label normally went up before the first token (see streamResult). This is the fallback
+      // for when it could not: no progress record was visible (the session may lack a grant to read
+      // them), so the tier is only knowable from the result. `ensureLine` because it follows an
+      // ANSWER, whose last character is the model's, not ours: without it the label was appended to
+      // the final sentence, which is where it was noticed.
+      if (!announced && tier) {
+        ensureLine();
+        write(`  ${dim(`[${tier}${win}]`)}\n`);
+      } else if (win) {
+        ensureLine();
+        write(`${dim(`[${win.slice(3)}]`)}\n`);
       }
-      continue; // the model reads the tool results from the thread on the next call
-    }
+      // The assistant message is ALREADY in the space: it arrived as the inference worker's ack, at
+      // the index the worker derived from the call. The thread only advances its cursor past it.
+      thread.noteExternal(index);
 
-    // Final answer. If nothing streamed (an inference error, or a non-streamed reply), print the
-    // message content, or errors would be invisible. Through the same renderer, so a one-shot reply
-    // is not the only markdown in the session that arrives raw.
-    if (!streamed) {
-      const answer = answerStream();
-      answer.push(message.content || `(no content; finish_reason=${finishReason})`);
-      answer.end();
+      if (message.tool_calls?.length) {
+        write("\n");
+        // The calls are DISPATCHED by the turn worker, one after the other, into slots this client
+        // can compute: reply i lands at the assistant message's index plus one plus i. So following
+        // them is arithmetic rather than coordination.
+        for (let i = 0; i < message.tool_calls.length; i++) {
+          await showToolReply(client, thread, message.tool_calls[i], index + 1 + i, tools, onToolWait);
+        }
+        // The next round's call is the WORKER's to write. Waiting for it, rather than writing one,
+        // is the whole difference: kill this process here and the turn still finishes.
+        callId = await nextCall(client, thread.id, callId!, turnAt);
+        if (callId) continue;
+        // No further call: the worker ended the turn instead (the round cap).
+        write(dim("\n[the turn reached its round limit]\n"));
+        return;
+      }
+
+      // Final answer. If nothing streamed (an inference error, or a non-streamed reply), print the
+      // message content, or errors would be invisible. Through the same renderer, so a one-shot reply
+      // is not the only markdown in the session that arrives raw.
+      if (!streamed) {
+        const answer = answerStream();
+        answer.push(message.content || `(no content; finish_reason=${finishReason})`);
+        answer.end();
+      }
+      write("\n");
+      return;
     }
-    write("\n");
-    return;
-  }
-  write(`\n[stopped: ${MAX_ROUNDS} tool rounds without an answer]\n`);
+  } catch (e) {
+    // ESCAPE BECOMES A RECORD. Killing this process stops nothing now: the chain is in the space, so
+    // the intent has to be too, or the workers keep answering a question nobody is waiting for. Best
+    // effort and keyed to the turn: failing to write it costs a few more rounds, never correctness,
+    // and a conversation-scoped one would silence every turn after this.
+    if (e instanceof TurnCancelled) {
+      await client.put({
+        kind: "cancel",
+        body: { conversationId: thread.id, owner: sessionOwner(), turnAt },
+        parentIds: [thread.id],
+      }, `cancel:${thread.id}:${turnAt}`).catch(() => {});
+    }
+    throw e;
   } finally {
     // Cleared whether the turn ended, threw or was cancelled, so a stale controller cannot make the
     // NEXT turn abort before it starts.
     cancel = null;
     holdLine(false); // and whatever queued while the turn ran gets printed now
   }
+}
+
+/**
+ * Wait for the round the turn worker emits after the last tool reply, or learn that it ended one.
+ *
+ * Returns the id whose CHUNKS to follow, which is the untiered call: the router re-dispatches under
+ * a new id but sets `replyTo` to the original, and the inference worker keys everything it streams
+ * to that. `null` means the worker wrote a `turn_complete` instead, which is the round cap.
+ */
+async function nextCall(client: RadiaClient, conversationId: string, afterId: string, turnAt: number): Promise<string | null> {
+  const deadline = Date.now() + INFERENCE_DEADLINE_MS;
+  while (Date.now() < deadline) {
+    if (cancel?.signal.aborted) throw new TurnCancelled();
+    const rows = await client.query(
+      { kind: "llm_call", match: { conversationId, tier: { $exists: false } } },
+      1,
+      { dir: "desc" },
+    );
+    if (rows[0] && rows[0].id > afterId) return rows[0].id;
+    // MATCHED ON `turnAt`, because a conversation accumulates one terminus per turn: unscoped, this
+    // found the PREVIOUS turn's and reported "round limit" after a single tool call, on every turn
+    // but the first.
+    if (await client.readOne({ kind: "turn_complete", match: { conversationId, turnAt } })) return null;
+    await waitWake(400);
+  }
+  throw new Error("timed out waiting for the next round. Is the turn worker running?");
 }
 
 /**
@@ -171,13 +231,24 @@ export function showOutput(out: unknown): string {
   return others > 0 ? `${value}${dim(` +${others}`)}` : value;
 }
 
-async function runToolCall(
+/**
+ * Follow ONE tool call the turn worker dispatched: print what was asked, wait for the reply at the
+ * slot it will land in, print what came back.
+ *
+ * It writes nothing. The call was put by `workers/turn.ts` and the reply is the tool worker's own
+ * ack (plan-chat-turn.md 2b), so a cancelled or crashed REPL leaves both intact and the chain runs
+ * on. That also retires the repair this function used to perform: it appended a synthetic reply on
+ * every exit, because an assistant `tool_calls` message with an unanswered id makes every LATER turn
+ * unsendable. The real reply now arrives whether anyone is watching, and `assembleContext` still
+ * covers the case where a worker never answers at all.
+ */
+async function showToolReply(
   client: RadiaClient,
   thread: Thread,
   call: { id: string; function: { name: string; arguments: string } },
+  slot: number,
   tools: ToolSet,
   onToolWait?: ToolWaitHook,
-  priorAttempt?: Map<string, { id: string; n: number }>,
 ): Promise<void> {
   let args: Record<string, unknown> = {};
   try {
@@ -186,64 +257,12 @@ async function runToolCall(
 
   const prefix = `  · ${call.function.name}(${trunc(showArgs(args), 60)}) `;
   write(prefix);
-  // `conversationId` travels in the BODY, not just parentIds, so a worker can key its progress
-  // records to this turn: provenance is causality, not a lookup path.
-  // The previous attempt at this tool is a DATA parent: the model wrote this call after reading
-  // that result, so the new code is derived from the old failure. Taint rides parent_ids, which is
-  // the right answer here rather than an accident: a fix written from tainted output is tainted.
-  const previous = priorAttempt?.get(call.function.name);
-  const attempt = (previous?.n ?? 0) + 1;
-  const { id: toolCallId } = await client.put({
-    kind: "tool_call",
-    body: {
-      tool: call.function.name,
-      args,
-      conversationId: thread.id,
-      owner: sessionOwner(),
-      // In the BODY as well as in the graph: `attempt` makes "how many tries did this take" a
-      // count rather than a traversal, and `retryOf` names the one this replaces, so a chain is
-      // readable from either direction.
-      attempt,
-      ...(previous ? { retryOf: previous.id } : {}),
-    },
-    parentIds: previous ? [thread.id, previous.id] : [thread.id],
-  });
-  // EVERY exit from here appends a reply, including the failures. The assistant's `tool_calls`
-  // message is already on the thread by now, and a provider rejects the whole payload if any id it
-  // names goes unanswered — so a throw between those two writes does not lose one turn, it makes
-  // the CONVERSATION permanently unusable: every later turn reassembles the same broken history.
-  // That is what a tool deadline used to do, since `awaitToolResult` throws.
-  //
-  // `assembleContext` repairs a thread that already holds one (it must: this cannot fix history).
-  // This is the other half, and it is the better half — the model gets to SEE "timed out" and try
-  // something else, where a repaired context just silently lacks the call.
-  let result: { ok: boolean; output: unknown };
-  try {
-    result = await awaitToolResult(client, toolCallId, prefix, call.function.name, tools, onToolWait);
-  } catch (e) {
-    // A CANCELLED turn takes this path too, and that is the point of it being here rather than in a
-    // narrower catch. The assistant's `tool_calls` message is already on the thread; leaving its
-    // reply absent is what makes every later turn in the conversation unsendable, so Escape has to
-    // answer the call it interrupted exactly as a timeout does. The wording differs because the
-    // model should learn what happened: the user stopped waiting, and the worker did not stop.
-    const output = e instanceof TurnCancelled
-      ? {
-        error: "the user cancelled this turn. The tool was already claimed and is still running, " +
-          "so its result will land in the space; nothing here is a failure of the tool.",
-      }
-      : { error: e instanceof Error ? e.message : String(e) };
-    await thread.append({ role: "tool", tool_call_id: call.id, content: JSON.stringify(output) }, [toolCallId]);
-    throw e;
-  }
-  priorAttempt?.set(call.function.name, { id: toolCallId, n: attempt });
+  const reply = await awaitToolReply(client, thread.id, slot, prefix, call.function.name, tools, onToolWait);
+  thread.noteExternal(slot);
   // Capped as well as fitted: on a wide terminal "fits the window" is 200 characters of JSON, which
   // is a wall rather than a summary. The record has the whole thing.
-  write(`${result.ok ? "→" : "✗"} ${trunc(showOutput(result.output), Math.max(24, Math.min(120, columns() - prefix.length - 4)))}\n`);
-  await showArtifact(client, result.output);
-  await thread.append(
-    { role: "tool", tool_call_id: call.id, content: JSON.stringify(result.ok ? result.output : { error: result.output }) },
-    [toolCallId],
-  );
+  write(`${reply.ok ? "→" : "✗"} ${trunc(showOutput(reply.output), Math.max(24, Math.min(120, columns() - prefix.length - 4)))}\n`);
+  await showArtifact(client, reply.output);
 }
 
 interface StreamedResult {
@@ -251,11 +270,14 @@ interface StreamedResult {
   finishReason: string;
   streamed: boolean;
   announced: boolean; // the routing label was already printed from the router's progress record
+  index: number; // the transcript slot the worker wrote the assistant message into
   tier?: string; // the tier that answered, stamped by the inference-worker
   context?: { sent: number; hidden: number }; // what the worker's context window sent vs. omitted
 }
 
-/** Follow one call: print `llm_chunk` deltas as they land, return when the `llm_result` arrives. */
+/** Follow one call: print `llm_chunk` deltas as they land, return when the assistant `message`
+ *  arrives. The message IS the inference worker's ack (plan-chat-turn.md), so this client never
+ *  appends the assistant's side of the conversation: it observes the record the worker wrote. */
 async function streamResult(client: RadiaClient, callId: string): Promise<StreamedResult> {
   const stall = "no worker claimed this call. Is the router/inference fleet running?";
   let lastIndex = -1; // watermark over ONE monotonic stream: an escalation hands it on, never resets
@@ -267,7 +289,7 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
 
   // The tier is known the moment the ROUTER decides it, which is before the tiered call exists and
   // so before any token can stream. Reading it from the router's progress record puts the label
-  // ahead of the text it describes; taking it from the `llm_result` (as this once did) can only
+  // ahead of the text it describes; taking it from the final message (as this once did) can only
   // ever print it after the last token, describing an answer the user has already read.
   const label = (text: string) => {
     endStatus(waiter.prefix);
@@ -332,9 +354,11 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
   // same shape as the tool wait below, which is why it moved. What stays here is the part that is
   // about a TERMINAL — flushing streamed tokens before each read, and holding the status line only
   // until real output takes it.
-  const outcome = await awaitResult<Omit<StreamedResult, "streamed" | "announced">>(
+  const outcome = await awaitResult<
+    { content?: string | null; tool_calls?: ChatMessage["tool_calls"]; finishReason: string; index: number; tier?: string; context?: { sent: number; hidden: number } }
+  >(
     client,
-    { kind: "llm_result", match: { callId } },
+    { kind: "message", match: { callId } },
     {
       timeoutMs: INFERENCE_DEADLINE_MS,
       wake: waitWake,
@@ -357,12 +381,22 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
   await printNew(); // flush any stragglers
   answer.end(); // and anything the renderer was holding back for the next character
   if (!printed) endStatus(waiter.prefix); // nothing streamed (tool-call turn, or an error)
-  return { ...outcome.body, streamed: printed, announced };
+  const b = outcome.body;
+  return {
+    message: { role: "assistant", content: b.content ?? null, ...(b.tool_calls?.length ? { tool_calls: b.tool_calls } : {}) },
+    finishReason: b.finishReason,
+    index: b.index,
+    tier: b.tier,
+    context: b.context,
+    streamed: printed,
+    announced,
+  };
 }
 
-async function awaitToolResult(
+async function awaitToolReply(
   client: RadiaClient,
-  callId: string,
+  conversationId: string,
+  slot: number,
   prefix: string,
   tool: string,
   tools: ToolSet,
@@ -387,16 +421,18 @@ async function awaitToolResult(
     : advertised
     ? `no result yet from '${tool}'`
     : `nothing advertises '${tool}'`;
-  const outcome = await awaitResult<{ ok: boolean; output: unknown }>(
+  const outcome = await awaitResult<{ ok: boolean; content: string }>(
     client,
-    { kind: "tool_result", match: { callId } },
+    // BY SLOT, not by call id: the client no longer writes the `tool_call`, so it does not know its
+    // id. The slot is arithmetic both sides agree on (workers/turn.ts assigns it).
+    { kind: "message", match: { conversationId, index: slot } },
     {
       timeoutMs: tool === "request_grant" ? HUMAN_DEADLINE_MS : TOOL_DEADLINE_MS,
       wake: waitWake,
       onWait: async () => {
         // Whatever this turn needs from the human, ask for it now rather than after the turn ends.
         if (onToolWait) await onToolWait(tool);
-        await waiter.pump(callId, stall);
+        await waiter.pump({ conversationId }, stall);
       },
       signal: cancel?.signal,
     },
@@ -413,7 +449,18 @@ async function awaitToolResult(
     );
   }
   endStatus(prefix);
-  return outcome.body;
+  // The reply is a tool MESSAGE now: `content` is the same JSON string this client used to write,
+  // so the structured output for rendering comes back out of it.
+  const parsed = ((): unknown => {
+    try {
+      return JSON.parse(outcome.body.content);
+    } catch {
+      return outcome.body.content;
+    }
+  })();
+  return outcome.body.ok
+    ? { ok: true, output: parsed }
+    : { ok: false, output: (parsed as { error?: unknown })?.error ?? parsed };
 }
 
 // ---- the tool set is discovered, never hard-coded ----

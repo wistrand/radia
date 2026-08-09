@@ -142,7 +142,9 @@ export interface InspectionHost {
     more: boolean;
     events?: { enabled: boolean; eligible: number; unsealed: number };
   }>;
-  verifyIntegrity(): Promise<IntegrityReport>;
+  /** `tail` walks only the newest N links; a health report has no business re-verifying the
+   *  whole history on every run. */
+  verifyIntegrity(tail?: number): Promise<IntegrityReport>;
   getLineage(recordId: string, max: number, createdBy?: string[]): Promise<{ record: RadiaRecord; depth: number }[]>;
   getChildren(recordId: string, limit: number): Promise<RadiaRecord[]>;
   authorAllows(createdBy: string[] | undefined, record: { runtimeMeta: { createdBy: string } }): boolean;
@@ -328,6 +330,7 @@ export async function diagnostics(h: InspectionHost, scope?: StatsScope): Promis
   const stats = await h.stats(scope);
   const total = (state: string) => stats.filter((s) => s.state === state).reduce((a, s) => a + s.count, 0);
   const SAMPLE = 500;
+  const INTEGRITY_TAIL = 500;
   const STALE_S = h.staleSeconds;
   // Starvation is only meaningful for CLAIMABLE (work) kinds: reference records (facts, config,
   // grants, kind_defs, history) sit `available` forever by design and are not stale, so exclude them
@@ -409,7 +412,9 @@ export async function diagnostics(h: InspectionHost, scope?: StatsScope): Promis
     // Same reasoning: a broken chain is not something anyone thinks to ask about until it
     // matters, and a health report that omits it says the space is fine when it cannot know.
     // Operator-only, because the chain covers every principal's activity.
-    ...(scope ? {} : { integrity: await h.verifyIntegrity() }),
+    // A SPOT CHECK, not the full audit: `radia doctor` walked every link ever written, which is
+    // O(history) on a routine command (60s on a working space). `radia integrity` is the full walk.
+    ...(scope ? {} : { integrity: await h.verifyIntegrity(INTEGRITY_TAIL) }),
   };
 }
 

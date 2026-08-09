@@ -25,6 +25,7 @@
 import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { activeByKey, newestByKey, RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
 import { dryRunEntrypoint } from "../../../extensions/ts/broker.ts";
+import { asTurnReply } from "./reply.ts";
 import { runCode, runEntry } from "../../../extensions/ts/sandbox.ts";
 import { captureWorkspace, commitWorkspace, materialize, readWorkspace, validateEntrypoint, writeWorkspace } from "../../../extensions/ts/workspace.ts";
 import { bwrapSandbox, defaultConfiner, denoSandbox, macosPython, runBwrap, runSeatbelt, seatbeltPythonSandbox } from "../../../extensions/ts/sandbox.ts";
@@ -73,7 +74,7 @@ const denyRead = argAll("--deny-dir").filter(Boolean);
  * space where model-written code runs anywhere near something that matters.
  */
 const requireConfinement = argOn("--require-confinement");
-const client = new RadiaClient(url, token ? { token } : {});
+const client = new RadiaClient(url, token ? { definitionToken: token } : {});
 
 /** Stdout longer than this is stored rather than inlined: a large payload in a `tool_result` lands
  *  in the message thread and is re-sent on every later turn. The reference costs ~40 characters. */
@@ -1062,7 +1063,13 @@ await agentLoop(client, {
   // Five named steps, each answerable on its own: resolve what to run, materialise what it runs
   // over, run it, capture what it changed, judge what it claimed. This was one 265-line function,
   // which is longer than most files in the runtime and was the hardest thing here to follow.
-  handle: async (rec, c) => {
+  // A slotted call's reply IS the tool message (workers/reply.ts); a bare call keeps tool_result.
+  handle: async (rec, c) => asTurnReply(rec, await serve(rec, c)),
+});
+
+// deno-lint-ignore no-explicit-any
+async function serve(rec: any, c: RadiaClient): Promise<{ kind: string; body: Record<string, unknown>; [extra: string]: unknown }> {
+  {
     const callId = rec.id;
     const b = rec.body as Call;
 
@@ -1240,8 +1247,8 @@ await agentLoop(client, {
       // carry file contents; with none there is nothing a barrier would test.
       taint: readRoots.length > 0 ? ["file"] : [],
     };
-  },
-});
+  }
+}
 
 /**
  * Store a named program: the code becomes an artifact, the name becomes a `procedure` record.

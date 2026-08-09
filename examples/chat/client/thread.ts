@@ -84,6 +84,13 @@ export class Thread {
     return this.nextIndex - 1;
   }
 
+  /** Advance the cursor past a message some WORKER wrote (the assistant message arrives as the
+   *  inference worker's ack, at an index derived from the call; this client never writes it).
+   *  `max` and not `index + 1` blindly: an escalated call answers the same slot once. */
+  noteExternal(index: number): void {
+    this.nextIndex = Math.max(this.nextIndex, index + 1);
+  }
+
   async append(msg: OutgoingMessage, parentIds: string[] = []): Promise<void> {
     await this.client.put({
       kind: "message",

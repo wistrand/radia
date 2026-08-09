@@ -515,7 +515,16 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
         "returned and say it expires. It is a SNAPSHOT of the tree as it is now: edit the workspace " +
         "and the old link keeps showing the old version, so share again after changing something. " +
         "If `entry` is null there is no index.html and the base URL opens nothing \u2014 say so " +
-        "rather than handing it over. Only files IN the workspace are reachable through it.",
+        "rather than handing it over. Only files IN the workspace are reachable through it. " +
+        // A capability the assistant kept DENYING, because nothing served it as a tool: asked how
+        // to get a tree into git it answered that Radia workspaces are not git repos and offered
+        // copy-paste. They are: the history is exportable as real git objects. Nobody can put that
+        // in a capability record (both are CLI verbs, client-side, with no worker behind them), so
+        // it belongs in the description of the tool the question arrives at.
+        "GETTING THE FILES OUT is not limited to this link: a workspace's history exports as a REAL " +
+        "git repository with `radia workspace-git <name> --dir <out>`, and `radia git-serve` serves " +
+        "it so the person can `git clone` it. Both are commands they run in their own terminal, not " +
+        "tools you can call, so say the command rather than offering to paste file contents.",
       parameters: {
         type: "object",
         properties: {

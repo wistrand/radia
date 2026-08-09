@@ -15,7 +15,7 @@ import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import { endStatus, showStatus } from "./terminal.ts";
 
 const WAKE_FALLBACK_MS = 250;
-const WAKE_KINDS = ["llm_chunk", "llm_result", "tool_result"];
+const WAKE_KINDS = ["llm_chunk", "message", "tool_result"];
 // How long before the status line stops saying "waiting" and offers the caller's hint instead.
 //
 // Raised from 2 500 after the hint turned out to be wrong most of the time it appeared. The trigger
@@ -109,12 +109,19 @@ export class Waiter {
    * otherwise never read, because the poll only runs while nothing has been printed, so the label
    * describing the answer arrived AFTER the answer.
    */
-  async pump(callId: string, stallHint: string, force = false): Promise<void> {
+  /** @param match how to find the progress records to report: `{callId}` when the caller wrote the
+   *   call and knows its id, `{conversationId}` when a WORKER wrote it and the caller only knows the
+   *   turn (plan-chat-turn.md step 4). Only one thing runs at a time in a turn, so the conversation
+   *   is as precise in practice and does not need an id the client never saw. */
+  async pump(match: string | Record<string, unknown>, stallHint: string, force = false): Promise<void> {
     const now = Date.now();
     if (!force && now < this.nextPoll) return;
     this.nextPoll = now + PROGRESS_POLL_MS;
     try {
-      const rows = await this.client.query({ kind: "progress", match: { callId } }, 20);
+      const rows = await this.client.query(
+        { kind: "progress", match: typeof match === "string" ? { callId: match } : match },
+        20,
+      );
       for (const r of rows.sort((a, b) => (a.id < b.id ? -1 : 1))) {
         if (this.seen.has(r.id)) continue;
         this.seen.add(r.id);

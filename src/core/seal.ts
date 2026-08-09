@@ -130,6 +130,9 @@ export async function linkEvents(
 
 /** What a verification found. `ok` is the only field a caller should branch on. */
 export interface IntegrityReport {
+  /** Set when only a SUFFIX was walked (`verifyIntegrity({tail})`): the first idx checked. `ok`
+   *  then means "nothing below this was altered", and says nothing about the links beneath it. */
+  spotCheckedFrom?: number;
   ok: boolean;
   /** Links checked in this pass. */
   checked: number;

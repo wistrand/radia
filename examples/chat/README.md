@@ -149,7 +149,8 @@ state, which is cheap to construct as records and nearly impossible to hit relia
 
 A CLI chatbot where **the whole conversation lives on the blackboard**. The chatbot makes
 no external calls; it only reads and writes records. LLM inference (`llm_call →
-llm_result`, streamed as `llm_chunk`) and tools (`tool_call → tool_result`) are both served
+the assistant `message`, streamed as `llm_chunk`) and tools (`tool_call` → the tool `message`; a
+bare call outside a turn gets a `tool_result`) are both served
 by content-routed workers.
 
 ```mermaid
@@ -162,16 +163,16 @@ flowchart TB
     R -->|"classify (a cheap llm_call of its own)"| SP
     R -->|"put llm_call {tier}"| SP
     SP -->|"take {llm_call, tier}"| I["inference ×3<br/>agent:chat-inference<br/>holds the API key"]
-    I -->|"llm_chunk · llm_result"| SP
+    I -->|"llm_chunk · message (the ack)"| SP
     I -.->|"escalate → next tier by rank"| SP
     SP -->|"take {tool_call, tool}"| T["tools<br/>agent:chat-tools<br/>sandboxed reads, no env"]
     SP -->|"take {tool_call, generate_image · analyze_image}"| G["images<br/>agent:chat-images<br/>API key, no files"]
     SP -->|"take {tool_call, run_javascript · run_python · save_procedure · &lt;saved name&gt;}"| X["exec<br/>agent:chat-exec<br/>--allow-run, no key, no files"]
     X -->|"snippet on stdin · or a workspace tree"| SB["deno run<br/>jailed, confined"]
     SB -->|"stdout / stderr · broker frames on a pipe"| X
-    T -->|"tool_result · artifact (save_content)"| SP
+    T -->|"message (the reply) · artifact (save_content)"| SP
     G -->|"artifact + tool_result (a reference)"| SP
-    X -->|"tool_result (labelled) · artifact (save_as)"| SP
+    X -->|"message (the reply, labelled) · artifact (save_as)"| SP
     G -.-> BL[(blob store)]
     T -.-> BL
     X -.-> BL
@@ -339,7 +340,7 @@ leases), and `stuckLeases` carries `atLeast` when its scan hit the sample cap, b
 scan must not read as a census.
 
 **The chat is woken by the runtime, not by a timer.** A background `watch` per streaming kind
-(`llm_chunk`, `llm_result`, `tool_result`) turns "a matching record became available" into a
+(`llm_chunk`, `message`, `tool_result`) turns "a matching record became available" into a
 wakeup, and the wait loops block on that with a 250 ms fallback tick, so a dropped or forbidden
 watch degrades to polling instead of stalling a turn. Reads are incremental: the chat asks for
 `{callId, index: {$gt: lastSeen}}` rather than re-scanning the whole stream every tick, which is
@@ -650,8 +651,8 @@ one tool-heavy turn is easily a dozen messages (an assistant `tool_calls` messag
 call), so the read expands until the most recent `user` message is inside it. Without that, a fixed
 count cuts away the question being answered and the model summarizes tool output it can no longer
 attribute. That is exactly how it fails, not gracefully. Set `RADIA_CHAT_WINDOW=0` for the old
-whole-thread behaviour. Each `llm_result` carries `context: {sent, hidden}`, so the cost of the
-window and the assistant's response to it are both queryable: `space_query {kind: llm_result}`
+whole-thread behaviour. Each assistant `message` carries `context: {sent, hidden}`, so the cost of
+the window and the assistant's response to it are both queryable on the transcript itself
 answers "how often does it go back for history?" with no instrumentation.
 
 Beyond recall, the second channel earns its keep on *structure*: lineage/children, another
@@ -791,8 +792,8 @@ RADIA_CHAT_TOKEN=<token> deno task chat  # the REPL runs as human:alice
 `RADIA_CHAT_TOKEN` (or `--token`) is **you**, and the chat will not start without it. The
 **operator** credential is separate: the launcher bootstraps the chain (design-auth) by registering
 kinds and minting **least-privilege run tokens** for the workers (`agent:chat-inference` = take
-`llm_call`, put `llm_result`/`llm_chunk`; `agent:chat-tools` = take `tool_call`, put
-`tool_result`/`capability`), all of which is privileged. It reads that from the credential file
+`llm_call`, put `message`/`llm_result`/`llm_chunk`; `agent:chat-tools` = take `tool_call`, put
+`message`/`tool_result`/`capability`), all of which is privileged. It reads that from the credential file
 `radia dev` provisions, or `RADIA_TOKEN`, and refuses to bootstrap unauthenticated.
 
 Neither falls back to the space's open-mode no-header shortcut, which answers as `human:local`, the
@@ -878,7 +879,8 @@ Five areas. `chat.ts` opens with the same map.
 
 | File | Role |
 |------|------|
-| `inference.ts` | one per tier (`--tier`/`--model`/`--rank`): claims `{llm_call, tier}`, streams `llm_chunk` + `llm_result`, windows the thread, intercepts `escalate` |
+| `turn.ts` | the conversation's loop as matching, not a loop: watches `message` facts and emits the next link (first tool call, next tool call, next round, `turn_complete`), each keyed on the trigger so a restart replays instead of doubling. The REPL writes only the seed call and renders what follows, so killing it mid-turn no longer kills the turn. See agent_docs/plan-chat-turn.md |
+| `inference.ts` | one per tier (`--tier`/`--model`/`--rank`): claims `{llm_call, tier}`, streams `llm_chunk`, ACKS the assistant `message` itself (an inline call keeps `llm_result`), windows the thread, intercepts `escalate` |
 | `router.ts` | claims UNTIERED `llm_call`s, classifies the turn, re-dispatches to a tier (`replyTo` keeps the result correlated) |
 | `tools.ts` | claims `tool_call` for every tool it serves; sandboxed permissions, no env |
 | `images.ts` | claims `tool_call{generate_image}` → image model → artifact → a reference; and `{analyze_image}` → artifact → vision model → an answer |

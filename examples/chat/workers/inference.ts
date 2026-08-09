@@ -28,7 +28,7 @@ const rank = Number(arg("--rank") ?? "0"); // capability rank (cheap→capable);
 // them), so this bounds per-turn cost without making history unreachable.
 const WINDOW = Number(arg("--window") ?? Deno.env.get("RADIA_CHAT_WINDOW") ?? "40");
 const WINDOW_CAP = 400; // ceiling on the current-turn expansion below, so one runaway turn is bounded
-const client = new RadiaClient(url, token ? { token } : {});
+const client = new RadiaClient(url, token ? { definitionToken: token } : {});
 
 /** A `message` record body as stored by the chat. */
 
@@ -54,6 +54,37 @@ if (tier) {
   // A stopped worker must stop being routed to: the router reads `model` records as a latest-wins
   // registry, so a retirement takes the tier out of rotation and the next start revives it.
   onStop(() => retireModel(client, ad));
+}
+
+/**
+ * The final ack, and it is TWO SHAPES because `llm_call` has two uses (plan-chat-turn.md).
+ *
+ * A CONVERSATION call (it names a `conversationId` and a slot after `upToIndex`) acks the assistant
+ * `message` itself: the transcript entry IS the work result, written inside the ack's fence, so a
+ * reclaimed worker's message is never written and there is exactly one assistant message per call.
+ * The client only observes it. An INLINE call (the router's classifier: `messages` carried in the
+ * body, no conversation) is an RPC, its answer belongs in no transcript, and it keeps `llm_result`.
+ */
+function finished(
+  body: { conversationId?: string; owner?: string; upToIndex?: number },
+  callId: string,
+  tier: string | undefined,
+  message: ChatMessage,
+  finishReason: string,
+  extra: Record<string, unknown>,
+): { kind: string; body: Record<string, unknown> } {
+  const shared = { callId, conversationId: body.conversationId, owner: body.owner, tier, finishReason, ...extra };
+  if (body.conversationId === undefined) return { kind: "llm_result", body: { ...shared, message } };
+  return {
+    kind: "message",
+    body: {
+      ...shared,
+      index: (body.upToIndex ?? -1) + 1,
+      role: "assistant",
+      content: message.content ?? null,
+      ...(message.tool_calls?.length ? { tool_calls: message.tool_calls } : {}),
+    },
+  };
 }
 
 await agentLoop(client, {
@@ -201,18 +232,11 @@ await agentLoop(client, {
         };
       }
       // `context` makes the window observable: what was sent, what was left behind. Measurable
-      // without instrumentation, since it is a record: `space_query {kind: llm_result}` answers
-      // "did windowing change how often the assistant reaches for its own history?".
-      return {
-        kind: "llm_result",
-        body: { callId: resultKey, conversationId: body.conversationId, owner: body.owner, message, finishReason, usage, tier, context: { sent: messages.length, hidden } },
-      };
+      // without instrumentation, since it is a record: it rides on the assistant message.
+      return finished(body, resultKey, tier, message, finishReason, { usage, context: { sent: messages.length, hidden } });
     } catch (e) {
       // Don't nack (that retries and double-spends); surface the error as the result.
-      return {
-        kind: "llm_result",
-        body: { callId: resultKey, conversationId: body.conversationId, owner: body.owner, message: { role: "assistant", content: `[inference error: ${e}]` }, finishReason: "error", tier },
-      };
+      return finished(body, resultKey, tier, { role: "assistant", content: `[inference error: ${e}]` }, "error", {});
     }
   },
 });

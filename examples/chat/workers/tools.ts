@@ -12,6 +12,7 @@ import { INSPECT_SCHEMAS, makeInspectTools } from "../tools/space.ts";
 import { makeRemediateTools, REMEDIATE_SCHEMAS } from "../tools/space.ts";
 import { makeSaveTools, makeShareTools, makeWorkspaceTools, SAVE_SCHEMAS, SHARE_SCHEMAS, WORKSPACE_SCHEMAS } from "../tools/save.ts";
 import { arg, argAll } from "../util.ts";
+import { asTurnReply } from "./reply.ts";
 import { publishCapability } from "../space/capability.ts";
 
 
@@ -25,7 +26,10 @@ if (!token || !sessionToken) {
   console.error("tools worker: --token and --session-token are both required");
   Deno.exit(1);
 }
-const client = new RadiaClient(url, { token }); // claims tool_calls, publishes capabilities
+// The DURABLE half: this worker re-mints its own run whenever the short one lapses, so a space
+// restart or the twelve-hour ceiling does not end it. The session client below is deliberately the
+// opposite, for the reason stated there.
+const client = new RadiaClient(url, { definitionToken: token }); // claims tool_calls, publishes capabilities
 // The space_* inspection/remediation tools act as the SESSION principal, not the worker, so the
 // answer matches what the person asking is allowed to see (a scoped session gets 403 on /ops).
 const spaceClient = new RadiaClient(url, { token: sessionToken });
@@ -84,7 +88,12 @@ void served;
 await agentLoop(client, {
   name: "tools",
   patterns: Object.keys(tools).map((tool) => ({ kind: "tool_call", match: { tool } })),
-  handle: async (rec, c) => {
+  // A slotted call's reply IS the tool message (workers/reply.ts); a bare call keeps tool_result.
+  handle: async (rec, c) => asTurnReply(rec, await serve(rec, c)),
+});
+
+async function serve(rec: Parameters<typeof asTurnReply>[0], c: RadiaClient) {
+  {
     const callId = rec.id;
     const b = rec.body as { tool: string; args?: Record<string, unknown>; conversationId?: string; owner?: string };
     // A file search or a space query can take seconds; say who picked it up and what is running.
@@ -95,6 +104,6 @@ await agentLoop(client, {
     } catch (e) {
       return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: String(e) } };
     }
-  },
-});
+  }
+}
 sessionAlive.abort(); // the loop returned, so nothing is left to keep a credential alive for

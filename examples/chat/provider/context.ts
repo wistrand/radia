@@ -77,7 +77,14 @@ function pairToolCalls(rows: ThreadRow[]): ThreadRow[] {
   const live = new Set<string>();
   for (const m of rows) {
     if (m.role === "tool") {
-      if (m.tool_call_id && live.has(m.tool_call_id)) out.push(m);
+      if (m.tool_call_id && live.has(m.tool_call_id)) {
+        out.push(m);
+        // FIRST reply per id wins, and later ones are dropped: a provider takes exactly one reply
+        // per call, and since 2b a duplicate is reachable (the client's synthetic timeout/cancel
+        // reply lands first; the worker's real ack can land later at the same slot). First, not
+        // last, so the transcript the model already acted on does not change under it.
+        live.delete(m.tool_call_id);
+      }
       continue;
     }
     if (m.tool_calls && m.tool_calls.length > 0) {

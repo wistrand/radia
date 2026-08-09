@@ -1,7 +1,7 @@
 # Plan: the chat turn as a chain of records
 
-DESIGNED, not built (2026-08-09, revised same day after a recheck reversed one decision). Removing
-the tool-call loop from the chat client, by letting the substrate route a conversation instead of
+BUILT (designed 2026-08-09, revised the same day after a recheck reversed one decision; every step
+shipped the same day). Removing the tool-call loop from the chat client, by letting the substrate route a conversation instead of
 re-encoding the loop somewhere else.
 
 Read this before changing `examples/chat/client/turn.ts` or `thread.ts`, before adding a state
@@ -40,7 +40,7 @@ Six shipped properties have no demo, for the same reason:
 | durability    | kill the REPL mid-turn, the turn is lost  | the chain continues, `--conversation last` shows it |
 | resumability  | an interrupted turn is abandoned          | the next emission is keyed off the last fact |
 | multi-client  | two REPLs collide on `index`              | both watch; keys and fences dedupe          |
-| cancel        | Escape cannot stop work already claimed   | a `cancel` record read before each emission |
+| cancel        | Escape cannot stop work already claimed   | BUILT: a `cancel` record read before each emission |
 | flow mining   | the flagship flow is invisible to `radia flows` | the turn is the flagship mined shape  |
 | the waterfall | rounds are not records                    | "why was this turn slow" is a picture      |
 
@@ -86,7 +86,15 @@ the same move (`workers/inference.ts:190` acks a higher-tier `llm_call`). So the
 only in WHAT they ack: the inference worker acks the assistant `message` itself, the exec worker
 acks the tool `message`. The transcript entry stops being written beside the result and becomes the
 result, fenced: a reclaimed worker's message is never written, so exactly one assistant message per
-call, structurally. `llm_result` and `tool_result` dissolve into `message`.
+call, structurally. BUILT for inference (step 2a, `smoke-turnlink.ts`).
+
+Building 2a corrected the plan on one point: `llm_result` does NOT die, and `tool_result` will not
+either. Both call kinds have a DUAL USE the fold missed: an `llm_call` is usually a conversation
+link, but the router's classifier is an `llm_call` with `messages` inline and no conversation, and
+its answer must never enter a transcript. Same for `tool_call`: the smoke harness and procedures
+drive bare calls with no turn slot. So the rule is: **a call that names its conversation slot acks
+the transcript entry; an inline call is an RPC and acks a result record.** The distinguisher is
+structural (`conversationId` present or not), not a flag.
 
 **Keyed links: the aggregator pattern.** The two missing links (user message → `llm_call`;
 assistant/tool message → next `tool_call` or next round) trigger on FACTS, and facts are not
@@ -101,7 +109,7 @@ one identity.
 
 | trigger (watched fact or claimed work)          | emits / acks (one record)                  | via    |
 |--------------------------------------------------|--------------------------------------------|--------|
-| `message{role:"user"}`                            | `llm_call{upToIndex, round:0}` (untiered)  | key    |
+| `message{role:"user"}`                            | `llm_call{upToIndex, round:0}` (untiered)  | CLIENT |
 | `llm_call` untiered                               | `llm_call{tier}` (exists: the router)      | fence  |
 | `llm_call{tier}`                                  | `message{role:"assistant", tool_calls?}`   | fence  |
 | `message{role:"assistant"}` with `tool_calls`     | `tool_call{i:0, of:n, assistantId}`        | key    |
@@ -110,7 +118,8 @@ one identity.
 | `message{role:"tool"}`, `i+1 === of`, round < cap | `llm_call{round+1}` (untiered)             | key    |
 | `message{role:"assistant"}` no `tool_calls`, or round cap | `turn_complete` (a fact)           | key    |
 
-Each record carries what the next step needs (`i`, `of`, `assistantId`, `round`, `upToIndex`), so
+The first row is the CLIENT's, not the worker's: see build step 3. Each record carries what the
+next step needs (`i`, `of`, `assistantId`, `round`, `upToIndex`), so
 no step recomputes from a scan. The client becomes: put the user message, watch, render until
 `turn_complete`.
 
@@ -148,7 +157,7 @@ Checked 2026-08-09, second pass:
 | The shape                         | a chain: fenced links + keyed links           | both halves have shipped precedent (router; aggregator)  |
 | Is `message` claimable?           | NO — reversed on recheck                      | starvation noise, uncovered roles, and migration replays history |
 | Where transcript entries come from | the ack's RESULT is the message               | one fenced write; a reclaimed worker's message is never written |
-| `llm_result` / `tool_result`      | folded into `message`                         | one transcript kind, one query                           |
+| `llm_result` / `tool_result`      | conversation answers fold into `message`; the kinds survive for INLINE calls | both call kinds have a dual use (the classifier, bare tool RPCs); an answer with no transcript slot needs a non-transcript shape |
 | The two missing links             | watch + emit with content-derived keys        | the aggregator pattern; claiming facts was rejected above |
 | Prerequisite                      | Package U (agent-scoped keys)                 | run-scoped keys make keyed emission unable to survive a restart |
 | The cursor                        | derived from the trigger record               | no counter, no lease                                     |
@@ -172,12 +181,70 @@ Checked 2026-08-09, second pass:
 ## Build order
 
 1. ~~Package U~~ DONE 2026-08-09 (`Space.idem`, `src/core/space.ts`).
-2. Inference worker acks `message{role:"assistant"}`; exec worker acks `message{role:"tool"}`.
-   Delete `llm_result`/`tool_result`; `assembleContext` reads one kind.
-3. The turn worker: watch messages, emit keyed work per the table. One process, one identity.
-4. The client reduced to put, watch, render until `turn_complete`.
-5. Cancel.
-6. Delete the loop and the round counter.
+2. a. ~~Inference worker acks `message{role:"assistant"}`~~ DONE 2026-08-09: `finished()` in
+      `workers/inference.ts` picks the shape by `conversationId`; the client observes the index
+      (`Thread.noteExternal`) instead of appending; `message` gained a `callId` index and the
+      session grant gained `read_one` (awaiting by call is a readOne, and `chat-test` cannot see a
+      scoped-live 403). Suite: `smoke-turnlink.ts`, the only one that runs the REAL inference
+      worker (fake OpenRouter via `RADIA_CHAT_API_BASE`); proved to fail against the pre-plan ack.
+   b. ~~Exec/tools/images workers ack `message{role:"tool"}`~~ DONE 2026-08-09, and it landed
+      ALONE after all: the client supplies the slot itself (`tool_call_id` + `replyIndex` on the
+      `tool_call`), so step 3 shrinks to just the two keyed links. One wrapper (`workers/reply.ts`,
+      `asTurnReply`) at each worker's `handle` rather than a branch at exec's ten result sites,
+      because the shape is the CALL's property, not the result's. The client parses the reply's
+      `content` back for rendering, so the record carries the payload ONCE where before it was
+      written twice (tool_result + the client's copy). Found and fixed on the way: `pairToolCalls`
+      dropped ORPHAN replies but not DUPLICATES, which 2b makes reachable (a synthetic
+      timeout/cancel reply plus the worker's late real ack at the same slot); FIRST reply per id
+      now wins, so the transcript the model already acted on does not change under it
+      (`smoke-context.ts` pins both halves). Suite: `smoke-turnlink.ts` tool cases, proved to fail
+      against the pre-2b shape. The reply must carry `i`/`of`/`round` FORWARD from the call: dropping
+      them is silent (a round of eight calls becomes eight rounds, and the client reads assistant
+      messages out of the reply slots it is waiting on), and only a multi-call round shows it.
+3. ~~The turn worker~~ DONE 2026-08-09 (`workers/turn.ts`, `agent:chat-turn`). Watches `message`,
+   reacts to four facts, writes every emission under `turn:<triggerId>`. NOT yet in `fleet.ts`: the
+   REPL still drives, and two drivers would double every call, so wiring it in is step 4's atomic
+   flip. Proved headless in `smoke-turnlink.ts`: seed a conversation, walk away, and
+   user → assistant(tool_calls) → tool → assistant → `turn_complete` runs with no client.
+   Corrections the build forced:
+   - THE CLIENT SEEDS, and link 1 of the table is not the worker's. The first `llm_call` carries
+     the session's tool list, which is session state (a scoped view plus conversation-scoped
+     procedures), so no worker can invent it. Later rounds copy it from the conversation's newest
+     `llm_call`, one bounded read of an indexed path.
+   - `getRecord` IS OPS-PLANE, so a scoped worker cannot follow an id. Everything the next reaction
+     needs is carried on the record (`i`, `of`, `round`, `replyIndex`) or reachable by an indexed
+     match; the one lookup left derives the assistant message's index arithmetically from slots
+     `dispatch` itself assigned.
+   - A wakeup carries only an id, so the worker SWEEPS the newest messages and skips a `seen` set,
+     which is the aggregator's shape exactly. `seen` is a cache; the key is the correctness.
+   - RECONCILIATION NEEDS TWO BOUNDS, both found on a real space and neither by the suite. The boot
+     sweep walked history and dispatched 47 stale tool calls into two dead threads, so the live turn
+     timed out behind them. Acting only on a conversation's HEAD is necessary and insufficient: an
+     abandoned multi-call turn's head legitimately means "dispatch the next call", so it resumed a
+     corpse one reply at a time. The second bound is the turn's own `deadlineAt`, stamped by the
+     CLIENT on the seed (it is the one waiting) and compared against the DB clock: an age cutoff was
+     tried first and rejected, since a clock cannot separate an abandoned turn from a slow one and a
+     `request_grant` legitimately waits five minutes on a person. A call with no deadline is never
+     resumed, which is every record written before this existed. Being keyed makes an emission
+     idempotent, not appropriate.
+   - The round-2 call is emitted UNTIERED, so the ROUTER is part of the chain. Missed at first, and
+     the turn stalled with an unclaimed call: a later round is judged on the work done so far.
+4. ~~The client reduced to seed, follow, render~~ DONE 2026-08-09, and the turn worker is in
+   `fleet.ts`. `runTurn` writes ONE record per turn (the seed `llm_call`, which carries the tool
+   list) and then only waits and prints: `showToolReply` renders a call the worker dispatched,
+   `nextCall` waits for the round the worker emits. What remains in the client is a RENDER loop,
+   which decides nothing; the control flow is gone. `MAX_ROUNDS` went with it (the worker holds the
+   bound now), and so did the synthetic reply the client appended on timeout or cancel: the real
+   reply arrives whether anyone is watching. Two seams moved: the progress waiter matches on
+   `{conversationId}` because the client no longer knows the tool call's id, and a tool reply is
+   awaited BY SLOT for the same reason.
+   Found by a live session, not by the suite: the flip needs `llm_call: query` on the SESSION, which
+   the client never needed while it wrote every call itself. The suite missed it because its client
+   case ran as the operator, who bypasses grants; it now mints a scoped session, and planting the
+   grant back reproduces the live failure.
+5. Cancel that actually cancels: a `cancel` record the worker reads before each emission. Today
+   Escape stops this process rendering and the chain runs on, which is the inversion accepted above.
+6. ~~Delete the loop and the round counter~~ done as part of 4.
 
 ## Rejected: rules as records
 

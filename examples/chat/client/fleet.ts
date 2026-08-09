@@ -86,7 +86,7 @@ export const FLEET_PROVIDERS = [
 ];
 
 export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.ChildProcess[] {
-  const { inferenceToken, routerToken, toolsToken, imagesToken, execToken } = tokens;
+  const { inferenceToken, routerToken, toolsToken, imagesToken, execToken, turnToken } = tokens;
   const procs: Deno.ChildProcess[] = [];
 
   // One inference-worker per tier, all the same agent: each claims only `{llm_call, tier}` and
@@ -163,6 +163,18 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
   // handed `--deny-read` on `.radia` (it holds the KEK and the database), and a deny beats an
   // allow in Deno, so a tree materialised under the runtime directory would be unreadable by the
   // very process meant to read it.
+  // The TURN worker: the conversation's loop, which used to be a `for` in the REPL. It writes the
+  // next link and nothing else, so it needs no key, no files and no ability to run anything
+  // (agent_docs/plan-chat-turn.md).
+  procs.push(spawn("turn", [
+    `--allow-net=127.0.0.1:${port}`,
+    "examples/chat/workers/turn.ts",
+    "--url",
+    local,
+    "--token",
+    turnToken,
+  ]));
+
   procs.push(spawn("exec", [
     `--allow-net=127.0.0.1:${port}`,
     "--allow-run=deno,bwrap,mkfifo",

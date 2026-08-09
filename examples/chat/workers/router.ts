@@ -35,7 +35,7 @@ const ME = "agent:chat-router";
 const url = arg("--url") ?? "http://127.0.0.1:7788";
 const token = arg("--token"); // agent:chat-router run token
 const classifyModel = arg("--classify-model") ?? Deno.env.get("RADIA_CHAT_CLASSIFY_MODEL") ?? "google/gemini-2.5-flash-lite";
-const client = new RadiaClient(url, token ? { token } : {});
+const client = new RadiaClient(url, token ? { definitionToken: token } : {});
 
 /** The live tiers, cheapest → most capable, discovered from what the fleet advertises. Only tiers
  *  that serve TEXT are routing candidates: the fleet also advertises image models (`modalities:

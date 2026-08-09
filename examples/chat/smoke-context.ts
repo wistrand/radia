@@ -127,6 +127,22 @@ check(
 const unrepaired = assembleContext(row(0, "system", "s"), [row(1, "user"), callRow(2, ["call_x"]), row(3, "user")]);
 check("…and without one it would have been dropped", !unrepaired.messages.some((m) => m.tool_calls));
 
+// ── a DUPLICATE reply keeps the first and drops the rest ─────────────────────────────────────────
+// Reachable since the workers ack tool messages themselves (plan-chat-turn.md 2b): the client's
+// synthetic timeout/cancel reply lands first, and the worker's real ack can land later at the same
+// slot. A provider takes exactly one reply per call id, and FIRST wins so the transcript the model
+// already acted on does not change under it.
+const doubled = assembleContext(row(0, "system", "s"), [
+  row(1, "user"),
+  callRow(2, ["call_d"]),
+  { index: 3, role: "tool", tool_call_id: "call_d", content: JSON.stringify({ error: "timed out" }) },
+  { index: 3, role: "tool", tool_call_id: "call_d", content: JSON.stringify({ late: "real result" }) },
+  row(4, "user", "next"),
+]);
+const replies = doubled.messages.filter((m) => m.role === "tool" && m.tool_call_id === "call_d");
+check("a duplicated reply reaches the provider ONCE", replies.length === 1, `${replies.length} replies`);
+check("…and the FIRST one wins", String(replies[0]?.content).includes("timed out"), String(replies[0]?.content));
+
 // A conversation with no system message at all must not fabricate one.
 const e = assembleContext(undefined, [row(0, "user")]);
 check("no system message means no head", e.messages.length === 1 && e.messages[0].role === "user");

@@ -49,6 +49,41 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     claimable: false,
   });
   await client.registerKind({ kind: "conversation", indexedPaths: [], claimable: false });
+  /**
+   * Escape, as a record.
+   *
+   * The loop used to live in the REPL, so cancelling was killing the thing that held it. Now the
+   * chain runs in the space and a dead terminal stops nothing, which is the same property as
+   * "kill the REPL and the answer still lands" seen from the other side. So the person's intent has
+   * to become a fact the worker can read. Keyed to a TURN, never a conversation: the next turn must
+   * not inherit it.
+   */
+  await client.registerKind({
+    kind: "cancel",
+    indexedPaths: [
+      { path: "conversationId", type: "keyword" },
+      { path: "owner", type: "keyword" },
+      { path: "turnAt", type: "integer" },
+    ],
+    claimable: false,
+    defaultRetentionSeconds: 7 * 24 * 3600,
+  });
+  // The turn's terminus (plan-chat-turn.md): a FACT, so the client has something to watch for and
+  // the mined flow a visible end. Termination by absence of a match was rejected: it leaves a
+  // client watching for silence, and any claimable record nobody claims alarms the diagnostic.
+  await client.registerKind({
+    kind: "turn_complete",
+    // `turnAt` is the index of the user message that STARTED the turn, and it is indexed because
+    // the client matches on it: a conversation accumulates one terminus per turn, so an unscoped
+    // "is this conversation done" read finds the previous turn's and ends every later one early.
+    indexedPaths: [
+      { path: "conversationId", type: "keyword" },
+      { path: "owner", type: "keyword" },
+      { path: "turnAt", type: "integer" },
+    ],
+    claimable: false,
+    defaultRetentionSeconds: 7 * 24 * 3600,
+  });
   await client.registerKind({
     kind: "message",
     // `role` is indexed because it is the dimension anyone aggregating a conversation reaches for
@@ -59,6 +94,9 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
       { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" },
       { path: "index", type: "integer" },
       { path: "role", type: "keyword" },
+      // An assistant message is the inference worker's ACK, and the client finds it by the call it
+      // answers (plan-chat-turn.md). Messages a client writes simply have no callId.
+      { path: "callId", type: "keyword" },
     ],
     sortablePaths: ["index"],
     claimable: false,
@@ -90,6 +128,9 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // grant scoped by conversation can only bind a path the body actually carries. Without it a
   // session holding a callId from another conversation could read its result.
   await client.registerKind({
+    // Since plan-chat-turn.md 2a this answers INLINE calls only (the router's classifier: `messages`
+    // in the body, no conversation). A conversation call's answer is the assistant `message` itself,
+    // acked by the inference worker inside the lease's fence.
     kind: "llm_result",
     indexedPaths: [{ path: "callId", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
     claimable: false,

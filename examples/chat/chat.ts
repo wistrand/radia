@@ -1,5 +1,5 @@
 // CLI chatbot: pure record I/O. It makes NO external calls; it only reads and writes records.
-// Thinking (`llm_call` → `llm_result`, streamed as `llm_chunk`), acting (`tool_call` →
+// Thinking (`llm_call` → the assistant `message`, streamed as `llm_chunk`), acting (`tool_call` →
 // `tool_result`), drawing, code execution and saved files all flow through the space, served by
 // workers this launches as scoped subprocesses. Watch the whole loop in the console's Feed tab.
 //
@@ -263,6 +263,12 @@ field(
     ? `${thread.id}${dim(` resumed, ${thread.resumedFrom} earlier messages in context`)}`
     : `${thread.id}${dim("  --conversation last to resume it")}`,
 );
+// The console's Graph tab, on THIS conversation. The view lives in the URL (`#tab/recordId`), so a
+// link is all it takes, and the turn is now a chain of records rather than a loop inside this
+// process: what the waterfall draws is the thing that actually ran. Printed at boot because that is
+// when a terminal can still be clicked through, and because nothing else advertises that the space
+// has a console at all.
+field("graph", `${url}/#graph/${thread.id}${dim("  the turn as records, with timings")}`);
 // Procedures belong to a conversation, so the tool set can only be complete once there is one.
 await tools.scopeTo(thread.id);
 
@@ -414,7 +420,12 @@ while (true) {
     // space — visible on the Feed and in the thread — and pretending the work was undone would be
     // the one wrong thing to say about an at-least-once substrate.
     if (e instanceof TurnCancelled) {
-      write(dim("\n[cancelled] the workers keep their claims, so results still land in the space\n"));
+      // What cancelling does and does not do, and it changed when the loop left this process: the
+      // turn STOPS ADVANCING (a `cancel` record, checked before the worker emits the next link),
+      // but a call already claimed still runs to completion and its result still lands. Saying so
+      // is the point: pretending the work was undone is the one wrong thing to claim about an
+      // at-least-once substrate.
+      write(dim("\n[cancelled] no further rounds; work already claimed still finishes and lands\n"));
     } else {
       write(`\n[error] ${e}\n`);
     }

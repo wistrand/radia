@@ -8,6 +8,11 @@
 // known kinds.
 
 import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
+// TYPE ONLY, which the layering guard exempts because it is erased: a surface may not hold a
+// runtime VALUE from `src/core`, and a shape is not one. Restating it here instead is what let the
+// two drift, and the drift compiled: `doctor` grew a `spotCheckedFrom` the CLI's private copy did
+// not have, and only `deno task compile` noticed.
+import type { Diagnostics } from "../core/inspection.ts";
 // A SURFACE may import a convention; the runtime may not. See conformance/layering.test.ts.
 import { exportWorkspaceGit } from "../../extensions/ts/git.ts";
 import { buildThreadSpans, postTraces, recordSpans, toResourceSpans, traceIdOf } from "../../extensions/ts/otlp.ts";
@@ -476,7 +481,13 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         // reads as a broader guarantee than it is, and this is the check whose absence nobody
         // notices until it matters.
         if (chain?.ok && chain.signed && chain.sealed > 0) {
-          lines.push(`event chain: ${chain.sealed} links verified, signed`);
+          // SAY it is a spot check. "4000 links verified" for a walk that read the newest 500 is
+          // the kind of reassurance nobody should receive on no evidence.
+          lines.push(
+            chain.spotCheckedFrom !== undefined
+              ? `event chain: newest ${chain.sealed - chain.spotCheckedFrom} of ${chain.sealed} links verified, signed (radia integrity walks all of it)`
+              : `event chain: ${chain.sealed} links verified, signed`,
+          );
         }
         // The sweep is on demand, so the backlog line is the only way anyone learns to run it.
         const sw = d.sweepable;
@@ -1423,21 +1434,3 @@ function table(headers: string[], rows: string[][]): string {
   return [line(headers), ...rows.map(line)].join("\n");
 }
 
-interface Diagnostics {
-  counts?: Record<string, number>;
-  deadLetter?: { count: number };
-  stuckLeases?: { count: number };
-  staleAvailable?: {
-    count: number;
-    split?: {
-      orphaned: { count: number; sample: unknown[] };
-      starving: { count: number };
-      complete: boolean;
-      caveat: string;
-    };
-  };
-  undoneErasures?: { count: number; checked: number; complete: boolean; sample: unknown[] };
-  sweepable?: { eligible: number; byKind: Record<string, number>; atLeast: boolean };
-  eventsSweepable?: { eligible: number; unsealed: number };
-  integrity?: { ok: boolean; sealed: number; signed: boolean; failure?: { idx: number; reason: string; detail: string } };
-}

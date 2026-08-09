@@ -22,6 +22,7 @@ import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { generateImage } from "../provider/imagegen.ts";
 import { describeMedia } from "../provider/vision.ts";
 import { progress } from "../space/progress.ts";
+import { asTurnReply } from "./reply.ts";
 import { arg, onStop } from "../util.ts";
 import { publishCapability } from "../space/capability.ts";
 import { publishModel, retireModel } from "../space/model.ts";
@@ -54,7 +55,7 @@ const safetySettings = (Deno.env.get("RADIA_CHAT_IMAGE_SAFETY") ?? "")
   .map((pair) => pair.split(":"))
   .filter((p) => p.length === 2)
   .map(([category, threshold]) => ({ category: category.trim(), threshold: threshold.trim() }));
-const client = new RadiaClient(url, token ? { token } : {});
+const client = new RadiaClient(url, token ? { definitionToken: token } : {});
 
 const GENERATE_IMAGE: ToolDef = {
   type: "function",
@@ -159,8 +160,9 @@ await agentLoop(client, {
     { kind: "tool_call", match: { tool: "analyze_image" } },
   ],
   leaseSeconds: 120, // image generation is slow; the heartbeat keeps the lease alive
-  handle: (rec, c) =>
-    (rec.body as Call).tool === "analyze_image" ? readImage(rec.id, rec.body as Call, c) : drawImage(rec.id, rec.body as Call, c),
+  // A slotted call's reply IS the tool message (workers/reply.ts); a bare call keeps tool_result.
+  handle: async (rec, c) =>
+    asTurnReply(rec, await ((rec.body as Call).tool === "analyze_image" ? readImage(rec.id, rec.body as Call, c) : drawImage(rec.id, rec.body as Call, c))),
 });
 
 async function drawImage(callId: string, b: Call, c: RadiaClient) {

@@ -55,6 +55,9 @@ interface Grant {
 const INFERENCE_GRANTS: Grant[] = [
   { kind: "interest", operations: ["put", "query"] }, // agentLoop declares what this worker listens for
   { kind: "llm_call", operations: ["take", "put"] },
+  // The assistant message IS this worker's ack for a conversation call (plan-chat-turn.md);
+  // `llm_result` remains the reply shape for INLINE calls only (the router's classifier).
+  { kind: "message", operations: ["put"] },
   { kind: "llm_result", operations: ["put"] },
   { kind: "llm_chunk", operations: ["put"] },
   { kind: "model", operations: ["put", "query"] },
@@ -82,7 +85,8 @@ const ROUTER_GRANTS: Grant[] = [
 const IMAGE_GRANTS: Grant[] = [
   { kind: "interest", operations: ["put", "query"] }, // agentLoop declares what this worker listens for
   { kind: "tool_call", operations: ["take"] },
-  { kind: "tool_result", operations: ["put"] },
+  { kind: "tool_result", operations: ["put"] }, // bare (un-slotted) calls only, since 2b
+  { kind: "message", operations: ["put"] }, // a slotted call's reply IS the tool message (workers/reply.ts)
   // `put` for the bytes it draws; `read_one` for the ones it reads back. The read arrived with
   // `analyze_image` and is in this list as part of that change, not after it: a worker shipped with
   // a capability whose grant was missing twice already (read_workspace, and the exec worker's
@@ -97,7 +101,8 @@ const IMAGE_GRANTS: Grant[] = [
 const TOOLS_GRANTS: Grant[] = [
   { kind: "interest", operations: ["put", "query"] }, // agentLoop declares what this worker listens for
   { kind: "tool_call", operations: ["take"] },
-  { kind: "tool_result", operations: ["put"] },
+  { kind: "tool_result", operations: ["put"] }, // bare (un-slotted) calls only, since 2b
+  { kind: "message", operations: ["put"] }, // a slotted call's reply IS the tool message (workers/reply.ts)
   // `put` for save_content, `read_one` for read_workspace and edit_workspace. The comment here used
   // to read "WRITE only, it never reads one back" and was true when written — until a reader was
   // added to this worker and the grant list did not follow, so every read_workspace in a real chat
@@ -125,7 +130,8 @@ const TOOLS_GRANTS: Grant[] = [
 const EXEC_GRANTS: Grant[] = [
   { kind: "interest", operations: ["put", "query"] }, // agentLoop declares what this worker listens for
   { kind: "tool_call", operations: ["take"] },
-  { kind: "tool_result", operations: ["put"] },
+  { kind: "tool_result", operations: ["put"] }, // bare (un-slotted) calls only, since 2b
+  { kind: "message", operations: ["put"] }, // a slotted call's reply IS the tool message (workers/reply.ts)
   { kind: "artifact", operations: ["put", "read_one"] },
   // `query` as well as `put`: it must know every tool name ANY worker advertises, to refuse a
   // saved procedure that would shadow one (see `capabilityNames` in workers/exec.ts).
@@ -174,17 +180,38 @@ const EXEC_GRANTS: Grant[] = [
 //
 // Growth is bounded by distinct scopes, not sessions: the pattern is part of a grant's identity,
 // so re-running under the same scope re-mints the same content key and writes nothing.
+/** The turn worker: it WATCHES messages and emits the next link. No `take` anywhere, because facts
+ *  are not claimed (plan-chat-turn.md); exactly-once is the idempotency key. */
+const TURN_GRANTS: Grant[] = [
+  { kind: "message", operations: ["query", "read_one"] },
+  { kind: "llm_call", operations: ["put", "query"] },
+  { kind: "tool_call", operations: ["put"] },
+  { kind: "turn_complete", operations: ["put"] },
+  { kind: "cancel", operations: ["read_one"] }, // checked before every emission
+];
+
 export function userGrants(scope?: Record<string, unknown>): Grant[] {
   const scoped = scope ? { pattern: scope } : {};
   return [
-    { kind: "message", operations: ["put", "query"], ...scoped },
-    { kind: "llm_call", operations: ["put"], ...scoped },
+    // `read_one` because the assistant reply is awaited BY CALL (`{kind: message, match: {callId}}`):
+    // since plan-chat-turn.md 2a the assistant message IS the inference worker's ack, and the
+    // session reads it where it used to read `llm_result`.
+    { kind: "message", operations: ["put", "query", "read_one"], ...scoped },
+    // `query` as well as `put` since step 4: the client no longer WRITES each round's call, so it
+    // finds the one the turn worker emitted (`nextCall`) to know which stream to follow.
+    { kind: "llm_call", operations: ["put", "query"], ...scoped },
     { kind: "tool_call", operations: ["put"], ...scoped },
     // Keyed by `callId`, so these carry the scope field purely so a grant can bind them: a session
     // that learned a callId from elsewhere could otherwise read another session's streamed tokens,
     // model output, or tool results.
     { kind: "llm_chunk", operations: ["query"], ...scoped },
+    // Historical only since the fold (2a): workers answer conversations with `message` now, so this
+    // covers records written before, not anything new.
     { kind: "llm_result", operations: ["read_one"], ...scoped },
+    // The turn's terminus, which the REPL waits on to know a round-capped turn ended.
+    { kind: "turn_complete", operations: ["read_one", "query"], ...scoped },
+    // Escape: the person's intent, which only they can declare.
+    { kind: "cancel", operations: ["put", "query"], ...scoped },
     { kind: "tool_result", operations: ["read_one"], ...scoped },
     { kind: "capability", operations: ["query"] }, // a registry: the fleet's tools, not session data
     // READ-ONLY on purpose: the session builds its tool list from the procedures its conversation
@@ -259,30 +286,45 @@ export async function assignUserGrants(
  * only assigns the grants (`assignUserGrants`). It stays for the suites, which need a scoped
  * credential without a human to mint one, and it is the same two steps `radia login` performs.
  */
-export function mintSession(
+export async function mintSession(
   admin: RadiaClient,
   principal: string,
   scope?: Record<string, unknown>,
 ): Promise<string> {
-  return mint(admin, principal, userGrants(scope));
+  return (await mint(admin, principal, userGrants(scope))).runToken;
 }
 
 /** Operator action: define an agent with its grants and mint a short-lived run token. */
-async function mint(admin: RadiaClient, agent: string, grants: Grant[]): Promise<string> {
+async function mint(
+  admin: RadiaClient,
+  agent: string,
+  grants: Grant[],
+): Promise<{ definitionToken: string; runToken: string }> {
   const { definitionToken } = await admin.createAgentDefinition(
     agent,
     grants.map((g) => ({ principal: agent, kind: g.kind, operations: g.operations, ...(g.pattern ? { pattern: g.pattern } : {}) })),
   );
   const { runToken } = await admin.createRun(definitionToken);
-  return runToken;
+  return { definitionToken, runToken };
 }
 
+/**
+ * The DURABLE half per worker, not a run token.
+ *
+ * A run lives fifteen minutes and renews to a twelve-hour ceiling, after which a worker holding
+ * only that half is finished: it cannot re-authenticate, so it spins on `token_expired` forever.
+ * Seen exactly that way when a dev space restarted under a running fleet. A definition token has no
+ * expiry and is MINT-ONLY (it cannot read, write or claim), which is what makes it safe to hand
+ * over, and `RadiaClient({definitionToken})` exchanges it for a fresh run whenever the short half
+ * stops working (conformance/exchange.test.ts). The mechanism was built and the fleet did not use it.
+ */
 export interface Bootstrapped {
   inferenceToken: string;
   routerToken: string;
   toolsToken: string;
   imagesToken: string;
   execToken: string;
+  turnToken: string;
 }
 
 /**
@@ -301,10 +343,11 @@ export async function bootstrap(
   admin: RadiaClient,
   scope?: Record<string, unknown>,
 ): Promise<Bootstrapped> {
-  const inferenceToken = await mint(admin, "agent:chat-inference", INFERENCE_GRANTS);
-  const routerToken = await mint(admin, "agent:chat-router", ROUTER_GRANTS);
-  const toolsToken = await mint(admin, "agent:chat-tools", TOOLS_GRANTS);
-  const imagesToken = await mint(admin, "agent:chat-images", IMAGE_GRANTS);
-  const execToken = await mint(admin, "agent:chat-exec", EXEC_GRANTS);
-  return { inferenceToken, routerToken, toolsToken, imagesToken, execToken };
+  const inferenceToken = (await mint(admin, "agent:chat-inference", INFERENCE_GRANTS)).definitionToken;
+  const routerToken = (await mint(admin, "agent:chat-router", ROUTER_GRANTS)).definitionToken;
+  const toolsToken = (await mint(admin, "agent:chat-tools", TOOLS_GRANTS)).definitionToken;
+  const imagesToken = (await mint(admin, "agent:chat-images", IMAGE_GRANTS)).definitionToken;
+  const execToken = (await mint(admin, "agent:chat-exec", EXEC_GRANTS)).definitionToken;
+  const turnToken = (await mint(admin, "agent:chat-turn", TURN_GRANTS)).definitionToken;
+  return { inferenceToken, routerToken, toolsToken, imagesToken, execToken, turnToken };
 }
