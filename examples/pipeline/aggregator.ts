@@ -1,7 +1,9 @@
 // An aggregator agent (fan-in). Unlike workers, it READS results (facts) rather than
 // claiming them. Results are knowledge, not work. When every result for a job has
 // arrived it emits one `summary`, linked to all of them. The idempotency key
-// `summary:<jobId>` makes the emit safe even if two aggregators race.
+// `summary:<jobId>` makes the emit safe when two aggregators race, PROVIDED they share an
+// identity: a key is scoped to the agent behind the caller (audit Package U), so two runs of one
+// agent dedupe and two different principals deliberately do not.
 //
 //   deno run --allow-net --allow-env examples/aggregator.ts
 

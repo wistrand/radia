@@ -46,10 +46,49 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~R~~ | ~~Dead taint parameter; half-tested guard~~ | ~~P2~~ | **CLOSED 2026-08-04**                 |
 | ~~S~~ | ~~Round-two reports, re-derived~~     | ~~P1/P2~~ | **CLOSED 2026-08-04** (11 of 12 reproduced) |
 | **T** | **Module loading escapes the Deno jail's read permission** | **P1** | **CLOSED on Linux + macOS 2026-08-06** (macOS confiner unexecuted in CI); **OPEN on Windows** |
+| ~~U~~ | ~~Idempotency keys scoped to one run token~~ | ~~P2~~ | **CLOSED 2026-08-09** |
 
-Every package is closed (A–S); **T is open**. Their lessons are rules in
+Every package is closed (A–S, U); **T is open**. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
+
+## Package U: idempotency keys were scoped to one run token (P2) — CLOSED 2026-08-09
+
+VERIFIED 2026-08-09 by reading the scope; CLOSED the same day.
+
+The fix is one seam: `Space.idem` (`src/core/space.ts`) scopes `IdempotencyKey.principal` to the
+agent behind a `run:*` caller, via the same `agentForRun` resolution `created_by` and flow mining
+already rely on. The agent behind a run is immutable, and the resolver falls back to reading the
+space, so the scope survives a runtime restart; an unresolvable run scopes to itself (no dedupe,
+never a shared scope). Contract case: `conformance/exchange.test.ts` "an idempotency key survives a
+re-mint", covering both directions (a second run of the same agent replays; a different agent with
+the identical key writes its own record), proved to FAIL against the planted old behavior. This
+also makes CLAUDE.md's registry claim ("restarting a fleet does not append a duplicate per entry")
+true for definition-token workers, which is what the 39-tools-to-1,498-records measurement in
+[plan-gc.md](plan-gc.md) was.
+
+[architecture-workspace-agents.md](architecture-workspace-agents.md) states that keying a brokered
+put on `(claimed record, output ordinal)` makes a retried attempt's writes a replay. It does, WITHIN
+one run token. An idempotency row is scoped to the RESOLVED CALLER (`IdempotencyKey.principal`,
+`src/storage/adapter.ts:285`, filled from `ctx.principal` in `Space.idem`), and a run token resolves
+to its own `run:*` principal (`src/server/http.ts:198`). So a retry after the SDK re-mints on expiry,
+or after a host restart, is a different principal and writes duplicates.
+
+The contract case (`extensions/conformance/broker.test.ts`, "a retried attempt's writes dedupe")
+retries through the SAME host, so it passes without covering that boundary: a guard reading stronger
+than it is.
+
+Decided: scope to the agent. The isolation cost was considered and accepted: a replay is returned
+only when the request hash matches an identical request from the same agent's earlier run, which is
+the same actor with the same authority retrying the same write. The alternative (documenting the
+bound) left three sites over-claiming and the aggregator pattern unusable across restarts.
+
+Surfaced while analysing [plan-chat-turn.md](plan-chat-turn.md), and that plan now lists this as
+its PREREQUISITE: its keyed links are the aggregator pattern (watch a fact, emit derived work under
+a content-derived key), which cannot survive a worker restart while keys are run-scoped. A second over-claim sits in `examples/pipeline/aggregator.ts:3`, whose
+`summary:<jobId>` key is said to make the emit safe "even if two aggregators race": true for two
+runs of one principal, false for two identities. Three sites now assume a key spans more than it
+does, which is what makes this systemic rather than a broker defect.
 
 ## Package T: module loading escapes the read permission (P1) — OPEN
 

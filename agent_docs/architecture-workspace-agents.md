@@ -231,7 +231,11 @@ Two properties follow, and they are the reason this is not "FaaS on a tuple spac
   computes `foreign` itself, because the output is derived from a record another principal wrote.
 - **Effectively-once, by construction.** With no egress but the broker, the host derives
   idempotency keys from `(claimed record id, output ordinal)`, so a retried attempt's puts
-  dedupe. Bounded by `idempotencyRetentionSeconds` (7 days), not forever. An entrypoint whose
+  dedupe. Bounded by `idempotencyRetentionSeconds` (7 days), not forever. This sentence
+  over-claimed for a day: keys were scoped to the `run:*` principal, so the dedupe held only
+  within one run token and a retry after a re-mint or a host restart duplicated. Closed by audit
+  Package U (2026-08-09): keys scope to the AGENT behind the run, which is exactly the retry
+  that needs the stored row. An entrypoint whose
   sandbox permits outside effects is exactly where a reviewer should look, and the sandbox
   pattern makes that visible in the grant.
 

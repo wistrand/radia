@@ -968,8 +968,8 @@ export class Space {
       // this, every bootstrap appended a fresh record per grant and a long-lived principal
       // accumulated hundreds. Those then outran the bounded page every authorization read takes,
       // silently. Unlike a worker republishing a capability, this key does dedup across restarts:
-      // agent definitions are an OPERATOR action, and an idempotency key is scoped to the acting
-      // principal, which here is stable.
+      // agent definitions are an OPERATOR action, and an idempotency key is scoped to the durable
+      // identity behind the acting principal, which here is the operator itself.
       //
       // REVIVING a retired grant therefore needs a key that differs from the record being revived,
       // or the write is an idempotent replay of it and the retirement stays newest. That is a
@@ -2867,8 +2867,16 @@ export class Space {
     principal?: string,
   ): Promise<IdempotencyKey | undefined> {
     if (!key) return undefined;
+    const caller = principal ?? this.ctx.principal;
+    // Scoped to the DURABLE identity behind the caller, not the caller (audit Package U). A run
+    // token is re-minted on every worker restart and on expiry, so a key scoped to `run:*` dedupes
+    // nothing that matters: the retry that needs the stored row is exactly the one arriving under
+    // a fresh run. The agent behind a run is immutable, and `agentForRun` falls back to reading
+    // the space, so the scope survives a runtime restart too. An unresolvable run scopes to
+    // itself: no dedupe, never a shared scope.
+    const scope = caller.startsWith("run:") ? (await this.agentForRun(caller)) ?? caller : caller;
     return {
-      principal: principal ?? this.ctx.principal,
+      principal: scope,
       operation,
       key,
       requestHash: await sha256Hex(JSON.stringify(request)),

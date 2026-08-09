@@ -284,3 +284,33 @@ Deno.test("[exchange] a definition token still cannot act on its own", async () 
     await s.close();
   }
 });
+
+Deno.test("[exchange] an idempotency key survives a re-mint: the scope is the AGENT, not the run", async () => {
+  const s = await newSpace();
+  try {
+    // The retry that NEEDS the stored row is exactly the one arriving under a fresh run: a worker
+    // restart, or an expiry the SDK answers by exchanging the durable half again. Scoped to the
+    // run, the row never matched and the "dedupe" only covered retries inside one process's
+    // lifetime (audit Package U; it is how 39 tools once became 1,498 capability records).
+    const first = await s.space.mintRun(s.definitionToken);
+    const a = new RadiaClient(s.base, { token: first.runToken });
+    const { id } = await a.put({ kind: "task", body: { tag: "once" } }, "job:42");
+
+    const second = await s.space.mintRun(s.definitionToken);
+    assert(first.run !== second.run, "two mints are two distinct run principals");
+    const b = new RadiaClient(s.base, { token: second.runToken });
+    const { id: again } = await b.put({ kind: "task", body: { tag: "once" } }, "job:42");
+    assertEquals(again, id, "the second run's retry replays the first run's write");
+
+    // A DIFFERENT agent using the same key is its own scope, not a collision: the widening stops
+    // at the agent, or one principal's key could pin another's record.
+    const other = await s.space.createAgentDefinition("agent:v", [
+      { principal: "agent:v", kind: "task", operations: ["put"] },
+    ]);
+    const c = new RadiaClient(s.base, { definitionToken: other.definitionToken });
+    const { id: theirs } = await c.put({ kind: "task", body: { tag: "once" } }, "job:42");
+    assert(theirs !== id, "another agent's identical key writes its own record");
+  } finally {
+    await s.close();
+  }
+});
