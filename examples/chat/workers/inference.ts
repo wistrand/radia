@@ -66,7 +66,7 @@ if (tier) {
  * body, no conversation) is an RPC, its answer belongs in no transcript, and it keeps `llm_result`.
  */
 function finished(
-  body: { conversationId?: string; owner?: string; upToIndex?: number },
+  body: { conversationId?: string; owner?: string; upToIndex?: number; round?: number; turnAt?: number },
   callId: string,
   tier: string | undefined,
   message: ChatMessage,
@@ -80,6 +80,12 @@ function finished(
     body: {
       ...shared,
       index: (body.upToIndex ?? -1) + 1,
+      // The turn's position, carried from the call. Dropped originally, and the round counter then
+      // RESET every round: the turn worker read `round` off the assistant message, got undefined,
+      // and emitted "round 1" forever, so `MAX_ROUNDS` could never trip and a tool-calling model
+      // could loop until the deadline. Seen live as two calls both claiming round 1.
+      ...(typeof body.round === "number" ? { round: body.round } : {}),
+      ...(typeof body.turnAt === "number" ? { turnAt: body.turnAt } : {}),
       role: "assistant",
       content: message.content ?? null,
       ...(message.tool_calls?.length ? { tool_calls: message.tool_calls } : {}),

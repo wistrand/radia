@@ -1192,6 +1192,13 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   is how a fully diagnosed failure reached a test as an exit code and nothing else. Size the ends
   for what each must catch rather than splitting evenly: the head needs one line, the tail needs a
   message sitting ABOVE a stack (`clip` in `extensions/ts/broker.ts`).
+- **A COUNTER that resets is worse than no counter, and it looks like it works.** The chat's round
+  cap lives on the `llm_call`; the assistant message (the inference worker's ack) dropped it, so the
+  turn worker read undefined, computed "round 1" every time, and `MAX_ROUNDS` could never trip. Seen
+  live as two calls both claiming round 1; reproduced as 28 calls stuck at round 1 and climbing. The
+  first assertion written for it passed under the bug, because rounds still read `[0,1,1,1…]` and
+  "some round advanced" is true. Assert the BOUND (how many calls happened), never that a value
+  changed.
 - **A chain that carries its own position must carry it on EVERY hop, and the gap is silent.** The
   chat's turn worker stamps `i`/`of` on a tool call so the reply can ask for the next one; the tool
   worker's ack rebuilt the reply record without them. Nothing failed: `of` defaulted to 1, so every

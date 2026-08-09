@@ -60,12 +60,18 @@ const fake = Deno.serve({ port: 0, hostname: "127.0.0.1", onListen: () => {} }, 
   // "compute twice" asks for TWO calls in one message: a multi-call round, which is the shape every
   // other case here misses and the one that broke live.
   const two = last.role === "user" && (last.content ?? "").includes("compute twice");
+  // "compute forever" never stops asking, which is the only way to reach the round cap.
+  const forever = msgs.some((m) => (m.content ?? "").includes("compute forever"));
   const call = (n: number) => ({
     index: n,
     id: `call_c${n + 1}`,
     function: { name: "run_javascript", arguments: JSON.stringify({ code: `console.log(${n + 1}*42)` }) },
   });
-  const body = two ? frames([{ tool_calls: [call(0), call(1)] }]) : wantsTool ? frames([{ tool_calls: [call(0)] }]) : frames([{ content: "canned answer" }]);
+  const body = two
+    ? frames([{ tool_calls: [call(0), call(1)] }])
+    : (wantsTool || forever)
+    ? frames([{ tool_calls: [call(0)] }])
+    : frames([{ content: "canned answer" }]);
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 });
 const apiBase = `http://127.0.0.1:${(fake.addr as Deno.NetAddr).port}`;
@@ -348,6 +354,46 @@ try {
     check("a round asking for TWO tools answers both before the next round", tail.join(",") === "assistant,tool,tool,assistant", tail.join(","));
     const replies = tm.filter((r) => (r.body as { role?: string; of?: number }).role === "tool" && (r.body as { of?: number }).of === 2);
     check("…and each reply names its position in the round", replies.map((r) => (r.body as { i?: number }).i).join(",") === "0,1", JSON.stringify(replies.map((r) => (r.body as { i?: number }).i)));
+
+    // THE ROUND CAP, which only bites if `round` actually advances. It did not: the counter lives on
+    // the `llm_call`, the assistant message dropped it, and the worker read undefined and emitted
+    // "round 1" forever. A model that keeps calling tools would then loop until the deadline rather
+    // than stopping at the cap. Driven with a cap of 2 so it is cheap to reach.
+    const capped = (await admin.put({ kind: "conversation", body: {} })).id;
+    const capWorker = new Deno.Command(Deno.execPath(), {
+      args: [
+        "run", `--allow-net=127.0.0.1:${PORT}`,
+        "examples/chat/workers/turn.ts", "--url", url, "--token", turnToken, "--max-rounds", "2",
+      ],
+      stdout: "null",
+      stderr: "inherit",
+    }).spawn();
+    try {
+      await admin.put({
+        kind: "message",
+        body: { conversationId: capped, owner: "human:t", index: 0, role: "user", content: "compute forever" },
+        parentIds: [capped],
+      });
+      await admin.put({
+        kind: "llm_call",
+        body: { conversationId: capped, owner: "human:t", upToIndex: 0, turnAt: 0, stream: false, tools: [] },
+        deadlineAt: new Date(Date.now() + 600_000).toISOString(),
+        parentIds: [capped],
+      });
+      const end = await awaitOne({ kind: "turn_complete", match: { conversationId: capped } }, 300);
+      check("a turn that keeps calling tools STOPS at the round cap", (end?.body as { why?: string })?.why === "round_cap", JSON.stringify(end?.body));
+      const rounds = (await admin.query({ kind: "llm_call", match: { conversationId: capped } }, 30))
+        .map((r) => (r.body as { round?: number }).round ?? 0);
+      // On the COUNT, not on "some round > 0": with the counter reset the rounds read [0,1,1,1…] and a
+      // distinct-values check passes while the turn runs forever. What the cap buys is a BOUND.
+      // Loose, because the suite's other turn worker (cap 8) watches every conversation too and the
+      // two race, so the effective cap here is the larger one. Twenty still separates "stopped" from
+      // the runaway, which reached 28 and was climbing.
+      check("…having made a BOUNDED number of calls, which is what the cap buys", rounds.length <= 20, JSON.stringify(rounds));
+    } finally {
+      capWorker.kill("SIGTERM");
+      await capWorker.status;
+    }
 
     // CANCEL: the person's Escape, as the record the worker reads before it emits. Written directly
     // here because a suite cannot press a key; what it proves is the worker half, which is the half
