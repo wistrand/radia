@@ -231,6 +231,9 @@ Measured across the three stages on the same corpus:
 
 The turn is first-class: `conversation + llm_call + tool_call + workspace ⇒ llm_call → llm_call +
 message + progress×2-3 → llm_result + progress` at 70 occurrences, the tool-call turn at 42.
+Measured before the chat's turn became a chain of records ([plan-chat-turn.md](plan-chat-turn.md)):
+`llm_result` is now the assistant `message` itself for a conversation call, and the chain is longer
+and fully mined, since the loop no longer hides inside the REPL. The shape of the finding stands.
 
 Known and deliberate: siblings do not survive a cut as a group. Two records sharing only a parent
 that is now gone have no edge between them, so each becomes its own piece and is counted as a

@@ -208,7 +208,10 @@ async function nextCall(client: RadiaClient, conversationId: string, afterId: st
 export function showArgs(args: Record<string, unknown>): string {
   const keys = Object.keys(args);
   if (keys.length === 0) return "";
-  const val = (v: unknown) => typeof v === "string" ? v : JSON.stringify(v);
+  // ONE LINE, whatever the value is. A truncated preview of source code carries the newlines inside
+  // it, so a single `run_javascript(code=…)` printed across three lines and read as three separate
+  // calls with two of them hanging. The width cap alone does not make a line: it caps characters.
+  const val = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v)).replace(/\s+/g, " ").trim();
   if (keys.length === 1) return val(args[keys[0]]);
   return keys.map((k) => `${k}=${val(args[k])}`).join(" ");
 }

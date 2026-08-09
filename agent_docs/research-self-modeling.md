@@ -182,8 +182,8 @@ success mining are one implementation, and the doc should not treat them as sepa
 
 ```
 job → task×N → result×N → summary                                  (the pipeline example)
-message(user) → llm_call{fast} → tool_call{search_files}
-              → tool_result → llm_call{fast} → llm_result           (a chat turn)
+message(user) → llm_call{fast} → message(assistant) → tool_call{search_files}
+              → message(tool) → llm_call{fast} → message(assistant)  (a chat turn)
 ```
 
 Group by signature; report occurrences, outcome distribution, median duration, and exemplar
@@ -277,12 +277,14 @@ pair in the design, empty until the scheduler (M3) computes the second half. A m
 
 ### What these need first
 
-- **Index additions**, each a `kind_def` successor: `llm_call` gains `conversationId`
-  (per-turn joins without scanning) and `escalatedFrom` (escalations become a query, not a
-  scan); `llm_result` gains `tier` (which tier answered is currently unmatchable).
-- **Record the turn outcome.** The round cap is printed to the terminal and never written, so
-  query 4's ground truth does not exist yet. A keyword `status` (`answered` / `round_cap` /
-  `error`) makes it a query. There is no boolean index type, so do not contort one.
+- **Index additions**, each a `kind_def` successor: `llm_call` gains `escalatedFrom` (escalations
+  become a query, not a scan). Two of the three asked for here have since landed for other reasons
+  ([plan-chat-turn.md](plan-chat-turn.md)): `llm_call` indexes `conversationId`, and the assistant
+  `message` carries `tier` (it IS the inference worker's ack now, so there is no separate
+  `llm_result` to index for a conversation).
+- ~~**Record the turn outcome.**~~ DONE, and not for this: a turn ends with a `turn_complete` fact
+  carrying `why` (`answered` / `round_cap`) and the `turnAt` it ends, so query 4's ground truth is a
+  query. The round cap used to be printed to the terminal and never written.
 - **Dual-dispatch for the counterfactual.** This is the one place worth spending real effort:
   the router *chooses* the tier, so tiers never see comparable work and their success rates
   measure the router's sorting, not the models. Put a sampled turn as two `llm_call`s at

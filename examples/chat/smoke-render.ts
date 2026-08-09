@@ -162,6 +162,14 @@ function check(name: string, ok: boolean, detail = "") {
 // ---- the two renderers ----
 
 check("one argument prints as its value", showArgs({ expr: "17+156223" }) === "17+156223", showArgs({ expr: "17+156223" }));
+// A code argument carries newlines, and the call line is ONE line: a preview cut at 60 characters
+// that still contains them printed across three, so one `run_javascript` read as three calls with
+// two of them apparently hanging.
+check(
+  "a multi-line argument stays on one line",
+  showArgs({ code: "const a=1;\nfunction f() {\n  return a;\n}" }) === "const a=1; function f() { return a; }",
+  JSON.stringify(showArgs({ code: "const a=1;\nfunction f() {\n  return a;\n}" })),
+);
 check(
   "several print as k=v",
   showArgs({ path: "a.ts", start: 1 }) === "path=a.ts start=1",

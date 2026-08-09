@@ -43,7 +43,7 @@ outside world).
 ## Testing it without a model
 
 ```bash
-deno task chat-test              # all nineteen suites, ~60s
+deno task chat-test              # all twenty suites, ~60s
 deno task chat-test longthread   # one by name
 ```
 
@@ -100,9 +100,13 @@ destroyed afterwards. And every clipboard read has a two-second deadline: the pr
 with a half-drawn line while it runs, and a clipboard owner that stops answering (which happens, and
 did during development) would otherwise hang the session with no way out.
 
-**Escape cancels a turn.** It stops this process WAITING; it does not stop a worker. An `llm_call`
-or `tool_call` already claimed runs to completion and its result still lands in the space, which is
-what at-least-once means and is why the message says so rather than implying the work was undone.
+**Escape cancels a turn, and it is a RECORD.** The loop lives in the space now
+([plan-chat-turn.md](../../agent_docs/plan-chat-turn.md)), so killing this process stops nothing:
+the intent has to be a fact the turn worker can read. Escape writes `cancel{conversationId, turnAt}`
+and the worker checks it before it emits the next link, so the turn stops advancing. Keyed to the
+TURN, or it would silence every later one. What it still does not do: an `llm_call` or `tool_call`
+already claimed runs to completion and its result lands anyway, which is what at-least-once means
+and is why the message says so rather than implying the work was undone.
 At the prompt the same key clears the line. It is a no-op when stdin is not a terminal, where the
 editor is bypassed entirely and input is read a line at a time, byte for byte as before.
 
@@ -147,18 +151,31 @@ real assembly, with no API key:
 The long thread is the one that pays for itself: bugs here come from the SHAPE of accumulated
 state, which is cheap to construct as records and nearly impossible to hit reliably by chatting.
 
-A CLI chatbot where **the whole conversation lives on the blackboard**. The chatbot makes
-no external calls; it only reads and writes records. LLM inference (`llm_call →
+A CLI chatbot where **the whole conversation lives on the blackboard**, including its CONTROL FLOW.
+The chatbot makes no external calls; it only reads and writes records. LLM inference (`llm_call` →
 the assistant `message`, streamed as `llm_chunk`) and tools (`tool_call` → the tool `message`; a
-bare call outside a turn gets a `tool_result`) are both served
-by content-routed workers.
+bare call outside a turn gets a `tool_result`) are both served by content-routed workers.
+
+The REPL writes ONE record per turn. It used to run the turn in a `for` loop, dispatching each tool
+and counting rounds; that loop is gone, and a turn is now a chain of records that workers advance by
+matching ([plan-chat-turn.md](../../agent_docs/plan-chat-turn.md)). The client seeds an `llm_call`
+carrying its tool list, then only renders what appears. So killing the terminal mid-turn no longer
+kills the turn, two REPLs can watch one conversation, and `radia flows` can mine the shape of a turn,
+none of which was true while the loop lived in a process the substrate could not see.
+
+Two rules the chain rests on, both learned by breaking them: every hop CARRIES what the next one
+needs (`i`, `of`, `round`, `turnAt`), because a field that quietly stops being set turns a round of
+eight calls into eight rounds; and records are addressed by IDENTITY, never by a predicted position,
+because a mismatched prediction returns the wrong record rather than nothing.
 
 ```mermaid
 flowchart TB
     subgraph REPL["chat.ts: the REPL (no routing logic, no tool list, no API key)"]
         U[you]
     end
-    U -->|"put message + UNTIERED llm_call"| SP[(space)]
+    U -->|"put message + ONE seed llm_call"| SP[(space)]
+    SP -->|"watch {message}"| TN["turn<br/>agent:chat-turn<br/>the loop, as matching"]
+    TN -->|"put tool_call · next round · turn_complete"| SP
     SP -->|"take {tier: absent}"| R["router<br/>agent:chat-router"]
     R -->|"classify (a cheap llm_call of its own)"| SP
     R -->|"put llm_call {tier}"| SP
@@ -176,7 +193,7 @@ flowchart TB
     G -.-> BL[(blob store)]
     T -.-> BL
     X -.-> BL
-    SP -->|"progress · llm_chunk"| U
+    SP -->|"progress · llm_chunk · message · turn_complete"| U
 ```
 
 Every arrow is a record. The REPL never calls a model, never picks a tier, and never holds a
@@ -265,8 +282,17 @@ narrowest set that lets it do its job, and no two dangerous capabilities meet in
 | **router** | `--allow-net --allow-env` | none | dispatches; never calls a model directly |
 | **images** | `--allow-net --allow-env` | `OPENROUTER_API_KEY` | no file access |
 | **tools** | `--allow-read=<sandbox dirs>`, `--allow-net=127.0.0.1:<port>` | none | **no `--allow-env`** |
-| **exec** | `--allow-run=deno,bwrap,mkfifo`, `--allow-net=127.0.0.1:<port>`, `--allow-env=HOME`, `--allow-{read,write}=<workspace root>` | run token | never executes anything itself. Three names, and only two are jails: `mkfifo` is the broker's channel (a pipe pair on the filesystem), needed to rehearse an entrypoint |
+| **exec** | `--allow-run=deno,bwrap,mkfifo`, `--allow-net=127.0.0.1:<port>`, `--allow-env=HOME`, `--allow-{read,write}=<workspace root>` | definition token | never executes anything itself. Three names, and only two are jails: `mkfifo` is the broker's channel (a pipe pair on the filesystem), needed to rehearse an entrypoint |
+| **turn** | `--allow-net=127.0.0.1:<port>` | definition token | the conversation's loop. No key, no files, and it can `take` nothing: it only watches facts and writes the next link |
 | ↳ **the sandbox** | *nothing* (optionally `--allow-read=<exec dirs>`) | none | spawned per call, killed on timeout |
+
+Every worker holds the DURABLE half of its credential, not a run token. A run expires (fifteen
+minutes, renewing to a twelve-hour ceiling) and a worker holding only that half cannot
+re-authenticate: a space restart under a running fleet left every one of them spinning on
+`token_expired`. A definition token has no expiry and is mint-only, so it cannot read, write or
+claim, which is exactly what makes handing it over safe. The one deliberate exception is the tools
+worker's SESSION client, which holds a run token because a worker able to mint a person's session
+can be that person at will.
 
 The two that matter most: the process that can read files (**tools**) cannot reach the network
 beyond the local space and cannot read secrets, so reading a file can't lead to exfiltrating it;
@@ -792,8 +818,8 @@ RADIA_CHAT_TOKEN=<token> deno task chat  # the REPL runs as human:alice
 `RADIA_CHAT_TOKEN` (or `--token`) is **you**, and the chat will not start without it. The
 **operator** credential is separate: the launcher bootstraps the chain (design-auth) by registering
 kinds and minting **least-privilege run tokens** for the workers (`agent:chat-inference` = take
-`llm_call`, put `message`/`llm_result`/`llm_chunk`; `agent:chat-tools` = take `tool_call`, put
-`message`/`tool_result`/`capability`), all of which is privileged. It reads that from the credential file
+`llm_call`, put `message`/`llm_result`/`llm_chunk`; `agent:chat-turn` = watch `message`, put
+`tool_call`/`llm_call`/`turn_complete`, and it can `take` nothing at all), all of which is privileged. It reads that from the credential file
 `radia dev` provisions, or `RADIA_TOKEN`, and refuses to bootstrap unauthenticated.
 
 Neither falls back to the space's open-mode no-header shortcut, which answers as `human:local`, the
@@ -869,13 +895,13 @@ Five areas. `chat.ts` opens with the same map.
 | `config.ts` | everything read from the environment. Setup only: it never decides per-turn behaviour |
 | `fleet.ts` | launching the workers and the permission set each one gets. The security story, in one file. It also OWNS each worker's stderr rather than letting it inherit the terminal, so a crash is labelled and lands between lines instead of inside an answer |
 | `thread.ts` | the conversation as `message` records on the space, plus the system prompt |
-| `turn.ts` | one user turn (`llm_call` → tools → answer), and the watched tool set. Contains no model, tier or tool choice |
+| `turn.ts` | one user turn: seed ONE `llm_call` carrying the session's tool list, then RENDER what the workers produce (`workers/turn.ts` runs the turn). It decides nothing: no model, no tier, no tool choice, no rounds. Escape writes a `cancel` record, since killing this process no longer stops anything |
 | `waiting.ts` | watch-driven wakeups, progress rendering, and stall diagnosis |
 | `terminal.ts` | everything drawn to the screen. One `write` funnel that tracks the cursor's column, so `notice` (a background watcher, a worker's stderr) holds its line until the turn releases it; TTY-only status **and colour**; width from `Deno.consoleSize`; artifact links; the single stdin pump |
 | `markdown.ts` | the answer rendered as it streams. Knows nothing about a terminal beyond ANSI codes and a width, so it is driven by a callback and tested with a string |
 | `edit.ts` | what a keystroke MEANS and what the line looks like afterwards. No I/O at all, so the awkward cases are driven from a test rather than from a keyboard |
 
-**`workers/`: the five agent processes, each with its own identity and grants**
+**`workers/`: the six agent processes, each with its own identity and grants**
 
 | File | Role |
 |------|------|
@@ -885,6 +911,7 @@ Five areas. `chat.ts` opens with the same map.
 | `tools.ts` | claims `tool_call` for every tool it serves; sandboxed permissions, no env |
 | `images.ts` | claims `tool_call{generate_image}` → image model → artifact → a reference; and `{analyze_image}` → artifact → vision model → an answer |
 | `exec.ts` | claims `tool_call{run_javascript}` and, where the jail probes clean, `tool_call{run_python}` → sandboxed subprocess → tainted result, optionally an artifact |
+| `reply.ts` | the one rule every tool worker's ack goes through: a call carrying a TURN SLOT is answered with the tool `message` itself (inside the ack's fence), a bare call with a `tool_result`. One wrapper rather than a branch at each of exec's ten result sites, because the shape is the CALL's property |
 
 **`tools/`: what those workers actually do**
 
