@@ -1192,6 +1192,15 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   is how a fully diagnosed failure reached a test as an exit code and nothing else. Size the ends
   for what each must catch rather than splitting evenly: the head needs one line, the tail needs a
   message sitting ABOVE a stack (`clip` in `extensions/ts/broker.ts`).
+- **Address records by IDENTITY, never by a predicted position.** The chat's turn chain had three
+  writers agreeing on arithmetic over a shared `index` (reply i of round r lands at assistant + 1 +
+  i). A disagreement did not return nothing, it returned the WRONG RECORD: the client rendered the
+  model's prose as a tool result. Match on something the record carries and the reader already knows
+  (the provider call id; `{turnAt, round, role}`), and keep the sequence for ORDERING only. Note the
+  constraint that pushes people into position-addressing here: a scoped client cannot fetch by id,
+  since `getRecord`, `lineage` and `children` are all ops-plane, so an address must be an indexed
+  body field. Also: a match on `{round: 0}` does NOT match a record whose `round` is absent, so a
+  field used as an address has to be stamped even when its value is the default.
 - **A COUNTER that resets is worse than no counter, and it looks like it works.** The chat's round
   cap lives on the `llm_call`; the assistant message (the inference worker's ack) dropped it, so the
   turn worker read undefined, computed "round 1" every time, and `MAX_ROUNDS` could never trip. Seen

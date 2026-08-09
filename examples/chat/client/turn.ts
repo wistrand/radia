@@ -90,7 +90,10 @@ export async function runTurn(
       // `owner` rides along so a worker can copy it onto the result and chunks. That is what lets
       // a grant bind records the SESSION did not write but that were produced for it.
       // `turnAt` names which turn this is, so the worker can scope a tool's retry chain to it.
-      body: { conversationId: thread.id, owner: sessionOwner(), upToIndex: turnAt, turnAt, tools: tools.all() },
+      // `round: 0` EXPLICITLY. Addressing is by identity now, so the worker finds a round's assistant
+      // message with `{turnAt, round, role}` — and a match on `round: 0` does not match a record
+      // whose `round` is absent. Leaving it off made every turn's FIRST round unaddressable.
+      body: { conversationId: thread.id, owner: sessionOwner(), upToIndex: turnAt, turnAt, round: 0, tools: tools.all() },
       // A CLIENT-SUBMITTED claim, which is what `deadline_at` is for: how long the caller will care
       // about this turn. The worker compares it against the DB clock, never against this one.
       deadlineAt: new Date(Date.now() + TURN_BUDGET_MS).toISOString(),
@@ -124,11 +127,11 @@ export async function runTurn(
 
       if (message.tool_calls?.length) {
         write("\n");
-        // The calls are DISPATCHED by the turn worker, one after the other, into slots this client
-        // can compute: reply i lands at the assistant message's index plus one plus i. So following
-        // them is arithmetic rather than coordination.
-        for (let i = 0; i < message.tool_calls.length; i++) {
-          await showToolReply(client, thread, message.tool_calls[i], index + 1 + i, tools, onToolWait);
+        // The calls are DISPATCHED by the turn worker, one after the other. Each reply is found by
+        // the provider call id it answers, which this client already holds: no slot is predicted, so
+        // there is no arithmetic for two writers to disagree about.
+        for (const call of message.tool_calls) {
+          await showToolReply(client, thread, call, tools, onToolWait);
         }
         // The next round's call is the WORKER's to write. Waiting for it, rather than writing one,
         // is the whole difference: kill this process here and the turn still finishes.
@@ -246,7 +249,6 @@ async function showToolReply(
   client: RadiaClient,
   thread: Thread,
   call: { id: string; function: { name: string; arguments: string } },
-  slot: number,
   tools: ToolSet,
   onToolWait?: ToolWaitHook,
 ): Promise<void> {
@@ -257,8 +259,9 @@ async function showToolReply(
 
   const prefix = `  · ${call.function.name}(${trunc(showArgs(args), 60)}) `;
   write(prefix);
-  const reply = await awaitToolReply(client, thread.id, slot, prefix, call.function.name, tools, onToolWait);
-  thread.noteExternal(slot);
+  const reply = await awaitToolReply(client, thread.id, call.id, prefix, call.function.name, tools, onToolWait);
+  // From the record, not from a prediction: it says where it landed.
+  thread.noteExternal(reply.index);
   // Capped as well as fitted: on a wide terminal "fits the window" is 200 characters of JSON, which
   // is a wall rather than a summary. The record has the whole thing.
   write(`${reply.ok ? "→" : "✗"} ${trunc(showOutput(reply.output), Math.max(24, Math.min(120, columns() - prefix.length - 4)))}\n`);
@@ -396,12 +399,12 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
 async function awaitToolReply(
   client: RadiaClient,
   conversationId: string,
-  slot: number,
+  toolCallId: string,
   prefix: string,
   tool: string,
   tools: ToolSet,
   onToolWait?: ToolWaitHook,
-): Promise<{ ok: boolean; output: unknown }> {
+): Promise<{ ok: boolean; output: unknown; index: number }> {
   const waiter = new Waiter(client, prefix);
   // WHAT THIS CAN ACTUALLY KNOW, which is less than it used to claim. The old hint read "no worker
   // serves 'x'" after 2.5 seconds without a `progress` record, and that is not what the absence of a
@@ -421,11 +424,13 @@ async function awaitToolReply(
     : advertised
     ? `no result yet from '${tool}'`
     : `nothing advertises '${tool}'`;
-  const outcome = await awaitResult<{ ok: boolean; content: string }>(
+  const outcome = await awaitResult<{ ok: boolean; content: string; index: number }>(
     client,
-    // BY SLOT, not by call id: the client no longer writes the `tool_call`, so it does not know its
-    // id. The slot is arithmetic both sides agree on (workers/turn.ts assigns it).
-    { kind: "message", match: { conversationId, index: slot } },
+    // BY THE PROVIDER'S CALL ID, which the model minted and the reply carries. Addressing by a
+    // predicted `index` instead meant a mismatch returned the WRONG RECORD rather than nothing: a
+    // round whose position field went missing put assistant messages in the slots this was waiting
+    // on, and the model's prose was rendered as a tool's output.
+    { kind: "message", match: { conversationId, tool_call_id: toolCallId } },
     {
       timeoutMs: tool === "request_grant" ? HUMAN_DEADLINE_MS : TOOL_DEADLINE_MS,
       wake: waitWake,
@@ -459,8 +464,8 @@ async function awaitToolReply(
     }
   })();
   return outcome.body.ok
-    ? { ok: true, output: parsed }
-    : { ok: false, output: (parsed as { error?: unknown })?.error ?? parsed };
+    ? { ok: true, output: parsed, index: outcome.body.index }
+    : { ok: false, output: (parsed as { error?: unknown })?.error ?? parsed, index: outcome.body.index };
 }
 
 // ---- the tool set is discovered, never hard-coded ----

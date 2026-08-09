@@ -97,6 +97,14 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
       // An assistant message is the inference worker's ACK, and the client finds it by the call it
       // answers (plan-chat-turn.md). Messages a client writes simply have no callId.
       { path: "callId", type: "keyword" },
+      // ADDRESSING, which used to be arithmetic over `index`. A tool reply is found by the provider
+      // call id it answers; an assistant message by which turn and round it belongs to. `index`
+      // stays, but only to ORDER the transcript and bound the context window: predicting one in
+      // order to read a record is what let three writers disagree silently and hand the client an
+      // assistant message where it expected a tool result.
+      { path: "tool_call_id", type: "keyword" },
+      { path: "turnAt", type: "integer" },
+      { path: "round", type: "integer" },
     ],
     sortablePaths: ["index"],
     claimable: false,

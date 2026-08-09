@@ -283,6 +283,8 @@ try {
         conversationId: c2,
         owner: "human:t",
         upToIndex: 0,
+        turnAt: 0,
+        round: 0,
         stream: false,
         tools: [{ type: "function", function: { name: "run_javascript", description: "run js", parameters: {} } }],
       },
@@ -376,7 +378,7 @@ try {
       });
       await admin.put({
         kind: "llm_call",
-        body: { conversationId: capped, owner: "human:t", upToIndex: 0, turnAt: 0, stream: false, tools: [] },
+        body: { conversationId: capped, owner: "human:t", upToIndex: 0, turnAt: 0, round: 0, stream: false, tools: [] },
         deadlineAt: new Date(Date.now() + 600_000).toISOString(),
         parentIds: [capped],
       });

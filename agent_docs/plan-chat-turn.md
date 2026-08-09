@@ -123,6 +123,17 @@ next step needs (`i`, `of`, `assistantId`, `round`, `upToIndex`), so
 no step recomputes from a scan. The client becomes: put the user message, watch, render until
 `turn_complete`.
 
+ADDRESSING IS BY IDENTITY, ordering is by index, and conflating the two was a mistake worth naming.
+A reply is found by the provider call id it answers (`{conversationId, tool_call_id}`); a round's
+assistant message by `{conversationId, turnAt, round, role}`. `index` still orders the transcript and
+bounds the context window, but nobody PREDICTS one in order to read a record. That prediction was a
+hand-rolled allocator shared by three writers, and its failure mode was not "not found" but "found
+the WRONG record": when a round's position field went missing, the client read assistant messages out
+of the slots it was waiting on and rendered the model's prose as a tool's output. The constraint that
+made addressing awkward in the first place is real and worth remembering: a scoped client cannot
+fetch by id at all, because `getRecord`, `lineage` and `children` are ops-plane, so anything used as
+an address has to be an indexed BODY field.
+
 Indices need no counter and no lease: each writer derives its index from the record it reacted to
 (assistant = `upToIndex + 1`, tool `i` = `upToIndex + 2 + i`). The only read-then-write left is the
 client picking the user message's index, and two REPLs colliding there is two people typing at

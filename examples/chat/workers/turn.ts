@@ -49,10 +49,12 @@ interface Msg {
   index?: number;
   role?: string;
   tool_calls?: ToolCall[];
-  /** Slot bookkeeping a tool reply carries forward, stamped by whoever emitted the call. */
+  /** Which call of which round this is, carried so the next reaction addresses records by
+   *  identity rather than by predicting where they will land. */
   i?: number;
   of?: number;
   round?: number;
+  turnAt?: number;
 }
 
 function parseArgs(raw: string): Record<string, unknown> {
@@ -103,7 +105,7 @@ async function dbNow(): Promise<string> {
 }
 
 /** Emit the call for `calls[i]`, naming the slot its reply lands in. */
-async function dispatch(m: Msg, assistantId: string, calls: ToolCall[], i: number, replyIndex: number, round: number, key: string) {
+async function dispatch(m: Msg, turnAt: number | undefined, calls: ToolCall[], i: number, replyIndex: number, round: number, key: string) {
   const call = calls[i];
   await client.put({
     kind: "tool_call",
@@ -120,8 +122,9 @@ async function dispatch(m: Msg, assistantId: string, calls: ToolCall[], i: numbe
       i,
       of: calls.length,
       round,
+      turnAt,
     },
-    parentIds: [assistantId],
+    parentIds: [m.conversationId!],
   }, key);
 }
 
@@ -150,23 +153,24 @@ async function advance(id: string, m: Msg): Promise<void> {
     if (round >= MAX_ROUNDS) return void await done("round_cap");
     // Replies occupy one slot each, immediately after the assistant message, so every slot in the
     // round is known here and no writer has to coordinate on a counter.
-    return await dispatch(m, id, calls, 0, (m.index ?? 0) + 1, round, key);
+    return await dispatch(m, m.turnAt, calls, 0, (m.index ?? 0) + 1, round, key);
   }
 
   if (m.role === "tool") {
     const i = m.i ?? 0, of = m.of ?? 1;
     if (i + 1 < of) {
-      // The assistant message sits one slot before the round's first reply, and this reply is the
-      // i-th of them: the arithmetic is sound because `dispatch` assigned those slots.
+      // The assistant message this reply belongs to, BY IDENTITY: which turn, which round. It used
+      // to be `index - 1 - i`, sound only because `dispatch` had assigned those slots and therefore
+      // wrong the moment any writer disagreed, with no error to say so.
       const assistant = await client.readOne({
         kind: "message",
-        match: { conversationId: m.conversationId, index: (m.index ?? 0) - 1 - i },
+        match: { conversationId: m.conversationId, turnAt: m.turnAt, round, role: "assistant" },
       });
       const calls = (assistant?.body as Msg | undefined)?.tool_calls ?? [];
       // Unreadable or disagreeing: stop rather than guess. The turn stalls visibly instead of
       // dispatching a call the assistant never asked for.
       if (calls.length <= i + 1) return;
-      return await dispatch(m, assistant!.id, calls, i + 1, (m.index ?? 0) + 1, round, key);
+      return await dispatch(m, m.turnAt, calls, i + 1, (m.index ?? 0) + 1, round, key);
     }
     if (round + 1 >= MAX_ROUNDS) return void await done("round_cap");
     // The round's last reply: back to the model, one round deeper.

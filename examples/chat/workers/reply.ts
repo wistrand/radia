@@ -20,7 +20,7 @@ interface ToolResultShape {
 
 // deno-lint-ignore no-explicit-any
 export function asTurnReply(rec: RadiaRecord, result: any): ToolResultShape {
-  const slot = rec.body as { tool_call_id?: string; replyIndex?: number; i?: number; of?: number; round?: number };
+  const slot = rec.body as { tool_call_id?: string; replyIndex?: number; i?: number; of?: number; round?: number; turnAt?: number };
   if (result?.kind !== "tool_result") return result;
   if (typeof slot.tool_call_id !== "string" || typeof slot.replyIndex !== "number") return result;
   const b = result.body as { callId?: string; conversationId?: string; owner?: string; ok?: boolean; output?: unknown };
@@ -41,6 +41,7 @@ export function asTurnReply(rec: RadiaRecord, result: any): ToolResultShape {
       ...(typeof slot.i === "number" ? { i: slot.i } : {}),
       ...(typeof slot.of === "number" ? { of: slot.of } : {}),
       ...(typeof slot.round === "number" ? { round: slot.round } : {}),
+      ...(typeof slot.turnAt === "number" ? { turnAt: slot.turnAt } : {}),
       callId: b.callId,
       ok: b.ok,
       // Exactly the string the CLIENT used to append, so the provider sees the same transcript it
