@@ -24,9 +24,10 @@ import { progress } from "../../../extensions/ts/progress.ts";
 // Its own `progress`, not the harness's `stage`: these notes carry WHICH model is running, which a
 // per-tool stage string cannot say.
 import { answer, serveTools } from "../../../extensions/ts/tool-worker.ts";
+import { readToolArtifact, storeToolArtifact } from "../../../extensions/ts/media.ts";
 import { arg, onStop } from "../util.ts";
 import { publishCapability } from "../../../extensions/ts/capability.ts";
-import { publishModel, retireModel } from "../space/model.ts";
+import { publishModel, retireModel } from "../../../extensions/ts/model.ts";
 import type { ToolDef } from "../provider/openrouter.ts";
 
 const ME = "agent:chat-images";
@@ -159,21 +160,15 @@ async function drawImage(callId: string, b: Call, c: RadiaClient) {
   if (!prompt) return answer("generate_image needs a prompt", { ok: false });
   try {
     const { bytes, mediaType } = await generateImage({ apiKey, model, prompt, safetySettings });
-    // Tainted on purpose. The bytes come from a provider (and in two of the response formats,
-    // from a URL the MODEL chose), and an image is a prompt-injection vector the moment anything
-    // reads it back: instructions render as pixels. A sensitive consumer can refuse it with
-    // `requireUntainted`; clearing it needs a privileged declassify.
-    const artifact = await c.putArtifact(bytes, {
-      mediaType,
-      filename: "generated.png",
-      parentIds: [callId], // lineage: conversation -> tool_call -> artifact
-      // Fetched from an image API: the bytes crossed a network.
-      taint: ["net"],
-      // Lineage records where it CAME from; this is what a grant can bind. Patterns match the
-      // body, and parent_ids is not body, so without this field an artifact is readable by any
-      // session that learns its id, whatever the conversation scoping says.
-      meta: { conversationId: b.conversationId ?? "", owner: b.owner ?? "" },
-    });
+    // `net` because the bytes crossed a network, and because a generated image is a prompt-injection
+    // vector the moment anything reads it back: instructions render as pixels. A sensitive consumer
+    // refuses it with `requireUntainted`; clearing it needs a privileged declassify.
+    const artifact = await storeToolArtifact(
+      c,
+      { callId, conversationId: b.conversationId, owner: b.owner },
+      bytes,
+      { mediaType, filename: "generated.png", taint: ["net"] },
+    );
     return answer({ artifactId: artifact.id, mediaType, size: artifact.size, model, prompt });
   } catch (e) {
     // Don't nack: a refused or failed generation is an ANSWER (the model should see why and can
@@ -198,30 +193,13 @@ async function readImage(callId: string, b: Call, c: RadiaClient) {
   await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "looking", by: ME, note: visionModel }, [callId]);
   if (!artifactId) return answer("analyze_image needs an artifactId", { ok: false });
   try {
-    // HEAD first, so an unreadable type or an oversized blob is refused without moving the bytes.
-    // `artifactMeta` is on the COORDINATION plane; `getRecord` would be `/v0/ops`, which a worker
-    // holding ordinary grants cannot reach, and the 403 would surface as "no artifact".
-    const meta = await c.artifactMeta(artifactId).catch((e) => {
-      // Naming the permission is the whole point: the same lookup answering "not found" for a
-      // missing grant sent an assistant round eight retries of a call that could never succeed.
-      const status = (e as { status?: number }).status;
-      throw new Error(
-        status === 403 || status === 401
-          ? `not allowed to read artifact ${artifactId}: this is a permission problem, not a missing file`
-          : String(e),
-      );
+    const read = await readToolArtifact(c, artifactId, {
+      accept: visionTypes,
+      maxBytes: MAX_IMAGE_BYTES,
+      describeSize: sizeLabel,
     });
-    if (!meta) {
-      return answer(`no artifact ${artifactId}`, { ok: false });
-    }
-    const mediaType = meta.mediaType.split(";")[0].trim().toLowerCase();
-    if (!visionTypes.includes(mediaType)) {
-      return answer(`${artifactId} is ${mediaType}; ${visionModel} reads ${visionTypes.join(", ")}`, { ok: false });
-    }
-    if (meta.size > MAX_IMAGE_BYTES) {
-      return answer(`${artifactId} is ${sizeLabel(meta.size)}, over the ${sizeLabel(MAX_IMAGE_BYTES)} limit`, { ok: false });
-    }
-    const bytes = await c.getArtifact(artifactId);
+    if ("refused" in read) return answer(read.refused, { ok: false });
+    const { bytes, mediaType } = read;
     const { text, finishReason, usage } = await describeMedia({
       apiKey,
       model: visionModel,

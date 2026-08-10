@@ -6,7 +6,22 @@
 // importable and directly testable (`smoke-context.ts`) rather than reachable only by running a
 // worker with an API key.
 
-import type { ChatMessage, ToolCall } from "./openrouter.ts";
+import type { ToolCall } from "./turn.ts";
+
+/**
+ * A message as a provider takes it.
+ *
+ * Here rather than beside a provider client, for the reason `ToolDef` is in ./capability.ts: it is
+ * what a transcript record turns INTO, and the client is one consumer of the shape rather than its
+ * owner. A provider speaking a different shape converts at its own edge.
+ */
+export interface ChatMessage {
+  role: string;
+  content?: string | null;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+  name?: string;
+}
 
 /** One `message` record's body, as stored on the space. */
 export interface ThreadRow {

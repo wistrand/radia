@@ -25,7 +25,7 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { bootstrap } from "./space/roles.ts";
-import { liveModels } from "./space/model.ts";
+import { liveModels } from "../../extensions/ts/model.ts";
 import type { ToolDef } from "./provider/openrouter.ts";
 
 const PORT = 7819;

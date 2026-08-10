@@ -7,7 +7,7 @@
 // question being answered, and a `system` message in a position no provider accepts (which is what
 // a RESUMED conversation produces, since resume appends fresh standing instructions mid-thread).
 
-import { assembleContext, type ThreadRow } from "./provider/context.ts";
+import { assembleContext, type ThreadRow } from "../../extensions/ts/context.ts";
 
 const check = (label: string, pass: boolean, detail = "") => console.log(`  ${pass ? "OK  " : "FAIL"} ${label}${detail ? `  ${detail}` : ""}`);
 const row = (index: number, role: string, content = `m${index}`): ThreadRow => ({ index, role, content });

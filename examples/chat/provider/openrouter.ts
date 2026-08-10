@@ -1,4 +1,5 @@
 import type { ToolDef } from "../../../extensions/ts/capability.ts";
+import type { ChatMessage } from "../../../extensions/ts/context.ts";
 // Thin OpenRouter client (OpenAI-compatible chat completions, streaming + tool calling).
 // Only the inference-worker imports this; it is the sole holder of the API key.
 
@@ -8,13 +9,9 @@ export interface ToolCall {
   function: { name: string; arguments: string };
 }
 
-export interface ChatMessage {
-  role: string;
-  content?: string | null;
-  tool_calls?: ToolCall[];
-  tool_call_id?: string;
-  name?: string;
-}
+// Owned by ./../../../extensions/ts/context.ts, for the reason `ToolDef` is owned by capability.ts:
+// this client is one consumer of the shape, not its authority.
+export type { ChatMessage };
 
 // The shape a `capability` record carries, so it is owned there rather than here: this client is
 // one consumer of it, not its authority. Re-exported because every tool definition in the app

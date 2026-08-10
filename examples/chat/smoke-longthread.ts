@@ -15,7 +15,7 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
-import { assembleContext, selectWindow, type ThreadRow } from "./provider/context.ts";
+import { assembleContext, selectWindow, type ThreadRow } from "../../extensions/ts/context.ts";
 
 const PORT = 7794;
 const url = `http://127.0.0.1:${PORT}`;

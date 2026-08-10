@@ -13,7 +13,7 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
-import { liveModels, publishModel, retireModel } from "./space/model.ts";
+import { liveModels, publishModel, retireModel } from "../../extensions/ts/model.ts";
 
 const PORT = 7801;
 const url = `http://127.0.0.1:${PORT}`;

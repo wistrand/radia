@@ -14,8 +14,8 @@
 // still wants the re-advertise half thought through. Do not "fix" it with a periodic re-publish;
 // registry growth itself is handled now (the kind declares `contentKey`, so `radia gc` compacts it).
 
-import type { RadiaClient } from "../../../sdk/ts/client.ts";
-import { activeByKey } from "../../../sdk/ts/registry.ts";
+import type { RadiaClient } from "../../sdk/ts/client.ts";
+import { activeByKey } from "../../sdk/ts/registry.ts";
 
 export interface ModelAd {
   tier: string;

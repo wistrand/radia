@@ -911,10 +911,10 @@ caller waiting out its deadline for an answer that already exists.
 | File | Role |
 |------|------|
 | `turn.ts` | the conversation's loop as matching, not a loop: watches `message` facts and emits the next link (first tool call, next tool call, next round, `turn_complete`), each keyed on the trigger so a restart replays instead of doubling. The REPL writes only the seed call and renders what follows, so killing it mid-turn no longer kills the turn. See agent_docs/plan-chat-turn.md |
-| `inference.ts` | one per tier (`--tier`/`--model`/`--rank`): claims `{llm_call, tier}`, streams `llm_chunk`, ACKS the assistant `message` itself (an inline call keeps `llm_result`), windows the thread, intercepts `escalate` |
+| `inference.ts` | this app's BINDING of a model to Radia: the OpenRouter call and the tier advertisement. The worker shape (claim `{llm_call, tier}`, window the thread, stream `llm_chunk`, ack the assistant `message`, intercept `escalate`) is `extensions/ts/inference.ts`, which takes `complete` as a function and knows no vendor |
 | `router.ts` | claims UNTIERED `llm_call`s, classifies the turn, re-dispatches to a tier (`replyTo` keeps the result correlated) |
 | `tools.ts` | composes its tool map and hands it to `serveTools` (extensions/ts/tool-worker.ts), which advertises, claims one pattern per NAME, and builds the one answer envelope. Sandboxed permissions, no env |
-| `images.ts` | claims `tool_call{generate_image}` → image model → artifact → a reference; and `{analyze_image}` → artifact → vision model → an answer |
+| `images.ts` | claims `tool_call{generate_image}` → image model → artifact → a reference; and `{analyze_image}` → artifact → vision model → an answer. The artifact rules either side (`storeToolArtifact`, `readToolArtifact`) are `extensions/ts/media.ts` |
 | `exec.ts` | claims `tool_call{run_javascript}` and, where the jail probes clean, `tool_call{run_python}` → sandboxed subprocess → tainted result, optionally an artifact |
 
 
