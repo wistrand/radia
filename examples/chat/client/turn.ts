@@ -41,6 +41,15 @@ export function cancelTurn(): void {
   cancel?.abort();
 }
 
+/**
+ * How long inference may go UNOBSERVED, not how long it may take.
+ *
+ * An absolute deadline cannot tell a slow answer from a stopped worker, and the expensive models are
+ * the slow ones: a top-tier turn over a big page was abandoned here at two minutes while the worker
+ * was still generating, so the answer landed for nobody. The clock restarts on any evidence of life
+ * (a streamed chunk, or a worker's progress record), so a five-minute answer is fine and genuine
+ * silence still fails in two.
+ */
 const INFERENCE_DEADLINE_MS = 120_000;
 /**
  * How long a whole turn stays worth finishing, stamped on the seed as the record's `deadlineAt`.
@@ -367,6 +376,8 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
     { kind: "message", match: { callId } },
     {
       timeoutMs: INFERENCE_DEADLINE_MS,
+      // Tokens arriving, or the worker still reporting: either means it is alive.
+      alive: () => `${lastIndex}:${waiter.beats}`,
       wake: waitWake,
       beforeRead: printNew,
       onWait: () => (printed ? undefined : waiter.pump(callId, stall)),
@@ -436,6 +447,8 @@ async function awaitToolReply(
     { kind: "message", match: { conversationId, tool_call_id: toolCallId } },
     {
       timeoutMs: tool === "request_grant" ? HUMAN_DEADLINE_MS : TOOL_DEADLINE_MS,
+      // Same rule for a tool: a long code run that keeps reporting is working, not stuck.
+      alive: () => waiter.beats,
       wake: waitWake,
       onWait: async () => {
         // Whatever this turn needs from the human, ask for it now rather than after the turn ends.

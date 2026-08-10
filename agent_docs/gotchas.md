@@ -1211,6 +1211,18 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 - **Scope a per-turn marker to the turn (`turnAt`), never the conversation.** `turn_complete`
   matched on `{conversationId}` finds the PREVIOUS turn's and ends every later turn immediately.
   Index the path. A suite running one turn per conversation cannot see it.
+- **A deadline on ELAPSED time cannot tell a slow answer from a dead worker.** The chat abandoned a
+  top-tier turn at two minutes while the worker was still generating, so the answer landed for
+  nobody. Time out on SILENCE instead: `awaitResult({alive})` restarts the clock on any evidence
+  (a streamed chunk, a progress record). The other half is that the evidence has to exist — a model
+  can think for minutes before its first token, so `runInferenceWorker` beats a `progress` record
+  every 15s while a completion is outstanding.
+- **Routing per round plus a tool-count signal is a RATCHET.** The chat re-classified every round of
+  a turn and told the classifier how many tools had run; the user's text is identical each round, so
+  the tool count was the only input that changed and it only ever grows. Measured: 14% of first
+  rounds went to the top tier and 72% of every round after, with most calls being later rounds. Two
+  fixes, and the second is the one that holds: say what happened rather than that it was hard, and
+  BOUND a later round to one step above where the turn opened (`capToTurn`, workers/router.ts).
 - **A WATCH does not outlive its run, so supervise the loop that owns one.** A run lasts fifteen
   minutes; the SDK mints another for ordinary calls, but the SSE stream opened under the old one is
   revoked with `credential_invalid`. An unsupervised `for await (… client.watch(…))` throws out and

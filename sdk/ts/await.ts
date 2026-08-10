@@ -27,8 +27,19 @@ export type AwaitOutcome<T = unknown> =
   | { status: "aborted" };
 
 export interface AwaitOptions {
-  /** How long to keep asking before giving up. */
+  /** How long to keep asking before giving up. With `alive`, this is how long the work may go
+   *  UNOBSERVED rather than how long it may take: a deadline on total elapsed time cannot tell a
+   *  slow answer from a dead worker, and the expensive models are the slow ones. */
   timeoutMs: number;
+  /**
+   * Evidence the work is still happening, checked on every wait. Returning a value DIFFERENT from
+   * last time restarts the clock.
+   *
+   * A caller that can see progress (streamed chunks, a worker's status records) should pass it:
+   * otherwise a long answer is indistinguishable from a stopped worker, and the caller abandons a
+   * turn the worker then finishes for nobody.
+   */
+  alive?: () => unknown;
   /** Wait for something to change. Defaults to a sleep of `pollMs`; pass a shared watch-driven
    *  wake to avoid a stream per outstanding call. */
   wake?: () => Promise<void>;
@@ -59,7 +70,8 @@ export async function awaitResult<T = unknown>(
   opts: AwaitOptions,
 ): Promise<AwaitOutcome<T>> {
   const started = Date.now();
-  const deadline = started + opts.timeoutMs;
+  let deadline = started + opts.timeoutMs;
+  let seen = opts.alive?.();
   const wake = opts.wake ?? (() => sleep(opts.pollMs ?? 200));
   while (Date.now() < deadline) {
     if (opts.beforeRead) await opts.beforeRead();
@@ -68,6 +80,13 @@ export async function awaitResult<T = unknown>(
     if (opts.onWait) await opts.onWait();
     await wake();
     if (opts.signal?.aborted) return { status: "aborted" };
+    if (opts.alive) {
+      const now = opts.alive();
+      if (now !== seen) {
+        seen = now;
+        deadline = Date.now() + opts.timeoutMs; // still working: the clock is about SILENCE
+      }
+    }
   }
   // One last read on the way out. The deadline expiring between the previous read and now is the
   // common case on a slow tool, and reporting a timeout for a result already in the space is the

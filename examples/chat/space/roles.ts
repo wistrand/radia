@@ -72,7 +72,9 @@ const INFERENCE_GRANTS: Grant[] = [
 // result; it never holds the API key: the classification is itself an llm_call served by the fleet.
 const ROUTER_GRANTS: Grant[] = [
   { kind: "interest", operations: ["put", "query"] }, // agentLoop declares what this worker listens for
-  { kind: "llm_call", operations: ["take", "put"] },
+  // `query` too: the per-turn ceiling reads the round-0 call to see where this turn started, so a
+  // later round cannot drift to the top tier by making tool calls.
+  { kind: "llm_call", operations: ["take", "put", "query"] },
   { kind: "llm_result", operations: ["read_one"] }, // reads its classifier call's result
   { kind: "message", operations: ["query"] },
   { kind: "model", operations: ["query"] },

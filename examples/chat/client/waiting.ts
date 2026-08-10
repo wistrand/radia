@@ -82,6 +82,9 @@ function describe(p: ProgressBody): string {
 /** One awaited call: what has been reported about it, and how long it has been waiting. */
 export class Waiter {
   private readonly seen = new Set<string>();
+  /** How many progress records this waiter has ever seen. A caller uses the CHANGE as evidence the
+   *  work is still happening, which is what separates a slow answer from a stopped worker. */
+  beats = 0;
   private readonly started = Date.now();
   private nextPoll = 0;
   last?: ProgressBody;
@@ -125,6 +128,7 @@ export class Waiter {
       for (const r of rows.sort((a, b) => (a.id < b.id ? -1 : 1))) {
         if (this.seen.has(r.id)) continue;
         this.seen.add(r.id);
+        this.beats++;
         this.last = r.body as ProgressBody; // ULID order = emission order, so the last one wins
         this.onProgress?.(this.last);
       }

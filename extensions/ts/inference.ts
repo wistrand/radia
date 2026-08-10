@@ -60,6 +60,8 @@ export interface InferenceOptions {
   /** Ceiling on the current-turn expansion, so one runaway turn stays bounded. */
   windowCap?: number;
   leaseSeconds?: number;
+  /** How often to report that a still-running completion is alive. See the heartbeat below. */
+  heartbeatMs?: number;
   signal?: AbortSignal;
 }
 
@@ -207,10 +209,30 @@ export async function runInferenceWorker(client: RadiaClient, opts: InferenceOpt
         const higher = (await liveModels(c)).find((m) => (m.rank ?? 0) > rank);
         const tools = higher ? body.tools : (body.tools ?? []).filter((t) => t.function.name !== "escalate");
 
-        const { message, finishReason, usage } = await complete(
-          { model: body.model ?? model, messages, tools, temperature: body.temperature },
-          (delta) => chunk(delta),
-        );
+        // A HEARTBEAT while the provider thinks. A top-tier model can spend minutes before its
+        // first token, and until one arrives there is no chunk and no progress record, so a caller
+        // watching for life sees a stopped worker and abandons a turn that is running normally.
+        // Cheap: one record per beat, on a kind that declares its own retention.
+        const beat = setInterval(() => {
+          progress(c, {
+            conversationId: body.conversationId,
+            owner: body.owner,
+            callId: resultKey,
+            stage: "generating",
+            by: provider,
+            note: `${tier ?? "any"} · ${reportModel}`,
+          }, [callId]).catch(() => {});
+        }, opts.heartbeatMs ?? 15_000);
+        let completion: Completion;
+        try {
+          completion = await complete(
+            { model: body.model ?? model, messages, tools, temperature: body.temperature },
+            (delta) => chunk(delta),
+          );
+        } finally {
+          clearInterval(beat);
+        }
+        const { message, finishReason, usage } = completion;
 
         if (higher && message.tool_calls?.some((tc) => tc.function.name === "escalate")) {
           // A model may emit text BEFORE escalating, and it is already on a screen. This attempt is

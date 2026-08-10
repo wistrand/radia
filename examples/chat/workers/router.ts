@@ -103,15 +103,19 @@ async function classifyLLM(text: string, toolCalls: number, tiers: string[], c: 
   const live = new Set(tiers);
   const system = `You are a routing classifier for an LLM chat. Choose the CHEAPEST capability tier ` +
     `that can handle the user's latest message well. Tiers, cheapest first: ${tiers.join(", ")}. ` +
-    `Reply with EXACTLY one tier word, nothing else. Guide: cheapest tier for greetings/small talk/` +
-    `simple lookups; a middle tier for moderate explanation or planning; the most capable tier for ` +
-    `hard reasoning, analysis, math/proofs, multi-step tool work, or non-trivial code.`;
-  // The turn is routed per round, so a later round must be judged on the work done so far, not on
-  // the bare question: the round that synthesizes a dozen tool results is the hard one, however
-  // simple the question looked.
+    `The most capable tier costs roughly fifty times the cheapest, so it has to EARN the choice; ` +
+    `when two tiers would both do, pick the cheaper. ` +
+    `Reply with EXACTLY one tier word, nothing else. Guide: cheapest tier for greetings, small talk, ` +
+    `lookups, and straightforward edits; a middle tier for ordinary explanation, planning, and most ` +
+    `code; the most capable tier ONLY for genuinely hard reasoning, subtle debugging, proofs, or ` +
+    `design with real trade-offs.`;
+  // Reading tool results is NORMAL work, so this says what happened and not that it was hard.
+  // Measured: with the old wording ("must now interpret the results. Weigh that, not just the
+  // wording") the tier went 14% deep on a turn's first round and 72% on every round after it, since
+  // the user's text is identical each round and the tool count was the only thing changing.
   const context = toolCalls > 0
-    ? `\n\n(The assistant has already made ${toolCalls} tool call${toolCalls === 1 ? "" : "s"} on this turn ` +
-      `and must now interpret the results. Weigh that, not just the wording.)`
+    ? `\n\n(Context: ${toolCalls} tool result${toolCalls === 1 ? " is" : "s are"} already available to ` +
+      `read. Judge the QUESTION; having tool output to summarise does not by itself make a turn hard.)`
     : "";
   const messages: ChatMessage[] = [{ role: "system", content: system }, { role: "user", content: text + context }];
   // temperature 0: the same question must not land on different tiers across rounds of one turn.
@@ -131,18 +135,50 @@ async function classifyLLM(text: string, toolCalls: number, tiers: string[], c: 
   return null; // timed out
 }
 
+/**
+ * A later round may climb ONE step above where the turn started, and no further.
+ *
+ * Routing per round is deliberate: a round that synthesises a dozen tool results can be harder than
+ * the question looked. But the question's text is IDENTICAL on every round, so the tool count is the
+ * only input that changes, and any prompt that treats tool work as difficulty becomes a ratchet.
+ * Measured before this bound: 14% of first rounds went to the top tier and 72% of every round after,
+ * with most of a turn's calls being later rounds.
+ *
+ * The bound is on the TURN's opening choice, read from the round-0 call the client seeded, so a hard
+ * question still starts high and a simple one cannot drift to the top by making tool calls.
+ */
+async function capToTurn(
+  c: RadiaClient,
+  body: { conversationId?: string; turnAt?: number; round?: number },
+  tiers: string[],
+  chosen: string,
+): Promise<string> {
+  if (!body.conversationId || !body.round || body.turnAt === undefined) return chosen; // round 0 sets the bar
+  const rows = await c.query(
+    { kind: "llm_call", match: { conversationId: body.conversationId, turnAt: body.turnAt } },
+    50,
+  );
+  const opening = rows.map((r) => (r.body as { round?: number; tier?: string }))
+    .filter((b) => b.tier && (b.round ?? 0) === 0)[0]?.tier;
+  if (!opening) return chosen;
+  const ceiling = Math.min(tiers.indexOf(opening) + 1, tiers.length - 1);
+  const want = tiers.indexOf(chosen);
+  return want > ceiling ? tiers[ceiling] : chosen;
+}
+
 await agentLoop(client, {
   name: "router",
   patterns: [{ kind: "llm_call", match: { tier: { $exists: false } } }],
   handle: async (rec, c) => {
-    const body = rec.body as { conversationId?: string; upToIndex?: number };
+    const body = rec.body as { conversationId?: string; upToIndex?: number; turnAt?: number; round?: number };
     // Report the claim before the classifier round-trip. It is the first sign of life the chat
     // gets, and with a classifier in the path there is now a visible gap to explain.
     await progress(c, { conversationId: body.conversationId, callId: rec.id, stage: "routing", by: ME }, [rec.id]);
     const tiers = await liveTiers(c);
     if (tiers.length === 0) throw new Error("no `model` record advertised yet");
     const { text, toolCalls } = await currentTurn(c, body.conversationId, body.upToIndex ?? 0);
-    const tier = (await classifyLLM(text, toolCalls, tiers, c)) ?? tiers[heuristicIndex(text, tiers.length, toolCalls)];
+    const chosen = (await classifyLLM(text, toolCalls, tiers, c)) ?? tiers[heuristicIndex(text, tiers.length, toolCalls)];
+    const tier = await capToTurn(c, body, tiers, chosen);
     await progress(c, { conversationId: body.conversationId, callId: rec.id, stage: "routed", by: ME, note: `→ ${tier}` }, [rec.id]);
     return { kind: "llm_call", body: { ...body, tier, replyTo: rec.id } };
   },

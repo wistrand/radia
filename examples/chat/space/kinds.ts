@@ -84,7 +84,14 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // did we do in THIS conversation" reachable in one query instead of a walk down children.
   await client.registerKind({
     kind: "llm_call",
-    indexedPaths: [{ path: "tier", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
+    // `turnAt` groups a turn's rounds, which is what the router's per-turn ceiling reads and what
+    // makes "the calls of one turn" a query rather than a scan.
+    indexedPaths: [
+      { path: "tier", type: "keyword" },
+      { path: "conversationId", type: "keyword" },
+      { path: "owner", type: "keyword" },
+      { path: "turnAt", type: "integer" },
+    ],
     // The BYTE hog: each body carries the tool list, and nothing reads it after the result lands
     // (context assembly reads `message` records, which carry no retention and stay). Measured
     // live: 747 llm_calls held 8 MB of the 10 MB of all bodies. A week covers any debugging.
