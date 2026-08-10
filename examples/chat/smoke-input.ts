@@ -88,6 +88,27 @@ function within<T>(ms: number, p: Promise<T>): Promise<T | "TIMED OUT"> {
   check("…and is not delivered as text to the next prompt", line === "next", String(line));
 }
 
+// ---- Ctrl-C during a turn cancels too, and spares the type-ahead around it ----
+// Raw mode takes SIGINT away, so 0x03 is just a byte — and it sat in the type-ahead buffer doing
+// nothing until the next prompt, which read live as "Ctrl-C does not work while calls run".
+{
+  const kb = keyboard();
+  const nextLine = lineReader();
+  let cancelled = false;
+  const stop = watchCancel(() => (cancelled = true));
+  // "next" on purpose: these blocks share one history file, and a NEW word here would become the
+  // newest entry and break the arrow-recall case below.
+  await kb.type("next"); // type-ahead the user meant for the next prompt
+  await kb.type("\x03");
+  await new Promise((r) => setTimeout(r, 20));
+  stop();
+  check("Ctrl-C during a turn cancels it", cancelled);
+  const pending = nextLine();
+  await kb.type("\n");
+  const line = await within(2000, pending);
+  check("…consuming only the interrupt, never the typing around it", line === "next", JSON.stringify(line));
+}
+
 // ---- an escape SEQUENCE is not a cancel ----
 {
   const kb = keyboard();

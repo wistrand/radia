@@ -608,6 +608,24 @@ export function watchCancel(onCancel: () => void): () => void {
         onCancel();
         return;
       }
+      // Ctrl-C during a turn means what Escape means: stop what is happening. Raw mode took SIGINT
+      // away, so this byte IS the interrupt — and it sat in the type-ahead buffer doing nothing
+      // until the next prompt, which read live as "Ctrl-C does not work while calls run". Unlike
+      // ESC it prefixes no key sequence, so containment is safe; only the 0x03 bytes are consumed,
+      // and the rest of the type-ahead stays. Pressing it twice quits: the second lands on an
+      // empty prompt, which is already the quit path, so the double-press exit composes for free.
+      // Ctrl-C during a turn means what Escape means: stop what is happening. Raw mode took SIGINT
+      // away, so this byte IS the interrupt — and it sat in the type-ahead buffer doing nothing
+      // until the next prompt, which read live as "Ctrl-C does not work while calls run". Unlike
+      // ESC it prefixes no key sequence, so containment is safe; only the 0x03 bytes are consumed,
+      // and the rest of the type-ahead stays. Pressing it twice quits: the second lands on an
+      // empty prompt, which is already the quit path, so the double-press exit composes for free.
+      if (lastChunk.includes("\x03")) {
+        buffered = buffered.replaceAll("\x03", "");
+        onCancel();
+        return;
+      }
+
     }
   })().catch(() => {});
   return () => {

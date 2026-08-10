@@ -228,7 +228,7 @@ Deno.addSignalListener("SIGINT", () => {
   Deno.exit(0);
 });
 
-// The banner is FACTS, aligned, one line each: prose here wraps to fifteen rows on an 80-column
+// The banner is the MARK plus FACTS, aligned, one line each: prose here wraps to fifteen rows on an 80-column
 // terminal before the first prompt. What a reader needs at that moment is where the space is, who
 // they are, and which directories are exposed. The design positions it also carried (routing is
 // automatic, languages are discovered rather than configured, the guarantees differ per jail and
@@ -313,7 +313,7 @@ field("tools", tools.all().length > 0 ? `${tools.all().length} discovered` : dim
  */
 const clipboard = await clipboardReader();
 field("paste", clipboard ? `${clipboard}  ${dim("Ctrl-V attaches an image, a PDF or a copied file")}` : dim("no reader (wl-paste / xclip / pngpaste); Ctrl-V does nothing"));
-write(dim("\n  Ctrl-D to quit, Escape to cancel a turn.\n"));
+write(dim("\n  Ctrl-D to quit, Escape or Ctrl-C to cancel a turn.\n"));
 holdLine(false); // and whatever the fleet said while the banner was printing lands now, in order
 
 /** Store bytes as an artifact of this conversation and return the marker that goes in the message. */

@@ -74,6 +74,10 @@ function fmtCost(usd: number): string {
   return `$${usd.toFixed(5)}`;
 }
 const TOOL_DEADLINE_MS = 30_000;
+/** How long a streamed answer must be silent before the status row returns beneath it. Long enough
+ *  that ordinary token-to-token gaps never flicker it in, short enough that "composing a large tool
+ *  call" is visibly alive rather than a dead screen. */
+const STREAM_QUIET_MS = 2_500;
 /** `request_grant` waits on a PERSON, so it gets a human deadline rather than a worker one, and a
  *  longer one than the tool's own wait, or the REPL would give up on a decision still being made. */
 const HUMAN_DEADLINE_MS = 300_000;
@@ -356,6 +360,8 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
   const stall = "no worker claimed this call. Is the router/inference fleet running?";
   let lastIndex = -1; // watermark over ONE monotonic stream: an escalation hands it on, never resets
   let printed = false; // any visible text on the line yet
+  let lastChunkAt = Date.now(); // when the stream last said anything visible
+  let statusResumed = false; // the status row is back on screen below a paused answer
   let announced = false; // the routing label is on screen
   // The answer is markdown, and it arrives in pieces, so the renderer is stateful and lives as long
   // as the answer does. Off a terminal this is the model's bytes, unaltered.
@@ -412,6 +418,13 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
       const b = chunk.body as { index: number; delta: string; reset?: boolean };
       if (b.index <= lastIndex) continue;
       lastIndex = b.index;
+      lastChunkAt = Date.now();
+      if (statusResumed) {
+        // The stream is talking again: take the status row back off the screen and let the text
+        // continue where it paused.
+        endStatus("");
+        statusResumed = false;
+      }
       if (b.reset) {
         // A worker escalated mid-stream: what is on screen came from the attempt it just threw
         // away. Say so, rather than letting the stronger model's answer append to it. WHICH tiers
@@ -467,7 +480,21 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
       alive: () => `${lastIndex}:${waiter.beats}`,
       wake: waitWake,
       beforeRead: printNew,
-      onWait: () => (printed ? undefined : waiter.pump(callId, stall)),
+      onWait: () => {
+        if (!printed) return waiter.pump(callId, stall);
+        // The model streamed text and went QUIET: it is composing tool arguments, which are never
+        // rendered. This gate used to stop for good at the first token, so a deep model writing
+        // 20KB of code showed a dead screen for minutes — read live as a hang — and froze the
+        // deadline's liveness signal under a worker that was heartbeating normally. After a short
+        // pause the status returns on its own row, carrying the worker's note (tier, model, ~tok).
+        if (Date.now() - lastChunkAt < STREAM_QUIET_MS) return;
+        if (!statusResumed) {
+          statusResumed = true;
+          ensureLine();
+          waiter.prefix = ""; // its own row: there is no prompt to re-print in front of it
+        }
+        return waiter.pump(callId, stall);
+      },
       signal: cancel?.signal,
     },
   );

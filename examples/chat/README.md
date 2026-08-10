@@ -55,8 +55,11 @@ credential file. Before this the prompt ran in cooked mode, where the driver giv
 typing, and there was no history at all.
 
 Owning raw mode is what buys that, and it comes with obligations the terminal driver used to meet.
-`Ctrl-C` no longer raises a signal, so it is a key: it clears a line with something in it and quits
-an empty one. `Ctrl-D` deletes forward mid-line and ends input on an empty one. The terminal is
+`Ctrl-C` no longer raises a signal, so it is a key: during a turn it cancels the turn (what Escape
+does — without this the byte sat in the type-ahead buffer doing nothing, which read as "Ctrl-C does
+not work while calls run"), at a prompt it clears a line with something in it and quits an empty
+one. Pressed twice during a turn it therefore quits, with no double-press logic anywhere: the
+second lands on the empty prompt. `Ctrl-D` deletes forward mid-line and ends input on an empty one. The terminal is
 restored on every exit path including a signal and an unhandled throw, because leaving raw mode
 behind means a shell with no echo. Bracketed paste is enabled, so a pasted block stays ONE input
 instead of submitting once per line. And the line is drawn on a single physical row, scrolled
@@ -264,6 +267,10 @@ thing moving, and a minute of real work looked exactly like a hung provider. The
 counts what the stream yields (prose and tool arguments alike) and carries it on its heartbeat:
 `generating balanced · … · ~840 tok · 43s`. Characters are what a stream gives you, so that figure
 is derived and marked `~`; the authoritative count is the provider's, on the record, afterwards.
+The same status returns BENEATH a streamed answer once the stream has been quiet for a couple of
+seconds: a model that narrates and then composes a large tool call spends minutes past its last
+visible token, and that stretch used to be a dead screen that read as a hang — with the deadline's
+liveness signal frozen under a worker that was heartbeating normally.
 
 **No tier name appears in the router.** Live tiers come from the `model` records ordered by `rank`;
 the classifier is asked to answer with one of *those* words; and when it errors or times out the

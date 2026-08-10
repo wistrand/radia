@@ -68,6 +68,27 @@ const fake = Deno.serve({ port: 0, hostname: "127.0.0.1", onListen: () => {} }, 
     id: `call_c${n + 1}`,
     function: { name: "run_javascript", arguments: JSON.stringify({ code: `console.log(${n + 1}*42)` }) },
   });
+  // "narrate": stream a sentence, go QUIET past the client's threshold, then ask for a tool. The
+  // shape a deep model has live: minutes of tool-argument composition after its last visible token.
+  if (last.role === "user" && (last.content ?? "").includes("narrate")) {
+    const enc = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      async start(c) {
+        // TWO deltas, spaced past the provider client's 150ms coalescing flush: a lone first delta
+        // is held until the NEXT event arrives, which would deliver the text and the tool call
+        // together and erase the very quiet stretch this case exists to show.
+        c.enqueue(enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "Thinking it " } }] })}\n`));
+        await new Promise((r) => setTimeout(r, 250));
+        c.enqueue(enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "through... " } }] })}\n`));
+        await new Promise((r) => setTimeout(r, 3_400));
+        c.enqueue(enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [call(0)] } }] })}\n`));
+        c.enqueue(enc.encode(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 1, completion_tokens: 1 } })}\n`));
+        c.enqueue(enc.encode("data: [DONE]\n"));
+        c.close();
+      },
+    });
+    return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+  }
   const body = two
     ? frames([{ tool_calls: [call(0), call(1)] }])
     : (wantsTool || forever)
@@ -624,6 +645,30 @@ try {
     }
     check("a turn's every record is reachable from its seed", covered === 3, `${covered}/3 turns are a complete subtree`);
     check("…and no other turn's records are", leaked === 0, `${leaked} records leaked in from another turn`);
+    // ---- a QUIET stretch while composing a tool call is visibly alive ----
+    // The status pump used to stop for good at the first streamed token, so everything a model
+    // wrote AFTER its last visible word — tool arguments, minutes of them — was a dead screen,
+    // read live as a hang, with the deadline's liveness signal frozen under a worker that was
+    // heartbeating normally. After STREAM_QUIET_MS the status row must return beneath the text.
+    const c4 = (await admin.put({ kind: "conversation", body: {} })).id;
+    const session4 = new RadiaClient(url, { token: await mintSession(admin, "human:t", { conversationId: c4 }) });
+    const thread4 = await Thread.open(session4, { principal: "human:t", privileged: false }, c4);
+    await thread4.append({ role: "user", content: "narrate then work" });
+    const tools4 = new ToolSet(session4);
+    await tools4.scopeTo(c4);
+    __useStatusLine(true);
+    const drawn4 = __captureOutput();
+    await runTurn(session4, thread4, tools4);
+    const painted4 = drawn4.text();
+    drawn4.stop();
+    __useStatusLine(false);
+    const spoke = painted4.indexOf("Thinking it through");
+    check("the narrated text streamed before the pause", spoke >= 0);
+    check(
+      "…and the quiet stretch shows the worker's status, not a dead screen",
+      /\x1b\[2K[^\n]*generating/.test(painted4.slice(spoke)),
+      JSON.stringify(painted4.slice(spoke, spoke + 160)),
+    );
   } finally {
     turn.kill("SIGTERM");
     router.kill("SIGTERM");

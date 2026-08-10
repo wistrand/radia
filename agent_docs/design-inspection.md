@@ -68,8 +68,12 @@ So the console can show every past hop and cannot draw the prospective topology.
 is why the newcomer's question has no answer.
 
 **Claim interest is a record.** The reserved `interest` kind carries `{kind, match?}`: what a run is
-listening for, content-keyed so republishing writes nothing, withdrawn by a `retired: true`
-successor. `agentLoop` publishes and retires it, so no agent author does anything.
+listening for, keyed PER RUN AND PATTERN (a run republishing an unchanged interest writes nothing;
+a NEW run always writes, because entries are author-keyed and live only while their run is —
+content-only keys made a restarted fleet invisible, gotchas.md "A registry keyed by AUTHOR needs
+run-scoped idempotency keys"), withdrawn by a `retired: true` successor. `agentLoop` publishes and
+retires it — in the background, never gating the claim loop — and re-announces when its credential
+turns over, so no agent author does anything.
 
 Three properties are what make it safe rather than merely convenient:
 

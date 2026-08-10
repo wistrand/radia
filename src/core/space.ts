@@ -190,7 +190,12 @@ const DEFAULT_CONTEXT: SpaceContext = {
   downloadCapabilitySeconds: 300,
   watchIdleSeconds: 300,
   maxWatchesPerPrincipal: 64,
-  maxInterestsPerPrincipal: 32,
+  // 64, raised from 32 with one worker already at 31: a tool worker registers one interest per
+  // tool NAME (the documented design, extensions/ts/tool-worker.ts), so the chat's tools worker sat
+  // one tool from the cliff — and `agentLoop` treats a refused publish as "no grant" and silently
+  // skips the remaining patterns. The ceiling exists to bound the registry's read cost, and the
+  // reads that pay it are author-scoped or memoized now, so headroom is cheap.
+  maxInterestsPerPrincipal: 64,
   // 200k rows, about 2.8s of oracle at the measured cost (`bench/deployment.ts`: 13.6s per million).
   // High enough that no space reaches it by growing normally, since every pushable predicate returns
   // matches rather than candidates and never counts against it. What it stops is the shape that has

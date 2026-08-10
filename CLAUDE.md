@@ -187,7 +187,10 @@ a stopped run's token kept resolving after a restart. So:
   keep-newest registries; for NEVER_COMPACT kinds it accumulates, and a re-put OUTRANKS a
   `retired: true` tombstone, so never republish an authorization registry entry on a schedule —
   assign at identity creation (`provisionObserver` is the worked example; gotchas.md).
-  Content-keying also only
+  One exception, learned the hard way: a registry keyed BY AUTHOR (`interest`, whose entries are
+  live only while their run is) keys its writes per RUN, because keys scope to the agent and a
+  content-only key made a restarted fleet's publishes replay a dead run's records — every routing
+  view empty, no suite able to see it (gotchas.md). Content-keying also only
   bounds a fleet that republishes the SAME entry, so a registry whose size is somebody else's read
   cost also needs a per-principal ceiling (`maxInterestsPerPrincipal`, `429 too_many_interests`).
 - Authorization has a canonical, inspectable form: `Space.effectivePermissions` /
