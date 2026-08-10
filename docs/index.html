@@ -243,9 +243,10 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
     </div>
 
     <p>
-      Nothing installs <code>radia</code> for you yet. Either compile it as above, or run
-      <code>deno run -A src/main.ts &lt;verb&gt;</code> straight from the checkout. The npm and pip
-      packaging is built but unpublished, so <code>npx radia</code> does not work today.
+      Run it from the checkout: compile it as above, or
+      <code>deno run -A src/main.ts &lt;verb&gt;</code> directly. The npm and pip packaging is
+      built but unpublished, so nothing installs <code>radia</code> for you yet and
+      <code>npx radia</code> does not work today.
     </p>
 
     <p>
@@ -272,8 +273,8 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
     </div>
 
     <p>
-      There is no server to register with and no address to configure. The loop handles the lease,
-      renews it while you work, and retries the record if your process dies partway through. Kill it
+      The loop handles the lease, renews it while you work, and retries the record if your process
+      dies partway through, with no server to register with and no address to configure. Kill it
       mid-document and the document goes back to waiting.
     </p>
   </div>

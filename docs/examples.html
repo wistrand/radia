@@ -132,7 +132,7 @@
     <h2>A real agent, with everything as records</h2>
     <p>
       The chat example is a command-line assistant, and it is where this design gets stress-tested.
-      Six separate processes, each with its own credential and its own operating system permissions.
+      Ten separate processes, each with its own credential and its own operating system permissions.
       The one that reads files cannot reach the network. The one that runs code holds no credential
       at all.
     </p>
@@ -151,18 +151,26 @@ a request        <span class="cmt">// no model named: the chat does not choose o
 a tool call      <span class="cmt">// whichever worker offers that tool claims it</span>
   some progress
   a tool result
-  a verdict      <span class="cmt">// written by the runner, not by the model</span></code></pre>
+  a verdict      <span class="cmt">// written by the runner, not by the model</span>
+a reply          <span class="cmt">// carrying the provider's own token and dollar figures</span></code></pre>
     </div>
 
     <p>
       Because the conversation is records rather than memory, it survives a restart, you can resume
-      it by name, and anyone with permission can inspect it. The last line is the one worth pausing
+      it by name, and anyone with permission can inspect it. The verdict is the line worth pausing
       on: when the assistant runs code and claims it worked, something other than the assistant
       checks and records the answer. The assistant has no permission to write that record.
     </p>
+    <p>
+      The reply carries what it cost, in the provider's own numbers, and those fields are declared
+      sortable, so "which call used the most tokens" is a query with an answer rather than a guess.
+      Model choice reads the same way in the other direction: say a tier's name and the router
+      obeys, and a bare "continue" keeps the tier the last turn ran on, because eight characters of
+      text say nothing about how hard the work is.
+    </p>
 
     <div class="callout">
-      <strong>Fourteen test suites, none of which need a model.</strong> Because a tool call is a
+      <strong>Twenty-one test suites, none of which need a model.</strong> Because a tool call is a
       record and assembling the context is a plain function, the tests drive the real thing with no
       API key. Most bugs in this project have surfaced here first.
     </div>

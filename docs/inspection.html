@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>What Radia can tell you about itself</title>
-  <meta name="description" content="There is no workflow file to read, so the shape of the system is worked out from what happened: mined flows, who is listening right now, what is stuck and why, and a hash chain over the record of it.">
+  <meta name="description" content="The shape of the system is worked out from what happened: mined flows, who is listening right now, what is stuck and why, and a hash chain over the record of it. No workflow file required, because none exists.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
@@ -14,7 +14,7 @@
   <meta property="og:type" content="article">
   <meta property="og:url" content="https://wistrand.github.io/radia/inspection.html">
   <meta property="og:title" content="What Radia can tell you about itself">
-  <meta property="og:description" content="No workflow file to read, so the shape gets worked out from what happened: mined flows, who is listening, what is stuck and why.">
+  <meta property="og:description" content="The shape of the system, worked out from what happened: mined flows, who is listening, what is stuck and why.">
   <meta property="og:image" content="https://wistrand.github.io/radia/og.png">
   <meta name="twitter:card" content="summary_large_image">
 </head>
@@ -53,8 +53,9 @@
   <div class="container">
     <h1>What the system can tell you about itself</h1>
     <p class="subtitle">
-      Nothing here declares how work flows, so there is no diagram to open. That is the design
-      working, and it is also a bill that comes due the first time somebody asks what this system
+      The shape of a running space is worked out from evidence: what happened, who is listening,
+      what is stuck. It has to be, because nothing here declares how work flows, which is the
+      design working, and also a bill that comes due the first time somebody asks what this system
       does. Here is how it gets paid.
     </p>
   </div>
@@ -64,9 +65,10 @@
   <div class="container">
     <h2>Where is the workflow?</h2>
     <p>
-      It is the first question every newcomer asks, and the honest answer is that there is not one.
-      A worker says what shape of record it handles, the space matches, and the system's behaviour is
-      whatever those independent declarations add up to while it runs. No file describes it.
+      It is the first question every newcomer asks. What exists is behaviour rather than a plan: a
+      worker says what shape of record it handles, the space matches, and the system is whatever
+      those independent declarations add up to while it runs. The honest answer is that no file
+      describes it.
     </p>
     <p>
       The tempting fix is to ask each agent to declare its place in a pipeline. That is a routing
@@ -261,6 +263,73 @@ event chain: 39112 links, UNSIGNED (detects corruption, not a rewrite; set RADIA
   &#9492; 01JB2Q7X4K  document
     &#9492; 01JB2Q1A8P  upload_batch</code></pre>
     </div>
+
+    <p>
+      Two reads over the same lineage answer different sizes of question. A conversation record is
+      a hub: every turn hangs off it, so the graph around any one message is the whole history, and
+      on a long conversation that picture saturates its node budget. It used to do so silently,
+      which is the worst property a diagram can have. It now says it was cut, and the console
+      offers the narrower read.
+    </p>
+    <p>
+      The narrower read exists because every link in a turn points at the record that caused it:
+      the model call at the question, each tool call at the message that asked for it, the next
+      round at the reply that finished the last. One turn is a subtree, so asking for descendants
+      only, starting at the question, returns that turn and nothing else. Drawn with time as the
+      axis it reads like a trace: where the seconds went, which tool stalled, what was happening
+      while nothing visible moved.
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 760 240" role="img" aria-label="A conversation as a hub with many turns on the left; one turn opened as a waterfall on the right">
+        <text x="10" y="18" class="muted">the whole conversation (capped, and it says so)</text>
+        <text x="420" y="18" class="muted">one turn, descendants only, time as the axis</text>
+
+        <!-- left: hub with turn fans -->
+        <g>
+          <circle cx="90" cy="130" r="12" class="box" fill="#60a5fa"/>
+          <text x="66" y="162" class="muted">conversation</text>
+          <g fill="#9ca3af">
+            <circle cx="170" cy="55" r="7" class="box"/><circle cx="220" cy="45" r="7" class="box"/><circle cx="270" cy="55" r="7" class="box"/>
+            <circle cx="180" cy="105" r="7" class="box"/><circle cx="230" cy="100" r="7" class="box"/><circle cx="280" cy="108" r="7" class="box"/>
+            <circle cx="180" cy="160" r="7" class="box"/><circle cx="230" cy="165" r="7" class="box"/>
+            <circle cx="170" cy="210" r="7" class="box"/><circle cx="220" cy="218" r="7" class="box"/>
+          </g>
+          <path d="M 101 123 L 163 58" class="flow"/><path d="M 177 55 L 213 47" class="flow"/><path d="M 227 46 L 263 53" class="flow"/>
+          <path d="M 102 127 L 173 106" class="flow"/><path d="M 187 104 L 223 101" class="flow"/><path d="M 237 101 L 273 106" class="flow"/>
+          <path d="M 102 134 L 173 158" class="flow"/><path d="M 187 161 L 223 164" class="flow"/>
+          <path d="M 100 138 L 163 206" class="flow"/><path d="M 177 212 L 213 217" class="flow"/>
+          <text x="150" y="238" class="muted">150 shown of 346</text>
+        </g>
+
+        <path d="M 330 130 L 390 130" class="flow" stroke="#818cf8" stroke-width="2"/>
+        <text x="322" y="120" class="muted">from here down</text>
+
+        <!-- right: the waterfall -->
+        <g>
+          <text x="420" y="52" class="label">question</text>
+          <rect x="500" y="42" width="18" height="10" rx="2" class="box" fill="#60a5fa"/>
+          <text x="420" y="76" class="label">route</text>
+          <rect x="512" y="66" width="14" height="10" rx="2" class="box" fill="#9ca3af"/>
+          <text x="420" y="100" class="label">answer</text>
+          <rect x="522" y="90" width="86" height="10" rx="2" class="box" fill="#9ca3af"/>
+          <text x="420" y="124" class="label">tool call</text>
+          <rect x="600" y="114" width="112" height="10" rx="2" class="box" fill="#fbbf24"/>
+          <text x="420" y="148" class="label">reply</text>
+          <rect x="706" y="138" width="20" height="10" rx="2" class="box" fill="#9ca3af"/>
+          <text x="420" y="172" class="label">done</text>
+          <rect x="722" y="162" width="8" height="10" rx="2" class="box" fill="#60a5fa"/>
+          <path d="M 500 195 L 730 195" class="flow"/>
+          <text x="500" y="212" class="muted">0s</text>
+          <text x="700" y="212" class="muted">14s</text>
+          <text x="560" y="230" class="muted">the tool is where the seconds went</text>
+        </g>
+      </svg>
+      <figcaption>
+        A turn is a subtree because every record points at its cause, so one question opens as its
+        own picture instead of dragging the whole conversation with it.
+      </figcaption>
+    </figure>
 
     <p>
       Lineage is data, never authority. A record derived from a privileged one inherits nothing from
