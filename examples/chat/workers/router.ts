@@ -18,10 +18,17 @@
 // added before the first token. Escalation stays as the catch for what the classifier under-routes; two
 // mechanisms for one decision is a deliberate trade here, not an oversight.
 //
-// Tier NAMES never appear in this file. Live tiers come from `model` records ordered by `rank`, the
-// classifier is asked to answer with one of those words, and the fallback picks by POSITION in that
-// list (cheapest / middle / most capable). Adding a tier-worker changes routing on both paths with
-// no code change here.
+// Tier NAMES never appear in this file. Live tiers come from `model` records ordered by `rank`, and
+// routing tries four things in order:
+//
+//   1. what the USER asked for   a tier named in the message ("retry deep") wins outright
+//   2. what the turn INHERITS    a bare "continue" keeps the previous turn's tier
+//   3. what the classifier says  a cheap model judging the question
+//   4. POSITION in the list      cheapest / middle / second-most capable, when 3 could not answer
+//
+// Adding a tier-worker changes all four with no code change here. The TOP tier is reachable only by
+// being asked for, inherited, or chosen: nothing positional selects it, because the fallback is the
+// weakest judge and that tier is the priciest.
 
 import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { RadiaClient } from "../../../sdk/ts/client.ts";
@@ -48,18 +55,90 @@ async function liveTiers(c: RadiaClient): Promise<string[]> {
   return [...new Set((await liveModels(c)).map((m) => m.tier))];
 }
 
+/**
+ * An explicit request for a tier, honoured ahead of any judgment.
+ *
+ * "retry deep" is an instruction, not a routing question, and the classifier answered `fast` to it
+ * on every round of a live turn. The client cannot own this — a `/tier` command is the anti-pattern
+ * the design principle names — so it is decided here, from the LIVE tier list, which is why this
+ * file still hardcodes no tier name.
+ *
+ * A CUE word is required alongside the tier word, or "explain deep learning" routes itself. The
+ * LAST tier mentioned wins, so "switch from fast to deep" means deep.
+ */
+export function explicitTier(text: string, tiers: string[]): string | null {
+  // Cues are deliberately VERBS. `with`, `on` and `in` were in this list and are ordinary
+  // prepositions: "a deep dive in the code" would have routed itself to the second-priciest model.
+  if (!/\b(use|using|retry|redo|re-?run|rerun|switch|try|again)\b/i.test(text)) return null;
+  let best: { tier: string; at: number } | null = null;
+  for (const tier of tiers) {
+    const m = new RegExp(`\\b${tier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi").exec(text);
+    if (m && (!best || m.index > best.at)) best = { tier, at: m.index };
+  }
+  return best?.tier ?? null;
+}
+
+/**
+ * Is this message only an instruction to CARRY ON?
+ *
+ * The whole message must be one, punctuation aside. "continue the analysis of X" carries its own
+ * content and is classified normally; bare "continue" carries none, and that is the point — its
+ * difficulty belongs to the turn before it.
+ */
+export function isContinuation(text: string): boolean {
+  return /^\s*(continue|carry on|go on|keep going|keep at it|proceed|resume|retry|try again|again|redo|re-?run|more|next|finish( it)?|fix (it|that))\b[\s.!]*$/i
+    .test(text);
+}
+
+/**
+ * The tier the PREVIOUS turn ran on, which a bare continuation inherits.
+ *
+ * Classifying "continue" on its own text drops a hard turn to the cheapest model mid-flight: eight
+ * characters read as small talk however difficult the work is. Reported from live use — with a
+ * capable model on the middle tier, "continue" and "retry" worked, because nothing had to
+ * understand them; the routing was simply never the part that did.
+ *
+ * Only LIVE tiers are returned, so a continuation cannot inherit a tier whose worker has gone.
+ */
+export async function previousTurnTier(
+  c: RadiaClient,
+  body: { conversationId?: string; turnAt?: number },
+  tiers: string[],
+): Promise<string | null> {
+  if (!body.conversationId) return null;
+  const rows = await c.query(
+    { kind: "llm_call", match: { conversationId: body.conversationId, tier: { $exists: true } } },
+    30,
+    { dir: "desc" },
+  );
+  for (const r of rows) {
+    const b = r.body as { tier?: string; turnAt?: number };
+    // STRICTLY EARLIER, not merely "not this turn". Skipping only the current turn also accepts a
+    // LATER one, which no live call can produce but which made "the first turn inherits nothing"
+    // return a tier — so the rule was looser than its name and nothing but the test said so.
+    if (body.turnAt !== undefined && !(typeof b.turnAt === "number" && b.turnAt < body.turnAt)) continue;
+    if (b.tier && tiers.includes(b.tier)) return b.tier;
+  }
+  return null;
+}
+
 /** Fallback for a classifier error/timeout: choose by POSITION in the discovered list, so a renamed
- *  or added tier still routes. Hard/analytical → most capable, small talk → cheapest, else middle.
- *  An UNKNOWN question is never scored as small talk: a zero-length string used to look like "hi"
- *  and route the hardest round of a turn to the cheapest model. */
-function heuristicIndex(text: string, n: number, toolCalls: number): number {
+ *  or added tier still routes. Hard/analytical → second-most capable, small talk → cheapest, else
+ *  middle. An UNKNOWN question is never scored as small talk: a zero-length string used to look
+ *  like "hi" and route the hardest round of a turn to the cheapest model. */
+export function heuristicIndex(text: string, n: number, toolCalls: number): number {
+  // The hard band aims at the SECOND-most capable tier, never the top one. This runs only when the
+  // classifier failed, and a keyword regex is the weakest judge in the system: the most expensive
+  // model should be chosen deliberately, not by a fallback that fires on a backtick. Under-routing
+  // here is recoverable — a worker out of its depth calls `escalate` — and over-routing is not.
+  const hard = Math.max(0, n - 2);
   const t = text.toLowerCase();
-  if (!text.trim()) return toolCalls > 0 ? n - 1 : Math.floor((n - 1) / 2);
+  if (!text.trim()) return toolCalls > 0 ? hard : Math.floor((n - 1) / 2);
   if (
     /```|traceback|stack trace|refactor|architect|analy[sz]|prove|derive|debug|optimi|percent|aggregate|how many|design (a|the)/.test(t) ||
     text.length > 400 ||
     toolCalls >= 3 // a synthesis round after this much tool work is not the turn the question looked like
-  ) return n - 1;
+  ) return hard;
   if (text.length <= 40 && !/\b(code|explain|compare|design|plan|why|count|list)\b/.test(t)) return 0;
   return Math.floor((n - 1) / 2);
 }
@@ -101,14 +180,19 @@ async function currentTurn(
 async function classifyLLM(text: string, toolCalls: number, tiers: string[], c: RadiaClient): Promise<string | null> {
   if (!text.trim() || tiers.length === 0) return null;
   const live = new Set(tiers);
+  // The bands are POSITIONAL, so this scales with however many tiers the fleet advertises and still
+  // names none of them. It has to: with a fourth tier added, a three-band guide left "the most
+  // capable" describing work the second-most capable already handles, which routes the expensive
+  // one by default rather than by need.
   const system = `You are a routing classifier for an LLM chat. Choose the CHEAPEST capability tier ` +
     `that can handle the user's latest message well. Tiers, cheapest first: ${tiers.join(", ")}. ` +
-    `The most capable tier costs roughly fifty times the cheapest, so it has to EARN the choice; ` +
-    `when two tiers would both do, pick the cheaper. ` +
-    `Reply with EXACTLY one tier word, nothing else. Guide: cheapest tier for greetings, small talk, ` +
-    `lookups, and straightforward edits; a middle tier for ordinary explanation, planning, and most ` +
-    `code; the most capable tier ONLY for genuinely hard reasoning, subtle debugging, proofs, or ` +
-    `design with real trade-offs.`;
+    `Cost rises steeply along that list and the top tier is the most expensive by a wide margin, so ` +
+    `it has to EARN the choice; when two tiers would both do, pick the cheaper. ` +
+    `Reply with EXACTLY one tier word, nothing else. Guide: the cheapest tier for greetings, small ` +
+    `talk, lookups, and straightforward edits; a middle tier for ordinary explanation, planning, and ` +
+    `most code; the SECOND-MOST capable tier for genuinely hard reasoning, subtle debugging, proofs, ` +
+    `or design with real trade-offs; the most capable tier ONLY when a turn is harder still — the ` +
+    `rare problem where a strong model would plausibly get it wrong.`;
   // Reading tool results is NORMAL work, so this says what happened and not that it was hard.
   // Measured: with the old wording ("must now interpret the results. Weigh that, not just the
   // wording") the tier went 14% deep on a turn's first round and 72% on every round after it, since
@@ -166,6 +250,9 @@ async function capToTurn(
   return want > ceiling ? tiers[ceiling] : chosen;
 }
 
+// Guarded so the pure helpers above can be imported and asserted. Spawning this file still runs
+// the loop: the fleet launches it as the entry module.
+if (import.meta.main) {
 await agentLoop(client, {
   name: "router",
   patterns: [{ kind: "llm_call", match: { tier: { $exists: false } } }],
@@ -183,9 +270,15 @@ await agentLoop(client, {
     const tiers = await liveTiers(c);
     if (tiers.length === 0) throw new Error("no `model` record advertised yet");
     const { text, toolCalls } = await currentTurn(c, body.conversationId, body.upToIndex ?? 0);
-    const chosen = (await classifyLLM(text, toolCalls, tiers, c)) ?? tiers[heuristicIndex(text, tiers.length, toolCalls)];
+    // ASKED FOR, then INHERITED, then judged, then guessed. The first two skip the classifier
+    // round-trip as well, so the two cases it got wrong are now also the fastest.
+    const chosen = explicitTier(text, tiers) ??
+      (isContinuation(text) ? await previousTurnTier(c, { conversationId: body.conversationId, turnAt: body.turnAt }, tiers) : null) ??
+      (await classifyLLM(text, toolCalls, tiers, c)) ??
+      tiers[heuristicIndex(text, tiers.length, toolCalls)];
     const tier = await capToTurn(c, body, tiers, chosen);
     await progress(c, { conversationId: body.conversationId, owner: body.owner, callId: rec.id, stage: "routed", by: ME, note: `→ ${tier}` }, [rec.id]);
     return { kind: "llm_call", body: { ...body, tier, replyTo: rec.id } };
   },
 });
+}

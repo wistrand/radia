@@ -81,13 +81,15 @@ export const spaceDb = Deno.env.get("RADIA_CHAT_DB") ?? `${Deno.env.get("RADIA_D
  *  the most recent. Empty = start fresh. */
 export const resume = arg("--conversation") ?? Deno.env.get("RADIA_CHAT_RESUME") ?? "";
 
-/** Three capability/cost tiers, cheap → capable in insertion order (the order sets escalation
- *  rank). Add one here and a new model is live: the router discovers it from the `model` records
- *  its worker advertises, and nothing in this client changes. */
+/** The capability/cost tiers, cheap → capable in insertion order (the order sets escalation rank).
+ *  Add one here and a new model is live: the router discovers it from the `model` records its
+ *  worker advertises, the ladder offers it as the next step up, and nothing in this client changes.
+ *  Each tier costs one more worker process. */
 export const TIERS: Record<string, string> = {
   fast: Deno.env.get("RADIA_CHAT_MODEL_FAST") ?? "openai/gpt-4o-mini",
   balanced: Deno.env.get("RADIA_CHAT_MODEL_BALANCED") ?? "openai/gpt-5.6-luna",
   deep: Deno.env.get("RADIA_CHAT_MODEL_DEEP") ?? "anthropic/claude-sonnet-5",
+  ultra: Deno.env.get("RADIA_CHAT_MODEL_ULTRA") ?? "anthropic/claude-opus-5",
 };
 
 /** The router classifies each turn with this cheap model, as an `llm_call` served by the fleet,

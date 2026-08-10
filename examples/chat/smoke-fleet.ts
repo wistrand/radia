@@ -14,6 +14,7 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { liveModels, publishModel, retireModel } from "../../extensions/ts/model.ts";
+import { explicitTier, heuristicIndex, isContinuation, previousTurnTier } from "./workers/router.ts";
 
 const PORT = 7801;
 const url = `http://127.0.0.1:${PORT}`;
@@ -103,6 +104,80 @@ await retireModel(client, DEEP);
 check("…and offers nothing once that tier is withdrawn", (await nextUp(0)) === undefined, String(await nextUp(0)));
 await publishModel(client, DEEP);
 check("…and offers it again when the worker comes back", (await nextUp(0)) === "deep", String(await nextUp(0)));
+
+const tiers4 = ["fast", "balanced", "deep", "ultra"];
+
+// --- a tier the user NAMED wins over the classifier ---
+// Live failure: "retry deep" was classified as `fast` on all four rounds of one turn. The client
+// cannot own this (a `/tier` command is the anti-pattern the design principle names), so the router
+// honours it, using the discovered tier list rather than any name written here.
+const say = (t: string) => explicitTier(t, tiers4);
+check("a named tier with a cue is honoured", say("retry deep") === "deep", String(say("retry deep")));
+check("…however it is phrased", say("try again with ultra") === "ultra", String(say("try again with ultra")));
+check("…and the LAST one named wins", say("switch from fast to deep") === "deep", String(say("switch from fast to deep")));
+// The cue is what stops the feature firing on ordinary prose that happens to contain a tier word.
+check("a tier word with no cue is not a request", say("explain deep learning") === null, String(say("explain deep learning")));
+check("…nor is a passing mention", say("the fast path matters here") === null, String(say("the fast path matters here")));
+// Prepositions are not cues. These read as requests only if `with`/`on`/`in` count, and they did.
+check("…nor a preposition near a tier word", say("a deep dive in the code") === null, String(say("a deep dive in the code")));
+check("…nor prose about one", say("notes on deep learning") === null, String(say("notes on deep learning")));
+check("an ordinary question names nothing", say("convert it to webgl") === null, String(say("convert it to webgl")));
+
+// --- a bare continuation INHERITS the previous turn's tier ---
+// "continue" is eight characters of small talk however hard the work is, so classifying it on its
+// own text drops a turn to the cheapest model mid-flight. Reported live: with a capable model on
+// the middle tier this appeared to work, because nothing had to understand the word.
+for (const t of ["continue", "Continue.", "retry", "try again", "keep going", "more", "fix it"]) {
+  check(`"${t}" is a continuation`, isContinuation(t), String(isContinuation(t)));
+}
+for (const t of ["continue the analysis of the router", "retry deep", "what next for the schema?", "add more tests"]) {
+  check(`"${t}" is NOT a bare continuation`, !isContinuation(t), String(isContinuation(t)));
+}
+
+// And the inheritance itself, against real records rather than a stub.
+const conv = (await client.put({ kind: "conversation", body: {} })).id;
+const putCall = (turnAt: number, tier?: string) =>
+  client.put({ kind: "llm_call", body: { conversationId: conv, turnAt, ...(tier ? { tier } : {}) }, parentIds: [conv] });
+await putCall(0, "deep"); // the turn being continued ran on deep
+await putCall(1); // the continuation's own seed, untiered, being routed right now
+check(
+  "a continuation inherits the tier of the turn before it",
+  (await previousTurnTier(client, { conversationId: conv, turnAt: 1 }, tiers4)) === "deep",
+  String(await previousTurnTier(client, { conversationId: conv, turnAt: 1 }, tiers4)),
+);
+await putCall(1, "fast"); // this turn's own round, which must not be mistaken for the previous turn
+check(
+  "…and never from its OWN rounds",
+  (await previousTurnTier(client, { conversationId: conv, turnAt: 1 }, tiers4)) === "deep",
+  String(await previousTurnTier(client, { conversationId: conv, turnAt: 1 }, tiers4)),
+);
+check(
+  "…and never a tier whose worker is gone",
+  (await previousTurnTier(client, { conversationId: conv, turnAt: 1 }, ["fast", "balanced"])) === null,
+  String(await previousTurnTier(client, { conversationId: conv, turnAt: 1 }, ["fast", "balanced"])),
+);
+check(
+  "a first turn has nothing to inherit",
+  (await previousTurnTier(client, { conversationId: conv, turnAt: 0 }, tiers4)) === null,
+  String(await previousTurnTier(client, { conversationId: conv, turnAt: 0 }, tiers4)),
+);
+
+// --- the fallback never reaches for the most expensive tier ---
+// It runs only when the classifier errored, and a keyword regex is the weakest judge here. Adding a
+// fourth tier turned "hard -> the top of the list" from Sonnet into Opus without a line changing,
+// so the hard band aims one below the top and the top is reachable only by a deliberate choice.
+const pick = (text: string, calls = 0) => tiers4[heuristicIndex(text, tiers4.length, calls)];
+check("a code block routes to the second-most capable, not the top", pick("fix this ```js\nx\n```") === "deep", pick("fix this ```js\nx\n```"));
+check("…and so does a long message", pick("x".repeat(500)) === "deep", pick("x".repeat(500)));
+check("…and a tool-heavy synthesis round", pick("summarise", 4) === "deep", pick("summarise", 4));
+check("small talk still routes to the cheapest", pick("hi there") === "fast", pick("hi there"));
+check("an ordinary question takes a middle tier", pick("explain how leases work") === "balanced", pick("explain how leases work"));
+check(
+  "NOTHING positional selects the top tier",
+  !tiers4.some((_, i) => pick(["hi", "explain this code", "x".repeat(900), "```\nprove it\n```"][i]) === "ultra"),
+);
+// With three tiers the same rule still leaves the top one to the classifier.
+check("the rule holds at three tiers too", ["fast", "balanced", "deep"][heuristicIndex("```\nx\n```", 3, 0)] === "balanced");
 
 space.kill();
 await space.status;

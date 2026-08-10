@@ -1553,6 +1553,12 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Agent- and model-facing design
 
+- **A turn whose TEXT is trivial is not a trivial turn** (`examples/chat/workers/router.ts`). The
+  router classifies the newest user message, so "retry deep" was answered `fast` on all four rounds
+  of a live turn, and a bare "continue" reads as small talk however hard the work is. Two rules
+  ahead of the classifier: a tier NAMED in the message wins, and a bare continuation INHERITS the
+  previous turn's tier. Both live in the router, from the discovered tier list — a `/tier` command
+  in the client is the anti-pattern the design principle names. Guard: `smoke-fleet.ts`.
 - **Unparseable tool arguments must be refused as a PARSE error** (`parseArgs`, `extensions/ts/turn.ts`;
   the refusal in `serveTools`, `tool-worker.ts`). Handed `{_unparsed}`, a tool reports whichever
   required field it misses first, so a malformed 16 KB `edit_workspace` call was refused with

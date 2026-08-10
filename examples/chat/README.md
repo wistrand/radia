@@ -219,7 +219,7 @@ latest-per-tool wins on discovery (so re-running never conflicts). This is "no p
 routing table" (§7) applied to tools. It is the substrate coordinating its own capabilities.
 
 **Model selection is content-routing, and the routing is delegated to the substrate.** There are
-three capability/cost **tiers** (`fast`, `balanced`, `deep`), each served by its own
+four capability/cost **tiers** (`fast`, `balanced`, `deep`, `ultra`), each served by its own
 inference-worker that claims only its tier's calls (`take {kind:llm_call, match:{tier}}`) and
 advertises a `model` record carrying its `rank` (cheap → capable). **The chat holds no routing
 logic:** it puts an *untiered* `llm_call`. A **router-worker** (`workers/router.ts`) claims untiered
@@ -230,13 +230,28 @@ stays isolated in the workers and classification routes through the substrate li
 The result stays keyed to the original call (`replyTo`), so the chat is oblivious to the
 indirection; it just sees `[routed → deep]`. Add a tier-worker → a new model is live, no
 orchestrator change.
-Defaults: `fast` → `openai/gpt-4o-mini`, `balanced` → `anthropic/claude-sonnet-5`, `deep` →
-`anthropic/claude-opus-5`; override per tier with `RADIA_CHAT_MODEL_{FAST,BALANCED,DEEP}`.
+Defaults: `fast` → `openai/gpt-4o-mini`, `balanced` → `openai/gpt-5.6-luna`, `deep` →
+`anthropic/claude-sonnet-5`, `ultra` → `anthropic/claude-opus-5`; override per tier with
+`RADIA_CHAT_MODEL_{FAST,BALANCED,DEEP,ULTRA}`.
+
+**A tier you NAME wins, and a continuation KEEPS one.** Routing tries four things in order: the
+tier you asked for, the tier the turn inherits, the classifier, then position in the list.
+
+"retry deep" is an instruction, not a routing question, and the classifier answered `fast` to it on
+all four rounds of a live turn. A bare "continue" or "retry" is the same problem from the other
+side: eight characters of small talk however hard the work is, so classifying it on its own text
+drops a turn to the cheapest model mid-flight, and it inherits the previous turn's tier instead.
+Both are decided in the router, from the live tier list, because a `/tier` command in the client is
+exactly the anti-pattern the design principle names. A cue verb is required beside a tier word
+("explain deep learning" routes normally), and a continuation must be the whole message
+("continue the analysis of X" carries its own content and is classified).
 
 **No tier name appears in the router.** Live tiers come from the `model` records ordered by `rank`;
 the classifier is asked to answer with one of *those* words; and when it errors or times out the
-fallback heuristic picks by **position** in that list (cheapest / middle / most capable), never by
-name. So "add a tier-worker and it is routable" holds on both the classifier path and the fallback.
+fallback heuristic picks by **position** in that list (cheapest / middle / second-most capable),
+never by name. So "add a tier-worker and it is routable" holds on all three paths. The fallback
+stops one below the top on purpose: a keyword regex is the weakest judge here, and the priciest
+tier should be asked for or chosen, not guessed into.
 
 Routing happens **per round**, not per turn: every `llm_call` is classified, including the rounds
 that come back after tool results. So the classifier is told how many tool calls the turn has
@@ -850,7 +865,7 @@ grant itself anything. Re-logging in assigns no duplicate grants, because grants
 
 Config: `OPENROUTER_API_KEY`, `RADIA_CHAT_TOKEN` (required; a `radia login` session token, or
 `--token`), `RADIA_TOKEN` (the operator credential, defaulting to the file `radia dev` writes),
-`RADIA_CHAT_MODEL_{FAST,BALANCED,DEEP}` (per-tier model overrides), `RADIA_CHAT_CLASSIFY_MODEL`
+`RADIA_CHAT_MODEL_{FAST,BALANCED,DEEP,ULTRA}` (per-tier model overrides), `RADIA_CHAT_CLASSIFY_MODEL`
 (the router's classifier), `RADIA_CHAT_DIRS`, `RADIA_URL`,
 `RADIA_CHAT_API_BASE` (any OpenAI-compatible endpoint: a local stub for offline testing, or a
 self-hosted gateway), `RADIA_CHAT_WINDOW` (newest messages sent per turn; 0 = whole thread),
