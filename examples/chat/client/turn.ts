@@ -12,7 +12,7 @@ import type { ChatMessage, ToolDef } from "../provider/openrouter.ts";
 import type { Thread } from "./thread.ts";
 import { sessionOwner } from "../space/roles.ts";
 import { type CapabilityBody, capabilityKey, collapseByTool } from "../../../extensions/ts/capability.ts";
-import { answerStream, columns, dim, endStatus, ensureLine, holdLine, notice, showArtifact, trunc, write } from "./terminal.ts";
+import { answerStream, columns, dim, endStatus, ensureLine, holdLine, notice, showArtifact, statusLineOn, trunc, write } from "./terminal.ts";
 import { Waiter, waitWake } from "./waiting.ts";
 
 const MAX_ROUNDS = 8;
@@ -488,6 +488,10 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
         // deadline's liveness signal under a worker that was heartbeating normally. After a short
         // pause the status returns on its own row, carrying the worker's note (tier, model, ~tok).
         if (Date.now() - lastChunkAt < STREAM_QUIET_MS) return;
+        // Only where a status line can actually draw. The redraw calls are no-ops when it cannot,
+        // but the `ensureLine` below is a REAL newline, and piped output must stay byte-identical
+        // to a run with no status at all (terminal.ts, first rule).
+        if (!statusLineOn()) return;
         if (!statusResumed) {
           statusResumed = true;
           ensureLine();

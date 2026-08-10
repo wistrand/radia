@@ -122,6 +122,11 @@ let statusOn = tty;
 export function __useStatusLine(on: boolean): void {
   statusOn = on;
 }
+/** Whether status redraws actually reach the screen. A caller that would WRITE something purely to
+ *  make room for a status line (a newline before resuming one mid-answer) must check this first,
+ *  or piped output stops being byte-identical to a run with no status at all — the file's first
+ *  rule, and the reason `showStatus`/`endStatus` are silently no-ops off a terminal. */
+export const statusLineOn = () => statusOn;
 
 export const dim = (s: string) => colour ? `\x1b[2m${s}\x1b[0m` : s;
 

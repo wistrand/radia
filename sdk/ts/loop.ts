@@ -223,6 +223,11 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
       // Say so, or the silence between "take error" and normal operation reads as a hang.
       report(`[${o.name}] recovered after ${failing.count} failed attempt${failing.count === 1 ? "" : "s"} over ${Math.round((Date.now() - failing.since) / 1000)}s`);
       failing = null;
+      // Re-announce too: a worker that BOOTED during the outage published into the void, and a
+      // plain-token client's bearer never changes, so the token-turnover trigger above cannot
+      // cover it (an exchange-capable client's first success changes the token and would). For
+      // everyone else this is a batch of idempotent replays.
+      announce();
     }
 
     if (!claimed) {
