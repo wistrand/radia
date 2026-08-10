@@ -1910,30 +1910,55 @@ export class Space {
       }
     };
     const seen = new Set<string>();
-    const queue = [recordId];
+    let queue = [recordId];
+    // ONE WAVE of the BFS per iteration: everything queued is fetched in a single batch and the
+    // accepted nodes' children in parallel. Node by node this was two sequential round trips per
+    // node — a 150-node graph cost ~300 RTTs per fetch, and the console polls it every 1.5s in
+    // live mode. `getLineage` above made the same move for the same reason. Enqueueing stays in
+    // the sequential walk's order (per accepted node: parents, then children), so which nodes fall
+    // inside the cap does not change.
     while (queue.length > 0 && nodes.size < maxNodes) {
-      const id = queue.shift()!;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      const rec = await this.storage.getRecord(id);
-      if (!rec || exclude.has(rec.kind)) continue;
-      // A foreign node is a wall, not a skip. Traversing through it would still expose the shape
-      // of what hangs off it, and the node's own id and label are enough to feed a lineage probe.
-      if (!this.authorAllows(opts.createdBy, rec)) continue;
-      nodes.set(id, rec);
-      for (const pid of rec.runtimeMeta.parentIds) {
-        // The edge is recorded either way — it is dropped below unless both ends are in view — so a
-        // descendants-only walk still draws the seed's own inbound edge rather than orphaning it.
-        addEdge(pid, id);
-        if (!down && !seen.has(pid)) queue.push(pid);
+      const wave: string[] = [];
+      while (queue.length > 0) {
+        const id = queue.shift()!;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        wave.push(id);
       }
-      // Bounded per node: the node cap below limits how many records the graph SHOWS, not how many
+      if (wave.length === 0) break;
+      const fetched = new Map((await this.storage.getRecords(wave)).map((r) => [r.id, r]));
+      const accepted: RadiaRecord[] = [];
+      for (let i = 0; i < wave.length; i++) {
+        if (nodes.size >= maxNodes) {
+          // Back on the queue, so `truncated` below still sees the unprocessed remainder exactly
+          // as the sequential walk left it when the cap tripped mid-stream.
+          queue = wave.slice(i).concat(queue);
+          break;
+        }
+        const rec = fetched.get(wave[i]);
+        if (!rec || exclude.has(rec.kind)) continue;
+        // A foreign node is a wall, not a skip. Traversing through it would still expose the shape
+        // of what hangs off it, and the node's own id and label are enough to feed a lineage probe.
+        if (!this.authorAllows(opts.createdBy, rec)) continue;
+        nodes.set(rec.id, rec);
+        accepted.push(rec);
+      }
+      // Bounded per node: the node cap above limits how many records the graph SHOWS, not how many
       // this reads, so an unbounded fan-out here would materialize a whole subtree to enqueue it.
-      for (const child of await this.storage.childrenOf(id, GRAPH_FANOUT)) {
-        if (exclude.has(child.kind)) continue;
-        addEdge(id, child.id);
-        if (!seen.has(child.id)) queue.push(child.id);
-      }
+      const children = await Promise.all(accepted.map((rec) => this.storage.childrenOf(rec.id, GRAPH_FANOUT)));
+      accepted.forEach((rec, i) => {
+        for (const pid of rec.runtimeMeta.parentIds) {
+          // The edge is recorded either way — it is dropped below unless both ends are in view — so
+          // a descendants-only walk still draws the seed's own inbound edge rather than orphaning it.
+          addEdge(pid, rec.id);
+          if (!down && !seen.has(pid)) queue.push(pid);
+        }
+        for (const child of children[i]) {
+          if (exclude.has(child.kind)) continue;
+          addEdge(rec.id, child.id);
+          if (!seen.has(child.id)) queue.push(child.id);
+        }
+      });
     }
     const nodeIds = new Set(nodes.keys());
     return {
@@ -2285,9 +2310,10 @@ export class Space {
       const before = addSeconds(now, -q.staleSeconds);
       envs = envs.filter((e) => e.attempt === 0 && e.availableAt < before);
     }
-    const rows: { record: RadiaRecord | null; envelope: Envelope }[] = [];
-    for (const e of envs) rows.push({ record: await this.storage.getRecord(e.recordId), envelope: e });
-    return rows;
+    // One batch, not a round trip per envelope: the default page is 100, and diagnostics composes
+    // several of these per call, so the loop this replaces was the ops plane's own N+1.
+    const found = new Map((await this.storage.getRecords(envs.map((e) => e.recordId))).map((r) => [r.id, r]));
+    return envs.map((e) => ({ record: found.get(e.recordId) ?? null, envelope: e }));
   }
 
   /**
