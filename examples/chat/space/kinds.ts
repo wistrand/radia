@@ -71,8 +71,18 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
       { path: "tool_call_id", type: "keyword" },
       { path: "turnAt", type: "integer" },
       { path: "round", type: "integer" },
+      // WHAT THE ANSWER COST, declared so it can be asked about. The provider's `usage` was on every
+      // assistant message from the start and reachable by nothing: an undeclared body field is
+      // invisible to matching AND to `space_digest`, so an agent asked "which call used most
+      // tokens" could not discover the numbers existed and answered from adjectives. Sortable as
+      // well as indexed, because the question is almost always "the biggest ones".
+      { path: "usage.total_tokens", type: "integer" },
+      // Ranked separately from tokens on purpose: they disagree across tiers. Measured on one live
+      // turn, 13.1k tokens on the middle tier cost $0.00283 while 16.9k on the cheapest cost
+      // $0.00128, so ordering by tokens puts the expensive call second.
+      { path: "usage.cost", type: "number" },
     ],
-    sortablePaths: ["index"],
+    sortablePaths: ["index", "usage.total_tokens", "usage.cost"],
     claimable: false,
   });
   // llm_call is indexed on `tier` so a per-tier inference-worker claims `{match:{tier}}`. Model
@@ -148,7 +158,10 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
       { path: "retryOf", type: "keyword" },
       { path: "turnAt", type: "integer" },
     ],
-    sortablePaths: ["attempt"],
+    // `turnAt` is sortable as well as indexed. Declaring only the index left "this turn's calls, in
+    // order" rejected with `unsortable_path`: the two are separate gates and opening one reads, from
+    // a caller's side, exactly like opening neither.
+    sortablePaths: ["attempt", "turnAt"],
   });
   // A `sandbox` = an execution environment and what it guarantees, declared by the OPERATOR and
   // verified by the worker before it serves anything. A record rather than prose because a grant

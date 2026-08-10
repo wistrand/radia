@@ -45,6 +45,12 @@ const local = `http://127.0.0.1:${port}`;
  * labelled and goes through `notice`, so it waits for the line to be idle. A worker that dies at
  * boot still gets its message out; it simply arrives at the next prompt.
  */
+/** Drop a worker's own leading `[label] ` from a forwarded line. The SDK loop labels its failures
+ *  so a STANDALONE worker's stderr is attributable; under this launcher every line gets the
+ *  launcher's label anyway, and `[inference:ultra] [inference:ultra] take error` is one fact
+ *  printed twice. Only a short leading bracket group is touched. */
+const unlabel = (line: string) => line.replace(/^\[[^\]\n]{1,48}\] /, "");
+
 function spawn(name: string, args: string[]): Deno.ChildProcess {
   const proc = new Deno.Command("deno", { args: ["run", ...args], stdout: "null", stderr: "piped", stdin: "null" }).spawn();
   (async () => {
@@ -56,9 +62,9 @@ function spawn(name: string, args: string[]): Deno.ChildProcess {
       rest += dec.decode(chunk, { stream: true });
       const lines = rest.split("\n");
       rest = lines.pop() ?? "";
-      for (const line of lines) if (line.trim()) notice(dim(`[${name}] ${line}`));
+      for (const line of lines) if (line.trim()) notice(dim(`[${name}] ${unlabel(line)}`));
     }
-    if (rest.trim()) notice(dim(`[${name}] ${rest}`));
+    if (rest.trim()) notice(dim(`[${name}] ${unlabel(rest)}`));
   })().catch(() => {/* the worker is gone; nothing left to forward */});
   return proc;
 }

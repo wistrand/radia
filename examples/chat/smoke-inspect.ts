@@ -16,7 +16,7 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { CHAT_USER, mintSession } from "./space/roles.ts";
-import { makeInspectTools } from "../../extensions/ts/agent-tools.ts";
+import { INSPECT_SCHEMAS, makeInspectTools } from "../../extensions/ts/agent-tools.ts";
 import { reviewGrantRequests } from "./client/grants.ts";
 
 const PORT = 7802;
@@ -489,6 +489,80 @@ check(
 // `defaultRetentionSeconds` lines from space/kinds.ts would leave every suite green while chunks
 // went back to being permanent — the exact silent regression that made them permanent for a month.
 // The chunk written above went through `registerChatKinds`, so its stamp is the declaration's.
+// ── what a turn COST is a query, not a body nobody can address ──────────────────────────────────
+// The provider's `usage` was written onto every assistant message from the start and reachable by
+// nothing: an undeclared body field is invisible to matching AND to `space_digest`, so an agent
+// asked "which call used most tokens" could not discover the numbers existed.
+const priced = (await admin.put({ kind: "conversation", body: {} })).id;
+const spend = (i: number, tokens: number, cost: number) =>
+  admin.put({
+    kind: "message",
+    body: { conversationId: priced, owner: CHAT_USER, index: i, role: "assistant", usage: { total_tokens: tokens, cost } },
+    parentIds: [priced],
+  });
+// Anti-correlated on purpose: this is what a mixed-tier turn really looks like, and it is why cost
+// is ranked separately rather than inferred from tokens.
+await spend(0, 13100, 0.00283);
+await spend(1, 16900, 0.00128);
+await spend(2, 41000, 0.00065);
+await admin.put({ kind: "message", body: { conversationId: priced, owner: CHAT_USER, index: 3, role: "user", content: "asks" }, parentIds: [priced] });
+
+const rank = async (path: string) =>
+  (await admin.query(
+    { kind: "message", match: { conversationId: priced, role: "assistant" }, orderBy: [{ path, dir: "desc" }] },
+    3,
+  )).map((r) => (r.body as { usage?: Record<string, number> }).usage ?? {});
+const topTokens = await rank("usage.total_tokens");
+const topCost = await rank("usage.cost");
+check("the biggest call by TOKENS is a query", topTokens[0]?.total_tokens === 41000, JSON.stringify(topTokens.map((u) => u.total_tokens)));
+check("…and the priciest is a DIFFERENT one", topCost[0]?.cost === 0.00283, JSON.stringify(topCost.map((u) => u.cost)));
+check("…so cost is not inferable from tokens", topTokens[0]?.total_tokens !== undefined && topCost[0]?.cost !== 0.00065);
+const pricey = await admin.query({ kind: "message", match: { conversationId: priced, "usage.cost": { $gt: 0.002 } } }, 10);
+check("a fractional path is matchable too, not only sortable", pricey.length === 1, `${pricey.length} over $0.002`);
+
+// THROUGH THE TOOL, not only the client — a wrapper is a place a bug can hide from every test of
+// the thing it wraps. This is the exact call an assistant needs for "which call used most tokens",
+// and the two rules its description teaches: rank on the kind that DECLARES the field, and pair a
+// desc sort with $exists.
+// In the SESSION's own conversation, because the tool runs under the scoped session: records in
+// another thread are (correctly) invisible to it, which the first version of this case proved by
+// accident.
+for (const [i, tok] of [[301, 7000], [302, 21000]] as const) {
+  await admin.put({
+    kind: "message",
+    body: { conversationId: mine, owner: CHAT_USER, index: i, role: "assistant", usage: { total_tokens: tok, cost: tok / 1e7 } },
+    parentIds: [mine],
+  });
+}
+const ranked = await tools.space_query({
+  kind: "message",
+  match: { "usage.total_tokens": { $exists: true } },
+  orderBy: [{ path: "usage.total_tokens", dir: "desc" }],
+  limit: 3,
+}) as { records?: { body?: { usage?: { total_tokens?: number } } }[] };
+check(
+  "the space_query TOOL answers 'which call used most tokens'",
+  ranked.records?.[0]?.body?.usage?.total_tokens === 21000,
+  JSON.stringify(ranked.records?.map((r) => r.body?.usage?.total_tokens)),
+);
+// The description is where the model learns both rules; a reworded description that drops them is
+// this failure shipping again (the pattern smoke-save uses for edit_workspace's own rules).
+const qDesc = (INSPECT_SCHEMAS.find((d) => d.function.name === "space_query")?.function.description) ?? "";
+check("…and its description teaches the $exists pairing", /\$exists: true\}\}/.test(qDesc) && /MISSING the field sort FIRST/.test(qDesc));
+check("…and to query the kind that DECLARES the field", /DECLARES the field/.test(qDesc));
+
+// THE TRAP, pinned so it is not rediscovered: `desc` negates the whole comparison, including the
+// missing-value rule, so a record with NO usage sorts FIRST. "The biggest" would be a user message.
+const unfiltered = await admin.query(
+  { kind: "message", match: { conversationId: priced }, orderBy: [{ path: "usage.total_tokens", dir: "desc" }] },
+  1,
+);
+check(
+  "a descending sort puts records with NO value first, so the match must exclude them",
+  (unfiltered[0]?.body as { role?: string }).role === "user",
+  JSON.stringify((unfiltered[0]?.body as { role?: string }).role),
+);
+
 const stamped = await admin.query({ kind: "llm_chunk", match: { callId: myCall } }, 1);
 check("an llm_chunk is born with the kind's retention stamped in", Boolean(stamped[0]?.retentionUntil), stamped[0]?.retentionUntil ?? "(none)");
 const { id: callRec } = await admin.put({ kind: "llm_call", body: { conversationId: mine } });

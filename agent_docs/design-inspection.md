@@ -308,7 +308,9 @@ becomes a defect.
   anyone noticed.
 - **A registry write must be able to revive.** Content-keyed writes need the `:after:<recordId>`
   idempotency suffix, or a re-declaration after a retirement replays the retirement and reports
-  success while writing nothing. This applies to the interest registry and to saved lenses.
+  success while writing nothing. Applies to saved lenses; the interest registry no longer needs the
+  anchor — its keys are RUN-scoped (a new run's key is new), which is also what keeps a restarted
+  worker visible (gotchas.md, "A registry keyed by AUTHOR needs run-scoped idempotency keys").
 - **Registry reads page to exhaustion.** Use `readRegistry` and surface `complete: false`. The space
   digest is the worst possible place to reintroduce the bounded-read-as-population bug, because it is
   the most trusted artifact an inspector has.

@@ -41,6 +41,26 @@ export interface LoopOptions {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * A network-level failure as something a person can act on.
+ *
+ * Deno's whole story for ANY transport failure is `TypeError: fetch failed` — the same five words
+ * for a space that is down, a DNS typo and a TLS mismatch. The part that says WHICH rides on the
+ * error's `cause`, and the address is the thing a reader needs first; eight workers printing
+ * "fetch failed" named neither. Anything that is not a transport failure passes through untouched.
+ */
+function describeFailure(e: unknown, base: string): string {
+  if (e instanceof TypeError && e.message.includes("fetch failed")) {
+    const cause = (e as { cause?: unknown }).cause;
+    const raw = cause instanceof Error ? cause.message : cause ? String(cause) : "";
+    // The cause is a request trace ("error sending request for url (...): client error (Connect):
+    // tcp connect error: Connection refused (os error 111)"); the tail is the part that says why.
+    const why = raw.split(": ").pop() ?? "";
+    return `cannot reach the space at ${base}${why ? ` (${why})` : ""}`;
+  }
+  return String(e);
+}
+
 export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<void> {
   const leaseSeconds = o.leaseSeconds ?? 30;
   const fallbackMs = Math.max(o.pollMs ?? 250, 1000);
@@ -69,18 +89,38 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
 
   // Declare what this run listens for, so the prospective topology is queryable. Best effort: a
   // worker with no grant to write `interest` records still works, it is just invisible to the
-  // routing view. Never fail the loop over it.
-  for (const pattern of o.patterns) {
-    try {
-      await client.publishInterest(pattern);
-    } catch (e) {
-      report(`[${o.name}] could not publish interest in '${pattern.kind}': ${e}`);
-      break; // one failure means no grant; stop trying for the rest
-    }
-  }
+  // routing view. Never fail the loop over it — and NEVER GATE CLAIMING ON IT: these are
+  // decoration, and 31 sequential publishes once held a tool worker deaf for 49 seconds on a
+  // lived-in space before its first claim. The loop below starts immediately; the announcement
+  // lands when it lands. Batches chain on `announced`, so a re-announcement never interleaves
+  // with the one before it.
+  let announced: Promise<void> = Promise.resolve();
+  let announcedUnder: string | undefined;
+  const announce = () => {
+    // Claimed SYNCHRONOUSLY at queue time, or every idle tick before the first batch completed
+    // would compare against undefined and queue another. Corrected inside the task once the
+    // credential is ensured, to the token the publishes actually ran under.
+    announcedUnder = client.bearerToken;
+    announced = announced.then(async () => {
+      await client.ensureCredential().catch(() => {});
+      announcedUnder = client.bearerToken;
+      for (const pattern of o.patterns) {
+        try {
+          await client.publishInterest(pattern);
+        } catch (e) {
+          report(`[${o.name}] could not publish interest in '${pattern.kind}': ${describeFailure(e, client.base)}`);
+          break; // one failure means no grant; stop trying for the rest
+        }
+      }
+    });
+  };
+  announce();
   // Retire on a clean stop. A crash cannot run this, which is why a reader treats an interest as
-  // live only while its RUN is: the record is a hint, the run is the fact.
+  // live only while its RUN is: the record is a hint, the run is the fact. Awaits the announcement
+  // first, or an instant shutdown retires BEFORE it publishes and the late publish, being newer,
+  // would leave a stopped worker looking subscribed.
   const retireInterests = async () => {
+    await announced.catch(() => {});
     for (const pattern of o.patterns) {
       try {
         await client.publishInterest(pattern, { retired: true });
@@ -100,9 +140,16 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
   // `o.signal` alone meant a stopped run's watchers retried a 401 connect every second forever,
   // and since the loop awaits them on the way out, it could never finish.
   const watchers = kinds.map(async (kind) => {
+    // The same streak suppression the take loop uses, for the same reason: a dead space drops the
+    // watch once per reconnect attempt, and "dropped ... Retrying" once a second is a flood that
+    // says nothing the first line did not. Repeats of one error are counted; a change is news.
+    let drops: { message: string; count: number } | null = null;
     while (!credential.signal.aborted) {
       try {
-        for await (const _ of client.watch({ kind }, credential.signal)) doWake();
+        for await (const _ of client.watch({ kind }, credential.signal)) {
+          drops = null; // frames are flowing: the next drop is a new streak
+          doWake();
+        }
         return; // generator ended (signal aborted): clean stop
       } catch (e) {
         // A run that ENDED is not a missing grant. The watch is revoked either way, but a client
@@ -121,10 +168,14 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
           report(`[${o.name}] watch on '${kind}' FORBIDDEN (${e.code}): no grant to watch it; using the poll fallback. Grant this run a '${kind}' grant to get wakeups.`);
           return;
         }
-        // Transient (network / server hiccup at watch creation): retry after a short backoff rather
-        // than killing the watcher for the loop's lifetime.
-        log(`[${o.name}] watch on '${kind}' dropped: ${e}. Retrying`);
-        await sleep(1000);
+        // Transient (network / server hiccup at watch creation): retry after a backoff rather
+        // than killing the watcher for the loop's lifetime. Reported once per streak.
+        const message = describeFailure(e, client.base);
+        if (drops === null || drops.message !== message) {
+          drops = { message, count: 1 };
+          log(`[${o.name}] watch on '${kind}' dropped: ${message}. Retrying`);
+        } else drops.count++;
+        await sleep(Math.min(1000 * 2 ** Math.min(drops.count, 4), 15_000));
       }
     }
   });
@@ -132,19 +183,54 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
   // The loop ends on the caller's signal OR on a credential that cannot be renewed. The second is
   // not an error to retry: a stopped or aged-out run will never resolve again, so continuing would
   // be an infinite series of 401s that looks, from outside, exactly like a busy worker.
+  // The current take-failure streak: same error repeating, counted rather than re-reported.
+  let failing: { message: string; since: number; count: number; remindedAt: number } | null = null;
+
   while (!o.signal?.aborted && !credentialLost) {
+    // A NEW RUN must re-announce. Interests are live only while their author-run is, and renewal
+    // keeps one run alive for its whole lifetime — so the token string changes exactly when the
+    // run does (a lapse, a stop, the lifetime ceiling), and a worker that kept its old interests
+    // would be listening invisibly from then on. The dead run's records need no retirement here:
+    // liveness already drops them.
+    if (client.bearerToken !== announcedUnder) announce();
     let claimed = null;
+    let takeFailed = false;
     try {
       for (const pattern of o.patterns) {
         claimed = await client.take({ pattern }, { leaseSeconds });
         if (claimed) break;
       }
     } catch (e) {
-      report(`[${o.name}] take error: ${e}`);
+      // ONE line per failure, not one per tick. A space being down errors every take, and eight
+      // workers at the 1s floor printed the same "fetch failed" ~500 times a minute — a flood that
+      // says nothing the first line did not, and buries anything else. Repeats of the SAME error
+      // are counted silently with a once-a-minute reminder; a DIFFERENT error is news and prints.
+      takeFailed = true;
+      const message = describeFailure(e, client.base);
+      const now = Date.now();
+      if (failing === null || failing.message !== message) {
+        failing = { message, since: now, count: 1, remindedAt: now };
+        report(`[${o.name}] ${message}; claiming paused, retrying with backoff`);
+      } else if (now - failing.remindedAt >= 60_000) {
+        failing.count++;
+        failing.remindedAt = now;
+        report(`[${o.name}] still down: ${message} (${failing.count} attempts over ${Math.round((now - failing.since) / 1000)}s)`);
+      } else {
+        failing.count++;
+      }
+    }
+    if (!takeFailed && failing) {
+      // Say so, or the silence between "take error" and normal operation reads as a hang.
+      report(`[${o.name}] recovered after ${failing.count} failed attempt${failing.count === 1 ? "" : "s"} over ${Math.round((Date.now() - failing.since) / 1000)}s`);
+      failing = null;
     }
 
     if (!claimed) {
-      // Idle: wait for a wakeup or the fallback tick, whichever comes first.
+      // Idle: wait for a wakeup or the fallback tick, whichever comes first. While the space is
+      // UNREACHABLE, back off instead: a wakeup cannot arrive (the watchers are down too), and the
+      // tight tick is what turned an outage into a retry storm. Capped low enough that recovery is
+      // never more than 15s late.
+      const waitMs = failing ? Math.min(fallbackMs * 2 ** Math.min(failing.count, 4), 15_000) : fallbackMs;
       await new Promise<void>((resolve) => {
         wake = resolve;
         setTimeout(() => {
@@ -152,7 +238,7 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
             wake = null;
             resolve();
           }
-        }, fallbackMs);
+        }, waitMs);
       });
       continue;
     }

@@ -105,10 +105,23 @@ export function statusText(prefix: string, s: string): string {
 
 /** Redraw the current line as prefix + dim status, cut to fit the window. */
 export const showStatus = (prefix: string, s: string) =>
-  tty && write(`\r\x1b[2K${prefix}\x1b[2m${statusText(prefix, s)}\x1b[0m`);
+  statusOn && write(`\r\x1b[2K${prefix}\x1b[2m${statusText(prefix, s)}\x1b[0m`);
 
 /** Wipe the status, keeping the prefix, so real output can continue on the same line. */
-export const endStatus = (prefix: string) => tty && write(`\r\x1b[2K${prefix}`);
+export const endStatus = (prefix: string) => statusOn && write(`\r\x1b[2K${prefix}`);
+
+/**
+ * TEST SEAM for the redraw, separate from `tty` because it must not turn on COLOUR.
+ *
+ * The status line erases and rewrites (`\r\x1b[2K` + prefix), and both calls are no-ops off a
+ * terminal. So the bug where a redraw wipes something it was supposed to keep cannot be reproduced
+ * with piped output: a deferred label erased the `assistant> ` in front of it and every suite stayed
+ * green. Set by `smoke-turnlink.ts` and by nothing else.
+ */
+let statusOn = tty;
+export function __useStatusLine(on: boolean): void {
+  statusOn = on;
+}
 
 export const dim = (s: string) => colour ? `\x1b[2m${s}\x1b[0m` : s;
 

@@ -12,5 +12,7 @@ const token = arg("--token");
 const maxRounds = Number(arg("--max-rounds") ?? "8");
 
 const client = new RadiaClient(url, token ? { definitionToken: token } : {});
-console.error(`[turn] watching messages on ${url} (max ${maxRounds} rounds)`);
+// No `[turn]` prefix: the launcher labels every line it forwards (`spawn`, client/fleet.ts), so
+// self-labelling printed "[turn] [turn] watching messages".
+console.error(`watching messages on ${url} (max ${maxRounds} rounds)`);
 await runTurnWorker(client, { maxRounds });

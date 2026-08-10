@@ -132,6 +132,9 @@ export class Waiter {
         this.last = r.body as ProgressBody; // ULID order = emission order, so the last one wins
         this.onProgress?.(this.last);
       }
+      // A read that WORKED clears the flag, or one transient hiccup marks the waiter blind for the
+      // rest of the call and the timeout blames a permission problem that lasted 400ms.
+      this.blind = undefined;
     } catch (e) {
       // Remembered, not just swallowed. "I looked and saw nothing" and "I was not allowed to look"
       // are different facts, and reporting the second as the first is how a timeout came to blame a

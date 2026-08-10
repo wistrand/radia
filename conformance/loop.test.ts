@@ -297,3 +297,57 @@ Deno.test("loop: a configured log still receives the failure, and stderr stays c
   assert(mine.some((l) => l.includes("deliberate handler failure")), JSON.stringify(mine.slice(0, 3)));
   assertEquals(lines, [], "a caller that gave a log must not also get stderr");
 });
+
+Deno.test("loop: a space outage is ONE line and a backoff, not a line per tick", async () => {
+  // Eight workers at the 1s fallback printed the same "fetch failed" ~500 times a minute while a
+  // space was down, burying anything else stderr had to say. The loop now reports the first
+  // failure of a streak, counts repeats silently (a once-a-minute reminder), backs off while the
+  // space is unreachable, and says when it recovered — which is also what proves the streak logic
+  // never suppressed a RECOVERY.
+  const port = 7867; // fixed, so the space can come up at the address the loop is already retrying
+  const dead = new RadiaClient(`http://127.0.0.1:${port}`);
+  const lines: string[] = [];
+  const stop = new AbortController();
+  const finished = agentLoop(dead, {
+    name: "w",
+    patterns: [{ kind: "task" }],
+    pollMs: 200, // floored to 1s by the loop
+    signal: stop.signal,
+    log: (m) => lines.push(m),
+    handle: () => Promise.resolve(),
+  });
+
+  // ~3.5s of outage: the old loop reports ~3 take errors here, the new one exactly 1.
+  await new Promise((r) => setTimeout(r, 3_500));
+  const errors = lines.filter((l) => l.includes("claiming paused")); // the take streak, not the watch drop
+  assertEquals(errors.length, 1, `one line per streak, not per tick: ${JSON.stringify(lines)}`);
+  // And it says WHERE. Deno's own text for every transport failure is "fetch failed" — the same
+  // five words for down, DNS and TLS — so the line must carry the address (and the cause when the
+  // runtime supplies one), or eight workers name neither.
+  assert(errors[0].includes(`http://127.0.0.1:${port}`), errors[0]);
+  assert(!errors[0].includes("fetch failed") || errors[0].includes("cannot reach"), errors[0]);
+  // The watchers reconnect through the same outage, and their retry line floods identically for
+  // any caller that wires a log (the fleet was spared only because workers pass none).
+  const drops = lines.filter((l) => l.includes("dropped"));
+  assert(drops.length <= 2, `watch drops are a streak too: ${JSON.stringify(drops)}`);
+
+  // The space comes up at the same address; the backed-off loop must notice within its 15s cap.
+  const adapter = new SqliteAdapter(":memory:");
+  await adapter.init();
+  const space = new Space(adapter);
+  space.registerKind({ kind: "task", indexedPaths: [] });
+  const server = Deno.serve({ port, hostname: "127.0.0.1", onListen: () => {} }, makeHandler(space, "<html/>", false));
+  try {
+    for (let i = 0; i < 200 && !lines.some((l) => l.includes("recovered")); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const recovered = lines.filter((l) => l.includes("recovered"));
+    assertEquals(recovered.length, 1, `recovery is announced once: ${JSON.stringify(lines)}`);
+    assert(/recovered after \d+ failed attempts? over \d+s/.test(recovered[0] ?? ""), recovered[0]);
+  } finally {
+    stop.abort();
+    await finished;
+    await server.shutdown();
+    await adapter.close();
+  }
+});

@@ -246,6 +246,25 @@ exactly the anti-pattern the design principle names. A cue verb is required besi
 ("explain deep learning" routes normally), and a continuation must be the whole message
 ("continue the analysis of X" carries its own content and is classified).
 
+**What a turn cost is on the record, and is a QUERY.** The provider's own `usage` is passed through
+untouched onto the assistant `message`: `prompt_tokens`, `completion_tokens`, `total_tokens`, `cost`
+in dollars, and the cache breakdown where the provider reports one. Nothing is recomputed, so there
+is no second number to doubt. `usage.total_tokens` and `usage.cost` are declared indexed and
+sortable, which is what makes them reachable at all: an undeclared body field is invisible to
+matching AND to `space_digest`, so an agent asked "which call used most tokens" could not discover
+the numbers existed. Rank them SEPARATELY — measured on one live turn, 13.1k tokens on the middle
+tier cost $0.00283 while 16.9k on the cheapest cost $0.00128, so ordering by tokens puts the
+expensive call second. A descending sort leads with records that have no value at all, so pair it
+with `role: "assistant"`. The chat prints each round's figure after the answer and a turn total
+once a turn takes more than one call.
+
+**While a model is still writing, the wait reports how much it has produced.** A tool-calling round
+renders nothing — the arguments are not text to show — so the elapsed second used to be the only
+thing moving, and a minute of real work looked exactly like a hung provider. The inference-worker
+counts what the stream yields (prose and tool arguments alike) and carries it on its heartbeat:
+`generating balanced · … · ~840 tok · 43s`. Characters are what a stream gives you, so that figure
+is derived and marked `~`; the authoritative count is the provider's, on the record, afterwards.
+
 **No tier name appears in the router.** Live tiers come from the `model` records ordered by `rank`;
 the classifier is asked to answer with one of *those* words; and when it errors or times out the
 fallback heuristic picks by **position** in that list (cheapest / middle / second-most capable),

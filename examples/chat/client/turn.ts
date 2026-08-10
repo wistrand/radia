@@ -60,6 +60,19 @@ const INFERENCE_DEADLINE_MS = 120_000;
  * `request_grant` able to sit five minutes on a person, so the bound is generous on purpose.
  */
 const TURN_BUDGET_MS = 15 * 60_000;
+
+/** 11006 -> "11.0k". A turn's rounds each print one of these, so width matters more than precision. */
+function fmtTokens(n: number): string {
+  return n >= 10_000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+/** Provider cost in dollars. Sub-cent calls are the common case, so the small end keeps its digits
+ *  rather than rounding every ordinary round to "$0.00". */
+function fmtCost(usd: number): string {
+  if (usd >= 1) return `$${usd.toFixed(2)}`;
+  if (usd >= 0.01) return `$${usd.toFixed(3)}`;
+  return `$${usd.toFixed(5)}`;
+}
 const TOOL_DEADLINE_MS = 30_000;
 /** `request_grant` waits on a PERSON, so it gets a human deadline rather than a worker one, and a
  *  longer one than the tool's own wait, or the REPL would give up on a decision still being made. */
@@ -88,6 +101,9 @@ export async function runTurn(
   // Also outside, and for the same reason: `callId` advances a round at a time, but a cancel belongs
   // to the TURN, so it parents to the seed rather than to whichever round was in flight.
   let seedId: string | null = null;
+  // Per TURN, not per round: a tool-heavy turn is a dozen provider calls, and the number worth
+  // knowing is what the whole question cost. Outside the try so a cancelled turn still reports it.
+  let turnTokens = 0, turnCost = 0, turnRounds = 0;
   // The turn owns the line from here until the `finally` below, so anything a background watcher
   // produces waits rather than splicing itself into the answer.
   holdLine(true);
@@ -116,33 +132,54 @@ export async function runTurn(
     })).id;
     seedId = callId;
 
-    for (;;) {
-      write("\nassistant> ");
-      const { message, finishReason, streamed, tier, context, announced, index } = await streamResult(client, callId);
+    for (let round = 0;; round++) {
+      // One blank line to open the TURN, none between its rounds. A tool-heavy turn was spending
+      // three blank lines per round on separation nobody needed: each round already begins with its
+      // own `assistant>`.
+      if (round === 0) write("\n");
+      else ensureLine();
+      write("assistant> ");
+      const { message, finishReason, streamed, tier, context, usage, announced, heldLabel, index } = await streamResult(client, callId);
+      turnTokens += usage?.total_tokens ?? 0;
+      turnCost += usage?.cost ?? 0;
+      if (usage?.total_tokens) turnRounds++;
 
-      // Show the context window only when it actually dropped something; otherwise it is noise. It is
-      // reported by the inference-worker, so unlike the tier it cannot be known up front. As a
-      // fraction rather than a sentence: this line is printed on every turn of a long conversation,
-      // and "38 msgs, 178 older not sent" spends eight words on two numbers.
-      const win = context && context.hidden > 0 ? ` · ${context.sent}/${context.sent + context.hidden} msgs` : "";
-      // The label normally went up before the first token (see streamResult). This is the fallback
-      // for when it could not: no progress record was visible (the session may lack a grant to read
-      // them), so the tier is only knowable from the result. `ensureLine` because it follows an
-      // ANSWER, whose last character is the model's, not ours: without it the label was appended to
-      // the final sentence, which is where it was noticed.
-      if (!announced && tier) {
-        ensureLine();
-        write(`  ${dim(`[${tier}${win}]`)}\n`);
-      } else if (win) {
-        ensureLine();
-        write(`${dim(`[${win.slice(3)}]`)}\n`);
+      // The round's numbers: the context window only when it dropped something, and the PROVIDER's
+      // own token and cost figures off the record — never recomputed, and each part appears only
+      // when it has a number behind it (`cost` is absent on providers that do not price a call).
+      const parts = [
+        context && context.hidden > 0 ? `${context.sent}/${context.sent + context.hidden} msgs` : "",
+        usage?.total_tokens ? `${fmtTokens(usage.total_tokens)} tok` : "",
+        usage?.cost ? fmtCost(usage.cost) : "",
+      ].filter(Boolean);
+      const win = parts.length ? ` · ${parts.join(" · ")}` : "";
+      // One tail per round: the routing label when it is still unspent (a tool round streams
+      // nothing, so the label was never flushed), else the tier when no label was ever visible
+      // (the session may lack a grant to read progress), else just the numbers.
+      const tail = heldLabel !== undefined
+        ? `[${heldLabel}${win}]`
+        : (!announced && tier)
+        ? `[${tier}${win}]`
+        : win
+        ? `[${win.slice(3)}]`
+        : "";
+      if (tail) {
+        // NOTHING STREAMED means the cursor is still sitting after `assistant> `, so the tail
+        // completes that line. Forcing a new line there left the prompt dangling above a lone
+        // `[fast]`, which is two lines saying what one says.
+        if (streamed) {
+          ensureLine();
+          write(`  ${dim(tail)}\n`);
+        } else {
+          write(`${dim(tail)}\n`);
+        }
       }
       // The assistant message is ALREADY in the space: it arrived as the inference worker's ack, at
       // the index the worker derived from the call. The thread only advances its cursor past it.
       thread.noteExternal(index);
 
       if (message.tool_calls?.length) {
-        write("\n");
+        ensureLine();
         // The calls are DISPATCHED by the turn worker, one after the other. Each reply is found by
         // the provider call id it answers, which this client already holds: no slot is predicted, so
         // there is no arithmetic for two writers to disagree about.
@@ -166,7 +203,9 @@ export async function runTurn(
         answer.push(message.content || `(no content; finish_reason=${finishReason})`);
         answer.end();
       }
-      write("\n");
+      // `ensureLine`, not a blank line: the turn's closing numbers follow immediately, and the REPL
+      // opens the next prompt with its own separation.
+      ensureLine();
       return;
     }
   } catch (e) {
@@ -183,6 +222,13 @@ export async function runTurn(
     }
     throw e;
   } finally {
+    // The whole question's cost, once it took more than one provider call. A single round already
+    // printed its own line, and repeating it as a "total" would read as a second charge. Reported
+    // from the FINALLY so a cancelled turn still says what it spent before stopping.
+    if (turnRounds > 1) {
+      ensureLine();
+      write(dim(`  [turn total: ${fmtTokens(turnTokens)} tok${turnCost > 0 ? ` · ${fmtCost(turnCost)}` : ""} over ${turnRounds} calls]\n`));
+    }
     // Cleared whether the turn ended, threw or was cancelled, so a stale controller cannot make the
     // NEXT turn abort before it starts.
     cancel = null;
@@ -291,10 +337,16 @@ interface StreamedResult {
   message: ChatMessage;
   finishReason: string;
   streamed: boolean;
-  announced: boolean; // the routing label was already printed from the router's progress record
+  announced: boolean; // a routing label was seen (printed, or still held in `heldLabel`)
+  /** The routing label, when nothing streamed and it is still unprinted. The caller finishes the
+   *  line with the round's numbers, so a tool round costs ONE line instead of three. */
+  heldLabel?: string;
   index: number; // the transcript slot the worker wrote the assistant message into
   tier?: string; // the tier that answered, stamped by the inference-worker
   context?: { sent: number; hidden: number }; // what the worker's context window sent vs. omitted
+  /** The PROVIDER's own numbers, passed through untouched onto the message record. Shown rather
+   *  than recomputed: an estimate beside an authoritative figure is just a second number to doubt. */
+  usage?: { total_tokens?: number; cost?: number };
 }
 
 /** Follow one call: print `llm_chunk` deltas as they land, return when the assistant `message`
@@ -313,11 +365,30 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
   // so before any token can stream. Reading it from the router's progress record puts the label
   // ahead of the text it describes; taking it from the final message (as this once did) can only
   // ever print it after the last token, describing an answer the user has already read.
+  //
+  // HELD, not printed on arrival. A tool-calling round renders no text, so a label printed the
+  // moment it is known occupies a line of its own and the round's cost occupies another. Held, the
+  // two become `[→ fast · 13.4k tok · $0.002]`: same facts, one line. It is flushed the instant a
+  // token is about to be printed, so on a STREAMED answer it still precedes the text it describes,
+  // which is the property it exists for.
+  let pending: string | null = null;
   const label = (text: string) => {
-    endStatus(waiter.prefix);
-    write(`${dim(`[${text}]`)}\n`);
-    waiter.prefix = ""; // the prompt is spent, so later status lines must not reprint it
+    pending = text;
     announced = true;
+  };
+  /**
+   * Emit the held label, optionally with the round's numbers folded in.
+   *
+   * The prefix is spent HERE, not when the label arrives. `endStatus` redraws the line as
+   * `\r\x1b[2K` + prefix, so clearing it early made the deferred flush erase the `assistant> ` it
+   * was supposed to complete: the round printed a bare `[→ fast · …]` with no prompt in front of it.
+   */
+  const flushLabel = (extra = "") => {
+    if (pending === null) return;
+    endStatus(waiter.prefix);
+    write(`${dim(`[${pending}${extra}]`)}\n`);
+    waiter.prefix = ""; // the prompt is on screen and finished; later status lines must not reprint it
+    pending = null;
   };
   const waiter = new Waiter(client, "assistant> ", (p) => {
     if (!p.note) return;
@@ -365,6 +436,7 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
         // written inside the last poll interval was never read: the label then appeared after the
         // whole answer, describing something the user had already finished reading.
         if (!announced) await waiter.pump(callId, stall, true);
+        flushLabel(); // before the first token, which is the whole reason it is read early
         endStatus(waiter.prefix); // first token: drop the status, keep the prompt
       }
       answer.push(b.delta);
@@ -377,7 +449,15 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
   // about a TERMINAL — flushing streamed tokens before each read, and holding the status line only
   // until real output takes it.
   const outcome = await awaitResult<
-    { content?: string | null; tool_calls?: ChatMessage["tool_calls"]; finishReason: string; index: number; tier?: string; context?: { sent: number; hidden: number } }
+    {
+      content?: string | null;
+      tool_calls?: ChatMessage["tool_calls"];
+      finishReason: string;
+      index: number;
+      tier?: string;
+      context?: { sent: number; hidden: number };
+      usage?: { total_tokens?: number; cost?: number };
+    }
   >(
     client,
     { kind: "message", match: { callId } },
@@ -412,8 +492,10 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
     index: b.index,
     tier: b.tier,
     context: b.context,
+    usage: b.usage,
     streamed: printed,
     announced,
+    ...(pending !== null ? { heldLabel: pending } : {}),
   };
 }
 

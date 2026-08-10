@@ -1765,7 +1765,15 @@ components:
             type: object
             properties:
               path: { type: string }
-              type: { type: string, enum: [keyword, integer, timestamp, array] }
+              type:
+                type: string
+                enum: [keyword, integer, number, timestamp, array]
+                description: >-
+                  What the path holds. Descriptive: nothing casts on it, since matching and ordering
+                  read the runtime JSON type. `number` is for values that are fractional and tolerant
+                  of rounding (a score, a reported cost); money being accounted for is a scaled
+                  integer in minor units, so use `integer` there. Prefer `integer` where values are
+                  whole.
         sortablePaths: { type: array, items: { type: string } }
         claimable: { type: boolean, default: true, description: "records of this kind are claimed as work (take); false = reference data (facts/config/history, never taken), and excluded from the starvation diagnostic" }
 

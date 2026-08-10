@@ -120,7 +120,7 @@ client-shaped and forgeable, which is the property authorization cannot tolerate
 
 ## Per-kind indexing contract
 
-Each kind declares `indexed_paths` (typed: keyword / integer / timestamp / array) and
+Each kind declares `indexed_paths` (typed: keyword / integer / number / timestamp / array) and
 `sortable_paths`. Registration rejects predicates on undeclared paths (or routes them to
 the rate-limited slow lane) and `order_by` on non-sortable paths. Hot declared paths
 become generated columns / expression indexes on `record_runtime` (see

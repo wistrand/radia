@@ -178,7 +178,18 @@ export interface SpaceEvent extends EventInput {
 // Kinds
 // ---------------------------------------------------------------------------
 
-export type IndexedType = "keyword" | "integer" | "timestamp" | "array";
+/**
+ * What a declared path holds. DESCRIPTIVE: nothing casts on it — matching, ordering and pushdown all
+ * read the runtime JSON type at the path — so this says what a reader should expect to find, and a
+ * declaration that lies is a lie nothing currently catches.
+ *
+ * `number` is for values that are genuinely fractional AND tolerant of rounding: a score, a ratio, a
+ * provider's reported `cost` of 0.00161865, which is a figure to rank and show rather than to
+ * reconcile. Money you are ACCOUNTING for is a scaled integer (minor units), as every ledger stores
+ * it — reach for `integer` there, not this. Prefer `integer` wherever values are whole: a float
+ * declared as `integer` sorts correctly today and misleads the first reader who trusts it.
+ */
+export type IndexedType = "keyword" | "integer" | "number" | "timestamp" | "array";
 
 export interface IndexedPath {
   path: string; // dotted path into the record body

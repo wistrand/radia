@@ -195,6 +195,18 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Registries, and reads that must not truncate
 
+- **A `desc` sort puts records with NO value FIRST** (`compareRecords`, `src/core/matching.ts`).
+  `compareValues` sorts a missing path last, then `desc` negates the whole comparison including that
+  rule, so "the largest" leads with the records that have none. Ordering by `usage.total_tokens`
+  ranked a user message above every answer. Always pair a descending `orderBy` with a match that
+  excludes the absent (`role: "assistant"`, or `$exists: true`). Matches Postgres's NULLS FIRST
+  default, so it is defensible, but the comment beside it claims "missing sorts last" unqualified.
+  Guard: `examples/chat/smoke-inspect.ts`, "a descending sort puts records with NO value first".
+- **A body field nobody DECLARED is invisible to discovery, not just to matching.** `space_digest`
+  reports declared paths, so an agent cannot learn a field exists. The provider's `usage` sat on
+  every assistant `message` from the start, unreachable: asked which call cost most, the assistant
+  went hunting in `tool_call`, spent a grant request on it, and answered in adjectives. Declaring
+  is publishing (`examples/chat/space/kinds.ts`); writing is not.
 - **`getGraph` walks parents AND children, so under a HUB record it returns every sibling thread**
   (`src/core/space.ts`). Seeded inside one conversation turn it climbs one hop to the conversation
   and fans back down into all of them, then stops at `maxNodes`: a live 346-record thread drew as
@@ -1858,10 +1870,22 @@ rejected for stated reasons.
   re-publishing it is not symmetric: the republish reuses the publish key, an idempotency key is
   scoped `(principal, operation, key)`, so within one principal the write REPLAYS the record being
   revived — nothing is written, the retirement stays newest, the entry is withdrawn permanently. It
-  works across a real restart only because the worker's principal is a fresh `run:<ulid>` each
-  launch, which is what makes it a trap: correctness would depend on who is calling. A revival keys
-  on the retirement it supersedes (`…:after:<id>`). Caught by `smoke-fleet.ts`; no test using a
-  fresh principal per step would have found it.
+  does NOT reset across restarts either: idempotency keys scope to the AGENT behind a run (Package
+  U), so a relaunched worker replays its dead predecessor's writes. A revival keys on the retirement
+  it supersedes (`…:after:<id>`). Caught by `smoke-fleet.ts`; no test using a fresh principal per
+  step would have found it. Harmless replay for content-keyed registries (capability, model), whose
+  entries survive their author; fatal for one keyed BY author — see the interest entry below.
+
+- **A registry keyed by AUTHOR needs run-scoped idempotency keys** (`publishInterest`,
+  `sdk/ts/client.ts`). Interest entries are keyed `createdBy|kind|match` and live only while their
+  run is, but the publish key was content-only, so a restarted worker's publish REPLAYED its dead
+  predecessor's write: no record under the new run, and every routing view of a lived-in space went
+  empty at the first restart inside the 7-day idempotency window. Invisible to every suite, because
+  suites run on fresh spaces with nothing to replay against. The key now carries the run, which also
+  deletes the revive anchor: a new run's key is new. The ceiling check reads author-scoped
+  (`checkInterestBudget`: `created_by` is a storage column), not the whole-registry liveness walk
+  that cost ~1.6s per publish × 31 patterns — a worker deaf for 49s before its first claim.
+  Guard: `conformance/exchange.test.ts`, "a restarted worker's interest survives".
 
 - **The matching construct is a `pattern`, and never a `selector`.** It was `template` until the
   whole surface was renamed (wire contract, code, both SDKs, CLI, MCP, docs; the inner field stayed

@@ -25,11 +25,18 @@ export interface Completion {
   usage?: unknown;
 }
 
-/** The one function that speaks to a model. `onDelta` is called as text arrives; a caller that does
- *  not stream simply never calls it. */
+/**
+ * The one function that speaks to a model. `onDelta` is called as text arrives; a caller that does
+ * not stream simply never calls it.
+ *
+ * `part` distinguishes prose from a tool call's arguments. Only prose becomes an `llm_chunk` — a
+ * half-built argument list is not something to render — but BOTH count as output, and a provider
+ * that reports neither leaves a tool-calling round looking identical to a stalled one. Optional, so
+ * a provider that only streams prose keeps calling `onDelta(text)`.
+ */
 export type Complete = (
   req: { model: string; messages: ChatMessage[]; tools?: ToolDef[]; temperature?: number },
-  onDelta: (delta: string) => Promise<void>,
+  onDelta: (delta: string, part?: "content" | "tool") => Promise<void>,
 ) => Promise<Completion>;
 
 /** The escalation tool. A model DISCOVERS it like any capability and calls it when out of depth;
@@ -213,21 +220,32 @@ export async function runInferenceWorker(client: RadiaClient, opts: InferenceOpt
         // first token, and until one arrives there is no chunk and no progress record, so a caller
         // watching for life sees a stopped worker and abandons a turn that is running normally.
         // Cheap: one record per beat, on a kind that declares its own retention.
+        //
+        // The beat also carries HOW MUCH has been generated, because on a tool-calling round the
+        // elapsed second is otherwise the only thing moving: nothing is rendered, so a minute of
+        // real work and a hung provider look the same. Characters are what a stream actually
+        // yields, so the token figure is `~` and derived (÷4) rather than claimed.
+        let outChars = 0;
         const beat = setInterval(() => {
+          const tokens = Math.round(outChars / 4);
           progress(c, {
             conversationId: body.conversationId,
             owner: body.owner,
             callId: resultKey,
             stage: "generating",
             by: provider,
-            note: `${tier ?? "any"} · ${reportModel}`,
+            note: `${tier ?? "any"} · ${reportModel}${tokens > 0 ? ` · ~${tokens} tok` : ""}`,
           }, [callId]).catch(() => {});
         }, opts.heartbeatMs ?? 15_000);
         let completion: Completion;
         try {
           completion = await complete(
             { model: body.model ?? model, messages, tools, temperature: body.temperature },
-            (delta) => chunk(delta),
+            (delta, part) => {
+              outChars += delta.length;
+              // A tool call's arguments count as output but are never rendered.
+              return part === "tool" ? Promise.resolve() : chunk(delta);
+            },
           );
         } finally {
           clearInterval(beat);

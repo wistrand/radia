@@ -42,7 +42,10 @@ const ENDPOINT = `${API_BASE}/chat/completions`;
  * cadence (~150 ms) so callers can emit chunk records without flooding; content and any
  * tool calls are assembled from the SSE deltas and returned whole.
  */
-export async function streamChat(opts: StreamOpts, onChunk: (text: string) => Promise<void>): Promise<StreamResult> {
+export async function streamChat(
+  opts: StreamOpts,
+  onChunk: (text: string, part?: "content" | "tool") => Promise<void>,
+): Promise<StreamResult> {
   const res = await fetch(ENDPOINT, {
     method: "POST",
     headers: {
@@ -116,6 +119,10 @@ export async function streamChat(opts: StreamOpts, onChunk: (text: string) => Pr
           if (tc.id) toolCalls[idx].id = tc.id;
           if (tc.function?.name) toolCalls[idx].function.name += tc.function.name;
           if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
+          // Reported, not rendered. A tool-calling round streams only this, so a caller that never
+          // hears about it cannot tell a model writing a long argument list from a stalled one.
+          const out = `${tc.function?.name ?? ""}${tc.function?.arguments ?? ""}`;
+          if (out) await onChunk(out, "tool");
         }
       }
       if (choice.finish_reason) finishReason = choice.finish_reason;

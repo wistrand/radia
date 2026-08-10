@@ -62,6 +62,14 @@ export const kindSuites: Suite[] = [
           }),
         "duplicate_path",
       );
+      // `number` is a declarable type, and a NESTED path is declarable and sortable. Both are load
+      // bearing for anything that records what an operation cost: a provider's `cost` is fractional
+      // and lives under `usage`, and every honest declaration for it was missing before.
+      space.registerKind({
+        kind: "priced",
+        indexedPaths: [{ path: "usage.cost", type: "number" }, { path: "usage.total_tokens", type: "integer" }],
+        sortablePaths: ["usage.cost", "usage.total_tokens"],
+      });
       expectError(
         () =>
           space.registerKind({

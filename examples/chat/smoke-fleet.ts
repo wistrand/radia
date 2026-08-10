@@ -172,6 +172,12 @@ check("…and so does a long message", pick("x".repeat(500)) === "deep", pick("x
 check("…and a tool-heavy synthesis round", pick("summarise", 4) === "deep", pick("summarise", 4));
 check("small talk still routes to the cheapest", pick("hi there") === "fast", pick("hi there"));
 check("an ordinary question takes a middle tier", pick("explain how leases work") === "balanced", pick("explain how leases work"));
+// Short does not mean small talk when the question RANKS: "which call used most tokens" is 27
+// characters, both routing paths read it as a lookup, and the cheapest tier answered it by naming
+// records the words brought to mind. Composing ranked queries is middle-tier work.
+check("a short ranking question is not small talk", pick("which call used most tokens") === "balanced", pick("which call used most tokens"));
+check("…nor a counting one", pick("total cost of this session?") === "balanced", pick("total cost of this session?"));
+check("plain small talk still lands on the cheapest", pick("thanks, looks great!") === "fast", pick("thanks, looks great!"));
 check(
   "NOTHING positional selects the top tier",
   !tiers4.some((_, i) => pick(["hi", "explain this code", "x".repeat(900), "```\nprove it\n```"][i]) === "ultra"),

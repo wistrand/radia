@@ -397,9 +397,10 @@ export class Space {
     kind: string,
     keyOf: (body: T, rec: RadiaRecord) => string | undefined,
     match?: Record<string, unknown>,
+    scope?: StatsScope,
   ): Promise<RegistryView> {
     return readRegistry<T>(
-      (limit: number, after?: string) => this.query({ kind, match }, limit, { dir: "desc", after }),
+      (limit: number, after?: string) => this.query({ kind, match }, limit, { dir: "desc", after }, scope),
       keyOf,
     );
   }
@@ -1330,13 +1331,32 @@ export class Space {
     const b = (req.body ?? {}) as { kind?: unknown; match?: unknown; retired?: unknown };
     if (typeof b.kind !== "string" || b.retired === true) return; // withdrawal always allowed
     const who = principal ?? this.ctx.principal;
-    const live = await this.liveInterests(b.kind);
-    const mine = live.interests.filter((i) => i.run === who);
+    // AUTHOR-SCOPED at the storage layer (`created_by` is a column), because only the caller's own
+    // entries decide its ceiling. This used to project every interest in the space and ask each
+    // one's run whether it was alive — seconds per publish on a lived-in space, paid once per
+    // pattern by every starting worker, to compute a filter that keeps at most 32 rows. Sound
+    // because the projection key BEGINS with the author, so restricting the read to one author can
+    // neither merge nor split entries; and the caller's own liveness needs no lookup — it is
+    // performing this write.
+    const view = await this.registry<{ kind?: unknown; match?: unknown }>(
+      INTEREST,
+      (ib, rec) =>
+        typeof ib?.kind === "string" ? `${rec.runtimeMeta.createdBy}|${ib.kind}|${JSON.stringify(ib.match ?? null)}` : undefined,
+      { kind: b.kind },
+      { createdBy: [who] },
+    );
+    if (!view.complete) {
+      // Cannot happen for a set the ceiling itself bounds, unless the ceiling was already blown by
+      // another path — in which case enforcing over a prefix would be the bounded-read trap at the
+      // one site that exists to prevent registry blowup.
+      throw new RadiaError("registry_incomplete", `interest registry read for '${who}' did not complete`);
+    }
+    const mine = [...view.entries.values()];
     if (mine.length < this.ctx.maxInterestsPerPrincipal) return;
     // Already registered? Re-publishing is a no-op at the registry, so it must not be refused: a
     // worker at the ceiling would otherwise fail to restart.
     const wanted = JSON.stringify(b.match ?? null);
-    if (mine.some((i) => JSON.stringify(i.match ?? null) === wanted)) return;
+    if (mine.some((r) => JSON.stringify((r.body as { match?: unknown }).match ?? null) === wanted)) return;
     throw new RadiaError(
       "too_many_interests",
       `principal '${who}' already registers ${mine.length} interests on kind '${b.kind}' (limit ` +
@@ -2149,11 +2169,23 @@ export class Space {
       { kind },
     );
     const out: LiveInterest[] = [];
+    // Memoized PER CALL: liveness is asked at a single point in time within one projection, so the
+    // memo is pure, and a lived-in space has far fewer runs than entries (measured 178 runs behind
+    // 1966 entries — this loop was 1966 sequential agent_run lookups without it). Deliberately not
+    // cached across calls: a run stopping is the event this exists to notice.
+    const liveMemo = new Map<string, boolean>();
+    const isLive = async (run: string) => {
+      const hit = liveMemo.get(run);
+      if (hit !== undefined) return hit;
+      const v = await this.runIsLive(run);
+      liveMemo.set(run, v);
+      return v;
+    };
     for (const rec of view.entries.values()) {
       const b = rec.body as { kind?: string; match?: Record<string, unknown> };
       if (b.kind !== kind) continue;
       const run = rec.runtimeMeta.createdBy;
-      if (!(await this.runIsLive(run))) continue;
+      if (!(await isLive(run))) continue;
       out.push({ run, agent: await this.agentForRun(run), ...(b.match ? { match: b.match } : {}) });
     }
     // `published` counts what was DECLARED, before liveness. The difference between it and

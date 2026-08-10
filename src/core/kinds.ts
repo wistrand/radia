@@ -338,6 +338,7 @@ export function validateGrantDef(def: GrantDef): void {
 const VALID_TYPES = new Set<IndexedType>([
   "keyword",
   "integer",
+  "number", // fractional: a provider's cost, a score. See `IndexedType` in sdk/ts/wire.ts.
   "timestamp",
   "array",
 ]);

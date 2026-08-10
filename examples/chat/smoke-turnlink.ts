@@ -12,6 +12,7 @@ import { registerChatKinds } from "./space/kinds.ts";
 import { bootstrap, mintSession, setSessionOwner } from "./space/roles.ts";
 import { Thread } from "./client/thread.ts";
 import { runTurn, ToolSet } from "./client/turn.ts";
+import { __captureOutput, __useStatusLine } from "./client/terminal.ts";
 
 const PORT = 7824;
 const url = `http://127.0.0.1:${PORT}`;
@@ -333,7 +334,42 @@ try {
     await thread.append({ role: "user", content: "compute something" });
     const toolset = new ToolSet(session);
     await toolset.scopeTo(c3);
+    // Captured so the LAYOUT is checked, not just the records. A tool-heavy turn was spending three
+    // blank lines per round, and a round's tier and its cost each took a line of their own.
+    // The status line is ON for this capture. It erases and redraws (`\r\x1b[2K` + prefix), and both
+    // calls are no-ops off a terminal, so with plain piped output a redraw that wipes the wrong
+    // thing is invisible: a deferred label erased the `assistant> ` in front of it and this very
+    // check stayed green. Replayed below the way a terminal would.
+    __useStatusLine(true);
+    const drawn = __captureOutput();
     await runTurn(session, thread, toolset);
+    const painted = drawn.text();
+    drawn.stop();
+    __useStatusLine(false);
+    // A terminal, in ten lines: `\r` returns to column 0, `\x1b[2K` clears, `\n` commits.
+    const lines: string[] = [];
+    let cur = "", col = 0;
+    for (const ch of painted.replace(/\x1b\[2K/g, "\u0000")) {
+      if (ch === "\n") { lines.push(cur); cur = ""; col = 0; }
+      else if (ch === "\r") col = 0;
+      else if (ch === "\u0000") { cur = ""; col = 0; }
+      else { cur = cur.slice(0, col) + ch + cur.slice(col + 1); col++; }
+    }
+    lines.push(cur);
+    const body = lines.slice(lines.findIndex((l) => l.includes("assistant>")));
+    check(
+      "a turn draws no blank lines inside itself",
+      !body.slice(0, -1).some((l) => l.trim() === ""),
+      JSON.stringify(body.map((l) => l.slice(0, 24))),
+    );
+    // The round that only called a tool: its label shares the prompt's line rather than sitting
+    // under a dangling `assistant>`.
+    // EVERY round, not just the first: the erasure only hit the streamed round, so checking one
+    // line passed while the bug was on screen. A label must never begin a line — a line starting
+    // with `[` is one whose `assistant> ` was wiped by the status redraw.
+    const orphaned = body.filter((l) => l.startsWith("["));
+    check("…and no round's label lost its prompt to the redraw", orphaned.length === 0, JSON.stringify(orphaned));
+
     const t3 = (await admin.query({ kind: "message", match: { conversationId: c3 } }, 50, { dir: "asc" }))
       .map((r) => (r.body as { role?: string }).role);
     check("the REAL client runs a turn it does not drive", t3.join(",") === "system,user,assistant,tool,assistant", t3.join(","));

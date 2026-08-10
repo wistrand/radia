@@ -172,16 +172,21 @@ export class RadiaClient {
   private exchange(): Promise<void> {
     this.exchanging ??= (async () => {
       try {
-        const { runToken } = await this.rawReq("POST", "/v0/agent-runs", {}, {
+        const { run, runToken } = await this.rawReq("POST", "/v0/agent-runs", {}, {
           "Authorization": `Bearer ${this.auth.definitionToken}`,
-        }) as { runToken: string };
+        }) as { run: string; runToken: string };
         this.auth.token = runToken;
+        this.runId = run;
       } finally {
         this.exchanging = null;
       }
     })();
     return this.exchanging;
   }
+
+  /** The run this client is acting as, learned from its own exchange. Undefined for a client built
+   *  on a plain token (an operator, or a run token minted elsewhere), which never exchanges. */
+  private runId?: string;
 
   /**
    * Make sure this client holds a usable run token, minting one if it has only the durable half.
@@ -267,27 +272,31 @@ export class RadiaClient {
    * prospective topology queryable. It is DESCRIPTIVE and grants nothing; the grant records still
    * decide what may be claimed.
    *
-   * Content-keyed, so republishing an unchanged interest writes nothing. Retiring and re-declaring
-   * works because the key anchors on the retirement it supersedes, the same shape `grant()` uses.
+   * THE KEY IS SCOPED TO THE RUN, not only to the content. Idempotency keys scope to the AGENT
+   * behind a run, so a content-only key made a restarted worker's publish REPLAY its dead
+   * predecessor's write: no record existed under the new run, and the registry — which keys entries
+   * by author and drops dead runs — showed no listener for anything the fleet re-announced. Every
+   * routing view of a lived-in space went empty on the first restart inside the idempotency window,
+   * and no suite saw it, because suites run on fresh spaces with nothing to replay against. A
+   * run-scoped key writes once per run and pattern, which is the registry's own granularity, and it
+   * makes revival across restarts free: a new run's key is new, so no revive anchor (and no
+   * registry-wide read to compute one) is needed.
+   *
+   * Within ONE run, publish → retire → publish leaves the interest retired: the second publish
+   * replays the first, and the tombstone stays newest. No shipped caller does this; one that needs
+   * it can `put` the record with its own key.
    */
   async publishInterest(pattern: Pattern, opts: { retired?: boolean } = {}): Promise<{ id: string }> {
     const body: Record<string, unknown> = { kind: pattern.kind };
     if (pattern.match && Object.keys(pattern.match).length > 0) body.match = pattern.match;
     if (opts.retired) body.retired = true;
+    // Exchange BEFORE computing the key, or the first publish of a fresh client would key itself
+    // to no run and then write under one. "self" covers callers with no run to name: an operator's
+    // author never rolls, so a content-stable key is correct for them.
+    await this.ensureCredential();
+    const scope = this.runId ?? "self";
     const identity = `${pattern.kind}|${JSON.stringify(pattern.match ?? null)}`;
-    let key = `interest:${opts.retired ? "retire:" : ""}${identity}`;
-    try {
-      const rows = await this.queryAll({ kind: "interest", match: { kind: pattern.kind } });
-      const mine = rows.filter((r) => {
-        const b = r.body as { kind?: string; match?: unknown };
-        return b.kind === pattern.kind && JSON.stringify(b.match ?? null) === JSON.stringify(pattern.match ?? null);
-      });
-      const supersedes = mine.find((r) => isRetired(r.body) !== !!opts.retired);
-      if (supersedes) key += `:after:${supersedes.id}`;
-    } catch {
-      // No grant to read the registry: fall back to the plain key rather than failing the loop.
-    }
-    return this.put({ kind: "interest", body }, key);
+    return this.put({ kind: "interest", body }, `interest:${opts.retired ? "retire:" : ""}${scope}:${identity}`);
   }
 
   /** One read that orients an investigator: kinds and their indexed paths, record counts, who is

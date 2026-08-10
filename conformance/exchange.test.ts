@@ -314,3 +314,45 @@ Deno.test("[exchange] an idempotency key survives a re-mint: the scope is the AG
     await s.close();
   }
 });
+
+Deno.test("[exchange] a restarted worker's interest survives its predecessor's idempotency window", async () => {
+  // THE RESTART SHAPE no fresh-space suite can see. Idempotency keys scope to the AGENT behind a
+  // run, so a content-only interest key made a restarted worker's publish replay its dead
+  // predecessor's write: no record under the new run, and the interest registry — keyed by author,
+  // live only while the author-run is — showed no listener at all. On a lived-in space every
+  // routing view went empty at the first restart inside the idempotency window (7 days), while
+  // every suite stayed green on spaces with nothing to replay against.
+  const s = await newSpace();
+  try {
+    const { definitionToken } = await s.space.createAgentDefinition("agent:listener", [
+      { principal: "agent:listener", kind: "task", operations: ["take"] },
+      { principal: "agent:listener", kind: "interest", operations: ["put"] },
+    ]);
+
+    // Session 1 announces, then dies the way a crashed or aged-out worker does: run stopped,
+    // interest record left behind (a crash never runs the retirement path, by design).
+    const first = new RadiaClient(s.base, { definitionToken });
+    await first.publishInterest({ kind: "task", match: { tag: "hot" } });
+    const run1 = ((await s.space.query({ kind: "agent_run", match: { agent: "agent:listener" } }, 5, { dir: "desc" }))[0]
+      ?.body as { run?: string }).run!;
+    await s.space.stopRun(run1);
+
+    // Session 2: same agent, same durable half, same pattern — a plain restart.
+    const second = new RadiaClient(s.base, { definitionToken });
+    await second.publishInterest({ kind: "task", match: { tag: "hot" } });
+
+    // The publish must be a WRITE under the new run, not a replay of the dead one's.
+    const recs = await s.space.query({ kind: "interest", match: { kind: "task" } }, 10);
+    assertEquals(recs.length, 2, "each run announces under its own author, so a restart writes");
+    const authors = new Set(recs.map((r) => r.runtimeMeta.createdBy));
+    assertEquals(authors.size, 2, "two runs, two authors");
+
+    // And the registry agrees: the listener is LIVE after the restart.
+    const d = await s.space.digest("local:test");
+    const row = d.interests.find((i) => i.kind === "task" && i.agent === "agent:listener");
+    assert(row, `a restarted worker is a live listener, not a ghost: ${JSON.stringify(d.interests)}`);
+    assertEquals(row!.runs, 1, "…counted under its live run only; the dead one is dropped");
+  } finally {
+    await s.close();
+  }
+});

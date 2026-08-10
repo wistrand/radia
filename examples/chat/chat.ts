@@ -49,7 +49,7 @@ import { ToolSet } from "./client/turn.ts";
 import { Thread } from "./client/thread.ts";
 import { cancelTurn, runTurn, TurnCancelled } from "./client/turn.ts";
 import { watchWakeups } from "./client/waiting.ts";
-import { dim, endStatus, lineReader, notice, releaseTerminal, showStatus, watchCancel, write } from "./client/terminal.ts";
+import { dim, endStatus, holdLine, lineReader, notice, releaseTerminal, showStatus, tty, watchCancel, write } from "./client/terminal.ts";
 import { reviewGrantRequests } from "./client/grants.ts";
 import { clipboardReader, missingClipboardTool, readClipboard } from "./client/clipboard.ts";
 import { staging } from "./client/attachments.ts";
@@ -239,7 +239,21 @@ Deno.addSignalListener("SIGINT", () => {
 // "clipboard" (exactly 9) printed as `clipboardwl-paste`, and every future label of that length
 // would have done the same.
 const field = (k: string, v: string) => write(`  ${dim(`${k} `.padEnd(9))}${v}\n`);
-write(`\nradia chat  ${dim("·")}  ${owner}${privileged ? dim("  (operator)") : ""}\n`);
+// HELD until the last field. The fleet is already running by now (it has to be: `tools` reports
+// what it advertised), and a worker's boot line is an idle-line notice, so it printed BETWEEN two
+// fields and split the block it was aligned to be read as. Held, the fleet's lines arrive together
+// underneath it, still in order and still labelled.
+holdLine(true);
+// THE MARK IS THE FAVICON (docs/favicon.svg): a record claimed out of a space — three waiting,
+// one taken. Same four cells, drawn in text instead of SVG, so the terminal and the browser tab
+// say the same thing; no colour, the filled cell carries the meaning. On a TERMINAL only: piped
+// output keeps the one greppable line below, byte for byte what it always was.
+if (tty) {
+  const who = `radia chat  ${dim("·")}  ${owner}${privileged ? dim("  (operator)") : ""}`;
+  write(`\n  ╭─╮ ╭─╮\n  ╰─╯ ╰─╯   ${who}\n  ╭─╮ ▟█▙\n  ╰─╯ ▜█▛\n`);
+} else {
+  write(`\nradia chat  ${dim("·")}  ${owner}${privileged ? dim("  (operator)") : ""}\n`);
+}
 field("space", `${url}${usingRunning ? dim(" existing") : dim(` spawned, ${spaceDb}`)}`);
 field("tiers", Object.entries(TIERS).map(([t, m]) => `${t}=${m}`).join("  "));
 field("files", toolRoots.join(", "));
@@ -252,6 +266,9 @@ try {
     ? await Thread.resume(session, conversation.id, { principal: owner, privileged })
     : await Thread.open(session, { principal: owner, privileged }, conversation.id);
 } catch (e) {
+  // Release the banner hold FIRST: the fleet's boot lines are queued behind it, and one of them is
+  // often the actual reason this failed (a worker refusing to serve, a space gone away).
+  holdLine(false);
   console.error(`could not resume: ${e}`);
   cleanup();
   Deno.exit(1);
@@ -297,6 +314,7 @@ field("tools", tools.all().length > 0 ? `${tools.all().length} discovered` : dim
 const clipboard = await clipboardReader();
 field("paste", clipboard ? `${clipboard}  ${dim("Ctrl-V attaches an image, a PDF or a copied file")}` : dim("no reader (wl-paste / xclip / pngpaste); Ctrl-V does nothing"));
 write(dim("\n  Ctrl-D to quit, Escape to cancel a turn.\n"));
+holdLine(false); // and whatever the fleet said while the banner was printing lands now, in order
 
 /** Store bytes as an artifact of this conversation and return the marker that goes in the message. */
 async function attach(bytes: Uint8Array, mediaType: string, filename: string): Promise<string> {

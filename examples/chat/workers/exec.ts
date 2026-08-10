@@ -566,7 +566,7 @@ let confine: "bubblewrap" | "sandbox-exec" | undefined;
     // execution too, so serving them while declining `run_javascript` would honour the letter of
     // this and none of its intent.
     console.error(
-      "exec worker: REFUSING to serve. --require-confinement is set and no confiner holds on this " +
+      "REFUSING to serve. --require-confinement is set and no confiner holds on this " +
         `host (${confinedFailed.map((f) => `${f.claim}: ${f.detail}`).join("; ")}). ` +
         "Install bubblewrap (Linux, WSL2), run on macOS, or drop the flag to accept an unconfined jail.",
     );
@@ -581,7 +581,7 @@ let confine: "bubblewrap" | "sandbox-exec" | undefined;
   const failed = confine ? [] : await verifySandbox(js, { readRoots, timeoutMs, networkTarget });
   if (failed.length > 0) {
     console.error(
-      "exec worker: refusing to serve. The Deno jail does not match its declaration: " +
+      "refusing to serve. The Deno jail does not match its declaration: " +
         failed.map((f) => `${f.claim} (${f.detail})`).join(", "),
     );
     Deno.exit(1);
@@ -592,8 +592,8 @@ let confine: "bubblewrap" | "sandbox-exec" | undefined;
   await declareSandbox(client, js);
   console.error(
     confine
-      ? `exec worker: JavaScript runs CONFINED (${confine} over the Deno jail); module loading is bounded`
-      : "exec worker: JavaScript runs UNCONFINED (no usable confiner). Module loading is not bounded by " +
+      ? `JavaScript runs CONFINED (${confine} over the Deno jail); module loading is bounded`
+      : "JavaScript runs UNCONFINED (no usable confiner). Module loading is not bounded by " +
         "the read permission, so any JSON this user can read is reachable from the sandbox: " +
         `${confinedFailed.map((f) => f.claim).join(", ")}. See agent_docs/plan-jail-confinement.md`,
   );
@@ -626,8 +626,8 @@ let confine: "bubblewrap" | "sandbox-exec" | undefined;
     const unavailable = pyFailed.length === 1 && pyFailed[0].claim === "backend";
     console.error(
       unavailable
-        ? "exec worker: run_python unavailable on this host (no bwrap), serving run_javascript only"
-        : `exec worker: REFUSING to serve run_python, its jail does not match its declaration: ${
+        ? "run_python unavailable on this host (no bwrap), serving run_javascript only"
+        : `REFUSING to serve run_python, its jail does not match its declaration: ${
           pyFailed.map((f) => `${f.claim} (${f.detail})`).join(", ")
         }`,
     );

@@ -139,7 +139,10 @@ export function heuristicIndex(text: string, n: number, toolCalls: number): numb
     text.length > 400 ||
     toolCalls >= 3 // a synthesis round after this much tool work is not the turn the question looked like
   ) return hard;
-  if (text.length <= 40 && !/\b(code|explain|compare|design|plan|why|count|list)\b/.test(t)) return 0;
+  // Ranking words keep a SHORT question out of the small-talk band: "which call used most tokens"
+  // is 27 characters and reads as a lookup, but answering it means composing ranked queries, which
+  // the cheapest tier reliably fabricates instead of doing.
+  if (text.length <= 40 && !/\b(code|explain|compare|design|plan|why|count|list|most|fewest|biggest|largest|total|average|rank|top)\b/.test(t)) return 0;
   return Math.floor((n - 1) / 2);
 }
 
@@ -189,8 +192,10 @@ async function classifyLLM(text: string, toolCalls: number, tiers: string[], c: 
     `Cost rises steeply along that list and the top tier is the most expensive by a wide margin, so ` +
     `it has to EARN the choice; when two tiers would both do, pick the cheaper. ` +
     `Reply with EXACTLY one tier word, nothing else. Guide: the cheapest tier for greetings, small ` +
-    `talk, lookups, and straightforward edits; a middle tier for ordinary explanation, planning, and ` +
-    `most code; the SECOND-MOST capable tier for genuinely hard reasoning, subtle debugging, proofs, ` +
+    `talk, lookups, and straightforward edits; a middle tier for ordinary explanation, planning, most ` +
+    `code, and anything that RANKS, COUNTS or AGGREGATES stored records (a "which X was biggest" ` +
+    `question needs queries composed correctly, which is not a lookup); the SECOND-MOST capable tier ` +
+    `for genuinely hard reasoning, subtle debugging, proofs, ` +
     `or design with real trade-offs; the most capable tier ONLY when a turn is harder still — the ` +
     `rare problem where a strong model would plausibly get it wrong.`;
   // Reading tool results is NORMAL work, so this says what happened and not that it was hard.
