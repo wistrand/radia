@@ -86,8 +86,8 @@ export const resume = arg("--conversation") ?? Deno.env.get("RADIA_CHAT_RESUME")
  *  its worker advertises, and nothing in this client changes. */
 export const TIERS: Record<string, string> = {
   fast: Deno.env.get("RADIA_CHAT_MODEL_FAST") ?? "openai/gpt-4o-mini",
-  balanced: Deno.env.get("RADIA_CHAT_MODEL_BALANCED") ?? "anthropic/claude-sonnet-5",
-  deep: Deno.env.get("RADIA_CHAT_MODEL_DEEP") ?? "anthropic/claude-opus-5",
+  balanced: Deno.env.get("RADIA_CHAT_MODEL_BALANCED") ?? "openai/gpt-5.6-luna",
+  deep: Deno.env.get("RADIA_CHAT_MODEL_DEEP") ?? "anthropic/claude-sonnet-5",
 };
 
 /** The router classifies each turn with this cheap model, as an `llm_call` served by the fleet,

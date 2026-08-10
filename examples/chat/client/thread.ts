@@ -91,8 +91,15 @@ export class Thread {
     this.nextIndex = Math.max(this.nextIndex, index + 1);
   }
 
-  async append(msg: OutgoingMessage, parentIds: string[] = []): Promise<void> {
-    await this.client.put({
+  /** The message this client appended most recently. A turn hangs off it, so the waterfall for a
+   *  turn starts where the person asked rather than at the conversation. */
+  get lastAppended(): string | undefined {
+    return this.lastId;
+  }
+  private lastId: string | undefined;
+
+  async append(msg: OutgoingMessage, parentIds: string[] = []): Promise<string> {
+    const { id } = await this.client.put({
       kind: "message",
       // `owner` is the identity binding a grant can scope on, and it is stamped even when the
       // session is scoped by conversation instead: a record that carries both can be read under
@@ -102,6 +109,8 @@ export class Thread {
       body: { conversationId: this.id, owner: sessionOwner(), index: this.nextIndex++, ...msg },
       parentIds: [this.id, ...parentIds],
     });
+    this.lastId = id;
+    return id;
   }
 }
 

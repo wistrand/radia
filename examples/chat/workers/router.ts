@@ -170,16 +170,22 @@ await agentLoop(client, {
   name: "router",
   patterns: [{ kind: "llm_call", match: { tier: { $exists: false } } }],
   handle: async (rec, c) => {
-    const body = rec.body as { conversationId?: string; upToIndex?: number; turnAt?: number; round?: number };
+    const body = rec.body as { conversationId?: string; owner?: string; upToIndex?: number; turnAt?: number; round?: number };
     // Report the claim before the classifier round-trip. It is the first sign of life the chat
     // gets, and with a classifier in the path there is now a visible gap to explain.
-    await progress(c, { conversationId: body.conversationId, callId: rec.id, stage: "routing", by: ME }, [rec.id]);
+    //
+    // `owner` IS REQUIRED, not decoration. The default session scope is by identity, so a grant
+    // pattern of `{owner}` narrows away every progress record that omits it — silently, since a
+    // narrowed answer is not an error. Without it the chat never saw the router at all: no routing
+    // label, no liveness signal to hold off its deadline, and a timeout that blamed a missing fleet
+    // for a call the router had already claimed and re-dispatched.
+    await progress(c, { conversationId: body.conversationId, owner: body.owner, callId: rec.id, stage: "routing", by: ME }, [rec.id]);
     const tiers = await liveTiers(c);
     if (tiers.length === 0) throw new Error("no `model` record advertised yet");
     const { text, toolCalls } = await currentTurn(c, body.conversationId, body.upToIndex ?? 0);
     const chosen = (await classifyLLM(text, toolCalls, tiers, c)) ?? tiers[heuristicIndex(text, tiers.length, toolCalls)];
     const tier = await capToTurn(c, body, tiers, chosen);
-    await progress(c, { conversationId: body.conversationId, callId: rec.id, stage: "routed", by: ME, note: `→ ${tier}` }, [rec.id]);
+    await progress(c, { conversationId: body.conversationId, owner: body.owner, callId: rec.id, stage: "routed", by: ME, note: `→ ${tier}` }, [rec.id]);
     return { kind: "llm_call", body: { ...body, tier, replyTo: rec.id } };
   },
 });

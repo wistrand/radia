@@ -137,12 +137,16 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     // error, fix, rerun, and every attempt used to parent to the conversation, so eight tries were
     // eight siblings with no ordering. Sortable on `attempt` so a chain reads in the order it
     // happened rather than in id order, which is the same thing until a retry crosses a second.
+    // `turnAt` is DECLARED because the dispatcher already writes it (`extensions/ts/turn.ts`), and a
+    // field a body carries but its kind does not declare is invisible to matching: "the tool calls
+    // of this turn" was rejected as `undeclared_path` rather than answered.
     indexedPaths: [
       { path: "tool", type: "keyword" },
       { path: "conversationId", type: "keyword" },
       { path: "owner", type: "keyword" },
       { path: "attempt", type: "integer" },
       { path: "retryOf", type: "keyword" },
+      { path: "turnAt", type: "integer" },
     ],
     sortablePaths: ["attempt"],
   });

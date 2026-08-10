@@ -248,9 +248,15 @@ export async function runTurnWorker(
     return { tools: body?.tools ?? [], turnAt: body?.turnAt, deadlineAt: rows[0]?.deadlineAt };
   };
 
-  /** Emit the call for `calls[i]`, naming the slot its reply lands in. */
+  /** Emit the call for `calls[i]`, naming the slot its reply lands in.
+   *
+   *  `askedBy` is the assistant message that requested the call, and it is the PARENT rather than
+   *  the conversation. Parenting a round to the conversation makes every round a stub hanging off
+   *  one hub, so a turn has no subtree to open and nothing to mine: measured at 83 of 185 records
+   *  in one live conversation naming the conversation directly. */
   const dispatch = async (
     m: TurnMessage,
+    askedBy: string,
     turnAt: number | undefined,
     calls: ToolCall[],
     i: number,
@@ -273,7 +279,7 @@ export async function runTurnWorker(
         round,
         turnAt,
       },
-      parentIds: [m.conversationId!],
+      parentIds: [askedBy],
     }, key);
   };
 
@@ -282,6 +288,8 @@ export async function runTurnWorker(
     if (!m.conversationId) return; // an inline call's answer belongs to no conversation
     const key = `turn:${id}`;
     const round = m.round ?? 0;
+    // Every link below parents to the record that CAUSED it (`id`), never to the conversation, so
+    // the turn is one subtree and `?direction=down` from its head is exactly this turn.
     const done = async (why: string) =>
       await client.put({
         kind: TURN_COMPLETE,
@@ -292,7 +300,7 @@ export async function runTurnWorker(
           turnAt: (await currentCall(m.conversationId!)).turnAt,
           why,
         },
-        parentIds: [m.conversationId!],
+        parentIds: [id],
       }, key);
 
     if (m.role === "assistant") {
@@ -301,7 +309,7 @@ export async function runTurnWorker(
       if (round >= maxRounds) return void await done("round_cap");
       // Replies occupy one slot each after the assistant message, so every slot in the round is
       // known here and no writer coordinates on a counter.
-      return await dispatch(m, m.turnAt, calls, 0, (m.index ?? 0) + 1, round, key);
+      return await dispatch(m, id, m.turnAt, calls, 0, (m.index ?? 0) + 1, round, key);
     }
 
     if (m.role === "tool") {
@@ -315,7 +323,9 @@ export async function runTurnWorker(
         const calls = (assistant?.body as TurnMessage | undefined)?.tool_calls ?? [];
         // Unreadable or disagreeing: stall visibly rather than dispatch a call nobody asked for.
         if (calls.length <= i + 1) return;
-        return await dispatch(m, m.turnAt, calls, i + 1, (m.index ?? 0) + 1, round, key);
+        // Parented to the assistant message, not to the sibling reply that woke this: a round reads
+        // as one fan of calls, which is what was asked for, rather than a staircase.
+        return await dispatch(m, assistant!.id, m.turnAt, calls, i + 1, (m.index ?? 0) + 1, round, key);
       }
       if (round + 1 >= maxRounds) return void await done("round_cap");
       const call = await currentCall(m.conversationId);
@@ -331,7 +341,7 @@ export async function runTurnWorker(
         },
         // The turn's deadline travels with it: the same turn, worth what the client said it was.
         ...(call.deadlineAt ? { deadlineAt: call.deadlineAt } : {}),
-        parentIds: [m.conversationId],
+        parentIds: [id],
       }, key);
     }
   };

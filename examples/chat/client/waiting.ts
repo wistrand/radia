@@ -132,17 +132,40 @@ export class Waiter {
         this.last = r.body as ProgressBody; // ULID order = emission order, so the last one wins
         this.onProgress?.(this.last);
       }
-    } catch { /* no grant to read progress: fall through to the elapsed-only status */ }
+    } catch (e) {
+      // Remembered, not just swallowed. "I looked and saw nothing" and "I was not allowed to look"
+      // are different facts, and reporting the second as the first is how a timeout came to blame a
+      // missing fleet for a call the router had claimed six seconds in.
+      this.blind = e instanceof Error ? e.message : String(e);
+    }
     if (force) return; // the caller is about to print; drawing a status line over it is noise
     const secs = Math.round((Date.now() - this.started) / 1000);
     if (this.last) showStatus(this.prefix, `${describe(this.last)} · ${secs}s`);
+    else if (this.blind) showStatus(this.prefix, `waiting · ${secs}s (progress unreadable)`);
     else if (Date.now() - this.started > STALL_MS) showStatus(this.prefix, `${stallHint} · ${secs}s`);
     else showStatus(this.prefix, `waiting · ${secs}s`);
   }
 
-  /** The error to raise when the deadline passes: name the last stage reached, or the stall. */
+  /** Why this waiter cannot see progress records, when it cannot. */
+  private blind?: string;
+
+  /**
+   * The error to raise when the deadline passes: name the last stage reached, or the stall.
+   *
+   * THREE outcomes, because there are three states and conflating two of them misdirects whoever
+   * reads the message: a stage was seen (slow), nothing was seen (nobody claimed it), or progress
+   * could not be read at all, in which case this waiter knows nothing about who claimed what and
+   * must say so instead of guessing.
+   */
   timeout(stallHint: string, slowHint: string): Error {
     endStatus(this.prefix);
-    return new Error(this.last ? `${slowHint} after '${this.last.stage}' (${this.last.by})` : `timed out: ${stallHint}`);
+    if (this.last) return new Error(`${slowHint} after '${this.last.stage}' (${this.last.by})`);
+    if (this.blind) {
+      return new Error(
+        `timed out. Whether a worker claimed this is UNKNOWN: reading progress records failed (${this.blind}), ` +
+          `so this session cannot see the fleet. Check the grant on 'progress' before blaming the workers.`,
+      );
+    }
+    return new Error(`timed out: ${stallHint}`);
   }
 }

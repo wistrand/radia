@@ -247,7 +247,9 @@ export async function handleGraph(space: Space, recordId: string, url: URL, scop
   if (!await visible(space, recordId, scope)) return problem(404, "not_found", `no record ${recordId}`);
   const excludeParam = url.searchParams.get("exclude");
   const excludeKinds = new Set((excludeParam ?? "").split(",").map((s) => s.trim()).filter(Boolean));
-  const graph = await space.getGraph(recordId, { excludeKinds, createdBy: scope?.createdBy });
+  // Anything but the explicit "down" is the both-ways default, so an unknown value narrows nothing.
+  const direction = url.searchParams.get("direction") === "down" ? "down" as const : "both" as const;
+  const graph = await space.getGraph(recordId, { excludeKinds, direction, createdBy: scope?.createdBy });
   if (!graph.nodes.length) return problem(404, "not_found", `no record ${recordId}`);
   return Response.json({ ...graph, scope: describeScope(scope) });
 }

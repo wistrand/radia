@@ -1560,14 +1560,22 @@ paths:
     get:
       operationId: graph
       summary: The parent_ids relationship graph around a record (dev console)
-      description: "BFS over parents and children; `?exclude=kind,kind` skips noisy kinds (e.g. llm_chunk)."
+      description: >-
+        BFS over parents and children; `?exclude=kind,kind` skips noisy kinds (e.g. llm_chunk).
+        `?direction=down` walks children only, which is what separates one sub-thread from the
+        siblings it shares a hub record with. `truncated` reports that the node cap was reached.
       x-stability: experimental
       parameters:
         - { name: recordId, in: path, required: true, schema: { type: string } }
         - { name: exclude, in: query, required: false, schema: { type: string } }
+        - name: direction
+          in: query
+          required: false
+          description: "`down` = descendants only. Anything else is the both-ways default."
+          schema: { type: string, enum: [both, down] }
       responses:
         "200":
-          description: "{nodes, edges}"
+          description: "{nodes, edges, truncated}"
           content:
             application/json:
               schema:
@@ -1587,6 +1595,9 @@ paths:
                     items:
                       type: object
                       properties: { from: { type: string }, to: { type: string } }
+                  truncated:
+                    type: boolean
+                    description: The node cap was hit; more of this graph exists than is shown.
         "404": { $ref: "#/components/responses/Problem" }
 
 components:

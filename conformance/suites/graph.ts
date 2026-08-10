@@ -106,6 +106,45 @@ export const graphSuites: Suite[] = [
       const graph = await space.getGraph(root, { maxNodes: 25 });
       assert(graph.nodes.length <= 25, `node cap held: ${graph.nodes.length}`);
       assert(graph.nodes.some((n) => n.id === root), "the root is in the graph");
+      // The cap is only honest if it SAYS so. A capped graph drawn without this reads as the whole
+      // story, which is the bounded-read-as-population trap in a picture instead of a list.
+      assertEquals(graph.truncated, true, "a capped walk reports that more exists");
+      assertEquals(
+        (await space.getGraph(root, { maxNodes: 500 })).truncated,
+        false,
+        "and a complete one does not",
+      );
+    },
+  },
+  {
+    name: "a descendants-only walk separates one thread from the siblings it shares a hub with",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      // The shape every conversation, batch and fan-out has: one hub, N threads under it. Seeded
+      // anywhere inside a thread, the both-ways walk climbs to the hub and comes back down into
+      // every OTHER thread, so "show me this one" is unanswerable without a direction.
+      const { id: hub } = await space.put({ kind: "task", body: { tag: "hub" } });
+      const heads: string[] = [];
+      for (let t = 0; t < 3; t++) {
+        const { id: head } = await space.put({ kind: "task", body: { thread: t }, parentIds: [hub] });
+        const { id: mid } = await space.put({ kind: "task", body: { thread: t, step: 1 }, parentIds: [head] });
+        await space.put({ kind: "task", body: { thread: t, step: 2 }, parentIds: [mid] });
+        heads.push(head);
+      }
+
+      const down = await space.getGraph(heads[0], { direction: "down" });
+      assertEquals(down.nodes.length, 3, "the head and its two descendants, and nothing else");
+      assert(!down.nodes.some((n) => n.id === hub), "it does not climb to the hub");
+      for (const other of heads.slice(1)) {
+        assert(!down.nodes.some((n) => n.id === other), "and so cannot reach a sibling thread");
+      }
+      // The inbound edge is still drawn: the head has a parent, and hiding that would misreport the
+      // shape rather than narrow it. It is dropped only because the hub is not in view.
+      assert(!down.edges.some((e) => e.from === hub), "an edge to a node out of view is dropped");
+
+      // The counterexample, so the assertions above are not passing for an unrelated reason.
+      const both = await space.getGraph(heads[0]);
+      assertEquals(both.nodes.length, 10, "the default walk returns the hub and all three threads");
     },
   },
   {

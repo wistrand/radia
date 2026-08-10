@@ -105,6 +105,15 @@ a restart, since the retry arrives under a fresh `run:*`. Keys now scope to the 
 run, so the emission is exactly-once across restarts AND across two REPLs, whose turn workers share
 one identity.
 
+**Every link parents to the record that CAUSED it, never to the conversation.** The conversation is
+a hub: parented to it, each round is a stub hanging off one node, so a turn has no subtree to open
+and `getGraph` from any member returns every turn in the thread. Measured before the fix at 83 of
+185 records naming the conversation directly. Now the seed `llm_call` parents to the user message,
+a `tool_call` to the assistant message that asked for it, the next round to the tool reply that
+completed the last, and `turn_complete` to the message that ended it. So `graph?direction=down` on
+a turn's seed is exactly that turn. Guard: `smoke-turnlink.ts`, "a turn's every record is reachable
+from its seed" (planted red: 6-8 of every turn's records unreachable).
+
 ## What the worker reacts to, today
 
 NOT A CONTRACT, and worth saying because the table below looks like one. Nothing enforces it, no

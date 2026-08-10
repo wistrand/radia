@@ -94,7 +94,8 @@ import {
   SEAL_BATCH,
   type SealKey,
 } from "./seal.ts";
-import { CHAIN_GENESIS, eventHash, RESERVED_KINDS } from "../../sdk/ts/wire.ts";
+import { CHAIN_GENESIS, eventHash, type GraphNode, RESERVED_KINDS } from "../../sdk/ts/wire.ts";
+export type { GraphNode };
 
 export interface SpaceContext {
   principal: string;
@@ -267,15 +268,6 @@ export interface ReadAccess {
   /** The allowlist the GRANTS impose, if they all impose one. Distinct from the caller's own
    *  `allowTaint`: this one the principal cannot decline. */
   allowTaint?: string[];
-}
-
-export interface GraphNode {
-  id: string;
-  kind: string;
-  label: string;
-  createdAt: string;
-  taint: string[]; // classification labels (see design-taint.md)
-  delegated: number; // delegation-chain length (0 = root/operator work)
 }
 
 export interface EffectivePermissions {
@@ -1867,12 +1859,20 @@ export class Space {
    * The relationship graph around a record: BFS over parents (lineage up) and children
    * (records that reference it), returning nodes + parent→child edges for a diagram.
    * `excludeKinds` skips noisy kinds (e.g. llm_chunk streaming records).
+   *
+   * `direction: "down"` walks children ONLY, which is what makes a sub-thread separable: from a hub
+   * record every member of every sibling thread is two hops away, so the default both-ways walk
+   * returns the hub's whole component whichever member you seed it with.
+   *
+   * `truncated` says the node cap was hit. A capped graph rendered without it reads as the whole
+   * story: a live 346-record conversation displayed as 150 nodes with nothing saying so.
    */
   async getGraph(
     recordId: string,
-    opts: { maxNodes?: number; excludeKinds?: Set<string>; createdBy?: string[] } = {},
-  ): Promise<{ nodes: GraphNode[]; edges: { from: string; to: string }[] }> {
+    opts: { maxNodes?: number; excludeKinds?: Set<string>; createdBy?: string[]; direction?: "both" | "down" } = {},
+  ): Promise<{ nodes: GraphNode[]; edges: { from: string; to: string }[]; truncated: boolean }> {
     const maxNodes = opts.maxNodes ?? 150;
+    const down = opts.direction === "down";
     const exclude = opts.excludeKinds ?? new Set<string>();
     const nodes = new Map<string, RadiaRecord>();
     const edges: { from: string; to: string }[] = [];
@@ -1897,8 +1897,10 @@ export class Space {
       if (!this.authorAllows(opts.createdBy, rec)) continue;
       nodes.set(id, rec);
       for (const pid of rec.runtimeMeta.parentIds) {
+        // The edge is recorded either way — it is dropped below unless both ends are in view — so a
+        // descendants-only walk still draws the seed's own inbound edge rather than orphaning it.
         addEdge(pid, id);
-        if (!seen.has(pid)) queue.push(pid);
+        if (!down && !seen.has(pid)) queue.push(pid);
       }
       // Bounded per node: the node cap below limits how many records the graph SHOWS, not how many
       // this reads, so an unbounded fan-out here would materialize a whole subtree to enqueue it.
@@ -1910,6 +1912,8 @@ export class Space {
     }
     const nodeIds = new Set(nodes.keys());
     return {
+      // Hitting the cap is the honest signal; an empty queue means the walk finished.
+      truncated: nodes.size >= maxNodes && queue.length > 0,
       nodes: [...nodes.values()].map((r) => ({
         id: r.id,
         kind: r.kind,

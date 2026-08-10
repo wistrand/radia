@@ -498,6 +498,96 @@ try {
     check("…leaving one terminus per turn, each naming its own", termini.length === 3, `${termini.length} turn_complete`);
     const at = (termini as { body: { turnAt?: number } }[]).map((t) => t.body.turnAt).sort((a, b) => (a ?? 0) - (b ?? 0));
     check("…and they name DIFFERENT turns", new Set(at).size === 3, JSON.stringify(at));
+
+    // A TURN IS A SUBTREE, which is what makes one turn openable on its own. Every link parents to
+    // the record that caused it, so descending from a turn's seed `llm_call` reaches that turn and
+    // stops. Parented to the conversation instead, each round is a stub off one hub and the walk
+    // from any member returns every turn in the conversation: measured live at 83 of 185 records
+    // naming the conversation directly, and a 346-record thread rendered as a capped 150.
+    // WHAT A DEFAULT SESSION CAN SEE OF THE FLEET. This suite scopes by `conversationId`, and the
+    // chat's default is `identity` (`{owner}`) — the posture under which a worker that forgets to
+    // stamp `owner` becomes invisible, because a grant narrows the answer instead of failing. The
+    // router did exactly that: the chat never saw a routing record, so it had no liveness signal and
+    // its timeout blamed a missing fleet for a call the router had already claimed.
+    const byIdentity = new RadiaClient(url, { token: await mintSession(admin, "human:t", { owner: "human:t" }) });
+    const seenStages = new Set(
+      (await byIdentity.query({ kind: "progress", match: { conversationId: c3 } }, 100))
+        .map((r) => String((r.body as { stage?: string }).stage)),
+    );
+    for (const stage of ["routing", "routed", "generating"]) {
+      check(`an identity-scoped session sees '${stage}' progress`, seenStages.has(stage), [...seenStages].join(",") || "none");
+    }
+
+    const turnOf = (b: unknown) => (b as { turnAt?: number }).turnAt;
+    // Every record of the conversation that names a turn, by turn. Grouped client-side on purpose:
+    // this is the EXPECTATION the subtree is checked against, so deriving it from the same matching
+    // the feature relies on would let one bug satisfy both sides.
+    const byTurn = new Map<number, Set<string>>();
+    for (const kind of ["message", "llm_call", "tool_call", "turn_complete"]) {
+      for (const r of await admin.query({ kind, match: { conversationId: c3 } }, 200)) {
+        const t = turnOf(r.body);
+        if (t === undefined) continue;
+        (byTurn.get(t) ?? byTurn.set(t, new Set()).get(t)!).add(r.id);
+      }
+    }
+    // "the tool calls of THIS turn" is one indexed query, not a walk down children. It was rejected
+    // as `undeclared_path` until `turnAt` was declared on `tool_call`, though the dispatcher had
+    // been writing it all along: a body field its kind does not declare is invisible to matching.
+    for (const [t, ids] of byTurn) {
+      const viaQuery = await admin.query({ kind: "tool_call", match: { conversationId: c3, turnAt: t } }, 50);
+      const viaBody = [...ids].length; // the grouping above already knows the answer
+      const expected = (await admin.query({ kind: "tool_call", match: { conversationId: c3 } }, 200))
+        .filter((r) => turnOf(r.body) === t).length;
+      check(
+        `tool calls of turn ${t} are reachable by query`,
+        viaQuery.length === expected && expected > 0,
+        `${viaQuery.length} matched, ${expected} carry turnAt=${t} (of ${viaBody} records in the turn)`,
+      );
+    }
+
+    // The head of a turn is its FIRST untiered `llm_call`: the client's seed. Later rounds are
+    // untiered too (the router adds the tier), so they are grouped out by turnAt rather than by a
+    // round number, which `llm_call` does not declare as an indexed path.
+    const untiered = await admin.query(
+      { kind: "llm_call", match: { conversationId: c3, tier: { $exists: false } } },
+      50,
+      { dir: "asc" },
+    );
+    // FIRST per turn, and `new Map(entries)` would give the last: that picked each turn's final
+    // round as its head, whose subtree is legitimately just the closing answer.
+    const heads = new Map<number, typeof untiered[number]>();
+    for (const r of untiered) if (!heads.has(turnOf(r.body)!)) heads.set(turnOf(r.body)!, r);
+    const turnHeads = [...heads.values()];
+    check("each turn has one seed call", turnHeads.length === 3, `${turnHeads.length} seeds`);
+
+    let covered = 0, leaked = 0;
+    for (const seed of turnHeads) {
+      const mine = turnOf(seed.body)!;
+      const want = byTurn.get(mine) ?? new Set<string>();
+      const sub = await admin.graph(seed.id, { direction: "down", excludeKinds: ["llm_chunk", "progress"] });
+      const got = new Set(sub.nodes.map((n) => n.id));
+      // COVERAGE is the property, and it is the one that fails when a round parents to the
+      // conversation: descending from the seed then reaches round 0's call chain and stops, which
+      // an "is the subtree bigger than the seed" check happily passes.
+      const missing = [...want].filter((id) => !got.has(id));
+      if (missing.length === 0) covered++;
+      else {
+        const kinds = [];
+        for (const id of missing) {
+          const r = await admin.getRecord(id);
+          kinds.push(`${r?.kind}:${(r?.body as {role?: string}).role ?? ""}:${id.slice(-4)}<-[${(r?.runtimeMeta.parentIds ?? []).map((x) => x.slice(-4)).join(",")}]`);
+        }
+        // Parents are in the detail because they name the fault: every unreachable record pointing
+        // at the same id means the chain went back to the conversation instead of to its cause.
+        check(`turn ${mine} subtree is complete`, false, `${missing.length}/${want.size} unreachable: ${kinds.join(" ")}`);
+      }
+      for (const n of sub.nodes) {
+        const t = turnOf((await admin.getRecord(n.id))?.body);
+        if (t !== undefined && t !== mine) leaked++;
+      }
+    }
+    check("a turn's every record is reachable from its seed", covered === 3, `${covered}/3 turns are a complete subtree`);
+    check("…and no other turn's records are", leaked === 0, `${leaked} records leaked in from another turn`);
   } finally {
     turn.kill("SIGTERM");
     router.kill("SIGTERM");

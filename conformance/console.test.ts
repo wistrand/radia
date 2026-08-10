@@ -176,6 +176,15 @@ Deno.test("console: a pasted token is verified before it is stored", () => {
   assert(storeAt > verifyAt, "signIn() stores the token before verifying it");
 });
 
+Deno.test("console: Enter in the token box signs in", () => {
+  // The box is auto-focused and holds a pasted credential, so Enter is the keystroke that follows a
+  // paste. Without a handler it did nothing and the only way in was to reach for the mouse.
+  const box = html.match(/<input id="signin-token"[^>]*>/s);
+  assert(box, "the sign-in token input is gone");
+  assert(/onkeydown=/.test(box[0]), `no key handler on the token input: ${box[0]}`);
+  assert(/["']Enter["']/.test(box[0]) && /signIn\(\)/.test(box[0]), `Enter does not call signIn(): ${box[0]}`);
+});
+
 Deno.test("console: an expired token returns to sign-in, never reports 'offline'", () => {
   // `/v0/health` is public, but a PRESENTED token must still resolve, so a bad or expired one 401s
   // on the very endpoint that would otherwise prove the space is up. The console called that
@@ -260,7 +269,8 @@ function newRouter(hash: string) {
     ${ulidLine![0]}
     let lastWritten = "";
     const calls = [];
-    const inputs = { "fl-gran": {value:"kind+agent"}, "fl-counts": {value:"bucketed"}, "fl-min": {value:"1"} };
+    const inputs = { "fl-gran": {value:"kind+agent"}, "fl-counts": {value:"bucketed"}, "fl-min": {value:"1"},
+      "g-view": {value:"layers"}, "g-down": {checked:false} };
     const $ = (id) => inputs[id];
     const CSS = { escape: (s) => s.replace(/[^a-zA-Z0-9+_-]/g, "") };
     const buttons = ${JSON.stringify(tabs)}.map((t) => ({ dataset: { tab: t }, classList: { add(){}, remove(){} } }));
@@ -280,7 +290,7 @@ function newRouter(hash: string) {
     navigate: (t: string, id?: string) => void;
     applyRoute: () => void;
     calls: string[];
-    inputs: Record<string, { value: string }>;
+    inputs: Record<string, { value: string; checked?: boolean }>;
   };
 }
 
@@ -318,6 +328,21 @@ Deno.test("console: a knob from the URL is applied before the loader, and valida
   assertEquals(bad.inputs["fl-gran"].value, "kind+agent");
   assertEquals(bad.inputs["fl-counts"].value, "bucketed");
   assertEquals(bad.inputs["fl-min"].value, "1");
+
+  // The graph's direction is the same kind of knob, and it has to survive the link: "one turn" and
+  // "the whole conversation around it" are different claims rendered from the same record id, so a
+  // waterfall someone is sent must open as the one they were looking at.
+  const down = newRouter("#graph/01KZ6X7QXBSV7PS9A9WS8VT6EJ?view=waterfall&dir=down");
+  down.applyRoute();
+  assertEquals(down.inputs["g-view"].value, "waterfall");
+  assertEquals(down.inputs["g-down"].checked, true);
+
+  // Absent means the default, and it must be applied rather than left as whatever the last view
+  // set: a sticky checkbox would silently narrow the next graph someone opened.
+  const both = newRouter("#graph/01KZ6X7QXBSV7PS9A9WS8VT6EJ?view=waterfall");
+  both.inputs["g-down"].checked = true;
+  both.applyRoute();
+  assertEquals(both.inputs["g-down"].checked, false);
 });
 
 Deno.test("console: the route is applied INSIDE the sign-in gate, never at page load", () => {

@@ -259,6 +259,17 @@ export function kindDefKey(def: KindDef): string {
 // Event chain (tamper evidence)
 // ---------------------------------------------------------------------------
 
+/** One record in a relationship graph (`/v0/ops/records/{id}/graph`). A projection, not a record:
+ *  enough to draw and label a node, with the body fetched by id when a reader opens one. */
+export interface GraphNode {
+  id: string;
+  kind: string;
+  label: string;
+  createdAt: string;
+  taint: string[]; // classification labels (see design-taint.md)
+  delegated: number; // delegation-chain length (0 = root/operator work)
+}
+
 /** The predecessor of the first sealed event. */
 export const CHAIN_GENESIS = "0".repeat(64);
 

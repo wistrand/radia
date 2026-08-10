@@ -195,6 +195,17 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Registries, and reads that must not truncate
 
+- **`getGraph` walks parents AND children, so under a HUB record it returns every sibling thread**
+  (`src/core/space.ts`). Seeded inside one conversation turn it climbs one hop to the conversation
+  and fans back down into all of them, then stops at `maxNodes`: a live 346-record thread drew as
+  150 nodes with nothing saying so. Use `direction: "down"`, and read `truncated` — a capped graph
+  is a bounded read presented as a population, in a picture. It only separates a thread that IS a
+  subtree: see [[plan-chat-turn]] on parenting each link to its cause.
+  Guards: `conformance/suites/graph.ts`, `examples/chat/smoke-turnlink.ts`.
+- **`new Map(entries)` keeps the LAST value per key, not the first.** Grouping "the first record per
+  turn" that way silently selects each turn's final round, and the assertion built on it passed
+  against the very shape it was written to reject. Build the map with an explicit
+  `if (!m.has(k)) m.set(k, v)` whenever first-wins is the point.
 - **`listKinds()` does not list every kind.** It reads `kind_def` RECORDS, and NINE kinds are
   defined in code instead (`kind_def`, `grant`, `signal`, `agent_definition`, `agent_run`,
   `artifact`, `interest`, `shred`, `ops_grant`; see `RESERVED_KINDS`, which is the list — this
@@ -822,6 +833,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Grants, scopes and narrowed answers
 
+- **A worker's `progress` record must carry `owner`, or an identity-scoped session cannot see it**
+  (`examples/chat/workers/router.ts`). The chat's default scope is `{owner}`, and a grant pattern
+  NARROWS rather than errors, so the router's `routing`/`routed` records were filtered out in
+  silence: no routing label, no liveness signal to extend the client's deadline, and a timeout that
+  reported "no worker claimed this call" for a call the router had claimed in 60ms. Any field a
+  scope can bind on is required on every record a scoped reader must see. Guard:
+  `smoke-turnlink.ts`, "an identity-scoped session sees 'routed' progress" — and note that suite
+  scopes by `conversationId`, the posture under which this bug is invisible, which is why it shipped.
 - **A bounded read that decides a SCOPE is not a performance question, it is an authorization one.**
   `runPrincipalsOf` answered "which principals count as me" from 1000 rows, so a long-lived agent's
   OLDEST records fell out of its own self-scoped reads. That list is the allowlist for `take`,

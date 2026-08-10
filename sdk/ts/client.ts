@@ -22,7 +22,8 @@ import type {
   SpaceEvent,
   TakeResult,
 } from "./wire.ts";
-import { KIND_DEF, kindDefKey, RESERVED_KINDS } from "./wire.ts";
+import { type GraphNode, KIND_DEF, kindDefKey, RESERVED_KINDS } from "./wire.ts";
+export type { GraphNode };
 import { activeByKey, grantKey, isRetired, newestByKey } from "./registry.ts";
 export { RESERVED_KINDS };
 // Re-exported because every client that reads a registry (capabilities, models, kinds, an app's
@@ -737,6 +738,23 @@ export class RadiaClient {
    *  BOUNDED: fan-out is unbounded in principle, so this is a page. Use `getChildrenPage` to walk. */
   async getChildren(recordId: string, limit = 100): Promise<RadiaRecord[]> {
     return (await this.getChildrenPage(recordId, limit)).children;
+  }
+
+  /**
+   * The relationship graph around a record: nodes plus parent→child edges.
+   *
+   * `direction: "down"` walks children ONLY, which is how one thread is separated from the siblings
+   * it shares a hub record with — seeded anywhere inside a thread, the default walk climbs to the
+   * hub and comes back down into all of them. BOUNDED: `truncated` says more exists than is shown.
+   */
+  async graph(
+    recordId: string,
+    opts: { direction?: "both" | "down"; excludeKinds?: string[] } = {},
+  ): Promise<{ nodes: GraphNode[]; edges: { from: string; to: string }[]; truncated: boolean }> {
+    const q = new URLSearchParams();
+    if (opts.excludeKinds?.length) q.set("exclude", opts.excludeKinds.join(","));
+    if (opts.direction === "down") q.set("direction", "down");
+    return await this.req("GET", `/v0/ops/records/${encodeURIComponent(recordId)}/graph?${q}`);
   }
 
   /** One page of children plus the cursor for the next; `nextAfter` is undefined on the last. */

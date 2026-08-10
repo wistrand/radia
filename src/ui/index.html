@@ -102,7 +102,8 @@
     operator default: whatever you paste here decides what the page can see and do, and the space
     enforces it.</p>
     <div class="row">
-      <input id="signin-token" placeholder="paste a session token" style="flex:1" autocomplete="off" spellcheck="false">
+      <input id="signin-token" placeholder="paste a session token" style="flex:1" autocomplete="off" spellcheck="false"
+        onkeydown="if (event.key === 'Enter') { event.preventDefault(); signIn(); }">
       <button class="btn" onclick="signIn()">Sign in</button>
     </div>
     <div id="signin-note"></div>
@@ -283,6 +284,7 @@
         </select></div>
         <div style="max-width:180px"><label>&nbsp;</label>
           <label style="font-size:12px;color:var(--muted);display:block"><input type="checkbox" id="g-hidechunks" style="width:auto" checked> hide llm_chunk</label>
+          <label style="font-size:12px;color:var(--muted);display:block" title="descendants only: everything this record caused, without the siblings it shares a parent with"><input type="checkbox" id="g-down" style="width:auto" onchange="routeGraphView()"> from here down</label>
           <label style="font-size:12px;color:var(--muted);display:block"><input type="checkbox" id="g-live" style="width:auto" onchange="toggleGraphLive()"> live</label>
         </div>
       </div>
@@ -519,6 +521,7 @@ function applyRoute() {
   if (b.dataset.tab === "graph") {
     const v = r.params.get("view");
     if (v === "layers" || v === "waterfall") $("g-view").value = v;
+    $("g-down").checked = r.params.get("dir") === "down";
   }
   selectTab(b);
   if (r.id && b.dataset.tab === "records") showDetail(r.id);
@@ -980,6 +983,10 @@ async function showDetail(id, target = "rec-detail") {
   $(target).innerHTML =
     `<div style="margin-bottom:8px">${e ? stateBadge(e.state) : ""} <span class="mono">${esc(id)}</span> <span class="mono muted">${esc(rec.kind)}</span>`
     + ` <button class="btn ghost" style="padding:1px 8px;font-size:11px" onclick="openWaterfall('${esc(id)}')" title="this record's thread with time as the axis">waterfall</button>`
+    // The narrow one: everything this record caused, without the siblings it shares a parent with.
+    // On a hub record (a conversation, a batch) that difference is the whole point — one turn
+    // instead of every turn.
+    + ` <button class="btn ghost" style="padding:1px 8px;font-size:11px" onclick="openWaterfall('${esc(id)}', true)" title="only what this record caused: its own thread, without the siblings around it">waterfall from here</button>`
     + ` <button class="btn ghost" style="padding:1px 8px;font-size:11px" onclick="navigate('graph','${esc(id)}')" title="this record's relationship graph">graph</button></div>`
     + authHtml
     + artifactHtml
@@ -1024,17 +1031,30 @@ async function showGraph(id) {
 }
 async function refreshGraph() {
   if (!currentRoot) return;
-  const q = $("g-hidechunks").checked ? "?exclude=llm_chunk" : "";
-  const r = await api("GET", `/v0/ops/records/${encodeURIComponent(currentRoot)}/graph${q}`);
+  const p = new URLSearchParams();
+  if ($("g-hidechunks").checked) p.set("exclude", "llm_chunk");
+  if ($("g-down").checked) p.set("direction", "down");
+  const r = await api("GET", `/v0/ops/records/${encodeURIComponent(currentRoot)}/graph?${p}`);
   if (!r.ok) { $("g-canvas").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
   if ($("g-view").value === "waterfall") renderWaterfall("g-canvas", r.data);
   else renderGraph("g-canvas", r.data);
+  // A capped graph reads as the whole story unless it says otherwise, and the whole point of a
+  // diagram is that you stop counting. "from here down" is the fix as well as the notice: one
+  // sub-thread fits where its hub's entire component does not.
+  if (r.data.truncated) {
+    $("g-canvas").insertAdjacentHTML(
+      "afterbegin",
+      `<div class="note info">Showing ${r.data.nodes.length} records; there are more. `
+        + `Open a record and use <b>from here down</b> to see one thread instead of everything around it.</div>`,
+    );
+  }
 }
-/** The view is a knob, so it travels in the hash like the Flows knobs: a waterfall someone is
- *  looking at is a claim about timing, and a claim should be sendable. */
+/** The view and the direction are knobs, so they travel in the hash like the Flows knobs: a
+ *  waterfall someone is looking at is a claim about timing, and a claim should be sendable. */
 function routeGraphView() {
   const p = new URLSearchParams();
   if ($("g-view").value === "waterfall") p.set("view", "waterfall");
+  if ($("g-down").checked) p.set("dir", "down");
   navigate("graph", currentRoot || "", p);
 }
 function startGraphLive() { if (!graphTimer) graphTimer = setInterval(refreshGraph, 1500); }
@@ -1175,8 +1195,10 @@ function fmtMs(ms) {
 }
 /** The waterfall is the drill-down for every "why did this take so long": one navigation, so the
  *  answer has a URL somebody can be sent. */
-function openWaterfall(id) {
-  navigate("graph", id, new URLSearchParams({ view: "waterfall" }));
+function openWaterfall(id, down) {
+  const p = new URLSearchParams({ view: "waterfall" });
+  if (down) p.set("dir", "down");
+  navigate("graph", id, p);
 }
 /** A mined shape is a claim; its exemplars are the evidence. A shape already reports a median
  *  DURATION, so the exemplar click opens the view that explains that number: the waterfall. */

@@ -85,6 +85,9 @@ export async function runTurn(
   // OUTSIDE the try, because the catch needs it: by then the cursor has advanced past everything
   // rendered, and a cancel naming that index would name a turn that never started.
   const turnAt = thread.upToIndex;
+  // Also outside, and for the same reason: `callId` advances a round at a time, but a cancel belongs
+  // to the TURN, so it parents to the seed rather than to whichever round was in flight.
+  let seedId: string | null = null;
   // The turn owns the line from here until the `finally` below, so anything a background watcher
   // produces waits rather than splicing itself into the answer.
   holdLine(true);
@@ -106,8 +109,12 @@ export async function runTurn(
       // A CLIENT-SUBMITTED claim, which is what `deadline_at` is for: how long the caller will care
       // about this turn. The worker compares it against the DB clock, never against this one.
       deadlineAt: new Date(Date.now() + TURN_BUDGET_MS).toISOString(),
-      parentIds: [thread.id],
+      // THE TURN'S ROOT is the message that asked for it, not the conversation. Everything the
+      // workers write descends from this call, so `graph?direction=down` on the user's message is
+      // one turn and nothing else — the conversation is a hub every turn would otherwise fan from.
+      parentIds: [thread.lastAppended ?? thread.id],
     })).id;
+    seedId = callId;
 
     for (;;) {
       write("\nassistant> ");
@@ -171,7 +178,7 @@ export async function runTurn(
       await client.put({
         kind: "cancel",
         body: { conversationId: thread.id, owner: sessionOwner(), turnAt },
-        parentIds: [thread.id],
+        parentIds: [seedId ?? thread.id], // inside the turn it stopped, not beside it
       }, `cancel:${thread.id}:${turnAt}`).catch(() => {});
     }
     throw e;

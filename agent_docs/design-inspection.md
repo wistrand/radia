@@ -125,6 +125,13 @@ the BFS, with `childrenOf` separately capped. The fix is progressive expansion o
 in the UI. Never reach for an index here; that prerequisite was already met, and an earlier draft of
 this plan carried it as a phantom blocker and ranked its deepest feature last because of it.
 
+**A both-ways walk cannot show one thread under a hub, and the node cap must say so.** `getGraph`
+BFSes parents AND children, so seeded anywhere under a hub it climbs to the hub and comes back down
+into every sibling thread: one live conversation returned 150 nodes of 346, silently. Two answers,
+both built: `?direction=down` (descendants only) makes a thread separable, and `truncated` on the
+response makes a capped graph admit it. Neither helps unless the thread IS a subtree, which is a
+property of how the app parents its records, not of the walk.
+
 ### A record is not a span
 
 A lineage subgraph maps onto a distributed trace, which is what makes OTLP export the cheapest way
