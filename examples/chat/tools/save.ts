@@ -522,9 +522,13 @@ export const WORKSPACE_SCHEMAS: ToolDef[] = [
         // in a capability record (both are CLI verbs, client-side, with no worker behind them), so
         // it belongs in the description of the tool the question arrives at.
         "GETTING THE FILES OUT is not limited to this link: a workspace's history exports as a REAL " +
-        "git repository with `radia workspace-git <name> --dir <out>`, and `radia git-serve` serves " +
-        "it so the person can `git clone` it. Both are commands they run in their own terminal, not " +
-        "tools you can call, so say the command rather than offering to paste file contents.",
+        "git repository (already committed — no git init/add needed). Locally: " +
+        "`radia workspace-git <name> --dir <out>`. OVER HTTP: `radia git-serve` serves every " +
+        "workspace so anyone who can reach the port runs " +
+        "`git clone http://127.0.0.1:7790/<name>.git` (7790 is git-serve's default port) — no GitHub, no push, the space IS the " +
+        "remote. Both are commands the person runs in their own terminal, not tools you can call, " +
+        "so when asked how to export to git, answer with the command — never with generic git " +
+        "hosting advice, and never by offering to paste file contents.",
       parameters: {
         type: "object",
         properties: {

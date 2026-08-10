@@ -301,6 +301,17 @@ check("edit_workspace names save_workspace and what selects it", /save_workspace
 check("…and warns that a whole-tree save DROPS omitted files", /DROPPED|dropped/.test(editDesc));
 check("list_workspaces points a change at edit_workspace too", /edit_workspace/.test(desc.get("list_workspaces") ?? ""));
 
+// The git story lives here because nothing serves it as a tool (both are CLI verbs). Asked "how do
+// I export to git over http", the assistant gave GitHub boilerplate and an invented ZIP flow: the
+// old sentence never said the words "over HTTP" and gave no clone URL, so the cheap tier had
+// nothing to match the question against.
+const wsShareDesc = desc.get("share_workspace") ?? "";
+check("share_workspace teaches the local git export", /workspace-git <name> --dir/.test(wsShareDesc));
+check("…and git OVER HTTP, in those words", /OVER HTTP/.test(wsShareDesc) && /git-serve/.test(wsShareDesc));
+check("…with the clone URL shape and its default port", /git clone http:\/\/127\.0\.0\.1:7790\/<name>\.git/.test(wsShareDesc));
+check("…and says the export is already a repo, not a tree to git-init", /already committed|no git init/.test(wsShareDesc));
+check("…and forbids the failure mode by name", /never with generic git hosting advice/.test(wsShareDesc));
+
 // Both addressing forms have to be discoverable, and the line-range one is useless without its
 // precondition being stated as required.
 check("edit_workspace documents the line-range form", /start_line/.test(editDesc) && /end_line/.test(editDesc));
