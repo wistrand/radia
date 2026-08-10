@@ -5,15 +5,15 @@
 // a file can't lead to exfiltrating it. Config comes via args, not env (it has no env access).
 
 import { agentLoop } from "../../../sdk/ts/loop.ts";
-import { RadiaClient } from "../../../sdk/ts/client.ts";
-import { progress } from "../space/progress.ts";
+import { RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
+import { progress } from "../../../extensions/ts/progress.ts";
 import { makeTools, TOOL_SCHEMAS } from "../tools/files.ts";
-import { INSPECT_SCHEMAS, makeInspectTools } from "../tools/space.ts";
-import { makeRemediateTools, REMEDIATE_SCHEMAS } from "../tools/space.ts";
+import { INSPECT_SCHEMAS, makeInspectTools } from "../../../extensions/ts/agent-tools.ts";
+import { makeRemediateTools, REMEDIATE_SCHEMAS } from "../../../extensions/ts/agent-tools.ts";
 import { makeSaveTools, makeShareTools, makeWorkspaceTools, SAVE_SCHEMAS, SHARE_SCHEMAS, WORKSPACE_SCHEMAS } from "../tools/save.ts";
 import { arg, argAll } from "../util.ts";
-import { asTurnReply } from "./reply.ts";
-import { publishCapability } from "../space/capability.ts";
+import { asTurnReply } from "../../../extensions/ts/turn.ts";
+import { publishCapability } from "../../../extensions/ts/capability.ts";
 
 
 const url = arg("--url") ?? "http://127.0.0.1:7788";
@@ -92,7 +92,7 @@ await agentLoop(client, {
   handle: async (rec, c) => asTurnReply(rec, await serve(rec, c)),
 });
 
-async function serve(rec: Parameters<typeof asTurnReply>[0], c: RadiaClient) {
+async function serve(rec: RadiaRecord, c: RadiaClient) {
   {
     const callId = rec.id;
     const b = rec.body as { tool: string; args?: Record<string, unknown>; conversationId?: string; owner?: string };

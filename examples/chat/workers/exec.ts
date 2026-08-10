@@ -25,14 +25,14 @@
 import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { activeByKey, newestByKey, RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
 import { dryRunEntrypoint } from "../../../extensions/ts/broker.ts";
-import { asTurnReply } from "./reply.ts";
+import { asTurnReply } from "../../../extensions/ts/turn.ts";
 import { runCode, runEntry } from "../../../extensions/ts/sandbox.ts";
 import { captureWorkspace, commitWorkspace, materialize, readWorkspace, validateEntrypoint, writeWorkspace } from "../../../extensions/ts/workspace.ts";
 import { bwrapSandbox, defaultConfiner, denoSandbox, macosPython, runBwrap, runSeatbelt, seatbeltPythonSandbox } from "../../../extensions/ts/sandbox.ts";
 import { declareSandbox, verifySandbox } from "../../../extensions/ts/sandbox-registry.ts";
-import { progress } from "../space/progress.ts";
+import { progress } from "../../../extensions/ts/progress.ts";
 import { arg, argAll, argOn } from "../util.ts";
-import { type CapabilityBody, capabilityKey, publishCapability } from "../space/capability.ts";
+import { type CapabilityBody, capabilityKey, publishCapability } from "../../../extensions/ts/capability.ts";
 import { bytesFrom, mediaTypeFor } from "../util.ts";
 import type { ToolDef } from "../provider/openrouter.ts";
 
@@ -1274,10 +1274,9 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
 
   await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "saving", by: ME, note: name }, [callId]);
 
-  // A PROCEDURE IS A WORKSPACE. It used to be a lone code artifact, which is a shape that cannot
-  // grow: single file, JavaScript whatever it contained (the jail came from the tool name), no
-  // versions to read back, no export, and nothing an agent could ever be bound to. As a tree it
-  // inherits all of that, and "promote a script to a tool" stops being a rewrite.
+  // A PROCEDURE IS A WORKSPACE, never a lone code artifact. A tree is multi-file, carries its own
+  // language through its entrypoint, versions, exports, and can be bound to an agent; a single
+  // artifact is none of those, so "promote a script to a tool" would be a rewrite.
   const language: "javascript" | "python" = a.language === "python" ? "python" : "javascript";
   const entry = language === "python" ? "main.py" : "main.js";
   const ws = `proc-${name}`;

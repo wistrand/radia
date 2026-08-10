@@ -4,7 +4,7 @@
 //
 // The distinction this suite exists for: `smoke-selfgrant.ts` proves the SERVER's scoped-ops
 // contract, and it does so by paging the event log itself. The chat does not reach the server
-// directly; it reaches it through the tools in `tools/space.ts`, and those were the broken half.
+// directly; it reaches it through `extensions/ts/agent-tools.ts`, and those were the broken half.
 // A live session asked "what happened in my space", got `{events: [], withheld: 500}` from a log of
 // 11,588, retried, got the identical answer with the identical cursor, and reported that its
 // pending grant must not have been approved. Every layer under the tool was behaving correctly.
@@ -16,7 +16,7 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { CHAT_USER, mintSession } from "./space/roles.ts";
-import { makeInspectTools } from "./tools/space.ts";
+import { makeInspectTools } from "../../extensions/ts/agent-tools.ts";
 import { reviewGrantRequests } from "./client/grants.ts";
 
 const PORT = 7802;

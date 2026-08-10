@@ -1,3 +1,4 @@
+import type { ToolDef } from "../../../extensions/ts/capability.ts";
 // Thin OpenRouter client (OpenAI-compatible chat completions, streaming + tool calling).
 // Only the inference-worker imports this; it is the sole holder of the API key.
 
@@ -15,10 +16,10 @@ export interface ChatMessage {
   name?: string;
 }
 
-export interface ToolDef {
-  type: "function";
-  function: { name: string; description: string; parameters: unknown };
-}
+// The shape a `capability` record carries, so it is owned there rather than here: this client is
+// one consumer of it, not its authority. Re-exported because every tool definition in the app
+// reaches for it through the provider.
+export type { ToolDef };
 
 export interface StreamOpts {
   apiKey: string;

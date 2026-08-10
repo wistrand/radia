@@ -21,10 +21,10 @@ import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { generateImage } from "../provider/imagegen.ts";
 import { describeMedia } from "../provider/vision.ts";
-import { progress } from "../space/progress.ts";
-import { asTurnReply } from "./reply.ts";
+import { progress } from "../../../extensions/ts/progress.ts";
+import { asTurnReply } from "../../../extensions/ts/turn.ts";
 import { arg, onStop } from "../util.ts";
-import { publishCapability } from "../space/capability.ts";
+import { publishCapability } from "../../../extensions/ts/capability.ts";
 import { publishModel, retireModel } from "../space/model.ts";
 import type { ToolDef } from "../provider/openrouter.ts";
 

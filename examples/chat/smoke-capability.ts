@@ -23,7 +23,7 @@ import {
   collapseByTool,
   publishCapability,
   retireProviderCapabilities,
-} from "./space/capability.ts";
+} from "../../extensions/ts/capability.ts";
 import type { ToolDef } from "./provider/openrouter.ts";
 
 const PORT = 7804;

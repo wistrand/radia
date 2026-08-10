@@ -6,9 +6,9 @@
 import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { assembleContext, selectWindow, type ThreadRow, toMessage } from "../provider/context.ts";
 import { RadiaClient } from "../../../sdk/ts/client.ts";
-import { progress } from "../space/progress.ts";
+import { progress } from "../../../extensions/ts/progress.ts";
 import { arg, onStop } from "../util.ts";
-import { publishCapability } from "../space/capability.ts";
+import { publishCapability } from "../../../extensions/ts/capability.ts";
 import { liveModels, publishModel, retireModel } from "../space/model.ts";
 import { type ChatMessage, streamChat, type ToolCall, type ToolDef } from "../provider/openrouter.ts";
 

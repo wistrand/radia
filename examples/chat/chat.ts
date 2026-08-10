@@ -42,7 +42,7 @@ import { registerChatKinds } from "./space/kinds.ts";
 import { assignUserGrants, bootstrap, setSessionOwner } from "./space/roles.ts";
 import { apiKey, EXEC_TIMEOUT_MS, execRoots, loginDefinitionToken, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
 import { FLEET_PROVIDERS, launchFleet, spawnSpace } from "./client/fleet.ts";
-import { retireProviderCapabilities } from "./space/capability.ts";
+import { retireProviderCapabilities } from "../../extensions/ts/capability.ts";
 import { denoSandbox } from "../../extensions/ts/sandbox.ts";
 import { declareSandbox } from "../../extensions/ts/sandbox-registry.ts";
 import { ToolSet } from "./client/turn.ts";
@@ -228,10 +228,9 @@ Deno.addSignalListener("SIGINT", () => {
   Deno.exit(0);
 });
 
-// The banner is FACTS, aligned, one line each. It used to be nine lines of prose, several of them
-// two sentences long, which on an 80-column terminal was about fifteen physical rows of wrapped
-// text before the first prompt. What a reader needs at that moment is where the space is, who they
-// are, and which directories are exposed. The design positions it also carried (routing is
+// The banner is FACTS, aligned, one line each: prose here wraps to fifteen rows on an 80-column
+// terminal before the first prompt. What a reader needs at that moment is where the space is, who
+// they are, and which directories are exposed. The design positions it also carried (routing is
 // automatic, languages are discovered rather than configured, the guarantees differ per jail and
 // live in `sandbox` records) are all true and none of them are what you need in the first second;
 // they are in examples/chat/README.md, and the assistant can answer the jail question from the
@@ -273,7 +272,7 @@ field("graph", `${url}/#graph/${thread.id}${dim("  the turn as records, with tim
 await tools.scopeTo(thread.id);
 
 // Wait for the workers to publish their capabilities (the watch fills the set). Up to ten seconds
-// of it, and it used to print nothing at all, so the first thing a new user saw was a hang.
+// of it, so it PRINTS: silence here reads as a hang.
 const bootStart = Date.now();
 for (let i = 0; i < 50 && tools.all().length === 0; i++) {
   showStatus("  ", `starting workers · ${Math.round((Date.now() - bootStart) / 1000)}s`);

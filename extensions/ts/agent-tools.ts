@@ -1,15 +1,29 @@
-// Inspection tools. These let the chatbot inspect the Radia space it runs on, in natural
-// language. Thin wrappers over the read endpoints, with BOUNDED output (small limits,
-// truncated bodies) so results are good LLM food, not firehoses. Because the chatbot's own
-// thinking/acting are records in the same space, these also let it inspect itself
-// (its conversation thread, its own llm_calls, their lineage).
+// The space itself, offered to a model as tools.
 //
-// Note the observer effect: each inspection is itself a tool_call/tool_result (and the
-// wrapping llm_call/message), so calling space_stats slightly changes the stats.
+// Thin wrappers over the read endpoints with BOUNDED output (small limits, truncated bodies), so
+// results are good LLM food rather than firehoses. An agent whose own thinking and acting are
+// records in the same space can therefore inspect ITSELF: its thread, its calls, their lineage.
+//
+// The observer effect is real and worth knowing: each inspection is itself a `tool_call` and a
+// reply, so asking for the stats changes them.
+//
+// Split in two on purpose. `makeInspectTools` READS and is safe to offer any session;
+// `makeRemediateTools` WRITES to the ops plane and is not. A scoped principal gets 403 on the
+// second set, which is the correct answer rather than a reason to withhold them.
 
-import type { RadiaClient, RadiaRecord } from "../../../sdk/ts/client.ts";
-import type { Tool } from "./files.ts";
-import type { ToolDef } from "../provider/openrouter.ts";
+import type { RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
+import type { ToolDef } from "./capability.ts";
+
+/** What a tool is called with. `ctx` carries the call it answers, so anything a tool writes can be
+ *  scoped the way the caller is. */
+export interface ToolContext {
+  callId: string;
+  conversationId?: string;
+  /** The identity the call was made on behalf of. Stamped by the session, enforced by its pattern. */
+  owner?: string;
+}
+
+export type Tool = (args: Record<string, unknown>, ctx?: ToolContext) => Promise<unknown>;
 
 /** A record trimmed for the prompt: id, kind, createdAt, and a size-capped body. */
 function compact(rec: RadiaRecord): unknown {

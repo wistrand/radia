@@ -1192,89 +1192,57 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   is how a fully diagnosed failure reached a test as an exit code and nothing else. Size the ends
   for what each must catch rather than splitting evenly: the head needs one line, the tail needs a
   message sitting ABOVE a stack (`clip` in `extensions/ts/broker.ts`).
-- **Address records by IDENTITY, never by a predicted position.** The chat's turn chain had three
-  writers agreeing on arithmetic over a shared `index` (reply i of round r lands at assistant + 1 +
-  i). A disagreement did not return nothing, it returned the WRONG RECORD: the client rendered the
-  model's prose as a tool result. Match on something the record carries and the reader already knows
-  (the provider call id; `{turnAt, round, role}`), and keep the sequence for ORDERING only. Note the
-  constraint that pushes people into position-addressing here: a scoped client cannot fetch by id,
-  since `getRecord`, `lineage` and `children` are all ops-plane, so an address must be an indexed
-  body field. Also: a match on `{round: 0}` does NOT match a record whose `round` is absent, so a
-  field used as an address has to be stamped even when its value is the default.
-- **A COUNTER that resets is worse than no counter, and it looks like it works.** The chat's round
-  cap lives on the `llm_call`; the assistant message (the inference worker's ack) dropped it, so the
-  turn worker read undefined, computed "round 1" every time, and `MAX_ROUNDS` could never trip. Seen
-  live as two calls both claiming round 1; reproduced as 28 calls stuck at round 1 and climbing. The
-  first assertion written for it passed under the bug, because rounds still read `[0,1,1,1…]` and
-  "some round advanced" is true. Assert the BOUND (how many calls happened), never that a value
-  changed.
-- **A chain that carries its own position must carry it on EVERY hop, and the gap is silent.** The
-  chat's turn worker stamps `i`/`of` on a tool call so the reply can ask for the next one; the tool
-  worker's ack rebuilt the reply record without them. Nothing failed: `of` defaulted to 1, so every
-  reply looked like the only one and a round of EIGHT calls became eight rounds. The client, which
-  computes contiguous reply slots, then read the assistant messages that landed in those slots as if
-  they were tool results, and rendered the model's prose as a tool's output. Test the SECOND element
-  of anything positional; a suite of one-call rounds proves nothing about the field being carried.
-- **A per-turn marker read per CONVERSATION ends every turn after the first.** The chat's client
-  waited on `turn_complete` to learn its turn was over and matched `{conversationId}`, so turn two
-  found turn one's terminus instantly and reported a round limit it never hit. Scope a marker to the
-  thing it marks (`turnAt`) and index that path. The suite ran ONE turn per conversation and was
-  green: for anything that accumulates per turn, the second one is the first real test.
-- **Give a long-lived worker the DURABLE half, not a run token.** A run lives fifteen minutes and
-  renews to a twelve-hour ceiling; past that, or when the space restarts under it, a worker holding
-  only that half cannot re-authenticate and spins on `token_expired` forever. Seen exactly so across
-  a whole chat fleet. A definition token has no expiry and is MINT-ONLY (it cannot read, write or
-  claim), which is what makes handing it over safe, and `RadiaClient({definitionToken})` exchanges
-  it whenever the short half stops working. The mechanism shipped in `conformance/exchange.test.ts`
-  and the fleet did not use it: `bootstrap` minted a run and threw the durable half away.
-  The exception is a credential that acts for SOMEBODY ELSE: the tools worker's session client holds
-  a run token deliberately, because a worker able to mint a person's session can be that person at
-  will. Renewal to the ceiling is the whole of what that half may have.
-- **Measure a storage-bound loop on a COLD cache, or you will measure the opposite.** `radia doctor`
-  took 60s on a working space. The chain walk read each link's event with its own windowed query,
-  and against a warm cache that costs 0.085ms a link, so a synthetic 20k-link space verified in
-  1.7s and the per-link read looked innocent; batching it even measured slightly SLOWER. Restarting
-  the space made the same walk take 135 SECONDS, because a cold read is ~6.7ms. Batched: 1.9s. The
-  hot number is the easy one to get and it is the wrong one for anything an audit runs on a machine
-  that just started.
-- **A routine health check must not verify the whole history.** `diagnostics` embedded a full chain
-  walk, so a command an operator runs casually was O(every event ever written). It spot-checks the
-  newest 500 links now (`verifyIntegrity({tail})`) and SAYS so in the output; `radia integrity`
-  remains the unbounded audit, which is where an unbounded walk belongs.
-- **A worker that reconciles on boot will REANIMATE HISTORY, and a head rule alone does not stop
-  it.** The chat's turn worker swept the newest messages at startup so an interrupted turn would
-  still finish, and on a real space it dispatched 47 stale tool calls into two dead threads; the
-  live turn queued behind them and timed out. Acting only on each conversation's HEAD is necessary
-  and insufficient: an abandoned multi-call turn has a head that legitimately means "dispatch the
-  next call", so it walked the corpse one reply at a time (33 dispatches became 60 on the next
-  boot). AGE was the second attempt and is a guess in both directions, because a clock cannot
-  separate an abandoned turn from a slow one: a `request_grant` waits five minutes on a person by
-  design. What works is the work declaring its own bound. `deadline_at` is the substrate's field for
-  it, client-submitted because the one WAITING knows how long the work stays worth doing, so a
-  reconciler advances only what still has an unexpired deadline and never touches a record that has
-  none. Being keyed makes an emission idempotent, never appropriate. A fresh test space has no
-  history to resurrect, so the case must plant it.
-- **A record FIELD does not survive a `{...body}` re-emit.** `deadlineAt` lives beside the body, so
-  the router's re-dispatch of an `llm_call` silently dropped it and the turn stalled. Either every
-  re-emitter copies it, or read it from the records the OWNER writes rather than from derivatives
-  (`currentCall` reads untiered calls only). Prefer the second: it cannot be forgotten by a worker
-  that does not know the field exists.
+- **Address a record by identity, never by a predicted index.** A reader that computes where a
+  record will land gets the WRONG record when a writer disagrees, not an error. Match on what the
+  record carries and the reader already knows (`tool_call_id`; `{turnAt, round, role}`), and keep
+  the sequence for ordering only. A scoped client cannot fetch by id at all (`getRecord`,
+  `lineage` and `children` are ops-plane), so an address has to be an indexed body field.
+- **A match on `{round: 0}` does not match a record whose `round` is absent.** A field used as an
+  address must be stamped even when its value is the default; `client/turn.ts` seeds `round: 0`
+  explicitly for this.
+- **`round` must be copied onto the assistant message** (`finished()`, `workers/inference.ts`). It
+  rides on the `llm_call`; dropped, the turn worker reads undefined, re-emits round 1 forever, and
+  `MAX_ROUNDS` never trips. Assert the BOUND (how many calls happened), not that a value changed:
+  under the bug the rounds still read `[0,1,1,1…]`. Guard: `smoke-turnlink.ts` "round cap".
+- **`i`/`of`/`round`/`turnAt` must be copied from a `tool_call` onto its reply** (`asTurnReply`,
+  `extensions/ts/turn.ts`). Dropped, `of` defaults to 1, every reply looks like the only one of its
+  round, and a round of eight calls becomes eight rounds. Test the SECOND element of anything
+  positional; a suite of one-call rounds proves nothing. Guard: `smoke-turnlink.ts` "TWO tools".
+- **Scope a per-turn marker to the turn (`turnAt`), never the conversation.** `turn_complete`
+  matched on `{conversationId}` finds the PREVIOUS turn's and ends every later turn immediately.
+  Index the path. A suite running one turn per conversation cannot see it.
+- **A long-lived worker holds the DEFINITION token, not a run token.** A run expires (15 minutes,
+  renewing to a 12-hour ceiling); past that, or across a space restart, a worker holding only that
+  half cannot re-authenticate and spins on `token_expired`. A definition token has no expiry and is
+  mint-only, so handing it over is safe, and `RadiaClient({definitionToken})` exchanges it. EXCEPT a
+  credential that acts for somebody else: the tools worker's session client keeps a run token,
+  because a worker able to mint a person's session can be that person.
+- **Measure a storage-bound loop on a COLD cache.** The event-chain walk read one event per link:
+  0.085ms warm, ~6.7ms cold. A 20k-link space verified in 1.7s warm and 135s after a restart, and
+  batching the reads measured slightly SLOWER warm. Batched cold: 1.9s.
+- **`diagnostics` spot-checks the event chain; it does not walk it.** A full walk is O(every event
+  ever written) on a command an operator runs casually. `verifyIntegrity({tail})` does the newest
+  500 and the output says so; `radia integrity` stays the unbounded audit.
+- **A boot reconcile needs TWO bounds: the conversation's head, and the work's own deadline.**
+  Sweeping history re-dispatches dead turns' work and starves the live one. Head alone is
+  insufficient: an abandoned multi-call turn's head legitimately asks for the next call. An age
+  cutoff guesses in both directions, since a grant request waits minutes on a person by design, so
+  the bound is `deadline_at`: client-submitted, and a record without one is never resumed. Being
+  keyed makes an emission idempotent, never appropriate.
+- **A record FIELD does not survive a `{...body}` re-emit.** `deadlineAt` sits beside the body, so
+  the router's re-dispatch of an `llm_call` dropped it. Either every re-emitter copies it, or read
+  it from the records the OWNER writes (`currentCall` reads untiered calls only). Prefer the second:
+  a worker cannot forget a field it does not know exists.
 - **A client test that runs as the OPERATOR tests the wrong principal.** An operator bypasses grant
-  checks entirely, so a suite driving real client code with an admin credential proves only that the
-  logic runs, never that the session may perform it. Shipped exactly this: the chat's turn flip was
-  green in `smoke-turnlink.ts` and died on the second round of a live session, missing
-  `llm_call: query`. Mint a scoped session (`mintSession`) for anything asserting client behaviour.
-- **Asserting on RECORDS cannot test a client that only reads them.** Same suite, same day: the
-  "real client" case checked the transcript's roles, and passed with the render loop planted broken,
-  because WORKERS write the transcript whatever the client does. Assert on state only the client
-  under test advances (there, the thread's cursor).
-- **A DIAGNOSTIC tool's failure is its answer, never a nack.** The chat's entrypoint rehearsal threw
-  on any failure, so the agent loop nacked, at-least-once ran the same doomed code six more times,
-  and the caller got a timeout while the diagnosis went to the terminal. TWO separate bugs hid this
-  way for a session each (a channel the host lacked permission to create, and a `put` with
-  positional arguments), both fully explained in a message nobody who could act on it ever saw.
-  Return infrastructure faults through the same path deliberately: a jail the worker cannot start is
-  something the caller needs told, and a silent retry loop is what hid it.
+  checks, so the suite proves the logic runs, never that the session may perform it. Mint a scoped
+  session (`mintSession`) for anything asserting client behaviour.
+- **Asserting on RECORDS cannot test a client that only reads them.** Workers write the transcript
+  whatever the client does, so a role-by-role assertion passes with the render loop broken. Assert
+  on state only the client under test advances (there, the thread's cursor).
+- **A diagnostic tool's failure is its ANSWER, never a nack.** A rehearsal that throws makes the
+  loop nack, at-least-once re-runs the same doomed code, and the caller times out while the
+  diagnosis reaches a terminal and nobody else. Return infrastructure faults the same way: a jail
+  the worker cannot start is something the caller needs told.
 - **A frame channel from a jail is UNTRUSTED, and should be built so that costs nothing.** Jailed
   code can forge any frame; it gains nothing when the labels, the compartment stamp, the forced
   parent, the idempotency key and the agent's grants are all applied HOST-side. Check this

@@ -23,7 +23,7 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
-import { publishCapability } from "./space/capability.ts";
+import { publishCapability } from "../../extensions/ts/capability.ts";
 import { makeSaveTools, makeShareTools, makeWorkspaceTools, SAVE_SCHEMAS, SHARE_SCHEMAS, WORKSPACE_SCHEMAS } from "./tools/save.ts";
 import { bootstrap, mintSession } from "./space/roles.ts";
 import { summarizeWorkspaces } from "../../extensions/ts/workspace.ts";

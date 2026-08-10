@@ -26,7 +26,7 @@
 import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { liveModels } from "../space/model.ts";
-import { progress } from "../space/progress.ts";
+import { progress } from "../../../extensions/ts/progress.ts";
 import { arg, sleep } from "../util.ts";
 import type { ChatMessage } from "../provider/openrouter.ts";
 

@@ -383,6 +383,16 @@ track milestone progress; `plan-m0-implementation.md` is the phase-by-phase reco
   the symbol to look at; cut the story of how it was found, what was believed first, and the
   restatement at the end. The same applies to a function's doc comment: if it runs longer than the
   function, the surplus is narrative.
+- **Name the thing, never the moral.** An entry's bold lead is the SYMBOL and the RULE
+  (``**`round` must be copied onto the assistant message**``), never a proverb about software
+  (`**A counter that resets is worse than no counter**`). A proverb reads as a general truth, cannot
+  be checked, and is the drift that turns notes about a system into a book about programming. A
+  gotcha caps at ~5 lines: the rule, the mechanism, the file or symbol to open, the guard that
+  catches it.
+- **A comment says what the code does and why it must, not what it did before.** `used to` is the
+  tell. History earns its place only where a reader would otherwise re-introduce the bug by making
+  an obvious-looking simplification, and then it goes in the file header or a `Rejected` section,
+  once, not scattered through the body.
 - State each rule on its own line as always/never; a rule buried mid-paragraph gets
   skipped.
 - Mark inferred claims and open questions; don't present a guess as a fact.

@@ -194,8 +194,7 @@ export function userGrants(scope?: Record<string, unknown>): Grant[] {
   const scoped = scope ? { pattern: scope } : {};
   return [
     // `read_one` because the assistant reply is awaited BY CALL (`{kind: message, match: {callId}}`):
-    // since plan-chat-turn.md 2a the assistant message IS the inference worker's ack, and the
-    // session reads it where it used to read `llm_result`.
+    // the assistant message IS the inference worker's ack (plan-chat-turn.md).
     { kind: "message", operations: ["put", "query", "read_one"], ...scoped },
     // `query` as well as `put` since step 4: the client no longer WRITES each round's call, so it
     // finds the one the turn worker emitted (`nextCall`) to know which stream to follow.

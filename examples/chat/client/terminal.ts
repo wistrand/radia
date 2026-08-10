@@ -85,9 +85,9 @@ export function columns(): number {
   }
 }
 
-/** At most `n` characters, ellipsis INCLUDED. It used to append after slicing, so every truncated
- *  string was one character over its budget: harmless in a message, and exactly enough to wrap the
- *  status line onto a second row that the redraw could not erase. */
+/** At most `n` characters, ellipsis INCLUDED. Appending it after slicing puts every truncated
+ *  string one over budget: harmless in a message, and exactly enough to wrap the status line onto a
+ *  second row the redraw cannot erase. */
 export function trunc(s: string, n: number): string {
   return s.length > n ? s.slice(0, Math.max(0, n - 1)) + "…" : s;
 }
@@ -297,10 +297,9 @@ function inputChanged(after: number, ms?: number): Promise<void> {
 
 // ---- raw mode, owned for the whole session ----
 //
-// It used to be entered per turn and left at the prompt, so the prompt ran in cooked mode and got
-// what the line discipline gives you: backspace, `^W`, `^U`, and nothing else. Arrow keys were
-// handled by nobody, so pressing left inserted the literal bytes `^[[D` into the line, and there was
-// no history. Owning raw mode continuously is what buys the editor below, and it comes with two
+// Owned CONTINUOUSLY, not entered per turn. A prompt in cooked mode gets what the line discipline
+// gives it (backspace, `^W`, `^U`) and nothing else: pressing left inserts the literal bytes `^[[D`
+// and there is no history. Continuous raw mode is what buys the editor below, and it comes with two
 // obligations. Ctrl-C no longer raises SIGINT, so it is handled as a key. And the terminal has to be
 // restored on EVERY exit path, or a crash leaves the user's shell with no echo.
 

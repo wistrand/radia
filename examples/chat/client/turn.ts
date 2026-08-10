@@ -11,7 +11,7 @@ import { activeByKey, awaitResult, newestByKey, readRegistry } from "../../../sd
 import type { ChatMessage, ToolDef } from "../provider/openrouter.ts";
 import type { Thread } from "./thread.ts";
 import { sessionOwner } from "../space/roles.ts";
-import { type CapabilityBody, capabilityKey, collapseByTool } from "../space/capability.ts";
+import { type CapabilityBody, capabilityKey, collapseByTool } from "../../../extensions/ts/capability.ts";
 import { answerStream, columns, dim, endStatus, ensureLine, holdLine, notice, showArtifact, trunc, write } from "./terminal.ts";
 import { Waiter, waitWake } from "./waiting.ts";
 
@@ -219,9 +219,9 @@ export function showArgs(args: Record<string, unknown>): string {
 /**
  * A tool result as the thing it actually says.
  *
- * Both halves of this line used to be raw JSON cut at a fixed width, so anything structured (an
- * artifact, a workspace, a run) showed its braces and lost its content. A scalar prints as itself;
- * an object leads with the field that carries the answer, when there is an obvious one.
+ * Never raw JSON cut at a fixed width: anything structured (an artifact, a workspace, a run) then
+ * shows its braces and loses its content. A scalar prints as itself; an object leads with the field
+ * that carries the answer, when there is an obvious one.
  */
 const PRIMARY = ["answer", "output", "text", "content", "result", "error", "artifactId", "name", "path"];
 export function showOutput(out: unknown): string {
@@ -243,10 +243,10 @@ export function showOutput(out: unknown): string {
  *
  * It writes nothing. The call was put by `workers/turn.ts` and the reply is the tool worker's own
  * ack (plan-chat-turn.md 2b), so a cancelled or crashed REPL leaves both intact and the chain runs
- * on. That also retires the repair this function used to perform: it appended a synthetic reply on
- * every exit, because an assistant `tool_calls` message with an unanswered id makes every LATER turn
- * unsendable. The real reply now arrives whether anyone is watching, and `assembleContext` still
- * covers the case where a worker never answers at all.
+ * on. Do NOT reintroduce a synthetic reply on the failure paths: an assistant `tool_calls` message
+ * with an unanswered id makes every LATER turn unsendable, which is why one was written here once,
+ * but the real reply arrives whether anyone is watching now, and `assembleContext` covers a worker
+ * that never answers at all.
  */
 async function showToolReply(
   client: RadiaClient,

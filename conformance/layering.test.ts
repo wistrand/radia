@@ -57,7 +57,7 @@ Deno.test("[layering] the runtime imports neither a surface nor an extension", a
   assertEquals(violations, [], "the runtime must not depend on a surface or an extension");
 });
 
-Deno.test("[layering] an extension never imports the runtime", async () => {
+Deno.test("[layering] an extension never imports the runtime, nor an example", async () => {
   // The other half, and the one CLAUDE.md already states: an extension composes `/v0` through the
   // SDK. If it needs a runtime change it is not an extension. Stated for both directions here so
   // the pair is readable in one place.
@@ -66,10 +66,16 @@ Deno.test("[layering] an extension never imports the runtime", async () => {
   for (const file of await tsFiles(root)) {
     const text = code(await Deno.readTextFile(new URL(file, root)));
     for (const [, spec] of text.matchAll(/from\s+"([^"]+)"/g)) {
+      // `examples/` too, and that half was stated without being enforced: `workspace.ts` carries a
+      // note explaining that it DUPLICATED a media-type table because "an extension may not import
+      // an example". A rule with a workaround written beside it and no guard behind it is the one
+      // to check, especially now that machinery has moved out of `examples/chat` into here — an
+      // import pointing back would leave the layer nominal.
       if (/(^|\/)src\//.test(spec)) violations.push(`extensions/ts/${file} -> ${spec}`);
+      if (/(^|\/)examples\//.test(spec)) violations.push(`extensions/ts/${file} -> ${spec}`);
     }
   }
-  assertEquals(violations, [], "an extension imports the SDK, never src/");
+  assertEquals(violations, [], "an extension imports the SDK, never src/ and never an example");
 });
 
 Deno.test("[layering] the SDK imports nothing from src/, so the package it ships in resolves", async () => {

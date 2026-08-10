@@ -4,6 +4,7 @@
 // that reads a file cannot exfiltrate it. Path canonicalization here is defense-in-depth
 // on top of that OS-level sandbox.
 
+import type { Tool, ToolContext } from "../../../extensions/ts/agent-tools.ts";
 import { isAbsolute, join, SEPARATOR } from "@std/path";
 import type { ToolDef } from "../provider/openrouter.ts";
 
@@ -85,15 +86,8 @@ async function walk(root: string, dir: string, fn: (real: string, rel: string) =
 
 /** What a tool knows about the call it is serving, beyond its arguments. Optional so the file and
  *  compute tools can ignore it; the ones that WRITE records use `callId` for lineage. */
-export interface ToolContext {
-  callId: string;
-  conversationId?: string;
-  /** The identity the call was made on behalf of, so anything a tool writes for it can be scoped
-   *  the same way the caller is. Stamped by the session, enforced by its write pattern. */
-  owner?: string;
-}
-
-export type Tool = (args: Record<string, unknown>, ctx?: ToolContext) => Promise<unknown>;
+// Owned by `extensions/ts/agent-tools.ts`: a tool's calling convention is not this app's to define.
+export type { Tool, ToolContext };
 
 export function makeTools(roots: string[]): Record<string, Tool> {
   return {

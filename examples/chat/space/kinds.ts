@@ -5,6 +5,9 @@
 // not quadratic) and the whole conversation is reconstructible from the space.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
+import { PROGRESS_KIND } from "../../../extensions/ts/progress.ts";
+import { CAPABILITY_KIND } from "../../../extensions/ts/capability.ts";
+import { CANCEL_KIND, TURN_COMPLETE_KIND } from "../../../extensions/ts/turn.ts";
 import { SANDBOX_KIND } from "../../../extensions/ts/sandbox-registry.ts";
 
 export async function registerChatKinds(client: RadiaClient): Promise<void> {
@@ -19,14 +22,7 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // publish falls back to the unanchored key. The visible symptom is a retired tool that cannot be
   // revived, which is two silent steps away from the missing declaration.
   await client.registerKind({
-    kind: "capability",
-    indexedPaths: [{ path: "tool", type: "keyword" }, { path: "provider", type: "keyword" }],
-    claimable: false,
-    // The latest-wins identity, declared so `radia gc` can compact the registry. Measured before:
-    // 1,498 capability records over 39 (provider, tool) pairs, because every session retires its
-    // tools on the way out and republishes them on the way in. The projection only ever reads the
-    // newest per pair; compaction deletes the rest, tombstones kept.
-    contentKey: ["provider", "tool"],
+    ...CAPABILITY_KIND, // extensions/ts/capability.ts owns the shape
   });
   // REDECLARING a reserved kind, on purpose. `artifact` is defined in code with {digest, mediaType}
   // indexed; the app adds `conversationId` so a grant pattern can bind an artifact to the
@@ -49,41 +45,12 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     claimable: false,
   });
   await client.registerKind({ kind: "conversation", indexedPaths: [], claimable: false });
-  /**
-   * Escape, as a record.
-   *
-   * The loop used to live in the REPL, so cancelling was killing the thing that held it. Now the
-   * chain runs in the space and a dead terminal stops nothing, which is the same property as
-   * "kill the REPL and the answer still lands" seen from the other side. So the person's intent has
-   * to become a fact the worker can read. Keyed to a TURN, never a conversation: the next turn must
-   * not inherit it.
-   */
-  await client.registerKind({
-    kind: "cancel",
-    indexedPaths: [
-      { path: "conversationId", type: "keyword" },
-      { path: "owner", type: "keyword" },
-      { path: "turnAt", type: "integer" },
-    ],
-    claimable: false,
-    defaultRetentionSeconds: 7 * 24 * 3600,
-  });
-  // The turn's terminus (plan-chat-turn.md): a FACT, so the client has something to watch for and
-  // the mined flow a visible end. Termination by absence of a match was rejected: it leaves a
-  // client watching for silence, and any claimable record nobody claims alarms the diagnostic.
-  await client.registerKind({
-    kind: "turn_complete",
-    // `turnAt` is the index of the user message that STARTED the turn, and it is indexed because
-    // the client matches on it: a conversation accumulates one terminus per turn, so an unscoped
-    // "is this conversation done" read finds the previous turn's and ends every later one early.
-    indexedPaths: [
-      { path: "conversationId", type: "keyword" },
-      { path: "owner", type: "keyword" },
-      { path: "turnAt", type: "integer" },
-    ],
-    claimable: false,
-    defaultRetentionSeconds: 7 * 24 * 3600,
-  });
+  // The two kinds the turn CHAIN introduces (extensions/ts/turn.ts owns both shapes): a terminus so
+  // a client has something to wait for, and Escape as a fact the worker can read. Both carry
+  // `turnAt`, because a conversation accumulates one of each per turn and a per-conversation read
+  // finds the previous turn's.
+  await client.registerKind(TURN_COMPLETE_KIND);
+  await client.registerKind(CANCEL_KIND);
   await client.registerKind({
     kind: "message",
     // `role` is indexed because it is the dimension anyone aggregating a conversation reaches for
@@ -97,11 +64,10 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
       // An assistant message is the inference worker's ACK, and the client finds it by the call it
       // answers (plan-chat-turn.md). Messages a client writes simply have no callId.
       { path: "callId", type: "keyword" },
-      // ADDRESSING, which used to be arithmetic over `index`. A tool reply is found by the provider
-      // call id it answers; an assistant message by which turn and round it belongs to. `index`
-      // stays, but only to ORDER the transcript and bound the context window: predicting one in
-      // order to read a record is what let three writers disagree silently and hand the client an
-      // assistant message where it expected a tool result.
+      // ADDRESSING. A tool reply is found by the provider call id it answers, an assistant message
+      // by which turn and round it belongs to. `index` orders the transcript and bounds the context
+      // window; it is never used to predict where a record will land, because a prediction that
+      // misses returns the wrong record rather than nothing.
       { path: "tool_call_id", type: "keyword" },
       { path: "turnAt", type: "integer" },
       { path: "round", type: "integer" },
@@ -248,11 +214,6 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
   // feedback is a record like everything else (see progress.ts): the chat renders the stream,
   // and its ABSENCE tells the chat nobody claimed the work.
   await client.registerKind({
-    kind: "progress",
-    indexedPaths: [{ path: "callId", type: "keyword" }, { path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
-    claimable: false,
-    // A status line's usefulness ends when the turn does. This kind stamped its own retention per
-    // put for a month before anything swept it; the declaration replaces that call-site memory.
-    defaultRetentionSeconds: 3600,
+    ...PROGRESS_KIND, // extensions/ts/progress.ts owns the shape; this app only declares it
   });
 }

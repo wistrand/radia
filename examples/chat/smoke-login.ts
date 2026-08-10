@@ -211,7 +211,10 @@ check("…and cannot attach one stamped with someone else's owner", forgedAttach
 // correctly and returns the wrong value only because of which PROCESS the code is in. So assert the
 // separation instead of the symptom. Anything the tools-worker loads must take identity from the
 // call it is serving.
-const workerSide = ["tools/space.ts", "tools/save.ts", "tools/files.ts", "workers/tools.ts", "workers/exec.ts"];
+// The space tools moved to `extensions/ts/agent-tools.ts`, where this property is now structural
+// rather than checked: `conformance/layering.test.ts` bars an extension from importing an example at
+// all, so it cannot reach `roles.ts`. The app-side files still need the check.
+const workerSide = ["tools/save.ts", "tools/files.ts", "workers/tools.ts", "workers/exec.ts"];
 for (const f of workerSide) {
   const src = await Deno.readTextFile(new URL(`./${f}`, import.meta.url));
   // The IMPORT, not the word: the fix is documented in a comment that names it, and prose is not a
