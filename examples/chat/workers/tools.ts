@@ -4,16 +4,13 @@
 // files cannot reach the network beyond the local space and cannot read secrets: reading
 // a file can't lead to exfiltrating it. Config comes via args, not env (it has no env access).
 
-import { agentLoop } from "../../../sdk/ts/loop.ts";
-import { RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
-import { progress } from "../../../extensions/ts/progress.ts";
+import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { makeTools, TOOL_SCHEMAS } from "../tools/files.ts";
 import { INSPECT_SCHEMAS, makeInspectTools } from "../../../extensions/ts/agent-tools.ts";
 import { makeRemediateTools, REMEDIATE_SCHEMAS } from "../../../extensions/ts/agent-tools.ts";
 import { makeSaveTools, makeShareTools, makeWorkspaceTools, SAVE_SCHEMAS, SHARE_SCHEMAS, WORKSPACE_SCHEMAS } from "../tools/save.ts";
 import { arg, argAll } from "../util.ts";
-import { asTurnReply } from "../../../extensions/ts/turn.ts";
-import { publishCapability } from "../../../extensions/ts/capability.ts";
+import { serveTools } from "../../../extensions/ts/tool-worker.ts";
 
 
 const url = arg("--url") ?? "http://127.0.0.1:7788";
@@ -64,46 +61,16 @@ const tools = {
   ...makeWorkspaceTools(client),
 };
 
-// Publish this worker's capabilities as `capability` records so agents can DISCOVER the
-// available tools from the space (no hard-coded tool list). In a real system this
-// registration would be grant-gated: an untrusted worker publishing a tool is a threat.
-const ME = "agent:chat-tools";
-const schemas = [...TOOL_SCHEMAS, ...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS, ...SAVE_SCHEMAS, ...SHARE_SCHEMAS, ...WORKSPACE_SCHEMAS];
-const served: string[] = [];
-for (const name of Object.keys(tools)) {
-  const def = schemas.find((s) => s.function.name === name);
-  if (def) {
-    await publishCapability(client, def, ME);
-    served.push(name);
-  }
-}
-// Withdrawal is the LAUNCHER's job, not this process's. A worker retiring its own advertisements in
-// a signal handler races its own death: the parent kills and exits without waiting, and a SIGKILL
-// or a crash runs nothing at all. The launcher outlives every worker it started and can await the
-// write, so `retireProviderCapabilities` in `client/fleet.ts` does it by provider.
-void served;
-
-// Credential renewal is `agentLoop`'s job, not each worker's: every process running that loop is
-// long-lived by definition, and copying the keep-alive into five workers is five places to forget.
-await agentLoop(client, {
-  name: "tools",
-  patterns: Object.keys(tools).map((tool) => ({ kind: "tool_call", match: { tool } })),
-  // A slotted call's reply IS the tool message (workers/reply.ts); a bare call keeps tool_result.
-  handle: async (rec, c) => asTurnReply(rec, await serve(rec, c)),
+// Serving is `serveTools` (extensions/ts/tool-worker.ts): it advertises each definition, claims one
+// pattern per tool NAME (never `tool_call` wholesale, which would steal other workers' work), runs
+// the tool, and answers with the one result envelope. Withdrawal is the LAUNCHER's job, not this
+// process's: a worker retiring its own advertisements in a signal handler races its own death, so
+// `retireProviderCapabilities` in `client/fleet.ts` does it by provider.
+await serveTools(client, {
+  provider: "agent:chat-tools",
+  tools,
+  schemas: [...TOOL_SCHEMAS, ...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS, ...SAVE_SCHEMAS, ...SHARE_SCHEMAS, ...WORKSPACE_SCHEMAS],
+  // A file search or a space query can take seconds; say who picked it up and what is running.
+  stage: () => "running",
 });
-
-async function serve(rec: RadiaRecord, c: RadiaClient) {
-  {
-    const callId = rec.id;
-    const b = rec.body as { tool: string; args?: Record<string, unknown>; conversationId?: string; owner?: string };
-    // A file search or a space query can take seconds; say who picked it up and what is running.
-    await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "running", by: "agent:chat-tools", note: b.tool }, [callId]);
-    try {
-      const output = await tools[b.tool](b.args ?? {}, { callId, conversationId: b.conversationId, owner: b.owner });
-      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: true, output } };
-    } catch (e) {
-      return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: String(e) } };
-    }
-  }
-}
 sessionAlive.abort(); // the loop returned, so nothing is left to keep a credential alive for

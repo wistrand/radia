@@ -967,7 +967,18 @@ export class RadiaClient {
       } finally {
         reader.cancel().catch(() => {});
       }
-      if (revoked) throw new RadiaClientError(403, "forbidden", `watch ${watchId} revoked: ${revoked}`);
+      if (revoked) {
+        // The REASON matters, and conflating the two cost a live session. `credential_invalid` means
+        // the run this watch belonged to ended, which a client holding the durable half recovers
+        // from by minting another and watching again; anything else means the authorization itself
+        // changed, which retrying cannot fix. Surfaced as the code so a caller can tell them apart
+        // without parsing a message.
+        let reason = "forbidden";
+        try {
+          reason = (JSON.parse(revoked) as { reason?: string }).reason ?? "forbidden";
+        } catch { /* not JSON: treat as a plain forbidden */ }
+        throw new RadiaClientError(403, reason, `watch ${watchId} revoked: ${revoked}`);
+      }
       if (signal?.aborted) return;
       await sleep(200);
     }

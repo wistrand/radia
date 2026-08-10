@@ -1211,6 +1211,16 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 - **Scope a per-turn marker to the turn (`turnAt`), never the conversation.** `turn_complete`
   matched on `{conversationId}` finds the PREVIOUS turn's and ends every later turn immediately.
   Index the path. A suite running one turn per conversation cannot see it.
+- **A WATCH does not outlive its run, so supervise the loop that owns one.** A run lasts fifteen
+  minutes; the SDK mints another for ordinary calls, but the SSE stream opened under the old one is
+  revoked with `credential_invalid`. An unsupervised `for await (… client.watch(…))` throws out and
+  takes its worker with it, which stopped every conversation on the space with one stack trace as
+  the sign. Re-watch, and sweep on the way round so nothing that landed in the gap is stranded.
+- **A revoked watch has TWO causes and they need opposite responses.** `credential_invalid` means
+  the run ended (mint another and re-watch); anything else means the authorization changed (poll
+  and tell the operator). Conflated, a worker whose credential merely turned over was told to fix a
+  grant it already had, and polled for the rest of the session. The reason is the error's `code`
+  (`RadiaClient.watch`), so a caller can tell them apart without parsing a message.
 - **A long-lived worker holds the DEFINITION token, not a run token.** A run expires (15 minutes,
   renewing to a 12-hour ceiling); past that, or across a space restart, a worker holding only that
   half cannot re-authenticate and spins on `token_expired`. A definition token has no expiry and is

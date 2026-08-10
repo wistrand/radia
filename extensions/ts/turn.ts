@@ -327,5 +327,20 @@ export async function runTurnWorker(
 
   await sweep();
   const stop = opts.signal ?? new AbortController().signal;
-  for await (const _ of client.watch({ kind: k.message }, stop)) await sweep();
+  // SUPERVISED, because a watch does not last as long as a worker does. It is revoked when the run
+  // behind it ends (a run lasts fifteen minutes; the SDK mints another for ordinary calls, but the
+  // stream opened under the old one dies), and this loop is the whole worker: an unhandled throw
+  // here stopped every conversation on the space, with one stack trace as the only sign. A sweep
+  // runs on the way round, so a re-established watch never strands a message that landed in the gap.
+  while (!stop.aborted) {
+    try {
+      for await (const _ of client.watch({ kind: k.message }, stop)) await sweep();
+      return; // the generator ended: the signal aborted, which is a clean stop
+    } catch (e) {
+      if (stop.aborted) return;
+      log(`[turn] watch dropped (${e instanceof Error ? e.message : e}); re-watching`);
+      await new Promise((r) => setTimeout(r, 1000));
+      await sweep();
+    }
+  }
 }

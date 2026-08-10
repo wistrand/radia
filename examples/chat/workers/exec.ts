@@ -31,6 +31,7 @@ import { captureWorkspace, commitWorkspace, materialize, readWorkspace, validate
 import { bwrapSandbox, defaultConfiner, denoSandbox, macosPython, runBwrap, runSeatbelt, seatbeltPythonSandbox } from "../../../extensions/ts/sandbox.ts";
 import { declareSandbox, verifySandbox } from "../../../extensions/ts/sandbox-registry.ts";
 import { progress } from "../../../extensions/ts/progress.ts";
+import { answer, toolResult } from "../../../extensions/ts/tool-worker.ts";
 import { arg, argAll, argOn } from "../util.ts";
 import { type CapabilityBody, capabilityKey, publishCapability } from "../../../extensions/ts/capability.ts";
 import { bytesFrom, mediaTypeFor } from "../util.ts";
@@ -689,11 +690,7 @@ const isRefused = (x: unknown): x is Refused => typeof x === "object" && x !== n
 /** Every refusal is the same record shape, and every copy of it has to remember `callId`: without
  *  one the client waits out its deadline for a reply that already exists. */
 function refusal(b: Call, callId: string, output: string) {
-  return {
-    kind: "tool_result",
-    body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output },
-    taint: [] as string[],
-  };
+  return toolResult(callId, b, answer(output, { ok: false, taint: [] }));
 }
 
 /**
@@ -1264,7 +1261,7 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
   const name = String(a.name ?? "");
   const description = String(a.description ?? "");
   const code = String(a.code ?? "");
-  const fail = (output: string) => ({ kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output }, taint: [] });
+  const fail = (output: string) => toolResult(callId, b, answer(output, { ok: false, taint: [] }));
 
   if (!NAME_RE.test(name)) return fail("`name` must be lowercase letters, digits and underscores, starting with a letter");
   if ((await capabilityNames(c)).has(name)) return fail(`'${name}' is already a tool served by a worker; choose another name`);
@@ -1326,15 +1323,11 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
     : usesArgs
     ? "saved with no `parameters` schema, but the code reads `args`, so callers will not know what to pass"
     : "saved with no `parameters`: it takes no input and will do the same thing on every call";
-  return {
-    kind: "tool_result",
-    body: {
-      callId,
-      conversationId: b.conversationId, owner: b.owner,
-      ok: true,
-      output: { name, workspace: ws, entrypoint: entry, treeDigest: w.treeDigest, size: code.length, saved: true, ...(note ? { note } : {}) },
-    },
-  };
+  return toolResult(
+    callId,
+    b,
+    answer({ name, workspace: ws, entrypoint: entry, treeDigest: w.treeDigest, size: code.length, saved: true, ...(note ? { note } : {}) }),
+  );
 }
 
 /**
@@ -1351,15 +1344,11 @@ async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
   const b = rec.body as { args?: { name?: string }; conversationId?: string; owner?: string };
   const name = String(b.args?.name ?? "");
   if (!name) {
-    return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: "read_procedure needs a `name`" }, taint: [] };
+    return toolResult(callId, b, answer("read_procedure needs a `name`", { ok: false, taint: [] }));
   }
   const rows = await c.query({ kind: "procedure", match: { name, conversationId: b.conversationId ?? "" } }, 50);
   if (rows.length === 0) {
-    return {
-      kind: "tool_result",
-      body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: `no procedure '${name}' saved in this conversation` },
-      taint: [],
-    };
+    return toolResult(callId, b, answer(`no procedure '${name}' saved in this conversation`, { ok: false, taint: [] }));
   }
   const latest = newestByKey<{ name?: string }>(rows, (bb) => bb?.name).get(name)!;
   const body = latest.body as { name: string; description: string; artifactId?: string; workspace?: string; entrypoint?: string };
@@ -1387,22 +1376,13 @@ async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
   } else if (body.artifactId) {
     code = new TextDecoder().decode(await c.getArtifact(body.artifactId));
   } else {
-    return {
-      kind: "tool_result",
-      body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output: `procedure '${name}' has no stored code` },
-      taint: [],
-    };
+    return toolResult(callId, b, answer(`procedure '${name}' has no stored code`, { ok: false, taint: [] }));
   }
-  return {
-    kind: "tool_result",
-    body: {
-      callId,
-      conversationId: b.conversationId, owner: b.owner,
-      ok: true,
-      output: { name: body.name, description: body.description, code, versions: rows.length },
-    },
-    taint: [],
-  };
+  return toolResult(
+    callId,
+    b,
+    answer({ name: body.name, description: body.description, code, versions: rows.length }, { taint: [] }),
+  );
 }
 
 /**
@@ -1418,7 +1398,7 @@ async function retireProcedure(rec: RadiaRecord, c: RadiaClient) {
   const callId = rec.id;
   const b = rec.body as { args?: { name?: string; reason?: string }; conversationId?: string; owner?: string };
   const name = String(b.args?.name ?? "");
-  const fail = (output: string) => ({ kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: false, output }, taint: [] });
+  const fail = (output: string) => toolResult(callId, b, answer(output, { ok: false, taint: [] }));
   if (!name) return fail("retire_procedure needs a `name`");
 
   const current = await lookupProcedure(c, name, b.conversationId);
@@ -1437,7 +1417,7 @@ async function retireProcedure(rec: RadiaRecord, c: RadiaClient) {
   // this handler runs INSIDE agentLoop's iteration over `patterns`, so splicing it here would
   // mutate the array being walked. The chat stops OFFERING the tool, which is what actually
   // removes it from the model's context.
-  return { kind: "tool_result", body: { callId, conversationId: b.conversationId, owner: b.owner, ok: true, output: { name, retired: true } } };
+  return toolResult(callId, b, answer({ name, retired: true }));
 }
 
 async function shortHash(s: string): Promise<string> {

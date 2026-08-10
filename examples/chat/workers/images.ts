@@ -17,12 +17,13 @@
 // message thread, be re-sent on every turn, and swamp the Feed. The record carries a reference; the
 // bytes live in the blob store (design-data-model §2.4).
 
-import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { generateImage } from "../provider/imagegen.ts";
 import { describeMedia } from "../provider/vision.ts";
 import { progress } from "../../../extensions/ts/progress.ts";
-import { asTurnReply } from "../../../extensions/ts/turn.ts";
+// Its own `progress`, not the harness's `stage`: these notes carry WHICH model is running, which a
+// per-tool stage string cannot say.
+import { answer, serveTools } from "../../../extensions/ts/tool-worker.ts";
 import { arg, onStop } from "../util.ts";
 import { publishCapability } from "../../../extensions/ts/capability.ts";
 import { publishModel, retireModel } from "../space/model.ts";
@@ -136,40 +137,26 @@ interface Call {
   owner?: string;
 }
 
-/** Every exit from a handler is a `tool_result`, including the refusals: a failed call is an ANSWER
- *  the model should see, never a nack to retry at cost. `parents` carries the DATA the answer came
- *  from, so taint rides lineage instead of being asserted. */
-function reply(
-  callId: string,
-  b: Call,
-  ok: boolean,
-  output: unknown,
-  parents: string[] = [],
-): { kind: string; body: unknown; parentIds?: string[] } {
-  return {
-    kind: "tool_result",
-    body: { callId, conversationId: b.conversationId, owner: b.owner, ok, output },
-    ...(parents.length ? { parentIds: parents } : {}),
-  };
-}
-
-await agentLoop(client, {
-  name: "images",
-  patterns: [
-    { kind: "tool_call", match: { tool: "generate_image" } },
-    { kind: "tool_call", match: { tool: "analyze_image" } },
-  ],
+// Serving is `serveTools` (extensions/ts/tool-worker.ts). A handler returns its value for the
+// ordinary case, or `answer(...)` when it needs to say more: a refusal, or the DATA the answer came
+// from, so taint rides lineage rather than being asserted.
+await serveTools(client, {
+  provider: ME,
+  tools: {
+    generate_image: (a, ctx) =>
+      drawImage(ctx!.callId, { args: a, conversationId: ctx!.conversationId, owner: ctx!.owner }, client),
+    analyze_image: (a, ctx) =>
+      readImage(ctx!.callId, { args: a, conversationId: ctx!.conversationId, owner: ctx!.owner }, client),
+  },
+  schemas: [GENERATE_IMAGE, ANALYZE_IMAGE],
   leaseSeconds: 120, // image generation is slow; the heartbeat keeps the lease alive
-  // A slotted call's reply IS the tool message (workers/reply.ts); a bare call keeps tool_result.
-  handle: async (rec, c) =>
-    asTurnReply(rec, await ((rec.body as Call).tool === "analyze_image" ? readImage(rec.id, rec.body as Call, c) : drawImage(rec.id, rec.body as Call, c))),
 });
 
 async function drawImage(callId: string, b: Call, c: RadiaClient) {
   const prompt = String(b.args?.prompt ?? "").trim();
   // Nothing streams for the next 5-20s, so this record is the only sign of life the chat has.
   await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "drawing", by: ME, note: model }, [callId]);
-  if (!prompt) return reply(callId, b, false, "generate_image needs a prompt");
+  if (!prompt) return answer("generate_image needs a prompt", { ok: false });
   try {
     const { bytes, mediaType } = await generateImage({ apiKey, model, prompt, safetySettings });
     // Tainted on purpose. The bytes come from a provider (and in two of the response formats,
@@ -187,11 +174,11 @@ async function drawImage(callId: string, b: Call, c: RadiaClient) {
       // session that learns its id, whatever the conversation scoping says.
       meta: { conversationId: b.conversationId ?? "", owner: b.owner ?? "" },
     });
-    return reply(callId, b, true, { artifactId: artifact.id, mediaType, size: artifact.size, model, prompt });
+    return answer({ artifactId: artifact.id, mediaType, size: artifact.size, model, prompt });
   } catch (e) {
     // Don't nack: a refused or failed generation is an ANSWER (the model should see why and can
     // rephrase), not a transient fault to retry at cost.
-    return reply(callId, b, false, String(e));
+    return answer(String(e), { ok: false });
   }
 }
 
@@ -209,7 +196,7 @@ async function readImage(callId: string, b: Call, c: RadiaClient) {
   const question = String(b.args?.question ?? "").trim() ||
     "Describe this file. Include any text it contains, verbatim.";
   await progress(c, { conversationId: b.conversationId, owner: b.owner, callId, stage: "looking", by: ME, note: visionModel }, [callId]);
-  if (!artifactId) return reply(callId, b, false, "analyze_image needs an artifactId");
+  if (!artifactId) return answer("analyze_image needs an artifactId", { ok: false });
   try {
     // HEAD first, so an unreadable type or an oversized blob is refused without moving the bytes.
     // `artifactMeta` is on the COORDINATION plane; `getRecord` would be `/v0/ops`, which a worker
@@ -225,14 +212,14 @@ async function readImage(callId: string, b: Call, c: RadiaClient) {
       );
     });
     if (!meta) {
-      return reply(callId, b, false, `no artifact ${artifactId}`);
+      return answer(`no artifact ${artifactId}`, { ok: false });
     }
     const mediaType = meta.mediaType.split(";")[0].trim().toLowerCase();
     if (!visionTypes.includes(mediaType)) {
-      return reply(callId, b, false, `${artifactId} is ${mediaType}; ${visionModel} reads ${visionTypes.join(", ")}`);
+      return answer(`${artifactId} is ${mediaType}; ${visionModel} reads ${visionTypes.join(", ")}`, { ok: false });
     }
     if (meta.size > MAX_IMAGE_BYTES) {
-      return reply(callId, b, false, `${artifactId} is ${sizeLabel(meta.size)}, over the ${sizeLabel(MAX_IMAGE_BYTES)} limit`);
+      return answer(`${artifactId} is ${sizeLabel(meta.size)}, over the ${sizeLabel(MAX_IMAGE_BYTES)} limit`, { ok: false });
     }
     const bytes = await c.getArtifact(artifactId);
     const { text, finishReason, usage } = await describeMedia({
@@ -248,10 +235,7 @@ async function readImage(callId: string, b: Call, c: RadiaClient) {
     // it from a complete one. Saying so IN the result is what turns a wrong summary into a retry:
     // the assistant asked a broad question, got half an account, and read it as the whole picture.
     const truncated = finishReason === "length";
-    return reply(
-      callId,
-      b,
-      true,
+    return answer(
       {
         artifactId,
         mediaType,
@@ -264,9 +248,10 @@ async function readImage(callId: string, b: Call, c: RadiaClient) {
           ? { truncated: true, note: `the answer hit the ${ANSWER_TOKENS}-token budget and stops mid-thought; ask a narrower question rather than treating this as the whole picture` }
           : {}),
       },
-      [artifactId], // the file is a data parent: its labels become the answer's
+      // the file is a data parent: its labels become the answer's
+      { parentIds: [artifactId] },
     );
   } catch (e) {
-    return reply(callId, b, false, String(e));
+    return answer(String(e), { ok: false });
   }
 }

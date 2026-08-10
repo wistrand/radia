@@ -105,8 +105,17 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
         for await (const _ of client.watch({ kind }, credential.signal)) doWake();
         return; // generator ended (signal aborted): clean stop
       } catch (e) {
-        // A 403 on watch is PERMANENT: this run has no grant to watch this kind, and retrying
-        // can't change that. Log it loudly ONCE and stop watching; the poll fallback keeps the loop
+        // A run that ENDED is not a missing grant. The watch is revoked either way, but a client
+        // holding the durable half mints another run and watches again, so this retries rather than
+        // degrading. Told apart by the revocation's reason: reported as `forbidden`, a worker whose
+        // credential simply turned over was told to fix a grant it already had, and polled from
+        // then on.
+        if (e instanceof RadiaClientError && e.code === "credential_invalid") {
+          log(`[${o.name}] watch on '${kind}' outlived its run; re-watching under a fresh one`);
+          continue;
+        }
+        // Any other 403 IS permanent: this run has no grant to watch this kind, and retrying can't
+        // change that. Log it loudly ONCE and stop watching; the poll fallback keeps the loop
         // correct, just without wakeups. "Silently slow" becomes "loudly wrong", so fix the grant.
         if (e instanceof RadiaClientError && e.status === 403) {
           report(`[${o.name}] watch on '${kind}' FORBIDDEN (${e.code}): no grant to watch it; using the poll fallback. Grant this run a '${kind}' grant to get wakeups.`);

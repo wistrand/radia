@@ -397,6 +397,32 @@ try {
       await capWorker.status;
     }
 
+    // A WATCH OUTLIVES ITS RUN, and the worker must not die with it. A run lasts fifteen minutes; the
+    // SDK mints another for ordinary calls, but the SSE stream opened under the old one is REVOKED
+    // with `credential_invalid`. Unsupervised, that threw out of the watch loop and killed the whole
+    // turn worker, stopping every conversation on the space; the only sign was one stack trace.
+    const turnRuns = await admin.query({ kind: "agent_run", match: { agent: "agent:chat-turn" } }, 10, { dir: "desc" });
+    const turnRun = (turnRuns[0]?.body as { run?: string } | undefined)?.run;
+    check("the turn worker minted its own run", !!turnRun, String(turnRun));
+    if (turnRun) {
+      await admin.stopRun(turnRun);
+      await new Promise((r) => setTimeout(r, 1500)); // let the revocation reach the stream
+      const revived = (await admin.put({ kind: "conversation", body: {} })).id;
+      await admin.put({
+        kind: "message",
+        body: { conversationId: revived, owner: "human:t", index: 0, role: "user", content: "compute something" },
+        parentIds: [revived],
+      });
+      await admin.put({
+        kind: "llm_call",
+        body: { conversationId: revived, owner: "human:t", upToIndex: 0, turnAt: 0, round: 0, stream: false, tools: [] },
+        deadlineAt: new Date(Date.now() + 600_000).toISOString(),
+        parentIds: [revived],
+      });
+      const after = await awaitOne({ kind: "turn_complete", match: { conversationId: revived } }, 300);
+      check("…and it keeps advancing turns after that run is STOPPED under its watch", after !== null);
+    }
+
     // CANCEL: the person's Escape, as the record the worker reads before it emits. Written directly
     // here because a suite cannot press a key; what it proves is the worker half, which is the half
     // that changed. A head that would otherwise dispatch is left alone.
