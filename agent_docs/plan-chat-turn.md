@@ -16,7 +16,7 @@ PREREQUISITE: Package U in [plan-audit-remediation.md](plan-audit-remediation.md
 - Rejected: a turn state token
 - Rejected: claimable messages
 - The design, and its two halves
-- The rules
+- What the worker reacts to, today
 - Verified against the code
 - Decisions
 - Costs
@@ -105,7 +105,18 @@ a restart, since the retry arrives under a fresh `run:*`. Keys now scope to the 
 run, so the emission is exactly-once across restarts AND across two REPLs, whose turn workers share
 one identity.
 
-## The rules
+## What the worker reacts to, today
+
+NOT A CONTRACT, and worth saying because the table below looks like one. Nothing enforces it, no
+conformance suite covers it, and it was edited three times in the day it was written as the code
+moved under it. It is a sketch of how `extensions/ts/turn.ts` currently behaves, kept because a
+reader needs somewhere to start.
+
+The AUTHORITY on what a turn actually was is the MINED flow: `radia flows`, or the Graph tab on a
+conversation. That is not a technicality. This substrate's claim is that a shape emerges from
+content-routed reactions and is discovered afterwards
+([design-inspection.md](design-inspection.md)), so a state machine written down in prose is the
+thing that claim rejects, and it goes stale the moment a reaction changes.
 
 | trigger (watched fact or claimed work)          | emits / acks (one record)                  | via    |
 |--------------------------------------------------|--------------------------------------------|--------|
@@ -163,6 +174,10 @@ Checked 2026-08-09, second pass:
 
 ## Decisions
 
+What was chosen and why: design history, not a specification of behaviour. Where a row names a
+field the CODE is the authority — `afterIndex` sat in the cancel row here for a day after the
+implementation had settled on `turnAt`, which is the drift any doc restating an implementation gets.
+
 | question                          | decided                                       | why                                                     |
 |-----------------------------------|-----------------------------------------------|----------------------------------------------------------|
 | The shape                         | a chain: fenced links + keyed links           | both halves have shipped precedent (router; aggregator)  |
@@ -173,7 +188,7 @@ Checked 2026-08-09, second pass:
 | Prerequisite                      | Package U (agent-scoped keys)                 | run-scoped keys make keyed emission unable to survive a restart |
 | The cursor                        | derived from the trigger record               | no counter, no lease                                     |
 | Parallel tool calls               | NO, stay sequential                           | a chain needs no join; parallel needs a join and a counter |
-| Cancel                            | `cancel{conversationId, afterIndex}` read before each keyed emission | the turn worker is already a reader |
+| Cancel                            | `cancel{conversationId, turnAt}` read at the same gate as the deadline | both ask "is anyone still waiting"; keyed to the TURN, or it silences every later one |
 | Concurrent chains                 | client refuses to send while a turn is live   | current behaviour; the one job the loop did that nothing else does |
 
 ## Costs
@@ -181,8 +196,10 @@ Checked 2026-08-09, second pass:
 - DEPENDED ON PACKAGE U, now closed: keys are agent-scoped, so a turn-worker restart inside a
   turn replays its emission instead of double-paying a model call. The contract case is in
   `conformance/exchange.test.ts` ("survives a re-mint").
-- The turn's shape lives in a table and the Flows tab, not one readable file. The state table
-  belongs in [examples/chat/README.md](../examples/chat/README.md) beside the existing diagram.
+- The turn's shape is no longer readable in one file. The honest replacement is the MINED one
+  (`radia flows`, or the Graph tab on a conversation), not a state table copied into a README:
+  a table is a second source of truth that nothing checks, and this plan's own went stale within a
+  day. Point a reader at the tooling that reads the real thing.
 - `assembleContext` and the renderer must read assistant/tool content from `message` records that
   arrived as ack results; resume and the bricked-conversation repair need re-verification against
   the folded kind.
