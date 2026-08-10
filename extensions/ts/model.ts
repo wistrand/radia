@@ -82,8 +82,10 @@ export async function publishModel(client: RadiaClient, ad: ModelAd): Promise<vo
   // write is an idempotent replay of that older record and the retirement stays newest: the tier
   // is withdrawn forever and the worker has no way to say otherwise. Keying on the retirement it
   // supersedes is unique per revival and still idempotent for a repeated attempt against the same
-  // one. (This does not bite across a real restart, where the principal, and so the idempotency
-  // scope, is a fresh run; relying on that would make correctness depend on who is calling.)
+  // one. Restarts do NOT reset the collision: idempotency keys scope to the AGENT behind a run
+  // (audit Package U), so a relaunched worker replays its predecessor's writes. Harmless here,
+  // because model entries are keyed by CONTENT and survive their author; fatal for a registry
+  // keyed by author (gotchas.md, "A registry keyed by AUTHOR needs run-scoped idempotency keys").
   if (now?.ad.retired) key += `:after:${now.id}`;
   await client.put({ kind: "model", body: ad }, key);
 }

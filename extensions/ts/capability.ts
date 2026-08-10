@@ -75,8 +75,10 @@ export async function publishCapability(client: RadiaClient, def: ToolDef, provi
       // REVIVAL. Re-publishing an unchanged definition after a retirement replays the original write
       // under the same key: nothing is written, the call reports success, and the retirement is
       // still the newest record, so the tool never comes back. Anchoring the key on the retirement
-      // it supersedes makes this a fresh write, and repeats stay idempotent because the anchor moves
-      // only when something is retired again. Same shape as `RadiaClient.grant`.
+      // it supersedes makes this a fresh write. NOT the same anchor rule as `RadiaClient.grant`,
+      // which anchors on the newest retirement even when a revival is already newest: here the
+      // repeat-publish that rule protects against exits early on the hash check above, so
+      // "newest is retired" suffices and the simpler condition is the honest one.
       key += `:after:${existing[0].id}`;
     } else if (current?.def && await defHash(current.def) === hash) {
       return; // unchanged and live

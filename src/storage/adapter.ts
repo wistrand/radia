@@ -617,8 +617,3 @@ export interface StorageAdapter {
     opts: { now: string; bumpAttempt?: boolean; onlyExpired?: boolean },
   ): Promise<boolean>;
 }
-
-/** Marker for port methods a phase has not implemented yet. */
-export function notImplemented(method: string): never {
-  throw new Error(`StorageAdapter.${method} not implemented yet`);
-}
