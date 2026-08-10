@@ -756,10 +756,20 @@ export async function editWorkspace(
           );
           return false;
         }
-        if (unnumber(want) !== actual) {
+        const wanted = unnumber(want);
+        if (wanted !== actual) {
+          // WHERE the quoted line actually is, when it is anywhere. Without it the message reads as
+          // "your quote is wrong" and a caller re-guesses the quote; the fault is almost always the
+          // RANGE. Seen live: five identical retries against a range whose end was 14 lines short,
+          // each one guessing a new last line while the message already held the answer.
+          const line = which === "First" ? start : end;
+          const at = body.reduce<number[]>((hits, text, i) => (text === wanted && hits.length < 3 ? [...hits, i + 1] : hits), []);
           problems.push(
-            `${where}: expect${which}Line does not match line ${which === "First" ? start : end}. ` +
-              `Expected ${JSON.stringify(unnumber(want))}, found ${JSON.stringify(actual)}`,
+            `${where}: expect${which}Line does not match line ${line}. ` +
+              `Expected ${JSON.stringify(wanted)}, found ${JSON.stringify(actual)}` +
+              (at.length
+                ? `. That line is ${at.join(" or ")}, not ${line} — correct the RANGE, not the quote`
+                : `. That line is not in the file; re-read it before editing`),
           );
           return false;
         }

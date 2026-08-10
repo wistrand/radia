@@ -130,11 +130,24 @@ export async function serveTools(client: RadiaClient, opts: ServeOptions): Promi
       const stage = opts.stage?.(b.tool ?? "");
       if (stage) await progress(c, { ...ctx, stage, by: provider, note: b.tool }, [callId]);
       let a: ToolAnswer;
-      try {
-        const out = await opts.tools[b.tool ?? ""](b.args ?? {}, ctx);
-        a = isAnswer(out) ? out : answer(out);
-      } catch (e) {
-        a = answer(e instanceof Error ? e.message : String(e), { ok: false });
+      const bad = b.args?._unparsed !== undefined ? b.args : null;
+      if (bad) {
+        // Refuse BEFORE the tool, and name the real problem. Handed `{_unparsed}`, a tool reports
+        // whichever required field it misses first, so a malformed payload is refused as a missing
+        // argument the model did send and it retries the same doomed call (`parseArgs`, ./turn.ts).
+        a = answer(
+          `the arguments for ${b.tool} were not valid JSON and could not be repaired: ${bad._parseError}. ` +
+            `Most often a long string contains a raw newline instead of \\n. Send them again, ` +
+            `escaped, or split the work into smaller calls.`,
+          { ok: false },
+        );
+      } else {
+        try {
+          const out = await opts.tools[b.tool ?? ""](b.args ?? {}, ctx);
+          a = isAnswer(out) ? out : answer(out);
+        } catch (e) {
+          a = answer(e instanceof Error ? e.message : String(e), { ok: false });
+        }
       }
       return asTurnReply(rec, toolResult(callId, b, a), opts.kinds);
     },

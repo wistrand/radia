@@ -808,6 +808,29 @@ Deno.test("workspace: a range asserts WHAT it replaces, not only that the file i
     );
     assert(/expectLastLine does not match line 5/.test(err.message), err.message);
     assert(/found "<\/head>"/.test(err.message), err.message);
+    // …and WHERE it actually is, so the caller fixes the range instead of re-guessing the quote.
+    // Five live retries went the other way against a message that stopped at "found".
+    assert(/That line is 4, not 5 — correct the RANGE/.test(err.message), err.message);
+
+    // A quote that is nowhere in the file is a different mistake and says so, rather than sending
+    // the caller hunting for a line number that does not exist.
+    const absent = await assertRejects(
+      () =>
+        editWorkspace(c, {
+          name: "aim",
+          edits: [{
+            path: "page.html",
+            startLine: 2,
+            endLine: 4,
+            newString: "Z\n",
+            expectDigest: digest,
+            expectFirstLine: "<style>",
+            expectLastLine: "</nothing>",
+          }],
+        }),
+      Error,
+    );
+    assert(/not in the file; re-read it/.test(absent.message), absent.message);
 
     // Omitting the assertion entirely is refused rather than silently allowed.
     const bare = await assertRejects(

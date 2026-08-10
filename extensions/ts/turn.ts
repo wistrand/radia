@@ -93,14 +93,61 @@ export interface TurnOptions {
   log?: (message: string) => void;
 }
 
-function parseArgs(raw: string): Record<string, unknown> {
-  try {
-    const v = JSON.parse(raw || "{}");
+/**
+ * Escape control characters that appear raw INSIDE a string literal.
+ *
+ * The lexical error long tool arguments actually make: a model escapes newlines correctly for
+ * thousands of characters, then emits them raw, which JSON forbids (RFC 8259 §7). Seen on a live
+ * 16 KB `edit_workspace` call that switched at offset 6995 and cost the turn its round budget.
+ * Unambiguous to repair: a raw control character is never valid inside a string, and outside one it
+ * is only whitespace, so it is left alone.
+ */
+function escapeRawControls(raw: string): string {
+  let out = "";
+  let inString = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inString && ch === "\\") { // an escape pair is copied whole, so `\"` cannot end the string
+      out += ch + (raw[i + 1] ?? "");
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      out += ch;
+      continue;
+    }
+    const code = ch.charCodeAt(0);
+    if (!inString || code >= 0x20) {
+      out += ch;
+      continue;
+    }
+    out += code === 0x0a ? "\\n" : code === 0x09 ? "\\t" : code === 0x0d ? "\\r" : `\\u${code.toString(16).padStart(4, "0")}`;
+  }
+  return out;
+}
+
+/**
+ * A model's `arguments` string as an object, repaired where the repair is unambiguous.
+ *
+ * When it cannot parse, the REASON travels with the raw text. Without it every tool reports whatever
+ * required field it misses first, so a call whose 16 KB body was malformed was refused with
+ * "needs a `workspace`" for a workspace it did send, and the model retried the same doomed payload.
+ * `serveTools` (./tool-worker.ts) turns `_parseError` into the refusal.
+ */
+export function parseArgs(raw: string): Record<string, unknown> {
+  const attempt = (text: string) => {
+    const v = JSON.parse(text || "{}");
     return v && typeof v === "object" ? v as Record<string, unknown> : {};
-  } catch {
-    // A model can emit unparseable arguments, and the tool worker refuses more usefully than a crash
-    // here would: pass it on and let the refusal reach the transcript as an ordinary reply.
-    return { _unparsed: raw };
+  };
+  try {
+    return attempt(raw);
+  } catch (e) {
+    try {
+      return attempt(escapeRawControls(raw));
+    } catch {
+      return { _unparsed: raw, _parseError: e instanceof Error ? e.message : String(e) };
+    }
   }
 }
 

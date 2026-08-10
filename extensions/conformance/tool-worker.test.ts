@@ -14,6 +14,7 @@ import { operatorToken } from "../../examples/operator.ts";
 import { CAPABILITY_KIND, type ToolDef } from "../ts/capability.ts";
 import { PROGRESS_KIND } from "../ts/progress.ts";
 import { answer, serveTools, toolResult } from "../ts/tool-worker.ts";
+import { parseArgs } from "../ts/turn.ts";
 
 const PORT = 7827;
 const url = `http://127.0.0.1:${PORT}`;
@@ -85,6 +86,58 @@ Deno.test("[tool-worker] the envelope always carries callId, and the answer's sh
   assertEquals(rich.parentIds, ["a1"]);
   assertEquals(rich.taint, [], "an explicit empty raise is preserved");
   assertEquals(rich.body.procedure, "p1", "meta lands on the record, beside output rather than inside it");
+});
+
+Deno.test("[tool-worker] a long argument that switches to raw newlines is repaired, not lost", () => {
+  // The live shape: correctly escaped for thousands of characters, then raw. Structurally complete
+  // JSON, so nothing downstream notices except `JSON.parse`.
+  const raw = `{"workspace":"ws","edits":[{"path":"a.js","replacement":"good\\nlines\\nhere\nthen raw\nones"}]}`;
+  const args = parseArgs(raw);
+  assertEquals(args._unparsed, undefined, "an unambiguous lexical error must not cost the turn");
+  const edit = (args.edits as { replacement: string }[])[0];
+  assertEquals(edit.replacement, "good\nlines\nhere\nthen raw\nones", "both halves decode to the same thing");
+
+  // A control character OUTSIDE a string is legal whitespace and must survive untouched.
+  assertEquals(parseArgs('{"a":\n1}').a, 1);
+  // A quote that is itself escaped must not be read as ending the string; if it were, the repair
+  // would treat the rest of the payload as being outside a string and leave its newlines raw.
+  assertEquals(parseArgs('{"a":"say \\" then\nmore"}').a, 'say " then\nmore');
+  assertEquals(parseArgs("").constructor, Object, "no arguments is an empty object, not a failure");
+
+  // Truly broken: the REASON travels, because the refusal is built from it.
+  const hopeless = parseArgs('{"workspace":"ws",');
+  assertEquals(hopeless._unparsed, '{"workspace":"ws",');
+  assert(typeof hopeless._parseError === "string" && hopeless._parseError.length > 0);
+});
+
+Deno.test("[tool-worker] unparseable arguments are refused as a PARSE error, before the tool runs", async () => {
+  await withSpace(async (c) => {
+    const stop = new AbortController();
+    let ran = 0;
+    const serving = serveTools(c, {
+      provider: "w1",
+      tools: { edit: () => { ran++; return Promise.resolve("ok"); } },
+      schemas: [def("edit")],
+      signal: stop.signal,
+    });
+    try {
+      // What `parseArgs` produces for a payload it cannot repair. The tool would report the first
+      // required field it misses ("needs a `workspace`") for a workspace the model DID send.
+      const call = await c.put({
+        kind: "tool_call",
+        body: { tool: "edit", args: { _unparsed: '{"workspace":"ws",', _parseError: "Unexpected end of JSON input" }, conversationId: "c1" },
+      });
+      const reply = await awaitOne(c, { kind: "tool_result", match: { callId: call.id } });
+      const body = reply?.body as { ok: boolean; output: string };
+      assertEquals(body.ok, false);
+      assert(body.output.includes("not valid JSON"), body.output);
+      assert(body.output.includes("Unexpected end of JSON input"), "the parse error is what makes it actionable");
+      assertEquals(ran, 0, "the tool must not see arguments that did not parse");
+    } finally {
+      stop.abort();
+      await serving.catch(() => {});
+    }
+  });
 });
 
 Deno.test("[tool-worker] serves what it advertises, and a THROWN failure is an answer not a nack", async () => {

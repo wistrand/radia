@@ -1534,6 +1534,13 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Agent- and model-facing design
 
+- **Unparseable tool arguments must be refused as a PARSE error** (`parseArgs`, `extensions/ts/turn.ts`;
+  the refusal in `serveTools`, `tool-worker.ts`). Handed `{_unparsed}`, a tool reports whichever
+  required field it misses first, so a malformed 16 KB `edit_workspace` call was refused with
+  "needs a `workspace`" for a workspace the model did send; it could not correct and burned the
+  turn's round budget. `parseArgs` also escapes raw control characters inside string literals, the
+  one lexical error long arguments actually make (a model escapes newlines for 7 KB, then stops).
+  Guard: `extensions/conformance/tool-worker.test.ts`, both cases proved red on a plant.
 - **Testing the client is not testing the TOOL the model calls.** `smoke-selfgrant.ts` proved the
   scoped-events contract by paging the log itself and passed, but the chat calls `tools/space.ts`,
   where `space_events` fetched one page from cursor `0`. On a busy space that page is all foreign
