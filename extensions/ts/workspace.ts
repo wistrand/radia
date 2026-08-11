@@ -828,8 +828,29 @@ export async function editWorkspace(
       // permission: the model had guessed the text instead of reading it, got this error, decided it
       // was an access problem, and asked for a grant — which the human narrowed, breaking the read
       // access it did have. An error that does not say what to do next gets diagnosed creatively.
+      // WHERE THE TEXT ACTUALLY IS, when it is anywhere. Telling a caller "read the file and copy
+      // it" is useless advice to one that just did: seen live, a model read style.css, edited,
+      // failed, and burned a third round before landing it. The same fix the line-range boundary
+      // got — locate the near-miss and name it, so the next attempt is a correction rather than
+      // another guess. Compared with runs of whitespace collapsed, since indentation and wrapping
+      // are what a recalled string gets wrong while the words stay right.
+      const flat = (s: string) => s.replace(/\s+/g, " ").trim();
+      const wantFlat = flat(oldString);
+      const near = wantFlat.length > 0 && flat(text).includes(wantFlat);
+      const firstLine = flat(oldString.split("\n")[0] ?? "");
+      const at = text.split("\n").reduce<number[]>(
+        (hits, line, i) => (firstLine.length > 0 && flat(line).includes(firstLine) && hits.length < 3 ? [...hits, i + 1] : hits),
+        [],
+      );
       const hint = stripped !== oldString && text.includes(stripped)
         ? "; it matches once the line-number prefixes are removed, so send the file's own text"
+        : near
+        ? `. The file DOES contain this text${at.length ? ` (from line ${at.join(" or ")})` : ""}, ` +
+          "differing only in whitespace or indentation. Copy those lines out of read_workspace " +
+          "verbatim rather than re-typing them; this is a WHITESPACE mismatch, not a missing edit"
+        : at.length
+        ? `. Line ${at.join(" or ")} looks close but does not match exactly, so read the file with ` +
+          "read_workspace and copy the text out of it rather than recalling it"
         : ". Whitespace and indentation are significant, so read the file with read_workspace and " +
           "copy the text out of it rather than recalling it. This is NOT a permissions problem: the " +
           "file was read successfully and does not contain that text";

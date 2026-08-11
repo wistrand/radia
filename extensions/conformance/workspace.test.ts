@@ -961,6 +961,25 @@ Deno.test("workspace: an edit names ONE form, and a pasted line-number prefix sa
     );
     assert(/read the file with read_workspace/.test(missed.message), missed.message);
     assert(/NOT a permissions problem/.test(missed.message), missed.message);
+
+    // WHITESPACE-ONLY near miss: the words are right, the indentation is not. Telling a caller to
+    // "read the file and copy it" is useless advice to one that just did — seen live, a model read
+    // the file, edited, failed, and burned a third round before landing it. Name where the text is
+    // and what actually differs, the same fix the line-range boundary error got.
+    await writeWorkspace(c, { name: "ws", owner: OWNER, files: { "style.css": ":root {\n    --gold:  #ffd166;\n}\n" } });
+    const spaced = await assertRejects(
+      () => editWorkspace(c, { name: "ws", edits: [{ path: "style.css", oldString: "--gold: #ffd166;", newString: "--gold: #fff;" }] }),
+      Error,
+    );
+    assert(/WHITESPACE mismatch/.test(spaced.message), spaced.message);
+    assert(/from line 2/.test(spaced.message), `expected the line located: ${spaced.message}`);
+    // …and it must not claim a whitespace match when the text genuinely is not there.
+    const absent = await assertRejects(
+      () => editWorkspace(c, { name: "ws", edits: [{ path: "style.css", oldString: "--silver: #ccc;", newString: "x" }] }),
+      Error,
+    );
+    assert(!/WHITESPACE mismatch/.test(absent.message), absent.message);
+    assert(/NOT a permissions problem/.test(absent.message), absent.message);
   });
 });
 
