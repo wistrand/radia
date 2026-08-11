@@ -80,6 +80,6 @@ await serveTools(client, {
   // A FLAG, not an env read: this worker runs without `--allow-env` on purpose (the fleet grants
   // it a port and its tool roots and nothing else), so reading the environment here crashes it on
   // startup. The launcher, which does have env access, resolves the value and passes it.
-  concurrency: Number(arg("--concurrency") ?? "4"),
+  concurrency: Number(arg("--concurrency") ?? "16"),
 });
 sessionAlive.abort(); // the loop returned, so nothing is left to keep a credential alive for

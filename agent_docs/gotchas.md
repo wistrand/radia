@@ -358,8 +358,8 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   (`examples/chat/client/fleet.ts`). Each worker is spawned with the narrowest permissions that
   let it work, and `tools`, `turn` and `exec` get no env access at all, so `Deno.env.get` there is
   a NotCapable crash at STARTUP, before any test that does not launch the real fleet can see it.
-  The launcher has the environment and resolves values into arguments (`WORKER_CONCURRENCY` is the
-  worked example). A `??` chain hides this: `arg("--url") ?? Deno.env.get(...)` never crashed only
+  The launcher has the environment and resolves values into arguments (`PROVIDER_CONCURRENCY` /
+  `LOCAL_CONCURRENCY` are the worked example). A `??` chain hides this: `arg("--url") ?? Deno.env.get(...)` never crashed only
   because the flag was always passed. Guard: `smoke-fleet.ts` correlates each spawn's flags with
   its worker's source, which is how the `turn.ts` case was found.
 - **A worker loop must never swallow a handler exception, whatever its logging is configured to

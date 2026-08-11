@@ -263,8 +263,9 @@ await agentLoop(client, {
   patterns: [{ kind: "llm_call", match: { tier: { $exists: false } } }],
   // EVERY untiered call passes through here, and classifying one is a model round trip this
   // worker only waits on, so at 1 the router serializes the whole fleet before a tier ever sees
-  // the work (agent_docs/plan-scaling.md). A flag, resolved by the launcher: see WORKER_CONCURRENCY.
-  concurrency: Number(arg("--concurrency") ?? "4"),
+  // the work (agent_docs/plan-scaling.md). Its slots are CHEAP: this worker holds no API key, so
+  // a slot waits on the fleet rather than on a vendor. Resolved by the launcher (LOCAL_CONCURRENCY).
+  concurrency: Number(arg("--concurrency") ?? "16"),
   handle: async (rec, c) => {
     const body = rec.body as { conversationId?: string; owner?: string; upToIndex?: number; turnAt?: number; round?: number };
     // Report the claim before the classifier round-trip. It is the first sign of life the chat

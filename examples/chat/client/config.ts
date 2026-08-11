@@ -107,18 +107,29 @@ export const TIERS: Record<string, string> = {
 export const CLASSIFY_MODEL = Deno.env.get("RADIA_CHAT_CLASSIFY_MODEL") ?? "google/gemini-2.5-flash-lite";
 
 /**
- * Claims a WAITING worker (inference, router, tools) holds at once (`agentLoop`'s `concurrency`).
+ * Claims a worker holds at once (`agentLoop`'s `concurrency`). TWO numbers, because the workers
+ * differ in WHO PAYS for an extra slot, which is the only thing that should set them.
  *
- * Resolved HERE and passed as a flag, never read in the worker: the fleet runs each worker with
- * the narrowest permissions that let it work, and `tools` has no `--allow-env` at all, so an
- * env read there crashes it on startup. The launcher has the environment; the workers take
- * arguments.
+ * Both are resolved HERE and passed as flags, never read in the worker: the fleet runs each with
+ * the narrowest permissions that let it work, and `tools` has no `--allow-env` at all, so an env
+ * read there crashes it on startup. The launcher has the environment; workers take arguments.
  *
- * Serving a call is 5-60s of awaiting a socket, so at 1 a tier answers one person at a time
- * whatever the space could take (agent_docs/plan-scaling.md). The exec worker is deliberately
- * excluded: it spawns a jail per call, where overlapping trades latency for contention.
+ * INFERENCE is bounded by the PROVIDER, and deliberately low. Its handler never nacks ("the error
+ * IS the answer", extensions/ts/inference.ts): a rate-limited call does not queue and retry, it
+ * delivers `[inference error: 429]` into somebody's conversation with the tokens already spent.
+ * So overshooting here converts backpressure into user-visible failure, and only the operator
+ * knows their account's limit. Raise it with RADIA_CHAT_CONCURRENCY once you know that number.
+ *
+ * ROUTER and TOOLS are bounded by US, and cost almost nothing per slot. The router holds no API
+ * key at all: it dispatches a classify `llm_call` and awaits an `llm_result`, so its slots wait on
+ * the fleet rather than on a vendor, and the fast tier's own limit still bounds the real model
+ * calls. Tool calls are local work (a query, a file read). Both are single processes serving every
+ * session, and the router sits in front of EVERY turn, so a small number there queues turns before
+ * they are even classified. The exec worker is excluded from both: it spawns a jail per call,
+ * where overlapping trades latency for contention. See agent_docs/plan-scaling.md.
  */
-export const WORKER_CONCURRENCY = Number(Deno.env.get("RADIA_CHAT_CONCURRENCY") ?? "4");
+export const PROVIDER_CONCURRENCY = Number(Deno.env.get("RADIA_CHAT_CONCURRENCY") ?? "4");
+export const LOCAL_CONCURRENCY = Number(Deno.env.get("RADIA_CHAT_LOCAL_CONCURRENCY") ?? "16");
 
 /** Not a tier: it serves the `generate_image` tool and advertises `modalities:["image"]`, so text
  *  routing never dispatches a conversation turn to it. */

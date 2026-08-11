@@ -31,7 +31,8 @@ import {
   url,
   VISION_MEDIA_TYPES,
   VISION_MODEL,
-  WORKER_CONCURRENCY,
+  LOCAL_CONCURRENCY,
+  PROVIDER_CONCURRENCY,
 } from "./config.ts";
 import type { Bootstrapped } from "../space/roles.ts";
 import { dim, notice } from "./terminal.ts";
@@ -109,7 +110,7 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
       "--tier", tier,
       "--model", model,
       "--rank", String(rank++),
-      "--concurrency", String(WORKER_CONCURRENCY),
+      "--concurrency", String(PROVIDER_CONCURRENCY),
     ]));
   }
 
@@ -122,7 +123,7 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
     "--url", url,
     "--token", routerToken,
     "--classify-model", CLASSIFY_MODEL,
-    "--concurrency", String(WORKER_CONCURRENCY),
+    "--concurrency", String(LOCAL_CONCURRENCY),
   ]));
 
   // Images: same privilege shape as inference (key + egress, no files). Draws (storing its output as
@@ -149,7 +150,7 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
     "--url", local,
     "--token", toolsToken,
     "--session-token", sessionToken,
-    "--concurrency", String(WORKER_CONCURRENCY),
+    "--concurrency", String(LOCAL_CONCURRENCY),
     ...toolRoots.flatMap((r) => ["--dir", r]),
   ]));
 

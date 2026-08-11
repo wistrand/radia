@@ -70,10 +70,16 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
 1. **BUILT: `concurrency: K` in `agentLoop`** (`sdk/ts/loop.ts`). The per-claim block (fenced
    lease, heartbeat, cancellation, settle) was always self-contained, so this is slot bookkeeping
    around it and no new machinery. **Default 1**, so no existing worker changes behaviour; the
-   chat opts its WAITING workers in at 4 (`WORKER_CONCURRENCY`, `RADIA_CHAT_CONCURRENCY`):
-   inference (5-60s awaiting a socket), the router (every untiered call passes through it and it
-   awaits a classifier), and tools (queries and file reads). The EXEC worker stays at 1 on
-   purpose: it spawns a jail per call, where overlapping trades latency for contention.
+   chat opts its waiting workers in, at TWO numbers set by who pays for a slot
+   (`examples/chat/client/config.ts`). Inference is PROVIDER-bound and deliberately low (4,
+   `RADIA_CHAT_CONCURRENCY`): its handler never nacks, so a rate-limited call does not queue and
+   retry, it delivers `[inference error: 429]` into a conversation with the tokens already spent,
+   and only the operator knows their account's limit. The router and tools are bound by US and
+   cost almost nothing per slot (16, `RADIA_CHAT_LOCAL_CONCURRENCY`): the router holds no API key
+   at all (it dispatches a classify `llm_call` and awaits the result, so the fast tier's own limit
+   still bounds real model calls) and it sits in front of EVERY turn, so a small number there
+   queues turns before they are even classified. The EXEC worker stays at 1 on purpose: it spawns
+   a jail per call, where overlapping trades latency for contention.
    Guards: `conformance/loop.test.ts` (K slots fill from one burst; the default still serializes;
    shutdown drains in-flight claims before retiring interests), each proven red.
 2. **K replicas per tier worker.** Now largely redundant for WAITING workers, which (1) covers in
