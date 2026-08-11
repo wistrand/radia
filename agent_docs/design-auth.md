@@ -178,7 +178,8 @@ bypasses put-authorization. This is pipeline-friendly: each hop needs only its o
 chain records the path (see [design-data-model.md](design-data-model.md)).
 
 **Deferred to later M1–M3:** real OIDC for `human:*` and the `agent-definitions` credential
-(the operator boundary is the auto-provisioned local default, not federated identity); the
+(the operator boundary is the auto-provisioned local default, not federated identity; the SHAPE is
+now decided, see "OIDC: deferred, with the shape decided" under Deferred); the
 stricter **chain-intersection** delegation policy (effective permission = intersection of the
 whole chain's grants, rejected as a hard default because it breaks legitimate pipelines; it
 belongs with taint composition); per-principal **trust classification** (auto-tainting untrusted
@@ -660,3 +661,35 @@ Boundary signing and agent-held keys (federation-time; rationale in
 recipient-keyed encryption as a runtime feature · field-level ACLs · multi-tenancy (one
 space per team for now) · ops-plane tiers (decided and planned, not built:
 [architecture-ops-tiers.md](architecture-ops-tiers.md)).
+
+### OIDC: deferred, with the shape decided
+
+Analyzed 2026-08-11; nothing built, and the trigger to revisit is concrete: the first shared
+deployment with humans who do not run the space. Three decisions are recorded now so the deferral
+stays cheap and the eventual build starts from a shape instead of a debate. Prerequisite either
+way: the console must first hold and exchange a credential like every other client
+([plan-console-auth.md](plan-console-auth.md) phase 1); OIDC ends with a credential the page still
+has to manage.
+
+- **OIDC is a new way to MINT into the existing chain, never a parallel auth model.**
+  `POST /v0/sessions/oidc` takes an `id_token`, the space verifies it (WebCrypto RS256/ES256, no
+  new dependency; an in-repo test issuer signs with a test key and serves a JWKS, the
+  fake-OpenRouter precedent), maps claims to a `human:` principal, and mints through the bootstrap
+  chain. Everything downstream is unchanged: leases owned by runs, idempotency scoped to the
+  agent, revocation by `stopRun`, audit in `agent_run` records, authorization only through `grant`
+  records. A fresh OIDC user therefore lands with ZERO grants, which is correct
+  ("assigned, never self-declared"), and escalates through the existing `grant_request` flow.
+  Rejected: validating JWTs per request (resource-server style). A bearer JWT has no run, and
+  fencing, lease ownership, idempotency scope and the event log's `runId` all key off run
+  identity; that path forks the model rather than extending it.
+- **The principal comes from a MAPPING REGISTRY, not from a claim used raw.** Grants bind to
+  principal strings, so the naming rule is load-bearing: `email` is readable but mutable and
+  reassignable (a renamed employee silently loses every grant), `sub` is stable but opaque and
+  per-issuer. The identity key is `(iss, sub)`; a reserved registry (records, latest-wins, the
+  house pattern) maps it to the `human:` principal grants bind to, so a rename is a registry
+  write instead of a grant migration.
+- **OIDC mints RUNS directly; no durable half is created.** A definition token deliberately never
+  expires, and an OIDC-minted definition would outlive IdP deprovisioning, which is the exact
+  thing SSO exists to prevent. Minting runs (12-hour ceiling, renewable) bounds every session by
+  the run lifetime, and the console re-dances via silent refresh, so IdP deprovisioning takes
+  effect within one ceiling with no expiry semantics added to definitions.
