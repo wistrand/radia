@@ -149,33 +149,7 @@ async function dev(args: string[]): Promise<void> {
   if (space.sealKey) console.log(`radia dev: event chain signed (key from ${space.sealKey.source})`);
   await space.loadKinds(); // restore persisted kind declarations
   const operatorToken = await space.mintOperatorToken(); // for the CLI, the MCP adapter and curl
-  // Auto-provision: write the token where the CLI and MCP adapter look, so local tools present a
-  // real Bearer token like any production client instead of relying on the no-header shortcut.
   const base = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
-  const saved = saveCredential(base, { token: operatorToken, mintedAt: new Date().toISOString(), storage: storage.name });
-  if (saved.ok) console.log(`radia dev: operator credential provisioned at ${saved.path} (destructive radia verbs use it)`);
-  else console.log(`radia dev: could not write ${saved.path} (${saved.error}). Set RADIA_TOKEN to use the CLI`);
-  // The OBSERVER credential (architecture-ops-tiers.md phase 5): an `agent:local-observer` definition
-  // holding the `observe` ops power. The MCP adapter and read-only CLI verbs prefer it, so a
-  // model harness inspects the space without holding the operator bit; coordination through MCP
-  // 403s until an operator grants kinds. The DEFINITION token is what lands on disk (mint-only,
-  // revocable via `radia revoke agent:local-observer`), reused across restarts. The power is
-  // assigned at mint and never re-put on reuse; see `provisionObserver` for why a re-put would
-  // eventually resurrect a retired power.
-  try {
-    const r = await provisionObserver(space, base, storage.name);
-    console.log(`radia dev: observer credential ${r.created ? "provisioned" : "reused"} (${OBSERVER_PRINCIPAL}: ops reads only; radia mcp defaults to it)`);
-  } catch (e) {
-    console.log(`radia dev: could not provision the observer credential (${(e as Error).message}); radia mcp will fall back to the operator token`);
-  }
-  // The console requires a credential in EVERY mode, not only `--auth required`, so print one
-  // unconditionally. It used to be shown only in required mode, which left the operator hunting
-  // for a token the sign-in screen asks for.
-  // The console and `curl` both need this; the CLI and MCP adapter read the file above instead.
-  console.log(`radia dev: operator token (console sign-in, curl): ${operatorToken}`);
-  if (!authRequired) {
-    console.log(`radia dev: --auth open. A request with no Authorization header is the OPERATOR.`);
-  }
   // Shut down on a signal instead of being killed mid-flight, so the cleanup below actually runs.
   // Without this, Ctrl-C or SIGTERM leaves a dead token on disk and the next CLI call 401s with
   // no explanation.
@@ -184,12 +158,41 @@ async function dev(args: string[]): Promise<void> {
 
   try {
     const { finished } = startServer({ port, space, host, authRequired, artifactPort, signal: stopping.signal });
+    // Bind succeeded (`Deno.serve` throws synchronously on a taken port), so only NOW touch the
+    // shared credential file: a second dev aimed at an occupied base used to overwrite the running
+    // space's operator entry before losing the port race, then delete it in the finally below.
+    // Auto-provision: write the token where the CLI and MCP adapter look, so local tools present a
+    // real Bearer token like any production client instead of relying on the no-header shortcut.
+    const saved = saveCredential(base, { token: operatorToken, mintedAt: new Date().toISOString(), storage: storage.name });
+    if (saved.ok) console.log(`radia dev: operator credential provisioned at ${saved.path} (destructive radia verbs use it)`);
+    else console.log(`radia dev: could not write ${saved.path} (${saved.error}). Set RADIA_TOKEN to use the CLI`);
+    // The OBSERVER credential (architecture-ops-tiers.md phase 5): an `agent:local-observer` definition
+    // holding the `observe` ops power. The MCP adapter and read-only CLI verbs prefer it, so a
+    // model harness inspects the space without holding the operator bit; coordination through MCP
+    // 403s until an operator grants kinds. The DEFINITION token is what lands on disk (mint-only,
+    // revocable via `radia revoke agent:local-observer`), reused across restarts. The power is
+    // assigned at mint and never re-put on reuse; see `provisionObserver` for why a re-put would
+    // eventually resurrect a retired power.
+    try {
+      const r = await provisionObserver(space, base, storage.name);
+      console.log(`radia dev: observer credential ${r.created ? "provisioned" : "reused"} (${OBSERVER_PRINCIPAL}: ops reads only; radia mcp defaults to it)`);
+    } catch (e) {
+      console.log(`radia dev: could not provision the observer credential (${(e as Error).message}); radia mcp will fall back to the operator token`);
+    }
+    // The console requires a credential in EVERY mode, not only `--auth required`, so print one
+    // unconditionally. The console and `curl` both need this; the CLI and MCP adapter read the
+    // file above instead.
+    console.log(`radia dev: operator token (console sign-in, curl): ${operatorToken}`);
+    if (!authRequired) {
+      console.log(`radia dev: --auth open. A request with no Authorization header is the OPERATOR.`);
+    }
     await finished;
   } finally {
     unlisten();
     // The token dies with the process (operator tokens are never persisted as records), so leaving
-    // it on disk would only mislead the next CLI invocation into a 401.
-    clearCredential(base);
+    // it on disk would only mislead the next CLI invocation into a 401. Conditional on the entry
+    // still being OURS: another dev on this base may have replaced it since.
+    clearCredential(base, operatorToken);
     await storage.close();
   }
 }

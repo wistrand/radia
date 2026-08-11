@@ -103,14 +103,25 @@
     operator default: whatever you paste here decides what the page can see and do, and the space
     enforces it.</p>
     <div class="row">
-      <input id="signin-token" placeholder="paste a session token" style="flex:1" autocomplete="off" spellcheck="false"
+      <input id="signin-token" placeholder="paste a token: radia login human:you --console prints a sign-in link instead" style="flex:1" autocomplete="off" spellcheck="false"
         onkeydown="if (event.key === 'Enter') { event.preventDefault(); signIn(); }">
       <button class="btn" onclick="signIn()">Sign in</button>
     </div>
+    <label style="display:block;margin-top:8px;font-size:13px;color:var(--muted)">
+      <input type="checkbox" id="signin-remember" checked style="width:auto"> remember on this browser
+      <span class="muted">(definition tokens only: the durable half can only mint, and revoking it is the off switch)</span>
+    </label>
     <div id="signin-note"></div>
-    <p class="muted" style="margin-bottom:0">Where to get one: <code>radia dev</code> prints an operator
-    token at startup and writes it to your credential file; <code>radia login human:you</code> mints a
-    scoped session for a person. Held in <code>sessionStorage</code> for this tab only.</p>
+    <div id="signin-operator" style="display:none;margin-top:10px">
+      <button class="btn ghost" onclick="signInOperator()">Sign in as local operator</button>
+      <span class="muted" style="font-size:13px">open mode: this browser then sends no credential and the
+      space answers as the operator, which any curl here already gets. The button exists so that
+      authority is taken visibly, never by default.</span>
+    </div>
+    <p class="muted" style="margin-bottom:0">Where to get one: <code>radia login human:you</code> mints a
+    person's session and prints both halves (<code>--console</code> prints a link that signs this page in);
+    <code>radia dev</code> prints an operator token at startup. A definition token keeps this browser
+    signed in indefinitely; a run token lasts a session.</p>
   </div>
 </div>
 <nav id="nav">
@@ -386,22 +397,27 @@ const $ = (id) => document.getElementById(id);
 
 // This page carries NO credential: it is served publicly so it can bootstrap in `--auth required`
 // mode, so anything baked in would be readable by anyone who can reach the port. It asks for one
-// instead, and REFUSES TO RUN WITHOUT IT, in every mode: the operator token `radia dev` prints, or
-// a person's session token (`radia login human:alice`, or minted on the Auth tab below). Held in
-// sessionStorage for this tab only.
+// instead (plan-console-auth.md), and holds it the way every other client does:
 //
-// The open-mode no-header shortcut is deliberately not used here even though the space still offers
-// it. A console that relies on it holds the entire control plane because nobody typed anything,
-// which is both the largest possible authority and the least visible way to acquire it. Requiring a
-// credential also makes the page's identity a thing someone CHOSE, which is what lets a person see
-// the space as themselves.
+//   the DURABLE half   a definition token, MINT-ONLY (the space refuses it for coordination), kept
+//                      in localStorage when the person asks to be remembered. Stealing it cannot
+//                      read or write; minting with it WRITES an `agent_run` record, so theft leaves
+//                      an audit trail and `radia revoke` is the off switch.
+//   the SHORT half     a run token, minted from the durable one, sessionStorage, renewed while the
+//                      tab is open and re-minted silently when it lapses. This is the only token
+//                      that ever authorizes a read or write.
 //
-// The token decides the identity, so nothing here assumes the console is the operator. WHO the
-// pasted token belongs to and what it may do are read back from the space (`ops/permissions`,
-// which every principal may call about ITSELF), never inferred from the fact that a token exists.
-// The console showing "operator" while running scoped is the promise-vs-enforcement gap that every
-// grant bug in this codebase has had.
+// The open-mode no-header shortcut is never used SILENTLY: in open mode the sign-in screen offers
+// it as a labeled button, because the objection to the shortcut was always visibility, not
+// existence (any curl already has it there). Identity is read back from `ops/permissions`, never
+// inferred from the fact that a token exists: the console showing "operator" while running scoped
+// is the promise-vs-enforcement gap every grant bug in this codebase has had.
 let AUTH_TOKEN = sessionStorage.getItem("radia.token");
+// The durable half, whichever home the person chose for it. One home only: `adopt` clears the other.
+let DEF_TOKEN = localStorage.getItem("radia.definition") || sessionStorage.getItem("radia.definition");
+// The labeled open-mode session: this browser sends NO credential and the space answers as the
+// operator. Chosen by a button that says so, per tab.
+let OPEN_OPERATOR = sessionStorage.getItem("radia.open-operator") === "1";
 let IDENTITY = null; // {principal, subject, privileged} once loadHealth has asked
 function setToken() {
   const t = prompt("Session token: the operator token `radia dev` prints, or a person's (`radia login human:alice`). Empty signs out:", AUTH_TOKEN ?? "");
@@ -412,7 +428,44 @@ function useToken(t) {
   AUTH_TOKEN = t || null;
   if (AUTH_TOKEN) sessionStorage.setItem("radia.token", AUTH_TOKEN);
   else sessionStorage.removeItem("radia.token");
+  // An explicit choice of credential REPLACES the stored ones. Leaving a definition behind would
+  // silently swap the identity back the moment this run token expired, which reads as haunting.
+  forgetDefinition();
+  sessionStorage.removeItem("radia.open-operator");
   location.reload();
+}
+
+function forgetDefinition() {
+  DEF_TOKEN = null;
+  localStorage.removeItem("radia.definition");
+  sessionStorage.removeItem("radia.definition");
+}
+
+/** One exchange at a time, exactly the SDK's rule: concurrent 401s must produce ONE new run, not a
+ *  burst of `agent_run` records that are all discarded but one. */
+let exchanging = null;
+function exchangeDefinition() {
+  if (!DEF_TOKEN) return Promise.resolve(false);
+  exchanging ??= (async () => {
+    let res;
+    try {
+      res = await fetch("/v0/agent-runs", { method: "POST", headers: { "Authorization": "Bearer " + DEF_TOKEN } });
+    } catch {
+      return false; // network: the caller's own failure handling names it
+    }
+    const d = await res.json().catch(() => null);
+    if (res.ok && d && d.runToken) {
+      AUTH_TOKEN = d.runToken;
+      sessionStorage.setItem("radia.token", AUTH_TOKEN);
+      return true;
+    }
+    // The definition itself is dead (revoked, or a different space): clear it and say WHY, rather
+    // than retrying a mint that can never work again on every poll.
+    forgetDefinition();
+    showSignIn(d && d.detail ? "Saved sign-in rejected: " + d.detail : "Your saved sign-in was rejected. Paste a new token.");
+    return false;
+  })().finally(() => { exchanging = null; });
+  return exchanging;
 }
 
 /** The one path that legitimately carries no credential: it is public so the page can tell "no
@@ -420,33 +473,45 @@ function useToken(t) {
 const PUBLIC_PATHS = new Set(["/v0/health"]);
 
 async function api(method, path, body, headers = {}) {
-  // Refuse to send an unauthenticated request rather than let the space answer it as the operator.
-  // The open-mode no-header shortcut is a real credential-shaped hole: a console that used it would
-  // hold the whole control plane by virtue of nobody having typed anything.
-  if (!AUTH_TOKEN && !PUBLIC_PATHS.has(path.split("?")[0])) {
+  // Refuse to send an unauthenticated request rather than let the space answer it as the operator,
+  // UNLESS the person chose the labeled open-operator session, which is exactly the request that
+  // sends no header, on purpose, visibly.
+  if (!AUTH_TOKEN && !DEF_TOKEN && !OPEN_OPERATOR && !PUBLIC_PATHS.has(path.split("?")[0])) {
     return { ok: false, status: 401, data: { title: "not signed in", detail: "this console sends no unauthenticated requests" } };
   }
-  const h = { ...headers };
-  if (body !== undefined) h["content-type"] = "application/json";
-  if (AUTH_TOKEN) h["Authorization"] = "Bearer " + AUTH_TOKEN;
-  // A network failure is an outcome, not an exception. `fetch` REJECTS when the space is not
-  // listening, and every caller here reads `{ok, status}`, so an uncaught rejection meant a stopped
-  // space left the page frozen on its last good render rather than saying anything. Status 0 is the
-  // "never reached the server" case, distinct from any HTTP status.
-  let res;
-  try {
-    res = await fetch(path, {
-      method,
-      headers: h,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-  } catch (e) {
-    return { ok: false, status: 0, data: { title: "unreachable", detail: String(e.message || e) } };
+  // Holding only the durable half is a signed-in state: mint the short one before the first real
+  // request, the same lazily-on-demand shape the SDK uses.
+  if (!AUTH_TOKEN && DEF_TOKEN) await exchangeDefinition();
+  // At most one retry, and only through the exchange: a 401 with a definition in hand means the
+  // run lapsed (a laptop slept through the window), which is the exact case the durable half
+  // exists for. A second failure is real and is returned as itself.
+  for (let attempt = 0;; attempt++) {
+    const h = { ...headers };
+    if (body !== undefined) h["content-type"] = "application/json";
+    if (AUTH_TOKEN) h["Authorization"] = "Bearer " + AUTH_TOKEN;
+    // A network failure is an outcome, not an exception. `fetch` REJECTS when the space is not
+    // listening, and every caller here reads `{ok, status}`, so an uncaught rejection meant a stopped
+    // space left the page frozen on its last good render rather than saying anything. Status 0 is the
+    // "never reached the server" case, distinct from any HTTP status.
+    let res;
+    try {
+      res = await fetch(path, {
+        method,
+        headers: h,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+    } catch (e) {
+      return { ok: false, status: 0, data: { title: "unreachable", detail: String(e.message || e) } };
+    }
+    if (res.status === 401 && DEF_TOKEN && attempt === 0) {
+      await res.body?.cancel();
+      if (await exchangeDefinition()) continue;
+    }
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+    return { ok: res.ok, status: res.status, data };
   }
-  const text = await res.text();
-  let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-  return { ok: res.ok, status: res.status, data };
 }
 // Escapes for BOTH text and attribute contexts. Quotes matter: record-derived values reach
 // attributes (a grant's pattern is JSON, which always contains `"`, and a kind name is validated
@@ -626,6 +691,7 @@ async function loadHealth() {
   // or agent whose grants it carries) is what the rest of the console should name.
   const who = await api("GET", "/v0/ops/permissions?principal=" + encodeURIComponent(d.principal || ""));
   if (!who.ok && who.status === 401) { showSignIn("That token is expired or no longer valid. Paste a new one."); return; }
+  maybeRenew(d.principal);
   IDENTITY = who.ok
     ? {
       principal: d.principal,
@@ -647,7 +713,9 @@ async function loadHealth() {
     : IDENTITY.powers.length
     ? "powers"
     : "scoped";
-  const pillTitle = IDENTITY.privileged
+  const pillTitle = OPEN_OPERATOR
+    ? "open-mode session: this browser sends NO credential and the space answers as the operator. Chosen by the button on the sign-in screen. Click to change token"
+    : IDENTITY.privileged
     ? "operator: every kind, full ops plane. Click to change token"
     : IDENTITY.powers.length
     ? `ops powers: ${IDENTITY.powers.join(", ")}. Coordination still needs kind grants. Click to change token`
@@ -1999,11 +2067,55 @@ async function mintSession() {
 async function signIn() {
   const t = $("signin-token").value.trim();
   if (!t) { note("signin-note", "err", "paste a token"); return; }
-  // Verify BEFORE storing it. Storing an unusable token leaves the console signed in and broken,
-  // with every panel reporting 401 and nothing saying why.
+  await adopt(t, $("signin-remember").checked);
+}
+
+/**
+ * Take a pasted or handed-off token, work out WHICH HALF it is, verify it, and store it.
+ *
+ * A definition can only mint, so asking it to mint is the identification: 200 names it, and the
+ * run that comes back is the session. Anything else is treated as a run/operator token and
+ * verified against health BEFORE storing, because storing an unusable token leaves the console
+ * signed in and broken, with every panel reporting 401 and nothing saying why.
+ */
+async function adopt(t, remember) {
+  let mint;
+  try {
+    mint = await fetch("/v0/agent-runs", { method: "POST", headers: { "Authorization": "Bearer " + t } });
+  } catch (e) {
+    note("signin-note", "err", "cannot reach the space: " + (e.message || e));
+    return false;
+  }
+  if (mint.ok) {
+    const d = await mint.json().catch(() => null);
+    if (d && d.runToken) {
+      // One home for the durable half, the one the person chose; the other is cleared so a later
+      // "forget" cannot miss a copy.
+      (remember ? localStorage : sessionStorage).setItem("radia.definition", t);
+      (remember ? sessionStorage : localStorage).removeItem("radia.definition");
+      sessionStorage.setItem("radia.token", d.runToken);
+      sessionStorage.removeItem("radia.open-operator");
+      location.reload();
+      return true;
+    }
+  }
   const res = await fetch("/v0/health", { headers: { "Authorization": "Bearer " + t } });
-  if (!res.ok) { note("signin-note", "err", res.status === 401 ? "that token is not valid on this space" : `HTTP ${res.status}`); return; }
+  if (!res.ok) {
+    note("signin-note", "err", res.status === 401 ? "that token is not valid on this space" : `HTTP ${res.status}`);
+    return false;
+  }
+  if (remember) note("signin-note", "info", "run tokens cannot be remembered (they expire); signing in for this tab");
   useToken(t);
+  return true;
+}
+
+/** The labeled open-mode session. Only offered when a header-less probe answers as the operator,
+ *  which is the space saying any curl already has this. */
+function signInOperator() {
+  forgetDefinition();
+  sessionStorage.removeItem("radia.token");
+  sessionStorage.setItem("radia.open-operator", "1");
+  location.reload();
 }
 
 /**
@@ -2017,22 +2129,55 @@ async function showSignIn(reason) {
   // Drop the dead credential: keeping it would re-enter this path on every poll, and it is of no
   // use to anyone now. The one in the box is the replacement, not this.
   if (AUTH_TOKEN) { AUTH_TOKEN = null; sessionStorage.removeItem("radia.token"); }
+  sessionStorage.removeItem("radia.open-operator");
+  OPEN_OPERATOR = false;
   $("signin").style.display = "";
   $("nav").style.display = "none";
   document.querySelector("main").style.display = "none";
   // Which of the two failures is this? Ask without a credential, since a credential is what is in
-  // question: unauthenticated `/v0/health` answers whenever the space is up.
+  // question: unauthenticated `/v0/health` answers whenever the space is up. The same probe also
+  // says whether the no-header shortcut exists here: open mode answers as the operator, and only
+  // then is the labeled button offered, because offering it under `--auth required` would be a
+  // button that always fails.
   const r = await fetch("/v0/health").catch(() => null);
   const up = !!(r && r.ok);
+  const probe = up ? await r.json().catch(() => null) : null;
+  $("signin-operator").style.display = probe && probe.principal === "human:local" ? "" : "none";
   $("health").innerHTML = `<span class="pill">${up ? "not signed in" : "offline"}</span>`;
   if (!up) note("signin-note", "err", `no space is answering at ${location.origin}. Start one with \`radia dev\`.`);
   else if (reason) note("signin-note", "info", reason);
   $("signin-token").focus();
 }
 
+/**
+ * Keep the run alive while the tab is (plan-console-auth.md phase 4). Renewal extends the SAME run
+ * until its 12-hour ceiling; every five minutes leaves a wide margin under the ~15-minute token.
+ * Failures are ignored on purpose: past the ceiling a definition re-mints on the next 401, and a
+ * pasted bare run token ends the way it always did, just twelve hours later instead of fifteen
+ * minutes.
+ */
+let lastRenew = Date.now();
+async function maybeRenew(principal) {
+  if (!AUTH_TOKEN || !String(principal).startsWith("run:")) return;
+  if (Date.now() - lastRenew < 5 * 60_000) return;
+  lastRenew = Date.now();
+  await api("POST", "/v0/agent-runs/" + encodeURIComponent(principal) + "/renew");
+}
+
 let healthTimer = null;
 function start() {
-  if (!AUTH_TOKEN) return showSignIn("");
+  // The CLI's handoff (`radia login human:you --console` prints /#token=...): the fragment never
+  // reaches the server, and it is stripped from the URL and history BEFORE anything else runs, so
+  // a screenshot of the address bar or a pasted link cannot carry it onward.
+  const frag = location.hash.match(/^#(?:token|login)=([^&]+)/);
+  if (frag) {
+    history.replaceState(null, "", location.pathname + location.search);
+    adopt(decodeURIComponent(frag[1]), true).then((ok) => {
+      if (!ok) showSignIn("The link's token was not accepted by this space.");
+    });
+    return;
+  }
+  if (!AUTH_TOKEN && !DEF_TOKEN && !OPEN_OPERATOR) return showSignIn("");
   $("signin").style.display = "none";
   $("nav").style.display = "";
   document.querySelector("main").style.display = "";

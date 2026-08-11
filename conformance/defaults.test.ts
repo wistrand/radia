@@ -89,6 +89,44 @@ Deno.test("dev: the observer's power is assigned at mint, and a RETIREMENT stand
   }
 });
 
+Deno.test("dev: losing a port race leaves the running space's credential alone", async () => {
+  // Seen live: a second `radia dev` aimed at an occupied base overwrote the running space's
+  // operator entry at startup, then deleted it outright in its shutdown cleanup when the bind
+  // failed. Every CLI verb against the healthy space then got auth_required, with nothing
+  // pointing at the long-dead loser. Two halves, each must fail alone.
+
+  // Half 1, behavioral: the shutdown clear deletes only the caller's own entry.
+  const dir = await Deno.makeTempDir({ prefix: "radia-portrace-" });
+  const credPath = `${dir}/credentials.json`;
+  Deno.env.set("RADIA_CREDENTIALS", credPath);
+  try {
+    const { saveCredential, clearCredential } = await import("../src/credentials.ts");
+    const base = "http://127.0.0.1:59998";
+    saveCredential(base, { token: "winner-token", mintedAt: new Date().toISOString() });
+    clearCredential(base, "loser-token");
+    const file = JSON.parse(await Deno.readTextFile(credPath));
+    assertEquals(file[base]?.token, "winner-token", "a clear conditioned on someone else's token deleted the entry");
+    clearCredential(base, "winner-token");
+    assertEquals(await Deno.readTextFile(credPath).catch(() => "gone"), "gone", "the owner's own clear no longer works");
+  } finally {
+    Deno.env.delete("RADIA_CREDENTIALS");
+    await Deno.remove(dir, { recursive: true });
+  }
+
+  // Half 2, source-read like the --auth default above (main.ts runs on import, so it cannot be
+  // driven in-process): the file writes happen only after the bind, and the clear names the token.
+  // Comments stripped first; the fix is explained in one that names both calls.
+  const main = (await Deno.readTextFile(new URL("../src/main.ts", import.meta.url)))
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+  const bind = main.indexOf("startServer({ port");
+  const save = main.indexOf("saveCredential(base");
+  assert(bind >= 0 && save >= 0, "dev no longer binds or provisions this way; update this test with it");
+  assert(bind < save, "dev writes the credential file BEFORE binding; a loser of a port race clobbers the winner's entry");
+  assert(bind < main.indexOf("provisionObserver(space, base"), "…and the observer entry has the same problem");
+  assert(/clearCredential\(base, operatorToken\)/.test(main), "dev's shutdown clear is unconditional; it deletes whatever dev wrote the entry last");
+});
+
 Deno.test("paths: every runtime default lives under one directory", async () => {
   // The complaint this fixes: `.radia-blobs/`, `.radia-kek.json`, `.radia-chat-space.db` and
   // `.radia-chat-space.db-blobs/` were four top-level entries in a project, each named where it was

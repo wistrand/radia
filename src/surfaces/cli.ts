@@ -44,7 +44,7 @@ Inspect
                                       recurring shapes of work, mined from lineage
   integrity                           verify the event chain; reports the FIRST divergence
   permissions <principal>             what that principal can actually do (the fold over its grants)
-  login <principal> [--grant k:ops]… [--compact | --compact-definition]
+  login <principal> [--grant k:ops]… [--compact | --compact-definition]  (--console prints a sign-in LINK for the web console)
                                       mint a session for a person, and keep the durable half so
                                       the CLI signs in again by itself. --compact prints the
                                       session token alone; --compact-definition prints the
@@ -207,7 +207,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // principal. Silent rather than loud, since a principal is just a string — `permissions
       // --json alice` cheerfully reported on a principal named "--json".
       const [who] = positional(argv, 1);
-      if (!who) return usage("login <principal> [--grant <kind>:<op,op>]… [--compact]");
+      if (!who) return usage("login <principal> [--grant <kind>:<op,op>]… [--compact|--compact-definition|--console]");
       if (!who.startsWith("human:")) return usage("login <principal>  (principal must start with 'human:')");
       const grants = flags(argv, "--grant").map((g) => {
         const [kind, ops] = String(g).split(":");
@@ -244,6 +244,13 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // safer of the two to put in a URL, since it cannot read or write anything by itself.
       if (has(argv, "--compact-definition")) {
         console.log(def.definitionToken);
+        return 0;
+      }
+      // The console handoff (plan-console-auth.md phase 2): a URL whose FRAGMENT carries the
+      // durable half. Fragments never reach the server, and the page strips it from the address
+      // bar and history before anything else runs. Open it and the browser is signed in, remembered.
+      if (has(argv, "--console")) {
+        console.log(`${client.base}/#token=${encodeURIComponent(def.definitionToken)}`);
         return 0;
       }
       const held = await client.permissions(who) as { kinds: { kind: string; operations: string[] }[] };

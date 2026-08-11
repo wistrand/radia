@@ -1,9 +1,16 @@
-# Console auth without the paste treadmill (proposal)
+# Console auth without the paste treadmill
 
-Status: SUGGESTION, nothing built or scheduled. Written 2026-08-11 after live use: pasting a token
-into the console on every tab and every expiry is the worst auth experience in the project, and it
-pushes people toward repeatedly clipboard-handling the operator token, which is the strongest
-secret transported the most often.
+Status: ALL FOUR PHASES BUILT 2026-08-11, same day as written. The console now holds a credential
+the way every other client does. Sources: the auth block in `src/ui/index.html` (`adopt`,
+`exchangeDefinition`, `api`'s retry-once, `maybeRenew`, `signInOperator`), `radia login --console`
+in `src/surfaces/cli.ts`. Guards: `conformance/console.test.ts` (the durable half only ever
+reaches the mint endpoint, one exchange under concurrent 401s, the revoked-definition path,
+adopt's identify-then-verify ordering) plus the widened sign-in gate assertion. The exchange and
+renew endpoints needed NO server change, which was the argument all along.
+
+Originally written after live use: pasting a token into the console on every tab and every expiry
+was the worst auth experience in the project, and it pushed people toward repeatedly
+clipboard-handling the operator token, which is the strongest secret transported the most often.
 
 ## The problem, decomposed
 

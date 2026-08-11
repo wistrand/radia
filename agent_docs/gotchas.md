@@ -688,6 +688,11 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   `req` that triggers it made a FAILING exchange re-enter the wrapper, await the in-flight exchange
   it was already inside, and deadlock: a revoked definition hung the caller instead of reporting
   itself. The exchange uses a raw request with no retry. Found by the test, not by reading.
+- **`radia dev` writes the credential file only after the bind, and its shutdown clear names its
+  own token** (`src/main.ts`; `clearCredential(base, onlyIfToken)` in `src/credentials.ts`). A
+  second dev losing the port race otherwise overwrites the running space's operator entry at
+  startup and deletes it in its `finally`, so every CLI verb against the healthy space gets
+  `auth_required`. Guard: `conformance/defaults.test.ts` "losing a port race".
 - **One credential file, two identities.** `radia dev` provisions an OPERATOR credential per space
   and `radia login` authenticates a PERSON against the same space. Keyed by base URL alone the
   second silently replaces the first, and the CLI's remediation verbs, the chat's bootstrap and the

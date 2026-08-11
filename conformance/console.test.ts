@@ -166,14 +166,125 @@ Deno.test("console: no credential means no request, not an operator default", ()
   assert(/\nstart\(\);/.test(html), "the sign-in gate is never invoked at init");
 });
 
-Deno.test("console: a pasted token is verified before it is stored", () => {
-  // Storing an unusable token leaves the console signed in and uniformly broken: every panel
-  // reports 401 and nothing says the credential was the problem.
-  const signIn = extractFunction(html, "signIn");
-  const verifyAt = signIn.indexOf("/v0/health");
-  const storeAt = signIn.indexOf("useToken");
-  assert(verifyAt >= 0, "signIn() does not verify the token against the space");
-  assert(storeAt > verifyAt, "signIn() stores the token before verifying it");
+/** The auth trio (api / exchangeDefinition / adopt) under a scripted fetch: responses are consumed
+ *  in order, every request is recorded with the credential it carried. Stubs ONLY page globals.
+ *  `async` is re-prefixed below because `extractFunction` matches from the `function` keyword and
+ *  silently drops it, which the grep-style tests never noticed and an EVALUATING one does. */
+function authHarness(script: { status: number; json?: unknown }[], opts: { def?: string; token?: string } = {}) {
+  const src = `
+    const mk = () => { const m = new Map(); return {
+      getItem: (k) => m.has(k) ? m.get(k) : null,
+      setItem: (k, v) => m.set(k, String(v)),
+      removeItem: (k) => m.delete(k),
+      dump: () => Object.fromEntries(m),
+    }; };
+    const sessionStorage = mk(), localStorage = mk();
+    const calls = [];
+    const fetch = async (url, opts = {}) => {
+      calls.push({ url, method: opts.method || "GET", auth: (opts.headers || {})["Authorization"] || null });
+      const next = script.length > 1 ? script.shift() : script[0];
+      return {
+        ok: next.status < 400, status: next.status,
+        json: async () => next.json ?? null,
+        text: async () => JSON.stringify(next.json ?? null),
+        body: { cancel: async () => {} },
+      };
+    };
+    let signInShown = null;
+    const showSignIn = (r) => { signInShown = r; };
+    let tokenUsed = null;
+    const useToken = (t) => { tokenUsed = t; };
+    const note = () => {};
+    const $ = () => ({ checked: true, value: "" });
+    const location = { reload: () => {} };
+    const PUBLIC_PATHS = new Set(["/v0/health"]);
+    let AUTH_TOKEN = opts.token ?? null, DEF_TOKEN = opts.def ?? null, OPEN_OPERATOR = false;
+    let exchanging = null;
+    ${extractFunction(html, "forgetDefinition")}
+    ${extractFunction(html, "exchangeDefinition")}
+    async ${extractFunction(html, "api")}
+    async ${extractFunction(html, "adopt")}
+    return {
+      api, adopt, exchangeDefinition, calls,
+      state: () => ({ AUTH_TOKEN, DEF_TOKEN, signInShown, tokenUsed, session: sessionStorage.dump(), local: localStorage.dump() }),
+    };
+  `;
+  // deno-lint-ignore no-explicit-any
+  return new Function("script", "opts", src)(script, opts) as any;
+}
+
+Deno.test("console: the durable half is only ever sent to the mint endpoint", async () => {
+  // The property that makes a definition token safe to keep: it can only mint. The page must hold
+  // that line too — a bug that attached it as the bearer for an ordinary read would quietly turn
+  // the mint-only half into a credential worth stealing.
+  const t = authHarness([
+    { status: 401, json: { title: "token_expired" } }, // the stale run token is refused
+    { status: 200, json: { runToken: "r2" } }, // the exchange
+    { status: 200, json: { stats: [] } }, // the retry succeeds
+  ], { def: "DEF", token: "stale" });
+  const r = await t.api("GET", "/v0/ops/stats");
+  assert(r.ok, JSON.stringify(r));
+  const defCarried = t.calls.filter((c: { auth: string | null }) => c.auth === "Bearer DEF").map((c: { url: string }) => c.url);
+  assertEquals(defCarried, ["/v0/agent-runs"], "the durable half reached something other than the mint");
+  assertEquals(t.calls.map((c: { url: string }) => c.url), ["/v0/ops/stats", "/v0/agent-runs", "/v0/ops/stats"]);
+  assertEquals(t.calls[2].auth, "Bearer r2", "the retry runs under the fresh run token");
+});
+
+Deno.test("console: a 401 retries ONCE through the exchange, and a second failure is itself", async () => {
+  const t = authHarness([
+    { status: 401, json: {} },
+    { status: 200, json: { runToken: "r2" } },
+    { status: 401, json: { title: "forbidden-ish" } },
+  ], { def: "DEF", token: "stale" });
+  const r = await t.api("GET", "/v0/ops/stats");
+  assertEquals(r.status, 401, "a failure after a fresh mint is real and is returned");
+  assertEquals(t.calls.filter((c: { url: string }) => c.url === "/v0/agent-runs").length, 1, "exactly one mint per request");
+});
+
+Deno.test("console: concurrent 401s share ONE exchange (the SDK's rule, ported)", async () => {
+  const t = authHarness([{ status: 200, json: { runToken: "r1" } }], { def: "DEF" });
+  const [a, b, c] = await Promise.all([t.exchangeDefinition(), t.exchangeDefinition(), t.exchangeDefinition()]);
+  assert(a && b && c);
+  assertEquals(t.calls.length, 1, "three concurrent exchanges must mint one run, not three agent_run records");
+  assertEquals(t.state().AUTH_TOKEN, "r1");
+});
+
+Deno.test("console: a revoked definition is forgotten and the reason is shown", async () => {
+  const t = authHarness([{ status: 401, json: { detail: "definition revoked" } }], { def: "DEF" });
+  const ok = await t.exchangeDefinition();
+  assert(!ok);
+  const st = t.state();
+  assertEquals(st.DEF_TOKEN, null, "a mint that can never work again must not retry on every poll");
+  assert(String(st.signInShown).includes("definition revoked"), String(st.signInShown));
+});
+
+Deno.test("console: adopt() identifies the half by asking it to mint, and verifies before storing", async () => {
+  // A definition can only mint, so 200 on the mint IS the identification; remembered means the
+  // durable half lands in localStorage with the other home cleared.
+  const t = authHarness([
+    { status: 200, json: { runToken: "r9" } },
+  ]);
+  await t.adopt("DEFTOK", true);
+  const st = t.state();
+  assertEquals(st.local["radia.definition"], "DEFTOK");
+  assertEquals(st.session["radia.token"], "r9");
+  assertEquals(st.session["radia.definition"], undefined, "one home only");
+
+  // A run token fails the mint, must verify against health BEFORE storing, and cannot be remembered.
+  const t2 = authHarness([
+    { status: 401, json: {} }, // not a definition
+    { status: 200, json: { principal: "run:x" } }, // health accepts it
+  ]);
+  await t2.adopt("RUNTOK", true);
+  assertEquals(t2.calls.map((c: { url: string }) => c.url), ["/v0/agent-runs", "/v0/health"]);
+  assertEquals(t2.state().tokenUsed, "RUNTOK", "stored only after health verified it");
+
+  // An unusable token is stored NOWHERE: signed-in-and-broken is the failure this ordering prevents.
+  const t3 = authHarness([{ status: 401, json: {} }]);
+  const ok = await t3.adopt("JUNK", false);
+  assert(!ok);
+  assertEquals(t3.state().tokenUsed, null);
+  assertEquals(Object.keys(t3.state().session).length, 0);
 });
 
 Deno.test("console: Enter in the token box signs in", () => {
@@ -371,8 +482,10 @@ Deno.test("console: the route is applied INSIDE the sign-in gate, never at page 
   // say so. The route may only be applied once a credential exists.
   const start = extractFunction(html, "start");
   assert(/applyRoute\(\)/.test(start), "start() never applies the route, so a deep link does nothing");
-  const gate = start.indexOf("if (!AUTH_TOKEN) return showSignIn");
-  assert(gate >= 0 && start.indexOf("applyRoute()") > gate, "start() applies the route before checking for a token");
+  // The gate widened when the page learned to hold the durable half and the labeled open-mode
+  // session (plan-console-auth.md): any of the three credentials is a signed-in state.
+  const gate = start.indexOf("if (!AUTH_TOKEN && !DEF_TOKEN && !OPEN_OPERATOR) return showSignIn");
+  assert(gate >= 0 && start.indexOf("applyRoute()") > gate, "start() applies the route before checking for a credential");
   assert(!/\napplyRoute\(\);/.test(html), "the route is applied at top level, outside the gate");
 
   // And the sign-in screen must leave the URL alone: that is the whole of how a view survives a

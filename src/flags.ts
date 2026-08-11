@@ -28,6 +28,7 @@ export const VALUELESS = new Set([
   "--run",
   "--undone",
   "--compact-definition",
+  "--console",
   "--anonymous",
   "--follow",
   "--retire",

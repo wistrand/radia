@@ -93,12 +93,17 @@ function writeEntry(key: string, cred: StoredCredential): { path: string; ok: bo
   }
 }
 
-/** Drop a base URL's credential (clean shutdown), removing the file once it is empty. */
-export function clearCredential(base: string): void {
+/** Drop a base URL's credential (clean shutdown), removing the file once it is empty.
+ *  `onlyIfToken` makes the delete conditional on the entry still being the caller's own write:
+ *  two dev processes aimed at one base share this file, and the loser of a port race must not
+ *  take the running space's credential down with it. */
+export function clearCredential(base: string, onlyIfToken?: string): void {
   const path = credentialsPath();
   try {
     const all = read(path);
-    delete all[baseKey(base)];
+    const key = baseKey(base);
+    if (onlyIfToken !== undefined && all[key]?.token !== onlyIfToken) return;
+    delete all[key];
     if (Object.keys(all).length === 0) removeFile(path);
     else writeTextFile(path, JSON.stringify(all, null, 2) + "\n");
   } catch { /* nothing to clean up */ }
