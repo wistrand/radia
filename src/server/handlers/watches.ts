@@ -160,7 +160,9 @@ export async function handleWatchEvents(
         }
         if (closed) break;
         // Wake on a mutation or the 15s keepalive. A disconnect resolves immediately.
-        await Promise.race([space.waitForEvents(15_000), new Promise<void>((r) => (wake = r))]);
+        // Wake on a write of THIS watch's kind (Space.notify is kind-aware), an authorization
+        // change (woken as everyone), a foreign-instance poll, or the 15s keepalive.
+        await Promise.race([space.waitForEvents(15_000, watch.match.kind), new Promise<void>((r) => (wake = r))]);
         if (closed) break;
         if (Date.now() - lastCheck >= AUTH_RECHECK_MS && !await stillAuthorized()) break;
         send(": keepalive\n\n");

@@ -38,6 +38,7 @@ import {
   SHRED,
   type ArtifactDef,
   assertReservedCompatible,
+  AUTHORIZATION_KINDS,
   GRANT,
   type GrantDef,
   type GrantOp,
@@ -1643,7 +1644,10 @@ export class Space {
         effectivePriority: 0, // server-computed; scheduler sets this for real in M3
       },
     });
-    this.notifier.notify(); // wake any watch streams
+    // Wake only streams watching THIS kind (a watch matches only its own kind). An
+    // authorization-kind write is the exception: the SSE loop re-scopes on those, so any stream
+    // may need it — wake everyone. This is the fan-out fix (bench/suites/fanout.ts).
+    this.notifier.notify(AUTHORIZATION_KINDS.has(record.kind) ? undefined : record.kind);
     await this.maybeAmortizedSweep(); // the write that crossed the threshold pays for the batch
     return { id: result.id };
   }
@@ -2037,7 +2041,10 @@ export class Space {
     }, principal);
     const r = await this.storage.ack(this.ref(lease, principal), resultInput, idem);
     if (declared && r.status === "ok") await this.adoptKind(declared);
-    this.notifier.notify(); // an emitted result is a new available record to wake on
+    // The emitted result is a new available record: wake streams watching ITS kind (the chat's
+    // ack path — a worker's answer IS its ack). No result, or an authorization-kind result: wake
+    // everyone, the conservative default. Same fan-out fix as putRaw.
+    this.notifier.notify(result && !AUTHORIZATION_KINDS.has(result.kind) ? result.kind : undefined);
     // The result record committed inside storage.ack, not through putRaw, so it counts here or the
     // amortized clock undercounts exactly the worker fleet's writes.
     await this.maybeAmortizedSweep();
@@ -2479,9 +2486,11 @@ export class Space {
   }
 
   /** Resolve when a mutation occurs (a watch wakeup) or after timeoutMs (keepalive). A mutation
-   *  made by another instance counts: see `pollForForeignChanges`. */
-  waitForEvents(timeoutMs: number): Promise<void> {
-    return this.notifier.wait(timeoutMs);
+   *  made by another instance counts: see `pollForForeignChanges`. `kind` scopes the wakeup to
+   *  writes of that kind (plus everyone, for authorization changes and foreign polls); a watch
+   *  matches only its own kind, so a stream should always pass `watch.match.kind`. */
+  waitForEvents(timeoutMs: number, kind?: string): Promise<void> {
+    return this.notifier.wait(timeoutMs, kind);
   }
 
   /**

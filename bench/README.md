@@ -47,6 +47,7 @@ constant result size is the signal.
 | `suites/graph.ts` | `getGraph` (the console's Graph/waterfall walk) over a conversation-shaped DAG: bounded by the answer, not the space |
 | `suites/gc.ts` | what housekeeping costs: the retention sweep, registry compaction, and the phase-4 blob pass |
 | `suites/oidc.ts` | the one UNAUTHENTICATED write path: what a rejected flood costs vs a first login vs a replay |
+| `suites/fanout.ts` | the watch fan-out: queries one write triggers as N streams park, counting the kind-blind `notify` tax directly |
 | `profile.ts` | `deno task profile <script> [args…]`: CPU-profile any workload with zero external tooling (see Profiling below) |
 | `deployment.ts` | standalone: one space over HTTP against whatever storage it was started with, re-measured as it fills. Takes a `--url` instead of an adapter, so it measures the thing the suites above cannot. **It writes records and cannot delete them**; point it at a throwaway space |
 | `edit-cost.ts` | standalone: what an edit costs versus rewriting a tree, in emitted characters and in records written. Not a timing suite, so it is run directly rather than through the harness |
@@ -253,6 +254,53 @@ path:** `stats` (~34ms/M, the count-group-by, ~700ms at 20M) and the diagnostics
 scan (~1s at 20M). Both AWAIT Postgres rather than holding the runtime, so they are a backend query
 per call, not an outage. Left as documented shapes to watch, not bounded, since a health check that
 costs a second on a 20M space is not the emergency an unbounded coordination path would be.
+
+## The watch fan-out, measured (`suites/fanout.ts`)
+
+The other measurement the scaling analysis called for and nobody had taken. It parks N watch
+streams (each on its own conversation, the chat shape) and counts the queries ONE write triggers,
+faithfully replaying the SSE loop (`getEvents` → `matchesEvent` → `waitForEvents`) against an
+adapter that counts the two fan-out reads. Query counts are exact; the ms is per-write wall time.
+
+Measured before the kind-aware wakeup fix (the kind-blind baseline this documents):
+
+| write, N streams parked | getEvents | getRecord | useful | pglite p50 |
+|---|---|---|---|---|
+| same-kind (a message in 1 of N convs) @ 25 | 25 | 25 | 1 | 15.9ms |
+| same-kind @ 100 | 100 | 100 | 1 | 52ms |
+| same-kind @ 250 | 250 | 250 | 1 | **127ms** |
+| other-kind (a write nobody watches) @ 250 | 250 | 0 | 0 | 68ms |
+
+**The derivation was a fact: one write cost N `getEvents` + (same-kind) N `getRecord`, of which
+ONE was useful.** `notify()` was kind-blind, so even a write no stream watched woke all N and each
+read the log (the other-kind row: 250 getEvents, 0 useful). At 250 streams (~50 users at 5 streams
+each) a single chunk write was 127ms of DB work on pglite — the O(U) coefficient behind the chat's
+quadratic.
+
+**Kind-aware wakeup (`notify(kind)`, done) — the other-kind row now reads 0/0.** `Space.notify`
+wakes only streams watching the written kind (authorization-kind writes still wake everyone, since
+the SSE loop re-scopes on them). A watch matches only its own kind, so waking a foreign kind's
+watchers was always pure waste. Re-run with the fix:
+
+| write, N=250 streams | getEvents | getRecord | before → after |
+|---|---|---|---|
+| other-kind (foreign kind) | **0** | **0** | 250 → **0** |
+| same-kind (all watch `feed`) | 250 | 250 | unchanged |
+
+The chat opens ~5 streams per user of DIFFERENT kinds (llm_chunk, message, tool_result,
+capability, procedure), so a `message` write used to wake all 5U and now wakes only the U message
+streams: **5U → U per write.** What kind-aware wakeup does NOT do is discriminate WITHIN a kind —
+250 streams all watching `message` (different conversations) still all wake on a `message` write,
+each fetching the record to run its conversation predicate. That residual (the same-kind row) is
+what per-conversation routing or a client that shares the registry streams would attack next:
+- **Dropping `capability`/`procedure` to periodic refresh:** removes 2 of the ~5 kinds a user
+  watches, so ~40% fewer distinct-kind streams — free, no runtime change.
+- **`idx_events_xid_seq` (done):** each surviving same-kind `getEvents` is a tail index scan, not
+  a whole-log scan+sort, so the residual no longer grows with history either.
+
+Guards: `conformance/notifier.test.ts` (notify(kind) wakes the kind + any-set, not foreign kinds;
+a re-registered same-kind waiter wakes again), both proven red against a kind-blind `notify`; the
+whole turn still delivers over watches (`deno task chat-test`, 21 suites).
 
 **Two things this run changed about the bench itself**, both discovered by wanting them mid-run.
 It prints each checkpoint's table AS IT COMPLETES, because a version that renders once at the end

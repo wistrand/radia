@@ -25,6 +25,48 @@ Deno.test("notifier: a timed-out waiter removes itself, so a quiet space does no
   assertEquals(n.waiting, 0, "and a notified waiter is gone too");
 });
 
+Deno.test("notifier: notify(kind) wakes that kind and the any-set, not foreign kinds", async () => {
+  // The fan-out fix (bench/suites/fanout.ts): a write of kind K must wake only streams watching
+  // K (a watch matches only its own kind), plus any kind-less waiter. Kind-blind wakeup was the
+  // O(U) term behind the chat's quadratic — every write woke every stream.
+  const n = new Notifier();
+  const woke = { a: false, b: false, any: false };
+  const wa = n.wait(10_000, "a").then(() => (woke.a = true));
+  const wb = n.wait(10_000, "b").then(() => (woke.b = true));
+  const wany = n.wait(10_000).then(() => (woke.any = true));
+  assertEquals(n.waiting, 3);
+
+  n.notify("a");
+  await wa;
+  await sleep(5); // give b/any a chance to (wrongly) resolve
+  assertEquals(woke, { a: true, b: false, any: true }, "kind 'a' and the any-waiter woke; 'b' did not");
+  assertEquals(n.waiting, 1, "only the 'b' waiter is still parked");
+
+  // undefined wakes EVERYONE — the conservative wake for authorization changes and foreign polls.
+  const wb2woken = wb; // the original 'b' waiter
+  n.notify();
+  await wb2woken;
+  assertEquals(woke.b, true, "notify() with no kind wakes the remaining 'b' waiter");
+  assertEquals(n.waiting, 0);
+  await wany;
+});
+
+Deno.test("notifier: a same-kind waiter re-registered after a wake is woken again", async () => {
+  // The SSE loop re-parks on the same kind every lap. A stale Set left in #byKind, or one deleted
+  // while a sibling still waits, would drop that stream's next wakeup — a stall until keepalive.
+  const n = new Notifier();
+  let woke = 0;
+  const first = n.wait(10_000, "feed").then(() => woke++);
+  n.notify("feed");
+  await first;
+  assertEquals(n.waiting, 0, "the kind's set is cleaned up when its last waiter leaves");
+  const second = n.wait(10_000, "feed").then(() => woke++);
+  assertEquals(n.waiting, 1);
+  n.notify("feed");
+  await second;
+  assertEquals(woke, 2, "a re-registered same-kind waiter wakes on the next write");
+});
+
 Deno.test("notifier: the change poll wakes a waiter, and only while someone is waiting", async () => {
   let polls = 0;
   let changed = false;

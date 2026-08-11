@@ -28,8 +28,9 @@ import { blobBenches } from "./suites/blobs.ts";
 import { graphBenches } from "./suites/graph.ts";
 import { gcBenches } from "./suites/gc.ts";
 import { oidcBenches } from "./suites/oidc.ts";
+import { fanoutBenches } from "./suites/fanout.ts";
 
-const ALL: Bench[] = [...recordBenches, ...claimBenches, ...lineageBenches, ...scaleBenches, ...blobBenches, ...graphBenches, ...gcBenches, ...oidcBenches];
+const ALL: Bench[] = [...recordBenches, ...claimBenches, ...lineageBenches, ...scaleBenches, ...blobBenches, ...graphBenches, ...gcBenches, ...oidcBenches, ...fanoutBenches];
 
 function arg(name: string): string | undefined {
   const i = Deno.args.indexOf(`--${name}`);

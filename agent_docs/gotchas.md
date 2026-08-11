@@ -333,6 +333,16 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Leases, claims, events and watches
 
+- **`notify(kind)` is kind-aware, and a new wake site must pass the right kind or wake everyone**
+  (`src/core/notifier.ts`, `Space.putRaw`/`ack`). A watch matches only its own kind, so a write
+  wakes only that kind's parked streams plus the any-set; waking foreign kinds was the O(U)
+  fan-out (bench/suites/fanout.ts: one write woke all N streams, N-1 wasted). Two rules for any
+  new wake: an AUTHORIZATION_KIND write must wake EVERYONE (`notify(undefined)`), because the SSE
+  loop re-scopes on those and a revoked stream must see it; and a caller that cannot cheaply name
+  the kind whose watchers newly match (a settle across kinds, the foreign-instance poll) wakes
+  everyone too — under-waking stalls a stream until its 15s keepalive, the one failure worse than
+  waste. Kind-aware does NOT help watchers that share a kind and differ by predicate (250
+  `message` streams still all wake on a `message` write). Guard: `conformance/notifier.test.ts`.
 - **A worker loop must never swallow a handler exception, whatever its logging is configured to
   do.** `agentLoop`'s `log` defaulted to a no-op and the nack path used it, so a throwing handler
   retried invisibly: claimed, nacked, reclaimed, nacked again, with nothing anywhere naming the
