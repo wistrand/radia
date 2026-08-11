@@ -213,6 +213,15 @@ create table if not exists event_seal (
   sig text
 );
 
+-- The seal walk's ordered range. sealableEvents (verify + the seal-first pass) asks for the next
+-- N events after a cursor in (xid, seq) order; without this index the primary key is on seq
+-- alone, so Postgres SEQ-SCANS the whole events table and top-N sorts it to return 500 rows.
+-- Measured on a 20M-event space (bench/README, the log-axis run): the window query was 2005ms
+-- and radia integrity 14.4s, both O(log size); with this index the window is 0.19ms and
+-- integrity 0.32s (45x). SQLite's events PK is already (seq) with a compatible ordered scan; this
+-- is the Postgres half. create-index-if-not-exists doubles as the migration for an older database.
+create index if not exists idx_events_xid_seq on events (xid, seq);
+
 -- migrations: columns added after the initial schema. No-ops on a database the CREATEs above
 -- just built, so the only path that needs them is a database from an older build.
 -- events.xid is the gap-safe watch cursor. Without it every getEvents (watch SSE and

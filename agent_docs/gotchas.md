@@ -536,6 +536,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Storage, SQL and the planner
 
+- **The events table needs `idx_events_xid_seq`, or the seal walk seq-scans the whole log**
+  (`src/storage/pgbase.ts`). `sealableEvents` (verify's per-page fetch and the seal-first pass)
+  asks for the next N events in (xid, seq) order; the PK is on `seq` alone, so without this index
+  Postgres parallel-seq-scans every row and top-N sorts to return 500. Measured at 20M events
+  (bench/README log-axis run): window query 2005ms, `radia integrity` 14.4s, both O(log size);
+  with the index 0.19ms and 0.32s. On-demand sealing hides this from any write workload — it only
+  bites the operator path (doctor/integrity/console Overview), which is why a pure-fill benchmark
+  never saw it. SQLite orders the walk by its `seq` PK already; Postgres half only.
 - **`appendSeals` batches, and the batch must land a CONTIGUOUS PREFIX, not just the rows that
   won** (`src/storage/pgbase.ts`). One INSERT per link cost ~650ms to seal a 500-link batch on
   Postgres, and sealing runs INSIDE reads (`verifyIntegrity` seals first; diagnostics spot-checks),

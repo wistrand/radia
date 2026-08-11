@@ -212,10 +212,47 @@ it as a thing to watch rather than the next thing to bound.
 **`take+ack` does not drift after all.** It read 15ms → 20ms to a million and then 16.3ms at 5.5M,
 so the earlier "drift" was noise across runs rather than a trend. Claim-order index and all.
 
-Not reached: the LOG axis. 5.5M records is about 11M events, and nothing sweeps them, so the
-question of whether cost grows with history rather than contents is still open — that is what a run
-to twenty million would actually be for, rather than another confirmation that the indexed paths
-are flat.
+## The log-axis run (2026-08-11): 20M records
+
+The run the previous paragraph called for. 20,000,000 records over HTTP against a live Postgres
+with fsync and sealing ON, into an isolated `radia_bench` database, 64 in flight, checkpoints at
+1M/5M/10M/20M. Final DB: 24 GB, 20.0M records, 20.0M events (this workload is ~1 put = 1 event,
+so records ≈ events; a take/ack workload is the 2:1 the earlier note assumed). p50/p99 in ms.
+
+| records | put/s | put | read_one | query | scoped | `$any` | `$each` | stats | take+ack |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 000 000  | 2800 | 2.1/3.3 | 2.1/3.8 | 1.5/2.8 | 1.3/2.8 | 0.96/1.4 | 2581 (refused) | 43.9 | 12.8/19.9 |
+| 5 000 000  | 3200 | 1.8/2.6 | 1.3/1.6 | 1.4/2.8 | 1.5/2.6 | 1.3/1.4  | 2464 (refused) | 184  | 11.9/21.1 |
+| 10 000 000 | 3200 | 2.0/3.0 | 1.9/4.8 | 0.76/1.8 | 0.74/1.3 | 0.69/0.71 | 2563 (refused) | 353 | 8.6/17.9 |
+| 20 000 000 | 3100 | 2.0/4.0 | 2.0/2.6 | 0.80/4.2 | 0.81/2.4 | 1.4/2.0  | 2739 (refused) | 675 | 11.6/18.3 |
+
+**The answer to "does cost grow with history": for the coordination paths, no.** Every pushable
+path is flat from 1M to 20M — put, read_one, query, owner-scoped, `$any` all sit in single-digit
+ms across a 20× range, some a touch faster at 20M than 1M (warmer cache, settled plans). **The
+fill never slowed** (3.1k/s at the end, same as the start), so 20M accumulated events do NOT drag
+the write path — the seal design's off-the-hot-path claim holds at scale. `$each` stays refused
+flat at ~2.6s, the scan budget bounding an undecidable pattern by work, not size. `stats` is the
+one operation that tracks contents, cleanly linear (44 → 184 → 353 → 675ms, ~34ms/M).
+
+**But the fill hid the real log-axis cost, and probing for it found a scan.** Sealing is
+on-demand, so a pure-write workload seals NOTHING (`event_seal` had 0 rows at 20M). The cost lives
+in the operator path that DOES seal — `radia integrity` / `radia doctor` / the console Overview —
+and there it was **14.4s** on the 20M-event space, flat regardless of integrity tail size. Cause,
+confirmed by EXPLAIN: `sealableEvents` asks for the next 500 events in (xid, seq) order, and the
+events table's only index was the `seq` primary key, so Postgres **parallel-seq-scanned all 20M
+rows and top-N sorted** them to return 500 — 2005ms per call, and verify runs it per page. Fixed
+with `idx_events_xid_seq` (`src/storage/pgbase.ts`, a `create index if not exists` that doubles as
+the migration): the window query **2005ms → 0.19ms**, `radia integrity` **14.4s → 0.32s (45×)**,
+and diagnostics 13.6s → 4.3s (its remainder is `stats` + the stale-envelope scan, both bounded and
+smaller). SQLite orders the same walk by its `seq` PK already, so this is the Postgres half only.
+Guard: the seal suites in `conformance/suites/integrity.ts` run on every adapter; the index is
+exercised by the pg conformance run.
+
+**Two things still genuinely grow with size, both operator-facing, neither on the coordination
+path:** `stats` (~34ms/M, the count-group-by, ~700ms at 20M) and the diagnostics stale-envelope
+scan (~1s at 20M). Both AWAIT Postgres rather than holding the runtime, so they are a backend query
+per call, not an outage. Left as documented shapes to watch, not bounded, since a health check that
+costs a second on a 20M space is not the emergency an unbounded coordination path would be.
 
 **Two things this run changed about the bench itself**, both discovered by wanting them mid-run.
 It prints each checkpoint's table AS IT COMPLETES, because a version that renders once at the end
