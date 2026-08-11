@@ -101,16 +101,73 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
 7. **Expose `--pool-size` and cache auth per epoch.** Eight connections is the hard cap on
    concurrent DB work and is not reachable from the CLI today; ~3 round trips precede every
    request's real work.
-8. **Within-kind routing.** 250 `message` watchers on different conversations still all wake on a
-   `message` write. Needs the record's `conversationId` at wake time, which the event does not
-   carry: a design question, not a tweak.
+8. **Within-kind routing: MEASURED AND DEFERRED**, see the section below. 250 `message` watchers
+   on different conversations still all wake on a `message` write, but after coalescing that costs
+   ~9µs per stream and is invisible on Postgres. Not worth its failure mode until `A x U` is around
+   10,000.
 9. **Horizontal.** N instances behind a load balancer, which needs the shared blob store first,
    since chat writes artifacts on every attachment and exec output.
 
 **Sizing 1,000 users** (100 concurrently streaming): ~700 records/s, so 2-4 runtime instances;
 ~10 worker processes at concurrency-10; 5,000 SSE streams sharded across instances; ~60M
-records/day, so retention is load-bearing and `eventRetentionSeconds` should be on. The tailer is
-MANDATORY at that scale: without it the fan-out alone demands 1.4M queries/s.
+records/day, so retention is load-bearing and `eventRetentionSeconds` should be on. The shared log
+read is what makes that reachable at all and it is BUILT: without it the fan-out alone would have
+demanded ~1.4M queries/s at those numbers.
+
+## Within-kind routing: measured, deferred (2026-08-11)
+
+The idea: 250 streams watching `message` on different conversations all wake on one `message`
+write, so wake only the ones whose predicate matches. The proposed mechanism was to carry the
+kind's declared indexed-path values in the notify payload (same process) and in the event row
+(cross-instance).
+
+**What it would save, measured.** Post-coalescing, per-write cost as same-kind streams scale
+(`bench/suites/fanout.ts`):
+
+| streams | sqlite p50 | pglite p50 |
+|---|---|---|
+| 1 | 618µs | 2.4ms |
+| 25 | 950µs | 3.4ms |
+| 100 | 1.3ms | 2.8ms |
+| 250 | 2.9ms | 2.3ms |
+
+Flat on pglite: the database round trip swamps everything, so 249 extra streams cost nothing
+measurable. Visible on sqlite only because its reads are fast: `(2.9 - 0.62) / 249` = **~9µs per
+stream per write**, which is a promise resolution, an array iteration and one `matchesRecord`
+against an already-in-memory record. On Postgres, the deployment target, that residual is below
+the noise of a single query.
+
+**Where it would start to matter.** CPU/s is about `7 x A x U x 9µs`: 6% of a core at A=10/U=100,
+63% at A=10/U=1000, and impossible at A=100/U=1000 — which is also 700 writes/s, at or past one
+instance's write ceiling, so that scale needs sharding anyway and sharding divides U per instance.
+The crossover is roughly `A x U` around 10,000, and it arrives with a cheaper answer attached.
+
+**The two halves of the mechanism are not equal.**
+- The same-process notify payload is genuinely cheap: `putRaw` holds the record, so passing its
+  indexed values costs no serialization and no storage. It buys nothing on its own, though: the
+  win needs a watcher INDEX bucketed by equality predicates, or the N predicate tests just move
+  from wake time to notify time.
+- The event-row column should not be built. Events are 259 bytes and 20M of them made a 24GB
+  database, so it is a permanent width cost on the highest-volume table, paid by single-instance
+  spaces that gain nothing. It is redundant (the values are in the record, which the reader
+  fetches once, coalesced). And the cross-instance path it would serve is rate-limited by the
+  250ms poll rather than by the write rate: at most ~4 wake-alls/s whatever the other instances
+  write, ~36ms/s of CPU at U=1000. Foreign kind-blindness is a LATENCY property, not a scaling one.
+
+**The risk that dominates the saving.** Under-waking is a stall, not a slowdown: a stream that is
+not woken waits out its 15s keepalive, which looks like a hang and is invisible to any test with a
+short timeout. Kind-aware routing is safe because kind equality is a structural invariant of the
+matcher (`matchesEvent` returns false on a kind mismatch before anything else). A value index has
+no such guarantee and must be provably at least as permissive as the matcher, so non-indexed
+paths, `$or`, `$exists`, taint scope and the `createdBy` restriction all have to fall into a
+wake-always bucket. That is tractable, and it is real complexity in the hot path whose failure
+mode is silent.
+
+**What would change the answer:** a deployment with U in the thousands on one instance, showing
+the fan-out bench's same-kind row rising off the floor. That bench already measures exactly this
+(each watcher watches its own conversation; one matches), so the evidence needs no new
+scaffolding. Ranked against the alternatives at that scale, shard instances first (needed for
+writes anyway), then drop the two registry streams, then consider this.
 
 ## Rejected, and why
 

@@ -307,6 +307,22 @@ against the shared record), and the record is shared but still AUTHORIZED per st
 changed how often it is read and never who may see it. Together the two fixes take a write from
 6U queries to 2.
 
+**What is left per stream, measured, because it is what the NEXT optimization would target.**
+Re-run post-coalescing, same-kind writes as parked streams scale:
+
+| streams | sqlite p50 | pglite p50 |
+|---|---|---|
+| 1 | 618µs | 2.4ms |
+| 25 | 950µs | 3.4ms |
+| 100 | 1.3ms | 2.8ms |
+| 250 | 2.9ms | 2.3ms |
+
+Flat on pglite (the round trip swamps it); visible on sqlite only because its reads are fast, at
+`(2.9 − 0.62) / 249` = **~9µs per stream per write** — a promise resolution, an array iteration and
+one `matchesRecord` against an already-in-memory record. That figure is the whole budget for
+within-kind routing (waking only the streams whose predicate matches), which is why it is deferred:
+see agent_docs/plan-scaling.md, "Within-kind routing: measured, deferred".
+
 Two notes on what did NOT turn out to matter:
 - **Dropping `capability`/`procedure` to periodic refresh no longer helps the fan-out.** Before
   kind-aware wakeup it cut 5U→3U; now a message write never wakes them, and coalescing makes the
