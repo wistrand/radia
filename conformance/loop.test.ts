@@ -351,3 +351,87 @@ Deno.test("loop: a space outage is ONE line and a backoff, not a line per tick",
     await adapter.close();
   }
 });
+
+Deno.test("loop: concurrency holds K claims at once, and 1 (the default) still serializes", async () => {
+  // The first ceiling the chat hits is not the substrate, it is this loop: one worker held one
+  // `llm_call` for the whole model response because the harness ran claims one at a time
+  // (agent_docs/plan-scaling.md). The substrate never required that — leases are independently
+  // fenced and there is no max-leases-per-principal — so concurrency is a harness option, and the
+  // DEFAULT must stay sequential or every existing worker's behaviour changes under it.
+  const run = async (concurrency: number | undefined, records: number) => {
+    const s = await newWorkerSpace();
+    try {
+      for (let i = 0; i < records; i++) await s.space.put({ kind: "task", body: { tag: "x", i } });
+      let inFlight = 0;
+      let peak = 0;
+      let done = 0;
+      const all = Promise.withResolvers<void>();
+      const stop = new AbortController();
+      const loop = agentLoop(s.client, {
+        name: "w",
+        patterns: [{ kind: "task", match: { tag: "x" } }],
+        signal: stop.signal,
+        ...(concurrency === undefined ? {} : { concurrency }),
+        handle: async () => {
+          inFlight++;
+          peak = Math.max(peak, inFlight);
+          // Long enough that a sequential loop cannot fake overlap by being fast.
+          await new Promise((r) => setTimeout(r, 120));
+          inFlight--;
+          if (++done === records) all.resolve();
+        },
+      });
+      const started = performance.now();
+      await all.promise;
+      const elapsed = performance.now() - started;
+      stop.abort();
+      await loop;
+      return { peak, elapsed };
+    } finally {
+      await s.close();
+    }
+  };
+
+  // DEFAULT: one at a time, whatever is waiting. 4 records x 120ms cannot finish under ~480ms.
+  const seq = await run(undefined, 4);
+  assertEquals(seq.peak, 1, "the default must stay strictly sequential");
+  assert(seq.elapsed >= 400, `sequential took ${seq.elapsed.toFixed(0)}ms, expected ~480+`);
+
+  // K=4: all four overlap, so the wall clock is one handler plus claim overhead, not four.
+  const par = await run(4, 4);
+  assertEquals(par.peak, 4, "four slots should all be filled from one burst of claimable work");
+  assert(par.elapsed < seq.elapsed, `concurrent (${par.elapsed.toFixed(0)}ms) should beat sequential (${seq.elapsed.toFixed(0)}ms)`);
+});
+
+Deno.test("loop: a concurrent worker settles every claim, and drains them on shutdown", async () => {
+  // Each in-flight claim owns a fenced lease, so the loop must not return while any is unsettled:
+  // `retireInterests` would race the settles, and a record left leased is one nobody reclaims
+  // until its lease lapses.
+  const s = await newWorkerSpace();
+  try {
+    const N = 6;
+    for (let i = 0; i < N; i++) await s.space.put({ kind: "task", body: { tag: "x", i } });
+    let started = 0;
+    const first = Promise.withResolvers<void>();
+    const stop = new AbortController();
+    const loop = agentLoop(s.client, {
+      name: "w",
+      patterns: [{ kind: "task", match: { tag: "x" } }],
+      signal: stop.signal,
+      concurrency: 3,
+      handle: async () => {
+        if (++started === 3) first.resolve(); // three slots busy
+        await new Promise((r) => setTimeout(r, 60));
+      },
+    });
+    await first.promise;
+    stop.abort(); // shut down mid-flight
+    await loop; // must not resolve until the in-flight claims have settled
+
+    // Nothing is left leased: every record the worker held was acked or nacked before it returned.
+    const leased = await s.space.queryEnvelopes({ state: "leased", limit: 50 });
+    assertEquals(leased.length, 0, "the loop returned while claims were still leased");
+  } finally {
+    await s.close();
+  }
+});

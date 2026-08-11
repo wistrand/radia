@@ -106,6 +106,20 @@ export const TIERS: Record<string, string> = {
  *  so the router never holds the API key. */
 export const CLASSIFY_MODEL = Deno.env.get("RADIA_CHAT_CLASSIFY_MODEL") ?? "google/gemini-2.5-flash-lite";
 
+/**
+ * Claims a WAITING worker (inference, router, tools) holds at once (`agentLoop`'s `concurrency`).
+ *
+ * Resolved HERE and passed as a flag, never read in the worker: the fleet runs each worker with
+ * the narrowest permissions that let it work, and `tools` has no `--allow-env` at all, so an
+ * env read there crashes it on startup. The launcher has the environment; the workers take
+ * arguments.
+ *
+ * Serving a call is 5-60s of awaiting a socket, so at 1 a tier answers one person at a time
+ * whatever the space could take (agent_docs/plan-scaling.md). The exec worker is deliberately
+ * excluded: it spawns a jail per call, where overlapping trades latency for contention.
+ */
+export const WORKER_CONCURRENCY = Number(Deno.env.get("RADIA_CHAT_CONCURRENCY") ?? "4");
+
 /** Not a tier: it serves the `generate_image` tool and advertises `modalities:["image"]`, so text
  *  routing never dispatches a conversation turn to it. */
 export const IMAGE_MODEL = Deno.env.get("RADIA_CHAT_IMAGE_MODEL") ?? "google/gemini-2.5-flash-image";

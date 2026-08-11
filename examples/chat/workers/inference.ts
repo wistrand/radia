@@ -22,6 +22,10 @@ const tier = arg("--tier"); // omit → serve ALL tiers (single-worker back-comp
 const model = arg("--model") ?? Deno.env.get("RADIA_CHAT_MODEL") ?? "openai/gpt-4o-mini";
 const rank = Number(arg("--rank") ?? "0"); // cheap→capable; escalation goes up
 const window = Number(arg("--window") ?? Deno.env.get("RADIA_CHAT_WINDOW") ?? "40");
+// Calls served at once. Serving one is 5-60s of awaiting a socket, so at 1 this tier answers one
+// person at a time however much the space could take (agent_docs/plan-scaling.md). The launcher
+// passes the flag (see WORKER_CONCURRENCY); the env fallback is for running this worker standalone.
+const concurrency = Number(arg("--concurrency") ?? Deno.env.get("RADIA_CHAT_CONCURRENCY") ?? "4");
 
 const client = new RadiaClient(url, token ? { definitionToken: token } : {});
 
@@ -40,6 +44,7 @@ await runInferenceWorker(client, {
   tier,
   rank,
   window,
+  concurrency,
   // The one function that speaks to a vendor. Everything else about this worker is Radia work.
   complete: (req, onDelta) => streamChat({ apiKey, ...req }, onDelta),
 });

@@ -7,7 +7,11 @@ import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { runTurnWorker } from "../../../extensions/ts/turn.ts";
 import { arg } from "../util.ts";
 
-const url = arg("--url") ?? Deno.env.get("RADIA_URL") ?? "http://127.0.0.1:7788";
+// No env fallback, deliberately: the fleet runs this worker with a port and nothing else (no
+// `--allow-env`), so reading the environment here is a NotCapable crash rather than a default.
+// It survived only because `--url` is always passed and `??` short-circuits before reaching it.
+// Same shape as the tools worker, and pinned by smoke-fleet.ts.
+const url = arg("--url") ?? "http://127.0.0.1:7788";
 const token = arg("--token");
 const maxRounds = Number(arg("--max-rounds") ?? "8");
 

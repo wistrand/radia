@@ -72,5 +72,14 @@ await serveTools(client, {
   schemas: [...TOOL_SCHEMAS, ...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS, ...SAVE_SCHEMAS, ...SHARE_SCHEMAS, ...WORKSPACE_SCHEMAS],
   // A file search or a space query can take seconds; say who picked it up and what is running.
   stage: () => "running",
+  // These tools WAIT (a space query, a file read, a fetch) rather than work, and one worker serves
+  // every session's tool calls, so serializing them queues one person's `space_query` behind
+  // another's. Code execution is NOT here: it is the exec worker, deliberately left at 1 because
+  // it spawns a jail per call (agent_docs/plan-scaling.md).
+  //
+  // A FLAG, not an env read: this worker runs without `--allow-env` on purpose (the fleet grants
+  // it a port and its tool roots and nothing else), so reading the environment here crashes it on
+  // startup. The launcher, which does have env access, resolves the value and passes it.
+  concurrency: Number(arg("--concurrency") ?? "4"),
 });
 sessionAlive.abort(); // the loop returned, so nothing is left to keep a credential alive for

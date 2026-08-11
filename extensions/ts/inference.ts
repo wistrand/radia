@@ -69,6 +69,16 @@ export interface InferenceOptions {
   leaseSeconds?: number;
   /** How often to report that a still-running completion is alive. See the heartbeat below. */
   heartbeatMs?: number;
+  /**
+   * Calls this worker serves AT ONCE. Default 1, the sequential behaviour.
+   *
+   * This is the fleet's throughput knob, and the reason it exists (agent_docs/plan-scaling.md):
+   * serving a call is 5-60s of awaiting a socket, so a worker at 1 makes the whole tier serve one
+   * answer at a time no matter what the substrate could take. Overlapping costs nothing but
+   * sockets, since each claim already carries its own fenced lease and heartbeat. The provider's
+   * own rate limit is the thing to size it against, not the space.
+   */
+  concurrency?: number;
   signal?: AbortSignal;
 }
 
@@ -180,6 +190,7 @@ export async function runInferenceWorker(client: RadiaClient, opts: InferenceOpt
     name: `inference:${tier ?? "all"}`,
     patterns: [tier ? { kind: "llm_call", match: { tier } } : { kind: "llm_call" }],
     leaseSeconds: opts.leaseSeconds ?? 60, // inference is slow; the heartbeat keeps the lease alive
+    ...(opts.concurrency ? { concurrency: opts.concurrency } : {}),
     ...(opts.signal ? { signal: opts.signal } : {}),
     handle: async (rec, c) => {
       const callId = rec.id;

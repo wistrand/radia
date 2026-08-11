@@ -185,6 +185,32 @@ check(
 // With three tiers the same rule still leaves the top one to the classifier.
 check("the rule holds at three tiers too", ["fast", "balanced", "deep"][heuristicIndex("```\nx\n```", 3, 0)] === "balanced");
 
+// ── a worker may only read what its permissions allow ────────────────────────────────────────────
+// Seen live: adding `Deno.env.get("RADIA_CHAT_CONCURRENCY")` to the tools worker crashed it on
+// startup with NotCapable, because the fleet runs that one with a port and its tool roots and no
+// `--allow-env` at all. The launcher has the environment; a worker takes arguments. Checked
+// structurally, since the failure is at STARTUP and every suite that does not launch the real
+// fleet is blind to it.
+{
+  const fleetSrc = Deno.readTextFileSync(new URL("./client/fleet.ts", import.meta.url));
+  // Each spawn(...) call: its permission flags plus the worker file it runs.
+  const spawns = [...fleetSrc.matchAll(/spawn\(\s*[`"'][^`"']*[`"']\s*,\s*\[([\s\S]*?)\]\s*\)/g)];
+  check("the fleet's spawns are parseable (this guard is not silently testing nothing)", spawns.length >= 5, `${spawns.length} spawns`);
+  for (const m of spawns) {
+    const args = m[1];
+    const file = args.match(/["'](examples\/chat\/workers\/[a-z-]+\.ts)["']/)?.[1];
+    if (!file) continue;
+    const src = Deno.readTextFileSync(new URL("../../" + file, import.meta.url));
+    const readsEnv = /Deno\.env\./.test(src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, ""));
+    const mayReadEnv = /--allow-env/.test(args);
+    check(
+      `${file.split("/").pop()}: reads env only if spawned with --allow-env`,
+      !readsEnv || mayReadEnv,
+      readsEnv ? (mayReadEnv ? "reads env, permitted" : "READS ENV WITHOUT --allow-env") : "no env reads",
+    );
+  }
+}
+
 space.kill();
 await space.status;
 console.log(failed === 0 ? "\nok" : `\nFAILED (${failed})`);

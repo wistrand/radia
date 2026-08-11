@@ -15,6 +15,25 @@ export interface LoopOptions {
   pollMs?: number; // fallback tick when no wakeup arrives
   signal?: AbortSignal;
   /**
+   * How many claims this worker may hold AT ONCE. Default 1: strictly sequential, the behaviour
+   * every existing caller has.
+   *
+   * Raise it for a worker whose handler is I/O WAIT rather than work. An inference worker holds
+   * one `llm_call` for the whole model response (5-60s) and does nothing but await a socket, so
+   * one process serialized the fleet's entire throughput at one answer per tier
+   * (agent_docs/plan-scaling.md: this, not the substrate, is the first ceiling the chat hits).
+   * Leave it at 1 for a handler that is CPU- or process-heavy (the exec worker spawns a jail per
+   * call), where overlapping only trades latency for contention.
+   *
+   * The substrate needs nothing for this: leases are independently fenced, there is no
+   * max-leases-per-principal, and every claim already carries its own lease, heartbeat and
+   * cancellation. What changes is only how many the harness holds. Records complete OUT OF ORDER
+   * above 1, which is already the contract (at-least-once, no ordering guarantee), but a handler
+   * that assumed "one at a time" because that is what it always saw must be checked before opting
+   * in.
+   */
+  concurrency?: number;
+  /**
    * Run one claimed record.
    *
    * `signal` aborts when this claim's lease STOPS BEING THIS WORKER'S: the heartbeat saw
@@ -63,6 +82,8 @@ function describeFailure(e: unknown, base: string): string {
 
 export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<void> {
   const leaseSeconds = o.leaseSeconds ?? 30;
+  // 1 by default: strictly sequential, every existing caller's behaviour. See LoopOptions.
+  const concurrency = Math.max(1, Math.floor(o.concurrency ?? 1));
   const fallbackMs = Math.max(o.pollMs ?? 250, 1000);
   const log = o.log ?? (() => {});
   // Failures go to the caller's `log` when it gave one, and to stderr when it did not. Never
@@ -127,6 +148,66 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
       } catch { /* shutting down: nothing useful to do */ }
     }
   };
+
+  /**
+   * One claim, start to settle: heartbeat, handler, ack or nack, cleanup.
+   *
+   * A function rather than the loop body it used to be, so several can be in flight at once. Every
+   * piece of per-claim state that used to be a loop variable is a local here, which is exactly why
+   * concurrency needs no new machinery: the fenced lease, its heartbeat and its cancellation were
+   * always per claim. It never throws — a handler's failure is nacked and reported inside — so a
+   * caller can hold it in a set and only await it for its timing.
+   */
+  const runClaim = async (claimed: NonNullable<Awaited<ReturnType<RadiaClient["take"]>>>): Promise<void> => {
+    // This claim's cancellation channel: the loop's own signal, plus the heartbeat's verdict.
+    const claim = new AbortController();
+    const cancelClaim = () => claim.abort();
+    o.signal?.addEventListener("abort", cancelClaim, { once: true });
+    let fenced = false;
+    const hb = startHeartbeat(client, claimed, leaseSeconds, (reason) => {
+      fenced = true;
+      if (reason === "credential") {
+        // The run is stopped or aged out: nothing it holds can be settled, so stop claiming too.
+        // `keepAlive` would reach the same conclusion at its own cadence, which is half of a
+        // 15-minute token: minutes of a handler running against a credential that is already dead.
+        credentialLost = true;
+        credential.abort();
+      }
+      log(`[${o.name}] lease lost on ${short(claimed.record.id)} (${reason}): cancelling the handler`);
+      claim.abort(new Error(`lease_lost: ${reason}`));
+    });
+    try {
+      const result = await o.handle(claimed.record, client, claim.signal);
+      if (fenced) {
+        // Settling is pointless and the log line has to say which of the two happened: the work
+        // ran to completion but somebody else owns the record now.
+        log(`[${o.name}] ${short(claimed.record.id)} finished after being fenced: not settled, duplicate work possible`);
+      } else {
+        const key = `ack:${claimed.record.id}:${claimed.lease.epoch}`;
+        const res = await client.ack(claimed.lease, result ?? undefined, key);
+        if (res.status === "lease_lost") {
+          log(`[${o.name}] fenced on ${short(claimed.record.id)}: duplicate work possible (at-least-once)`);
+        } else {
+          log(`[${o.name}] ${claimed.record.kind} ${short(claimed.record.id)} -> ok`);
+        }
+      }
+    } catch (e) {
+      // A handler that threw BECAUSE it was cancelled must not be nacked: the lease is not ours, so
+      // the nack fences out anyway, and calling it invites a stray attempt bump on the next owner.
+      if (fenced) {
+        log(`[${o.name}] ${short(claimed.record.id)} stopped on the fence: ${e}`);
+      } else {
+        await client.nack(claimed.lease).catch(() => {});
+        report(`[${o.name}] ${short(claimed.record.id)} -> nack: ${e}`);
+      }
+    } finally {
+      hb.stop();
+      o.signal?.removeEventListener("abort", cancelClaim);
+    }
+  };
+
+  /** Claims running right now. Size is the only slot bookkeeping the loop needs. */
+  const inFlight = new Set<Promise<void>>();
 
   // Background watchers: each matching-kind wakeup resolves a pending idle wait.
   let wake: (() => void) | null = null;
@@ -248,53 +329,19 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
       continue;
     }
 
-    // This claim's cancellation channel: the loop's own signal, plus the heartbeat's verdict.
-    const claim = new AbortController();
-    const cancelClaim = () => claim.abort();
-    o.signal?.addEventListener("abort", cancelClaim, { once: true });
-    let fenced = false;
-    const hb = startHeartbeat(client, claimed, leaseSeconds, (reason) => {
-      fenced = true;
-      if (reason === "credential") {
-        // The run is stopped or aged out: nothing it holds can be settled, so stop claiming too.
-        // `keepAlive` would reach the same conclusion at its own cadence, which is half of a
-        // 15-minute token: minutes of a handler running against a credential that is already dead.
-        credentialLost = true;
-        credential.abort();
-      }
-      log(`[${o.name}] lease lost on ${short(claimed!.record.id)} (${reason}): cancelling the handler`);
-      claim.abort(new Error(`lease_lost: ${reason}`));
-    });
-    try {
-      const result = await o.handle(claimed.record, client, claim.signal);
-      if (fenced) {
-        // Settling is pointless and the log line has to say which of the two happened: the work
-        // ran to completion but somebody else owns the record now.
-        log(`[${o.name}] ${short(claimed.record.id)} finished after being fenced: not settled, duplicate work possible`);
-      } else {
-        const key = `ack:${claimed.record.id}:${claimed.lease.epoch}`;
-        const res = await client.ack(claimed.lease, result ?? undefined, key);
-        if (res.status === "lease_lost") {
-          log(`[${o.name}] fenced on ${short(claimed.record.id)}: duplicate work possible (at-least-once)`);
-        } else {
-          log(`[${o.name}] ${claimed.record.kind} ${short(claimed.record.id)} -> ok`);
-        }
-      }
-    } catch (e) {
-      // A handler that threw BECAUSE it was cancelled must not be nacked: the lease is not ours, so
-      // the nack fences out anyway, and calling it invites a stray attempt bump on the next owner.
-      if (fenced) {
-        log(`[${o.name}] ${short(claimed.record.id)} stopped on the fence: ${e}`);
-      } else {
-        await client.nack(claimed.lease).catch(() => {});
-        report(`[${o.name}] ${short(claimed.record.id)} -> nack: ${e}`);
-      }
-    } finally {
-      hb.stop();
-      o.signal?.removeEventListener("abort", cancelClaim);
-    }
+    // Start it, and (at concurrency 1) wait for it right here, which is the behaviour every
+    // existing caller has. Above 1 the slot bookkeeping below is what waits.
+    const running = runClaim(claimed);
+    inFlight.add(running);
+    running.finally(() => inFlight.delete(running));
+    // Fill the remaining slots from the same wakeup before parking: a burst of claimable records
+    // should not need one wakeup each. When every slot is busy, wait for the first to free.
+    if (inFlight.size >= concurrency) await Promise.race([...inFlight]);
   }
 
+  // Drain: the handlers were aborted with the loop's signal, but they still own leases until they
+  // settle, and `retireInterests` must not race the settles it would otherwise interleave with.
+  await Promise.allSettled([...inFlight]);
   await retireInterests();
   await Promise.allSettled(watchers);
 }

@@ -21,9 +21,10 @@ bootstraps as the space OPERATOR. Ten users is ninety worker processes and ten p
 the control plane. That is a dev harness, not a deployment. Every number below assumes a shared
 fleet and scoped sessions.
 
-### 2. Fleet concurrency: 2-3 concurrent answers, 5-10 people chatting
+### 2. Fleet concurrency: was 2-3 concurrent answers, now K per waiting worker
 
-`agentLoop` (`sdk/ts/loop.ts`) is strictly sequential: take one record, run the handler to
+FIXED by item 1 below (`concurrency: K`), so this section describes the ceiling as it WAS and why
+it bound first. `agentLoop` was strictly sequential: take one record, run the handler to
 completion, settle, loop. One inference worker holds one `llm_call` for the whole model response
 (5-60s), and the fleet starts ONE worker per tier. Concurrent answers therefore cap at the number
 of distinct tiers in flight, realistically 1-2 because the router concentrates traffic. Tool calls
@@ -66,12 +67,21 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
 
 **App and SDK, no runtime change. ~3 -> ~30 concurrent answers.**
 
-1. **K replicas per tier worker.** Claims are single-winner and `capability` is content-keyed by
-   `(provider, tool)`, so replicas are one registry entry and safe by construction.
-2. **`concurrency: K` in `agentLoop`.** A handler awaiting a 60s model call is pure I/O wait, the
-   worst thing to serialize. Multiplies (1) without more processes and needs no new machinery.
+1. **BUILT: `concurrency: K` in `agentLoop`** (`sdk/ts/loop.ts`). The per-claim block (fenced
+   lease, heartbeat, cancellation, settle) was always self-contained, so this is slot bookkeeping
+   around it and no new machinery. **Default 1**, so no existing worker changes behaviour; the
+   chat opts its WAITING workers in at 4 (`WORKER_CONCURRENCY`, `RADIA_CHAT_CONCURRENCY`):
+   inference (5-60s awaiting a socket), the router (every untiered call passes through it and it
+   awaits a classifier), and tools (queries and file reads). The EXEC worker stays at 1 on
+   purpose: it spawns a jail per call, where overlapping trades latency for contention.
+   Guards: `conformance/loop.test.ts` (K slots fill from one burst; the default still serializes;
+   shutdown drains in-flight claims before retiring interests), each proven red.
+2. **K replicas per tier worker.** Now largely redundant for WAITING workers, which (1) covers in
+   one process: replicas buy true parallelism, which matters for CPU-bound work (exec), not for a
+   socket wait. Still the answer for spreading load across machines.
 3. **One shared process serving many sessions**, rather than a fleet per user bootstrapping as
-   operator.
+   operator. The remaining app-shape item, and the one that makes "N users" a deployment rather
+   than N copies of a dev harness.
 
 **Runtime. Changes the scaling law.**
 

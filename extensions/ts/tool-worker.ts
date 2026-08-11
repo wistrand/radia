@@ -96,6 +96,13 @@ export interface ServeOptions {
   /** For a loop label; defaults to `provider`. */
   name?: string;
   leaseSeconds?: number;
+  /**
+   * Tool calls served AT ONCE. Default 1 (sequential), because a tool worker's cost profile is
+   * the tool's, not the harness's: raise it for a worker whose tools WAIT (a query, an HTTP
+   * fetch), leave it at 1 for one whose tools WORK (spawning a jail, encoding an image), where
+   * overlapping trades latency for contention. See agent_docs/plan-scaling.md.
+   */
+  concurrency?: number;
   kinds?: Partial<TurnKinds>;
   signal?: AbortSignal;
 }
@@ -123,6 +130,7 @@ export async function serveTools(client: RadiaClient, opts: ServeOptions): Promi
     // workers' work, and content-routing per name is the whole point.
     patterns: Object.keys(opts.tools).map((tool) => ({ kind: "tool_call", match: { tool } })),
     ...(opts.leaseSeconds ? { leaseSeconds: opts.leaseSeconds } : {}),
+    ...(opts.concurrency ? { concurrency: opts.concurrency } : {}),
     handle: async (rec: RadiaRecord, c: RadiaClient) => {
       const b = rec.body as ToolCallBody;
       const callId = rec.id;
