@@ -611,8 +611,9 @@ function applyRoute() {
     if (v === "flat" || v === "thread") $("feed-group").value = v;
   }
   if (b.dataset.tab === "graph") {
-    const v = r.params.get("view");
-    if (v === "layers" || v === "waterfall") $("g-view").value = v;
+    // Absent means the DEFAULT (waterfall — a duration question is where a graph link usually
+    // starts), applied rather than left sticky from the last view.
+    $("g-view").value = r.params.get("view") === "layers" ? "layers" : "waterfall";
     $("g-down").checked = r.params.get("dir") === "down";
   }
   selectTab(b);

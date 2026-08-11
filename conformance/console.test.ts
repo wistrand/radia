@@ -473,6 +473,17 @@ Deno.test("console: a knob from the URL is applied before the loader, and valida
   both.inputs["g-down"].checked = true;
   both.applyRoute();
   assertEquals(both.inputs["g-down"].checked, false);
+
+  // Same rule for the view itself, and the default is WATERFALL: a bare graph link opens on the
+  // timing question, and `view=layers` is the knob a sender chooses. Sticky would show whatever
+  // the last look used.
+  const bare = newRouter("#graph/01KZ6X7QXBSV7PS9A9WS8VT6EJ");
+  bare.inputs["g-view"].value = "layers";
+  bare.applyRoute();
+  assertEquals(bare.inputs["g-view"].value, "waterfall", "a bare graph link defaults to the waterfall");
+  const layers = newRouter("#graph/01KZ6X7QXBSV7PS9A9WS8VT6EJ?view=layers");
+  layers.applyRoute();
+  assertEquals(layers.inputs["g-view"].value, "layers", "…and an explicit layers link is honoured");
 });
 
 Deno.test("console: the route is applied INSIDE the sign-in gate, never at page load", () => {
