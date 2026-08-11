@@ -12,9 +12,17 @@ export const scaleBenches: Bench[] = [
     name: "growth",
     note: "put / read_one / query / take, re-measured as the space fills. Rising p50 with a constant result size is the signal.",
     run: async (ctx) => {
-      ctx.space.registerKind({
-        kind: "task",
-        indexedPaths: [{ path: "op", type: "keyword" }, { path: "n", type: "integer" }, { path: "tags", type: "array" }],
+      // DURABLY declared, not `registerKind`: only the durable path runs `prepareKind`, which is
+      // where Postgres creates its planner statistics. Declared with registerKind, this suite
+      // measured a plan no real client gets — `take` read 23.6ms at 40k and "grew with the
+      // space", when the same claim on a real declaration is ~6ms and flat (2026-08-11; the
+      // ANALYZE experiment is in the README).
+      await ctx.space.put({
+        kind: "kind_def",
+        body: {
+          kind: "task",
+          indexedPaths: [{ path: "op", type: "keyword" }, { path: "n", type: "integer" }, { path: "tags", type: "array" }],
+        },
       });
       const out: Measurement[] = [];
       let planted = 0;

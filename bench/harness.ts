@@ -22,6 +22,9 @@ export interface BenchContext {
   space: Space;
   /** How hard to push: scales iteration counts so a quick run stays under a minute. */
   scale: number;
+  /** The adapter itself, for a suite that needs a Space with a non-default context (the OIDC
+   *  suite configures an issuer). Build the second Space over this; never a second adapter. */
+  adapter: StorageAdapter;
 }
 
 export interface Bench {
@@ -100,10 +103,10 @@ export function renderTable(rows: { adapter: string; m: Measurement }[], heading
 }
 
 /** A fresh space per benchmark, so one suite's records never skew another's scans. */
-export async function withSpace<T>(adapter: StorageAdapter, fn: (space: Space) => Promise<T>): Promise<T> {
+export async function withSpace<T>(adapter: StorageAdapter, fn: (space: Space, adapter: StorageAdapter) => Promise<T>): Promise<T> {
   await adapter.init();
   try {
-    return await fn(new Space(adapter));
+    return await fn(new Space(adapter), adapter);
   } finally {
     await adapter.close();
   }

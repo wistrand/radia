@@ -113,9 +113,12 @@ export class OidcVerifier {
     this.#cooldownMs = opts.cooldownMs ?? UNKNOWN_KID_COOLDOWN_MS;
   }
 
-  /** Verify one id_token against the configured issuer/audience. `nowMs` is the DB clock (the
-   *  invariant: never a local clock) in epoch milliseconds; JWT times are epoch SECONDS. */
-  async verify(idToken: string, nowMs: number): Promise<Verified> {
+  /** Verify one id_token against the configured issuer/audience. `now` is the DB clock (the
+   *  invariant: never a local clock) in epoch milliseconds — as a THUNK, because fetching it
+   *  costs a database round trip on Postgres and this is the unauthenticated path: a flood of
+   *  garbage must fail on string compares before the space pays any I/O for it (measured:
+   *  562µs -> 27µs-class for a wrong-issuer reject). A plain number is accepted for tests. */
+  async verify(idToken: string, now: number | (() => Promise<number>)): Promise<Verified> {
     const parts = idToken.split(".");
     if (parts.length !== 3) return { ok: false, reason: "malformed token" };
     const header = b64urlJson(parts[0]);
@@ -136,6 +139,7 @@ export class OidcVerifier {
       : Array.isArray(aud) && aud.includes(this.#cfg.audience) &&
         (aud.length === 1 || payload.azp === this.#cfg.audience);
     if (!audOk) return { ok: false, reason: "audience mismatch" };
+    const nowMs = typeof now === "number" ? now : await now();
     const nowSec = Math.floor(nowMs / 1000);
     if (typeof payload.exp !== "number" || nowSec > payload.exp + SKEW_SECONDS) {
       return { ok: false, reason: "expired" };

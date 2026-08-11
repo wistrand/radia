@@ -488,12 +488,18 @@ export interface StorageAdapter {
   sealHead(): Promise<EventSeal | null>;
 
   /**
-   * Append seal rows, contiguously from `sealHead().idx + 1`. Returns how many were written.
+   * Append seal rows, contiguously from `sealHead().idx + 1`. Returns the length of the
+   * CONTIGUOUS PREFIX this call landed, and leaves the database holding exactly that prefix of
+   * the attempt (any row past it is another sealer's and must remain theirs).
    *
    * A conflicting index is skipped rather than overwritten: two runtimes over one database may seal
    * the same events concurrently, and they compute identical rows from identical input, so first
    * writer wins and the loser learns it wrote nothing. Overwriting would let a second sealer replace
-   * a link, which is the one thing this table exists to make impossible. (M1)
+   * a link, which is the one thing this table exists to make impossible.
+   *
+   * The prefix (not the raw win count) is the contract, because the caller re-reads the head at
+   * `prefix` and continues from there: a batched implementation that wins positions BEYOND a
+   * gap must discard them, or the chain grows a hole the caller never revisits. (M1)
    */
   appendSeals(seals: EventSeal[]): Promise<number>;
 

@@ -1097,10 +1097,15 @@ export class Space {
   async mintOidcRun(idToken: string): Promise<{ run: string; agent: string; runToken: string; expiresAt: string }> {
     const cfg = this.ctx.oidc;
     if (!cfg) throw new RadiaError("oidc_not_configured", "this space has no OIDC issuer configured (dev: --oidc-issuer + --oidc-audience)");
-    const now = await this.storage.now();
+    // The DB clock is fetched LAZILY, through the verifier: this is the unauthenticated path,
+    // and on Postgres `storage.now()` is a round trip, so a flood of garbage tokens must die on
+    // string compares before the space pays any I/O for them (measured in bench/suites/oidc.ts).
+    let nowIso: string | undefined;
+    const nowMs = async () => Date.parse(nowIso ??= await this.storage.now());
     this.#oidcVerifier ??= new OidcVerifier(cfg, (url) => this.oidcFetch(url));
-    const v = await this.#oidcVerifier.verify(idToken, Date.parse(now));
+    const v = await this.#oidcVerifier.verify(idToken, nowMs);
     if (!v.ok) throw new RadiaError("invalid_credential", `id_token rejected: ${v.reason}`);
+    const now = nowIso ?? (nowIso = await this.storage.now());
 
     // Who is this? The mapping registry decides; a raw claim never does. Fail CLOSED on an
     // incomplete view — an absent mapping changes who the caller IS, not just what they may do.

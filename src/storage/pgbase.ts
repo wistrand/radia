@@ -1130,17 +1130,38 @@ export class PgSqlAdapter implements StorageAdapter {
   }
 
   async appendSeals(seals: EventSeal[]): Promise<number> {
-    let written = 0;
+    if (seals.length === 0) return 0;
+    // ONE round trip for the whole batch, not one per link: sealing a 500-link batch cost 650ms
+    // on Postgres as sequential INSERTs (measured 2026-08-11, bench/README) — and sealing runs
+    // inside reads (`verifyIntegrity` seals first, and diagnostics spot-checks), so every doctor
+    // poll on a backlogged space paid it. RETURNING names the rows that actually landed.
+    const values: string[] = [];
+    const params: unknown[] = [];
     for (const s of seals) {
-      const r = await this.sql.query(
-        `insert into event_seal (idx, event_id, cursor, seq, hash, prev_hash, sig)
-         values ($1,$2,$3,$4,$5,$6,$7) on conflict (idx) do nothing`,
-        [s.idx, s.eventId, s.cursor, s.seq, s.hash, s.prevHash, s.sig ?? null],
-      );
-      if (r.affectedRows === 0) break; // another sealer got there first; its links stand
-      written++;
+      const b = params.length;
+      values.push(`($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7})`);
+      params.push(s.idx, s.eventId, s.cursor, s.seq, s.hash, s.prevHash, s.sig ?? null);
     }
-    return written;
+    const r = await this.sql.query<{ idx: number | string | bigint }>(
+      `insert into event_seal (idx, event_id, cursor, seq, hash, prev_hash, sig)
+       values ${values.join(",")} on conflict (idx) do nothing returning idx`,
+      params,
+    );
+    const won = new Set(r.rows.map((row) => Number(row.idx)));
+    // The single-row contract, preserved exactly: report the CONTIGUOUS PREFIX of the attempt,
+    // and past the first position another sealer already held, leave nothing of ours — "its
+    // links stand". Links are deterministic from (head, events, key), so a lost position holds a
+    // byte-identical row, but the caller reasons from the prefix and re-reads the head there;
+    // stray wins beyond it are removed so batched and row-at-a-time are indistinguishable.
+    let prefix = 0;
+    while (prefix < seals.length && won.has(seals[prefix].idx)) prefix++;
+    if (prefix < seals.length) {
+      const strays = seals.slice(prefix).filter((s) => won.has(s.idx)).map((s) => s.idx);
+      if (strays.length > 0) {
+        await this.sql.query(`delete from event_seal where idx = any($1)`, [strays]);
+      }
+    }
+    return prefix;
   }
 
   async getSeals(afterIdx: number, limit: number): Promise<EventSeal[]> {

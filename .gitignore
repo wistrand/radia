@@ -18,6 +18,10 @@
 *.db-wal
 *.db-shm
 
+# CPU profiles from `deno task profile` (bench/profile.ts)
+/bench/*.cpuprofile
+/bench/*.folded
+
 # Deno
 .deno/
 

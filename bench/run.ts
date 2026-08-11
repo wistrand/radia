@@ -25,8 +25,11 @@ import { claimBenches } from "./suites/claims.ts";
 import { lineageBenches } from "./suites/lineage.ts";
 import { scaleBenches } from "./suites/scale.ts";
 import { blobBenches } from "./suites/blobs.ts";
+import { graphBenches } from "./suites/graph.ts";
+import { gcBenches } from "./suites/gc.ts";
+import { oidcBenches } from "./suites/oidc.ts";
 
-const ALL: Bench[] = [...recordBenches, ...claimBenches, ...lineageBenches, ...scaleBenches, ...blobBenches];
+const ALL: Bench[] = [...recordBenches, ...claimBenches, ...lineageBenches, ...scaleBenches, ...blobBenches, ...graphBenches, ...gcBenches, ...oidcBenches];
 
 function arg(name: string): string | undefined {
   const i = Deno.args.indexOf(`--${name}`);
@@ -61,8 +64,8 @@ for (const bench of benches) {
   for (const f of running) {
     // The blob suites do not touch storage; run them once rather than once per adapter.
     if (bench.name === "blobs" && f.name !== running[0].name) continue;
-    await withSpace(f.create(), async (space) => {
-      for (const m of await bench.run({ space, scale })) rows.push({ adapter: bench.name === "blobs" ? "-" : f.name, m });
+    await withSpace(f.create(), async (space, adapter) => {
+      for (const m of await bench.run({ space, scale, adapter })) rows.push({ adapter: bench.name === "blobs" ? "-" : f.name, m });
     });
   }
   console.log(`## ${bench.name}`);

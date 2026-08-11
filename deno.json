@@ -12,6 +12,7 @@
     "workspace-git": "deno run --allow-net --allow-read --allow-write --allow-env extensions/ts/export-git.ts",
     "chat-test": "deno run -A examples/chat/smoke.ts",
     "bench": "deno run --allow-read --allow-write --allow-env --allow-net bench/run.ts",
+    "profile": "deno run --allow-read --allow-write --allow-env --allow-net --allow-run bench/profile.ts",
     "demo": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/pipeline/demo.ts",
     "demo:ci": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/pipeline/demo.ts --once",
     "stress": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/stress/stress.ts",

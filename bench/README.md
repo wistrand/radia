@@ -44,6 +44,10 @@ constant result size is the signal.
 | `suites/lineage.ts` | `childrenOf` and `getLineage`, the documented hotspot, measured |
 | `suites/scale.ts` | the same operations re-measured at 2k / 10k / 40k records |
 | `suites/blobs.ts` | artifact bytes, and what encryption costs |
+| `suites/graph.ts` | `getGraph` (the console's Graph/waterfall walk) over a conversation-shaped DAG: bounded by the answer, not the space |
+| `suites/gc.ts` | what housekeeping costs: the retention sweep, registry compaction, and the phase-4 blob pass |
+| `suites/oidc.ts` | the one UNAUTHENTICATED write path: what a rejected flood costs vs a first login vs a replay |
+| `profile.ts` | `deno task profile <script> [args…]`: CPU-profile any workload with zero external tooling (see Profiling below) |
 | `deployment.ts` | standalone: one space over HTTP against whatever storage it was started with, re-measured as it fills. Takes a `--url` instead of an adapter, so it measures the thing the suites above cannot. **It writes records and cannot delete them**; point it at a throwaway space |
 | `edit-cost.ts` | standalone: what an edit costs versus rewriting a tree, in emitted characters and in records written. Not a timing suite, so it is run directly rather than through the harness |
 
@@ -219,6 +223,76 @@ means stopping early (the shape is clear, or something looks wrong) throws away 
 taken so far. And it seeds its counter from the space's own record count, so a long fill can be
 resumed after an interruption, and an already-filled space can be measured as it stands by naming a
 checkpoint at or below its current size.
+
+## What the 2026-08-11 re-run confirmed (and the two things it flagged)
+
+Full three-adapter run after OIDC, blob GC and the artifact-sweep change landed. The shapes
+held: `read_one`/`query`/`$any` flat across 2k→40k, `childrenOf` flat, contention flat with
+single-digit empty takes. First numbers for the new suites (sqlite): an OIDC cheap-reject is
+**27µs** (a flood pays a string compare), a signature reject 552µs (the WebCrypto verify), a
+first login 1.4ms (mapping + profile artifact + run), a replay 570µs; `getGraph` is flat across
+space sizes (6.8ms for 150 nodes, 11.5ms for 400, at 2k and at 10k alike); gc sweeps ~635k
+records/s and `retainOnly` scans ~7M blobs/s in memory.
+
+**The OIDC suite found a fix on its first Postgres run.** A wrong-issuer reject cost 562µs
+there against 27µs on sqlite, because `mintOidcRun` fetched the DB clock BEFORE verifying: an
+anonymous flood bought a database round trip per garbage token. The clock is now a lazy thunk
+the verifier calls only after the string-compare claims pass (`src/core/oidc.ts` `verify`),
+and the same reject is **45µs** — 1.4k/s → 18.5k/s of flood capacity. Flagged, not yet
+explained:
+
+- **Postgres `take` grows with the space again**: 9.8ms @ 2k → 22.9ms @ 40k in the growth
+  suite. The planner-guess shape (see "planned on a guess" above). The profiling session's
+  first target — see "the profiling session found two things", below, where it turned out to be
+  the BENCH, not the runtime.
+- **`diagnostics` is the heaviest read everywhere**: 33ms (sqlite) / 213ms (pglite) / 657ms
+  (postgres) at 40k. `doctor` and the console Overview pay it; second target, and a real
+  runtime fix (below).
+
+## The profiling session found two things (2026-08-11)
+
+Both flagged rows above, run down with `deno task profile` and a pair of throwaway scripts. One
+was a benchmark artifact; one was a real hotspot, now fixed.
+
+**Postgres `take` was the BENCH lying, not the runtime.** The growth suite declared its kind
+with `registerKind`, the in-memory path, which never calls `prepareKind` — so Postgres had no
+planner statistics on the body paths and fell back to the guess the "planned on a guess" section
+describes (`take` 23.6ms, "growing"). A real client declares durably (a `kind_def` record),
+which creates the statistics; measured that way the same claim is **10.5ms and flat**, and an
+explicit `ANALYZE` takes it to 6.3ms. The fix was in the bench: `suites/scale.ts` now declares
+its kind durably, so it measures the plan a real deployment gets. The finding worth keeping is
+that a benchmark using the convenience registration path measures a plan no client sees.
+
+**`diagnostics` was `appendSeals` doing 500 sequential INSERTs.** `verifyIntegrity` seals before
+it checks, diagnostics runs a spot check, and every seal batch on Postgres was one round trip
+PER LINK — so a doctor poll on a space with a seal backlog paid ~650ms of insert latency, flat
+regardless of the integrity tail size (the tell: 614ms at tail 50, 698ms at tail 500). Batched
+into one multi-row INSERT ... RETURNING (`src/storage/pgbase.ts`), preserving the
+contiguous-prefix contract that concurrent sealers depend on (a win past a rival's position is
+discarded, not left as a hole — pinned by `conformance/suites/integrity.ts` "appendSeals lands
+a contiguous prefix"). **diagnostics on a 10k Postgres space: ~650ms → ~80ms, 8×.** SQLite is
+single-connection and its loop was already fast, so it kept it.
+
+## Profiling
+
+`deno task profile <script> [args…]` CPU-profiles any Deno workload with nothing installed: no
+`perf` (this machine has none, and `perf_event_paranoid=2`), no Chrome, no node. It drives V8's
+own sampler over raw CDP: the target runs under `--inspect-brk` through `profile-wrap.ts`
+(which imports the script, then HOLDS the process so the profiler can stop before exit — the
+tail of a run is usually the part under investigation), and the controller writes:
+
+- `bench/<name>.cpuprofile` — load in Chrome DevTools (Performance → Load) or speedscope
+- `bench/<name>.folded` — flamegraph.pl-compatible folded stacks
+- a top-20 self-time table in the terminal, which is usually enough
+
+```bash
+deno task profile bench/run.ts --suite take-ack --adapter postgres
+deno task profile --out oidc bench/run.ts --suite oidc --adapter sqlite
+```
+
+Two caveats: the profiled script runs via dynamic import, so `import.meta.main` is false inside
+it; and an await-heavy workload shows large `(idle)` — that is honest (the CPU really is
+waiting), so profile the adapter under load, not a latency bench, when hunting CPU.
 
 ## Writing a benchmark
 

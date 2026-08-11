@@ -58,6 +58,44 @@ export const integritySuites: Suite[] = [
     },
   },
   {
+    // `appendSeals` was batched into one INSERT for Postgres (2026-08-11: 500 sequential
+    // inserts cost 650ms, paid inside every diagnostics poll). The contract it must keep,
+    // whatever the dialect: it lands the CONTIGUOUS PREFIX from the head, and a position another
+    // sealer already holds stops the prefix AND leaves nothing of ours beyond the gap — or the
+    // chain grows a hole the caller, which re-reads the head at `prefix`, never revisits.
+    name: "appendSeals lands a contiguous prefix and yields conflicting positions whole",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      await work(space);
+      await space.sealEvents(); // seal the existing log so the next idx is known
+      const head = await adapter.sealHead();
+      const base = head ? head.idx + 1 : 0;
+      const prev = head ? head.hash : "genesis";
+      // Three would-be links at base, base+1, base+2. Plant the MIDDLE one first, as a rival
+      // sealer's row, then attempt all three.
+      const mk = (idx: number, tag: string) => ({
+        idx,
+        eventId: `ev-${idx}-${tag}`,
+        cursor: `c-${idx}`,
+        seq: 1000 + idx,
+        hash: `hash-${idx}-${tag}`,
+        prevHash: prev,
+      });
+      // Plant the rival's row at base+1 directly (appendSeals inserts what it is given; it does
+      // not itself check contiguity against the head, the caller does). This stands in for a
+      // second sealer that reached base+1 first.
+      assertEquals(await adapter.appendSeals([mk(base + 1, "rival")]), 1, "the rival's own write lands");
+      const got = await adapter.appendSeals([mk(base, "mine"), mk(base + 1, "mine"), mk(base + 2, "mine")]);
+      assertEquals(got, 1, "only base is contiguous; base+1 was taken, so the prefix stops there");
+      // base+1 must still be the RIVAL's row, and base+2 (a stray win past the gap) must be gone.
+      const seals = await adapter.getSeals(base - 1, 10);
+      const at = (idx: number) => seals.find((s) => s.idx === idx);
+      assertEquals(at(base)?.eventId, `ev-${base}-mine`, "our contiguous row landed");
+      assertEquals(at(base + 1)?.eventId, `ev-${base + 1}-rival`, "the rival's row stands");
+      assertEquals(at(base + 2), undefined, "a win beyond the gap was discarded, not left as a hole's far side");
+    },
+  },
+  {
     name: "the chain continues across a restart rather than starting over",
     run: async (adapter) => {
       const space = newSpace(adapter);

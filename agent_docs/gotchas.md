@@ -536,6 +536,16 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Storage, SQL and the planner
 
+- **`appendSeals` batches, and the batch must land a CONTIGUOUS PREFIX, not just the rows that
+  won** (`src/storage/pgbase.ts`). One INSERT per link cost ~650ms to seal a 500-link batch on
+  Postgres, and sealing runs INSIDE reads (`verifyIntegrity` seals first; diagnostics spot-checks),
+  so every `radia doctor` poll on a backlogged space paid it — diagnostics ~650ms → ~80ms once
+  batched. The trap in batching: two concurrent sealers compute identical rows, so `on conflict do
+  nothing` may let this call win positions on BOTH sides of a rival's row. The caller re-reads the
+  head at the returned prefix length and continues, so a win past the gap becomes a hole nobody
+  revisits. The multi-row insert returns the won idxs, and anything beyond the first conflict is
+  DELETED before returning the prefix. SQLite is single-connection and kept its row-at-a-time loop.
+  Guard: `conformance/suites/integrity.ts` "appendSeals lands a contiguous prefix".
 - **A sound pre-filter is not a complete one, and the gap is measurable.** What `pushdown.ts`
   cannot express renders as `TRUE`, and the whole kind is then pulled into JS for
   `core/matching.ts` to decide. Measured over HTTP against Postgres (`bench/deployment.ts`): 278ms
@@ -664,6 +674,11 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   while is not a bug. Also: an unfiltered first window (try the head of the queue, fall back to the
   filtered query) was built and **reverted** — it only wins when the head holds a match, and every
   measured cell got worse (sqlite 1.0 → 1.3ms, Postgres 22.7 → 28.6ms).
+  A COROLLARY that bit a benchmark (2026-08-11): the statistics are created by `prepareKind`, which
+  only the DURABLE declaration path calls, never the synchronous `registerKind`. Declared with
+  `registerKind`, a Postgres `take` measured 23.6ms and "grew with the space"; the same kind
+  declared as a `kind_def` record was 10.5ms and flat. A test or bench that uses `registerKind`
+  measures a plan no real client gets. `bench/suites/scale.ts` declares durably for this reason.
 - **The Postgres driver needs TCP_NODELAY or every parameterized query costs ~40ms.** deno-postgres
   (0.19.x) does not set `TCP_NODELAY`, so its extended-protocol (parameterized) queries send several
   small packets and hit Nagle + delayed-ACK, measured at **42ms per query vs 0.18ms** with NODELAY, a
