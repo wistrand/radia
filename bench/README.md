@@ -287,16 +287,24 @@ watchers was always pure waste. Re-run with the fix:
 | other-kind (foreign kind) | **0** | **0** | 250 → **0** |
 | same-kind (all watch `feed`) | 250 | 250 | unchanged |
 
-The chat opens ~5 streams per user of DIFFERENT kinds (llm_chunk, message, tool_result,
-capability, procedure), so a `message` write used to wake all 5U and now wakes only the U message
-streams: **5U → U per write.** What kind-aware wakeup does NOT do is discriminate WITHIN a kind —
-250 streams all watching `message` (different conversations) still all wake on a `message` write,
-each fetching the record to run its conversation predicate. That residual (the same-kind row) is
-what per-conversation routing or a client that shares the registry streams would attack next:
-- **Dropping `capability`/`procedure` to periodic refresh:** removes 2 of the ~5 kinds a user
-  watches, so ~40% fewer distinct-kind streams — free, no runtime change.
+The chat opens 5 streams per user of DIFFERENT kinds (llm_chunk, message, tool_result — the three
+wakeup watches; capability, procedure — the two registry watches), so a `message` write used to
+wake all 5U and now wakes only the U message streams: **5U → U per write.** What kind-aware wakeup
+does NOT do is discriminate WITHIN a kind — 250 streams all watching `message` (different
+conversations) still all wake on a `message` write, each fetching the record to run its
+conversation predicate. That residual (the same-kind row) is the next lever, and it is not the one
+the pre-fix analysis named:
+- **Per-conversation routing (or a shared registry client) is what attacks the residual.** Waking
+  only the streams whose conversation matches would need the record's `conversationId` at wake
+  time, which the event does not carry — so it is a real design question (a second index dimension
+  on the wakeup), not a client tweak.
 - **`idx_events_xid_seq` (done):** each surviving same-kind `getEvents` is a tail index scan, not
   a whole-log scan+sort, so the residual no longer grows with history either.
+- **Dropping `capability`/`procedure` to periodic refresh no longer helps the fan-out.** Before
+  kind-aware wakeup it cut 5U→3U (kind-blind notify woke those two per message); now a message
+  write never wakes them, so dropping them buys only 2 fewer open connections and parked waiters
+  per user — a memory/fd cleanup, not a query reduction. Noted so the pre-fix "~40% off" claim is
+  not carried forward.
 
 Guards: `conformance/notifier.test.ts` (notify(kind) wakes the kind + any-set, not foreign kinds;
 a re-registered same-kind waiter wakes again), both proven red against a kind-blind `notify`; the
