@@ -16,11 +16,17 @@
   <text x="80" y="464" font-family="sans-serif" font-size="26" fill="#9ca3af">A coordination runtime for LLM agents. Adding a worker</text>
   <text x="80" y="502" font-family="sans-serif" font-size="26" fill="#9ca3af">adds a capability, with no code change anywhere else.</text>
 
-  <!-- Four records: three waiting, one claimed. Same figure as the favicon. -->
-  <circle cx="960" cy="200" r="26" fill="#60a5fa"/>
-  <circle cx="1060" cy="200" r="26" fill="#60a5fa"/>
-  <circle cx="960" cy="300" r="26" fill="#60a5fa"/>
-  <circle cx="1060" cy="300" r="34" fill="#818cf8"/>
+  <!-- Four records: three waiting, one claimed. Same figure as the favicon: bright lines on
+       dark, the claimed one double-struck. -->
+  <g fill="none" stroke="#60a5fa" stroke-width="7">
+    <rect x="934" y="174" width="52" height="52" rx="14"/>
+    <rect x="1034" y="174" width="52" height="52" rx="14"/>
+    <rect x="934" y="274" width="52" height="52" rx="14"/>
+  </g>
+  <g fill="none" stroke="#a5b4fc" stroke-width="6">
+    <rect x="1028" y="268" width="64" height="64" rx="14"/>
+    <rect x="1043" y="283" width="34" height="34" rx="7"/>
+  </g>
 
   <text x="80" y="566" font-family="monospace" font-size="22" fill="#6366f1">github.com/wistrand/radia</text>
 </svg>

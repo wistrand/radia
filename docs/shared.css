@@ -60,7 +60,12 @@ nav .brand {
   font-weight: 700;
   font-size: 1.1rem;
   color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
 }
+
+nav .brand svg { display: block; }
 
 nav .brand:hover { color: var(--accent); text-decoration: none; }
 

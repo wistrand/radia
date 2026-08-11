@@ -226,12 +226,18 @@ let blitzoomJs: string | null = null;
 /** A record claimed out of a space: three waiting, one taken. The same mark as `docs/favicon.svg`
  *  (kept byte-equal by http.test.ts) and the chat banner's text rendering of it. */
 const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <!-- A record claimed out of a space: three waiting, one taken. The console's own palette. -->
+  <!-- A record claimed out of a space: three waiting, one taken. Bright lines on dark — the
+       chat banner's text mark (thin rounded boxes, the claimed one double-struck) drawn for real. -->
   <rect width="64" height="64" rx="12" fill="#0e0e11"/>
-  <circle cx="21" cy="21" r="6" fill="#60a5fa"/>
-  <circle cx="43" cy="21" r="6" fill="#60a5fa"/>
-  <circle cx="21" cy="43" r="6" fill="#60a5fa"/>
-  <circle cx="43" cy="43" r="8" fill="#818cf8"/>
+  <g fill="none" stroke="#60a5fa" stroke-width="2.5">
+    <rect x="12" y="12" width="17" height="17" rx="5"/>
+    <rect x="35" y="12" width="17" height="17" rx="5"/>
+    <rect x="12" y="35" width="17" height="17" rx="5"/>
+  </g>
+  <g fill="none" stroke="#a5b4fc" stroke-width="2">
+    <rect x="34" y="34" width="19" height="19" rx="5"/>
+    <rect x="38.5" y="38.5" width="10" height="10" rx="2.5"/>
+  </g>
 </svg>`;
 
 
