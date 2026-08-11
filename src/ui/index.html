@@ -709,7 +709,14 @@ async function loadHealth() {
       powers: who.data.opsPowers || [],
     }
     : { principal: d.principal, subject: d.principal, privileged: false, kinds: [], powers: [], unknown: true };
-  const label = esc(IDENTITY.subject || d.principal || "?");
+  // A person who signed in over SSO gets their IdP display name in the pill, as DECORATION: the
+  // name came from the id_token's own claims at sign-in (client-side, sessionStorage), while the
+  // identity the space enforces is still the principal beside it. Shown only for the derived
+  // `human:oidc-…` principals, where the hash tells a person nothing; a mapped principal already
+  // reads as a name.
+  const ssoName = sessionStorage.getItem("radia.oidc-name");
+  const label = esc(IDENTITY.subject || d.principal || "?")
+    + (ssoName && String(IDENTITY.subject || "").startsWith("human:oidc-") ? ` (${esc(ssoName)})` : "");
   const badge = IDENTITY.privileged
     ? "operator"
     : IDENTITY.unknown
@@ -2113,6 +2120,7 @@ async function adopt(t, remember) {
       (remember ? sessionStorage : localStorage).removeItem("radia.definition");
       sessionStorage.setItem("radia.token", d.runToken);
       sessionStorage.removeItem("radia.open-operator");
+      sessionStorage.removeItem("radia.oidc-name"); // a pasted credential is a different sign-in
       location.reload();
       return true;
     }
@@ -2132,6 +2140,7 @@ async function adopt(t, remember) {
 function signInOperator() {
   forgetDefinition();
   sessionStorage.removeItem("radia.token");
+  sessionStorage.removeItem("radia.oidc-name");
   sessionStorage.setItem("radia.open-operator", "1");
   location.reload();
 }
@@ -2209,7 +2218,9 @@ async function oidcStart() {
   u.searchParams.set("response_type", "code");
   u.searchParams.set("client_id", OIDC_INFO.clientId);
   u.searchParams.set("redirect_uri", location.origin + location.pathname);
-  u.searchParams.set("scope", "openid");
+  // profile + email: purely so the enrollment record carries a recognizable name for the
+  // operator. The principal never derives from either claim.
+  u.searchParams.set("scope", "openid profile email");
   u.searchParams.set("state", state);
   u.searchParams.set("nonce", nonce);
   u.searchParams.set("code_challenge", challenge);
@@ -2243,6 +2254,12 @@ async function oidcFinish(code, pending) {
     const b64 = seg.replace(/-/g, "+").replace(/_/g, "/");
     const payload = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)));
     if (pending.nonce && payload.nonce !== pending.nonce) throw new Error("nonce mismatch: the id_token is not from this sign-in");
+    // The person's display name, kept CLIENT-side for the pill. Decoration only: the space
+    // resolves identity from the run token; this is the same claim set it stores on the
+    // enrollment record, read here so the pill need not query a kind the session cannot read.
+    const shown = payload.name || payload.preferred_username;
+    if (shown) sessionStorage.setItem("radia.oidc-name", String(shown));
+    else sessionStorage.removeItem("radia.oidc-name");
     const sr = await fetch("/v0/sessions/oidc", {
       method: "POST",
       headers: { "content-type": "application/json" },

@@ -40,7 +40,7 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { assignUserGrants, bootstrap, setSessionOwner } from "./space/roles.ts";
-import { apiKey, EXEC_TIMEOUT_MS, execRoots, loginDefinitionToken, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
+import { apiKey, EXEC_TIMEOUT_MS, execRoots, loginDefinitionToken, loginSource, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
 import { FLEET_PROVIDERS, launchFleet, spawnSpace } from "./client/fleet.ts";
 import { retireProviderCapabilities } from "../../extensions/ts/capability.ts";
 import { denoSandbox } from "../../extensions/ts/sandbox.ts";
@@ -169,12 +169,46 @@ const session = new RadiaClient(url, {
   token: loginToken,
   ...(loginDefinitionToken ? { definitionToken: loginDefinitionToken } : {}),
 });
-await session.ensureCredential(); // fail here, at startup, rather than on the first message
-const who = (await session.health()).principal;
+let who: string;
+try {
+  // BOTH calls, at startup, rather than on the first message. `ensureCredential` only ACTS when
+  // it has to mint (a present token is taken on faith), so a dead token surfaces at the first
+  // authenticated request — the health read below is deliberately that request.
+  await session.ensureCredential();
+  who = (await session.health()).principal;
+} catch (e) {
+  // The commonest way here: the STORED login outlived the database it was minted against (a
+  // space restarted onto a different store still answers on the same port). The server's raw
+  // refusal ("a valid agent-definition token is required") says nothing about which credential
+  // or what to do, so say it here, by source.
+  console.error(`cannot start a session on ${url}: ${(e as Error).message}`);
+  if (loginSource === "stored") {
+    console.error(`  The stored login for this space is stale (the space's database does not know it).`);
+    console.error(`  Mint a fresh one:  radia login human:<you>`);
+  } else if (loginSource === "flag") {
+    console.error(`  The --token you passed was not accepted; mint a fresh one with: radia login human:<you>`);
+  } else if (loginSource === "env") {
+    console.error(`  RADIA_CHAT_TOKEN was not accepted; mint a fresh one with: radia login human:<you>`);
+  }
+  Deno.exit(1);
+}
 const perms = await admin.permissions(who) as { subject: string; privileged: boolean };
 const owner = perms.subject;
 const privileged = perms.privileged;
 setSessionOwner(owner);
+
+// The person's display name, when their identity enrolled through OIDC: read from the
+// enrollment record (the substrate's answer, agent_docs/plan-oidc.md), never from anything the
+// session claims about itself. Banner decoration only; every record still carries the principal.
+let displayName = "";
+try {
+  for (const r of await admin.query({ kind: "oidc_identity" }, 200, { dir: "desc" })) {
+    const b = r.body as { principal?: string; name?: string; username?: string; retired?: boolean };
+    if (b.principal !== owner) continue;
+    if (!b.retired) displayName = b.name ?? b.username ?? "";
+    break; // the newest record for this principal decides, either way
+  }
+} catch { /* nothing enrolled, or no read: the principal alone is fine */ }
 
 // What the session's grants bind to. `owner` is this identity across all its conversations;
 // `conversationId` is this thread only. See RADIA_CHAT_SCOPE.
@@ -249,8 +283,10 @@ holdLine(true);
 // say the same thing; no colour, the filled cell carries the meaning. On a TERMINAL only: piped
 // output keeps the one greppable line below, byte for byte what it always was.
 if (tty) {
-  const who = `radia chat  ${dim("·")}  ${owner}${privileged ? dim("  (operator)") : ""}`;
-  write(`\n  ╭─╮ ╭─╮\n  ╰─╯ ╰─╯   ${who}\n  ╭─╮ ▟█▙\n  ╰─╯ ▜█▛\n`);
+  // With a display name the principal moves into the dim parenthesis: still there (it is what
+  // grants and records say), no longer the greeting. Piped output below stays byte-stable.
+  const who = `radia chat  ${dim("·")}  ${displayName ? `${displayName} ${dim(`(${owner})`)}` : owner}${privileged ? dim("  (operator)") : ""}`;
+  write(`\n  ╭─╮ ╭─╮\n  ╰─╯ ╰─╯   ${who}\n  ╭─╮ ╔═╗\n  ╰─╯ ╚═╝\n`);
 } else {
   write(`\nradia chat  ${dim("·")}  ${owner}${privileged ? dim("  (operator)") : ""}\n`);
 }

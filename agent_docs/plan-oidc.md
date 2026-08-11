@@ -1,6 +1,6 @@
 # OIDC sign-in: mint runs from an IdP's id_token
 
-Status: BUILT 2026-08-11 (server + console; CLI device flow deferred). Sources:
+Status: BUILT 2026-08-11 (server + console + CLI). Sources:
 `src/core/oidc.ts` (the verifier), `Space.mintOidcRun` in `src/core/space.ts`,
 `handleOidcSession` in `src/server/handlers/agents.ts`, the sign-in flow in `src/ui/index.html`
 (`oidcStart`/`oidcFinish` and the return leg in `start()`), `httpGetJson` in `src/platform.ts`
@@ -24,9 +24,17 @@ runs are minted directly with NO durable half, so IdP deprovisioning takes effec
   --oidc-audience`), null by default. Trust anchors are config like `operators`. `--oidc-audience`
   is the value the IdP puts in `aud`; health advertises it as `clientId`.
 - Identity: mapped `(iss, sub)` wins; absent auto-admits as `human:oidc-<32 hex of
-  sha256(iss\nsub)>` with ZERO grants; a `retired: true` mapping is a BAN, never a fall-through
-  to auto-admit (offboarding must not un-happen). Privileged principals are refused at mapping
-  write AND at mint.
+  sha256(iss\nsub)>` with ZERO grants, and the FIRST login writes the `oidc_identity` record
+  itself (`auto: true`, with the IdP's `preferred_username`/`name`/`email` as description; the
+  console requests `scope=openid profile email` for exactly this), and later logins REFRESH
+  those claims when they changed at the IdP (a successor preserving the principal, keyed
+  `:after:` its predecessor; a withheld claim never strips a stored one; a ban refuses before
+  any write, so a tombstone stays newest forever) — so
+  `radia query oidc_identity` shows who has signed in, a rename is a successor of a visible
+  record, and a ban is a retire of one. Written ONLY on true absence: a re-put on later logins
+  would eventually outrank a retire tombstone (the resurrection class). A `retired: true`
+  mapping is a BAN, never a fall-through to auto-admit (offboarding must not un-happen).
+  Privileged principals are refused at mapping write AND at mint.
 - The run token is DERIVED from the id_token (domain-separated hash), so a replayed POST finds
   the existing run by tokenHash and writes nothing. A per-subject ceiling
   (`maxOidcRunsPerSubject`, default 8 active runs, 429 `too_many_runs`) bounds distinct tokens.
@@ -37,6 +45,19 @@ runs are minted directly with NO durable half, so IdP deprovisioning takes effec
   PKCE-bound single-use code and required by IdPs; do not "fix" it into a fragment.
 - JWKS: cached 1h TTL; unknown-kid refetch is single-flight with a GLOBAL 45s cooldown after a
   miss, because a per-kid negative cache is defeated by minting a fresh random kid per request.
+- CLI: `radia login --sso` (`ssoLogin` in `src/surfaces/cli.ts`) is the native-app LOOPBACK flow
+  (RFC 8252), not device codes: a one-shot listener on `127.0.0.1:8253` (`--sso-port`; the port
+  is part of the IdP's redirect-URI registration, so fixed, not ephemeral), the printed URL is
+  the person's one click, PKCE exchanged CLI-side, nonce checked CLI-side, and the run token
+  stored in the `#login` slot the chat and CLI verbs already read — with NO definitionToken, so
+  a lapsed session is one click again rather than a silent re-mint. What the terminal prints is
+  `http://127.0.0.1:8253/<12 random hex>`: the listener 302s that path to the full authorize
+  URL, so the PKCE query string never has to survive a terminal, and the random path means a
+  probe of `/` or a link preview cannot spend the sign-in by accident.
+- Display: the enrollment record's claims decorate, never decide. The console pill shows the
+  IdP name beside a derived principal (kept client-side from the id_token at sign-in); the
+  chat's banner reads it from the enrollment record. Both show the principal alongside, because
+  that string is what grants and records say.
 
 ## Accepted gaps
 
@@ -44,10 +65,17 @@ runs are minted directly with NO durable half, so IdP deprovisioning takes effec
   the idempotent mint, the run ceiling and the JWKS cooldown bound the damage, and a failed
   verification writes nothing.
 - Silent refresh (prompt=none iframe) deferred: past the 12h ceiling the SSO button reappears
-  and the dance repeats, which doubles as the deprovisioning check.
-- CLI device flow deferred until a real IdP exists.
+  and the dance repeats, which doubles as the deprovisioning check. Same for the CLI: a lapsed
+  `--sso` session is one browser click, not a stored secret.
+- A device-code flow (for a HEADLESS machine, where no browser can reach 127.0.0.1) stays
+  deferred; the loopback flow covers every desktop case.
 - An id_token replayed within its validity returns the same audited run; that is the designed
   bound, not a leak of new authority.
+- The enrollment record's display claims (`username`/`name`/`email`) are PERMANENT:
+  `oidc_identity` is reserved and NEVER_COMPACT, and record bodies have no erasure path (the
+  erasure invariant in CLAUDE.md). Deliberate — the record exists to be recognizable — but a
+  deployment that must honour deletion of personal data should know the trade before its first
+  sign-in.
 
 ## Rejected
 

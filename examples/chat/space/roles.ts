@@ -215,6 +215,11 @@ export function userGrants(scope?: Record<string, unknown>): Grant[] {
     { kind: "cancel", operations: ["put", "query"], ...scoped },
     { kind: "tool_result", operations: ["read_one"], ...scoped },
     { kind: "capability", operations: ["query"] }, // a registry: the fleet's tools, not session data
+    // Same category, and the grant `space_kinds` runs on: what kinds EXIST is reference data,
+    // and the model is told to discover kinds rather than be taught them (CLAUDE.md, the
+    // corollary). Missing, every fresh identity 403'd on its own discovery tool while
+    // long-lived ones worked from one-off manual grants — the drift that hid this for weeks.
+    { kind: "kind_def", operations: ["query"] },
     // READ-ONLY on purpose: the session builds its tool list from the procedures its conversation
     // saved, but cannot write one. Only the exec-worker can, and only as the result of a
     // `save_procedure` call it actually ran. So "the assistant saved a procedure" always means code

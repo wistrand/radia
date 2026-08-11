@@ -3,7 +3,9 @@
 Spec and rationale for principals, grants, delegation, taint, revocation, and budgets.
 Origin: outline §8.
 
-**M1 status (grants + bootstrap chain + run tokens built):** kind-scoped **grants are records**
+**M1 status (grants + bootstrap chain + run tokens + OIDC sign-in built):** OIDC mints ordinary
+runs from a verified id_token (`POST /v0/sessions/oidc`; [plan-oidc.md](plan-oidc.md) for sources
+and guards, "OIDC: built" below for the three decisions). kind-scoped **grants are records**
 (reserved `grant` kind; body `{principal, kind, operations}`, indexed on principal+kind, never
 wildcard; `src/core/kinds.ts`). `Space.authorize(principal, op, kind)` enforces them and
 `Space.isPrivileged` marks operators: a principal NAMED in `SpaceContext.operators` (default
@@ -665,7 +667,8 @@ space per team for now) · ops-plane tiers (decided and planned, not built:
 ### OIDC: built, on the shape decided here
 
 Analyzed 2026-08-11 and BUILT the same day ([plan-oidc.md](plan-oidc.md): sources, guards, and
-the accepted gaps — no CLI device flow, no silent refresh, no general rate limit). The three
+the accepted gaps — no silent refresh, no general rate limit, headless device-code flow
+deferred; the desktop CLI signs in via the RFC 8252 loopback, `radia login --sso`). The three
 decisions below drove the implementation and stand unchanged; `src/core/oidc.ts`,
 `Space.mintOidcRun` and the console's `oidcStart`/`oidcFinish` are their code. The prerequisite
 (the console holding a credential like every other client, plan-console-auth.md) shipped first.

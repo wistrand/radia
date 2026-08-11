@@ -389,8 +389,11 @@ summary    put                 own records only</code></pre>
         server.
       </li>
       <li>
-        There is no single sign-on. Identity is the token chain described above and nothing else,
-        so wiring this to your company directory is work you would have to do.
+        Single sign-on covers people, not the root of trust. A space configured with an OIDC
+        issuer mints ordinary sessions from a verified id_token (the console's "Sign in with
+        SSO", <code>radia login --sso</code>), and deprovisioning at the identity provider ends
+        access within one session ceiling. Operators stay a local config set: an IdP can never
+        mint one.
       </li>
       <li>
         There are no spending limits. You cannot yet say an agent may burn ten dollars an hour and

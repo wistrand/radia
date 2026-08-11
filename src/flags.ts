@@ -22,6 +22,7 @@ export const VALUELESS = new Set([
   "-h",
   "--all",
   "--drain",
+  "--sso",
   "--compact",
   "--partial",
   "--shared",

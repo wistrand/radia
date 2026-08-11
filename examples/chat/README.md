@@ -854,9 +854,15 @@ principal:
 ```bash
 radia login human:alice                  # mints your session token
 RADIA_CHAT_TOKEN=<token> deno task chat  # the REPL runs as human:alice
+
+radia login --sso                        # OR: sign in through the space's OIDC issuer
+deno task chat                           # the stored session is picked up; no env var needed
 ```
 
-`RADIA_CHAT_TOKEN` (or `--token`) is **you**, and the chat will not start without it. The
+`RADIA_CHAT_TOKEN` (or `--token`, or the login `radia login` stored) is **you**, and the chat
+will not start without it. An SSO session has no durable half by design (a lapsed one is one
+browser click, and offboarding at the IdP ends access); if the identity enrolled through OIDC,
+the banner greets you by the IdP's display name with the principal beside it. The
 **operator** credential is separate: the launcher bootstraps the chain (design-auth) by registering
 kinds and minting **least-privilege run tokens** for the workers (`agent:chat-inference` = take
 `llm_call`, put `message`/`llm_result`/`llm_chunk`; `agent:chat-turn` = watch `message`, put

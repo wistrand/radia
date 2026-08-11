@@ -45,6 +45,7 @@ Inspect
   integrity                           verify the event chain; reports the FIRST divergence
   permissions <principal>             what that principal can actually do (the fold over its grants)
   login <principal> [--grant k:ops]… [--compact | --compact-definition]  (--console prints a sign-in LINK for the web console)
+  login --sso [--sso-port <n>]     sign in through the space's OIDC issuer (browser click; no operator, no durable credential)
                                       mint a session for a person, and keep the durable half so
                                       the CLI signs in again by itself. --compact prints the
                                       session token alone; --compact-definition prints the
@@ -133,6 +134,142 @@ interface Ctx {
  *  `RADIA_TOKEN` still wins for every verb (resolveToken precedence). */
 const OBSERVER_VERBS = new Set(["stats", "events", "doctor", "erasures", "flows", "integrity", "permissions", "get", "lineage", "children", "otlp"]);
 
+/**
+ * The CLI leg of OIDC sign-in (plan-oidc.md): the native-app LOOPBACK flow, RFC 8252. Discover
+ * the issuer from the space's health, run code+PKCE through a one-shot listener on 127.0.0.1,
+ * verify the nonce (only this process ever saw it), trade the id_token for a run token. No
+ * operator involved and no durable half stored: sign-in authority stays with the IdP, so
+ * deprovisioning there ends terminal access within one run ceiling.
+ *
+ * The PORT is part of the IdP's registration (`http://127.0.0.1:8253/*` must be a redirect URI
+ * on the client), which is why it is fixed rather than ephemeral; `--sso-port` exists for a
+ * space whose IdP registered a different one. Exported for the conformance dance, where `onUrl`
+ * plays the browser.
+ */
+export async function ssoLogin(
+  base: string,
+  opts: { port?: number; onUrl?: (url: string) => void; timeoutMs?: number } = {},
+): Promise<{ run: string; agent: string; runToken: string; expiresAt: string }> {
+  const port = opts.port ?? 8253;
+  const health = await fetch(`${base}/v0/health`).then((r) => r.json()).catch(() => null) as
+    | { oidc?: { issuer: string; clientId: string } }
+    | null;
+  if (!health?.oidc) throw new UsageError("this space has no OIDC issuer configured (dev: --oidc-issuer + --oidc-audience)");
+  const { issuer, clientId } = health.oidc;
+  const disco = await fetch(`${issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`).then((r) => r.json()).catch(() => null) as
+    | { authorization_endpoint?: string; token_endpoint?: string }
+    | null;
+  if (!disco?.authorization_endpoint || !disco?.token_endpoint) {
+    throw new UsageError(`the issuer's discovery document is unreachable (${issuer}/.well-known/openid-configuration)`);
+  }
+
+  const rand = (n: number) => {
+    const b = new Uint8Array(n);
+    crypto.getRandomValues(b);
+    return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  };
+  const b64url = (bytes: Uint8Array) => {
+    let s = "";
+    for (const b of bytes) s += String.fromCharCode(b);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  };
+  const verifier = rand(32), state = rand(16), nonce = rand(16), linkCode = rand(6);
+  const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier) as BufferSource)));
+  const redirect = `http://127.0.0.1:${port}/`;
+
+  // The one-shot listener: resolves on the first callback carrying OUR state; anything else
+  // (favicon probes, stray tabs) gets a page and changes nothing.
+  const stopping = new AbortController();
+  let settle!: (v: string) => void, fail!: (e: Error) => void;
+  const code = new Promise<string>((res, rej) => {
+    settle = res;
+    fail = rej;
+  });
+  const page = (msg: string) =>
+    new Response(`<!doctype html><meta charset="utf-8"><title>radia</title><body style="font:16px system-ui;padding:2em">${msg}</body>`, {
+      headers: { "content-type": "text/html" },
+    });
+  const auth = new URL(disco.authorization_endpoint);
+  auth.searchParams.set("response_type", "code");
+  auth.searchParams.set("client_id", clientId);
+  auth.searchParams.set("redirect_uri", redirect);
+  auth.searchParams.set("scope", "openid profile email"); // profile+email feed the enrollment record
+  auth.searchParams.set("state", state);
+  auth.searchParams.set("nonce", nonce);
+  auth.searchParams.set("code_challenge", challenge);
+  auth.searchParams.set("code_challenge_method", "S256");
+
+  try {
+    serve({ port, hostname: "127.0.0.1", signal: stopping.signal }, (req) => {
+      const u = new URL(req.url);
+      // The SHORT url: `/<random path>` 302s to the full authorize URL, so what the terminal
+      // prints is ~40 characters instead of a PKCE query string that wraps three lines and
+      // breaks on click. The random path is what makes it deliberate: a probe of `/`, a
+      // favicon fetch or a link preview cannot spend an authorize round trip by accident.
+      if (u.pathname === `/${linkCode}`) {
+        return new Response(null, { status: 302, headers: { location: auth.href } });
+      }
+      const err = u.searchParams.get("error");
+      if (err) {
+        fail(new UsageError(`the identity provider refused: ${err}${u.searchParams.get("error_description") ? " — " + u.searchParams.get("error_description") : ""}`));
+        return page("Sign-in refused; you can close this tab.");
+      }
+      const got = u.searchParams.get("code");
+      if (!got || u.searchParams.get("state") !== state) return page("Waiting for the sign-in to complete…");
+      settle(got);
+      return page("Signed in. You can close this tab and return to the terminal.");
+    });
+  } catch (e) {
+    throw new UsageError(
+      `cannot listen on 127.0.0.1:${port} (${(e as Error).message}); another sign-in running? --sso-port picks another, but the IdP must have that redirect URI registered`,
+    );
+  }
+
+  (opts.onUrl ?? ((u: string) => {
+    console.log("Open this in your browser to sign in:");
+    console.log(`  ${u}`);
+  }))(`${redirect}${linkCode}`);
+
+  const timer = setTimeout(() => fail(new UsageError("timed out waiting for the browser sign-in (5 minutes)")), opts.timeoutMs ?? 300_000);
+  let authCode: string;
+  try {
+    authCode = await code;
+  } finally {
+    clearTimeout(timer);
+    stopping.abort();
+  }
+
+  const tr = await fetch(disco.token_endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code: authCode,
+      redirect_uri: redirect,
+      client_id: clientId,
+      code_verifier: verifier,
+    }).toString(),
+  });
+  const tj = await tr.json().catch(() => ({})) as { id_token?: string; error?: string; error_description?: string };
+  if (!tr.ok || !tj.id_token) throw new UsageError(`the token exchange failed: ${tj.error_description || tj.error || `HTTP ${tr.status}`}`);
+  const seg = tj.id_token.split(".")[1] ?? "";
+  const b64 = seg.replace(/-/g, "+").replace(/_/g, "/");
+  let payload: { nonce?: string } = {};
+  try {
+    payload = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)));
+  } catch { /* refused below */ }
+  if (payload.nonce !== nonce) throw new UsageError("nonce mismatch: the id_token is not from this sign-in");
+
+  const sr = await fetch(`${base}/v0/sessions/oidc`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id_token: tj.id_token }),
+  });
+  const sj = await sr.json().catch(() => ({})) as { run?: string; agent?: string; runToken?: string; expiresAt?: string; detail?: string };
+  if (!sr.ok || !sj.runToken) throw new UsageError(`the space refused the id_token: ${sj.detail ?? `HTTP ${sr.status}`}`);
+  return sj as { run: string; agent: string; runToken: string; expiresAt: string };
+}
+
 export async function runCli(cmd: string, argv: string[]): Promise<number> {
   if (cmd === "help") {
     console.log(HELP);
@@ -206,8 +343,24 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // `positional`, not `argv[0]`: a flag written before the principal would otherwise BE the
       // principal. Silent rather than loud, since a principal is just a string — `permissions
       // --json alice` cheerfully reported on a principal named "--json".
+      // SSO (plan-oidc.md, the CLI leg): no principal argument, because the IdP says who you
+      // are and the space's mapping registry names the principal. Nothing durable is stored;
+      // past the run ceiling this command is one browser click again.
+      if (has(argv, "--sso")) {
+        const portFlag = flag(argv, "--sso-port");
+        const sso = await ssoLogin(client.base, portFlag ? { port: Number(portFlag) } : {});
+        const kept = saveLogin(client.base, { principal: sso.agent, token: sso.runToken, mintedAt: new Date().toISOString() });
+        return out(ctx, { principal: sso.agent, run: sso.run, token: sso.runToken, expiresAt: sso.expiresAt }, () =>
+          [
+            `${sso.agent} signed in as ${sso.run} (expires ${sso.expiresAt}; clients renew it to the run ceiling)`,
+            kept.ok
+              ? `  kept at ${kept.path} — the chat and CLI verbs now run as ${sso.agent}.`
+              : `  could not store the session (${kept.error}); it ends when the token does.`,
+            `  No durable credential exists for an SSO session: when it ends, run this again.`,
+          ].join("\n"));
+      }
       const [who] = positional(argv, 1);
-      if (!who) return usage("login <principal> [--grant <kind>:<op,op>]… [--compact|--compact-definition|--console]");
+      if (!who) return usage("login <principal> [--grant <kind>:<op,op>]… [--compact|--compact-definition|--console] | login --sso [--sso-port <n>]");
       if (!who.startsWith("human:")) return usage("login <principal>  (principal must start with 'human:')");
       const grants = flags(argv, "--grant").map((g) => {
         const [kind, ops] = String(g).split(":");

@@ -27,6 +27,16 @@ export const port = new URL(url).port || "7788";
 // the exact conflation the paragraph above exists to prevent.
 export const loginToken = arg("--token") ?? Deno.env.get("RADIA_CHAT_TOKEN") ?? storedLogin(url)?.token;
 
+/** Where `loginToken` came from, so a failed startup can say which thing to fix: a stale STORED
+ *  login wants `radia login` re-run; an explicit flag or env var wants the caller to replace it. */
+export const loginSource: "flag" | "env" | "stored" | undefined = arg("--token")
+  ? "flag"
+  : Deno.env.get("RADIA_CHAT_TOKEN")
+  ? "env"
+  : storedLogin(url)?.token
+  ? "stored"
+  : undefined;
+
 /**
  * The DURABLE half of the person's credential, when `radia login` stored one.
  *

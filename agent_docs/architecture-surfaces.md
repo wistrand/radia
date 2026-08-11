@@ -141,6 +141,14 @@ session's grants to `{owner: <principal>}` separates two people only if they ARE
 sharing one constant (as `examples/chat` did with `agent:chat-user`) makes the pattern bind to the
 same value for everybody. The chat consumes this via `RADIA_CHAT_TOKEN`.
 
+**`radia login --sso` is the same slot filled by an IdP** ([plan-oidc.md](plan-oidc.md)): the
+RFC 8252 loopback dance against the issuer the space's health advertises, landing an ordinary
+run token in the `#login` entry — with NO definition token, deliberately. A lapsed SSO session
+is one browser click, not a stored secret, and deprovisioning at the IdP ends terminal access
+within one run ceiling. Everything downstream (the chat, the CLI verbs, `storedLogin`) reads it
+identically; only the renewal story differs, and `keepAlive` covers a live process to the
+ceiling either way.
+
 It reports what the principal can ACTUALLY do, by asking `permissions` after minting, rather than
 echoing the `--grant` flags it was passed. Grants may come from an earlier login or from an app
 that assigns its own, so a report derived from argv would say "nothing yet" about a fully-granted

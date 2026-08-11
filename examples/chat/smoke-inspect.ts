@@ -234,13 +234,15 @@ check("…and the view is complete, not a prefix", perms.complete !== false);
 
 // The question the transcript could not answer: was my grant approved? A kind never granted must
 // be absent, and one that was granted must be present. That is the whole point of asking the
-// enforcement instead of inferring from another call's scope line.
-check("a kind that was never granted is absent", !(perms.kinds ?? []).some((k) => k.kind === "kind_def"));
-await admin.put({ kind: "grant", body: { principal: "agent:chat-user", kind: "kind_def", operations: ["query", "read_one"], scope: { createdBy: "self" } } });
+// enforcement instead of inferring from another call's scope line. `model` is the exemplar
+// because sessions never hold it (it is a worker registry); `kind_def` used to be, until it
+// joined the standard set — a fixture premise, not a lesson, so it moved.
+check("a kind that was never granted is absent", !(perms.kinds ?? []).some((k) => k.kind === "model"));
+await admin.put({ kind: "grant", body: { principal: "agent:chat-user", kind: "model", operations: ["query", "read_one"], scope: { createdBy: "self" } } });
 const after = await tools.space_permissions({}) as { kinds?: { kind: string; readsScopedToSelf?: boolean }[] };
-const kindDef = (after.kinds ?? []).find((k) => k.kind === "kind_def");
-check("a newly granted kind shows up immediately", Boolean(kindDef));
-check("…and says the read is narrowed to its own records", kindDef?.readsScopedToSelf === true);
+const modelGrant = (after.kinds ?? []).find((k) => k.kind === "model");
+check("a newly granted kind shows up immediately", Boolean(modelGrant));
+check("…and says the read is narrowed to its own records", modelGrant?.readsScopedToSelf === true);
 
 // ---- "reads only" must mean reads only ----
 // A live session asked for `["query","read_one","take"]` on `llm_call`; the prompt offered "only its
@@ -321,18 +323,22 @@ const real = (await tools.space_permissions({}) as { kinds?: { kind: string; kin
 check("…and a grant on a real kind is not flagged", real !== undefined && real.kindNotDeclared === undefined);
 
 // ---- the trap that grant walks into ----
-// `kind_def` records are written by whoever declares kinds, never by the chat session. So a
-// SELF-SCOPED read grant on it authorizes a view of nothing, and `space_kinds` answers `[]` while
-// the space has plenty. The tool is behaving correctly; the GRANT is the wrong shape, which is why
-// the approval prompt now measures this and recommends against self-scope for such a kind.
-const kinds = await tools.space_kinds({}) as { kinds: unknown[] };
+// `model` records are written by the launcher, never by the chat session. So the SELF-SCOPED
+// read grant minted above authorizes a view of nothing, and a query answers `[]` while the
+// space has tiers. The tool is behaving correctly; the GRANT is the wrong shape, which is why
+// the approval prompt measures this and recommends against self-scope for such a kind.
+// (`kind_def` was the original exemplar; it is in the standard set now, and grants are
+// additive, so the unscoped one would win and the trap could no longer be seen through it.)
+// This harness never launches the fleet, so the registry the launcher would fill is seeded here.
+await admin.put({ kind: "model", body: { tier: "fast", model: "test/model" } });
+const modelRows = await tools.space_query({ kind: "model", limit: 10 }) as { records: unknown[] };
 check(
   "a self-scoped grant on a registry kind exposes nothing (the approval prompt warns about this)",
-  kinds.kinds.length === 0,
-  `${kinds.kinds.length} kinds`,
+  modelRows.records.length === 0,
+  `${modelRows.records.length} model records`,
 );
-const asOperator = await admin.listKinds();
-check("…while the space really does have kinds", asOperator.length > 0, `${asOperator.length} declared`);
+const asOperator = await admin.query({ kind: "model" }, 10);
+check("…while the space really does have models", asOperator.length > 0, `${asOperator.length} tiers`);
 
 
 // ---------------------------------------------------------------------------

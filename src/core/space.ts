@@ -1115,6 +1115,33 @@ export class Space {
     if (this.isPrivileged(agent)) {
       throw new RadiaError("invalid_credential", `'${agent}' is a privileged principal; OIDC never mints one`);
     }
+    // FIRST login enrolls: write the mapping record the operator would otherwise have to build
+    // by hand from the IdP's user screen. Renaming is now a successor of a visible record and a
+    // ban needs no archaeology. `username`/`name`/`email` ride along as description, never as
+    // identity, and LATER logins refresh them when the IdP's claims changed — a successor that
+    // preserves everything else about the record, keyed `:after:` its predecessor (the
+    // grant-retire pattern) so one change is one write. A supplied claim overwrites; an absent
+    // one (scope withheld) never strips what is stored. This can never resurrect a ban: a
+    // retired mapping refused above, before any write, so a tombstone stays newest forever.
+    const display: Record<string, string> = {
+      ...(v.username ? { username: v.username } : {}),
+      ...(v.name ? { name: v.name } : {}),
+      ...(v.email ? { email: v.email } : {}),
+    };
+    if (!newest) {
+      await this.putRaw(
+        { kind: OIDC_IDENTITY, body: { iss: v.iss, sub: v.sub, principal: agent, auto: true, ...display } },
+        `oidc-enroll:${await sha256Hex(key)}`,
+      );
+    } else {
+      const prev = newest.body as Record<string, unknown>;
+      if (Object.entries(display).some(([k, val]) => prev[k] !== val)) {
+        await this.putRaw(
+          { kind: OIDC_IDENTITY, body: { ...prev, ...display } },
+          `oidc-enroll:${await sha256Hex(key)}:after:${newest.id}`,
+        );
+      }
+    }
 
     // Replay: the derived token's run may already exist. Newest record wins, same as resolution.
     const token = (await sha256Hex(`radia-oidc-run\n${idToken}`)).slice(0, 48);

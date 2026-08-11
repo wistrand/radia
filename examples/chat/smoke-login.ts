@@ -68,6 +68,13 @@ check("a login token resolves to the person it was minted for", alice.owner === 
 check("…and that person is not privileged", !alice.privileged);
 check("…and is not the shared default principal", alice.owner !== CHAT_USER);
 
+// A FRESH identity must be able to run its own discovery tool: `space_kinds` reads `kind_def`,
+// which is reference data like `capability`. Missing from the standard set, every new sign-in
+// (OIDC or `radia login`) 403'd on it while long-lived identities worked from one-off manual
+// grants — drift a suite full of pre-provisioned principals never sees, hence this check.
+const discovery = await alice.client.query({ kind: "kind_def" }, 5).then(() => "ok", (e) => String(e));
+check("a fresh session can discover kinds (space_kinds' underlying read)", discovery === "ok", discovery);
+
 // The token names a RUN, not the human. The chat must map it back through the space, because the
 // run id is what a scoped read reports and what a grant would otherwise be assigned to.
 const aliceRun = (await new RadiaClient(url, { token: aliceToken }).health()).principal;
@@ -243,6 +250,26 @@ check("…and names the variable to set", /RADIA_CHAT_TOKEN/.test(said));
 check("…and how to mint one", /radia login/.test(said));
 check("…and says there is no default identity", /no default identity/i.test(said), said.split("\n")[0]);
 check("…and never reached the space", CHAT_USER === "agent:chat-user"); // the constant survives, unused as a fallback
+
+// ── a dead credential fails with a diagnosis, not the server's raw refusal ──────────────────────
+// The live shape: a stored login outlives the database it was minted against (a space restarted
+// onto a different store still answers on the same port). The server says "a valid
+// agent-definition token is required to mint a run", which names neither the credential at fault
+// nor the fix; chat.ts must translate it before exiting.
+const deadToken = new Deno.Command(Deno.execPath(), {
+  args: ["run", "-A", "examples/chat/chat.ts", "--token", "0".repeat(48), "--operator-token", operatorToken(url) ?? ""],
+  env: { OPENROUTER_API_KEY: "dummy", RADIA_CHAT_DIRS: "examples/chat/sandbox", RADIA_URL: url },
+  clearEnv: true,
+  stdout: "piped",
+  stderr: "piped",
+  stdin: "null",
+});
+const deadOut = await deadToken.output();
+const deadSaid = new TextDecoder().decode(deadOut.stderr);
+check("a refused credential exits non-zero at startup", deadOut.code !== 0, `exit ${deadOut.code}`);
+check("…names the credential that failed (the --token flag)", /--token/.test(deadSaid), deadSaid.split("\n").slice(0, 3).join(" | "));
+check("…and prints the fix", /radia login/.test(deadSaid));
+check("…and is not an uncaught stack trace", !/at async/.test(deadSaid), deadSaid.split("\n")[0]);
 
 space.kill();
 await space.status;

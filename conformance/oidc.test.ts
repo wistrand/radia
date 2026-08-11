@@ -140,6 +140,64 @@ Deno.test("oidc: unconfigured refuses, malformed refuses, oversized is refused b
   }
 });
 
+Deno.test("oidc: first login ENROLLS the identity as a record; renames and bans start from it", async () => {
+  // Without this record the operator renames and bans by fishing the sub out of the IdP's admin
+  // screen. With it, `radia query oidc_identity` shows who has signed in, a rename is a
+  // successor of a visible record, and a ban is a retire of one.
+  const t = await newSpace();
+  try {
+    const first = await (await post(t.handler, {
+      id_token: await t.keys.sign(claims({ preferred_username: "demo", name: "Radia Demo", email: "demo@x.test" })),
+    })).json();
+    const rows = await t.space.query({ kind: "oidc_identity", match: { sub: "user-1" } }, 10, { dir: "desc" });
+    assertEquals(rows.length, 1, "one enrollment record");
+    const body = rows[0].body as Record<string, unknown>;
+    assertEquals(body.principal, first.agent, "the record names the derived principal");
+    assertEquals(body.auto, true, "…marked as enrolled, not operator-assigned");
+    assertEquals(body.username, "demo", "the IdP's display claims ride along as description");
+    assertEquals(body.name, "Radia Demo", "…including the real name (the profile scope's whole point here)");
+    assertEquals(body.email, "demo@x.test");
+
+    // A later login with UNCHANGED claims writes nothing…
+    await post(t.handler, {
+      id_token: await t.keys.sign(claims({ preferred_username: "demo", name: "Radia Demo", email: "demo@x.test", iat: 5 + Math.floor(Date.now() / 1000) })),
+    });
+    assertEquals((await t.space.query({ kind: "oidc_identity", match: { sub: "user-1" } }, 10, { dir: "desc" })).length, 1);
+
+    // …a CHANGED claim refreshes: one successor, principal preserved, absent claims kept. The
+    // IdP renamed the person; the record must not keep describing who they used to be.
+    await post(t.handler, {
+      id_token: await t.keys.sign(claims({ preferred_username: "demo", name: "Radia Demo-Renamed", iat: 6 + Math.floor(Date.now() / 1000) })),
+    });
+    const refreshed = await t.space.query({ kind: "oidc_identity", match: { sub: "user-1" } }, 10, { dir: "desc" });
+    assertEquals(refreshed.length, 2, "one change is one successor (audit keeps the old name)");
+    const now2 = refreshed[0].body as Record<string, unknown>;
+    assertEquals(now2.name, "Radia Demo-Renamed");
+    assertEquals(now2.email, "demo@x.test", "a claim the IdP stopped sending is never stripped");
+    assertEquals(now2.principal, first.agent, "a display refresh never touches the principal");
+    assertEquals(now2.auto, true, "…nor the provenance flag");
+    // Same change replayed: the :after: key dedupes, no third record.
+    await post(t.handler, {
+      id_token: await t.keys.sign(claims({ preferred_username: "demo", name: "Radia Demo-Renamed", iat: 7 + Math.floor(Date.now() / 1000) })),
+    });
+    assertEquals((await t.space.query({ kind: "oidc_identity", match: { sub: "user-1" } }, 10, { dir: "desc" })).length, 2);
+
+    // The rename an operator actually performs: a successor over the SAME (iss, sub).
+    await t.space.put({ kind: "oidc_identity", body: { iss: ISS, sub: "user-1", principal: "human:demo" } });
+    const renamed = await (await post(t.handler, { id_token: await t.keys.sign(claims({ iat: 9 + Math.floor(Date.now() / 1000) })) })).json();
+    assertEquals(renamed.agent, "human:demo");
+
+    // And a ban needs nothing built by hand: retire the enrollment itself.
+    const u2 = await t.keys.sign(claims({ sub: "user-2" }));
+    await post(t.handler, { id_token: u2 });
+    await t.space.put({ kind: "oidc_identity", body: { iss: ISS, sub: "user-2", principal: (await (await post(t.handler, { id_token: u2 })).json()).agent, retired: true } });
+    const banned = await post(t.handler, { id_token: await t.keys.sign(claims({ sub: "user-2", iat: 3 + Math.floor(Date.now() / 1000) })) });
+    assertEquals(banned.status, 401, "retiring the auto-enrollment bans the identity");
+  } finally {
+    await t.close();
+  }
+});
+
 Deno.test("oidc: the mapping registry decides who you are, and RETIRE IS A BAN", async () => {
   const t = await newSpace();
   try {
@@ -299,6 +357,62 @@ Deno.test("oidc: the verifier's cache honours its TTL and single-flights concurr
   assert((await v2.verify(token, now)).ok);
   assert((await v2.verify(token, now + 10)).ok);
   assertEquals(fetches, 2, "past the TTL the JWKS is refetched");
+});
+
+Deno.test("oidc: `radia login --sso` runs the loopback dance end to end", async () => {
+  // The CLI leg (RFC 8252): everything over real sockets — the issuer, the space, and the
+  // one-shot listener — with `onUrl` playing the person's browser. PKCE is enforced by the
+  // issuer (S256 verified at /token), so this passing means the CLI sent a real challenge.
+  const issuer = await startIssuer({ audience: AUD });
+  const adapter = new SqliteAdapter(":memory:");
+  await adapter.init();
+  // deno-lint-ignore no-explicit-any
+  const space = new Space(adapter, { oidc: { issuer: issuer.base, audience: AUD } } as any);
+  const server = Deno.serve({ port: 0, hostname: "127.0.0.1", onListen: () => {} }, makeHandler(space, "<html>x</html>", true));
+  const base = `http://127.0.0.1:${(server.addr as Deno.NetAddr).port}`;
+  try {
+    const { ssoLogin } = await import("../src/surfaces/cli.ts");
+    // The issuer verifies PKCE only when a challenge arrives, so the test must SEE one or a CLI
+    // that dropped PKCE entirely would still pass the dance.
+    let sawPkce = false;
+    let shortUrl = "";
+    const browser = (url: string) => {
+      shortUrl = url;
+      // A browser follows the SHORT url to the authorize redirect, then the authorize redirect
+      // back to the CLI's loopback listener. Two manual hops, exactly what a real browser does.
+      (async () => {
+        // A probe of the bare root must NOT spend the sign-in: the random path is the consent.
+        const probe = await fetch(new URL("/", url), { redirect: "manual" });
+        if (probe.status !== 200) throw new Error(`bare root answered ${probe.status}; an accidental hit would consume the dance`);
+        await probe.body?.cancel();
+        const hop1 = await fetch(url, { redirect: "manual" });
+        const authorize = hop1.headers.get("location");
+        await hop1.body?.cancel();
+        const a = new URL(authorize!);
+        sawPkce = a.searchParams.get("code_challenge_method") === "S256" && !!a.searchParams.get("code_challenge");
+        const hop2 = await fetch(authorize!, { redirect: "manual" });
+        const loc = hop2.headers.get("location");
+        await hop2.body?.cancel();
+        const done = await fetch(loc!);
+        const text = await done.text();
+        if (!text.includes("Signed in")) throw new Error(`listener answered: ${text.slice(0, 80)}`);
+      })();
+    };
+    const out = await ssoLogin(base, { port: 8259, onUrl: browser, timeoutMs: 15_000 });
+    assert(sawPkce, "the authorize URL carried no S256 challenge");
+    assertMatch(shortUrl, /^http:\/\/127\.0\.0\.1:8259\/[0-9a-f]{12}$/, "the printed URL is short, and behind a random path — never the PKCE query string, never the bare root");
+    assertMatch(out.agent, /^human:oidc-[0-9a-f]{32}$/);
+    assertMatch(out.runToken, /^[0-9a-f]{48}$/);
+    const r = await space.resolveToken(out.runToken);
+    assert(r.ok && r.kind === "run", "the CLI holds a live run on the space");
+    // And the listener is truly one-shot: the port is free again for the next sign-in.
+    const again = Deno.serve({ port: 8259, hostname: "127.0.0.1", onListen: () => {} }, () => new Response("x"));
+    await again.shutdown();
+  } finally {
+    await server.shutdown();
+    await adapter.close();
+    await issuer.close();
+  }
 });
 
 Deno.test("oidc: the identity registry never compacts, even redeclared with a hostile contentKey", async () => {

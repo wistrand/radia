@@ -1,7 +1,9 @@
 # Radia examples
 
 Three examples, in increasing order of how much of the runtime they touch. Each has its own
-directory and README; start with whichever question you have.
+directory and README; start with whichever question you have. (A real OIDC issuer for the
+console's SSO sign-in lives in [`../docker/keycloak/`](../docker/keycloak/) — a deployment
+recipe, not an example.)
 
 | Example | What it shows | Needs a key? |
 |---------|---------------|--------------|

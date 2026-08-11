@@ -1,0 +1,34 @@
+{
+  "realm": "radia",
+  "enabled": true,
+  "registrationAllowed": false,
+  "clients": [
+    {
+      "clientId": "radia-console",
+      "name": "Radia web console",
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://127.0.0.1:7788/", "http://localhost:7788/", "http://127.0.0.1:8253/*"],
+      "webOrigins": ["http://127.0.0.1:7788", "http://localhost:7788"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "demo",
+      "enabled": true,
+      "email": "demo@example.test",
+      "emailVerified": true,
+      "firstName": "Radia-demo",
+      "lastName": "Radia",
+      "credentials": [{ "type": "password", "value": "radia", "temporary": false }]
+    }
+  ]
+}

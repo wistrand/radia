@@ -23,7 +23,12 @@ export interface OidcConfig {
 
 export type FetchJson = (url: string) => Promise<unknown>;
 
-export type Verified = { ok: true; iss: string; sub: string } | { ok: false; reason: string };
+export type Verified =
+  /** `username`/`name`/`email` are DESCRIPTIVE, for the enrollment record an operator reads
+   *  before renaming ("who is b6fc…?"); the principal never derives from them (mutable,
+   *  reassignable). Present only when the client requested the `profile`/`email` scopes. */
+  | { ok: true; iss: string; sub: string; username?: string; name?: string; email?: string }
+  | { ok: false; reason: string };
 
 /** Clock skew allowed on `exp`/`nbf`, seconds. IdP and space clocks are different machines. */
 const SKEW_SECONDS = 60;
@@ -155,7 +160,14 @@ export class OidcVerifier {
       // (the seal.ts convention).
       return { ok: false, reason: "bad signature" };
     }
-    return { ok: true, iss: this.#cfg.issuer, sub: payload.sub };
+    return {
+      ok: true,
+      iss: this.#cfg.issuer,
+      sub: payload.sub,
+      ...(typeof payload.preferred_username === "string" && payload.preferred_username ? { username: payload.preferred_username } : {}),
+      ...(typeof payload.name === "string" && payload.name ? { name: payload.name } : {}),
+      ...(typeof payload.email === "string" && payload.email ? { email: payload.email } : {}),
+    };
   }
 
   /** The signing key for `kid`, from cache, refetching at most once — single-flight, and never

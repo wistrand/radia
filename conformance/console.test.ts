@@ -662,6 +662,7 @@ Deno.test("console: oidcStart builds a compliant PKCE redirect and keeps the dan
   assertEquals(u.searchParams.get("client_id"), "console");
   assertEquals(u.searchParams.get("code_challenge_method"), "S256");
   assertEquals(u.searchParams.get("redirect_uri"), "http://c.test/");
+  assertEquals(u.searchParams.get("scope"), "openid profile email", "profile+email feed the enrollment record's display claims");
   const pending = JSON.parse(st.session["radia.oidc"]);
   assertEquals(u.searchParams.get("state"), pending.state, "the state in the URL is the stored one");
   assertEquals(u.searchParams.get("nonce"), pending.nonce);
@@ -678,7 +679,7 @@ Deno.test("console: oidcStart builds a compliant PKCE redirect and keeps the dan
 Deno.test("console: oidcFinish enforces the nonce and stores ONLY a run token", async () => {
   const idToken = (nonce: string) => {
     const b64 = (s: string) => btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    return `${b64(JSON.stringify({ alg: "RS256" }))}.${b64(JSON.stringify({ sub: "u", nonce }))}.sig`;
+    return `${b64(JSON.stringify({ alg: "RS256" }))}.${b64(JSON.stringify({ sub: "u", nonce, name: "Demo Person" }))}.sig`;
   };
   const pending = { verifier: "v", nonce: "N1", tokenEndpoint: "http://idp.test/token", clientId: "console", route: "" };
 
@@ -693,6 +694,7 @@ Deno.test("console: oidcFinish enforces the nonce and stores ONLY a run token", 
   assertEquals(st.AUTH_TOKEN, "rt-1");
   assert(st.reloaded, "a successful sign-in re-enters through start()");
   assertEquals(st.session["radia.definition"], undefined, "an OIDC session has no durable half to remember");
+  assertEquals(st.session["radia.oidc-name"], "Demo Person", "the IdP display name is kept for the pill (decoration, client-side)");
   assertEquals(t.calls[1].url, "/v0/sessions/oidc", "the id_token goes to the space, nowhere else");
   assert(String(t.calls[0].body).includes("code_verifier=v"), "the exchange carries the PKCE verifier");
 

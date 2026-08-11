@@ -1,0 +1,14 @@
+# A real OIDC issuer for a local Radia space (agent_docs/plan-oidc.md). Dev mode, no TLS, no
+# autorestart: this is a thing you start deliberately and stop with Ctrl-C, not a service.
+# The realm import gives Radia everything preconfigured; see README.md for the three commands.
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: start-dev --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./realm-radia.json:/opt/keycloak/data/import/realm-radia.json:ro
