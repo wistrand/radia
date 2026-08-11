@@ -1053,10 +1053,18 @@ async function judgeRun(
   }
 }
 
+// Executions at once. NOT 1: a jail is a separate OS process, so jails parallelise across cores
+// and serving one at a time left a multi-core machine idle while calls queued. NOT many either: a
+// wall-clock timeout judges the work, so past the core count contention turns a passing script
+// into a reported TIMEOUT (see EXEC_CONCURRENCY in client/config.ts). The launcher sizes it from
+// the machine; the fallback is for running this worker standalone.
+const concurrency = Number(arg("--concurrency") ?? String(Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1))));
+
 await agentLoop(client, {
   name: "exec",
   patterns,
   leaseSeconds: 60,
+  concurrency,
   // Five named steps, each answerable on its own: resolve what to run, materialise what it runs
   // over, run it, capture what it changed, judge what it claimed. This was one 265-line function,
   // which is longer than most files in the runtime and was the hardest thing here to follow.

@@ -78,8 +78,14 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
    cost almost nothing per slot (16, `RADIA_CHAT_LOCAL_CONCURRENCY`): the router holds no API key
    at all (it dispatches a classify `llm_call` and awaits the result, so the fast tier's own limit
    still bounds real model calls) and it sits in front of EVERY turn, so a small number there
-   queues turns before they are even classified. The EXEC worker stays at 1 on purpose: it spawns
-   a jail per call, where overlapping trades latency for contention.
+   queues turns before they are even classified. EXEC is sized from the MACHINE
+   (`min(4, cores - 1)`, `RADIA_CHAT_EXEC_CONCURRENCY`): a jail is a separate OS process so jails
+   really do parallelise across cores, but a wall-clock timeout judges the work, so past the core
+   count contention turns a passing script into a reported TIMEOUT. Same failure shape as
+   inference overshoot, reached by a different route — which is the rule for all four: **where
+   something outside the harness judges the work (a vendor's rate limit, a deadline), overshoot
+   becomes a visible failure rather than backpressure, so the bound belongs at that resource;
+   where only we pay, queueing is the only cost and the number should be generous.**
    Guards: `conformance/loop.test.ts` (K slots fill from one burst; the default still serializes;
    shutdown drains in-flight claims before retiring interests), each proven red.
 2. **K replicas per tier worker.** Now largely redundant for WAITING workers, which (1) covers in

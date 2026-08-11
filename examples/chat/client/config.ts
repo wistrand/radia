@@ -131,6 +131,25 @@ export const CLASSIFY_MODEL = Deno.env.get("RADIA_CHAT_CLASSIFY_MODEL") ?? "goog
 export const PROVIDER_CONCURRENCY = Number(Deno.env.get("RADIA_CHAT_CONCURRENCY") ?? "4");
 export const LOCAL_CONCURRENCY = Number(Deno.env.get("RADIA_CHAT_LOCAL_CONCURRENCY") ?? "16");
 
+/**
+ * Code executions at once, sized from the MACHINE rather than picked.
+ *
+ * Exec is not "CPU-bound so do not overlap": a jail is a separate OS process, so jails genuinely
+ * parallelise across cores and running one at a time left a multi-core box idle while calls
+ * queued. What bounds it is that a WALL-CLOCK TIMEOUT judges the work (`--timeout-ms`, 5s): past
+ * the core count, contention does not merely slow a script down, it pushes a passing one over its
+ * deadline and reports a TIMEOUT. That is the same failure shape as inference overshoot — a
+ * visible failure rather than backpressure — reached by a different route, and it is why this is
+ * capped by cores instead of set to `LOCAL_CONCURRENCY`.
+ *
+ * Capped at 4 regardless: each jail is a language runtime (tens of MB), the code inside is
+ * model-written and unbounded in what it may allocate, and chat runs far fewer executions than
+ * completions. RADIA_CHAT_EXEC_CONCURRENCY overrides for a machine that wants more.
+ */
+export const EXEC_CONCURRENCY = Number(
+  Deno.env.get("RADIA_CHAT_EXEC_CONCURRENCY") ?? String(Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1))),
+);
+
 /** Not a tier: it serves the `generate_image` tool and advertises `modalities:["image"]`, so text
  *  routing never dispatches a conversation turn to it. */
 export const IMAGE_MODEL = Deno.env.get("RADIA_CHAT_IMAGE_MODEL") ?? "google/gemini-2.5-flash-image";

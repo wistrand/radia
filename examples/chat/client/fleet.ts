@@ -31,6 +31,7 @@ import {
   url,
   VISION_MEDIA_TYPES,
   VISION_MODEL,
+  EXEC_CONCURRENCY,
   LOCAL_CONCURRENCY,
   PROVIDER_CONCURRENCY,
 } from "./config.ts";
@@ -196,6 +197,7 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
     "--url", local,
     "--token", execToken,
     "--timeout-ms", EXEC_TIMEOUT_MS,
+    "--concurrency", String(EXEC_CONCURRENCY),
     ...execRoots.flatMap((r) => ["--dir", r]),
     // Forwarded, not decided here: whether an unconfined jail is acceptable is the operator's call,
     // and the worker is the only thing that can find out whether a confiner holds. With this set
