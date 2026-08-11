@@ -737,10 +737,12 @@ REPORTED 2026-08-11 (found during the OIDC review, not yet re-derived): a redecl
 a `contentKey` is a legal EXTENSION of a reserved kind (`assertReservedCompatible` pins only
 indexedPaths and claimable), and `gc.ts` compaction honours it for any reserved kind not in
 `NEVER_COMPACT` — today `shred` and `interest`. For `shred` that could delete erasure markers
-under a hostile key; `interest` is liveness-scoped so the harm is smaller. `oidc_identity` was
-added to `NEVER_COMPACT` at birth for exactly this reason (guard:
-`conformance/oidc.test.ts` "never compacts"); decide whether `shred` joins it or compaction
-stops honouring app-declared keys on reserved kinds altogether.
+under a hostile key; `interest` is liveness-scoped so the harm is smaller. `oidc_identity`
+answered it the third way: a RUNTIME key (`RUNTIME_KEYS` in core/gc.ts) takes precedence over
+any declared contentKey, so the registry compacts safely AND the redeclaration is inert (guard:
+`conformance/oidc.test.ts` "compacts under the RUNTIME's key"). Decide whether `shred` gets the
+same treatment (it has no natural succession key, so NEVER_COMPACT membership may be right) or
+compaction stops honouring app-declared keys on reserved kinds altogether.
 
 Three entries LEFT this batch on 2026-08-04. Two were re-derived under package S: pattern-take
 OFFSET paging (the same defect as the spurious-empty report) and `ownerGuard` turning a succeeded

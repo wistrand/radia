@@ -711,13 +711,14 @@ async function loadHealth() {
     }
     : { principal: d.principal, subject: d.principal, privileged: false, kinds: [], powers: [], unknown: true };
   // A person who signed in over SSO gets their IdP display name in the pill, as DECORATION: the
-  // name came from the id_token's own claims at sign-in (client-side, sessionStorage), while the
-  // identity the space enforces is still the principal beside it. Shown only for the derived
-  // `human:oidc-…` principals, where the hash tells a person nothing; a mapped principal already
-  // reads as a name.
+  // name came from the id_token's own claims at sign-in (client-side, sessionStorage, cleared by
+  // every other sign-in path), while the identity the space enforces is still the principal
+  // beside it. Any `human:` subject, not only the derived `human:oidc-…` hashes: a mapped
+  // principal reads as an account name, and the person's actual name is still the thing a
+  // colleague glancing at the screen recognizes.
   const ssoName = sessionStorage.getItem("radia.oidc-name");
   const label = esc(IDENTITY.subject || d.principal || "?")
-    + (ssoName && String(IDENTITY.subject || "").startsWith("human:oidc-") ? ` (${esc(ssoName)})` : "");
+    + (ssoName && String(IDENTITY.subject || "").startsWith("human:") ? ` (${esc(ssoName)})` : "");
   const badge = IDENTITY.privileged
     ? "operator"
     : IDENTITY.unknown

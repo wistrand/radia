@@ -30,20 +30,29 @@ import { AGENT_DEFINITION, AGENT_RUN, GRANT, INTEREST, KIND_DEF, OIDC_IDENTITY, 
 import { getPath } from "./matching.ts";
 import type { RadiaRecord } from "../storage/adapter.ts";
 
-/** Reserved kinds compaction knows how to key IN CODE. Everything else reserved is excluded. */
+/** Reserved kinds compaction knows how to key IN CODE. Everything else reserved is excluded.
+ *  A runtime key also NEUTRALIZES a hostile redeclaration: `RUNTIME_KEYS[kind] ?? contentKey`
+ *  means a `put: kind_def` grant cannot re-key one of these registries into compaction under an
+ *  arbitrary key (the move that keeps `shred`/`interest`… out of this table entirely). */
 const RUNTIME_KEYS: Record<string, string[]> = {
   // A run's records (mint, renewals at half-life, the stop) all carry the same `run`; the newest
   // holds the live tokenHash/expiry/status, which is exactly what credential resolution reads.
   [AGENT_RUN]: ["run"],
+  // An identity's records (enrollment, display refreshes, renames, retires) all carry the same
+  // (iss, sub); the newest is what the mint reads (`view.newest`), tombstone included. Compacting
+  // the rest is a PRIVACY property as much as a space one: superseded mappings from before
+  // display claims moved into profile artifacts carry names in immutable bodies, and
+  // supersede-then-compact is their only deletion path (plan-oidc.md).
+  [OIDC_IDENTITY]: ["iss", "sub"],
 };
 
 /** Reserved kinds that must never compact, whatever anyone declares. See the header. `ops_grant`
  *  for the same reason as `grant`: the assignment history of an ops power is audit, and deleting
- *  a retire-marker would silently restore a power. `oidc_identity` likewise: its retire-marker is
- *  a BAN the mint checks, and a redeclaration carrying a contentKey (legal for any holder of a
- *  `put: kind_def` grant, since assertReservedCompatible pins only paths and claimable) must not
- *  be able to opt the identity registry into compaction under an arbitrary key. */
-const NEVER_COMPACT = new Set([GRANT, KIND_DEF, SIGNAL, AGENT_DEFINITION, OPS_GRANT, OIDC_IDENTITY]);
+ *  a retire-marker would silently restore a power. `oidc_identity` is NOT here: it compacts
+ *  under its RUNTIME key above (newest per (iss, sub) survives, tombstone included, so a ban
+ *  stands), and the runtime key is itself what defeats the hostile-contentKey redeclaration
+ *  that once argued for listing it. */
+const NEVER_COMPACT = new Set([GRANT, KIND_DEF, SIGNAL, AGENT_DEFINITION, OPS_GRANT]);
 
 /** Everything compaction needs from the space. `sweepIds` is the destructive member; the rest are
  *  reads. The adapters keep their own lease floor under `sweepIds`. */

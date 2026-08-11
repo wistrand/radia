@@ -1126,27 +1126,75 @@ export class Space {
     }
     // FIRST login enrolls: write the mapping record the operator would otherwise have to build
     // by hand from the IdP's user screen. Renaming is now a successor of a visible record and a
-    // ban needs no archaeology. `username`/`name`/`email` ride along as description, never as
-    // identity, and LATER logins refresh them when the IdP's claims changed — a successor that
-    // preserves everything else about the record, keyed `:after:` its predecessor (the
-    // grant-retire pattern) so one change is one write. A supplied claim overwrites; an absent
-    // one (scope withheld) never strips what is stored. This can never resurrect a ban: a
-    // retired mapping refused above, before any write, so a tombstone stays newest forever.
+    // ban needs no archaeology. LATER logins refresh the display claims when they changed at the
+    // IdP, as a successor keyed `:after:` its predecessor (the grant-retire pattern) so one
+    // change is one write. This can never resurrect a ban: a retired mapping refused above,
+    // before any write, so a tombstone stays newest forever.
+    //
+    // The claims themselves live in an ARTIFACT the mapping references, never in the mapping
+    // body: `oidc_identity` never compacts and a record body has no erasure path, so a name or
+    // email written inline would be PERMANENT — the exact shape the erasure invariant exists to
+    // prevent. The artifact is shreddable (`radia shred <profile id>` is the deletion-request
+    // runbook), and its JSON carries a random NONCE because {name, email} is low-entropy: the
+    // plaintext sha256 survives a shred in the artifact record's body, and without the nonce
+    // anyone holding a candidate name could confirm it had been here.
     const display: Record<string, string> = {
       ...(v.username ? { username: v.username } : {}),
       ...(v.name ? { name: v.name } : {}),
       ...(v.email ? { email: v.email } : {}),
     };
+    const writeProfile = async (claims: Record<string, string>): Promise<string> => {
+      const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+      const bytes = new TextEncoder().encode(JSON.stringify({ nonce, ...claims }));
+      return (await this.putArtifact(bytes, { mediaType: "application/json", filename: "oidc-profile.json" })).id;
+    };
     if (!newest) {
       await this.putRaw(
-        { kind: OIDC_IDENTITY, body: { iss: v.iss, sub: v.sub, principal: agent, auto: true, ...display } },
+        {
+          kind: OIDC_IDENTITY,
+          body: {
+            iss: v.iss,
+            sub: v.sub,
+            principal: agent,
+            auto: true,
+            ...(Object.keys(display).length ? { profile: await writeProfile(display) } : {}),
+          },
+        },
         `oidc-enroll:${await sha256Hex(key)}`,
       );
-    } else {
+    } else if (Object.keys(display).length > 0) {
+      // What is currently known: the referenced profile artifact, or — for a record enrolled
+      // before claims moved out of line — legacy inline fields, which the successor STRIPS (the
+      // migration path; the legacy body itself stays in history, which is why this design was
+      // worth fixing early). A withheld claim never strips a stored one: comparison and the new
+      // artifact both merge over what is known. A SHREDDED profile reads as unknown, so an
+      // active user's next changed claim re-enrolls one; erasing someone who keeps signing in
+      // is not offboarding — retire the mapping first.
       const prev = newest.body as Record<string, unknown>;
-      if (Object.entries(display).some(([k, val]) => prev[k] !== val)) {
+      const known: Record<string, string> = {};
+      if (typeof prev.profile === "string") {
+        try {
+          const got = await this.readArtifact(prev.profile);
+          if (got) {
+            const chunks: Uint8Array[] = [];
+            for await (const c of got.stream) chunks.push(c);
+            const all = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
+            let at = 0;
+            for (const c of chunks) {
+              all.set(c, at);
+              at += c.byteLength;
+            }
+            const parsed = JSON.parse(new TextDecoder().decode(all)) as Record<string, unknown>;
+            for (const k of ["username", "name", "email"]) if (typeof parsed[k] === "string") known[k] = parsed[k] as string;
+          }
+        } catch { /* unreadable profile: treated as unknown, re-enrolled below if claims differ */ }
+      } else {
+        for (const k of ["username", "name", "email"]) if (typeof prev[k] === "string") known[k] = prev[k] as string;
+      }
+      if (Object.entries(display).some(([k, val]) => known[k] !== val)) {
+        const { username: _u, name: _n, email: _e, ...rest } = prev;
         await this.putRaw(
-          { kind: OIDC_IDENTITY, body: { ...prev, ...display } },
+          { kind: OIDC_IDENTITY, body: { ...rest, profile: await writeProfile({ ...known, ...display }) } },
           `oidc-enroll:${await sha256Hex(key)}:after:${newest.id}`,
         );
       }

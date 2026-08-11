@@ -32,12 +32,13 @@ What the realm import sets up, and why each piece:
   (http://localhost:8080, admin / admin).
 
 First sign-in lands as `human:oidc-<hash>` with zero grants, and ENROLLS itself: the space
-writes an `oidc_identity` record carrying the `(iss, sub)` pair plus the IdP's username/email
-as description. So renaming needs no trip to Keycloak's admin screen — read the record, write
-a successor:
+writes an `oidc_identity` record carrying the `(iss, sub)` pair, referencing the IdP's
+username/name/email in a `profile` ARTIFACT (out of line so a deletion request is honourable:
+`radia shred <profile id>` destroys the claims while the mapping and sign-in survive). Renaming
+needs no trip to Keycloak's admin screen — read the record, write a successor:
 
 ```sh
-radia query oidc_identity     # who has signed in, with iss/sub/username on each record
+radia query oidc_identity     # who has signed in: iss/sub/principal + the profile artifact id
 radia put oidc_identity '{"iss":"http://localhost:8080/realms/radia","sub":"<sub from above>","principal":"human:you"}'
 radia put ops_grant '{"principal":"human:you","operations":["observe"]}'   # the console's observability tabs
 ```

@@ -146,6 +146,19 @@ Deno.test("oidc: first login ENROLLS the identity as a record; renames and bans 
   // successor of a visible record, and a ban is a retire of one.
   const t = await newSpace();
   try {
+    const readProfile = async (body: Record<string, unknown>): Promise<Record<string, unknown>> => {
+      const got = await t.space.readArtifact(String(body.profile));
+      assert(got, "the mapping references a readable profile artifact");
+      const chunks: Uint8Array[] = [];
+      for await (const c of got!.stream) chunks.push(c);
+      const all = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
+      let at = 0;
+      for (const c of chunks) {
+        all.set(c, at);
+        at += c.byteLength;
+      }
+      return JSON.parse(new TextDecoder().decode(all));
+    };
     const first = await (await post(t.handler, {
       id_token: await t.keys.sign(claims({ preferred_username: "demo", name: "Radia Demo", email: "demo@x.test" })),
     })).json();
@@ -154,9 +167,15 @@ Deno.test("oidc: first login ENROLLS the identity as a record; renames and bans 
     const body = rows[0].body as Record<string, unknown>;
     assertEquals(body.principal, first.agent, "the record names the derived principal");
     assertEquals(body.auto, true, "…marked as enrolled, not operator-assigned");
-    assertEquals(body.username, "demo", "the IdP's display claims ride along as description");
-    assertEquals(body.name, "Radia Demo", "…including the real name (the profile scope's whole point here)");
-    assertEquals(body.email, "demo@x.test");
+    // The claims live in a PROFILE ARTIFACT, never in the body: the body has no erasure path and
+    // the kind never compacts, so an inline name would be permanent — the erasure invariant's
+    // exact target shape. The body carries only the reference.
+    for (const k of ["username", "name", "email"]) assertEquals(k in body, false, `${k} must not live in the mapping body`);
+    const p1 = await readProfile(body);
+    assertEquals(p1.username, "demo");
+    assertEquals(p1.name, "Radia Demo", "the real name (the profile scope's whole point here)");
+    assertEquals(p1.email, "demo@x.test");
+    assertMatch(String(p1.nonce), /^[0-9a-f]{32}$/, "low-entropy claims get a nonce, or a shredded digest stays confirmable");
 
     // A later login with UNCHANGED claims writes nothing…
     await post(t.handler, {
@@ -164,16 +183,19 @@ Deno.test("oidc: first login ENROLLS the identity as a record; renames and bans 
     });
     assertEquals((await t.space.query({ kind: "oidc_identity", match: { sub: "user-1" } }, 10, { dir: "desc" })).length, 1);
 
-    // …a CHANGED claim refreshes: one successor, principal preserved, absent claims kept. The
-    // IdP renamed the person; the record must not keep describing who they used to be.
+    // …a CHANGED claim refreshes: one successor, a NEW profile artifact, principal preserved,
+    // absent claims kept. The IdP renamed the person; the record must not keep describing who
+    // they used to be.
     await post(t.handler, {
       id_token: await t.keys.sign(claims({ preferred_username: "demo", name: "Radia Demo-Renamed", iat: 6 + Math.floor(Date.now() / 1000) })),
     });
     const refreshed = await t.space.query({ kind: "oidc_identity", match: { sub: "user-1" } }, 10, { dir: "desc" });
-    assertEquals(refreshed.length, 2, "one change is one successor (audit keeps the old name)");
+    assertEquals(refreshed.length, 2, "one change is one successor (audit keeps the old name reachable)");
     const now2 = refreshed[0].body as Record<string, unknown>;
-    assertEquals(now2.name, "Radia Demo-Renamed");
-    assertEquals(now2.email, "demo@x.test", "a claim the IdP stopped sending is never stripped");
+    assert(now2.profile !== body.profile, "a refresh is a new artifact, not a rewrite");
+    const p2 = await readProfile(now2);
+    assertEquals(p2.name, "Radia Demo-Renamed");
+    assertEquals(p2.email, "demo@x.test", "a claim the IdP stopped sending is never stripped");
     assertEquals(now2.principal, first.agent, "a display refresh never touches the principal");
     assertEquals(now2.auto, true, "…nor the provenance flag");
     // Same change replayed: the :after: key dedupes, no third record.
@@ -181,6 +203,27 @@ Deno.test("oidc: first login ENROLLS the identity as a record; renames and bans 
       id_token: await t.keys.sign(claims({ preferred_username: "demo", name: "Radia Demo-Renamed", iat: 7 + Math.floor(Date.now() / 1000) })),
     });
     assertEquals((await t.space.query({ kind: "oidc_identity", match: { sub: "user-1" } }, 10, { dir: "desc" })).length, 2);
+
+    // ERASURE, the reason for this whole shape: shred the profiles and the person's name is
+    // gone while the mapping, the principal and sign-in itself survive.
+    for (const r of refreshed) await t.space.shredArtifact(String((r.body as { profile?: string }).profile), { reason: "deletion request" });
+    assertEquals(await t.space.readArtifact(String(now2.profile)), null, "the claims are destroyed");
+    const afterShred = await post(t.handler, {
+      id_token: await t.keys.sign(claims({ preferred_username: "demo", name: "Radia Demo-Renamed", iat: 8 + Math.floor(Date.now() / 1000) })),
+    });
+    assertEquals(afterShred.status, 201, "erasure of display data never breaks authentication");
+    assertEquals((await (afterShred).json()).agent, first.agent);
+
+    // Two people with the SAME claims produce DIFFERENT digests: the nonce at work. Without it,
+    // a shred leaves a content address anyone holding a candidate name could confirm.
+    await post(t.handler, { id_token: await t.keys.sign(claims({ sub: "twin-a", name: "Same Name" })) });
+    await post(t.handler, { id_token: await t.keys.sign(claims({ sub: "twin-b", name: "Same Name" })) });
+    const digestOf = async (sub: string) => {
+      const rec = (await t.space.query({ kind: "oidc_identity", match: { sub } }, 1, { dir: "desc" }))[0];
+      const prof = await t.space.readArtifact(String((rec.body as { profile?: string }).profile));
+      return prof!.def.digest;
+    };
+    assert((await digestOf("twin-a")) !== (await digestOf("twin-b")), "identical claims must never share a content address");
 
     // The rename an operator actually performs: a successor over the SAME (iss, sub).
     await t.space.put({ kind: "oidc_identity", body: { iss: ISS, sub: "user-1", principal: "human:demo" } });
@@ -415,19 +458,27 @@ Deno.test("oidc: `radia login --sso` runs the loopback dance end to end", async 
   }
 });
 
-Deno.test("oidc: the identity registry never compacts, even redeclared with a hostile contentKey", async () => {
+Deno.test("oidc: the identity registry compacts under the RUNTIME's key, and a hostile contentKey changes nothing", async () => {
   const adapter = new SqliteAdapter(":memory:");
   await adapter.init();
   try {
     const space = new Space(adapter);
-    // Three records, one (iss, sub): two supersessions and a tombstone. Under compaction with a
-    // contentKey of ["principal"] the older rows are exactly what a keep-newest pass deletes.
+    // One identity, three generations: two superseded live entries and a BAN tombstone on top.
+    // The superseded rows are the privacy case — a pre-artifact enrollment carries names in an
+    // immutable body, and supersede-then-compact is its only deletion path (plan-oidc.md).
     const body = { iss: ISS, sub: "user-1", principal: "human:erik" };
-    const { id: a } = await space.put({ kind: "oidc_identity", body });
+    const { id: a } = await space.put({ kind: "oidc_identity", body: { ...body, name: "legacy inline" } });
     const { id: b } = await space.put({ kind: "oidc_identity", body: { ...body, note: 2 } });
     const { id: c } = await space.put({ kind: "oidc_identity", body: { ...body, retired: true } });
+    // TWO identities sharing one principal: under a hostile contentKey of ["principal"] one of
+    // them would be superseded by the other; under the runtime's (iss, sub) key each is the
+    // newest of its own identity and must survive.
+    const { id: x } = await space.put({ kind: "oidc_identity", body: { iss: ISS, sub: "sub-x", principal: "human:shared" } });
+    const { id: y } = await space.put({ kind: "oidc_identity", body: { iss: ISS, sub: "sub-y", principal: "human:shared" } });
     // The hostile-but-legal move: any `put: kind_def` grant may EXTEND a reserved kind, and a
-    // contentKey is an extension (assertReservedCompatible pins only paths and claimable).
+    // contentKey is an extension (assertReservedCompatible pins only paths and claimable). The
+    // runtime key must win (`RUNTIME_KEYS[kind] ?? contentKey`), or this grant re-keys an
+    // authorization-adjacent registry.
     await space.put({
       kind: "kind_def",
       body: {
@@ -438,8 +489,12 @@ Deno.test("oidc: the identity registry never compacts, even redeclared with a ho
       },
     });
     const r = await space.gc();
-    assertEquals(r.compaction?.byKind?.["oidc_identity"] ?? 0, 0, "NEVER_COMPACT holds whatever anyone declares");
-    for (const id of [a, b, c]) assert(await space.getRecord(id), `record ${id} must survive: identity history is audit, and the tombstone is a ban`);
+    assertEquals(r.compaction?.byKind?.["oidc_identity"], 2, "exactly the two superseded generations go");
+    assertEquals(await space.getRecord(a), null, "the legacy inline body is finally deletable");
+    assertEquals(await space.getRecord(b), null);
+    assert(await space.getRecord(c), "the newest per identity survives, TOMBSTONE INCLUDED: the ban stands");
+    assert(await space.getRecord(x), "a shared principal is not a shared key");
+    assert(await space.getRecord(y), "…in either direction: the hostile contentKey was ignored");
   } finally {
     await adapter.close();
   }

@@ -25,16 +25,30 @@ runs are minted directly with NO durable half, so IdP deprovisioning takes effec
   is the value the IdP puts in `aud`; health advertises it as `clientId`.
 - Identity: mapped `(iss, sub)` wins; absent auto-admits as `human:oidc-<32 hex of
   sha256(iss\nsub)>` with ZERO grants, and the FIRST login writes the `oidc_identity` record
-  itself (`auto: true`, with the IdP's `preferred_username`/`name`/`email` as description; the
-  console requests `scope=openid profile email` for exactly this), and later logins REFRESH
-  those claims when they changed at the IdP (a successor preserving the principal, keyed
-  `:after:` its predecessor; a withheld claim never strips a stored one; a ban refuses before
-  any write, so a tombstone stays newest forever) — so
-  `radia query oidc_identity` shows who has signed in, a rename is a successor of a visible
-  record, and a ban is a retire of one. Written ONLY on true absence: a re-put on later logins
-  would eventually outrank a retire tombstone (the resurrection class). A `retired: true`
-  mapping is a BAN, never a fall-through to auto-admit (offboarding must not un-happen).
-  Privileged principals are refused at mapping write AND at mint.
+  itself (`auto: true`) — so a rename is a successor of a visible record and a ban is a retire
+  of one. Later logins REFRESH the display claims when they changed at the IdP (a successor
+  preserving the principal, keyed `:after:` its predecessor; a withheld claim never strips a
+  stored one; a ban refuses before any write, so a tombstone stays newest forever). A
+  `retired: true` mapping is a BAN, never a fall-through to auto-admit (offboarding must not
+  un-happen). Privileged principals are refused at mapping write AND at mint.
+- **Display claims live in a PROFILE ARTIFACT the mapping references, never in the mapping
+  body** — the erasure invariant applied, after a review rightly escalated the earlier inline
+  shape from "trade to know about" to blocker: `oidc_identity` never compacts and a body has no
+  erasure path, so an inline name or email would be permanent. The body carries only
+  `{iss, sub, principal, auto, profile}` (`sub` is pseudonymous and is the registry key; the
+  console requests `scope=openid profile email` to fill the artifact). The artifact's JSON
+  carries a random NONCE, because {name, email} is low-entropy and the plaintext sha256
+  survives a shred — without it, a destroyed name would stay confirmable by anyone holding a
+  candidate. **Deletion-request runbook:** `radia query oidc_identity` (all successors for the
+  sub) → `radia shred <each profile id>`; the mapping, principal, grants and sign-in survive.
+  Two honest residues: a shredded ACTIVE user re-enrolls a profile on their next changed-claim
+  login (erasure is not offboarding — retire the mapping first), and any record enrolled while
+  claims were inline (before 2026-08-11, same day, no known deployments) keeps them in its
+  immutable body UNTIL superseded and compacted: `oidc_identity` compacts under the runtime's
+  (iss, sub) key (`RUNTIME_KEYS` in core/gc.ts, which also defeats a hostile contentKey
+  redeclaration — newest per identity survives, tombstone included, so a ban stands), so a
+  successor plus `radia gc --run` deletes the legacy record whole. What remains after that is
+  the event log's entry (id, kind, bodySha256) until event retention truncates it.
 - The run token is DERIVED from the id_token (domain-separated hash), so a replayed POST finds
   the existing run by tokenHash and writes nothing. A per-subject ceiling
   (`maxOidcRunsPerSubject`, default 8 active runs, 429 `too_many_runs`) bounds distinct tokens.
@@ -71,12 +85,6 @@ runs are minted directly with NO durable half, so IdP deprovisioning takes effec
   deferred; the loopback flow covers every desktop case.
 - An id_token replayed within its validity returns the same audited run; that is the designed
   bound, not a leak of new authority.
-- The enrollment record's display claims (`username`/`name`/`email`) are PERMANENT:
-  `oidc_identity` is reserved and NEVER_COMPACT, and record bodies have no erasure path (the
-  erasure invariant in CLAUDE.md). Deliberate — the record exists to be recognizable — but a
-  deployment that must honour deletion of personal data should know the trade before its first
-  sign-in.
-
 ## Rejected
 
 - Per-request JWT validation (resource-server style): a bearer JWT has no run, and fencing,
@@ -85,3 +93,10 @@ runs are minted directly with NO durable half, so IdP deprovisioning takes effec
   strand every grant. The mapping registry renames without touching grants.
 - Refusing multi-audience tokens outright: `azp` is the compliant check and real IdPs emit
   multi-audience tokens.
+- Display claims inline in the mapping body: shipped for a few hours as an "accepted gap"
+  ("permanent, deliberate, know the trade") and correctly escalated to a blocker — it was the
+  erasure invariant's exact target shape, and the fix is cheap before the first real deployment
+  and impossible after (immutable bodies). The profile-artifact design above replaced it.
+- Not storing claims at all (operator names people by hand): loses the enrollment record's
+  whole point — an operator recognizing WHO signed in without IdP archaeology — to avoid a
+  problem the artifact path solves properly.

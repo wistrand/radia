@@ -203,12 +203,21 @@ setSessionOwner(owner);
 let displayName = "";
 try {
   for (const r of await admin.query({ kind: "oidc_identity" }, 200, { dir: "desc" })) {
-    const b = r.body as { principal?: string; name?: string; username?: string; retired?: boolean };
+    const b = r.body as { principal?: string; profile?: string; name?: string; username?: string; retired?: boolean };
     if (b.principal !== owner) continue;
-    if (!b.retired) displayName = b.name ?? b.username ?? "";
+    if (!b.retired) {
+      if (typeof b.profile === "string") {
+        // Display claims live in a PROFILE ARTIFACT so they are erasable (plan-oidc.md); a
+        // shredded one simply reads as no name, which is the erasure doing its job.
+        const p = JSON.parse(new TextDecoder().decode(await admin.getArtifact(b.profile))) as { name?: string; username?: string };
+        displayName = p.name ?? p.username ?? "";
+      } else {
+        displayName = b.name ?? b.username ?? ""; // enrolled before claims moved out of line
+      }
+    }
     break; // the newest record for this principal decides, either way
   }
-} catch { /* nothing enrolled, or no read: the principal alone is fine */ }
+} catch { /* nothing enrolled, a shredded profile, or no read: the principal alone is fine */ }
 
 // What the session's grants bind to. `owner` is this identity across all its conversations;
 // `conversationId` is this thread only. See RADIA_CHAT_SCOPE.
