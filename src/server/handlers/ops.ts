@@ -371,6 +371,16 @@ export async function handleFlows(space: Space, url: URL, scope?: StatsScope | n
     const n = Number(raw);
     return Number.isFinite(n) ? n : undefined;
   };
+  // Body paths to sum per shape. Validated to the same grammar a kind declaration accepts, and
+  // capped: each path is resolved once per scanned record, so an open-ended list is a scan
+  // multiplier handed to the caller.
+  const sum = (p.get("sum") ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+  if (sum.length > 4) return problem(400, "invalid_query", `sum accepts at most 4 paths, got ${sum.length}`);
+  for (const path of sum) {
+    if (path.length > 128 || !path.split(".").every((seg) => seg.length > 0)) {
+      return problem(400, "invalid_query", `invalid sum path '${path}'`);
+    }
+  }
   const r = await space.flows({
     granularity,
     counts,
@@ -379,6 +389,7 @@ export async function handleFlows(space: Space, url: URL, scope?: StatsScope | n
     hubDegree: num("hub_degree"),
     includeReserved: p.get("include_reserved") === "true",
     includeSingletons: p.get("include_singletons") === "true",
+    ...(sum.length > 0 ? { sum } : {}),
     scope: scope ?? undefined,
   });
   return Response.json({

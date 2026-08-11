@@ -11,6 +11,7 @@
 
 import type { CompiledMatch, Envelope, Page, RadiaRecord, RecordState, StatsScope } from "../storage/adapter.ts";
 import { isClaimable, type KindDef, RESERVED_KINDS } from "./kinds.ts";
+import { getPath } from "./matching.ts";
 
 /** Everything mining needs from a space, and nothing else. Implemented inline by `Space.flows`. */
 export interface FlowSource {
@@ -78,7 +79,14 @@ export interface FlowShape {
   outcomes: { complete: number; open: number; failed: number };
   successRate: number;
   medianDurationMs: number;
+  /** The whole shape's wall-clock, summed across occurrences: `count x median` misestimates a
+   *  skewed shape, and "which shape burns the most time" is the question a total exists for. */
+  totalDurationMs: number;
   medianRecords: number;
+  /** Totals for the caller's `sum` paths: `{ "usage.cost": { total, records } }`. Present only
+   *  when sums were requested. `records` keeps an empty metric honest: a zero with records: 0 is
+   *  "nothing here carries this field", not "this shape is free". */
+  sums?: Record<string, { total: number; records: number }>;
   /** Roots of the newest occurrences, so a reader can go look at the thing itself. */
   exemplars: string[];
 }
@@ -112,6 +120,11 @@ opts: {
   includeSingletons?: boolean;
   /** Children a record needs before it is TESTED as a hub; 0 leaves every component whole. */
   hubDegree?: number;
+  /** Body paths to SUM per shape (`usage.cost`), so "where does the metric go" is answered by the
+   *  same scan that mines the shapes. Caller-named on purpose: the runtime learns no app's
+   *  vocabulary, it adds numbers at addresses it was handed. Non-numeric and absent values count
+   *  as nothing, and `records` beside each total says how many records actually carried one. */
+  sum?: string[];
   scope?: StatsScope;
 } = {},
 ): Promise<FlowReport> {
@@ -132,7 +145,8 @@ opts: {
   kinds.sort();
 
   // --- the scan. One keyset walk per kind, stopping at the cap rather than at a page boundary.
-  const nodes = new Map<string, { kind: string; agent: string; createdAt: string; parents: string[] }>();
+  const sumPaths = (opts.sum ?? []).slice(0, 4);
+  const nodes = new Map<string, { kind: string; agent: string; createdAt: string; parents: string[]; vals?: number[] }>();
   const agentCache = new Map<string, string>();
   const agentOf = async (createdBy: string): Promise<string> => {
     const memo = agentCache.get(createdBy);
@@ -157,6 +171,14 @@ opts: {
           agent: await agentOf(rec.runtimeMeta.createdBy),
           createdAt: rec.runtimeMeta.createdAt,
           parents: rec.runtimeMeta.parentIds,
+          // Extracted while the record is in hand: the body is not kept, and a second read to sum
+          // a column would double the cost of the feature's whole reason to exist.
+          ...(sumPaths.length > 0
+            ? { vals: sumPaths.map((path) => {
+              const v = getPath(rec.body, path);
+              return typeof v === "number" && Number.isFinite(v) ? v : NaN;
+            }) }
+            : {}),
         });
       }
       if (page.length === 0) break;
@@ -355,7 +377,7 @@ opts: {
   // --- abstraction. Ids are monotonic ULIDs minted by this process at commit, so ascending id IS
   // a topological order: a parent always exists before the child that names it. That is what lets
   // depth be one pass instead of a walk per node.
-  const shapes = new Map<string, { occurrences: number; complete: number; open: number; failed: number; durations: number[]; sizes: number[]; exemplars: string[] }>();
+  const shapes = new Map<string, { occurrences: number; complete: number; open: number; failed: number; durations: number[]; sizes: number[]; exemplars: string[]; sums: number[]; sumRecords: number[] }>();
   let unknownState = 0;
   let singletons = 0;
   for (const unit of units) {
@@ -409,7 +431,18 @@ opts: {
       )
       .join(" → ");
     const key = (unit.prefix ? `${unit.prefix} ⇒ ` : "") + (unit.fragment ? `… → ${signature}` : signature);
-    const s = shapes.get(key) ?? { occurrences: 0, complete: 0, open: 0, failed: 0, durations: [], sizes: [], exemplars: [] };
+    const s = shapes.get(key) ??
+      { occurrences: 0, complete: 0, open: 0, failed: 0, durations: [], sizes: [], exemplars: [], sums: sumPaths.map(() => 0), sumRecords: sumPaths.map(() => 0) };
+    for (const id of members) {
+      const vals = nodes.get(id)!.vals;
+      if (!vals) continue;
+      for (let i = 0; i < vals.length; i++) {
+        if (!Number.isNaN(vals[i])) {
+          s.sums[i] += vals[i];
+          s.sumRecords[i]++;
+        }
+      }
+    }
     s.occurrences++;
     if (failed) s.failed++;
     else if (open) s.open++;
@@ -432,7 +465,11 @@ opts: {
       outcomes: { complete: s.complete, open: s.open, failed: s.failed },
       successRate: s.complete / s.occurrences,
       medianDurationMs: median(s.durations),
+      totalDurationMs: s.durations.reduce((a, b) => a + b, 0),
       medianRecords: median(s.sizes),
+      ...(sumPaths.length > 0
+        ? { sums: Object.fromEntries(sumPaths.map((path, i) => [path, { total: s.sums[i], records: s.sumRecords[i] }])) }
+        : {}),
       exemplars: s.exemplars.sort().slice(-FLOW_EXEMPLARS).reverse(),
     }))
     .sort((a, b) =>

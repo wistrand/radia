@@ -270,6 +270,7 @@ function newRouter(hash: string) {
     let lastWritten = "";
     const calls = [];
     const inputs = { "fl-gran": {value:"kind+agent"}, "fl-counts": {value:"bucketed"}, "fl-min": {value:"1"},
+      "fl-sum": {value:""}, "fl-sort": {value:"occurrences"}, "fl-view": {value:"list"},
       "g-view": {value:"layers"}, "g-down": {checked:false} };
     const $ = (id) => inputs[id];
     const CSS = { escape: (s) => s.replace(/[^a-zA-Z0-9+_-]/g, "") };
@@ -323,11 +324,29 @@ Deno.test("console: a knob from the URL is applied before the loader, and valida
 
   // Anyone can type anything here. A value the endpoint would reject falls back to the default
   // rather than travelling on to become a 400 that reads as the space being broken.
-  const bad = newRouter("#flows?granularity=bogus&counts=nope&min=-3");
+  const bad = newRouter("#flows?granularity=bogus&counts=nope&min=-3&sort=upward&view=pie");
   bad.applyRoute();
   assertEquals(bad.inputs["fl-gran"].value, "kind+agent");
   assertEquals(bad.inputs["fl-counts"].value, "bucketed");
   assertEquals(bad.inputs["fl-min"].value, "1");
+  assertEquals(bad.inputs["fl-sort"].value, "occurrences", "an unknown sort falls back rather than 400ing downstream");
+  assertEquals(bad.inputs["fl-view"].value, "list");
+
+  // The sum/sort/view trio is what makes a COST CLAIM sendable: a flame someone is looking at is
+  // an assertion about where the money goes, and it has to reopen as the same picture.
+  const flame = newRouter("#flows?sum=usage.cost%2Cusage.total_tokens&sort=sum&view=flame");
+  flame.applyRoute();
+  assertEquals(flame.inputs["fl-sum"].value, "usage.cost,usage.total_tokens");
+  assertEquals(flame.inputs["fl-sort"].value, "sum");
+  assertEquals(flame.inputs["fl-view"].value, "flame");
+  // Absent means default, applied rather than left as whatever the last view set.
+  flame.inputs["fl-view"].value = "flame";
+  const plain = newRouter("#flows");
+  plain.inputs["fl-view"].value = "flame";
+  plain.inputs["fl-sum"].value = "usage.cost";
+  plain.applyRoute();
+  assertEquals(plain.inputs["fl-view"].value, "list");
+  assertEquals(plain.inputs["fl-sum"].value, "");
 
   // The graph's direction is the same kind of knob, and it has to survive the link: "one turn" and
   // "the whole conversation around it" are different claims rendered from the same record id, so a
@@ -388,4 +407,94 @@ Deno.test("console: a network failure is an outcome, not an exception", () => {
   // rejection left a stopped space showing the last good render, saying nothing.
   const api = extractFunction(html, "api");
   assert(/catch\s*\(e\)\s*\{[\s\S]*status:\s*0/.test(api), "api() does not turn an unreachable space into a result");
+});
+
+Deno.test("console: the flame view's geometry is the metric, and merged prefixes tell the truth", () => {
+  // Width IS the claim this view makes, so the arithmetic is tested rather than eyeballed: two
+  // shapes sharing a first step must merge into ONE frame whose width carries their combined
+  // total, and the whole row must sum to the root. Also the two honesty notes: no paths named,
+  // and paths nothing carries.
+  const harness = `
+    let captured = "";
+    // Stub ONLY what the page genuinely defines (\$, esc, graphColor, fmtMs are page globals).
+    // The first version of this harness also stubbed a \`columns()\` the page does NOT define,
+    // which is how the view shipped broken under a green test: a harness that provides a missing
+    // dependency is testing a page that does not exist.
+    const $ = () => ({ set innerHTML(v) { captured = v; } });
+    const esc = (s) => String(s);
+    const graphColor = () => "#888";
+    const fmtMs = (n) => n + "ms";
+    let FLOWS_LAST = [];
+    let FLAME_NODES = [];
+    ${extractFunction(html, "fmtSum")}
+    ${extractFunction(html, "renderFlowFlame")}
+    return { render: (flows, paths) => { FLOWS_LAST = flows; renderFlowFlame(flows, paths); return captured; }, fmtSum };
+  `;
+  const { render, fmtSum } = new Function(harness)() as {
+    render: (flows: unknown[], paths: string[]) => string;
+    fmtSum: (n: number) => string;
+  };
+
+  const flow = (signature: string, cost: number) => ({
+    signature,
+    occurrences: 1,
+    totalDurationMs: 5,
+    exemplars: [],
+    sums: { "usage.cost": { total: cost, records: 1 } },
+  });
+  const out = render(
+    [flow("conv ⇒ call → reply", 3), flow("conv ⇒ call → tool", 1)],
+    ["usage.cost"],
+  );
+  // One merged root frame ("conv ⇒ call"), two children.
+  const widths = [...out.matchAll(/<rect[^>]*y="0"[^>]*width="([\d.]+)"/g)].map((m) => Number(m[1]));
+  assertEquals(widths.length, 1, `two flows sharing a first step are ONE root frame: ${out.slice(0, 300)}`);
+  const children = [...out.matchAll(/<rect[^>]*y="26"[^>]*width="([\d.]+)"/g)].map((m) => Number(m[1]));
+  assertEquals(children.length, 2, "…with each flow's own tail as a child");
+  // The merged frame carries the COMBINED total, and the children split 3:1.
+  assert(out.includes("usage.cost: 4 (100%"), out.match(/usage\.cost[^\n<]*/)?.[0]);
+  assert(children[0] > children[1] * 2.5 && children[0] < children[1] * 3.5, `widths split by metric: ${children}`);
+
+  // The honesty notes: a flame with nothing to weigh must say WHY it is empty.
+  assert(render([flow("a → b", 1)], []).includes("needs a summed body path"));
+  const none = { ...flow("a → b", 0), sums: { "usage.cost": { total: 0, records: 0 } } };
+  assert(render([none], ["usage.cost"]).includes("That is a fact about the data"));
+
+  // fmtSum keeps small money readable and big counts short.
+  assertEquals(fmtSum(0.00283), "0.00283");
+  assertEquals(fmtSum(11006), "11.0k");
+});
+
+Deno.test("console: the Flame button is one gesture, and only PROMOTES the hint on a click", () => {
+  // Reaching the flame must not require knowing the knob dance (paths, view, sort). But the
+  // console defaults to NO app vocabulary, so the placeholder becomes a value only on this
+  // explicit gesture, and a sum the user already typed is never overwritten.
+  const harness = `
+    const inputs = {
+      "fl-sum": { value: "", placeholder: "usage.cost,usage.total_tokens" },
+      "fl-view": { value: "list" },
+      "fl-sort": { value: "occurrences" },
+    };
+    const $ = (id) => inputs[id];
+    let routed = false;
+    function routeFlows() { routed = true; }
+    ${extractFunction(html, "openFlame")}
+    return { inputs, openFlame, wasRouted: () => routed };
+  `;
+  const t = new Function(harness)() as {
+    inputs: Record<string, { value: string }>;
+    openFlame: () => void;
+    wasRouted: () => boolean;
+  };
+  t.openFlame();
+  assertEquals(t.inputs["fl-sum"].value, "usage.cost,usage.total_tokens", "an empty box adopts the hint");
+  assertEquals(t.inputs["fl-view"].value, "flame");
+  assertEquals(t.inputs["fl-sort"].value, "sum");
+  assert(t.wasRouted(), "and it routes through the hash so the picture is sendable");
+
+  t.inputs["fl-sum"].value = "my.own.metric";
+  t.inputs["fl-sort"].value = "time";
+  t.openFlame();
+  assertEquals(t.inputs["fl-sum"].value, "my.own.metric", "a typed value is never overwritten");
+  assertEquals(t.inputs["fl-sort"].value, "time", "…nor a chosen sort");
 });

@@ -369,3 +369,48 @@ Deno.test("flows: a scan that hits its cap reports a prefix rather than a plausi
     await close();
   }
 });
+
+Deno.test("[flows] caller-named sums answer 'where does the metric go, by shape'", async () => {
+  // The runtime learns no app's vocabulary: `usage.cost` is an address the CALLER names, and the
+  // miner adds numbers it finds there while the records are already in hand. The chat is the worked
+  // example (provider cost on every reply), but the mechanism is any numeric body path.
+  const { space, close } = await pipelineSpace();
+  try {
+    const conv = await space.put({ kind: "job", body: { text: "conversation-shaped" } });
+    let spent = 0, carried = 0;
+    for (let turn = 0; turn < 3; turn++) {
+      const cost = (turn + 1) / 100; // 0.01 + 0.02 + 0.03
+      const call = await space.put({
+        kind: "task",
+        body: { op: "llm", input: `t${turn}`, usage: { cost, total_tokens: 1000 * (turn + 1) } },
+        parentIds: [conv.id],
+      });
+      spent += cost;
+      carried++;
+      // A reply with NO usage, so `records` counts what actually carried the field.
+      await space.put({ kind: "result", body: { out: "text" }, parentIds: [call.id] });
+    }
+
+    const r = await space.flows({ granularity: "kind", counts: "exact", sum: ["usage.cost", "usage.total_tokens", "no.such.path"] });
+    const shape = r.flows.find((f) => f.signature.includes("task") && f.signature.includes("result"));
+    assert(shape, JSON.stringify(r.flows.map((f) => f.signature)));
+
+    // Exact totals, because cost is ADDITIVE: no concurrency double-count, unlike wall-clock.
+    assertEquals(shape!.sums?.["usage.cost"], { total: 0.06, records: 3 });
+    assertEquals(shape!.sums?.["usage.total_tokens"], { total: 6000, records: 3 });
+    // A path nothing carries is an honest zero, not an absent key: records: 0 is what tells a
+    // reader "nothing here has this field" apart from "this shape is free".
+    assertEquals(shape!.sums?.["no.such.path"], { total: 0, records: 0 });
+
+    // The total-duration column: for shapes this fast the number is small, but it must be a SUM
+    // over occurrences, never count x median.
+    assert(shape!.totalDurationMs >= shape!.medianDurationMs, `${shape!.totalDurationMs} >= ${shape!.medianDurationMs}`);
+
+    // Unrequested, the fields stay absent: the response does not grow for callers that did not ask.
+    const plain = await space.flows({ granularity: "kind" });
+    assert(plain.flows.every((f) => f.sums === undefined));
+    assert(carried === 3 && spent === 0.06, "test arithmetic");
+  } finally {
+    await close();
+  }
+});

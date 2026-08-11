@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Radia dev console</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
   :root {
     --bg: #f7f7f8; --panel: #fff; --ink: #1a1a1f; --muted: #6b7280; --line: #e4e4e7;
@@ -317,6 +318,21 @@
           </select>
         </div>
         <div style="max-width:160px"><label>Min occurrences</label><input id="fl-min" type="number" value="1" onchange="routeFlows()"></div>
+        <div style="max-width:260px"><label>Sum body paths <span class="muted">(where a metric goes)</span></label>
+          <input id="fl-sum" placeholder="usage.cost,usage.total_tokens" onchange="routeFlows()" spellcheck="false"></div>
+        <div style="max-width:150px"><label>Sort by</label>
+          <select id="fl-sort" onchange="routeFlows()">
+            <option value="occurrences">occurrences</option>
+            <option value="time">total time</option>
+            <option value="sum">summed path</option>
+          </select></div>
+        <div style="max-width:150px"><label>View</label>
+          <select id="fl-view" onchange="routeFlows()">
+            <option value="list">list</option>
+            <option value="flame">flame (by sum)</option>
+          </select></div>
+        <div style="max-width:120px"><label>&nbsp;</label>
+          <button class="btn" onclick="openFlame()" title="where the summed metric goes, by shape; width is the metric, never time">Flame</button></div>
       </div>
       <div id="fl-msg"></div>
     </div>
@@ -509,6 +525,11 @@ function applyRoute() {
     if (c === "bucketed" || c === "exact") $("fl-counts").value = c;
     const m = Number(r.params.get("min"));
     if (Number.isFinite(m) && m >= 1) $("fl-min").value = String(m);
+    $("fl-sum").value = r.params.get("sum") ?? "";
+    const so = r.params.get("sort");
+    $("fl-sort").value = so === "time" || so === "sum" ? so : "occurrences";
+    const fv = r.params.get("view");
+    $("fl-view").value = fv === "flame" ? fv : "list";
   }
   if (b.dataset.tab === "feed") {
     const k = r.params.get("kind");
@@ -539,10 +560,22 @@ function selectRecord(id) {
 }
 /** The Flows knobs exist to be varied and compared, which is only possible if a comparison can be
  *  sent to someone. `min` is omitted at its default so the common URL stays short. */
+/** One gesture to the flame: adopt the placeholder paths when none are set (an explicit click
+ *  promoting the page's own hint, so the console still DEFAULTS to no app vocabulary), then route
+ *  through the hash like every other knob so the picture is sendable. */
+function openFlame() {
+  if (!$("fl-sum").value.trim()) $("fl-sum").value = $("fl-sum").placeholder;
+  $("fl-view").value = "flame";
+  if ($("fl-sort").value === "occurrences") $("fl-sort").value = "sum";
+  routeFlows();
+}
 function routeFlows() {
   const p = new URLSearchParams({ granularity: $("fl-gran").value, counts: $("fl-counts").value });
   const min = Number($("fl-min").value);
   if (Number.isFinite(min) && min > 1) p.set("min", String(min));
+  if ($("fl-sum").value.trim()) p.set("sum", $("fl-sum").value.trim());
+  if ($("fl-sort").value !== "occurrences") p.set("sort", $("fl-sort").value);
+  if ($("fl-view").value !== "list") p.set("view", $("fl-view").value);
   navigate("flows", "", p);
 }
 
@@ -1068,6 +1101,8 @@ async function loadFlows() {
     counts: $("fl-counts").value,
     min_occurrences: String(Math.max(1, Number($("fl-min").value) || 1)),
   });
+  const sumPaths = $("fl-sum").value.split(",").map((x) => x.trim()).filter(Boolean).slice(0, 4);
+  if (sumPaths.length) q.set("sum", sumPaths.join(","));
   const r = await api("GET", `/v0/ops/flows?${q}`);
   if (!r.ok) { $("fl-list").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
   const d = r.data;
@@ -1080,9 +1115,19 @@ async function loadFlows() {
   const notes = (d.notes || []).map((n) => `<div class="note err">${esc(n)}</div>`).join("");
   $("fl-msg").innerHTML = `<div class="muted" style="margin-top:8px">${esc(scanned)}</div>${notes}`;
   if (!d.flows.length) { $("fl-list").innerHTML = `<div class="empty">${esc(d.note || "no shapes mined")}</div>`; return; }
-  FLOWS_LAST = d.flows;
-  const top = d.flows[0].occurrences;
-  $("fl-list").innerHTML = d.flows.map((f, i) => {
+  // Sort CLIENT-SIDE: the server's order (occurrences) is one of three answers to "biggest", and
+  // which one the reader means is a knob, not a fact.
+  const metricOf = (f) => sumPaths.length ? (f.sums?.[sumPaths[0]]?.total ?? 0) : 0;
+  const flows = [...d.flows];
+  if ($("fl-sort").value === "time") flows.sort((a, b) => b.totalDurationMs - a.totalDurationMs);
+  else if ($("fl-sort").value === "sum") flows.sort((a, b) => metricOf(b) - metricOf(a));
+  FLOWS_LAST = flows;
+  if ($("fl-view").value === "flame") {
+    renderFlowFlame(flows, sumPaths);
+    return;
+  }
+  const top = flows[0].occurrences;
+  $("fl-list").innerHTML = flows.map((f, i) => {
     const pct = Math.round(f.successRate * 100);
     const bar = Math.max(2, Math.round((f.occurrences / top) * 100));
     const segs = f.signature.split(" → ").map((s) => `<span class="tag mono">${esc(s)}</span>`).join(
@@ -1096,7 +1141,8 @@ async function loadFlows() {
         <b>${f.occurrences}×</b>
         <span class="badge ${pct === 100 ? "st-consumed" : pct === 0 ? "st-dead_letter" : "st-leased"}">${pct}% complete</span>
         <span class="muted">${f.outcomes.complete} done · ${f.outcomes.open} open · ${f.outcomes.failed} failed</span>
-        <span class="muted">median ${f.medianRecords} records, ${fmtMs(f.medianDurationMs)}</span>
+        <span class="muted">median ${f.medianRecords} records, ${fmtMs(f.medianDurationMs)} · total ${fmtMs(f.totalDurationMs)}</span>
+        ${f.sums ? Object.entries(f.sums).map(([path, v]) => `<span class="muted">${esc(path)}: <b>${fmtSum(v.total)}</b>${v.records ? ` over ${v.records}` : ` <span class="tag">no records carry this</span>`}</span>`).join(" ") : ""}
         <button class="btn ghost" style="padding:1px 8px;font-size:11px" onclick="flowTiming(${i})" title="where the median duration goes: one waterfall aggregated across this shape's exemplars">timing</button>
       </div>
       <div style="height:3px;background:var(--accent);width:${bar}%;margin:6px 0 8px;border-radius:2px"></div>
@@ -1107,6 +1153,97 @@ async function loadFlows() {
   }).join("");
 }
 let FLOWS_LAST = [];
+/** Compact numeric formatting for a summed body path. App-agnostic on purpose: the console does
+ *  not know whether the number is dollars, tokens or a score, so it prints the number well and
+ *  lets the path name say what it is. */
+function fmtSum(n) {
+  if (n === 0) return "0";
+  if (Math.abs(n) >= 10000) return `${(n / 1000).toFixed(1)}k`;
+  if (Math.abs(n) >= 100) return String(Math.round(n));
+  return String(Number(n.toPrecision(3)));
+}
+/**
+ * The flame view: where a SUMMED metric goes, by shape, stacked by the signature's own steps.
+ *
+ * Width is the metric, never time. Cost and tokens are ADDITIVE, so a parent frame's width is
+ * exactly the sum of its children and the geometry tells the truth; wall-clock is not (children
+ * overlap), which is why the time answer stays a sortable column and the per-shape waterfall.
+ * Shapes sharing a prefix of steps merge into one frame, which is what makes the wide frame the
+ * answer to "where does it go" rather than a list to add up by eye.
+ */
+let FLAME_NODES = [];
+function renderFlowFlame(flows, sumPaths) {
+  const el = $("fl-list");
+  if (!sumPaths.length) {
+    el.innerHTML = `<div class="empty">The flame view needs a summed body path. Name one in "Sum body paths" (the chat writes usage.cost and usage.total_tokens on its replies).</div>`;
+    return;
+  }
+  const path = sumPaths[0];
+  const weighted = flows.filter((f) => (f.sums?.[path]?.total ?? 0) > 0);
+  if (!weighted.length) {
+    el.innerHTML = `<div class="empty">No records in these shapes carry a number at <code>${esc(path)}</code>. That is a fact about the data, not an empty space: pick a path the kinds actually write.</div>`;
+    return;
+  }
+  // A trie over signature steps, weighted by the metric.
+  const root = { name: "", value: 0, children: new Map(), flows: [] };
+  for (const f of weighted) {
+    const v = f.sums[path].total;
+    root.value += v;
+    let node = root;
+    for (const step of f.signature.split(" → ")) {
+      let child = node.children.get(step);
+      if (!child) {
+        child = { name: step, value: 0, children: new Map(), flows: [] };
+        node.children.set(step, child);
+      }
+      child.value += v;
+      child.flows.push(FLOWS_LAST.indexOf(f));
+      node = child;
+    }
+  }
+  // The panel's own width, not a terminal helper: `columns()` exists in the CHAT's terminal code
+  // and this page has no such function — shipping that reference broke the view while its test
+  // passed, because the harness had stubbed the missing dependency into existence.
+  const rowH = 26, plotW = Math.max(560, Math.min(1100, (el.clientWidth || 920) - 20));
+  let maxDepth = 0;
+  FLAME_NODES = [];
+  let svg = "";
+  const draw = (node, depth, x0) => {
+    maxDepth = Math.max(maxDepth, depth);
+    let x = x0;
+    for (const child of [...node.children.values()].sort((a, b) => b.value - a.value)) {
+      const w = (child.value / root.value) * plotW;
+      const id = FLAME_NODES.length;
+      FLAME_NODES.push(child);
+      const c = graphColor(child.name.replace(/ ⇒.*|×.*/g, ""));
+      svg += `<g class="click" onclick="flameSelect(${id})">` +
+        `<rect x="${x.toFixed(1)}" y="${depth * rowH}" width="${Math.max(1, w - 1).toFixed(1)}" height="${rowH - 4}" rx="3" fill="${c}" fill-opacity="0.5" stroke="${c}"/>` +
+        (w > 70 ? `<text x="${(x + 5).toFixed(1)}" y="${depth * rowH + 16}" font-size="11" fill="var(--ink)">${esc(child.name.slice(0, Math.floor(w / 7)))}</text>` : "") +
+        `<title>${esc(child.name)}
+${esc(path)}: ${fmtSum(child.value)} (${Math.round((child.value / root.value) * 100)}% of ${fmtSum(root.value)})
+click to list these flows</title></g>`;
+      draw(child, depth + 1, x);
+      x += w;
+    }
+  };
+  draw(root, 0, 0);
+  const height = (maxDepth + 1) * rowH;
+  el.innerHTML =
+    `<div class="muted" style="margin-bottom:6px">${esc(path)}: <b>${fmtSum(root.value)}</b> across ${weighted.length} shape(s); width IS the metric, top-level frames are causal roots. Click a frame to list its flows.</div>` +
+    `<div style="overflow:auto"><svg viewBox="0 0 ${plotW} ${height}" width="${plotW}" height="${height}">${svg}</svg></div>` +
+    `<div id="fl-flame-sel"></div>`;
+}
+function flameSelect(id) {
+  const node = FLAME_NODES[id];
+  const el = $("fl-flame-sel");
+  if (!node || !el) return;
+  const rows = [...new Set(node.flows)].map((i) => {
+    const f = FLOWS_LAST[i];
+    return `<div style="margin-top:6px"><span class="tag mono">${esc(f.signature)}</span> <span class="muted">${f.occurrences}× · ${fmtMs(f.totalDurationMs)}</span> ` +
+      f.exemplars.slice(0, 3).map((ex) => `<button class="btn ghost" style="padding:1px 6px;font-size:11px" onclick="openFromFlow('${esc(ex)}')">${esc(ex.slice(-8))}</button>`).join(" ") + `</div>`;
+  }).join("");
+  el.innerHTML = `<div class="panel" style="background:var(--bg);margin-top:8px"><b>${esc(node.name)}</b>${rows}</div>`;
+}
 function median(xs) {
   const s = [...xs].sort((a, b) => a - b);
   return s.length ? s[Math.floor((s.length - 1) / 2)] : 0;

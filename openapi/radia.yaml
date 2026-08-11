@@ -1110,6 +1110,7 @@ paths:
         - { name: hub_degree, in: query, schema: { type: integer, default: 8 }, description: "children a record needs before it is TESTED as a hub whose removal splits the flow; a same-kind version spine is tested the same way regardless; 0 leaves every component whole" }
         - { name: include_reserved, in: query, schema: { type: boolean, default: false }, description: "include the substrate's own kinds (declarations, grants, run records)" }
         - { name: include_singletons, in: query, schema: { type: boolean, default: false }, description: "include records linked to nothing; they are counted in `singletons` either way" }
+        - { name: sum, in: query, schema: { type: string }, description: "comma-separated body paths (max 4) summed per shape, e.g. `usage.cost,usage.total_tokens`: 'where does the metric go, by shape'. Caller-named, so the runtime learns no app's vocabulary" }
       responses:
         "200":
           description: mined flows
@@ -1135,7 +1136,16 @@ paths:
                             failed: { type: integer }
                         successRate: { type: number }
                         medianDurationMs: { type: integer }
+                        totalDurationMs: { type: integer, description: "the shape's summed wall-clock across occurrences: which shape burns the most time" }
                         medianRecords: { type: integer }
+                        sums:
+                          type: object
+                          description: "present when `sum` was requested: per path, {total, records}. records: 0 beside a zero total means nothing carried the field, not that the shape is free"
+                          additionalProperties:
+                            type: object
+                            properties:
+                              total: { type: number }
+                              records: { type: integer }
                         exemplars: { type: array, items: { type: string }, description: "roots of the newest occurrences, for a thread read" }
                   scanned:
                     type: object

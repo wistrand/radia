@@ -345,6 +345,8 @@ export class RadiaClient {
     includeReserved?: boolean;
     includeSingletons?: boolean;
     hubDegree?: number;
+    /** Body paths (max 4) summed per shape, e.g. `["usage.cost"]`: where the metric goes, by shape. */
+    sum?: string[];
   } = {}): Promise<{
     granularity: string;
     counts: string;
@@ -354,7 +356,9 @@ export class RadiaClient {
       outcomes: { complete: number; open: number; failed: number };
       successRate: number;
       medianDurationMs: number;
+      totalDurationMs: number;
       medianRecords: number;
+      sums?: Record<string, { total: number; records: number }>;
       exemplars: string[];
     }[];
     scanned: { records: number; kinds: string[]; subgraphs: number };
@@ -373,6 +377,7 @@ export class RadiaClient {
     if (opts.includeReserved) q.set("include_reserved", "true");
     if (opts.includeSingletons) q.set("include_singletons", "true");
     if (opts.hubDegree !== undefined) q.set("hub_degree", String(opts.hubDegree));
+    if (opts.sum?.length) q.set("sum", opts.sum.join(","));
     const qs = q.toString();
     return this.req("GET", `/v0/ops/flows${qs ? `?${qs}` : ""}`);
   }

@@ -276,6 +276,20 @@ Deno.test("http: --auth required closes the no-header shortcut but keeps the con
     const page = await handler(get("/"));
     assertEquals(page.status, 200);
     await drain(page);
+
+    // The favicon too: browsers probe /favicon.ico unprompted, so in required mode every console
+    // load fired a 401 into the network log — noise wearing an error's clothes. It is an icon; it
+    // carries nothing.
+    for (const path of ["/favicon.ico", "/favicon.svg"]) {
+      const icon = await handler(get(path));
+      assertEquals(icon.status, 200, path);
+      assertEquals(icon.headers.get("content-type"), "image/svg+xml");
+      const body = await icon.text();
+      // Byte-equal to the docs site's mark, so the browser tab and the published site cannot
+      // drift into two different logos nobody decided on.
+      const site = (await Deno.readTextFile(new URL("../docs/favicon.svg", import.meta.url))).trim();
+      assertEquals(body, site, `${path} must serve the same mark as docs/favicon.svg`);
+    }
   } finally {
     await close();
   }

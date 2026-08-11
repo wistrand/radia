@@ -223,6 +223,18 @@ async function resolveAuth(req: Request, space: Space, authRequired: boolean): P
 /** Vendored console JS, read on first request (never on import) and held for the process life. */
 let blitzoomJs: string | null = null;
 
+/** A record claimed out of a space: three waiting, one taken. The same mark as `docs/favicon.svg`
+ *  (kept byte-equal by http.test.ts) and the chat banner's text rendering of it. */
+const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- A record claimed out of a space: three waiting, one taken. The console's own palette. -->
+  <rect width="64" height="64" rx="12" fill="#0e0e11"/>
+  <circle cx="21" cy="21" r="6" fill="#60a5fa"/>
+  <circle cx="43" cy="21" r="6" fill="#60a5fa"/>
+  <circle cx="21" cy="43" r="6" fill="#60a5fa"/>
+  <circle cx="43" cy="43" r="8" fill="#818cf8"/>
+</svg>`;
+
+
 /**
  * The whole HTTP surface as one `(Request) => Response` function.
  *
@@ -307,7 +319,8 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     const auth = await resolveAuth(req, space, authRequired);
     // The console (GET /) and health stay public so the console can bootstrap even in required
     // mode; everything else 401s. These carry no credential. Keep it that way (see `loadUi`).
-    const isPublic = route === "GET /" || route === "GET /v0/health" || route === "GET /ui/blitzoom.bundle.js";
+    const isPublic = route === "GET /" || route === "GET /v0/health" || route === "GET /ui/blitzoom.bundle.js" ||
+      route === "GET /favicon.ico" || route === "GET /favicon.svg";
     // "Public" means NO credential is needed. It does not mean a presented one is ignored. Only
     // `auth_required` (nothing was presented) is exempt; a token that failed to resolve is a 401
     // even here. Never exempt both: health is the one endpoint a client calls to ask "am I
@@ -430,6 +443,16 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     switch (route) {
       case "GET /":
         return new Response(ui, { headers: { "content-type": "text/html; charset=utf-8" } });
+
+      // The mark, at the path browsers probe unprompted. Every console load fired a 401 here in
+      // required mode, which is noise wearing an error's clothes. Public like the page itself: it
+      // is the same four dots the docs site ships, and `http.test.ts` holds the two files equal so
+      // the browser tab and the published site cannot drift apart.
+      case "GET /favicon.ico":
+      case "GET /favicon.svg":
+        return new Response(FAVICON_SVG, {
+          headers: { "content-type": "image/svg+xml", "cache-control": "public, max-age=86400" },
+        });
 
       // Vendored console asset, loaded lazily by the Space tab. Immutable: the bundle is a
       // checked-in build artifact pinned to an upstream commit (src/ui/vendor/README.md).
