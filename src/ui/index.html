@@ -297,8 +297,8 @@
       <div class="row">
         <div><label>Kind to pick from</label><input id="g-kind" list="kind-list" value="conversation"></div>
         <div style="max-width:150px"><label>View</label><select id="g-view" onchange="routeGraphView()">
-          <option value="layers" selected>layers</option>
-          <option value="waterfall">waterfall</option>
+          <option value="layers">layers</option>
+          <option value="waterfall" selected>waterfall</option>
         </select></div>
         <div style="max-width:180px"><label>&nbsp;</label>
           <label style="font-size:12px;color:var(--muted);display:block"><input type="checkbox" id="g-hidechunks" style="width:auto" checked> hide llm_chunk</label>
@@ -1128,6 +1128,29 @@ async function loadGraphRoots() {
   // Newest first: the root picker showed the 50 OLDEST conversations of a long-lived space, the
   // same bounded-read trap the records browser shipped.
   const r = await api("POST", "/v0/records/query", { kind, limit: 50, dir: "desc" });
+  if (!r.ok && r.status === 403) {
+    // An OBSERVER holds the ops plane, not this kind's coordination read — and the graph walk
+    // itself is an ops read they can make. So the picker falls back to the event log, which
+    // observe does cover: creations of this kind from the tail, newest first. Bounded and says
+    // so; the log's tail is recency, never the population.
+    const ev = await api("GET", "/v0/ops/events?tail=500");
+    if (ev.ok) {
+      const seen = new Set();
+      const ids = [];
+      for (const e of (ev.data.events || []).slice().reverse()) {
+        if (e.operation !== "put" || e.kind !== kind || !e.recordId || seen.has(e.recordId)) continue;
+        seen.add(e.recordId);
+        ids.push(e.recordId);
+        if (ids.length >= 50) break;
+      }
+      if (ids.length) {
+        $("g-roots").innerHTML =
+          `<div class="muted" style="margin:8px 0 4px">recent ${esc(kind)} roots, from the event log (observe covers the log; a '${esc(kind)}' query grant would list directly) — pick one:</div>`
+          + ids.map((id) => `<button class="btn ghost" style="margin:0 4px 4px 0" onclick="navigate('graph','${id}')">${esc(id.slice(-8))}</button>`).join("");
+        return;
+      }
+    }
+  }
   if (!r.ok) { $("g-roots").innerHTML = `<div class="note err">${esc(errText(r))}</div>`; return; }
   const recs = r.data.records;
   if (!recs.length) { $("g-roots").innerHTML = `<div class="empty">No ${esc(kind)} records.</div>`; return; }
@@ -1167,7 +1190,9 @@ async function refreshGraph() {
  *  waterfall someone is looking at is a claim about timing, and a claim should be sendable. */
 function routeGraphView() {
   const p = new URLSearchParams();
-  if ($("g-view").value === "waterfall") p.set("view", "waterfall");
+  // The hash carries only the NON-default: waterfall is where a duration question starts, so
+  // it is the default and `view=layers` is the knob worth sending.
+  if ($("g-view").value === "layers") p.set("view", "layers");
   if ($("g-down").checked) p.set("dir", "down");
   navigate("graph", currentRoot || "", p);
 }

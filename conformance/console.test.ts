@@ -757,3 +757,54 @@ Deno.test("console: the SSO button appears exactly when health advertises an iss
   await without.showSignIn("");
   assertEquals(without.els["signin-oidc"].style.display, "none", "no issuer, no button: it would only 403");
 });
+
+Deno.test("console: the Graph root picker serves an OBSERVER through the event log", async () => {
+  // `observe` opens the ops plane and not coordination reads, and the picker's listing is a
+  // coordination query. Seen live: every tab worked for an observer except Graph, which 403'd
+  // on `conversation` — while the graph WALK it feeds is an ops read the observer can make.
+  // The fallback lists recent roots from the event log's tail instead of rendering the refusal.
+  const harness = (script: { status: number; json?: unknown }[]) => {
+    const src = `
+      const els = {};
+      const $ = (id) => (els[id] ??= { innerHTML: "", value: "conversation", style: {} });
+      const calls = [];
+      const api = async (method, path, body) => {
+        calls.push({ method, path });
+        const next = script.length > 1 ? script.shift() : script[0];
+        return { ok: next.status < 400, status: next.status, data: next.json ?? {} };
+      };
+      ${extractFunction(html, "esc")}
+      const errText = (r) => "err";
+      const window = {};
+      async ${extractFunction(html, "loadGraphRoots")}
+      return { loadGraphRoots, els, calls };
+    `;
+    // deno-lint-ignore no-explicit-any
+    return new Function("script", src)(script) as any;
+  };
+
+  // 403 on the coordination read -> the event-log fallback renders pick buttons.
+  const t = harness([
+    { status: 403, json: {} },
+    { status: 200, json: { events: [
+      { operation: "put", kind: "conversation", recordId: "01AAAAAAAAAAAAAAAAAAAAAAAA" },
+      { operation: "put", kind: "message", recordId: "01BBBBBBBBBBBBBBBBBBBBBBBB" }, // wrong kind: filtered
+      { operation: "put", kind: "conversation", recordId: "01CCCCCCCCCCCCCCCCCCCCCCCC" },
+      { operation: "take", kind: "conversation", recordId: "01DDDDDDDDDDDDDDDDDDDDDDDD" }, // not a creation
+      { operation: "put", kind: "conversation", recordId: "01CCCCCCCCCCCCCCCCCCCCCCCC" }, // dupe
+    ] } },
+  ]);
+  await t.loadGraphRoots();
+  assertEquals(t.calls.map((c: { path: string }) => c.path), ["/v0/records/query", "/v0/ops/events?tail=500"]);
+  const out = t.els["g-roots"].innerHTML;
+  assert(out.includes("CCCCCC") && out.includes("AAAAAA"), out.slice(0, 120));
+  assert(!out.includes("BBBBBB") && !out.includes("DDDDDD"), "wrong kind or non-creation leaked into the picker");
+  assert(out.indexOf("CCCCCC") < out.indexOf("AAAAAA"), "newest first");
+  assert(out.includes("query grant"), "…and it says why this is the fallback view");
+
+  // Any other failure is still shown as the refusal it is, not silently retried through ops.
+  const t2 = harness([{ status: 500, json: {} }]);
+  await t2.loadGraphRoots();
+  assertEquals(t2.calls.length, 1, "only a 403 reroutes; a 500 is an error to show");
+  assert(t2.els["g-roots"].innerHTML.includes("note err"));
+});

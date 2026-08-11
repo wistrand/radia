@@ -850,6 +850,11 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Grants, scopes and narrowed answers
 
+- **A one-off manual grant to a long-lived principal hides gaps in the standard set**
+  (`userGrants`, examples/chat/space/roles.ts). `kind_def:query` was hand-granted to one person
+  in August and never added to the set, so `space_kinds` worked for them and 403'd for every
+  FRESH identity — first seen when OIDC minted one. Test defaults with a new principal, never an
+  accumulated one. Guard: smoke-login.ts "a fresh session can discover kinds".
 - **A worker's `progress` record must carry `owner`, or an identity-scoped session cannot see it**
   (`examples/chat/workers/router.ts`). The chat's default scope is `{owner}`, and a grant pattern
   NARROWS rather than errors, so the router's `routing`/`routed` records were filtered out in
