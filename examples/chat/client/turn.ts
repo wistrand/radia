@@ -15,7 +15,6 @@ import { type CapabilityBody, capabilityKey, collapseByTool } from "../../../ext
 import { answerStream, columns, dim, endStatus, ensureLine, holdLine, notice, showArtifact, statusLineOn, trunc, write } from "./terminal.ts";
 import { Waiter, waitWake } from "./waiting.ts";
 
-const MAX_ROUNDS = 8;
 
 /**
  * The user pressed Escape. A distinct type so the REPL can say "cancelled" rather than "[error]".

@@ -1,9 +1,9 @@
 # Plan: garbage collection (retention sweep + registry compaction)
 
-> Status: phases 1–3 built (records 2026-08-05; the amortized write-path sweep, idempotency-row
-> sweeping, kind-level `defaultRetentionSeconds`, and all three steps of event-log retention
-> 2026-08-06); phase 4 (blob GC) designed, not scheduled. Origin: a measured finding, not a
-> feature request — see the table below. Read
+> Status: ALL FOUR PHASES BUILT (records 2026-08-05; the amortized write-path sweep,
+> idempotency-row sweeping, kind-level `defaultRetentionSeconds`, and all three steps of
+> event-log retention 2026-08-06; reference-aware blob GC 2026-08-11, "Phase 4" below).
+> Origin: a measured finding, not a feature request — see the table below. Read
 > [design-data-model.md](design-data-model.md) for `retention_until`'s field semantics and
 > [design-observability.md](design-observability.md) for the event chain GC must not break.
 
@@ -86,8 +86,10 @@ The one place the trade is stated whole; the sections below carry the mechanics.
   An operator who wants such work gone today must requeue-or-dead-letter it AND stamp retention on
   what replaces it, or declare a `defaultRetentionSeconds` on the kind going forward.
 - `claimable: false` kinds sweep from any state: reference data sits `available` forever by design.
-- Never a reserved kind, and never `artifact` until reference-aware blob GC exists (phase 4):
-  sweeping an artifact record strands its bytes with no path to them but `erasures`.
+- Never a reserved kind — except `artifact`, since phase 4: with the blob pass reclaiming
+  unreferenced bytes, an artifact record whose writer declared retention sweeps like any other
+  reference record (any state, `claimable: false`). Before phase 4 sweeping one stranded its
+  bytes with no path to them but `erasures`, which is why the exclusion existed.
 - Eligibility is COLUMN predicates (`retention_until < now`, state, lease), never a body pattern:
   no oracle, no scan-budget interaction, index-served.
 - A kind may declare `defaultRetentionSeconds` on its `kind_def`: MATERIALIZED into
@@ -183,7 +185,37 @@ the one-liner is an index on `created_at where created_at <> ''`.
    boundary, the anchored verify + sealed horizon statement, and the sweep
    (`Space.gcEvents`, riding the `gc` verb; `eventRetentionSeconds` in `SpaceContext`,
    `radia dev --event-retention`, off by default).
-4. **Reference-aware blob GC** — artifacts join retention.
+4. **Reference-aware blob GC** — BUILT 2026-08-11 (see "Phase 4" below).
+
+## Phase 4: reference-aware blob GC (BUILT 2026-08-11)
+
+Artifacts join retention. The record side is one selector change (`artifact` left `neverKinds`
+and joined the any-state class in `Space.sweepSelector`); the byte side is
+`BlobStore.retainOnly(liveDigests, {graceMs})`, run LAST by a live `Space.gc`: the live set is
+every digest a surviving artifact record carries (paged to exhaustion), and the store deletes
+what is absent from it and untouched past the grace window. Three decisions carry the safety:
+
+- **The keep set travels as DIGESTS, mapped by the store.** An encrypted store's filenames are
+  HMAC(KEK, digest) precisely so a listing identifies nothing, so no port method may return
+  digests from storage; the store computes keep-names (both homes, since a pre-encryption blob
+  sits at its plaintext name) and deletes the complement. Sidecar DEKs and stale `.tmp`/orphan
+  `.key` crash leftovers go with their payloads.
+- **The grace window is the race answer, not politeness** (`blobGcGraceSeconds`, default 900).
+  `putArtifact` writes bytes before committing the record, and a DEDUPED put now refreshes the
+  blob's clock (mtime / `touchedAt`), so bytes younger than the grace are live whatever the
+  record store says — including a put from a second process over the same directory, which no
+  in-process latch could see. Ages are host-clock on purpose: mtimes are host-clock data.
+- **Live runs only.** `doctor` runs `gc` dry on every diagnostics, and a dry blob pass would
+  walk every artifact record plus the whole blob directory to predict what the live sweep
+  reports anyway (`blobs: {scanned, deleted, bytes}`).
+
+Erasure stays the only DELIBERATE destruction and neither mechanism masks the other: a
+re-written shredded digest with a surviving record is KEPT (deleting it would silently
+re-assert an erasure the report says was undone), and a shredded digest simply never appears in
+the store's listing. Guards: `conformance/suites/gc.ts` ("sweeps an expired artifact",
+"never deletes a re-written shredded digest") and `conformance/suites/blobs.ts` (the port
+contract across all four stores, the grace/touch pair on real mtimes), each proven red by a
+plant. Still open, unchanged: KEK rotation.
 
 ## Phase 3: event GC (analyzed and BUILT 2026-08-06)
 

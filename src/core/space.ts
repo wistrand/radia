@@ -33,6 +33,7 @@ import {
   AGENT_RUN,
   INTEREST,
   normalizeTaint,
+  ARTIFACT,
   parseTaintAllowlist,
   SHRED,
   type ArtifactDef,
@@ -59,7 +60,7 @@ import {
 } from "./kinds.ts";
 import { CredentialStore, hashToken, mintCredential, type ResolvedToken } from "./auth.ts";
 import { type CompactionResult, compactRegistries } from "./gc.ts";
-import { type BlobStore, MemoryBlobStore } from "../storage/blobs.ts";
+import { type BlobGcResult, type BlobStore, MemoryBlobStore } from "../storage/blobs.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
 import { activeSet, grantKey, isRetired, oidcIdentityKey, opsGrantKey, readRegistry, type RegistryView } from "./registry.ts";
@@ -172,6 +173,13 @@ export interface SpaceContext {
    *  appends permanent `agent_run` records at network speed. Sign-ins are rare; 8 concurrent
    *  sessions per person is generous. */
   maxOidcRunsPerSubject: number;
+  /** How long an UNREFERENCED blob must sit untouched before blob GC may take it (plan-gc.md
+   *  phase 4). This window is the whole cross-process race answer: `putArtifact` writes bytes
+   *  before committing the record, and a deduped put refreshes the blob's clock, so a blob
+   *  younger than this is treated as live whatever the record store says — including a put from
+   *  a SECOND process over the same blob directory. Minutes, not seconds: it has to dwarf any
+   *  bytes-to-commit gap, and blobs eligible today are eligible on the next sweep too. */
+  blobGcGraceSeconds: number;
 }
 
 /** Rows one amortized sweep pass may delete: small enough that the write paying for it feels a few
@@ -218,6 +226,7 @@ const DEFAULT_CONTEXT: SpaceContext = {
   eventRetentionSeconds: null, // opt-in: an unconfigured space never truncates its log
   oidc: null, // opt-in: an unconfigured space refuses /v0/sessions/oidc
   maxOidcRunsPerSubject: 8,
+  blobGcGraceSeconds: 900, // 15 min; see the field's comment for why this is the race bound
 };
 
 /** What one event-log retention pass did (`Space.gcEvents`; rides the `gc` verb). */
@@ -2506,6 +2515,7 @@ export class Space {
     passes: number;
     compaction?: CompactionResult;
     events?: EventGcResult;
+    blobs?: BlobGcResult;
   }> {
     const limit = Math.min(Math.max(opts.limit ?? 1000, 1), 10_000);
     const totals = { swept: 0, eligible: 0, idempotency: 0, byKind: {} as Record<string, number>, more: false, passes: 0 };
@@ -2543,16 +2553,39 @@ export class Space {
     // Registry compaction rides the same verb (phase 2, plan-gc.md): superseded successors of
     // latest-wins registries, plus interests whose run is over. `core/gc.ts` owns the keep-newest
     // logic and its resurrection guard; this only wires the reads and the one destructive member.
+    let compaction: CompactionResult | undefined;
     if (opts.compact !== false) {
-      const compaction = await compactRegistries({
+      compaction = await compactRegistries({
         listKinds: () => this.kinds.list(),
         pageDesc: (kind, limit, after) => this.query({ kind }, limit, { dir: "desc", after }),
         sweepIds: (ids, runId) => this.storage.sweepIds(ids, runId),
         runIsLive: (run) => this.runIsLive(run),
       }, { dryRun: opts.dryRun, runId: opts.principal ?? this.ctx.runId });
-      return { ...totals, compaction, ...(events ? { events } : {}) };
     }
-    return { ...totals, ...(events ? { events } : {}) };
+    // Reference-aware blob GC rides the verb LAST (phase 4, plan-gc.md): the record sweep above
+    // is what turns an expired artifact into an unreferenced digest, so its bytes reclaim in the
+    // same call. The live set is every digest any surviving artifact record carries, paged to
+    // exhaustion; the store deletes what is absent from it AND untouched past the grace window
+    // (the whole race answer — see `blobGcGraceSeconds` and `BlobStore.retainOnly`). LIVE sweeps
+    // only: `doctor` runs this dry on every diagnostics, and a dry blob pass would walk every
+    // artifact record and the whole blob directory to report a number the live sweep reports
+    // anyway.
+    let blobs: BlobGcResult | undefined;
+    if (!opts.dryRun) {
+      const live = new Set<string>();
+      let after: string | undefined;
+      for (;;) {
+        const rows = await this.query({ kind: ARTIFACT }, 500, { dir: "desc", after });
+        for (const rec of rows) {
+          const d = (rec.body as { digest?: unknown }).digest;
+          if (typeof d === "string") live.add(d);
+        }
+        if (rows.length < 500) break;
+        after = rows[rows.length - 1].id;
+      }
+      blobs = await this.blobs.retainOnly(live, { graceMs: this.ctx.blobGcGraceSeconds * 1000 });
+    }
+    return { ...totals, ...(compaction ? { compaction } : {}), ...(events ? { events } : {}), ...(blobs ? { blobs } : {}) };
   }
 
   /**
@@ -2624,10 +2657,14 @@ export class Space {
    *  kinds are reference data and which are reserved). Shared by the verb and the amortized pass. */
   private sweepSelector(limit: number, dryRun?: boolean) {
     return {
+      // `artifact` is reference data like any other claimable-false kind (it sits `available`
+      // forever), so once its writer declared retention it sweeps from any state. It left
+      // `neverKinds` when reference-aware blob GC arrived (plan-gc.md phase 4): before that,
+      // sweeping the record stranded its bytes with no path to them but `erasures`.
       anyStateKinds: this.kinds.list()
-        .filter((d) => !isClaimable(d) && !RESERVED_KINDS.includes(d.kind))
+        .filter((d) => !isClaimable(d) && (!RESERVED_KINDS.includes(d.kind) || d.kind === ARTIFACT))
         .map((d) => d.kind),
-      neverKinds: [...RESERVED_KINDS],
+      neverKinds: RESERVED_KINDS.filter((k) => k !== ARTIFACT),
       limit,
       dryRun,
     };

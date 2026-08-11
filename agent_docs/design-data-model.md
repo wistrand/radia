@@ -438,7 +438,10 @@ encrypted read cannot stream (AES-GCM verifies its tag over the whole ciphertext
 decrypted in memory, bounded by `maxArtifactBytes`), and a space started **without** the KEK cannot
 even address its sealed blobs, so reads are `404` while the records remain intact.
 
-**Still not in v1:** reference-aware GC (blobs are permanent; `retention_until` on the artifact
-record is the hook), and KEK rotation (rewrapping every DEK, and renaming every path, since the
-name is derived from the key). Recipient-keyed / token-derived keys stay out; see
-[gotchas.md](gotchas.md).
+**Reference-aware GC is BUILT** (2026-08-11, [plan-gc.md](plan-gc.md) phase 4): an artifact
+record whose writer declared `retention_until` sweeps like any reference record, and a live
+`gc` ends with a blob pass deleting bytes no surviving artifact record references (grace-windowed
+against in-flight puts; `BlobStore.retainOnly`). A record with no retention keeps the old
+posture: permanent, blob and all. **Still not in v1:** KEK rotation (rewrapping every DEK, and
+renaming every path, since the name is derived from the key). Recipient-keyed / token-derived
+keys stay out; see [gotchas.md](gotchas.md).

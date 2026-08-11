@@ -24,13 +24,16 @@
 // immutable artifact record. A store with no cipher stores plaintext, which is the default.
 
 import {
+  fileMtimeMs,
   fileSize,
+  listDirNames,
   mkdirp,
   readBinaryFile,
   readBinaryStream,
   readTextFile,
   removeFile,
   renameFile,
+  touchFile,
   writeBinaryFile,
   writeTextFile,
 } from "../platform.ts";
@@ -43,16 +46,42 @@ export interface BlobRef {
   size: number;
 }
 
+/** What one `retainOnly` pass did. `scanned` counts stored payloads examined; `bytes` is the
+ *  stored size reclaimed (ciphertext size on an encrypted store). */
+export interface BlobGcResult {
+  scanned: number;
+  deleted: number;
+  bytes: number;
+}
+
 export interface BlobStore {
   readonly name: string;
-  /** Store bytes; returns the content address. Storing the same bytes twice is a no-op. */
+  /** Store bytes; returns the content address. Storing the same bytes twice is a no-op for the
+   *  CONTENT and must still refresh the blob's clock (see `retainOnly`'s grace window). */
   put(bytes: Uint8Array): Promise<BlobRef>;
   /** The blob's bytes as a stream, or null if unknown. Downloads never buffer the whole object. */
   get(digest: string): Promise<ReadableStream<Uint8Array> | null>;
   /** Size lookup without reading, or null if unknown. */
   stat(digest: string): Promise<BlobRef | null>;
-  /** Remove a blob. Missing is not an error. Unreferenced-blob GC is not implemented (v1). */
+  /** Remove a blob. Missing is not an error. Crypto-shredding's half; GC uses `retainOnly`. */
   delete(digest: string): Promise<void>;
+  /**
+   * Reference-aware GC (plan-gc.md phase 4): delete every stored blob whose digest is NOT in
+   * `liveDigests` and whose last write is older than `graceMs`.
+   *
+   * The keep set travels as DIGESTS and the store maps them to its own storage names, never the
+   * reverse: an encrypted store's filenames are deliberately unmappable back to digests (they
+   * are HMAC(KEK, digest), so a stolen listing cannot answer "do you hold this file"), which is
+   * why no `list()` of digests can exist on this port.
+   *
+   * The GRACE window is load-bearing, not politeness. `putArtifact` writes bytes FIRST and
+   * commits the record after; a concurrent put that deduped into an existing blob has, for that
+   * gap, bytes that look unreferenced. `put` refreshes the blob's clock, so anything younger
+   * than the grace is treated as live whatever the record store says. That bound also covers a
+   * SECOND process over the same blob directory, which no in-process latch could. Ages are
+   * host-clock (mtimes are host-clock data); `nowMs` exists for tests, never to pass a DB time.
+   */
+  retainOnly(liveDigests: ReadonlySet<string>, opts: { graceMs: number; dryRun?: boolean; nowMs?: number }): Promise<BlobGcResult>;
 }
 
 /** In-memory blobs: the default for an ephemeral space (`radia dev` with no `--db`), where a
@@ -60,8 +89,9 @@ export interface BlobStore {
 export class MemoryBlobStore implements BlobStore {
   readonly name: string;
   /** Stored form: ciphertext when a cipher is set, plaintext otherwise. `size` is always the
-   *  PLAINTEXT length, which is the port's contract and 16 bytes less than sealed bytes. */
-  private readonly blobs = new Map<string, { stored: Uint8Array; size: number; key?: SealedKey }>();
+   *  PLAINTEXT length, which is the port's contract and 16 bytes less than sealed bytes.
+   *  `touchedAt` is the grace-window clock `retainOnly` reads; a deduped put refreshes it. */
+  private readonly blobs = new Map<string, { stored: Uint8Array; size: number; key?: SealedKey; touchedAt: number }>();
 
   constructor(private readonly cipher?: BlobCipher) {
     this.name = cipher ? "memory+aes-gcm" : "memory";
@@ -69,15 +99,30 @@ export class MemoryBlobStore implements BlobStore {
 
   async put(bytes: Uint8Array): Promise<BlobRef> {
     const digest = await sha256Hex(bytes);
-    if (!this.blobs.has(digest)) {
-      if (this.cipher) {
-        const { ciphertext, key } = await this.cipher.seal(digest, bytes);
-        this.blobs.set(digest, { stored: ciphertext, size: bytes.byteLength, key });
-      } else {
-        this.blobs.set(digest, { stored: bytes, size: bytes.byteLength });
-      }
+    const existing = this.blobs.get(digest);
+    if (existing) {
+      existing.touchedAt = Date.now(); // the dedupe still means "these bytes are wanted NOW"
+    } else if (this.cipher) {
+      const { ciphertext, key } = await this.cipher.seal(digest, bytes);
+      this.blobs.set(digest, { stored: ciphertext, size: bytes.byteLength, key, touchedAt: Date.now() });
+    } else {
+      this.blobs.set(digest, { stored: bytes, size: bytes.byteLength, touchedAt: Date.now() });
     }
     return { digest, size: bytes.byteLength };
+  }
+
+  retainOnly(liveDigests: ReadonlySet<string>, opts: { graceMs: number; dryRun?: boolean; nowMs?: number }): Promise<BlobGcResult> {
+    const now = opts.nowMs ?? Date.now();
+    const out: BlobGcResult = { scanned: 0, deleted: 0, bytes: 0 };
+    for (const [digest, entry] of this.blobs) {
+      out.scanned++;
+      if (liveDigests.has(digest)) continue;
+      if (now - entry.touchedAt < opts.graceMs) continue; // young: a racing put may own it
+      out.deleted++;
+      out.bytes += entry.stored.byteLength;
+      if (!opts.dryRun) this.blobs.delete(digest);
+    }
+    return Promise.resolve(out);
   }
 
   async get(digest: string): Promise<ReadableStream<Uint8Array> | null> {
@@ -178,6 +223,12 @@ export class FileBlobStore implements BlobStore {
     // from a crash.
     const stored = fileSize(path) === this.expectedSize(bytes.byteLength) &&
       (!this.cipher || this.readKey(path) !== undefined);
+    if (stored) {
+      // The dedupe still means "these bytes are wanted NOW": the mtime is the grace-window
+      // clock `retainOnly` reads, and without this bump a re-put of an old blob races GC —
+      // the caller's record commits after the bytes, and in that gap the blob looks orphaned.
+      touchFile(path);
+    }
     if (!stored) {
       mkdirp(dir);
       if (this.cipher) {
@@ -252,6 +303,57 @@ export class FileBlobStore implements BlobStore {
     } catch {
       return undefined;
     }
+  }
+
+  async retainOnly(liveDigests: ReadonlySet<string>, opts: { graceMs: number; dryRun?: boolean; nowMs?: number }): Promise<BlobGcResult> {
+    const now = opts.nowMs ?? Date.now();
+    // The keep set as STORAGE NAMES. A live digest may occupy either home (the plaintext-digest
+    // name from before encryption was enabled, the HMAC name after), so an encrypted store keeps
+    // both; the reverse mapping (name -> digest) deliberately does not exist.
+    const keep = new Set<string>();
+    for (const d of liveDigests) {
+      keep.add(d);
+      if (this.cipher) keep.add(await this.cipher.storageName(d));
+    }
+    const out: BlobGcResult = { scanned: 0, deleted: 0, bytes: 0 };
+    for (const shard of listDirNames(this.root)) {
+      if (!/^[0-9a-f]{2}$/.test(shard)) continue; // never walk anything this store did not lay out
+      const dir = `${this.root}/${shard}`;
+      const names = listDirNames(dir);
+      const present = new Set(names);
+      for (const name of names) {
+        const path = `${dir}/${name}`;
+        // writeAtomic leftovers from a crash: past the grace they belong to no write in flight.
+        if (name.endsWith(".tmp")) {
+          const age = now - (fileMtimeMs(path) ?? now);
+          if (age >= opts.graceMs && !opts.dryRun) removeFile(path);
+          continue;
+        }
+        // A sidecar rides its payload's fate; an ORPHAN key (crash between key and payload, the
+        // documented honest-miss state) is deletable on its own once old enough.
+        if (name.endsWith(".key")) {
+          if (!present.has(name.slice(0, -4))) {
+            const age = now - (fileMtimeMs(path) ?? now);
+            if (age >= opts.graceMs && !opts.dryRun) removeFile(path);
+          }
+          continue;
+        }
+        if (!/^[0-9a-f]{64}$/.test(name)) continue; // not a payload this store wrote
+        out.scanned++;
+        if (keep.has(name)) continue;
+        const age = now - (fileMtimeMs(path) ?? now);
+        if (age < opts.graceMs) continue; // young: a racing put (this process or another) may own it
+        out.deleted++;
+        out.bytes += fileSize(path) ?? 0;
+        if (!opts.dryRun) {
+          // Key first, like `delete`: a sealed payload whose DEK is gone is already unrecoverable,
+          // so an interrupted pass leaves shredded bytes rather than readable ones.
+          removeFile(`${path}.key`);
+          removeFile(path);
+        }
+      }
+    }
+    return out;
   }
 }
 

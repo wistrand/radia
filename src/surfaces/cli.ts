@@ -685,9 +685,15 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
             ? `event log: ${ev.eligible} sealed events past retention${ev.unsealed ? ` (+${ev.unsealed}+ unsealed: gc seals first)` : ""}`
             : `event log: ${ev.attested === false ? "statement not sealed yet, nothing truncated (run again)" : `truncated ${ev.swept} events${ev.anchorIdx !== undefined ? ` to anchor ${ev.anchorIdx}` : ""}`}${ev.sealed ? `, sealed ${ev.sealed} links first` : ""}`)
           : "";
+        // Live sweeps only: a dry blob pass would walk every artifact record and the whole blob
+        // directory to predict what the live sweep reports anyway (plan-gc.md phase 4).
+        const b = (r as { blobs?: { scanned: number; deleted: number; bytes: number } }).blobs;
+        const blobLine = b && b.deleted > 0
+          ? `\nblobs: deleted ${b.deleted} unreferenced of ${b.scanned} (${(b.bytes / 1024).toFixed(1)} KiB reclaimed)`
+          : "";
         return dry
-          ? `${r.eligible}${r.more ? "+" : ""} sweepable: ${fmt(r.byKind)}${compactLine}${idemLine}${evLine}\nradia gc --run to delete them`
-          : `swept ${r.swept}${r.more ? " (more remain: run again)" : ""}: ${fmt(r.byKind)}${compactLine}${idemLine}${evLine}`;
+          ? `${r.eligible}${r.more ? "+" : ""} sweepable: ${fmt(r.byKind)}${compactLine}${idemLine}${evLine}\nradia gc --run to delete them (a live run also sweeps unreferenced blobs)`
+          : `swept ${r.swept}${r.more ? " (more remain: run again)" : ""}: ${fmt(r.byKind)}${compactLine}${idemLine}${evLine}${blobLine}`;
       });
     }
 

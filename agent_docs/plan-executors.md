@@ -145,7 +145,7 @@ Neither existing mechanism helps, and one would do damage:
 |---|---|
 | compaction | `workspace` declares no `contentKey`, so it is untouched. Giving it one is keep-NEWEST, which deletes the version history `workspace-git` exports and fork detection reads |
 | retention (`defaultRetentionSeconds`) | would sweep, but `workspace` is not a keyed registry, so "the newest per key survives" does not protect it: it could delete the CURRENT version of a live procedure |
-| blob/artifact GC | `artifact` is reserved and never swept, whatever the clock says. Blob GC is designed, not scheduled (plan-gc.md) |
+| blob/artifact GC | BUILT since 2026-08-11 (plan-gc.md phase 4): an artifact with declared retention sweeps, and a live `gc` reclaims unreferenced bytes. One with no retention stays permanent, which is what the chat's writers rely on |
 
 So the answer is DO NOTHING STRUCTURAL until a real space shows the read cost. The options if it
 ever does, in the order they should be considered: keep-newest-N per workspace name (a bounded

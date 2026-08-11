@@ -609,9 +609,11 @@ paths:
         the same pass.
 
         Never swept: records under an unexpired lease, `available` work of claimable kinds
-        (unclaimed work is not litter), reserved kinds, and `artifact` records (until blob GC
-        exists). Reference kinds (`claimable: false`) sweep from any state, since they sit
-        `available` forever by design.
+        (unclaimed work is not litter), and reserved kinds — except `artifact`, which sweeps
+        like any reference record now that blob GC exists: a LIVE run ends with a blob pass that
+        deletes bytes no surviving artifact record references (and nothing touched within the
+        grace window, the race bound with an in-flight put). Reference kinds (`claimable: false`)
+        sweep from any state, since they sit `available` forever by design.
 
         Never on a timer: this verb, plus an amortized batch the write path itself runs every
         `gcEveryWrites` commits. `radia doctor` reports the backlog (`sweepable`); `dryRun` counts
@@ -672,6 +674,21 @@ paths:
                       anchorIdx: { type: integer }
                       attested: { type: boolean, description: "False = the horizon statement did not seal; nothing was deleted, run again." }
                       more: { type: boolean }
+                  blobs:
+                    type: object
+                    description: >-
+                      Reference-aware blob GC (LIVE runs only; a dry run skips the pass, since it
+                      would walk every artifact record and the whole blob store to predict what the
+                      live sweep reports anyway). Deletes stored payloads whose digest no surviving
+                      artifact record references and that were last written before the grace window
+                      (`blobGcGraceSeconds`, the race bound with an in-flight put, which refreshes a
+                      deduped blob's clock). Erasure (`shred`) stays the only deliberate destruction;
+                      this is housekeeping over the unreferenced.
+                    required: [scanned, deleted, bytes]
+                    properties:
+                      scanned: { type: integer, description: "Stored payloads examined." }
+                      deleted: { type: integer }
+                      bytes: { type: integer, description: "Stored bytes reclaimed (ciphertext size on an encrypted store)." }
         "400": { $ref: "#/components/responses/Problem" }
         "403": { $ref: "#/components/responses/Problem" }
   /watches:

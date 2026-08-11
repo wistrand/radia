@@ -1,7 +1,7 @@
 // Clipboard bytes that become artifacts only if the line is actually sent.
 //
 // WHY THIS EXISTS. Ctrl-V used to upload on the keystroke, so a mis-paste was permanent: an
-// `artifact` record is never swept (the GC invariant, "bytes with no other path to them"), and
+// `artifact` record written with no retention is permanent (the chat stamps none), and
 // pasting the wrong screenshot then deleting the marker, or abandoning the line with Ctrl-C, left it
 // stored in the space anyway. The keystroke now only STAGES the bytes; Enter is what writes them.
 //

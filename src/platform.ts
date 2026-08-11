@@ -142,6 +142,37 @@ export function fileSize(path: string): number | undefined {
   }
 }
 
+/** The file's mtime in epoch ms, or undefined. Blob GC's grace window reads it: mtimes are
+ *  HOST-clock data, so the comparison partner is the host clock too, never the DB clock. */
+export function fileMtimeMs(path: string): number | undefined {
+  try {
+    const st = Deno.statSync(path);
+    return st.isFile ? st.mtime?.getTime() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Bump a file's mtime to now. A deduped blob `put` calls this so the grace window in
+ *  `retainOnly` treats the payload as freshly wanted; missing is not an error. */
+export function touchFile(path: string): void {
+  try {
+    const now = new Date();
+    Deno.utimeSync(path, now, now);
+  } catch { /* absent or read-only: the caller's next check answers honestly */ }
+}
+
+/** Entry names directly under `path` (files and directories alike); [] when it does not exist. */
+export function listDirNames(path: string): string[] {
+  try {
+    const out: string[] = [];
+    for (const e of Deno.readDirSync(path)) out.push(e.name);
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 /** A file's bytes, or undefined if it does not exist. Used where the whole payload is needed at
  *  once (an encrypted blob: AES-GCM verifies its tag over the complete ciphertext). */
 export async function readBinaryFile(path: string): Promise<Uint8Array | undefined> {

@@ -372,8 +372,9 @@ async function attach(bytes: Uint8Array, mediaType: string, filename: string): P
 }
 
 /**
- * Ctrl-V stages; Enter writes. See `client/attachments.ts` for why: an artifact is never swept, so
- * uploading on the keystroke made a mis-paste permanent.
+ * Ctrl-V stages; Enter writes. See `client/attachments.ts` for why: the chat stamps no retention
+ * on attachments, so they are permanent, and uploading on the keystroke made a mis-paste
+ * permanent. (A shred can still destroy the bytes; staging just keeps it from being needed.)
  */
 const attachments = staging(({ bytes, mediaType, filename }) => attach(bytes, mediaType, filename));
 

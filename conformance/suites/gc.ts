@@ -9,6 +9,7 @@ import { assert, assertEquals } from "@std/assert";
 import type { Suite } from "../harness.ts";
 import type { StorageAdapter } from "../../src/storage/adapter.ts";
 import { Space } from "../../src/core/space.ts";
+import { MemoryBlobStore } from "../../src/storage/blobs.ts";
 import { RadiaError } from "../../src/core/errors.ts";
 import { activeByKey } from "../../sdk/ts/registry.ts";
 import { SealKey } from "../../src/core/seal.ts";
@@ -131,26 +132,66 @@ export const gcSuites: Suite[] = [
     },
   },
   {
-    name: "gc never touches reserved kinds, artifact records above all",
+    // The posture FLIPPED with blob GC (plan-gc.md phase 4). Before it, sweeping an artifact
+    // record stranded its bytes with no path to them but the erasure report, so artifacts were
+    // excluded wholesale — and the previous version of this test pinned exactly that. Now the
+    // rule is the same as everywhere else (the writer's declared retention decides), and the
+    // blob pass reclaims bytes precisely when NO surviving record references the digest.
+    name: "gc sweeps an expired artifact, and its bytes only once nothing references them",
     run: async (adapter) => {
-      const space = newSpace(adapter);
-      // An artifact whose retention has passed. Sweeping the RECORD would strand the BYTES with no
-      // path to them but the erasure report, so artifacts are excluded until blob GC exists; the
-      // record survives and the erasure path (`shredArtifact`) stays the only way to destroy data.
-      const { id } = await space.putArtifact(new TextEncoder().encode("bytes"), {
+      const store = new MemoryBlobStore();
+      const space = new Space(adapter, { blobGcGraceSeconds: 0 }, store);
+      const shared = new TextEncoder().encode("shared bytes");
+      // TWO records, ONE digest (content addressing dedupes): the expired record goes, the
+      // bytes stay, because reference-awareness is the entire point of phase 4.
+      const { id: expired } = await space.putArtifact(shared, { mediaType: "text/plain", retentionUntil: PAST });
+      const { id: kept } = await space.putArtifact(shared, { mediaType: "text/plain" });
+      // CONSUMED, deliberately: take-by-id works on any kind, and an artifact must sweep from
+      // this state too or an abandoned consumed artifact would be immortal.
+      const claim = await space.take({ recordId: expired });
+      await space.ack(claim!.lease);
+      const r1 = await space.gc();
+      assertEquals(r1.byKind["artifact"], 1, "an expired artifact record sweeps like any reference record");
+      assertEquals(await space.getRecord(expired), null);
+      assert(await space.getRecord(kept), "a no-retention artifact keeps the old posture: permanent");
+      assert(await space.readArtifact(kept), "…and the SHARED bytes survive: a live record still references the digest");
+      assertEquals(r1.blobs?.deleted, 0, "referenced bytes are never deleted");
+
+      // A digest with a single owner whose record expires: record and bytes reclaim together.
+      const { id: loner } = await space.putArtifact(new TextEncoder().encode("lone bytes"), {
         mediaType: "text/plain",
         retentionUntil: PAST,
       });
-      // CONSUMED, deliberately: an available artifact is already saved by the state guard, so this
-      // is the row where the reserved-kinds exclusion is the only thing standing. Take-by-id works
-      // on any kind (`claimable` is a hint, not a rule), so this state is reachable, and without
-      // the exclusion a consumed artifact would sweep and strand its bytes.
-      const claim = await space.take({ recordId: id });
-      await space.ack(claim!.lease);
+      const digest = ((await space.getRecord(loner))!.body as { digest: string }).digest;
+      const r2 = await space.gc();
+      assertEquals(r2.byKind["artifact"], 1);
+      assertEquals(r2.blobs?.deleted, 1, "an unreferenced digest past the grace window is reclaimed");
+      assert(r2.blobs!.bytes > 0, "…and the reclaim reports its bytes");
+      assertEquals(await store.stat(digest), null, "the bytes are truly gone from the store");
+    },
+  },
+  {
+    // Blob GC is reference-awareness, never policy: erasure stays the ONLY deliberate
+    // destruction, and neither mechanism may mask the other.
+    name: "blob gc never deletes a re-written shredded digest while a record references it",
+    run: async (adapter) => {
+      const space = new Space(adapter, { blobGcGraceSeconds: 0 });
+      const secret = new TextEncoder().encode("payload someone shredded");
+      const { id } = await space.putArtifact(secret, { mediaType: "text/plain" });
+      const digest = ((await space.getRecord(id))!.body as { digest: string }).digest;
+      await space.shredArtifact(id, { reason: "test" });
+      // A shredded digest has no blob; the blob pass must shrug, not error, and the erasure holds.
       const r = await space.gc();
-      assertEquals(r.swept, 0, "an artifact past retention is NOT swept in v1, even consumed");
-      assert(await space.getRecord(id));
-      assert(await space.readArtifact(id), "and its bytes still read");
+      assertEquals(r.blobs?.deleted, 0);
+      assertEquals((await space.erasures()).erasures[0]?.holds, true);
+
+      // Someone re-stores the identical payload (the documented undo): the record still
+      // references the digest, so blob GC must KEEP the bytes — deleting them would silently
+      // re-assert an erasure the operator's report says was undone. Detection stays the answer.
+      await space.putArtifact(secret, { mediaType: "text/plain" });
+      const r2 = await space.gc();
+      assertEquals(r2.blobs?.deleted, 0, "a referenced digest is live, shred marker or not");
+      assertEquals((await space.erasures()).erasures[0]?.holds, false, "…and the report keeps telling the truth");
     },
   },
   {
