@@ -177,9 +177,9 @@ acting agent (`Space.ack` calls `authorize(owner, "put", kind)`), so an ack-emit
 bypasses put-authorization. This is pipeline-friendly: each hop needs only its own grant, and the
 chain records the path (see [design-data-model.md](design-data-model.md)).
 
-**Deferred to later M1–M3:** real OIDC for `human:*` and the `agent-definitions` credential
-(the operator boundary is the auto-provisioned local default, not federated identity; the SHAPE is
-now decided, see "OIDC: deferred, with the shape decided" under Deferred); the
+**Deferred to later M1–M3:** ~~real OIDC~~ (BUILT 2026-08-11: `POST /v0/sessions/oidc` mints
+runs from a verified id_token, see "OIDC: built, on the shape decided here" under Deferred and
+[plan-oidc.md](plan-oidc.md); the operator boundary itself stays the local config set); the
 stricter **chain-intersection** delegation policy (effective permission = intersection of the
 whole chain's grants, rejected as a hard default because it breaks legitimate pipelines; it
 belongs with taint composition); per-principal **trust classification** (auto-tainting untrusted
@@ -225,7 +225,7 @@ Cross-cutting versions are in [CLAUDE.md](../CLAUDE.md); detail here is authorit
 
 ## Principals
 
-- `human:*` (a person; OIDC deferred, `radia login` today)
+- `human:*` (a person; `radia login`, or OIDC sign-in via `POST /v0/sessions/oidc`)
 - `agent:*` (a definition: grants, budgets, patterns)
 - `run:*` (an instance)
 
@@ -662,14 +662,13 @@ recipient-keyed encryption as a runtime feature · field-level ACLs · multi-ten
 space per team for now) · ops-plane tiers (decided and planned, not built:
 [architecture-ops-tiers.md](architecture-ops-tiers.md)).
 
-### OIDC: deferred, with the shape decided
+### OIDC: built, on the shape decided here
 
-Analyzed 2026-08-11; nothing built, and the trigger to revisit is concrete: the first shared
-deployment with humans who do not run the space. Three decisions are recorded now so the deferral
-stays cheap and the eventual build starts from a shape instead of a debate. Prerequisite either
-way: the console must first hold and exchange a credential like every other client
-([plan-console-auth.md](plan-console-auth.md) phase 1); OIDC ends with a credential the page still
-has to manage.
+Analyzed 2026-08-11 and BUILT the same day ([plan-oidc.md](plan-oidc.md): sources, guards, and
+the accepted gaps — no CLI device flow, no silent refresh, no general rate limit). The three
+decisions below drove the implementation and stand unchanged; `src/core/oidc.ts`,
+`Space.mintOidcRun` and the console's `oidcStart`/`oidcFinish` are their code. The prerequisite
+(the console holding a credential like every other client, plan-console-auth.md) shipped first.
 
 - **OIDC is a new way to MINT into the existing chain, never a parallel auth model.**
   `POST /v0/sessions/oidc` takes an `id_token`, the space verifies it (WebCrypto RS256/ES256, no

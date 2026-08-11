@@ -127,6 +127,32 @@ Deno.test("dev: losing a port race leaves the running space's credential alone",
   assert(/clearCredential\(base, operatorToken\)/.test(main), "dev's shutdown clear is unconditional; it deletes whatever dev wrote the entry last");
 });
 
+Deno.test("dev: OIDC is off until someone configures an issuer", async () => {
+  // The posture: an unconfigured space refuses /v0/sessions/oidc outright. The endpoint requires
+  // no credential, so "off by default" is the difference between opt-in SSO and every space
+  // shipping an anonymous mint that trusts whatever issuer a later config typo names.
+  const { Space } = await import("../src/core/space.ts");
+  const { SqliteAdapter } = await import("../src/storage/sqlite.ts");
+  const { makeHandler } = await import("../src/server/http.ts");
+  const adapter = new SqliteAdapter(":memory:");
+  await adapter.init();
+  try {
+    const space = new Space(adapter);
+    assertEquals(space.oidcConfig, null, "an unconfigured space has no OIDC trust anchors");
+    const res = await makeHandler(space, "<html>x</html>", false)(
+      new Request("http://t/v0/sessions/oidc", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id_token: "x" }),
+      }),
+    );
+    assertEquals(res.status, 403);
+    assertEquals((await res.json()).title, "oidc_not_configured");
+  } finally {
+    await adapter.close();
+  }
+});
+
 Deno.test("paths: every runtime default lives under one directory", async () => {
   // The complaint this fixes: `.radia-blobs/`, `.radia-kek.json`, `.radia-chat-space.db` and
   // `.radia-chat-space.db-blobs/` were four top-level entries in a project, each named where it was

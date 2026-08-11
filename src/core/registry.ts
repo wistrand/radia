@@ -10,6 +10,7 @@ export {
   grantKey,
   isRetired,
   newestByKey,
+  oidcIdentityKey,
   opsGrantKey,
   readRegistry,
   RETIRED,

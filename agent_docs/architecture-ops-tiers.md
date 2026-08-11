@@ -140,7 +140,9 @@ Phase numbers are kept because other docs cite them.
 - No change to the coordination plane's grant model or the reserved-kind write rule.
 - No sub-splitting of `observe` (metadata vs. bodies) until a real deployment names the failure;
   the three-views warning in [design-inspection.md](design-inspection.md) applies.
-- No OIDC and no federation; the root stays the local config operator set.
+- The root stays the local config operator set. OIDC now exists ([plan-oidc.md](plan-oidc.md))
+  and does not move it: an OIDC mapping may not name a privileged principal, and the mint
+  re-checks, so an IdP can never mint an operator or reach identity writes.
 
 ## Risks
 

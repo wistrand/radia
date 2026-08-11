@@ -26,7 +26,7 @@
 // adapters re-check the lease floor under it whatever this logic decides.
 
 import type { KindDef } from "./kinds.ts";
-import { AGENT_DEFINITION, AGENT_RUN, GRANT, INTEREST, KIND_DEF, OPS_GRANT, SIGNAL } from "./kinds.ts";
+import { AGENT_DEFINITION, AGENT_RUN, GRANT, INTEREST, KIND_DEF, OIDC_IDENTITY, OPS_GRANT, SIGNAL } from "./kinds.ts";
 import { getPath } from "./matching.ts";
 import type { RadiaRecord } from "../storage/adapter.ts";
 
@@ -39,8 +39,11 @@ const RUNTIME_KEYS: Record<string, string[]> = {
 
 /** Reserved kinds that must never compact, whatever anyone declares. See the header. `ops_grant`
  *  for the same reason as `grant`: the assignment history of an ops power is audit, and deleting
- *  a retire-marker would silently restore a power. */
-const NEVER_COMPACT = new Set([GRANT, KIND_DEF, SIGNAL, AGENT_DEFINITION, OPS_GRANT]);
+ *  a retire-marker would silently restore a power. `oidc_identity` likewise: its retire-marker is
+ *  a BAN the mint checks, and a redeclaration carrying a contentKey (legal for any holder of a
+ *  `put: kind_def` grant, since assertReservedCompatible pins only paths and claimable) must not
+ *  be able to opt the identity registry into compaction under an arbitrary key. */
+const NEVER_COMPACT = new Set([GRANT, KIND_DEF, SIGNAL, AGENT_DEFINITION, OPS_GRANT, OIDC_IDENTITY]);
 
 /** Everything compaction needs from the space. `sweepIds` is the destructive member; the rest are
  *  reads. The adapters keep their own lease floor under `sweepIds`. */

@@ -733,6 +733,15 @@ checking `res.ok`. Separately, the artifact write-side grant check matches a bod
 `appFields` (`src/server/handlers/artifacts.ts`), so pattern-scoped put grants on an app field can
 never be satisfied. It is fail-closed, so legitimate writes just 403.
 
+REPORTED 2026-08-11 (found during the OIDC review, not yet re-derived): a redeclaration carrying
+a `contentKey` is a legal EXTENSION of a reserved kind (`assertReservedCompatible` pins only
+indexedPaths and claimable), and `gc.ts` compaction honours it for any reserved kind not in
+`NEVER_COMPACT` — today `shred` and `interest`. For `shred` that could delete erasure markers
+under a hostile key; `interest` is liveness-scoped so the harm is smaller. `oidc_identity` was
+added to `NEVER_COMPACT` at birth for exactly this reason (guard:
+`conformance/oidc.test.ts` "never compacts"); decide whether `shred` joins it or compaction
+stops honouring app-declared keys on reserved kinds altogether.
+
 Three entries LEFT this batch on 2026-08-04. Two were re-derived under package S: pattern-take
 OFFSET paging (the same defect as the spurious-empty report) and `ownerGuard` turning a succeeded
 settle's retry into a false `lease_lost`, which reproduces and breaches the

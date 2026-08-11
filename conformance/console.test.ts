@@ -611,3 +611,147 @@ Deno.test("console: the Flame button is one gesture, and only PROMOTES the hint 
   assertEquals(t.inputs["fl-sum"].value, "my.own.metric", "a typed value is never overwritten");
   assertEquals(t.inputs["fl-sort"].value, "time", "…nor a chosen sort");
 });
+
+/** The OIDC browser flow under scripted fetch, same rules as authHarness: stub ONLY things the
+ *  page itself defines. `async` re-prefixed for the same extractFunction reason. */
+function oidcHarness(script: { status: number; json?: unknown }[], opts: { pendingRoute?: string } = {}) {
+  const src = `
+    const mk = () => { const m = new Map(); return {
+      getItem: (k) => m.has(k) ? m.get(k) : null,
+      setItem: (k, v) => m.set(k, String(v)),
+      removeItem: (k) => m.delete(k),
+      dump: () => Object.fromEntries(m),
+    }; };
+    const sessionStorage = mk();
+    const calls = [];
+    const fetch = async (url, o = {}) => {
+      calls.push({ url: String(url), method: o.method || "GET", body: o.body ?? null });
+      const next = script.length > 1 ? script.shift() : script[0];
+      return { ok: next.status < 400, status: next.status, json: async () => next.json ?? null };
+    };
+    let signInShown = null;
+    const showSignIn = (r) => { signInShown = r; };
+    let noted = null;
+    const note = (id, cls, msg) => { noted = msg; };
+    let reloaded = false;
+    const location = { origin: "http://c.test", pathname: "/", hash: "#feed", search: "", href: "", reload: () => { reloaded = true; } };
+    let AUTH_TOKEN = null;
+    let OIDC_INFO = { issuer: "http://idp.test", clientId: "console" };
+    ${extractFunction(html, "randHex")}
+    ${extractFunction(html, "b64urlBytes")}
+    async ${extractFunction(html, "oidcStart")}
+    async ${extractFunction(html, "oidcFinish")}
+    return {
+      oidcStart, oidcFinish, calls,
+      state: () => ({ AUTH_TOKEN, signInShown, noted, reloaded, redirect: location.href, session: sessionStorage.dump() }),
+    };
+  `;
+  // deno-lint-ignore no-explicit-any
+  return new Function("script", "opts", src)(script, opts) as any;
+}
+
+Deno.test("console: oidcStart builds a compliant PKCE redirect and keeps the dance one-use", async () => {
+  const t = oidcHarness([
+    { status: 200, json: { authorization_endpoint: "http://idp.test/authorize", token_endpoint: "http://idp.test/token" } },
+  ]);
+  await t.oidcStart();
+  const st = t.state();
+  const u = new URL(st.redirect);
+  assertEquals(u.origin + u.pathname, "http://idp.test/authorize");
+  assertEquals(u.searchParams.get("response_type"), "code");
+  assertEquals(u.searchParams.get("client_id"), "console");
+  assertEquals(u.searchParams.get("code_challenge_method"), "S256");
+  assertEquals(u.searchParams.get("redirect_uri"), "http://c.test/");
+  const pending = JSON.parse(st.session["radia.oidc"]);
+  assertEquals(u.searchParams.get("state"), pending.state, "the state in the URL is the stored one");
+  assertEquals(u.searchParams.get("nonce"), pending.nonce);
+  assertEquals(pending.route, "#feed", "the current tab survives the round trip");
+  // The challenge really is S256(verifier): recompute it. A harness that only checked presence
+  // would pass a page sending the verifier itself.
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pending.verifier)));
+  let bin = "";
+  for (const b of digest) bin += String.fromCharCode(b);
+  const expect = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  assertEquals(u.searchParams.get("code_challenge"), expect);
+});
+
+Deno.test("console: oidcFinish enforces the nonce and stores ONLY a run token", async () => {
+  const idToken = (nonce: string) => {
+    const b64 = (s: string) => btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return `${b64(JSON.stringify({ alg: "RS256" }))}.${b64(JSON.stringify({ sub: "u", nonce }))}.sig`;
+  };
+  const pending = { verifier: "v", nonce: "N1", tokenEndpoint: "http://idp.test/token", clientId: "console", route: "" };
+
+  // The good path: exchange, nonce match, the space's runToken lands in sessionStorage, reload.
+  const t = oidcHarness([
+    { status: 200, json: { id_token: idToken("N1") } },
+    { status: 201, json: { run: "run:x", agent: "human:oidc-a", runToken: "rt-1", expiresAt: "later" } },
+  ]);
+  await t.oidcFinish("code-1", pending);
+  const st = t.state();
+  assertEquals(st.session["radia.token"], "rt-1");
+  assertEquals(st.AUTH_TOKEN, "rt-1");
+  assert(st.reloaded, "a successful sign-in re-enters through start()");
+  assertEquals(st.session["radia.definition"], undefined, "an OIDC session has no durable half to remember");
+  assertEquals(t.calls[1].url, "/v0/sessions/oidc", "the id_token goes to the space, nowhere else");
+  assert(String(t.calls[0].body).includes("code_verifier=v"), "the exchange carries the PKCE verifier");
+
+  // A swapped id_token (right issuer, wrong dance): the nonce is the page's ONLY replay check,
+  // because the space never saw it.
+  const t2 = oidcHarness([{ status: 200, json: { id_token: idToken("OTHER") } }]);
+  await t2.oidcFinish("code-2", pending);
+  const st2 = t2.state();
+  assert(String(st2.signInShown).includes("nonce"), String(st2.signInShown));
+  assertEquals(st2.session["radia.token"], undefined, "nothing is stored from a token that failed the nonce");
+  assertEquals(t2.calls.length, 1, "the space is never asked to mint from it");
+
+  // The space refusing (revoked mapping, misconfigured issuer): the reason reaches the person.
+  const t3 = oidcHarness([
+    { status: 200, json: { id_token: idToken("N1") } },
+    { status: 401, json: { detail: "this identity's mapping was retired; sign-in is refused" } },
+  ]);
+  await t3.oidcFinish("code-3", pending);
+  assert(String(t3.state().signInShown).includes("retired"), String(t3.state().signInShown));
+});
+
+Deno.test("console: the IdP return leg is consumed once, checked against state, and stripped", () => {
+  // start() is not extracted (it drags the whole page in); the return-leg contract is structural:
+  // the query branch must spend the pending dance BEFORE deciding anything, compare state, strip
+  // the query via replaceState restoring the carried route, and never loop an error back into
+  // the dance.
+  const start = extractFunction(html, "start");
+  const leg = start.slice(start.indexOf('qs.has("code")'));
+  assert(start.includes('new URLSearchParams(location.search)'), "start() never reads the query string");
+  const spend = leg.indexOf('sessionStorage.removeItem("radia.oidc")');
+  assert(spend >= 0, "the pending dance is never spent");
+  assert(spend < leg.indexOf('if (qs.has("error"))'), "…and must be spent before the error branch, or a refused dance stays replayable");
+  assert(spend < leg.indexOf("oidcFinish("), "…and before the exchange");
+  assert(leg.includes('qs.get("state") !== pending.state'), "the state echo is never compared");
+  assert(/history\.replaceState\(null, "", location\.pathname \+ \(\(pending && pending\.route\) \|\| ""\)\)/.test(leg), "the query is not stripped, or the carried route is dropped");
+});
+
+Deno.test("console: the SSO button appears exactly when health advertises an issuer", async () => {
+  const showSignInHarness = (health: unknown) => {
+    const src = `
+      const els = {};
+      const $ = (id) => (els[id] ??= { style: {}, innerHTML: "", focus: () => {} });
+      const fetch = async () => ({ ok: true, json: async () => (health) });
+      const note = () => {};
+      const document = { querySelector: () => ({ style: {} }) };
+      const sessionStorage = { removeItem: () => {} };
+      let AUTH_TOKEN = null, OPEN_OPERATOR = false, OIDC_INFO = null, healthTimer = null;
+      async ${extractFunction(html, "showSignIn")}
+      return { showSignIn, els, info: () => OIDC_INFO };
+    `;
+    // deno-lint-ignore no-explicit-any
+    return new Function("health", src)(health) as any;
+  };
+  const withSso = showSignInHarness({ principal: "anonymous", oidc: { issuer: "http://idp.test", clientId: "console" } });
+  await withSso.showSignIn("");
+  assertEquals(withSso.els["signin-oidc"].style.display, "", "the button is offered when the space trusts an issuer");
+  assertEquals(withSso.info()?.clientId, "console", "oidcStart reads what the probe stored");
+
+  const without = showSignInHarness({ principal: "anonymous" });
+  await without.showSignIn("");
+  assertEquals(without.els["signin-oidc"].style.display, "none", "no issuer, no button: it would only 403");
+});

@@ -668,6 +668,12 @@ Deno.test("http: a wrong-typed field is a 400 at the boundary, never a 500 from 
       { path: "/v0/leases/nack", body: { leaseId: "x", epoch: 1, backoffSeconds: [] }, about: "backoffSeconds an array" },
       { path: "/v0/watches", body: { kind: 7 }, about: "watch kind not a string" },
       { path: "/v0/watches", body: {}, about: "watch with no pattern" },
+
+      // The one pre-auth route with a body: its parser sees anonymous input by design.
+      { path: "/v0/sessions/oidc", body: {}, about: "no id_token at all" },
+      { path: "/v0/sessions/oidc", body: { id_token: 7 }, about: "id_token not a string" },
+      { path: "/v0/sessions/oidc", body: { id_token: "" }, about: "id_token empty" },
+      { path: "/v0/sessions/oidc", body: [], about: "body an array" },
     ];
     for (const c of cases) {
       const res = await handler(post(c.path, c.body));

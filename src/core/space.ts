@@ -46,6 +46,7 @@ import {
   kindDefKey,
   KindRegistry,
   META_RESERVED,
+  OIDC_IDENTITY,
   OPS_GRANT,
   OPS_POWERS,
   type OpsGrantDef,
@@ -61,7 +62,9 @@ import { type CompactionResult, compactRegistries } from "./gc.ts";
 import { type BlobStore, MemoryBlobStore } from "../storage/blobs.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
-import { activeSet, grantKey, isRetired, opsGrantKey, readRegistry, type RegistryView } from "./registry.ts";
+import { activeSet, grantKey, isRetired, oidcIdentityKey, opsGrantKey, readRegistry, type RegistryView } from "./registry.ts";
+import { type OidcConfig, OidcVerifier } from "./oidc.ts";
+import { httpGetJson } from "../platform.ts";
 import { Notifier } from "./notifier.ts";
 import { type FlowReport, type FlowShape, mineFlows } from "./flows.ts";
 import {
@@ -160,6 +163,15 @@ export interface SpaceContext {
    *  Weeks, not hours: it must dwarf any watch reconnect gap, since a client sleeping past it
    *  gets a 410 and re-syncs by query. Verb-only, never amortized. */
   eventRetentionSeconds: number | null;
+  /** OIDC trust anchors (design-auth.md "OIDC"). `null` (the default) disables the endpoint.
+   *  Config, like `operators`: the issuer set cannot be a record written by the thing it
+   *  authenticates. */
+  oidc: OidcConfig | null;
+  /** ACTIVE runs one OIDC subject may hold at once. `POST /v0/sessions/oidc` requires no
+   *  credential, so without a ceiling one leaked (or self-issued-by-a-hostile-IdP) identity
+   *  appends permanent `agent_run` records at network speed. Sign-ins are rare; 8 concurrent
+   *  sessions per person is generous. */
+  maxOidcRunsPerSubject: number;
 }
 
 /** Rows one amortized sweep pass may delete: small enough that the write paying for it feels a few
@@ -204,6 +216,8 @@ const DEFAULT_CONTEXT: SpaceContext = {
   idempotencyRetentionSeconds: 7 * 24 * 3600,
   gcEveryWrites: 1000,
   eventRetentionSeconds: null, // opt-in: an unconfigured space never truncates its log
+  oidc: null, // opt-in: an unconfigured space refuses /v0/sessions/oidc
+  maxOidcRunsPerSubject: 8,
 };
 
 /** What one event-log retention pass did (`Space.gcEvents`; rides the `gc` verb). */
@@ -1053,6 +1067,102 @@ export class Space {
     return { run, agent, runToken: token, expiresAt };
   }
 
+  /** The fetcher behind OIDC's JWKS/discovery reads. A field so tests point it at an in-repo
+   *  issuer or a stub; the default is the platform seam's one outbound-HTTP function. */
+  oidcFetch: (url: string) => Promise<unknown> = httpGetJson;
+  #oidcVerifier: OidcVerifier | null = null;
+
+  /**
+   * Mint a run from a verified OIDC id_token (design-auth.md "OIDC"). A new way to MINT into the
+   * existing chain, never a parallel auth model: everything downstream (leases, idempotency
+   * scope, stopRun, audit, grants) sees an ordinary run whose agent happens to be a `human:`.
+   * No durable half is created — past the 12h ceiling the holder re-authenticates at the IdP,
+   * which is how deprovisioning takes effect.
+   *
+   * The run token is DERIVED from the id_token (domain-separated hash), which is what bounds
+   * replay: the same id_token POSTed again finds the already-minted run by tokenHash (the
+   * indexed lookup credential resolution already does) and writes NOTHING. Deriving is sound
+   * because holding the id_token already mints; H(id_token) is exactly as secret. Two racing
+   * first-POSTs can both write; the newest wins resolution and the orphan expires inert.
+   */
+  async mintOidcRun(idToken: string): Promise<{ run: string; agent: string; runToken: string; expiresAt: string }> {
+    const cfg = this.ctx.oidc;
+    if (!cfg) throw new RadiaError("oidc_not_configured", "this space has no OIDC issuer configured (dev: --oidc-issuer + --oidc-audience)");
+    const now = await this.storage.now();
+    this.#oidcVerifier ??= new OidcVerifier(cfg, (url) => this.oidcFetch(url));
+    const v = await this.#oidcVerifier.verify(idToken, Date.parse(now));
+    if (!v.ok) throw new RadiaError("invalid_credential", `id_token rejected: ${v.reason}`);
+
+    // Who is this? The mapping registry decides; a raw claim never does. Fail CLOSED on an
+    // incomplete view — an absent mapping changes who the caller IS, not just what they may do.
+    const view = await this.registry(OIDC_IDENTITY, oidcIdentityKey, { iss: v.iss, sub: v.sub });
+    if (!view.complete) throw new RadiaError("oidc_unavailable", "identity registry read incomplete; refusing to guess");
+    const key = oidcIdentityKey({ iss: v.iss, sub: v.sub })!;
+    const newest = view.newest.get(key);
+    // RETIRE IS A BAN. `activeByKey` drops tombstones, so "unmapped ⇒ auto-admit" would silently
+    // re-admit an offboarded identity under its old derived principal, grants and all.
+    if (newest && isRetired(newest.body)) {
+      throw new RadiaError("invalid_credential", "this identity's mapping was retired; sign-in is refused");
+    }
+    // Mapped ⇒ the operator's name for this person. Absent ⇒ auto-admit under a principal
+    // derived from (iss, sub) alone: stable, and never from email/username, which are mutable
+    // and reassignable. 32 hex = 128 bits, because grants bind to this string.
+    const agent = newest
+      ? (newest.body as { principal: string }).principal
+      : `human:oidc-${(await sha256Hex(`${v.iss}\n${v.sub}`)).slice(0, 32)}`;
+    // The same wall createAgentDefinition holds, re-checked at mint time: a mapping written
+    // before its principal entered `operators` must not become an operator-minting oracle.
+    if (this.isPrivileged(agent)) {
+      throw new RadiaError("invalid_credential", `'${agent}' is a privileged principal; OIDC never mints one`);
+    }
+
+    // Replay: the derived token's run may already exist. Newest record wins, same as resolution.
+    const token = (await sha256Hex(`radia-oidc-run\n${idToken}`)).slice(0, 48);
+    const hash = await hashToken(token);
+    const prior = await this.newestByHash(AGENT_RUN, hash) as
+      | { run?: string; agent?: string; status?: string; expiresAt?: string }
+      | undefined;
+    if (prior?.run) {
+      if (prior.status === "stopped") throw new RadiaError("run_stopped", `run ${prior.run} was stopped`);
+      if ((prior.expiresAt ?? "") <= now) throw new RadiaError("token_expired", "this id_token's run has expired; sign in again for a fresh token");
+      this.creds.rememberRun(prior.run, prior.agent ?? agent);
+      return { run: prior.run, agent: prior.agent ?? agent, runToken: token, expiresAt: prior.expiresAt! };
+    }
+
+    // The ceiling on ACTIVE runs per subject: the one write this endpoint can be made to do is a
+    // permanent record, so it gets a per-principal bound like watches and interests. Newest row
+    // per run decides its state; the page cap failing CLOSED is deliberate — a subject with
+    // thousands of live agent_run rows is who the ceiling is for.
+    let active = 0;
+    let after: string | undefined;
+    const seenRuns = new Set<string>();
+    for (let page = 0; page < 4; page++) {
+      const rows = await this.query({ kind: AGENT_RUN, match: { agent } }, 500, { dir: "desc", after });
+      for (const r of rows) {
+        const b = r.body as { run?: string; status?: string; expiresAt?: string };
+        if (!b.run || seenRuns.has(b.run)) continue;
+        seenRuns.add(b.run);
+        if (b.status === "active" && (b.expiresAt ?? "") > now) active++;
+      }
+      if (rows.length < 500) break;
+      after = rows[rows.length - 1].id;
+      if (page === 3) active = Number.MAX_SAFE_INTEGER; // cap hit: refuse rather than guess
+    }
+    if (active >= this.ctx.maxOidcRunsPerSubject) {
+      throw new RadiaError(
+        "too_many_runs",
+        `'${agent}' already holds ${this.ctx.maxOidcRunsPerSubject} active runs; wait for one to expire or stop one`,
+      );
+    }
+
+    const run = `run:${newUlid()}`;
+    const expiresAt = addSeconds(now, this.ctx.runTokenSeconds);
+    await this.putRaw({ kind: AGENT_RUN, body: { run, agent, tokenHash: hash, status: "active", expiresAt, mintedAt: now } });
+    this.creds.rememberRun(run, agent);
+    this.notifier.notify();
+    return { run, agent, runToken: token, expiresAt };
+  }
+
   /**
    * Extend a live run's expiry, presenting its own token.
    *
@@ -1318,6 +1428,27 @@ export class Space {
         );
       }
     }
+    // An oidc_identity maps an IdP identity to the principal grants bind to (design-auth.md
+    // "OIDC"). The privileged refusal is the same wall createAgentDefinition holds: OIDC mints
+    // runs from these mappings, and a mapping naming an operator would make the IdP an
+    // operator-minting oracle.
+    if (req.kind === OIDC_IDENTITY) {
+      const m = req.body as { iss?: unknown; sub?: unknown; principal?: unknown };
+      for (const f of ["iss", "sub", "principal"] as const) {
+        if (typeof m?.[f] !== "string" || (m[f] as string).length === 0) {
+          throw new RadiaError("invalid_oidc_identity", `oidc_identity.${f} must be a non-empty string`);
+        }
+      }
+      if (!(m.principal as string).startsWith("human:")) {
+        throw new RadiaError("invalid_oidc_identity", "oidc_identity.principal must start with 'human:' (an IdP authenticates people)");
+      }
+      if (this.isPrivileged(m.principal as string)) {
+        throw new RadiaError(
+          "invalid_oidc_identity",
+          `'${m.principal}' is a privileged principal; an OIDC mapping may not name it (OIDC must never mint an operator)`,
+        );
+      }
+    }
     return undefined;
   }
 
@@ -1436,6 +1567,12 @@ export class Space {
 
   get maxArtifactBytes(): number {
     return this.ctx.maxArtifactBytes;
+  }
+
+  /** The configured OIDC trust anchors, or null. Health advertises issuer + audience from this
+   *  (public by OIDC's own design); the verifier and mint read the context directly. */
+  get oidcConfig(): OidcConfig | null {
+    return this.ctx.oidc;
   }
 
   get downloadCapabilitySeconds(): number {

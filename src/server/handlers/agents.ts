@@ -54,6 +54,62 @@ export async function handleCreateRun(space: Space, req: Request): Promise<Respo
   }
 }
 
+/** How much JSON an UNAUTHENTICATED caller may make us parse. The only pre-auth route with a
+ *  body; `maxRecordBytes` never applies here. An id_token is a few KB on the largest IdPs. */
+const MAX_OIDC_BODY_BYTES = 64 * 1024;
+
+/** POST /v0/sessions/oidc: body {id_token}. No credential — the token IS the credential; the
+ *  space verifies it against the configured issuer and mints an ordinary run (design-auth.md
+ *  "OIDC"). Verification failures are one broad 401: which check failed is for the space's own
+ *  tests, never for an anonymous caller. */
+export async function handleOidcSession(space: Space, req: Request): Promise<Response> {
+  // Cap the STREAM, not the content-length header: a chunked body carries no length and this is
+  // the one route where the caller needed no credential to make us read.
+  const reader = req.body?.getReader();
+  let text = "";
+  if (reader) {
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_OIDC_BODY_BYTES) {
+        await reader.cancel();
+        return problem(413, "body_too_large", `id_token body over ${MAX_OIDC_BODY_BYTES} bytes`);
+      }
+      chunks.push(value);
+    }
+    const all = new Uint8Array(size);
+    let at = 0;
+    for (const c of chunks) {
+      all.set(c, at);
+      at += c.byteLength;
+    }
+    text = new TextDecoder().decode(all);
+  }
+  let j: Record<string, unknown> | null = null;
+  try {
+    const parsed = JSON.parse(text);
+    j = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch { /* refused below */ }
+  if (!j || typeof j.id_token !== "string" || j.id_token.length === 0) {
+    return problem(400, "invalid_body", "expected {id_token: string}");
+  }
+  try {
+    const out = await space.mintOidcRun(j.id_token);
+    return new Response(JSON.stringify(out), { status: 201, headers: { "content-type": "application/json" } });
+  } catch (e) {
+    if (e instanceof RadiaError) {
+      if (e.code === "oidc_not_configured") return problem(403, e.code, e.message);
+      if (e.code === "oidc_unavailable") return problem(503, e.code, e.message);
+      if (e.code === "too_many_runs") return problem(429, e.code, e.message);
+      return problem(401, "invalid_credential", e.message);
+    }
+    throw e;
+  }
+}
+
 /** POST /v0/agent-runs/{id}/stop: operator, or the run's own definition token (Bearer).
  *  Body `{quarantine: true}` upgrades graceful stop to emergency revocation (invalidate leases). */
 /**

@@ -112,6 +112,12 @@
       <span class="muted">(definition tokens only: the durable half can only mint, and revoking it is the off switch)</span>
     </label>
     <div id="signin-note"></div>
+    <div id="signin-oidc" style="display:none;margin-top:10px">
+      <button class="btn" onclick="oidcStart()">Sign in with SSO</button>
+      <span class="muted" style="font-size:13px">this space trusts an OIDC issuer; the identity
+      provider signs you in and the space mints an ordinary session from its answer. No token to
+      paste, and the session ends when the provider stops vouching for you.</span>
+    </div>
     <div id="signin-operator" style="display:none;margin-top:10px">
       <button class="btn ghost" onclick="signInOperator()">Sign in as local operator</button>
       <span class="muted" style="font-size:13px">open mode: this browser then sends no credential and the
@@ -1999,8 +2005,20 @@ async function loadAuth() {
       + `</div>`;
   });
 
+  // runs whose agent has no agent_definition: OIDC sessions (minted from an id_token, no durable
+  // half). Without this group they were invisible here — runsByAgent entries with no card were
+  // silently dropped, which made the one revocable thing about an SSO session unfindable.
+  const oidcAgents = Object.keys(runsByAgent).filter((a) => a && !agents.has(a));
+  for (const agent of oidcAgents.sort()) {
+    cards.push(`<div class="panel" style="background:var(--bg)">`
+      + `<b class="mono">${esc(agent)}</b> <span class="muted" style="font-size:11px">OIDC session (no definition: the IdP re-vouches past the run ceiling)</span>`
+      + `<div class="tree" style="margin-top:8px"><span class="muted">grants:</span> ${grantChips(grantsBy[agent] || [])}</div>`
+      + `<div class="tree" style="margin-top:8px"><span class="muted">run tokens:</span> ${runLines(runsByAgent[agent] || [])}</div>`
+      + `</div>`);
+  }
+
   // grants whose principal has no agent_definition (e.g. a directly-assigned principal)
-  const orphans = Object.keys(grantsBy).filter((p) => p && !agents.has(p));
+  const orphans = Object.keys(grantsBy).filter((p) => p && !agents.has(p) && !runsByAgent[p]);
   if (orphans.length) {
     cards.push(`<div class="panel" style="background:var(--bg)"><b class="muted">principals with grants but no definition</b>`
       + orphans.map((p) => `<div class="tree" style="margin-top:6px"><span class="mono">${esc(p)}</span> ${grantChips(grantsBy[p])}</div>`).join("")
@@ -2143,10 +2161,102 @@ async function showSignIn(reason) {
   const up = !!(r && r.ok);
   const probe = up ? await r.json().catch(() => null) : null;
   $("signin-operator").style.display = probe && probe.principal === "human:local" ? "" : "none";
+  // The same probe advertises SSO: `health.oidc` is present exactly when the space holds OIDC
+  // trust anchors, so the button never appears where the endpoint would 403.
+  OIDC_INFO = (probe && probe.oidc) || null;
+  $("signin-oidc").style.display = OIDC_INFO ? "" : "none";
   $("health").innerHTML = `<span class="pill">${up ? "not signed in" : "offline"}</span>`;
   if (!up) note("signin-note", "err", `no space is answering at ${location.origin}. Start one with \`radia dev\`.`);
   else if (reason) note("signin-note", "info", reason);
   $("signin-token").focus();
+}
+
+/**
+ * OIDC sign-in, browser half (agent_docs/plan-oidc.md): authorization code + PKCE against the
+ * issuer `health.oidc` advertises, then the id_token to `POST /v0/sessions/oidc` for an ordinary
+ * run token. There is NO durable half: past the run's 12h ceiling this dance repeats, which is
+ * exactly how IdP deprovisioning takes effect.
+ */
+let OIDC_INFO = null; // {issuer, clientId} from the health probe, set by showSignIn
+
+function randHex(n) {
+  const b = new Uint8Array(n);
+  crypto.getRandomValues(b);
+  return [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+function b64urlBytes(bytes) {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function oidcStart() {
+  if (!OIDC_INFO) return note("signin-note", "err", "this space does not advertise an OIDC issuer");
+  const disco = await fetch(OIDC_INFO.issuer.replace(/\/+$/, "") + "/.well-known/openid-configuration")
+    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  if (!disco || !disco.authorization_endpoint || !disco.token_endpoint) {
+    return note("signin-note", "err", "the issuer's discovery document is unreachable from this browser");
+  }
+  const verifier = randHex(32), state = randHex(16), nonce = randHex(16);
+  // One pending dance at a time, spent on return whatever happens. `route` carries the #tab so
+  // the view survives the round trip, the same promise sign-in already keeps.
+  sessionStorage.setItem("radia.oidc", JSON.stringify({
+    verifier, state, nonce,
+    tokenEndpoint: disco.token_endpoint, clientId: OIDC_INFO.clientId, route: location.hash || "",
+  }));
+  const challenge = b64urlBytes(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+  const u = new URL(disco.authorization_endpoint);
+  u.searchParams.set("response_type", "code");
+  u.searchParams.set("client_id", OIDC_INFO.clientId);
+  u.searchParams.set("redirect_uri", location.origin + location.pathname);
+  u.searchParams.set("scope", "openid");
+  u.searchParams.set("state", state);
+  u.searchParams.set("nonce", nonce);
+  u.searchParams.set("code_challenge", challenge);
+  u.searchParams.set("code_challenge_method", "S256");
+  location.href = u.href;
+}
+
+/** The return leg: exchange the code at the IdP (PKCE), check the nonce, trade the id_token for
+ *  a run token. The code travelled in the QUERY string — unlike `#token` it does reach server
+ *  logs, which is fine for a PKCE-bound single-use code and required by IdPs; do not "fix" it
+ *  into a fragment. */
+async function oidcFinish(code, pending) {
+  try {
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: location.origin + location.pathname,
+      client_id: pending.clientId,
+      code_verifier: pending.verifier,
+    });
+    const tr = await fetch(pending.tokenEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    });
+    const tj = await tr.json().catch(() => ({}));
+    if (!tr.ok || !tj.id_token) throw new Error(tj.error_description || tj.error || "the token exchange failed");
+    // The nonce binds the id_token to THIS dance; the space cannot check it (it never saw the
+    // nonce), so the page must.
+    const seg = String(tj.id_token).split(".")[1] || "";
+    const b64 = seg.replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)));
+    if (pending.nonce && payload.nonce !== pending.nonce) throw new Error("nonce mismatch: the id_token is not from this sign-in");
+    const sr = await fetch("/v0/sessions/oidc", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id_token: tj.id_token }),
+    });
+    const sj = await sr.json().catch(() => ({}));
+    if (!sr.ok || !sj.runToken) throw new Error(sj.detail || "the space refused the id_token");
+    // A run token and nothing else: there is no definition to remember for an OIDC session.
+    AUTH_TOKEN = sj.runToken;
+    sessionStorage.setItem("radia.token", sj.runToken);
+    location.reload();
+  } catch (e) {
+    showSignIn("SSO sign-in failed: " + ((e && e.message) || e));
+  }
 }
 
 /**
@@ -2175,6 +2285,27 @@ function start() {
     adopt(decodeURIComponent(frag[1]), true).then((ok) => {
       if (!ok) showSignIn("The link's token was not accepted by this space.");
     });
+    return;
+  }
+  // The IdP's return leg (?code=&state=, or ?error=). The pending dance is SPENT here whatever
+  // happens — state, nonce and verifier are one-use — and the query is stripped before anything
+  // else runs, restoring the #tab route the dance carried.
+  const qs = new URLSearchParams(location.search);
+  if (qs.has("code") || qs.has("error")) {
+    let pending = null;
+    try { pending = JSON.parse(sessionStorage.getItem("radia.oidc") || "null"); } catch { /* spent below */ }
+    sessionStorage.removeItem("radia.oidc");
+    history.replaceState(null, "", location.pathname + ((pending && pending.route) || ""));
+    if (qs.has("error")) {
+      // access_denied and friends: show the reason, never loop back into the dance.
+      showSignIn("The identity provider refused: " + qs.get("error") + (qs.get("error_description") ? " — " + qs.get("error_description") : ""));
+      return;
+    }
+    if (!pending || qs.get("state") !== pending.state) {
+      showSignIn("SSO state mismatch (a stale or replayed return); start the sign-in again.");
+      return;
+    }
+    oidcFinish(qs.get("code"), pending);
     return;
   }
   if (!AUTH_TOKEN && !DEF_TOKEN && !OPEN_OPERATOR) return showSignIn("");

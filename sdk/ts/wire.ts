@@ -243,7 +243,10 @@ export const INTEREST = "interest";
 /** Ops-plane powers as records (architecture-ops-tiers.md): `{principal, operations}` over a closed
  *  power vocabulary, assigned by a config operator, additive, retired to revoke. */
 export const OPS_GRANT = "ops_grant";
-export const RESERVED_KINDS = [KIND_DEF, GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, ARTIFACT, INTEREST, SHRED, OPS_GRANT];
+/** OIDC identity mapping (design-auth.md "OIDC"): `{iss, sub, principal}`, latest-wins per
+ *  (iss, sub), operator-assigned. Maps an IdP identity to the `human:` principal grants bind to. */
+export const OIDC_IDENTITY = "oidc_identity";
+export const RESERVED_KINDS = [KIND_DEF, GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, ARTIFACT, INTEREST, SHRED, OPS_GRANT, OIDC_IDENTITY];
 
 /**
  * A deterministic idempotency key for a declaration, stable across process restarts and

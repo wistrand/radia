@@ -16,7 +16,7 @@ import type { Space } from "../core/space.ts";
 import type { OpsPower } from "../core/kinds.ts";
 import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
-import { handleCreateDefinition, handleCreateRun, handleRenewRun, handleRevokeDefinition, handleStopRun } from "./handlers/agents.ts";
+import { handleCreateDefinition, handleCreateRun, handleOidcSession, handleRenewRun, handleRevokeDefinition, handleStopRun } from "./handlers/agents.ts";
 import { handleGetArtifact, handleMintCapability, handleMintPathCapability, handlePutArtifact, handleShredArtifact } from "./handlers/artifacts.ts";
 import { handleRemediate, handleAdmin, handleGc, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleErasures, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleFlows, handleIntegrity, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
@@ -252,6 +252,8 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     // Minting a run reads its DEFINITION token directly (a def token isn't a coordination
     // principal), so it runs before principal resolution rejects non-run bearer tokens.
     if (route === "POST /v0/agent-runs") return await handleCreateRun(space, req);
+    // OIDC sign-in: the id_token in the body IS the credential, so this too runs pre-auth.
+    if (route === "POST /v0/sessions/oidc") return await handleOidcSession(space, req);
     // Mint a capability over a SET of artifacts, addressed by path. Generic: the runtime is handed
     // {path, artifactId} pairs and never learns what they are, so a workspace is one caller rather
     // than a concept in here.
@@ -473,6 +475,10 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
           storage: space.storageName,
           now: await space.now(),
           principal, // the resolved caller (so the console can show who it's authenticated as)
+          // Pre-auth SSO discovery for the console's sign-in screen (the `principal` field's
+          // precedent: health is where a signed-out page learns what this space offers). The
+          // issuer and client id are public knowledge by OIDC's own design; never a secret here.
+          ...(space.oidcConfig ? { oidc: { issuer: space.oidcConfig.issuer, clientId: space.oidcConfig.audience } } : {}),
         });
       case "POST /v0/artifacts":
         return await handlePutArtifact(space, req, principal);

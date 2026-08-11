@@ -223,3 +223,21 @@ export function serve(
   const server = Deno.serve({ ...opts, onListen: () => {} }, handler);
   return { finished: server.finished };
 }
+
+// ---------------------------------------------------------------------------
+// HTTP client
+// ---------------------------------------------------------------------------
+
+/** GET a JSON document. The runtime's ONLY outbound HTTP, added for OIDC's JWKS/discovery
+ *  fetches; narrowed to a single verb and a single content shape on purpose. The 10s timeout is
+ *  load-bearing: this is called while an unauthenticated request waits, so a hung IdP must fail
+ *  the sign-in rather than pin a handler. */
+export async function httpGetJson(url: string): Promise<unknown> {
+  const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+  try {
+    if (!res.ok) throw new Error(`GET ${url}: ${res.status}`);
+    return await res.json();
+  } finally {
+    if (res.bodyUsed === false) await res.body?.cancel();
+  }
+}

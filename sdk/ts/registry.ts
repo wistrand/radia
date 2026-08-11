@@ -156,6 +156,15 @@ export function opsGrantKey(body: unknown): string | undefined {
   return JSON.stringify(["og1", g.principal, ops]);
 }
 
+/** The logical identity of an OIDC mapping (design-auth.md "OIDC"): the `(iss, sub)` pair. The
+ *  PRINCIPAL is deliberately not part of the key: a rename is a successor for the same identity,
+ *  latest-wins, never a second live entry. Same versioned-tag rule as `grantKey`. */
+export function oidcIdentityKey(body: unknown): string | undefined {
+  const m = body as { iss?: unknown; sub?: unknown };
+  if (typeof m?.iss !== "string" || typeof m?.sub !== "string") return undefined;
+  return JSON.stringify(["oi1", m.iss, m.sub]);
+}
+
 /** What a registry read produced, and whether it saw everything. */
 export interface RegistryView {
   /** Current entry per key, retired ones dropped. */

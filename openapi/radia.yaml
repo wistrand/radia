@@ -85,6 +85,12 @@ paths:
                   storage: { type: string }
                   now: { type: string }
                   principal: { type: string, description: "the resolved caller (from the bearer token, or the operator default)" }
+                  oidc:
+                    type: object
+                    description: "present when OIDC sign-in is configured; pre-auth discovery for the console (issuer and client id are public by OIDC's design)"
+                    properties:
+                      issuer: { type: string }
+                      clientId: { type: string, description: "the configured audience: what the IdP puts in `aud`" }
 
   # --- Data plane: FROZEN v0-stable, additive-only ------------------------------------
 
@@ -794,6 +800,49 @@ paths:
                   runToken: { type: string }
                   expiresAt: { type: string }
         "401": { $ref: "#/components/responses/Problem" }
+
+  /sessions/oidc:
+    post:
+      operationId: createOidcSession
+      summary: Mint a run from an OIDC id_token
+      x-stability: experimental
+      x-phase: "M1"
+      description: |
+        No Authorization header: the id_token IS the credential. The space verifies it against the
+        configured issuer/audience (RS256/ES256 via the issuer's JWKS), resolves the principal
+        through the `oidc_identity` mapping registry — an unmapped (iss, sub) auto-admits as a
+        derived `human:oidc-…` principal with ZERO grants; a retired mapping REFUSES — and mints an
+        ordinary run through the bootstrap chain. No durable definition is created: past the run
+        lifetime ceiling the holder re-authenticates at the IdP, which is how deprovisioning takes
+        effect. Replaying one id_token returns the same run. See design-auth.md "OIDC".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id_token]
+              properties:
+                id_token: { type: string, description: "the OIDC id_token, as issued (compact JWS)" }
+      responses:
+        "201":
+          description: run minted (or the same id_token's existing run returned)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run, agent, runToken, expiresAt]
+                properties:
+                  run: { type: string }
+                  agent: { type: string }
+                  runToken: { type: string }
+                  expiresAt: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "413": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
 
   /agent-runs/{runId}/renew:
     post:

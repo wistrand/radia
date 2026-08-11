@@ -41,6 +41,7 @@ import {
   GRANT as WIRE_GRANT,
   INTEREST as WIRE_INTEREST,
   KIND_DEF,
+  OIDC_IDENTITY as WIRE_OIDC_IDENTITY,
   OPS_GRANT as WIRE_OPS_GRANT,
   SHRED as WIRE_SHRED,
   SIGNAL as WIRE_SIGNAL,
@@ -89,6 +90,11 @@ export const INTEREST = WIRE_INTEREST;
  *  "The operator bit". Assigned by a config operator, additive, retired to revoke. */
 export const OPS_GRANT = WIRE_OPS_GRANT;
 
+/** Reserved kind: an OIDC identity mapping (body {iss, sub, principal}). Latest-wins per
+ *  (iss, sub); `retired: true` is a BAN, not an unmapping — the mint refuses rather than falling
+ *  back to auto-admit, or offboarding would silently un-happen (design-auth.md "OIDC"). */
+export const OIDC_IDENTITY = WIRE_OIDC_IDENTITY;
+
 /**
  * The closed ops-power vocabulary (design-auth.md "The operator bit", powers 1–5). Powers 6
  * (identity root: grant/signal/agent_* writes, minting, revoke) and 7 (coordination bypass) are
@@ -128,7 +134,7 @@ export function validateOpsGrantDef(def: OpsGrantDef): void {
 /** Reserved kinds only an OPERATOR may write directly (assigned, never self-declared), with one
  *  carve-out in `Space.authorize`: the supervisor may put `grant`/`signal`, its entire remaining
  *  privilege. Runs/definitions are also written internally by the bootstrap endpoints. */
-export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, SHRED, OPS_GRANT]);
+export const WRITE_PROTECTED_KINDS = new Set<string>([GRANT, SIGNAL, AGENT_DEFINITION, AGENT_RUN, SHRED, OPS_GRANT, OIDC_IDENTITY]);
 
 /**
  * Kinds whose appearance in the event log means somebody's authorization may have just changed.
@@ -440,6 +446,8 @@ export const META_RESERVED: KindDef[] = [
   { kind: SHRED, indexedPaths: [{ path: "digest", type: "keyword" }], claimable: false },
   // Indexed on principal: the ops gate reads one principal's powers per request.
   { kind: OPS_GRANT, indexedPaths: [{ path: "principal", type: "keyword" }], claimable: false },
+  // Indexed on (iss, sub): the OIDC mint looks up exactly one identity per sign-in.
+  { kind: OIDC_IDENTITY, indexedPaths: [{ path: "iss", type: "keyword" }, { path: "sub", type: "keyword" }], claimable: false },
   // Indexed on digest (find every record referencing the same bytes) and mediaType (route by what
   // it is: an image worker claims `{mediaType: "image/png"}` without a routing table).
   {

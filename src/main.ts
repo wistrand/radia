@@ -24,6 +24,7 @@ const USAGE = `radia <command>
   dev [--port <n>] [--host <addr>] [--storage pglite|sqlite|postgres] [--db [path|url]]
       [--blobs <dir>] [--blob-kek [file]] [--seal-key [file]] [--auth required|open]
       [--artifact-port <n>] [--max-scan-rows <n>] [--event-retention <seconds>]
+      [--oidc-issuer <url> --oidc-audience <client-id>]
       Run an embedded space + web console. Everything it writes goes under ./.radia
       (RADIA_DIR moves it); bare --db and --blob-kek take their defaults from there.
   mcp [--url <base>]
@@ -126,10 +127,22 @@ async function dev(args: string[]): Promise<void> {
   if (eventRetentionSeconds !== undefined && (!Number.isInteger(eventRetentionSeconds) || eventRetentionSeconds < 0)) {
     throw new UsageError(`--event-retention must be a non-negative whole number of seconds, got '${evFlag}'`);
   }
+  // OIDC is OPT-IN and takes both halves: the issuer says who signs, the audience says which
+  // client the token was minted for (`aud` — the client id for plain OIDC, an API identifier on
+  // Auth0-style setups). One without the other verifies nothing, so it is a usage error.
+  const oidcIssuer = flag(args, "--oidc-issuer");
+  const oidcAudience = flag(args, "--oidc-audience");
+  if ((oidcIssuer === undefined) !== (oidcAudience === undefined)) {
+    throw new UsageError("--oidc-issuer and --oidc-audience must be given together");
+  }
   const space = new Space(storage, {
     ...(maxScanRows === undefined ? {} : { maxScanRows }),
     ...(eventRetentionSeconds === undefined ? {} : { eventRetentionSeconds }),
+    ...(oidcIssuer && oidcAudience ? { oidc: { issuer: oidcIssuer, audience: oidcAudience } } : {}),
   }, blobs);
+  if (oidcIssuer && oidcAudience) {
+    console.log(`radia dev: OIDC sign-in enabled (issuer ${oidcIssuer}, audience ${oidcAudience})`);
+  }
   if (eventRetentionSeconds !== undefined) {
     console.log(`radia dev: event-log retention ${eventRetentionSeconds}s (gc truncates the sealed log to this window)`);
   }
