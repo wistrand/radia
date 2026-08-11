@@ -1,9 +1,11 @@
 # Plan: milestones
 
 > Status: M0 (Phases 0–7) built and verified; M1 largely built (watches, the authorization stack,
-> the Postgres adapter, the tamper-evident event chain, resource limits, credential exchange);
-> M2/M3 mostly unbuilt. Workspaces and the git projection are complete beside the list, bar push.
-> Origin: outline §11.
+> the Postgres adapter, the tamper-evident event chain, resource limits, credential exchange, and
+> OIDC sign-in for humans — server, console and CLI, [plan-oidc.md](plan-oidc.md)); a real M2
+> slice is built too (GC + compaction, event-log retention, ops-plane tiers, revocation,
+> pushdown + the scan budget); the rest of M2/M3 is unbuilt. Workspaces and the git projection
+> are complete beside the list, bar push. Origin: outline §11.
 
 ## Goal
 
@@ -91,7 +93,7 @@ two-terminal demo works.
 ### M1: usable runtime
 
 - [x] Postgres storage adapter (same conformance suite as embedded). `src/storage/postgres.ts` (deno-postgres pool) over the shared `src/storage/pgbase.ts` body PGlite also uses, so both speak identical SQL; `take` claims atomically across connections with a checked compare-and-set over a bounded candidate window (it originally used `FOR UPDATE ... SKIP LOCKED` over the whole kind, which starved peers; see [gotchas.md](gotchas.md)). `--storage postgres` in `radia dev`. **VERIFIED:** `scripts/pg-conformance.sh` green against a live Postgres 16 (**698 passed, 0 failed** as of 2026-08-04; 508 embedded plus the postgres rows), each test in an ephemeral schema. That run is the only cover for the pool-only paths: `SKIP LOCKED` claims across connections, and the `xid8` watermark in `getEvents` that keeps watch cursors gap-free when transactions commit out of seq order. **That run is now in CI** (`.github/workflows/ci.yml`, the `postgres` job against a service container), together with the two CONTENDED claim-path cases the embedded adapters cannot express (`conformance/concurrency.test.ts`). Still to do: the partition/failover fault suite (M2).
-- [~] single-node deployment mode with admin-provisioned auth. **Auth bootstrap chain + per-run leases built** (agent definitions → run tokens → stop/quarantine; `Authorization: Bearer` is the sole channel; a run inherits its agent's grants and owns its leases; graceful stop vs. emergency quarantine; credentials resolve from `agent_definition`/`agent_run` records per request, uncached; the dev console holds any session token, operator or a person's, and mints the latter). A person gets a session through the same chain (`radia login`, or the console's Auth tab), so identity-scoped grants can separate two people on one space. OIDC for `human:*`, the deployment mode itself, and federated identity still to do. See [design-auth.md](design-auth.md).
+- [~] single-node deployment mode with admin-provisioned auth. **Auth bootstrap chain + per-run leases built** (agent definitions → run tokens → stop/quarantine; `Authorization: Bearer` is the sole channel; a run inherits its agent's grants and owns its leases; graceful stop vs. emergency quarantine; credentials resolve from `agent_definition`/`agent_run` records per request, uncached; the dev console holds any session token, operator or a person's, and mints the latter). A person gets a session through the same chain (`radia login`, or the console's Auth tab), so identity-scoped grants can separate two people on one space. **OIDC for `human:*` is BUILT** (2026-08-11, [plan-oidc.md](plan-oidc.md)): `POST /v0/sessions/oidc` mints runs from a verified id_token, the `oidc_identity` registry names the principal (first login enrolls, retire is a ban), the console has "Sign in with SSO" and the CLI `radia login --sso`, with `docker/keycloak/` as the worked issuer. Still to do: the documented deployment mode itself, and more than one issuer per space. See [design-auth.md](design-auth.md).
 - [x] read_one + **keyset query**: `after`/`dir` on `POST /v0/records/query` (`Page` in `src/storage/adapter.ts`). A cursor over record id, not an offset, so a page stays correct while the space is written to; `dir: "desc"` is what makes "the newest N" expressible at all, since the deterministic tie-break is ascending id and a plain limit therefore returns the OLDEST matches. Defined for the natural id order only. Combining a cursor with `order_by` is rejected rather than silently resolved, because a keyset over a body field needs the whole sort key plus the oracle's type rules. Pinned by `conformance/suites/keyset.ts`, including paging while records are inserted.
 - [ ] long-polls
 - [~] schema version registry: kind *declarations* persist (as `kind_def` records, reloaded at startup by `Space.loadKinds`, and re-read per kind on a stale-projection compile error so N instances over one database stay correct); schema *versioning* + migration still to do
@@ -140,7 +142,10 @@ pinned in `conformance/http.test.ts` and the horizon derivation per adapter in
 - [ ] signed, externally-anchored log checkpoints. The INTERNAL half converged with event GC
   (plan-gc.md phase 3): each seal is self-contained and the retained suffix verifies from an
   anchor, so what remains open is only publishing a checkpoint outside the operator's trust domain
-- [ ] lineage viewer
+- [x] lineage viewer: the console's Graph tab (parents/children walk, `?direction=down`, honest
+  `truncated`), the WATERFALL view (time as the axis; now the tab's default), and the Flows tab's
+  mined shapes with per-exemplar timing. Listed open long after the console shipped it; the same
+  drift `run-scoped credentials` had below.
 - [x] run-scoped short-lived credentials: built in M1 with the bootstrap chain above. A run token
   carries `expiresAt`, renews at half-life (`keepAlive` in both SDKs) and is capped by
   `runMaxLifetimeSeconds`; `src/core/auth.ts` mints and hashes, `Space.createRun` issues. Listed as
