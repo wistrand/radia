@@ -390,6 +390,48 @@ Deno.test("workspace: a summary scoped to a conversation shows only that convers
   });
 });
 
+Deno.test("workspace: edit reaches the same trees read does, and versions them where they live", async () => {
+  await withSpace(async (c) => {
+    // Read and edit MUST agree about what exists. They did not: `read_workspace` fell back to an
+    // unscoped lookup and `editWorkspace` did not, so a model could read a tree and then be told
+    // it does not exist — and recover by SAVING over the name, discarding what it had just read.
+    await writeWorkspace(c, { name: "shared", owner: OWNER, conversationId: "conv-a", files: { "app.js": "one\n" } });
+
+    // From ANOTHER conversation: the edit lands, and the successor stays in conv-a rather than
+    // moving the tree to the editor's conversation.
+    const r = await editWorkspace(c, {
+      name: "shared",
+      conversationId: "conv-b",
+      edits: [{ path: "app.js", oldString: "one", newString: "two" }],
+    });
+    assertEquals(r.changed, ["app.js"]);
+    const head = await readWorkspace(c, "shared");
+    assertEquals(head?.conversationId, "conv-a", "an edit versions the tree where it lives, never relocates it");
+    assertEquals(new TextDecoder().decode(await c.getArtifact(head!.files[0].artifactId)), "two\n");
+
+    // A tree the editing conversation OWNS still wins over a same-named one elsewhere.
+    await writeWorkspace(c, { name: "shared", owner: OWNER, conversationId: "conv-c", files: { "app.js": "mine\n" } });
+    const own = await editWorkspace(c, {
+      name: "shared",
+      conversationId: "conv-c",
+      edits: [{ path: "app.js", oldString: "mine", newString: "still mine" }],
+    });
+    assertEquals(own.changed, ["app.js"]);
+    const c_head = await readWorkspace(c, "shared", "conv-c");
+    assertEquals(new TextDecoder().decode(await c.getArtifact(c_head!.files[0].artifactId)), "still mine\n");
+    // …and conv-a's tree is untouched by that edit.
+    const a_head = await readWorkspace(c, "shared", "conv-a");
+    assertEquals(new TextDecoder().decode(await c.getArtifact(a_head!.files[0].artifactId)), "two\n");
+
+    // A name nobody has is still an error, with the same message.
+    await assertRejects(
+      () => editWorkspace(c, { name: "absent", conversationId: "conv-b", edits: [{ path: "x", oldString: "a", newString: "b" }] }),
+      Error,
+      "no workspace named",
+    );
+  });
+});
+
 Deno.test("workspace: the record body limit caps a manifest, which forces dependencies out of line", async () => {
   await withSpace(async (c) => {
     // The number this phase owed. A manifest is a record body, and a body cannot be erased, so the

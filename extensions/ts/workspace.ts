@@ -636,7 +636,19 @@ export async function editWorkspace(
     forked: boolean;
   }
 > {
-  const head = await readWorkspace(client, input.name, input.conversationId);
+  // EDIT WHAT YOU CAN READ. The conversation-scoped lookup first (a tree this conversation owns
+  // wins over a same-named one elsewhere), then unscoped — the two-step `read_workspace` already
+  // does. Seen live: the model read `nw`, was told "no workspace named nw to edit", and recovered
+  // by SAVING a fresh tree over the name, discarding the content it had just read. Read and edit
+  // disagreeing about what exists costs rounds and, worse, silently replaces work.
+  //
+  // The narrowing was never doing security work (same argument as `list_workspaces`): the query is
+  // bounded by the caller's GRANT, so a scoped session sees its own trees and no one else's
+  // whatever this passes, and a conversation-scoped session still cannot reach another
+  // conversation's. The successor keeps `...head`'s own `conversationId`, so an edit adds a
+  // version where the tree lives rather than moving it here.
+  const head = await readWorkspace(client, input.name, input.conversationId) ??
+    await readWorkspace(client, input.name);
   if (!head) throw new Error(`no workspace named ${JSON.stringify(input.name)} to edit`);
 
   const edits = input.edits ?? [];
