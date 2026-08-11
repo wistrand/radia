@@ -60,6 +60,7 @@ import {
   WRITE_PROTECTED_KINDS,
 } from "./kinds.ts";
 import { CredentialStore, hashToken, mintCredential, type ResolvedToken } from "./auth.ts";
+import { Coalescer } from "./coalesce.ts";
 import { type CompactionResult, compactRegistries } from "./gc.ts";
 import { type BlobGcResult, type BlobStore, MemoryBlobStore } from "../storage/blobs.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
@@ -352,6 +353,11 @@ export class Space {
   private readonly creds = new CredentialStore();
   private readonly ctx: SpaceContext;
   private readonly notifier = new Notifier(() => this.pollForForeignChanges());
+  /** Collapses the identical reads a wakeup burst produces: one `notify()` resumes every parked
+   *  watch stream in the same tick, and they all ask for the same events and the same record
+   *  (`core/coalesce.ts`, agent_docs/plan-scaling.md). Single-flight, so nothing is ever cached
+   *  past the read it belongs to. */
+  private readonly reads = new Coalescer();
   /** How far the cross-instance poll has read the event log. `undefined` until the first poll,
    *  which is why that first one always reports a change (see `pollForForeignChanges`). */
   private changeCursor?: string;
@@ -2209,9 +2215,17 @@ export class Space {
     };
   }
 
-  /** Append-only event log after the opaque `afterCursor` ("0"/"" = from the start). */
+  /**
+   * Append-only event log after the opaque `afterCursor` ("0"/"" = from the start).
+   *
+   * COALESCED: every watch stream is woken by the same `notify()` and asks this same question in
+   * the same tick, so U streams issued U identical reads for one write (bench/suites/fanout.ts).
+   * Concurrent callers with the same (cursor, limit) now share one read; a sequential caller
+   * always hits storage. Safe because the log below the finality watermark is append-only, so an
+   * answer cannot change while it is in flight.
+   */
   getEvents(afterCursor = "0", limit = 200): Promise<SpaceEvent[]> {
-    return this.storage.getEvents(afterCursor, limit);
+    return this.reads.run(`ev ${afterCursor} ${limit}`, () => this.storage.getEvents(afterCursor, limit));
   }
 
   /** The newest `limit` final events, ascending: the tail a live view starts from. */
@@ -2479,7 +2493,12 @@ export class Space {
     // `runId` is who performed the operation, not who authored the record, so a nack or release by
     // another principal would otherwise wake a self-scoped watcher on a record it cannot read.
     if (!watch.match.where && !watch.createdBy) return true;
-    const rec = await this.storage.getRecord(event.recordId);
+    // COALESCED, like the log read above it: every stream woken by one write fetches the SAME
+    // record to run its own predicate against, so U streams made U identical fetches. Shared here
+    // and still authorized per watch below (`authorAllows` + `matchesRecord`), so this changes how
+    // often the record is read, never who may see it. Records are immutable, so a shared fetch
+    // cannot serve one caller something another would not have seen.
+    const rec = await this.reads.run(`rec ${event.recordId}`, () => this.storage.getRecord(event.recordId!));
     if (!rec) return false;
     if (!this.authorAllows(watch.createdBy, rec)) return false;
     return watch.match.where ? matchesRecord(rec, watch.match) : true;

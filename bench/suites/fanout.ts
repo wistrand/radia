@@ -49,7 +49,7 @@ export const fanoutBenches: Bench[] = [
   {
     name: "fanout",
     note:
-      "queries a single write triggers as N streams park. KIND-BLIND notify wakes all N, so getEvents is O(N) whatever the write; a same-kind predicate watch also getRecords O(N). 'useful' is how many of those matched — the rest is what a kind-aware wakeup would save. Counts are exact; the ms is per-write wall time (cheap per read since idx_events_xid_seq, still O(N) in count).",
+      "queries a single write triggers as N streams park. Both fixes should hold here: kind-aware notify keeps other-kind at 0 wakeups, and read coalescing keeps same-kind at 1 getEvents + 1 getRecord however large N gets. A count that tracks N again means one of them regressed (the history: 250 streams once cost 250+250 and 127ms).",
     run: async (ctx) => {
       const P = "local:dev"; // the default ctx principal, privileged, so createWatch authorizes
       const out: Measurement[] = [];

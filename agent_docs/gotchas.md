@@ -333,6 +333,17 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Leases, claims, events and watches
 
+- **The wakeup burst's reads are COALESCED, and only reads that cannot change in flight may be**
+  (`src/core/coalesce.ts`; `Space.getEvents` and the record fetch in `matchesEvent`). One
+  `notify()` resumes every parked stream in the same tick, so U streams issued U identical log
+  reads and U identical record fetches for one write; single-flight collapses them to one each
+  (measured 250+250 → 1+1, 127ms → 2.3ms at 250 streams). It is NOT a cache: an entry lives only
+  while its read is in flight, so a sequential caller always hits storage and there is no TTL or
+  invalidation. Two rules before coalescing anything else: the answer must be immutable for the
+  read's duration (the log below the finality watermark is append-only; records are immutable),
+  and a shared result must still be AUTHORIZED per caller — the shared record is evaluated against
+  each watch's own scope, so sharing changes how often it is read, never who may see it.
+  Guard: `conformance/coalesce.test.ts`.
 - **`notify(kind)` is kind-aware, and a new wake site must pass the right kind or wake everyone**
   (`src/core/notifier.ts`, `Space.putRaw`/`ack`). A watch matches only its own kind, so a write
   wakes only that kind's parked streams plus the any-set; waking foreign kinds was the O(U)
