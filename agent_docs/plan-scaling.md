@@ -105,68 +105,84 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
      near-term answer is to move `space_*` into the SESSION process, where the property holds by
      construction and the plumbing is deleted rather than generalised. It does not generalise, and
      that is item 3a.
-3a. **Scope delegation: my capabilities, the caller's identity.** The general form of the problem
-   above, and what the shared fleet's SECOND worker will demand. `space_*` can move into the
-   session because they are reads the session could make itself; exec cannot (it needs the jail,
-   its own permissions, `--allow-run`), yet it runs model-written code ON BEHALF OF a session and
-   must not reach past what that session may touch. Images is the same shape, and the marketplace
-   (M2) is entirely this shape: a bidder acting for a requester.
+3a. **Scope delegation, as a DELEGATED RUN.** The general form of the problem above, and what a
+   shared worker needs: act with my own capability, under my caller's reach. `space_*` can move
+   into the session because they are reads the session could make itself; exec cannot (it needs
+   the jail, its own permissions, `--allow-run`) yet runs model-written code ON BEHALF OF a
+   session. Images is the same shape, and the marketplace (M2) is entirely this shape.
 
-   **The axis is capability vs scope, and only one of them delegates.** This was first written as
-   "authorize as `grants(worker) INTERSECT grants(caller)`" and that is WRONG, for the same reason
-   the hard chain-intersection gate is wrong — it just takes one more step to see. The chat's
-   security properties are IMPLEMENTED BY workers holding more than sessions: `EXEC_GRANTS` has
-   `check: put` where the session has `query`, so "the code did what was claimed" is never a record
-   the model authored about itself, and the same for `procedure` (only exec may write one, so a
-   saved procedure always went through the sandbox). Intersecting grant SETS deletes exactly those
-   properties, and deletes them in the unsafe direction: to restore function you would grant the
-   session `check: put`, which is the thing the design refuses. A worker is setuid-shaped. What it
-   holds beyond its caller is the reason it exists.
+   **The shape: mint a narrowed credential, do not annotate every call.**
+   `POST /v0/agent-runs/delegated {actingFor: <a record I hold a lease on>}` returns an ordinary
+   run token whose authority is `grants(worker) INTERSECT grants(caller)`, computed ONCE at mint.
+   The worker then holds TWO credentials and chooses per operation:
+   - its OWN token for its own capability. Exec writes `check` as itself, because the verdict IS
+     exec's — that is the whole point of the session not having `check: put`.
+   - the DELEGATED run for anything touching the caller's data, which is bounded by what the
+     caller could reach.
 
-   | dimension | what it means | whose applies |
-   |---|---|---|
-   | kind + operations | CAPABILITY: why the worker exists | the WORKER's, always |
-   | pattern / scope | WHOSE DATA: what must never be laundered | the CALLER's |
+   That is real/effective uid made explicit as two tokens, and the audit shows which was used
+   because `created_by` differs.
 
-   Both leaks a shared fleet creates are scope leaks, never capability leaks. A shared tools worker
-   with an unscoped `message: query` hands user A user B's messages. And user A can ask a shared
-   worker to write a body stamped with B's `owner`: today `bodyMatchesGrant` refuses that because
-   the write happens AS A (`--session-token`), and with one worker serving everyone that check
-   evaporates. So the primitive is: **the worker acts with its own capabilities under the caller's
-   identity** — effective uid the worker, real uid the caller.
+   **Why not holes filled at call time** (the first two drafts of this item, both rejected).
+   Passing `actingFor` on every request, or templating a grant pattern with `$caller` /
+   `$record.owner`, both make a grant a statement completed at check time. PostgreSQL RLS shows
+   that CAN work (`USING (owner = current_user)`), but note what makes RLS tolerable: it binds one
+   well-known variable, not arbitrary fields of a triggering record. The general form is a small
+   template language living inside a frozen wire contract, it puts `actingFor` on every verb, and
+   it turns `effectivePermissions` from a list into a two-principal matrix — in a codebase where
+   every grant bug so far was a promise that did not match enforcement, and the antidote was
+   keeping permissions inspectable.
 
-   - READS: the caller must hold the kind AT ALL (this is what stops A asking a worker to query
-     `grant`), and the effective pattern is `worker AND caller` via `combineMatch`.
-   - WRITES: the worker's capability stands, and the BODY must satisfy the caller's scope. Exec
-     writes `procedure`, but only into A's space.
+   **Prior art converges on the credential, not the annotation.** AWS STS `AssumeRole` with a
+   session policy: effective = role policy INTERSECT session policy, computed at issuance, short
+   lifetime, plus permissions boundaries as a separate ceiling. OAuth 2.0 Token Exchange
+   (RFC 8693): an intermediary exchanges subject+actor tokens for a new one carrying an `act`
+   chain, scopes narrowed at exchange. Kerberos constrained delegation (S4U2Proxy), whose whole
+   evolution ran unconstrained impersonation -> declared targets -> the RESOURCE declaring who may
+   act for it. Macaroons and Biscuit: attenuation-only tokens any holder may narrow and none may
+   widen. Three independent mature systems reached the same answer, because a credential can be
+   named, inspected, logged, expired and revoked, is computed once so cost and failure land at one
+   point, and leaves every call site ignorant of delegation.
 
-   Checked against every case this repo has: exec writes `check` for A (capability kept, scope A);
-   tools reads only A's messages; A cannot reach `grant`; A cannot write a body carrying B's owner.
+   **Why it fits here specifically:**
+   - A run is already a RECORD, so this needs no new lifecycle: `radia query agent_run` inspects
+     it, `stopRun` revokes it, `runMaxLifetimeSeconds` expires it.
+   - `effectivePermissions` STAYS A LIST. Ask the delegated run and the answer is flat.
+   - No change to `query`/`take`/`ack`/`put`: the authority is in the token, so one mint endpoint
+     is the entire wire surface.
+   - It mints into the existing bootstrap chain rather than adding a parallel credential model,
+     the same rule OIDC followed.
+   - The precedent is in this repo already: download capabilities are "delegation of a read the
+     holder already had... authority that narrows as it travels, never widens" (design-auth.md),
+     scoped to one object and expiring. A delegated run is that principle at record scope.
+   - The cross-product of two pattern disjunctions is paid ONCE at mint, and an explosion fails
+     there with a clear message instead of mysteriously at some later query.
+   - "The caller holds no grant on this kind" stops being a hole: the delegated run simply cannot
+     do it, which is correct, and the worker does it with its own token, deliberately.
 
-   MOSTLY ALREADY BUILT, which is why this is an item and not a research question:
-   - `combineMatch` intersects two patterns; it is what grant AND request already does on every
-     scoped read, and it is the whole scope half.
-   - The delegator is SERVER-KNOWN: the worker claims a record whose `created_by` the runtime
-     assigned, so "act under whoever wrote the record I hold a lease on" is verifiable rather than
-     asserted. That is usually the dangerous part of delegation, and it is already solved.
-   - `delegation_context` (`Space.deriveDelegation`) already records the chain, server-derived from
-     the claimed lease and never from data parents.
+   **What turns the mechanism into a guarantee: REMOVE THE AMBIENT AUTHORITY.** If the tools
+   worker keeps unscoped grants on session data, minting a delegated run stays optional and
+   someone will forget — setuid's failure mode, exactly. Narrow the worker's OWN grants so it
+   cannot read session data as itself, and delegation becomes the only path to it.
 
-   What is missing: an opt-in at the call site, and `authorize` applying the caller's scope while
-   leaving kind and operations to the worker.
+   **Already built, which is why this is an item and not research:** `combineMatch` intersects two
+   patterns (it is what grant AND request does on every scoped read); the delegator is
+   SERVER-KNOWN as the leased record's `created_by`, so it is verifiable rather than asserted; and
+   `delegation_context` already records the chain, which is RFC 8693's `act` by another name.
+
+   **Left to decide:** where the attenuation lives — materialized grant records per delegated run
+   (many records, but they are records) versus an inline constraint on the `agent_run` body that
+   `authorize` ANDs in. The latter looks right: one field and one AND, against intersecting two
+   grant sets per request. Mint per (worker, caller) pair and reuse until expiry, never per call,
+   which bounds the growth.
+
+   **Do NOT take:** unconstrained impersonation (Kerberos's original mode, Kubernetes' `impersonate`
+   verb) — full authority transfer with no attenuation, where the failure mode is total. And
+   `may_act`-style caller-declared allowlists are real but a second policy surface to earn later.
 
    **This does NOT supersede the M3 chain-intersection line** in design-auth.md. That deferral
    stays: this is a different mechanism aimed at the concrete problem, not the policy arriving
    early. Anyone marking M3 done because this shipped has read it wrong.
-
-   Risks, real and bounded: it sits on the hot authorization path (one extra grant registry read
-   per call — indexed, and concurrent identical reads already coalesce), and scope composition
-   fails SILENTLY TOWARD OVER-PERMISSION, which is the direction nobody notices. So it gets the
-   treatment the grant work already got: `effectivePermissions` must be able to report the
-   delegated answer, or the promise is not inspectable before something depends on it. One limit
-   worth stating rather than discovering: this works only where the caller's scope is DERIVABLE.
-   The chat's grants are pattern-scoped (`{owner}`/`{conversationId}`), so it is; a caller holding
-   an UNSCOPED grant delegates an unscoped read, which is correct and still worth knowing.
 
 **Runtime. Changes the scaling law.**
 

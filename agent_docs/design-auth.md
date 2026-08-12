@@ -430,21 +430,22 @@ cannot), so M1 enforces the acting agent's own `put` grant and keeps the chain a
 record. Intersection composes with taint (M3): sensitive consumers may constrain both lineages.
 
 **A different mechanism now has a concrete caller** ([plan-scaling.md](plan-scaling.md) item 3a),
-and it is NOT this policy arriving early: SCOPE DELEGATION, where a worker acts with its OWN
-capability (kind + operations) under the CALLER's scope (the grant pattern). The distinction is
-what makes it safe where intersection is not. Intersecting grant SETS would delete the properties
-workers exist to provide — `EXEC_GRANTS` holds `check: put` where the session has `query` exactly
-so the model never grades its own work, and only exec may write a `procedure` so a saved one
-always went through the sandbox. A worker is setuid-shaped; what it holds beyond its caller is the
-point. What must never cross is WHOSE DATA it touches, and both leaks a shared worker creates are
-scope leaks: reading another session's records, and writing a body stamped with another session's
-owner (today refused only because the tools worker acts as its one session via `--session-token`,
-which stops working when one process serves many). Most of the machinery exists: `combineMatch`
-already intersects patterns, and the delegator is already server-known as the claimed record's
-`created_by`. Missing: an opt-in at the call site, `authorize` applying the caller's scope while
-leaving capability to the worker, and an `effectivePermissions` that reports the delegated answer
-— scope composition fails silently toward over-permission, so it has to be inspectable before
-anything depends on it.
+and it is NOT this policy arriving early: a DELEGATED RUN. A worker holding a lease mints a run
+whose authority is `grants(worker) INTERSECT grants(caller)`, computed once, and then holds two
+credentials — its own for its own capability, the delegated one for anything touching the caller's
+data. Intersecting grant SETS as a blanket rule would delete the properties workers exist to
+provide (`EXEC_GRANTS` holds `check: put` where the session has `query`, precisely so the model
+never grades its own work), which is why the split is per-credential rather than per-policy: the
+worker writes `check` as ITSELF and reads the session's records as the DELEGATED run.
+
+Minting rather than annotating each call is where AWS session policies, OAuth 2.0 Token Exchange
+(RFC 8693) and Kerberos constrained delegation all independently landed, and it keeps
+`effectivePermissions` a flat list — ask the delegated run. It is the same family as the
+capability below, one scope up: authority that narrows as it travels and never widens. Most of the
+machinery exists (`combineMatch` intersects patterns, the delegator is server-known as the leased
+record's `created_by`, `delegation_context` is already RFC 8693's `act` chain by another name).
+What makes it a guarantee rather than a mechanism is removing the worker's ambient authority, so
+delegation is the only path to a caller's data rather than the polite one.
 
 ## Download capabilities: a delegated read, not a credential
 
