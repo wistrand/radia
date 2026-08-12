@@ -93,7 +93,49 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
    socket wait. Still the answer for spreading load across machines.
 3. **One shared process serving many sessions**, rather than a fleet per user bootstrapping as
    operator. The remaining app-shape item, and the one that makes "N users" a deployment rather
-   than N copies of a dev harness.
+   than N copies of a dev harness. Two decisions inside it, one of which is item 3a:
+   - WHO ASSIGNS a session's grants once the session is not an operator. The substrate already
+     answers this: the SUPERVISOR carve-out (`space.ts`, `authorize`) may write `grant`/`signal`
+     and nothing else, and is mintable since ops-tiers phase 5. A session broker in the fleet runs
+     as it. The alternative is assigning at `radia login` time, which needs no component and makes
+     onboarding manual.
+   - HOW `space_*` keeps running as the caller. Today `tools.ts` takes `--session-token` and acts
+     as the one session it was launched for, which is exactly what stops a scoped user laundering
+     ops access through a privileged worker. One worker serving many callers cannot do that. The
+     near-term answer is to move `space_*` into the SESSION process, where the property holds by
+     construction and the plumbing is deleted rather than generalised. It does not generalise, and
+     that is item 3a.
+3a. **Per-call delegation: act as the caller, not as me.** The general form of the problem above,
+   and the thing the shared fleet's SECOND worker will demand. `space_*` can move into the session
+   because they are reads the session could make itself; exec cannot (it needs the jail, its own
+   permissions, and `--allow-run`), yet it runs model-written code ON BEHALF OF a session and must
+   not exceed what that session may touch. Images has the same shape, and the marketplace (M2) is
+   entirely this shape: a bidder acting for a requester.
+
+   MOSTLY ALREADY BUILT, which is why this is an item rather than a research question:
+   - `delegation_context` (`Space.deriveDelegation`) already records the authority chain,
+     SERVER-DERIVED from the claimed lease and never from data parents, one actor per hop. Its own
+     comment says the enforcement half is M3.
+   - `combineMatch` already intersects two patterns; it is what grant ∧ request uses on every
+     scoped read, and grant ∧ grant is the same operation.
+   - The delegator is server-known: the worker claims a record whose `created_by` the runtime
+     assigned, so "act as whoever wrote the record I hold a lease on" is verifiable rather than
+     asserted. That is usually the dangerous part of delegation, and it is already solved.
+
+   What is missing: an opt-in at the call site, and `authorize` computing
+   `grants(actor) INTERSECT grants(delegator)`.
+
+   NOT the rejected policy. design-auth.md rejects a HARD chain-intersection gate because it breaks
+   legitimate pipelines (the exec worker writes `check` records the session cannot; the inference
+   worker writes `message` records a session may only read). This is the strictly weaker opt-in:
+   it NARROWS one call, applies where the caller asks for it, and leaves every existing pipeline
+   untouched. Build it that way or it will be rejected again, for the same correct reason.
+
+   Risks, both real and bounded: it sits on the hot authorization path (one extra grant registry
+   read per call, indexed, and concurrent identical reads already coalesce), and intersection over
+   pattern-scoped grants is subtle in the direction where a mistake is SILENT OVER-PERMISSION. So
+   it gets the treatment the grant work already got: `effectivePermissions` must be able to report
+   the intersected answer, or the promise is not inspectable before something depends on it.
 
 **Runtime. Changes the scaling law.**
 

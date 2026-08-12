@@ -429,6 +429,19 @@ work = intersection of the authorization chain's grants*, but a hard chain-inter
 cannot), so M1 enforces the acting agent's own `put` grant and keeps the chain as the authority
 record. Intersection composes with taint (M3): sensitive consumers may constrain both lineages.
 
+**A narrower shape now has a concrete caller** ([plan-scaling.md](plan-scaling.md) item 3a): a
+per-call OPT-IN, where a worker asks to be authorized as `grants(actor) ∩ grants(delegator)` for
+one operation. It is strictly weaker than the gate rejected above — it narrows where the caller
+asks and leaves every pipeline untouched — and it is what a SHARED worker needs once one process
+serves many sessions. Today the chat's tools worker preserves that property by holding one
+session's token (`--session-token`), which works only because there is one session per fleet;
+exec cannot use that trick at all, since it needs its own jail and permissions while running code
+on a session's behalf. Most of the machinery exists: the chain is already server-derived from the
+claimed lease, `combineMatch` already intersects two patterns, and the delegator is already known
+to the runtime as the claimed record's `created_by`. What is missing is the opt-in and the
+intersection in `authorize` — plus an `effectivePermissions` that can report the intersected
+answer, or the promise is not inspectable before something depends on it.
+
 ## Download capabilities: a delegated read, not a credential
 
 Artifact bytes need one authorization shape the rest of the API does not: a browser cannot attach
