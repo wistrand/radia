@@ -105,37 +105,68 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
      near-term answer is to move `space_*` into the SESSION process, where the property holds by
      construction and the plumbing is deleted rather than generalised. It does not generalise, and
      that is item 3a.
-3a. **Per-call delegation: act as the caller, not as me.** The general form of the problem above,
-   and the thing the shared fleet's SECOND worker will demand. `space_*` can move into the session
-   because they are reads the session could make itself; exec cannot (it needs the jail, its own
-   permissions, and `--allow-run`), yet it runs model-written code ON BEHALF OF a session and must
-   not exceed what that session may touch. Images has the same shape, and the marketplace (M2) is
-   entirely this shape: a bidder acting for a requester.
+3a. **Scope delegation: my capabilities, the caller's identity.** The general form of the problem
+   above, and what the shared fleet's SECOND worker will demand. `space_*` can move into the
+   session because they are reads the session could make itself; exec cannot (it needs the jail,
+   its own permissions, `--allow-run`), yet it runs model-written code ON BEHALF OF a session and
+   must not reach past what that session may touch. Images is the same shape, and the marketplace
+   (M2) is entirely this shape: a bidder acting for a requester.
 
-   MOSTLY ALREADY BUILT, which is why this is an item rather than a research question:
-   - `delegation_context` (`Space.deriveDelegation`) already records the authority chain,
-     SERVER-DERIVED from the claimed lease and never from data parents, one actor per hop. Its own
-     comment says the enforcement half is M3.
-   - `combineMatch` already intersects two patterns; it is what grant ∧ request uses on every
-     scoped read, and grant ∧ grant is the same operation.
-   - The delegator is server-known: the worker claims a record whose `created_by` the runtime
-     assigned, so "act as whoever wrote the record I hold a lease on" is verifiable rather than
+   **The axis is capability vs scope, and only one of them delegates.** This was first written as
+   "authorize as `grants(worker) INTERSECT grants(caller)`" and that is WRONG, for the same reason
+   the hard chain-intersection gate is wrong — it just takes one more step to see. The chat's
+   security properties are IMPLEMENTED BY workers holding more than sessions: `EXEC_GRANTS` has
+   `check: put` where the session has `query`, so "the code did what was claimed" is never a record
+   the model authored about itself, and the same for `procedure` (only exec may write one, so a
+   saved procedure always went through the sandbox). Intersecting grant SETS deletes exactly those
+   properties, and deletes them in the unsafe direction: to restore function you would grant the
+   session `check: put`, which is the thing the design refuses. A worker is setuid-shaped. What it
+   holds beyond its caller is the reason it exists.
+
+   | dimension | what it means | whose applies |
+   |---|---|---|
+   | kind + operations | CAPABILITY: why the worker exists | the WORKER's, always |
+   | pattern / scope | WHOSE DATA: what must never be laundered | the CALLER's |
+
+   Both leaks a shared fleet creates are scope leaks, never capability leaks. A shared tools worker
+   with an unscoped `message: query` hands user A user B's messages. And user A can ask a shared
+   worker to write a body stamped with B's `owner`: today `bodyMatchesGrant` refuses that because
+   the write happens AS A (`--session-token`), and with one worker serving everyone that check
+   evaporates. So the primitive is: **the worker acts with its own capabilities under the caller's
+   identity** — effective uid the worker, real uid the caller.
+
+   - READS: the caller must hold the kind AT ALL (this is what stops A asking a worker to query
+     `grant`), and the effective pattern is `worker AND caller` via `combineMatch`.
+   - WRITES: the worker's capability stands, and the BODY must satisfy the caller's scope. Exec
+     writes `procedure`, but only into A's space.
+
+   Checked against every case this repo has: exec writes `check` for A (capability kept, scope A);
+   tools reads only A's messages; A cannot reach `grant`; A cannot write a body carrying B's owner.
+
+   MOSTLY ALREADY BUILT, which is why this is an item and not a research question:
+   - `combineMatch` intersects two patterns; it is what grant AND request already does on every
+     scoped read, and it is the whole scope half.
+   - The delegator is SERVER-KNOWN: the worker claims a record whose `created_by` the runtime
+     assigned, so "act under whoever wrote the record I hold a lease on" is verifiable rather than
      asserted. That is usually the dangerous part of delegation, and it is already solved.
+   - `delegation_context` (`Space.deriveDelegation`) already records the chain, server-derived from
+     the claimed lease and never from data parents.
 
-   What is missing: an opt-in at the call site, and `authorize` computing
-   `grants(actor) INTERSECT grants(delegator)`.
+   What is missing: an opt-in at the call site, and `authorize` applying the caller's scope while
+   leaving kind and operations to the worker.
 
-   NOT the rejected policy. design-auth.md rejects a HARD chain-intersection gate because it breaks
-   legitimate pipelines (the exec worker writes `check` records the session cannot; the inference
-   worker writes `message` records a session may only read). This is the strictly weaker opt-in:
-   it NARROWS one call, applies where the caller asks for it, and leaves every existing pipeline
-   untouched. Build it that way or it will be rejected again, for the same correct reason.
+   **This does NOT supersede the M3 chain-intersection line** in design-auth.md. That deferral
+   stays: this is a different mechanism aimed at the concrete problem, not the policy arriving
+   early. Anyone marking M3 done because this shipped has read it wrong.
 
-   Risks, both real and bounded: it sits on the hot authorization path (one extra grant registry
-   read per call, indexed, and concurrent identical reads already coalesce), and intersection over
-   pattern-scoped grants is subtle in the direction where a mistake is SILENT OVER-PERMISSION. So
-   it gets the treatment the grant work already got: `effectivePermissions` must be able to report
-   the intersected answer, or the promise is not inspectable before something depends on it.
+   Risks, real and bounded: it sits on the hot authorization path (one extra grant registry read
+   per call — indexed, and concurrent identical reads already coalesce), and scope composition
+   fails SILENTLY TOWARD OVER-PERMISSION, which is the direction nobody notices. So it gets the
+   treatment the grant work already got: `effectivePermissions` must be able to report the
+   delegated answer, or the promise is not inspectable before something depends on it. One limit
+   worth stating rather than discovering: this works only where the caller's scope is DERIVABLE.
+   The chat's grants are pattern-scoped (`{owner}`/`{conversationId}`), so it is; a caller holding
+   an UNSCOPED grant delegates an unscoped read, which is correct and still worth knowing.
 
 **Runtime. Changes the scaling law.**
 
