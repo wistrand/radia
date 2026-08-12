@@ -441,11 +441,16 @@ worker writes `check` as ITSELF and reads the session's records as the DELEGATED
 Minting rather than annotating each call is where AWS session policies, OAuth 2.0 Token Exchange
 (RFC 8693) and Kerberos constrained delegation all independently landed, and it keeps
 `effectivePermissions` a flat list — ask the delegated run. It is the same family as the
-capability below, one scope up: authority that narrows as it travels and never widens. Most of the
-machinery exists (`combineMatch` intersects patterns, the delegator is server-known as the leased
-record's `created_by`, `delegation_context` is already RFC 8693's `act` chain by another name).
-What makes it a guarantee rather than a mechanism is removing the worker's ambient authority, so
-delegation is the only path to a caller's data rather than the polite one.
+capability below, one scope up: authority that narrows as it travels and never widens.
+
+Two things about it are counter-intuitive enough to state here. The caller is resolved through the
+RUN (`created_by` names a `run:*`, and its `agent_run` body carries `actingFor`), never from the
+triggering record's author or an `owner` field: in the chat the record a worker claims was written
+by ANOTHER worker, and an `owner` written under an unpatterned `put` grant is an unconstrained body
+value. And a plain intersection cannot remove the worker's ambient authority, because
+`grants(worker) INTERSECT grants(caller)` is a subset of the worker's own grants, so narrowing the
+worker empties the delegated run too. That needs a grant only a delegated run may exercise. Both
+are worked through in [plan-scaling.md](plan-scaling.md) item 3a.
 
 ## Download capabilities: a delegated read, not a credential
 

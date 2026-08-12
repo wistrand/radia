@@ -106,22 +106,58 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
      construction and the plumbing is deleted rather than generalised. It does not generalise, and
      that is item 3a.
 3a. **Scope delegation, as a DELEGATED RUN.** The general form of the problem above, and what a
-   shared worker needs: act with my own capability, under my caller's reach. `space_*` can move
+   shared worker needs: act with my own capability, under my caller's reach. The build sequence is
+   [plan-delegation.md](plan-delegation.md); the design and the rejected alternatives are here. `space_*` can move
    into the session because they are reads the session could make itself; exec cannot (it needs
    the jail, its own permissions, `--allow-run`) yet runs model-written code ON BEHALF OF a
    session. Images is the same shape, and the marketplace (M2) is entirely this shape.
 
    **The shape: mint a narrowed credential, do not annotate every call.**
-   `POST /v0/agent-runs/delegated {actingFor: <a record I hold a lease on>}` returns an ordinary
-   run token whose authority is `grants(worker) INTERSECT grants(caller)`, computed ONCE at mint.
-   The worker then holds TWO credentials and chooses per operation:
+   `POST /v0/agent-runs/delegated {for: <a record naming the caller>}` returns an ordinary run
+   token whose authority is `grants(worker) INTERSECT grants(caller)`, computed ONCE at mint, and
+   whose `agent_run` body carries `actingFor: <the caller>`. The worker then holds TWO credentials
+   and chooses per operation:
    - its OWN token for its own capability. Exec writes `check` as itself, because the verdict IS
-     exec's — that is the whole point of the session not having `check: put`.
+     exec's, which is the whole point of the session not having `check: put`.
    - the DELEGATED run for anything touching the caller's data, which is bounded by what the
      caller could reach.
 
    That is real/effective uid made explicit as two tokens, and the audit shows which was used
    because `created_by` differs.
+
+   **Who the caller IS: resolve through the RUN, never through a body field.** The mint's argument
+   proves ENTITLEMENT; it does not name the caller. Getting that resolution right is most of the
+   feature, and the three obvious sources all fail against the chat's actual topology:
+   - the leased record's `created_by`. The `tool_call` exec claims is written by the TURN WORKER
+     (`extensions/ts/turn.ts`, a keyed put), so this names `agent:chat-turn`, and intersecting with
+     `TURN_GRANTS` (`message` read, `llm_call`, `tool_call: put`, `turn_complete`, `cancel`) yields
+     nothing on `artifact`, `workspace` or `procedure`. Exec fails closed and cannot do its job.
+   - `body.owner`. Names the person, and is UNCONSTRAINED: `tool_call: put` in `TURN_GRANTS` carries
+     no pattern, so the turn worker may emit a call naming anyone. Authority from an unconstrained
+     body value is "provenance is not authority" wearing a different hat.
+   - `delegation_context`. The right source, and absent at this hop. It is derived at exactly one
+     site (`Space.deriveDelegation`, called from inside `ack`), so lease-emitted work carries a
+     chain and a plain put never does, and the turn worker's links are keyed puts by the deliberate
+     choice recorded in plan-chat-turn.md.
+
+   What works is already in the shape of the data: **`created_by` names the RUN**, not the agent
+   (`resolveCredential` returns `principal: b.run`, and `http.ts` passes it through), and a run is
+   a record. So put `actingFor` on the `agent_run` body and caller resolution is transitive:
+
+       caller(R) = run(R.created_by).actingFor ?? grantSubject(R.created_by)
+
+   One indexed read, no walk: `actingFor` holds a resolved caller, never another run. The turn
+   worker holds its own delegated run for the session, so the `tool_call` it emits is authored by
+   that run, and exec resolving through it lands on the person. Every hop is server-derived; the
+   worker asserts nothing beyond naming a record it may already reach.
+
+   **Entitlement to mint, in two rules, because they rest on different things.** A pure narrowing
+   (`grants(worker) INTERSECT grants(caller)`) needs only READ on the naming record: the result is
+   a subset of what the worker already holds, so it can gain nothing. That is the turn worker's
+   case, and it is why relaying identity does not require making `message` claimable, which
+   plan-chat-turn.md rejected. Exercising a DELEGABLE grant (below) needs a LEASE on the naming
+   record, because that is authority the worker cannot use alone, so the caller's request must be
+   one it actually claimed. Exec holds the `tool_call`'s lease and qualifies.
 
    **Why not holes filled at call time** (the first two drafts of this item, both rejected).
    Passing `actingFor` on every request, or templating a grant pattern with `$caller` /
@@ -160,21 +196,64 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
    - "The caller holds no grant on this kind" stops being a hole: the delegated run simply cannot
      do it, which is correct, and the worker does it with its own token, deliberately.
 
-   **What turns the mechanism into a guarantee: REMOVE THE AMBIENT AUTHORITY.** If the tools
-   worker keeps unscoped grants on session data, minting a delegated run stays optional and
-   someone will forget — setuid's failure mode, exactly. Narrow the worker's OWN grants so it
-   cannot read session data as itself, and delegation becomes the only path to it.
+   **What turns the mechanism into a guarantee: REMOVE THE AMBIENT AUTHORITY.** `EXEC_GRANTS`
+   (`examples/chat/space/roles.ts`) holds five UNSCOPED grants over session data (`artifact:
+   put/read_one`, `workspace: query/put`, `procedure: put/query`, `message: put`, `tool_result:
+   put`), so one shared exec worker reads every user's tree today and minting a delegated run stays
+   optional. Somebody will forget, which is setuid's failure mode exactly. This half is larger than
+   the endpoint, and until it lands the delegated run is decoration.
+
+   It also cannot be done by plain narrowing, and that contradiction has to be resolved first:
+   `grants(worker) INTERSECT grants(caller)` is a SUBSET of the worker's own grants, so removing
+   exec's `artifact: read_one` empties the intersection and the delegated run cannot read the
+   attachment either. The resolution is a grant only a delegated run may exercise (`delegable:
+   true`, refused to a run carrying no `actingFor`): exec's own token cannot touch session data,
+   the delegated run can, and the caller's pattern bounds it. That is AWS's role/principal split as
+   one grant field, a container of authority you can only exercise by assuming it.
+   `effectivePermissions` must render it MARKED, or it is one more promise that does not match
+   enforcement.
+
+   **Whose identity the delegated run carries: the WORKER's.** The alternative is minting under the
+   CALLER's agent, attenuated by the worker's grants, so `created_by` names the person and
+   delegation chains through `grantSubject` with no new field. Rejected on three costs and a
+   decider that does not hold:
+   - `computeTaint` compares `grantSubject(createdBy) !== grantSubject(writer)`
+     (`src/core/space.ts`), so a worker writing as its caller stops tainting its output `foreign`.
+     A barrier label disappears quietly, in the one place anything reads it.
+   - Idempotency is scoped to the agent behind the caller (audit Package U), so two workers
+     delegated for one caller SHARE that namespace. The turn worker's keys are derived from record
+     ids (`turn:${id}`), which a second worker delegated for the same caller can derive too.
+   - Every view attributes by author, so output written by model-written code would render as
+     authored by the person.
+   - The decider offered for it was revocation, and it does not hold. `revokeDefinition` leaves
+     runs alive ON PURPOSE ("Existing RUNS are untouched", `src/core/space.ts`) and
+     `resolveCredential` checks the run's own `status`/`expiresAt`, never its definition's, so
+     deprovisioning bounds by the ceiling under EITHER identity. The property actually wanted is
+     that delegated runs are ENUMERABLE by caller, and an indexed `actingFor` gives it directly:
+     `query agent_run{actingFor, status: "active"}` then `stopRun` each, the shape `remediate`
+     already uses for leases.
+
+   **Guard the two shortcuts BEFORE building either half.** `authorize` returns `null` for a
+   privileged principal before reading any grant, and again for the supervisor's `grant`/`signal`
+   carve-out, which keys on `grantSubject(principal)`: the AGENT, not the run. An inline
+   attenuation is skipped by both. Item 3's first decision puts the session broker on the
+   supervisor identity, and the supervisor is MINTABLE (`createAgentDefinition` refuses
+   `isPrivileged`, which covers operators and the space's own principal but not `ctx.supervisor`;
+   its error message says otherwise and is stale). So the MINT refuses a privileged or supervisor
+   agent outright rather than trusting `authorize` to catch it, and the planted regression is two
+   tests: an attenuated run of each must reach neither shortcut.
 
    **Already built, which is why this is an item and not research:** `combineMatch` intersects two
-   patterns (it is what grant AND request does on every scoped read); the delegator is
-   SERVER-KNOWN as the leased record's `created_by`, so it is verifiable rather than asserted; and
-   `delegation_context` already records the chain, which is RFC 8693's `act` by another name.
+   patterns (it is what grant AND request does on every scoped read); `created_by` names the RUN,
+   so the credential behind any record is itself a readable record; and `delegation_context` is
+   RFC 8693's `act` chain by another name, for the lease-emitted half.
 
-   **Left to decide:** where the attenuation lives — materialized grant records per delegated run
+   **Left to decide:** where the attenuation lives, materialized grant records per delegated run
    (many records, but they are records) versus an inline constraint on the `agent_run` body that
    `authorize` ANDs in. The latter looks right: one field and one AND, against intersecting two
    grant sets per request. Mint per (worker, caller) pair and reuse until expiry, never per call,
-   which bounds the growth.
+   which bounds the growth. And whether `delegable` is a field on `grant` or a kind of its own; a
+   field keeps one registry and one projection.
 
    **Do NOT take:** unconstrained impersonation (Kerberos's original mode, Kubernetes' `impersonate`
    verb) — full authority transfer with no attenuation, where the failure mode is total. And
