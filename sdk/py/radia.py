@@ -364,6 +364,22 @@ class RadiaClient:
         """Mint a short-lived run token from a definition token."""
         return self._req("POST", "/v0/agent-runs", {}, {"Authorization": f"Bearer {definition_token}"})
 
+    def create_delegated_run(self, for_record_id: str) -> Dict[str, Any]:
+        """Mint a DELEGATED run: this client's capability, bounded by its caller's reach.
+
+        ``for_record_id`` names a record this client holds a lease on, or may read; the caller is
+        resolved server-side from that record's author, so nothing here asserts an identity. The
+        returned token is held BESIDE this client's own, never instead of it: use your own for your
+        own capability, the delegated one for anything touching the caller's data.
+        """
+        return self._req("POST", "/v0/agent-runs/delegated", {"for": for_record_id})
+
+    def delegated_client(self, for_record_id: str) -> "RadiaClient":
+        """The same mint, as a second client. Holds no definition token, so it cannot outlive the
+        run it was given: a delegated credential is scoped to a piece of work."""
+        out = self.create_delegated_run(for_record_id)
+        return RadiaClient(self.base, token=out["runToken"])
+
     def renew_run(self, run: str) -> Dict[str, Any]:
         """Extend this run's expiry, keeping the SAME token. Bounded by the run's max lifetime."""
         return self._req("POST", f"/v0/agent-runs/{urllib.parse.quote(run, safe='')}/renew")

@@ -22,6 +22,7 @@ imports.
 | Remediation | `admin(action, id)` / `remediate(action, selector)` | `admin(action, id)` / `remediate(action, state=…, expired=…)` |
 | Ops queries | `queryEnvelopes` / `diagnostics` / `erasures` / `getStats` / `getEvents` / `getEventsPage` | `query_envelopes` / `diagnostics` / `erasures` / `get_stats` / `get_events` / `get_events_page` |
 | Bootstrap   | `grant` / `createAgentDefinition` / `createRun` / `stopRun` | `grant` / `create_agent_definition` / `create_run` / `stop_run` |
+| Delegation  | `createDelegatedRun` / `delegatedClient`                    | `create_delegated_run` / `delegated_client`                     |
 | Credential  | `{definitionToken}` exchanges on expiry; `keepAlive(signal, onLost)` renews at half-life | `keep_alive(stop, on_lost)`, renewal only (see below) |
 | Children    | `getChildren` / `getChildrenPage` (paged) | `get_children` / `get_children_page` (paged) |
 | Dependencies| none beyond the runtime | none, standard library only (3.9+) |

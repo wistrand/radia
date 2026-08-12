@@ -902,6 +902,29 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Grants, scopes and narrowed answers
 
+- **A delegated run can never exceed its CALLER, so a worker capability cannot be delegated**
+  (`intersectGrants`, src/core/space.ts). The authority is `worker INTERSECT caller`, so anything
+  the caller deliberately lacks intersects to nothing: exec's `check: put` and `workspace: put`
+  stay on its own token because the session holds neither, and moving them to `delegable:` broke
+  `save_procedure` outright. Split a worker's grants by READ versus WRITE, not by "session data".
+  Guard: conformance/delegation.test.ts "a SUBSET on every axis".
+- **Anything that mints an `agent_run` per call grows a table GC never sweeps**
+  (`Space.mintDelegatedRun`). Reserved kinds are exempt from the retention sweep and compaction
+  only keeps newest-per-`run`, so each distinct run is a permanent row — and `runPrincipalsOf`
+  pages an agent's runs to exhaustion on every self-scoped read, refusing rather than narrowing.
+  Derive the token from the caller's credential plus what makes the run distinct (the OIDC mint's
+  move), so an unchanged one is found by its `tokenHash` and writes nothing. Put anything that can
+  CHANGE into the derivation, or reuse would mutate a run whose authority is memoized as immutable.
+  Guard: conformance/delegation.test.ts "REUSES its run".
+- **A read-then-write helper needs two credentials, and its name will not tell you**
+  (`writeWorkspace`, extensions/ts/workspace.ts). It reads the predecessor AND asks whether the
+  tree forked, two separate reads inside one write call; passing only the writing credential
+  produced a `forbidden` three frames down in an extension. Both take an optional `reader`
+  defaulting to `client`. Grep a function for reads before handing it a narrowed credential.
+- **A test harness acting as the OPERATOR is not testing the real path** (smoke-procedures.ts).
+  It wrote `tool_call` records as `admin`, so every call had a privileged author; delegation
+  refuses those (an operator has no grant set to narrow to) and the whole suite failed at once.
+  Write records as the principal production uses.
 - **A one-off manual grant to a long-lived principal hides gaps in the standard set**
   (`userGrants`, examples/chat/space/roles.ts). `kind_def:query` was hand-granted to one person
   in August and never added to the set, so `space_kinds` worked for them and 403'd for every

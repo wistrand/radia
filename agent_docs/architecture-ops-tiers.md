@@ -61,6 +61,12 @@ the escalation root) and the coordination bypass (power 7). Those stay config-op
 only. An `ops_grant` also grants NOTHING on the coordination plane: `observe` does not put, take
 or query records; that stays kind-scoped ordinary grants.
 
+A DELEGATED run holds NO powers at all, whatever its worker holds (`Space.opsPowers` refuses
+before anything else). `ops_grant` is keyed by principal and resolved through `grantSubject`, which
+answers with the worker's AGENT, so without that refusal a worker's `observe` would ride along on
+every run it minted for a caller. Delegation narrows the coordination plane; it must not open this
+one. See [plan-delegation.md](plan-delegation.md).
+
 ## Enforcement
 
 One place: the ops gate in `src/server/http.ts`, a three-way instead of a binary.

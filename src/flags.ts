@@ -35,6 +35,7 @@ export const VALUELESS = new Set([
   "--retire",
   "--once",
   "--no-broker",
+  "--stop",
 ]);
 
 /** The value of `--name`, or undefined. First occurrence wins, not last, which keeps

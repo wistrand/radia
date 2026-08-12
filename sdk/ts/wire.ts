@@ -45,6 +45,22 @@ export interface DelegationContext {
   origin: Ulid; // the leased record it was delegated from (the authorization parent)
 }
 
+/**
+ * What `POST /v0/agent-runs/delegated` returns: an ordinary run token whose authority is
+ * `grants(worker) INTERSECT grants(caller)`.
+ *
+ * `agent` is still the WORKER's: delegation narrows what a run may do, it does not change who it
+ * is, so `created_by`, taint and the idempotency scope all keep naming the worker. `actingFor` is
+ * the other half of the answer and is server-resolved from the named record's author.
+ */
+export interface DelegatedRun {
+  run: Ulid;
+  agent: string;
+  runToken: string;
+  expiresAt: string;
+  actingFor: string;
+}
+
 /** Server-assigned, authoritative metadata. Never client-editable. */
 export interface RuntimeMeta {
   createdBy: string; // principal id

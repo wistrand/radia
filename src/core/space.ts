@@ -59,7 +59,14 @@ import {
   validateOpsGrantDef,
   WRITE_PROTECTED_KINDS,
 } from "./kinds.ts";
-import { CredentialStore, hashToken, mintCredential, type ResolvedToken } from "./auth.ts";
+import {
+  CredentialStore,
+  type Delegation,
+  type DelegatedGrant,
+  hashToken,
+  mintCredential,
+  type ResolvedToken,
+} from "./auth.ts";
 import { Coalescer } from "./coalesce.ts";
 import { type CompactionResult, compactRegistries } from "./gc.ts";
 import { type BlobGcResult, type BlobStore, MemoryBlobStore } from "../storage/blobs.ts";
@@ -289,6 +296,177 @@ export interface Watch {
   lastSeenAt: number;
 }
 
+/** Every grant in force for one principal, and where they came from. The single answer behind
+ *  `authorize`, `readAccess`, `authorScope`, `taintBarrier`, `authorizeWatch`, `opsScope` and
+ *  `effectivePermissions`, so a delegated run cannot be attenuated in some of them. */
+/**
+ * The principal holding an agent's DELEGABLE grants: authority it may exercise only through a
+ * delegated run (plan-delegation.md phase 3).
+ *
+ * A prefix no credential can ever resolve to, which is the whole mechanism. `grantSubject` answers
+ * `agent:`, `human:` or `run:`; `createAgentDefinition` refuses anything but the first two; OIDC
+ * mints `human:` only. So these grants are unreachable by authentication and readable only by the
+ * mint, and a space running an older build sees a principal that never authenticates rather than a
+ * flag it does not understand.
+ */
+export const DELEGABLE_PREFIX = "delegable:";
+
+export function delegablePrincipal(agent: string): string {
+  return `${DELEGABLE_PREFIX}${agent}`;
+}
+
+/** What a delegated mint returns. Mirrors `createAgentRun`, plus who it is bounded by. */
+export interface DelegatedRunMint {
+  run: string;
+  agent: string;
+  runToken: string;
+  expiresAt: string;
+  actingFor: string;
+}
+
+/** The cross product of two pattern disjunctions is paid ONCE, at mint. This is where an explosion
+ *  fails, with a message naming the fix, instead of silently making every later read expensive. */
+const MAX_DELEGATED_GRANTS = 64;
+
+/**
+ * `grants(worker) INTERSECT grants(caller)`, per kind and per operation.
+ *
+ * The result is a SUBSET of the worker's authority on every axis, which is the property the whole
+ * mechanism rests on: an operation neither side holds is absent, and a pattern either side imposes
+ * is applied. An unpatterned grant means "the whole kind", so it contributes the other side's
+ * patterns unchanged rather than widening to nothing.
+ *
+ * A `scope.createdBy: "self"` grant on EITHER side is dropped. "Self" is relative to the holder,
+ * and a delegated run's writer is the worker, so materializing it would invert the caller's
+ * intent — the one narrowing that cannot be carried across a change of author. Dropping is
+ * fail-closed: the delegated run simply cannot use that grant.
+ */
+export function intersectGrants(worker: GrantDef[], caller: GrantDef[]): DelegatedGrant[] {
+  const usable = (defs: GrantDef[]) =>
+    defs.filter((g) =>
+      typeof g?.kind === "string" && Array.isArray(g.operations) &&
+      (g as GrantDef & { scope?: { createdBy?: string } }).scope?.createdBy !== "self"
+    );
+  const w = usable(worker);
+  const c = usable(caller);
+  const out: DelegatedGrant[] = [];
+  const kinds = [...new Set(w.map((g) => g.kind))].filter((k) => c.some((g) => g.kind === k)).sort();
+  for (const kind of kinds) {
+    const wk = w.filter((g) => g.kind === kind);
+    const ck = c.filter((g) => g.kind === kind);
+    const ops = [...new Set(wk.flatMap((g) => g.operations))]
+      .filter((op) => ck.some((g) => g.operations.includes(op)))
+      .sort();
+    for (const op of ops) {
+      const wp = patternsOf(wk, op);
+      const cp = patternsOf(ck, op);
+      const taint = intersectTaint(allowlistOf(wk, op), allowlistOf(ck, op));
+      const scope = taint === undefined ? {} : { scope: { taint: taint.length === 0 ? "none" : taint.join(",") } };
+      const patterns = wp === null ? cp : cp === null ? wp : wp.flatMap((a) => cp.map((b) => intersectPattern(a, b)));
+      if (patterns === null) {
+        out.push({ kind, operations: [op], ...scope });
+        continue;
+      }
+      for (const pattern of patterns) out.push({ kind, operations: [op], pattern, ...scope });
+    }
+  }
+  return out;
+}
+
+/** The patterns grants permitting `op` impose, or `null` when one of them is unrestricted (which
+ *  widens to the whole kind, exactly as `constraintFrom` reads it). */
+function patternsOf(grants: GrantDef[], op: GrantOp): Record<string, unknown>[] | null {
+  const applicable = grants.filter((g) => g.operations.includes(op));
+  const patterns: Record<string, unknown>[] = [];
+  for (const g of applicable) {
+    if (!g.pattern || Object.keys(g.pattern).length === 0) return null;
+    patterns.push(g.pattern);
+  }
+  return patterns.length > 0 ? patterns : null;
+}
+
+/** The taint allowlist grants permitting `op` impose, or `undefined` for no barrier. Mirrors
+ *  `barrierFrom`: every applicable grant must state one, and together they UNION. */
+function allowlistOf(grants: GrantDef[], op: GrantOp): string[] | undefined {
+  const applicable = (grants as (GrantDef & { scope?: Record<string, string> })[])
+    .filter((g) => g.operations.includes(op));
+  if (applicable.length === 0 || !applicable.every((g) => typeof g.scope?.taint === "string")) return undefined;
+  const allowed = new Set<string>();
+  for (const g of applicable) for (const l of parseTaintAllowlist(g.scope!.taint!)) allowed.add(l);
+  return [...allowed].sort();
+}
+
+/** Two barriers compose as the NARROWER of the two: a label must be allowed by both sides to
+ *  survive. Absence is "no barrier", so it yields to whichever side states one. */
+function intersectTaint(a: string[] | undefined, b: string[] | undefined): string[] | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return a.filter((l) => b.includes(l));
+}
+
+/** Both patterns must hold. Merged FLAT when they can be, because the result is stored and then
+ *  AND-ed into every request (`combineMatch`), and nesting compounds against the compiler's
+ *  depth-3 limit. A key both sides constrain differently cannot merge, so it falls back to `$and`
+ *  and the compiler decides. */
+function intersectPattern(a: Record<string, unknown>, b: Record<string, unknown>): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...a };
+  for (const [k, v] of Object.entries(b)) {
+    if (!(k in merged)) {
+      merged[k] = v;
+      continue;
+    }
+    if (JSON.stringify(merged[k]) !== JSON.stringify(v)) return { $and: [a, b] };
+  }
+  return merged;
+}
+
+/** An `agent_run` body, as the mint and its successors write it. */
+interface RunBody {
+  run?: string;
+  agent?: string;
+  tokenHash?: string;
+  status?: string;
+  expiresAt?: string;
+  mintedAt?: string;
+  /** Delegated runs only: the caller this run is bounded by, and the intersection it was minted
+   *  with. Indexed (`actingFor`) so `radia runs --acting-for` is one query. */
+  actingFor?: string;
+  delegated?: { grants?: unknown };
+}
+
+/** A run's current state, folded over its successors. */
+interface RunState {
+  agent?: string;
+  tokenHash?: string;
+  status?: string;
+  delegation?: Delegation;
+}
+
+/** The attenuation an `agent_run` body carries, or `undefined`. Defensive about the shape because
+ *  a malformed one must read as NO delegation on a run that claims one, which `access` then
+ *  treats as an empty grant set rather than as the worker's. */
+function delegationOfBody(body: RunBody | undefined): Delegation | undefined {
+  if (!body || typeof body.actingFor !== "string" || body.actingFor.length === 0) return undefined;
+  const raw = body.delegated?.grants;
+  const grants = Array.isArray(raw)
+    ? raw.filter((g): g is DelegatedGrant =>
+      !!g && typeof (g as DelegatedGrant).kind === "string" && Array.isArray((g as DelegatedGrant).operations)
+    )
+    : [];
+  return { actingFor: body.actingFor, grants };
+}
+
+interface GrantAccess {
+  /** Operator or the space itself: no grant is read and nothing constrains it. Never true for a
+   *  delegated run, whose mint refuses a privileged agent. */
+  privileged: boolean;
+  /** Set when the principal is a delegated run; `defs` then came from its own `agent_run` body. */
+  delegated?: Delegation;
+  defs: GrantDef[];
+  complete: boolean;
+  scanned: number;
+}
+
 /** What a read verb is allowed to see: pattern constraint plus author restriction. */
 export interface ReadAccess {
   /** Patterns the request must additionally satisfy (`null` = unrestricted). */
@@ -305,6 +483,13 @@ export interface EffectivePermissions {
   /** The agent a run resolves to. Grants are held by agents, not by individual runs. */
   subject: string;
   privileged: boolean;
+  /** Set for a DELEGATED run: the caller whose reach bounds it. `kinds` below is then the
+   *  intersection it was minted with, not `subject`'s own grants, so the two lines have to be read
+   *  together. See agent_docs/plan-delegation.md. */
+  actingFor?: string;
+  /** Authority this agent can reach ONLY by minting a delegated run (`delegable:<agent>` grants).
+   *  Absent from `kinds` on purpose: its own token cannot use these. */
+  delegable?: { kind: string; operations: GrantOp[] }[];
   kinds: {
     kind: string;
     operations: GrantOp[];
@@ -527,6 +712,28 @@ export class Space {
   }
 
   /**
+   * The attenuation a DELEGATED run carries, or `undefined` for every other principal.
+   *
+   * FAIL-CLOSED is the whole contract here: if this answers `undefined` for a run that IS
+   * delegated, `access` falls through to `grantSubject`, which resolves to the WORKER's agent, and
+   * the run silently gains the worker's full authority. So absence from the memo means UNKNOWN and
+   * costs a record read, never "not delegated".
+   *
+   * The memo is warm for every authenticated request, because `resolveCredential` reads the run
+   * body anyway and remembers what it found. The cold path is real: `ack` authorizes the LEASE
+   * OWNER, which may be a run minted by another instance or before a restart.
+   */
+  private async delegationOf(principal: string): Promise<Delegation | undefined> {
+    if (!principal.startsWith("run:")) return undefined; // agents and humans are never delegated
+    const known = this.creds.runFacts(principal);
+    if (known) return known.delegation;
+    const rec = await this.runRecord(principal);
+    if (!rec?.agent) return undefined; // not a run this space knows; it holds no grants either way
+    this.creds.rememberRun(principal, rec.agent, rec.delegation);
+    return rec.delegation;
+  }
+
+  /**
    * A privileged principal has operator access: `/ops/*` with every power, grant and signal
    * writes, minting, and any operation without a grant.
    *
@@ -564,7 +771,19 @@ export class Space {
    * the grant's pattern).
    */
   async authorize(principal: string, op: GrantOp, kind: string): Promise<Record<string, unknown>[] | null> {
-    if (this.isPrivileged(principal)) return null;
+    const access = await this.access(principal, kind);
+    // BEFORE both shortcuts below, because both return `null` (unrestricted) without reading a
+    // grant, and a delegated run's whole authority is the attenuation they would skip. The mint
+    // refuses a privileged or supervisor agent outright, so this is the second wall rather than
+    // the only one; it is here because `isPrivileged` and the carve-out both resolve
+    // `grantSubject`, which for a delegated run answers with the WORKER's agent.
+    if (access.delegated) {
+      if ((op === "put" || op === "take") && WRITE_PROTECTED_KINDS.has(kind)) {
+        throw new RadiaError("forbidden", `a delegated run may not write '${kind}' records`);
+      }
+      return this.constraintFrom(access.defs, principal, op, kind);
+    }
+    if (access.privileged) return null;
     const subject = this.grantSubject(principal);
     if ((op === "put" || op === "take") && WRITE_PROTECTED_KINDS.has(kind)) {
       // The supervisor's ENTIRE remaining privilege (architecture-ops-tiers.md phase 5): it assigns
@@ -584,36 +803,63 @@ export class Space {
         `writing '${kind}' records requires an operator${kind === GRANT || kind === SIGNAL ? " or the supervisor" : ""}: it is assigned, never self-declared`,
       );
     }
-    // Grants are records: query the ones for this (subject, kind) and check the op.
-    //
-    // ADDITIVE, not latest-wins: a principal may hold several grants on one kind (different
-    // operations, different pattern scopes) and they coexist. So a revocation targets one GRANT,
-    // identified by its content (`grantKey`), and `activeSet` drops exactly that entry while
-    // leaving the others in force. Projecting by (principal, kind) instead would let a single
-    // revocation silently take every grant on the kind with it.
-    const view = await this.registry(GRANT, grantKey, { principal: subject, kind });
-    this.warnIfIncomplete(view, principal, op, kind);
-    return this.constraintFrom([...view.entries.values()], principal, op, kind);
+    this.warnIfIncomplete(access, principal, op, kind);
+    return this.constraintFrom(access.defs, principal, op, kind);
   }
 
-  /** The pattern constraint a already-read grant set imposes. Split from the read so `readAccess`
+  /**
+   * THE authorization read: every grant in force for `principal` (on `kind`, or on every kind when
+   * omitted), plus whether the read saw everything.
+   *
+   * One seam, because there are six entry points (`authorize`, `readAccess`, `authorScope`,
+   * `taintBarrier`, `authorizeWatch`, `effectivePermissions`) and a delegated run must be attenuated
+   * in ALL of them. Adding the branch per call site is how five of them would keep reading the
+   * worker's grants.
+   *
+   * Grants are records: for an ordinary principal this queries the ones for this (subject, kind).
+   * ADDITIVE, not latest-wins: a principal may hold several grants on one kind (different
+   * operations, different pattern scopes) and they coexist. So a revocation targets one GRANT,
+   * identified by its content (`grantKey`), and `activeSet` drops exactly that entry while leaving
+   * the others in force. Projecting by (principal, kind) instead would let a single revocation
+   * silently take every grant on the kind with it.
+   */
+  private async access(principal: string, kind?: string): Promise<GrantAccess> {
+    const delegated = await this.delegationOf(principal);
+    if (delegated) {
+      // A delegated run reads NO grant record. Its authority was computed at mint and lives on its
+      // own `agent_run` body, so it cannot widen when the worker's grants do, and `complete` is
+      // true by construction (nothing was paged).
+      const defs = delegated.grants
+        .filter((g) => kind === undefined || g.kind === kind)
+        .map((g) => ({ ...g, principal }) as GrantDef);
+      return { privileged: false, delegated, defs, complete: true, scanned: defs.length };
+    }
+    if (this.isPrivileged(principal)) return { privileged: true, defs: [], complete: true, scanned: 0 };
+    const subject = this.grantSubject(principal);
+    const view = await this.registry(GRANT, grantKey, kind === undefined ? { principal: subject } : { principal: subject, kind });
+    return {
+      privileged: false,
+      defs: [...view.entries.values()].map((r) => r.body as GrantDef),
+      complete: view.complete,
+      scanned: view.scanned,
+    };
+  }
+
+  /** The pattern constraint an already-read grant set imposes. Split from the read so `readAccess`
    *  can answer three questions from ONE view; the rule is unchanged. */
   private constraintFrom(
-    grants: RadiaRecord[],
+    grants: GrantDef[],
     principal: string,
     op: GrantOp,
     kind: string,
   ): Record<string, unknown>[] | null {
-    const applicable = grants.filter((g) => {
-      const ops = (g.body as Partial<GrantDef>)?.operations;
-      return Array.isArray(ops) && ops.includes(op);
-    });
+    const applicable = grants.filter((g) => Array.isArray(g.operations) && g.operations.includes(op));
     if (applicable.length === 0) {
       throw new RadiaError("forbidden", `principal '${principal}' has no '${op}' grant for kind '${kind}'`);
     }
     const patterns: Record<string, unknown>[] = [];
     for (const g of applicable) {
-      const t = (g.body as GrantDef).pattern;
+      const t = g.pattern;
       if (!t || Object.keys(t).length === 0) return null; // an unrestricted grant widens to the whole kind
       patterns.push(t);
     }
@@ -635,20 +881,23 @@ export class Space {
    * behaviour, which is the permissive-but-consistent reading of a union.
    */
   async authorScope(principal: string, op: GrantOp, kind: string): Promise<string[] | undefined> {
-    if (this.isPrivileged(principal)) return undefined;
-    const subject = this.grantSubject(principal);
     // Only grants that permit THIS operation are relevant. A `put`-only grant says nothing about
     // reads, and counting it as "an unscoped grant on this kind" lifts the read restriction the
     // moment a read grant is narrowed while the write grant stays as it was.
-    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject, kind })).entries.values()];
-    if (!this.selfScoped(grants, op)) return undefined;
-    return await this.runPrincipalsOf(subject, principal);
+    const access = await this.access(principal, kind);
+    if (access.privileged || !this.selfScoped(access.defs, op)) return undefined;
+    // A delegated run's self scope is its CALLER's, which is what the caller's own grant meant.
+    // The mint refuses self-scoped grants today (plan-delegation.md 1d), so this is unreachable
+    // until it stops doing so; resolving it to the worker would be the inversion that rule exists
+    // to prevent.
+    const subject = access.delegated ? this.grantSubject(access.delegated.actingFor) : this.grantSubject(principal);
+    return await this.runPrincipalsOf(subject, access.delegated ? access.delegated.actingFor : principal);
   }
 
   /** Do ALL the grants permitting `op` carry `scope: {createdBy: "self"}`? Split from the read so
    *  `readAccess` can answer from one view. */
-  private selfScoped(grants: RadiaRecord[], op: GrantOp): boolean {
-    const applicable = (grants.map((g) => g.body as GrantDef & { scope?: { createdBy?: string } }))
+  private selfScoped(grants: GrantDef[], op: GrantOp): boolean {
+    const applicable = (grants as (GrantDef & { scope?: { createdBy?: string } })[])
       .filter((g) => Array.isArray(g.operations) && g.operations.includes(op));
     return applicable.length > 0 && applicable.every((g) => g.scope?.createdBy === "self");
   }
@@ -666,16 +915,15 @@ export class Space {
    * and enforcing it anyway would deny something that was granted.
    */
   async taintBarrier(principal: string, op: GrantOp, kind: string): Promise<string[] | undefined> {
-    if (this.isPrivileged(principal)) return undefined; // no grants to read, so no barrier to impose
-    const subject = this.grantSubject(principal);
-    const view = await this.registry(GRANT, grantKey, { principal: subject, kind });
-    return this.barrierFrom([...view.entries.values()], op);
+    const access = await this.access(principal, kind);
+    if (access.privileged) return undefined; // no grants to read, so no barrier to impose
+    return this.barrierFrom(access.defs, op);
   }
 
   /** The allowlist an already-read grant set imposes. Split from the read so `readAccess` can
    *  answer from one view. */
-  private barrierFrom(grants: RadiaRecord[], op: GrantOp): string[] | undefined {
-    const applicable = (grants.map((g) => g.body as GrantDef & { scope?: Record<string, string> }))
+  private barrierFrom(grants: GrantDef[], op: GrantOp): string[] | undefined {
+    const applicable = (grants as (GrantDef & { scope?: Record<string, string> })[])
       .filter((g) => Array.isArray(g.operations) && g.operations.includes(op));
     // Every applicable grant must state a barrier, or one that does not already permits the claim
     // (grants UNION). When they all do, the effective allowlist is their UNION for the same reason:
@@ -701,14 +949,17 @@ export class Space {
     // ONE registry read for all three answers. Asking separately cost four storage reads per
     // coordination verb — the `grant` registry paged to exhaustion three times over, once per
     // question, plus the `agent_run` read behind a self scope — for three views of the same set.
-    if (this.isPrivileged(principal)) return { constraint: null, createdBy: undefined, allowTaint: undefined };
-    const subject = this.grantSubject(principal);
-    const view = await this.registry(GRANT, grantKey, { principal: subject, kind });
-    this.warnIfIncomplete(view, principal, op, kind);
-    const grants = [...view.entries.values()];
-    const constraint = this.constraintFrom(grants, principal, op, kind);
-    const createdBy = this.selfScoped(grants, op) ? await this.runPrincipalsOf(subject, principal) : undefined;
-    return { constraint, createdBy, allowTaint: this.barrierFrom(grants, op) };
+    const access = await this.access(principal, kind);
+    if (access.privileged) return { constraint: null, createdBy: undefined, allowTaint: undefined };
+    this.warnIfIncomplete(access, principal, op, kind);
+    const constraint = this.constraintFrom(access.defs, principal, op, kind);
+    // Still one read: `authorScope` would repeat it. A delegated run's "self" is its CALLER (see
+    // there), which is unreachable today because the mint refuses self-scoped grants.
+    const who = access.delegated ? access.delegated.actingFor : principal;
+    const createdBy = this.selfScoped(access.defs, op)
+      ? await this.runPrincipalsOf(this.grantSubject(who), who)
+      : undefined;
+    return { constraint, createdBy, allowTaint: this.barrierFrom(access.defs, op) };
   }
 
   /**
@@ -722,7 +973,7 @@ export class Space {
    * its grants. Content-keyed grant writes make >20k records for one (principal, kind) implausible,
    * which is why this warns rather than throws.
    */
-  private warnIfIncomplete(view: RegistryView, principal: string, op: GrantOp, kind: string): void {
+  private warnIfIncomplete(view: { complete: boolean; scanned: number }, principal: string, op: GrantOp, kind: string): void {
     if (view.complete) return;
     console.warn(
       `[radia] grant view for '${principal}' (${op} on '${kind}') is INCOMPLETE after ${view.scanned} records; ` +
@@ -785,7 +1036,8 @@ export class Space {
    */
   async effectivePermissions(principal: string): Promise<EffectivePermissions> {
     const subject = this.grantSubject(principal);
-    if (this.isPrivileged(principal)) {
+    const access = await this.access(principal);
+    if (access.privileged) {
       return {
         principal,
         subject,
@@ -796,10 +1048,8 @@ export class Space {
         complete: true,
       };
     }
-    const view = await this.registry(GRANT, grantKey, { principal: subject });
     const byKind = new Map<string, { kind: string; operations: GrantOp[]; scoped: boolean; unscoped: boolean; opsEligible: boolean; patterns: Record<string, unknown>[] }>();
-    for (const rec of view.entries.values()) {
-      const g = rec.body as GrantDef & { scope?: { createdBy?: string } };
+    for (const g of access.defs as (GrantDef & { scope?: { createdBy?: string } })[]) {
       if (typeof g.kind !== "string" || !Array.isArray(g.operations)) continue;
       const row = byKind.get(g.kind) ??
         { kind: g.kind, operations: [], scoped: false, unscoped: false, opsEligible: false, patterns: [] };
@@ -841,10 +1091,18 @@ export class Space {
       principal,
       subject,
       privileged: false,
+      // A delegated run answers about the intersection it was minted with, and says whose reach
+      // bounds it. Without this the list looks like an ordinary agent's and the second half of the
+      // answer ("bounded by whom") is invisible in the one view built for checking.
+      ...(access.delegated ? { actingFor: access.delegated.actingFor } : {}),
+      // And an agent's own answer names what it can reach ONLY by delegating. Omitting it would
+      // make this view under-report a worker's reach, which is the same failure as over-reporting:
+      // the point of the page is that it matches enforcement.
+      ...(access.delegated ? {} : await this.delegableSection(subject)),
       kinds,
       ops: { reachable: opsKinds.length > 0, kinds: opsKinds.sort() },
       opsPowers: [...await this.opsPowers(principal)].sort(),
-      complete: view.complete,
+      complete: access.complete,
     };
   }
 
@@ -858,12 +1116,12 @@ export class Space {
    * principal has no grant for the kind (closing the last unguarded coordination verb).
    */
   async authorizeWatch(principal: string, kind: string): Promise<ReadAccess> {
-    if (this.isPrivileged(principal)) return { constraint: null };
-    const subject = this.grantSubject(principal);
     // Retracted grants are subtracted here too. A watch observes records, so a revocation that
     // stopped `query` but left `watch` standing would revoke nothing that matters.
-    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject, kind })).entries.values()]
-      .map((g) => g.body as GrantDef & { scope?: { createdBy?: string } });
+    const access = await this.access(principal, kind);
+    if (access.privileged) return { constraint: null };
+    const grants = access.defs as (GrantDef & { scope?: { createdBy?: string } })[];
+    const subject = access.delegated ? this.grantSubject(access.delegated.actingFor) : this.grantSubject(principal);
     if (grants.length === 0) {
       throw new RadiaError("forbidden", `principal '${principal}' has no grant to watch kind '${kind}'`);
     }
@@ -958,13 +1216,19 @@ export class Space {
       throw new RadiaError("invalid_principal", "a definition principal must start with 'agent:' or 'human:'");
     }
     // A definition mints run tokens for its subject, so a definition NAMING a privileged principal
-    // is a minting credential for privilege. Refused here rather than handled downstream: the
-    // operator set and the supervisor are the two identities whose authority is not expressed as
-    // grants, so nothing later in the chain narrows what such a run could do.
+    // is a minting credential for privilege. Refused here rather than handled downstream: an
+    // operator's authority is not expressed as grants, so nothing later in the chain narrows what
+    // such a run could do.
+    //
+    // The SUPERVISOR is deliberately NOT refused, and the message used to claim it was: it is
+    // mintable since ops-tiers phase 5, which is what makes the role usable at all. Its carve-out
+    // is `grant`/`signal` writes and nothing else. What that costs is recorded in
+    // plan-delegation.md phase 0: `authorize` short-circuits for it before any attenuation, so
+    // `mintDelegatedRun` refuses it there rather than here.
     if (this.isPrivileged(agent)) {
       throw new RadiaError(
         "invalid_principal",
-        `'${agent}' is a privileged principal (an operator or the supervisor); a definition for it ` +
+        `'${agent}' is a privileged principal (an operator, or the space itself); a definition for it ` +
           `would be a permanent way to mint privileged runs. Name an ordinary principal and grant it ` +
           `what it needs.`,
       );
@@ -1081,6 +1345,264 @@ export class Space {
     this.creds.rememberRun(run, agent);
     this.notifier.notify();
     return { run, agent, runToken: token, expiresAt };
+  }
+
+  /**
+   * Mint a DELEGATED run: act with my own capability, under my caller's reach
+   * (agent_docs/plan-delegation.md).
+   *
+   * `worker` is the authenticated caller. `recordId` names a record it may read, and the CALLER is
+   * resolved from that record rather than asserted: `created_by` names a RUN, and a run is a
+   * record, so `actingFor` on the run behind it composes transitively. Never `body.owner` (an
+   * unconstrained body value) and never the record's author (in the chat that is another worker).
+   *
+   * The returned run's authority is `grants(worker) INTERSECT grants(caller)`, computed once and
+   * stored on its own `agent_run` body. It is therefore a SUBSET of what the worker already holds,
+   * which is why naming a readable record is enough entitlement: the mint can gain the worker
+   * nothing it could not already do.
+   *
+   * `presentedToken` is the caller's own bearer credential, used to DERIVE this run's token so an
+   * unchanged delegation reuses its run instead of appending a permanent record per call. Optional
+   * only for in-process callers that have no token to present; see the derivation below.
+   */
+  async mintDelegatedRun(worker: string, recordId: string, presentedToken?: string): Promise<DelegatedRunMint> {
+    // No re-delegation. A delegated run is already bounded by somebody; letting it mint again
+    // makes the chain unbounded and gives `actingFor` two meanings. The worker mints with its OWN
+    // credential, which is the credential it holds anyway.
+    if (await this.delegationOf(worker)) {
+      throw new RadiaError("forbidden", "a delegated run may not delegate again; mint with the worker's own credential");
+    }
+    // The wall createAgentDefinition holds, at the other place a run can come into existence.
+    // `isPrivileged` and the supervisor carve-out both short-circuit `authorize` before any
+    // attenuation is consulted, so an attenuated run of either would be unattenuated in practice.
+    const agent = this.grantSubject(worker);
+    if (this.isPrivileged(worker)) {
+      throw new RadiaError("forbidden", `'${agent}' is privileged; a delegated run of it would not be attenuated at all`);
+    }
+    if (agent === this.ctx.supervisor) {
+      throw new RadiaError("forbidden", `'${agent}' is the supervisor; its grant/signal carve-out ignores attenuation`);
+    }
+
+    const record = await this.storage.getRecord(recordId);
+    if (!record) throw new RadiaError("not_found", `no record ${recordId}`);
+    // A worker holding DELEGABLE grants must prove a LEASE, not merely a read. Read access is
+    // enough for a pure narrowing because the result is a subset of what the worker already holds;
+    // a delegable grant breaks that, so the caller's request has to be one this worker actually
+    // claimed rather than one it happened to see.
+    const delegable = await this.delegableGrants(agent);
+    if (!await this.mayActOn(worker, record, { requireLease: delegable.length > 0 })) {
+      throw new RadiaError(
+        "forbidden",
+        delegable.length > 0
+          ? `'${worker}' holds no lease on ${recordId}, and '${agent}' has delegable grants, which need one`
+          : `'${worker}' neither holds a lease on ${recordId} nor may read it`,
+      );
+    }
+
+    const actingFor = await this.callerOf(record);
+    if (!actingFor) {
+      throw new RadiaError("invalid_request", `record ${recordId} has no resolvable caller to act for`);
+    }
+    // A privileged caller has no grants to intersect WITH: authority it holds is not expressed as
+    // grants at all. Reading that as "unrestricted" would hand the worker's full ambient reach to
+    // anything an operator happens to trigger, and reading it as "empty" would break their session
+    // silently. Refuse, and say which one it is.
+    if (this.isPrivileged(actingFor)) {
+      throw new RadiaError(
+        "forbidden",
+        `'${actingFor}' is privileged, so there is no grant set to narrow to; a delegated run cannot bound it`,
+      );
+    }
+
+    // The worker side is its OWN grants plus its DELEGABLE ones. Both are needed and they answer
+    // different halves: without the own grants a worker could not delegate what it already uses,
+    // and without the delegable ones there is no way to narrow the worker at all, because an
+    // intersection is a subset of what it holds (plan-delegation.md phase 3).
+    const workerGrants = [...(await this.access(worker)).defs, ...delegable];
+    const callerGrants = (await this.access(actingFor)).defs;
+    const grants = intersectGrants(workerGrants, callerGrants);
+    if (grants.length === 0) {
+      throw new RadiaError(
+        "empty_delegation",
+        `'${agent}' and '${actingFor}' share no grant, so a delegated run could do nothing; ` +
+          `check that the worker holds the kinds it needs to serve this caller`,
+      );
+    }
+    if (grants.length > MAX_DELEGATED_GRANTS) {
+      throw new RadiaError(
+        "delegation_too_large",
+        `the intersection expands to ${grants.length} grants (limit ${MAX_DELEGATED_GRANTS}); ` +
+          `narrow the patterns on one side rather than paying this per request`,
+      );
+    }
+
+    const now = await this.storage.now();
+    const delegation: Delegation = { actingFor, grants };
+
+    // REUSE, or a worker's delegated runs accumulate forever. `agent_run` is reserved, so the
+    // retention sweep never touches it; compaction keeps newest-per-`run`, so every distinct run
+    // is one permanent row. A worker re-mints whenever its cached credential lapses (the run token
+    // is short and a delegated run deliberately cannot renew itself), which made the growth
+    // proportional to CONVERSATION-MINUTES rather than to how many callers there actually are, and
+    // it lands in the one table `runPrincipalsOf` pages to exhaustion.
+    //
+    // So the token is DERIVED, exactly as the OIDC mint derives one from an id_token: the same
+    // (worker credential, caller, grant set) yields the same token, finds its own run through the
+    // indexed `tokenHash` lookup resolution already performs, and writes NOTHING while it is live.
+    // Growth is now one row per distinct delegation, not per mint call.
+    //
+    // The GRANT SET is in the derivation, which is what keeps a run's authority IMMUTABLE (the
+    // property `CredentialStore` memoizes on): a changed intersection cannot mutate an existing
+    // run, it derives a different token and becomes a different run. Deriving from the presented
+    // token and never from its hash matters — the hash is in a record anyone with read access can
+    // see, and would let them compute a live credential.
+    const bucket = Math.floor(Date.parse(now) / (this.ctx.runMaxLifetimeSeconds * 1000));
+    const derived = presentedToken
+      ? (await sha256Hex(
+        `radia-delegated-run\n${presentedToken}\n${actingFor}\n${await sha256Hex(JSON.stringify(grants))}\n${bucket}`,
+      )).slice(0, 48)
+      : undefined;
+
+    if (derived) {
+      const hash = await hashToken(derived);
+      const prior = await this.newestByHash(AGENT_RUN, hash) as RunBody | undefined;
+      if (prior?.run) {
+        // A stopped delegation stays stopped. Reviving it here would make the deprovisioning
+        // cascade (`radia runs --acting-for … --stop`) undone by the worker's next call.
+        if (prior.status === "stopped") throw new RadiaError("run_stopped", `run ${prior.run} was stopped`);
+        if ((prior.expiresAt ?? "") > now) {
+          this.creds.rememberRun(prior.run, agent, delegation);
+          return { run: prior.run, agent, runToken: derived, expiresAt: prior.expiresAt!, actingFor };
+        }
+        // Expired but inside its ceiling: extend the SAME run rather than making a new one. Same
+        // successor shape as `renewRun`, so compaction still keeps exactly one row for it.
+        const mintedAt = prior.mintedAt ?? now;
+        if (addSeconds(mintedAt, this.ctx.runMaxLifetimeSeconds) > now) {
+          const expiresAt = addSeconds(now, this.ctx.runTokenSeconds);
+          await this.putRaw({
+            kind: AGENT_RUN,
+            body: { run: prior.run, agent, tokenHash: hash, status: "active", expiresAt, mintedAt, actingFor, delegated: { grants } },
+          });
+          this.creds.rememberRun(prior.run, agent, delegation);
+          this.notifier.notify();
+          return { run: prior.run, agent, runToken: derived, expiresAt, actingFor };
+        }
+        // Past the ceiling. The bucket above has rolled or is about to, so the next derivation
+        // differs and this cannot collide with the run below; two runs must never share a
+        // tokenHash, or stopping one would shadow the other.
+      }
+    }
+
+    const run = `run:${newUlid()}`;
+    const expiresAt = addSeconds(now, this.ctx.runTokenSeconds);
+    // No presented credential (an in-process caller, e.g. a test) means nothing to derive from, so
+    // this mints a fresh random token and forgoes reuse rather than deriving from something
+    // guessable.
+    const token = derived ?? (await mintCredential()).token;
+    const hash = await hashToken(token);
+    await this.putRaw({
+      kind: AGENT_RUN,
+      body: { run, agent, tokenHash: hash, status: "active", expiresAt, mintedAt: now, actingFor, delegated: { grants } },
+    });
+    this.creds.rememberRun(run, agent, delegation);
+    this.notifier.notify();
+    return { run, agent, runToken: token, expiresAt, actingFor };
+  }
+
+  /**
+   * Grants an agent may exercise ONLY through a delegated run, held under the principal
+   * `delegable:<agent>`.
+   *
+   * This is what removes the ambient authority, and it is a principal rather than a flag on the
+   * grant for one reason: nothing can authenticate as it. `grantSubject` answers `agent:`/`human:`/
+   * `run:`, `createAgentDefinition` requires the first two, OIDC requires `human:`. So the worker's
+   * own token cannot reach these grants by any path, including one written before this existed,
+   * while `radia permissions delegable:agent:x` inspects them with the verb that already exists.
+   *
+   * A `delegable: true` FIELD was the alternative and is worse three ways: it would have to enter
+   * `grantKey` (or a delegable and an ordinary grant on the same triple collapse into one entry,
+   * latest-wins, silently), it changes nothing for a build that predates it, so such a grant reads
+   * as an ordinary one and WIDENS, and every existing read path would need the branch.
+   */
+  /** The `delegable` block of `effectivePermissions`, or nothing when the agent holds none. */
+  private async delegableSection(agent: string): Promise<{ delegable?: { kind: string; operations: GrantOp[] }[] }> {
+    if (agent.startsWith(DELEGABLE_PREFIX)) return {}; // asking about the holder itself: it IS the list
+    let defs: GrantDef[];
+    try {
+      defs = await this.delegableGrants(agent);
+    } catch {
+      return {}; // an incomplete read refuses a MINT; it must not break the inspection page
+    }
+    if (defs.length === 0) return {};
+    const byKind = new Map<string, Set<GrantOp>>();
+    for (const g of defs) {
+      const ops = byKind.get(g.kind) ?? new Set<GrantOp>();
+      for (const op of g.operations) ops.add(op);
+      byKind.set(g.kind, ops);
+    }
+    return {
+      delegable: [...byKind.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))
+        .map(([kind, ops]) => ({ kind, operations: [...ops].sort() })),
+    };
+  }
+
+  private async delegableGrants(agent: string): Promise<GrantDef[]> {
+    const view = await this.registry(GRANT, grantKey, { principal: delegablePrincipal(agent) });
+    if (!view.complete) {
+      // Fail CLOSED: a truncated view here silently drops authority the delegated run then lacks,
+      // which reads as a broken worker rather than as a partial read.
+      throw new RadiaError(
+        "registry_incomplete",
+        `could not read all delegable grants of '${agent}'; refusing to mint from a partial set`,
+      );
+    }
+    return [...view.entries.values()].map((r) => r.body as GrantDef);
+  }
+
+  /**
+   * Who a record is ultimately acting for: its author, or — when its author is itself a delegated
+   * run — the caller that run was bounded by.
+   *
+   * One read and no walk: `actingFor` holds a RESOLVED principal, never another run, so a chain of
+   * workers relaying a session collapses to the person at its head in a single hop.
+   */
+  /**
+   * May `principal` mint a delegated run from this record? Two proofs, and the weaker one is
+   * sufficient because a phase-1 intersection can only NARROW the worker.
+   *
+   * A live LEASE it owns is the strong proof, and the one the real path uses: a tool worker holds
+   * `take` on the kind it serves and often no read grant at all, so requiring `read_one` would
+   * refuse exactly the caller this exists for. Read access is the weak proof, kept for workers that
+   * react to facts rather than claim work (the turn worker, which cannot hold a lease because
+   * `message` is deliberately not claimable).
+   *
+   * When a delegable grant exists (plan-delegation.md phase 3) the weak proof stops being
+   * sufficient, because the mint would then yield authority the worker cannot exercise alone. That
+   * is why `intersectGrants` is fed the worker's OWN grants here.
+   */
+  private async mayActOn(principal: string, record: RadiaRecord, opts: { requireLease?: boolean } = {}): Promise<boolean> {
+    const env = await this.storage.getEnvelope(record.id);
+    if (env?.state === "leased" && env.leaseOwner === principal) return true;
+    if (opts.requireLease) return false;
+    // EITHER read op, because they are separate grants and a worker commonly holds one. Asking only
+    // about `read_one` refused a worker that reaches its records by `query`, which is most of them.
+    for (const op of ["query", "read_one"] as const) {
+      try {
+        const { constraint, createdBy } = await this.readAccess(principal, op, record.kind);
+        if (!this.authorAllows(createdBy, record)) continue;
+        if (!constraint || this.bodyMatchesGrant(record.kind, record.body, constraint)) return true;
+      } catch (e) {
+        if (!(e instanceof RadiaError && e.code === "forbidden")) throw e;
+      }
+    }
+    return false;
+  }
+
+  private async callerOf(record: RadiaRecord): Promise<string | undefined> {
+    const author = record.runtimeMeta.createdBy;
+    if (!author) return undefined;
+    const delegation = await this.delegationOf(author);
+    return delegation ? delegation.actingFor : this.grantSubject(author);
   }
 
   /** The fetcher behind OIDC's JWKS/discovery reads. A field so tests point it at an in-repo
@@ -1278,7 +1800,7 @@ export class Space {
   async renewRun(run: string): Promise<{ run: string; agent: string; expiresAt: string; maxLifetimeAt: string }> {
     const now = await this.storage.now();
     const rows = await this.query({ kind: AGENT_RUN, match: { run } }, 5, { dir: "desc" });
-    const bodies = rows.map((r) => r.body as { agent?: string; tokenHash?: string; status?: string; mintedAt?: string });
+    const bodies = rows.map((r) => r.body as RunBody);
     if (bodies.length === 0) throw new RadiaError("not_found", `no run ${run}`);
     if (bodies[0]?.status === "stopped") throw new RadiaError("run_stopped", `run ${run} was stopped`);
     const agent = bodies.find((b) => b.agent)?.agent;
@@ -1297,7 +1819,22 @@ export class Space {
     // Never past the ceiling: the last renewal before it lands exactly on it.
     const window = addSeconds(now, this.ctx.runTokenSeconds);
     const expiresAt = window > maxLifetimeAt ? maxLifetimeAt : window;
-    await this.putRaw({ kind: AGENT_RUN, body: { run, agent, tokenHash, status: "active", expiresAt, mintedAt } });
+    // The attenuation is COPIED, for the same reason `mintedAt` is: `resolveCredential` reads the
+    // NEWEST body for a token hash, so a renewal that dropped these fields would hand back a run
+    // that resolves as an ordinary one holding the worker's full grants.
+    const carried = bodies.find((b) => b.actingFor);
+    await this.putRaw({
+      kind: AGENT_RUN,
+      body: {
+        run,
+        agent,
+        tokenHash,
+        status: "active",
+        expiresAt,
+        mintedAt,
+        ...(carried ? { actingFor: carried.actingFor, delegated: carried.delegated } : {}),
+      },
+    });
     this.notifier.notify();
     return { run, agent, expiresAt, maxLifetimeAt };
   }
@@ -1331,6 +1868,10 @@ export class Space {
         tokenHash: mint.tokenHash,
         status: "stopped",
         quarantined: opts.quarantine ?? false,
+        // Carried like `renewRun` does. A stopped run resolves no further, so this is for the
+        // AUDIT rather than for enforcement: the terminal record of a delegated run still says
+        // whose reach it held.
+        ...(mint.delegation ? { actingFor: mint.delegation.actingFor, delegated: { grants: mint.delegation.grants } } : {}),
       },
     });
     let quarantined = 0;
@@ -1378,9 +1919,13 @@ export class Space {
 
     const run = await this.newestByHash(AGENT_RUN, hash);
     if (run) {
-      const b = run as { run?: string; agent?: string; status?: string; expiresAt?: string };
+      const b = run as RunBody;
       if (!b.run || !b.agent) return { ok: false, reason: "invalid_token" };
-      this.creds.rememberRun(b.run, b.agent); // immutable; safe to memo
+      // Both facts are immutable for the life of the run, so both are safe to memo. Recording the
+      // delegation HERE is what keeps `delegationOf` warm on every authenticated request; a memo
+      // holding only the agent would assert "not delegated" and hand the run its worker's grants.
+      // Successors copy the fields, so the newest body always carries them.
+      this.creds.rememberRun(b.run, b.agent, delegationOfBody(b));
       if (b.status === "stopped") return { ok: false, reason: "run_stopped" };
       if (!b.expiresAt || b.expiresAt <= now) return { ok: false, reason: "token_expired" };
       return { ok: true, kind: "run", principal: b.run, agent: b.agent };
@@ -1452,16 +1997,20 @@ export class Space {
     return { tokenHash: bodies.find((b) => b.tokenHash)?.tokenHash, status: bodies[0]?.status };
   }
 
-  private async runRecord(run: string): Promise<{ agent?: string; tokenHash?: string; status?: string } | undefined> {
+  private async runRecord(run: string): Promise<RunState | undefined> {
     const rows = await this.query({ kind: AGENT_RUN, match: { run } }, 5, { dir: "desc" });
     // The stop successor omits nothing, but an older mint carries the hash if a caller wrote one
     // without it; take the newest non-empty value for each field.
-    const bodies = rows.map((r) => r.body as { agent?: string; tokenHash?: string; status?: string });
+    const bodies = rows.map((r) => r.body as RunBody);
     if (bodies.length === 0) return undefined;
     return {
       agent: bodies.find((b) => b.agent)?.agent,
       tokenHash: bodies.find((b) => b.tokenHash)?.tokenHash,
       status: bodies[0]?.status,
+      // Folded like the rest, so a successor that omits it does not un-delegate the run. Successors
+      // COPY it as well (`renewRun`, `stopRun`), because `resolveCredential` reads only the newest
+      // body: a renewal that dropped the attenuation would resolve to an unattenuated run.
+      delegation: delegationOfBody(bodies.find((b) => b.actingFor)),
     };
   }
 
@@ -1792,6 +2341,11 @@ export class Space {
    * this same function, so the promise cannot drift from the enforcement.
    */
   async opsPowers(principal: string): Promise<Set<OpsPower>> {
+    // A delegated run holds NONE, whatever its worker holds. `ops_grant` is keyed by principal and
+    // resolved through `grantSubject`, which answers with the WORKER's agent, so without this a
+    // delegated run inherits `observe` or `remediate` and reads the whole space on a caller's
+    // behalf. Delegation narrows the coordination plane; it must not widen this one.
+    if (await this.delegationOf(principal)) return new Set();
     if (this.isPrivileged(principal)) return new Set<OpsPower>(OPS_POWERS);
     const subject = this.grantSubject(principal);
     const view = await this.registry<OpsGrantDef>(OPS_GRANT, opsGrantKey, { principal: subject });
@@ -1806,10 +2360,10 @@ export class Space {
   }
 
   async opsScope(principal: string): Promise<StatsScope | null> {
-    if (this.isPrivileged(principal)) return null;
+    const access = await this.access(principal);
+    if (access.privileged) return null;
     const subject = this.grantSubject(principal);
-    const grants = [...(await this.registry(GRANT, grantKey, { principal: subject })).entries.values()]
-      .map((g) => g.body as GrantDef & { scope?: { createdBy?: string } })
+    const grants = (access.defs as (GrantDef & { scope?: { createdBy?: string } })[])
       .filter((g) => Array.isArray(g.operations) && g.operations.includes("query"));
     // Reachability is still opt-in: SOME kind must carry a self-scoped read grant, or the plane
     // stays shut. An ordinary query grant does not open it.

@@ -16,7 +16,15 @@ import type { Space } from "../core/space.ts";
 import type { OpsPower } from "../core/kinds.ts";
 import { handlePut, handleQuery, handleReadOne } from "./handlers/records.ts";
 import { handleAck, handleNack, handleRelease, handleRenew, handleTake } from "./handlers/leases.ts";
-import { handleCreateDefinition, handleCreateRun, handleOidcSession, handleRenewRun, handleRevokeDefinition, handleStopRun } from "./handlers/agents.ts";
+import {
+  handleCreateDefinition,
+  handleCreateRun,
+  handleDelegatedRun,
+  handleOidcSession,
+  handleRenewRun,
+  handleRevokeDefinition,
+  handleStopRun,
+} from "./handlers/agents.ts";
 import { handleGetArtifact, handleMintCapability, handleMintPathCapability, handlePutArtifact, handleShredArtifact } from "./handlers/artifacts.ts";
 import { handleRemediate, handleAdmin, handleGc, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleErasures, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleFlows, handleIntegrity, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
@@ -260,6 +268,13 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
     if (route === "POST /v0/agent-runs") return await handleCreateRun(space, req);
     // OIDC sign-in: the id_token in the body IS the credential, so this too runs pre-auth.
     if (route === "POST /v0/sessions/oidc") return await handleOidcSession(space, req);
+    // Mint a DELEGATED run. AUTHENTICATED, unlike the two mints above: the caller is a worker that
+    // already holds a credential and is asking for a narrower one (plan-delegation.md).
+    if (route === "POST /v0/agent-runs/delegated") {
+      const auth = await resolveAuth(req, space, authRequired);
+      if ("error" in auth) return problem(401, auth.error, auth.detail);
+      return await handleDelegatedRun(space, req, auth.principal);
+    }
     // Mint a capability over a SET of artifacts, addressed by path. Generic: the runtime is handed
     // {path, artifactId} pairs and never learns what they are, so a workspace is one caller rather
     // than a concept in here.

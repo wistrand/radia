@@ -19,4 +19,7 @@ const client = new RadiaClient(url, token ? { definitionToken: token } : {});
 // No `[turn]` prefix: the launcher labels every line it forwards (`spawn`, client/fleet.ts), so
 // self-labelling printed "[turn] [turn] watching messages".
 console.error(`watching messages on ${url} (max ${maxRounds} rounds)`);
-await runTurnWorker(client, { maxRounds });
+// `delegate`: the chat's exec worker holds its session-data grants under `delegable:agent:chat-exec`
+// (space/roles.ts), so the record it claims has to name the person it is serving. That name comes
+// from the run this worker emits under, never from the body.
+await runTurnWorker(client, { maxRounds, delegate: true });

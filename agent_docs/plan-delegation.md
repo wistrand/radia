@@ -3,7 +3,12 @@
 The build plan for [plan-scaling.md](plan-scaling.md) item 3a, which holds the design and the
 rejected alternatives. Read that first; this file is the sequence, the seams and the guards.
 
-**Status: PLANNED.** Nothing below is built.
+**Status: BUILT (2026-08-12), all phases.** `Space.mintDelegatedRun` +
+`POST /v0/agent-runs/delegated` (`src/core/space.ts`, `src/server/handlers/agents.ts`), the
+`access` seam every authorization read goes through, `delegable:<agent>` grants, `radia runs
+--acting-for`, and the chat cutover. Guards: `conformance/delegation.test.ts`, each proved red by
+a plant. What each phase decided is kept below; where the build changed the plan, the entry says
+so.
 
 ## What it is, in one paragraph
 
@@ -69,11 +74,13 @@ already folds a run's successors and is the read to extend.
 
 ### 1c. Entitlement
 
-Phase 1 mints a PURE NARROWING, so the naming record only needs to be READABLE by the worker: the
-result is a subset of what the worker already holds and can gain it nothing. Phase 3 raises this to
-a LEASE, because a delegable grant is authority the worker cannot use alone. Implement the read
-check as the ordinary `readAccess` path, so a worker cannot mint for a caller whose records it
-cannot see.
+A pure narrowing needs only READ on the naming record: the result is a subset of what the worker
+already holds and can gain it nothing. A worker holding DELEGABLE grants (phase 3) needs a LEASE,
+because that is authority it cannot use alone. Both in `Space.mayActOn`.
+
+BUILT DIFFERENTLY in one respect: the read proof accepts `query` OR `read_one`, not `read_one`
+alone. A tool worker holds `take` on the kind it serves and commonly no `read_one` at all, so the
+narrower check refused exactly the callers this exists for.
 
 ### 1d. The intersection
 
@@ -91,23 +98,29 @@ Per kind held by BOTH sides, then per operation held by both:
 Emit one `GrantDef` per (kind, operation, pattern). Refuse above 64 entries with a named error, so
 a cross-product explosion fails AT THE MINT with a clear message rather than at some later query.
 
-### 1e. Enforcement: one seam, three call sites
+### 1e. Enforcement: one seam, SIX call sites
 
-`authorize`, `readAccess` and `effectivePermissions` all begin by reading the grant registry for
-`grantSubject(principal)`. Add one helper they share:
+Not three: `authorize`, `readAccess`, `authorScope`, `taintBarrier`, `authorizeWatch` and
+`effectivePermissions` (plus `opsScope`) each began by reading the grant registry for
+`grantSubject(principal)`. Adding the branch per site is how five of them would have kept reading
+the worker's grants. They now share `Space.access(principal, kind?)`, which returns the delegated
+run's inline grants or the registry view; `constraintFrom`, `selfScoped` and `barrierFrom` take
+`GrantDef[]` and are unchanged otherwise.
 
-    private async grantsFor(principal, kind): Promise<{entries, complete}>
-
-which returns the delegated run's inline grants when the principal is one, and the registry view
-otherwise. `constraintFrom` then works unchanged, because inline grants are already `GrantDef`s.
-
-**The fail-open to design against.** If `grantsFor` cannot tell that a run is delegated, it falls
+**The fail-open to design against.** If `access` cannot tell that a run is delegated, it falls
 through to the WORKER's full grants. `resolveCredential` reads the run body on every request and
-already calls `creds.rememberRun(run, agent)`, so extend that memo entry to carry the delegation
-and the authenticated path is always warm. The cold path is real and must be handled: `ack`
-authorizes the LEASE OWNER, which may be a run this process never authenticated, so `grantsFor`
-falls back to `runRecord` exactly as `Space.agentForRun` already does. A cold miss must never
-resolve to the agent's grants.
+already called `creds.rememberRun(run, agent)`, so that memo entry now carries the delegation and
+the authenticated path is always warm. The cold path is real and handled: `ack` authorizes the
+LEASE OWNER, which may be a run this process never authenticated, so `delegationOf` falls back to
+`runRecord` exactly as `Space.agentForRun` does. Absence from the memo means UNKNOWN, never "not
+delegated".
+
+A SECOND fail-open, found by planting rather than by design: successors must COPY `actingFor` and
+`delegated`, because `resolveCredential` resolves a token through `newestByHash` and never folds.
+A renewal that dropped them would hand back a run resolving as an ordinary one. `renewRun` and
+`stopRun` copy them, the way `mintedAt` is copied. The test has to present the TOKEN to catch this:
+asserting through `authorize(run)` passes either way, since that path reaches `runRecord`, which
+folds. The first version of that test did exactly that and stayed green against the plant.
 
 `grantSubject` is NOT changed. Its other consumers want the worker's agent and are right to:
 `computeTaint` compares authorship (so a worker writing under delegation still tags its output
@@ -190,18 +203,54 @@ a `delegable:` grant never appears in the worker's own `effectivePermissions.kin
 
 Two changes, and the second is the point:
 
-1. The TURN WORKER mints a delegated run for the session and emits `tool_call` under it, so the
-   record exec claims carries a resolvable caller. It needs no data authority to do this: the
-   delegated run exists to carry `actingFor`. This is why relaying identity does not require making
-   `message` claimable, which plan-chat-turn.md rejected.
-2. `EXEC_GRANTS` (`examples/chat/space/roles.ts`) holds five UNSCOPED grants over session data:
-   `artifact: put/read_one`, `workspace: query/put`, `procedure: put/query`, `message: put`,
-   `tool_result: put`. Each becomes a grant for `delegable:agent:chat-exec`. Exec's own token keeps
-   `check: put`, `capability`, `progress`, `sandbox` and `tool_call: take`.
+1. The TURN WORKER mints a delegated run and emits `tool_call` under it (`runTurnWorker`'s
+   `delegate` option), so the record exec claims carries a resolvable caller. It needs no data
+   authority to do this: the delegated run exists to carry `actingFor`. This is why relaying
+   identity does not require making `message` claimable, which plan-chat-turn.md rejected.
 
-Until (2) lands, one shared exec worker reads every user's tree and delegation is decoration. This
-phase is larger than the endpoint. `agent:chat-tools` follows the same treatment, at which point
-`--session-token` (`examples/chat/workers/tools.ts`) is deleted rather than generalised.
+   **Minted from the SEED `llm_call`, not from the triggering message.** The seed is the one record
+   in a conversation whose author IS the person; an assistant message is authored by the INFERENCE
+   worker, which acks it under its own lease and cannot ack under any other credential. That
+   constraint is worth keeping in mind generally: `ack` is performed by the lease owner, so no
+   ack-emitted record can carry a delegated author.
+
+2. Exec's grants over session data move to `delegable:agent:chat-exec`. Which ones is narrower than
+   this plan first said, and the mechanism decides it rather than caution: a delegated run is
+   `worker INTERSECT caller`, so it can never exceed the CALLER, and the session deliberately holds
+   no `workspace: put` and no `procedure: put`. Delegating those would intersect to nothing and
+   break `save_procedure` and write-back. So the split is READ versus WRITE:
+   - delegable: `artifact: read_one`, `workspace: query`, `procedure: query`.
+   - exec's own: the `put` half of those three, plus `check`, `capability`, `progress`, `sandbox`,
+     `tool_call: take`, and `message`/`tool_result` (both written through `ack`).
+
+   What stays ambient is therefore authoring INTO another session's scope: an integrity reach, not
+   a confidentiality one. The cross-user exposure was the read half, and that is closed.
+
+**A read-then-write function needs BOTH credentials, and that is the shape to expect.**
+`writeWorkspace` looks up the predecessor and asks whether the tree forked; `commitWorkspace` asks
+the fork question too. Under delegation the write half is the worker's and the read half is the
+caller's, so both take an optional `reader` defaulting to `client` (every existing caller is
+unchanged). Missing one of `writeWorkspace`'s two internal reads produced a `forbidden` three
+frames deep in an extension, which is worth knowing before splitting a credential anywhere else:
+grep the function for reads rather than trusting its name.
+
+`agent:chat-tools` can follow the same treatment, at which point `--session-token`
+(`examples/chat/workers/tools.ts`) is deleted rather than generalised. Not done here.
+
+**The harness had to change too, and the change is the point.** `smoke-procedures.ts` and
+`smoke-runners.ts` wrote their `tool_call` records as the OPERATOR, so every call had a privileged
+author and the mint refused them (correctly: an operator has no grant set to narrow to). They now
+write as a person, which is what the real fleet does. A privileged caller stays refused rather than
+being read as "unrestricted", because with delegable grants that would hand a worker its full
+delegable reach on any operator-triggered call.
+
+**A failed mint FALLS BACK, loudly, in both workers.** Throwing was the first design and it is
+wrong in each place for its own reason: in the turn worker it kills the whole turn, so one
+undelegatable conversation stops advancing instead of one tool call failing; in exec it nacks, and
+at-least-once then retries a call that cannot succeed. The fallback is safe because the worker's
+own token does not hold the delegable grants, so it still reaches no other session's data, and the
+downstream failure is a legible `forbidden` rather than a stall. Both log a line naming the caller:
+a silent fallback makes a delegation that did not happen look like a grant bug.
 
 Verify (`deno task chat-test`, which needs no API key): a tool call for conversation A cannot read
 conversation B's artifact, asserted through the real fleet; `save_procedure` still works; `check`
@@ -214,12 +263,48 @@ delegated run's reach on the next mint.
 BUILT with the phase record, `architecture-ops-tiers.md` if the ops-power refusal changes its
 table, CLAUDE.md's `src/core` and reserved-kind touchpoints, and this file's status line.
 
+## The token is DERIVED, because a mint per call is permanent growth
+
+`agent_run` is reserved, so the retention sweep never touches it, and compaction keeps
+newest-per-`run`: every distinct run is one row that outlives everything around it. A worker
+re-mints whenever its cached credential lapses, and a delegated run deliberately cannot renew
+itself, so the first build grew rows in proportion to CONVERSATION-MINUTES (roughly one per active
+conversation per run-token lifetime) rather than to how many callers there are. Worse than the disk
+cost: `runPrincipalsOf` pages an agent's runs TO EXHAUSTION on every self-scoped authorization and
+refuses loudly rather than narrowing, so unbounded growth there eventually breaks an authorization
+path for the worker.
+
+The fix is the OIDC mint's own move. The run token is derived from
+`(presented worker credential, caller, grant-set digest, ceiling bucket)`, so an unchanged
+delegation finds its own run through the indexed `tokenHash` lookup resolution already performs and
+writes NOTHING while it is live; expired-but-inside-its-ceiling extends the same run with a
+`renewRun`-shaped successor, which compacts back to one row. Growth is now one row per distinct
+delegation.
+
+Four details are load-bearing:
+
+- **The grant set is IN the derivation.** A run's authority must stay immutable, because
+  `CredentialStore` memoizes it and other instances would otherwise serve a stale, possibly wider
+  set from a cold path. A changed intersection therefore derives a different token and becomes a
+  different run, never an edit of the old one.
+- **Derived from the presented TOKEN, never its hash.** The hash is in a record; anyone who can read
+  `agent_run` could otherwise compute a live credential. Holding the plaintext already permits
+  minting, so this leaks nothing new — the same argument OIDC makes.
+- **A stopped run is never revived**, or the deprovisioning cascade would be undone by the worker's
+  next call. Refused as `run_stopped`, matching the OIDC replay path.
+- **The ceiling bucket exists so two runs never share a `tokenHash`.** A stop writes a successor
+  carrying that hash, so a collision would let stopping one run shadow another.
+
+Guards: "an unchanged delegation REUSES its run" and "reuse never revives a STOPPED run", both
+proved red by disabling the derivation.
+
 ## Accepted gaps
 
 - **Ceiling-bounded revocation.** A delegated run survives its caller's deprovisioning until the
   cascade runs or the token expires, the same bound OIDC accepted for the same reason.
 - **No chain intersection.** This does not supersede the M3 line in design-auth.md. A delegated run
   intersects TWO principals at mint; it says nothing about a chain of five.
-- **Per-pair minting is a cache.** Mint per (worker, caller) and reuse until expiry. A grant revoked
-  mid-window still holds for that window, which is the standard session-policy trade and worth
-  stating rather than discovering.
+- **A grant revoked mid-window still holds for that window.** A worker caches its delegated
+  credential, so a narrowing lands at its next mint rather than instantly. The standard
+  session-policy trade, and bounded by the run token rather than by the 12h ceiling, because a
+  delegated run cannot renew itself.

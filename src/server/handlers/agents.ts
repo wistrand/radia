@@ -6,7 +6,7 @@
 import type { Space } from "../../core/space.ts";
 import type { GrantDef } from "../../core/kinds.ts";
 import { RadiaError } from "../../core/errors.ts";
-import { problem } from "../problem.ts";
+import { problem, statusFor } from "../problem.ts";
 
 async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   try {
@@ -50,6 +50,33 @@ export async function handleCreateRun(space: Space, req: Request): Promise<Respo
     return new Response(JSON.stringify(out), { status: 201, headers: { "content-type": "application/json" } });
   } catch (e) {
     if (e instanceof RadiaError) return problem(401, e.code, e.message);
+    throw e;
+  }
+}
+
+/**
+ * POST /v0/agent-runs/delegated: body `{for: <record id>}`, authenticated as the WORKER.
+ *
+ * Unlike the two mints above this is not a bootstrap route: the caller already holds a credential,
+ * and what it gets back is a narrower one. So it sits inside the authenticated block, and the
+ * record it names is what identifies the caller to act for (never a field the caller supplies).
+ */
+export async function handleDelegatedRun(space: Space, req: Request, principal: string): Promise<Response> {
+  const j = await readJson(req);
+  const forId = j?.for;
+  if (typeof forId !== "string" || forId.length === 0) {
+    return problem(400, "invalid_body", "expected {for: string}, the id of a record naming the caller to act for");
+  }
+  try {
+    // The presented credential is passed through so the mint can DERIVE this run's token from it:
+    // that is what lets an unchanged delegation reuse its run rather than write a permanent
+    // `agent_run` record per call. Same shape as the OIDC mint, which derives from the id_token.
+    const out = await space.mintDelegatedRun(principal, forId, bearer(req));
+    return new Response(JSON.stringify(out), { status: 201, headers: { "content-type": "application/json" } });
+  } catch (e) {
+    // 422 for the two "your grants do not compose" answers: the request is well-formed and the
+    // configuration is what has to change, which a 400 would not say.
+    if (e instanceof RadiaError) return problem(statusFor(e.code, e.code === "not_found" ? 404 : 422), e.code, e.message);
     throw e;
   }
 }

@@ -57,7 +57,7 @@ export type ResolvedToken =
  */
 export class CredentialStore {
   #operatorHashes = new Set<string>();
-  #agentByRun = new Map<string, string>();
+  #runs = new Map<string, RunFacts>();
 
   /** Register an operator token hash. It resolves to the space's own principal (privileged), not
    *  to `human:local`, which is the named operator a PERSON can hold. */
@@ -69,13 +69,46 @@ export class CredentialStore {
     return this.#operatorHashes.has(hash);
   }
 
-  /** Remember which agent a run instantiates. Immutable for the life of the run, so caching it
-   *  cannot make a stale authorization decision. It only saves a query. */
-  rememberRun(run: string, agent: string): void {
-    this.#agentByRun.set(run, agent);
+  /** Remember which agent a run instantiates, and whether it is DELEGATED. Both are immutable for
+   *  the life of the run, so caching them cannot make a stale authorization decision; it only saves
+   *  a query. Always pass what you know: an entry recorded WITHOUT a delegation asserts there is
+   *  none, and `Space.grantsOf` believes it. */
+  rememberRun(run: string, agent: string, delegation?: Delegation): void {
+    this.#runs.set(run, delegation ? { agent, delegation } : { agent });
   }
 
   agentForRun(run: string): string | undefined {
-    return this.#agentByRun.get(run);
+    return this.#runs.get(run)?.agent;
   }
+
+  /** What is known about a run, or `undefined` when this process has never resolved it. Distinct
+   *  from `agentForRun` returning a value with no delegation: absence means UNKNOWN and the caller
+   *  must read the record, while a present entry with no `delegation` means "not delegated". */
+  runFacts(run: string): RunFacts | undefined {
+    return this.#runs.get(run);
+  }
+}
+
+/** What a delegated run may do, materialized at mint. Held on the `agent_run` body and memoized
+ *  here; see agent_docs/plan-delegation.md. */
+export interface Delegation {
+  /** The principal whose reach this run is bounded by. */
+  actingFor: string;
+  /** `grants(worker) INTERSECT grants(actingFor)`, computed once. This run's ENTIRE authority: no
+   *  grant record is ever read for it. */
+  grants: DelegatedGrant[];
+}
+
+/** One entry of a delegated run's authority. The `GrantDef` shape minus `principal`, which is the
+ *  run itself. Structural rather than an import, so `auth.ts` stays a leaf. */
+export interface DelegatedGrant {
+  kind: string;
+  operations: string[];
+  pattern?: Record<string, unknown>;
+  scope?: Record<string, string>;
+}
+
+interface RunFacts {
+  agent: string;
+  delegation?: Delegation;
 }

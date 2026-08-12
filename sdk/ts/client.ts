@@ -11,6 +11,7 @@
 
 import type {
   AckResult,
+  DelegatedRun,
   KindDef,
   Lease,
   Page,
@@ -413,6 +414,30 @@ export class RadiaClient {
   /** Mint a short-lived run token from a definition token. */
   createRun(definitionToken: string): Promise<{ run: string; agent: string; runToken: string; expiresAt: string }> {
     return this.req("POST", "/v0/agent-runs", {}, { "Authorization": `Bearer ${definitionToken}` });
+  }
+
+  /**
+   * Mint a DELEGATED run: this client's own capability, bounded by the reach of whoever the record
+   * `forRecordId` is acting for. Returns a token to hold BESIDE this one, never instead of it.
+   *
+   * Use `delegatedClient` unless you want the raw response. The caller is resolved server-side from
+   * the record's author, so nothing here asserts an identity.
+   */
+  createDelegatedRun(forRecordId: string): Promise<DelegatedRun> {
+    return this.req("POST", "/v0/agent-runs/delegated", { for: forRecordId });
+  }
+
+  /**
+   * The same mint, as a second client ready to use.
+   *
+   * Deliberately holds NO definition token, so it cannot re-mint itself when the run lapses: a
+   * delegated run is scoped to a piece of work, and one that renewed itself indefinitely would
+   * outlive the request it was minted for. Mint a new one per claim, or per (worker, caller) pair
+   * and reuse until it expires.
+   */
+  async delegatedClient(forRecordId: string): Promise<{ client: RadiaClient; actingFor: string; expiresAt: string }> {
+    const out = await this.createDelegatedRun(forRecordId);
+    return { client: new RadiaClient(this.base, { token: out.runToken }), actingFor: out.actingFor, expiresAt: out.expiresAt };
   }
 
   /**

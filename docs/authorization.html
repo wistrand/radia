@@ -319,6 +319,19 @@
       something powerful, name it as an input, and inherit its reach. Reading a document tells you
       where information came from. It never tells you what the reader is allowed to do.
     </p>
+    <p>
+      There is a separate mechanism for the case where a shared worker genuinely does serve many
+      people: it asks for a second, narrower credential, whose reach is the overlap between its own
+      grants and those of the person whose work it claimed. It then holds two, and picks per
+      operation: its own for the things that are its job, the narrow one for anything touching that
+      person's data. The overlap is computed once, when the credential is minted, and it can only
+      ever be smaller than both sides.
+    </p>
+    <p>
+      Who it is acting for is never something the worker states. It is read from the record it
+      claimed, back through the credential that wrote it, so a chain of workers passing one request
+      along still resolves to the person at the head of it.
+    </p>
   </div>
 </section>
 

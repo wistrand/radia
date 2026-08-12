@@ -89,6 +89,10 @@ export interface TurnOptions {
    *  each conversation is a candidate. */
   sweep?: number;
   kinds?: Partial<TurnKinds>;
+  /** Emit each `tool_call` under a run DELEGATED for the conversation's owner, so the worker that
+   *  claims it can resolve who it is acting for. Needs a space whose tool workers hold delegable
+   *  grants; without them the extra mint buys nothing. See agent_docs/plan-delegation.md. */
+  delegate?: boolean;
   /** Where a per-conversation failure is reported. One bad turn must not stop the worker. */
   log?: (message: string) => void;
 }
@@ -245,7 +249,40 @@ export async function runTurnWorker(
       { dir: "desc" },
     );
     const body = rows[0]?.body as { tools?: unknown[]; turnAt?: number } | undefined;
-    return { tools: body?.tools ?? [], turnAt: body?.turnAt, deadlineAt: rows[0]?.deadlineAt };
+    return { tools: body?.tools ?? [], turnAt: body?.turnAt, deadlineAt: rows[0]?.deadlineAt, seedId: rows[0]?.id };
+  };
+
+  /**
+   * The client to emit a `tool_call` with: a DELEGATED run bounded by the person whose turn this
+   * is, so the worker that claims the call can resolve them (agent_docs/plan-delegation.md).
+   *
+   * Minted from the SEED call, which the session itself wrote. That is the one record in a
+   * conversation whose author IS the person: an assistant message is authored by the inference
+   * worker (it acks it under its own lease and no other credential can), and `body.owner` is a
+   * value this worker could have made up. Off unless `delegate` is set, because a space whose
+   * workers hold no delegable grants gains nothing from the extra mint.
+   *
+   * Cached per conversation until an expiry it does not renew: a delegated credential is scoped to
+   * a piece of work, and one that renewed itself indefinitely would outlive the turn.
+   */
+  const delegated = new Map<string, { client: RadiaClient; until: number }>();
+  const callerClient = async (conversationId: string, seedId: string | undefined): Promise<RadiaClient> => {
+    if (!opts.delegate || !seedId) return client;
+    const hit = delegated.get(conversationId);
+    if (hit && hit.until > Date.now() + 60_000) return hit.client;
+    try {
+      const d = await client.delegatedClient(seedId);
+      delegated.set(conversationId, { client: d.client, until: Date.parse(d.expiresAt) });
+      return d.client;
+    } catch (e) {
+      // SAID OUT LOUD, then carry on as this worker. Throwing here kills the whole turn, and a
+      // conversation that stops advancing is a worse failure than a later tool call answering
+      // `forbidden`: the claimant of an undelegated `tool_call` resolves the caller to THIS AGENT
+      // and fails closed, which is safe and legible. A seed written by an operator hits this by
+      // design, since a privileged caller has no grant set to narrow to.
+      log(`turn: no delegated run for ${conversationId} (${e}); tool calls will carry this worker's reach`);
+      return client;
+    }
   };
 
   /** Emit the call for `calls[i]`, naming the slot its reply lands in.
@@ -265,7 +302,10 @@ export async function runTurnWorker(
     key: string,
   ) => {
     const call = calls[i];
-    await client.put({
+    // Emitted under the caller's delegated run, so the record the tool worker claims names a
+    // resolvable person rather than this worker.
+    const as = await callerClient(m.conversationId!, (await currentCall(m.conversationId!)).seedId);
+    await as.put({
       kind: k.toolCall,
       body: {
         tool: call.function.name,

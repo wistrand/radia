@@ -23,7 +23,7 @@
 import { activeByKey, RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
-import { bootstrap } from "./space/roles.ts";
+import { bootstrap, mintSession } from "./space/roles.ts";
 import { writeWorkspace } from "../../extensions/ts/workspace.ts";
 
 const PORT = 7818;
@@ -105,8 +105,14 @@ function descriptions(rows: any[]): Map<string, string> {
   );
 }
 
+// As a PERSON, not the operator: exec resolves who it acts for from the call's author, and an
+// operator has no grant set to narrow to, so a delegated mint for one is refused. Anything that
+// then reads a workspace runs with the worker's own reach, which no longer includes reading one
+// (agent_docs/plan-delegation.md phase 4).
+const caller = new RadiaClient(url, { token: await mintSession(admin, "human:runners") });
+
 async function call(conv: string, tool: string, args: Record<string, unknown>) {
-  const { id } = await admin.put({
+  const { id } = await caller.put({
     kind: "tool_call",
     body: { tool, args, conversationId: conv, owner: "agent:chat-user" },
     parentIds: [conv],

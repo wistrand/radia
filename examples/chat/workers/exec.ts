@@ -949,7 +949,7 @@ type Run = Awaited<ReturnType<typeof runProgram>>;
  * An unchanged tree writes nothing, so a read-only attempt does not manufacture a version. Mutates
  * `tree` because the result belongs to the version the run PRODUCED, not the one it started from.
  */
-async function captureTree(c: RadiaClient, tree: Tree, r: Run): Promise<{
+async function captureTree(c: RadiaClient, tree: Tree, r: Run, s: RadiaClient = c): Promise<{
   committed: { id: string; treeDigest: string; forked: boolean } | null;
   changed?: { changed: string[]; removed: string[] };
 }> {
@@ -959,7 +959,7 @@ async function captureTree(c: RadiaClient, tree: Tree, r: Run): Promise<{
     try {
       const cap = await captureWorkspace(c, tree.manifest, tree.root);
       changed = { changed: cap.changed, removed: cap.removed };
-      committed = await commitWorkspace(c, tree.manifest, cap);
+      committed = await commitWorkspace(c, tree.manifest, cap, {}, s);
       if (committed) {
         tree.digest = committed.treeDigest;
         tree.parent = committed.id;
@@ -1060,6 +1060,45 @@ async function judgeRun(
 // the machine; the fallback is for running this worker standalone.
 const concurrency = Number(arg("--concurrency") ?? String(Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1))));
 
+/**
+ * The SESSION-scoped client for one call: this worker's capability, bounded by the reach of the
+ * person whose turn this is (agent_docs/plan-delegation.md).
+ *
+ * Cached on the tool_call's AUTHOR RUN, which is server-assigned (`created_by`) and therefore safe
+ * as a key: a run's delegation is immutable, so two calls from the same author resolve to the same
+ * caller. Keying on `body.conversationId` would be an escalation, since a body naming somebody
+ * else's conversation would then reuse their credential. Not per call, because every mint writes a
+ * permanent `agent_run` record.
+ *
+ * DECLARED ABOVE `agentLoop`, which is a top-level `await`: a `const` after it never initializes,
+ * and every claim nacked with a TDZ error instead of running.
+ */
+const sessions = new Map<string, { client: RadiaClient; until: number }>();
+
+async function sessionClient(rec: RadiaRecord, c: RadiaClient): Promise<RadiaClient> {
+  const author = rec.runtimeMeta?.createdBy;
+  if (!author) return c;
+  const hit = sessions.get(author);
+  if (hit && hit.until > Date.now() + 60_000) return hit.client;
+  // The claimed record is the entitlement: this worker holds its lease, which is what a delegable
+  // grant requires. A mint that fails because the caller cannot be resolved (an old-style
+  // `tool_call` written by a worker rather than under a delegated run) falls back to this worker's
+  // own client, which still cannot read another session's data: the delegable grants are the only
+  // path to that, and `c` does not hold them.
+  try {
+    const d = await c.delegatedClient(rec.id);
+    sessions.set(author, { client: d.client, until: Date.parse(d.expiresAt) });
+    return d.client;
+  } catch (e) {
+    // SAID OUT LOUD, always. The fallback is safe (this worker's own token does not hold the
+    // delegable grants, so it can still reach no other session's data), but it turns a working
+    // tool call into a `forbidden` further down, and a silent fallback makes that look like a
+    // grant bug rather than a delegation that did not happen.
+    console.error(`[exec] no delegated run for ${author} (${e}); this call runs with the worker's own reach`);
+    return c;
+  }
+}
+
 await agentLoop(client, {
   name: "exec",
   patterns,
@@ -1077,17 +1116,26 @@ async function serve(rec: any, c: RadiaClient): Promise<{ kind: string; body: Re
   {
     const callId = rec.id;
     const b = rec.body as Call;
+    // Two credentials, chosen per operation, and the line between them is READ versus WRITE rather
+    // than data versus capability. `s` READS the caller's data (their workspaces, procedures and
+    // artifacts) and reaches only what they could, which is what makes one worker safe for many
+    // people. `c` stays this worker's own for everything it AUTHORS: a delegated run can never
+    // exceed the caller, and the session deliberately holds no `workspace: put` or `procedure: put`
+    // (only this worker may author a tree or store a procedure), so delegating those would
+    // intersect to nothing. `progress`, the `check` verdict and the ack are exec's own for the
+    // reasons stated where each is written.
+    const s = await sessionClient(rec, c);
 
-    if (b.tool === "save_procedure") return await saveProcedure(rec, c);
-    if (b.tool === "read_procedure") return await readProcedure(rec, c);
-    if (b.tool === "retire_procedure") return await retireProcedure(rec, c);
+    if (b.tool === "save_procedure") return await saveProcedure(rec, c, s);
+    if (b.tool === "read_procedure") return await readProcedure(rec, s);
+    if (b.tool === "retire_procedure") return await retireProcedure(rec, c, s);
 
-    const program = await resolveProgram(c, b);
+    const program = await resolveProgram(s, b);
     if (isRefused(program)) return refusal(b, callId, program.refused);
 
     // A PROCEDURE brings its own tree, so the call's `workspace` argument is not consulted: a tool
     // call carries arguments, never the code that serves it.
-    const tree = await openTree(c, b, callId, program.workspace);
+    const tree = await openTree(s, b, callId, program.workspace);
     if (isRefused(tree)) return refusal(b, callId, tree.refused);
 
     // PIN THE CODE, not just its name. `materialize` verified this digest against the bytes it
@@ -1170,14 +1218,14 @@ async function serve(rec: any, c: RadiaClient): Promise<{ kind: string; body: Re
         ...(jail === "python" ? { spec: { name: "dry", language: "python", isolation: "bubblewrap" } as never } : {}),
         });
       } catch (e) {
-        await captureTree(c, tree, { stdout: "", stderr: "", ok: false, exitCode: 1, timedOut: false, truncated: false, ms: 0 });
+        await captureTree(c, tree, { stdout: "", stderr: "", ok: false, exitCode: 1, timedOut: false, truncated: false, ms: 0 }, s);
         return refusal(
           b,
           callId,
           `the rehearsal of ${tree.name}/${entry} failed, and nothing was written: ${String(e instanceof Error ? e.message : e).slice(0, 2000)}`,
         );
       }
-      await captureTree(c, tree, { stdout: "", stderr: "", ok: true, exitCode: 0, timedOut: false, truncated: false, ms: 0 });
+      await captureTree(c, tree, { stdout: "", stderr: "", ok: true, exitCode: 0, timedOut: false, truncated: false, ms: 0 }, s);
       return {
         kind: "tool_result",
         body: {
@@ -1205,8 +1253,11 @@ async function serve(rec: any, c: RadiaClient): Promise<{ kind: string; body: Re
       ? await runProcedure(tree, entry as string, b.args ?? {})
       : await runProgram(program.code, jail, tree, entry);
 
-    const { committed, changed } = await captureTree(c, tree, r);
+    const { committed, changed } = await captureTree(c, tree, r, s);
     const stored = await storeStdout(c, b, callId, r);
+    // `c`, not `s`: the verdict IS exec's, which is the whole reason the session holds `check:
+    // query` and not `check: put`. Delegating it would let the model's own reach decide whether
+    // its run passed.
     const checked = await judgeRun(c, b, callId, jail, tree, r);
 
     return {
@@ -1262,7 +1313,7 @@ async function serve(rec: any, c: RadiaClient): Promise<{ kind: string; body: Re
  * dedups, a changed one is a successor and latest wins), so "save it again under the same name"
  * is an update, never a 409.
  */
-async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
+async function saveProcedure(rec: RadiaRecord, c: RadiaClient, s: RadiaClient) {
   const callId = rec.id;
   const b = rec.body as { args?: Record<string, unknown>; conversationId?: string; owner?: string };
   const a = b.args ?? {};
@@ -1285,7 +1336,9 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
   const language: "javascript" | "python" = a.language === "python" ? "python" : "javascript";
   const entry = language === "python" ? "main.py" : "main.js";
   const ws = `proc-${name}`;
-  const prev = await readWorkspace(c, ws, b.conversationId);
+  // READ as the session, WRITE as the worker. A write path still has to look first, and looking is
+  // the half that must not reach another person's trees.
+  const prev = await readWorkspace(s, ws, b.conversationId);
   const w = await writeWorkspace(c, {
     name: ws,
     owner: b.owner ?? "",
@@ -1293,7 +1346,7 @@ async function saveProcedure(rec: RadiaRecord, c: RadiaClient) {
     files: { [entry]: code },
     entrypoint: entry,
     basedOn: prev?.id,
-  });
+  }, s); // authors as the worker, reads the predecessor as the session
 
   const key = await shortHash(`${description}\n${ws}\n${w.treeDigest}`);
   await c.put({
@@ -1402,14 +1455,16 @@ async function readProcedure(rec: RadiaRecord, c: RadiaClient) {
  * that is not retired. A delete would also be the wrong shape for a space where every earlier
  * version of the procedure is still referenced by the tool_calls that ran it.
  */
-async function retireProcedure(rec: RadiaRecord, c: RadiaClient) {
+async function retireProcedure(rec: RadiaRecord, c: RadiaClient, s: RadiaClient) {
   const callId = rec.id;
   const b = rec.body as { args?: { name?: string; reason?: string }; conversationId?: string; owner?: string };
   const name = String(b.args?.name ?? "");
   const fail = (output: string) => toolResult(callId, b, answer(output, { ok: false, taint: [] }));
   if (!name) return fail("retire_procedure needs a `name`");
 
-  const current = await lookupProcedure(c, name, b.conversationId);
+  // Looked up as the SESSION, so a name is only retirable by whoever could see it; the successor
+  // is written as the worker, which is the only principal that may author a `procedure`.
+  const current = await lookupProcedure(s, name, b.conversationId);
   if (!current) return fail(`no procedure '${name}' saved in this conversation`);
   if (current.retired) return fail(`'${name}' is already retired`);
 

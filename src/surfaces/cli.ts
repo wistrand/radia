@@ -52,6 +52,8 @@ Inspect
                                       durable one, for a tool that cannot re-authenticate
   shred <artifact-id> [--reason <t>] [--shared]  destroy an artifact's bytes, keep the record
   revoke <principal> [--reason <t>]   kill an agent definition's token, permanently
+  runs --acting-for <principal> [--stop]  delegated runs minted on someone's behalf; --stop is the
+                                      deprovisioning cascade (revoking a definition leaves runs alive)
   kinds                               declared kinds (a query for kind_def records)
   get <record-id>                     one record
   lineage <record-id>                 ancestry via parent_ids
@@ -759,6 +761,40 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       const req = { kind, body: json(bodyArg, "body"), ...(parents.length ? { parentIds: parents } : {}) };
       const r = await client.put(req, flag(argv, "--idempotency-key"));
       return out(ctx, r, () => r.id);
+    }
+
+    // Delegated runs, by the caller they were minted for. The deprovisioning answer: revoking a
+    // definition deliberately leaves runs alive (`Space.revokeDefinition`) and `resolveCredential`
+    // never consults a definition, so a credential minted on someone's behalf outlives their
+    // offboarding until it expires. `--stop` is the cascade, and it is a verb rather than a timer
+    // for the same reason `gc` is.
+    case "runs": {
+      const actingFor = flag(argv, "--acting-for");
+      if (!actingFor) return usage("runs --acting-for <principal> [--stop]");
+      const recs = await client.query({ kind: "agent_run", match: { actingFor } }, 1000);
+      // Newest record per run id wins: a stop and a renewal are both successors carrying the run.
+      const latest = new Map<string, Record<string, unknown>>();
+      for (const r of recs) {
+        const b = r.body as { run?: string };
+        if (typeof b.run === "string" && !latest.has(b.run)) latest.set(b.run, r.body as Record<string, unknown>);
+      }
+      const now = new Date().toISOString();
+      const rows = [...latest.values()] as { run: string; agent: string; status?: string; expiresAt?: string }[];
+      const live = rows.filter((r) => r.status !== "stopped" && (r.expiresAt ?? "") > now);
+      const stopped: string[] = [];
+      if (has(argv, "--stop")) for (const r of live) if ((await client.stopRun(r.run)).applied) stopped.push(r.run);
+      return out(ctx, { actingFor, runs: rows, active: live.length, stopped }, () =>
+        [
+          rows.length
+            ? table(["RUN", "WORKER", "STATUS", "EXPIRES"], rows.map((r) => [
+              r.run,
+              r.agent ?? "-",
+              r.status === "stopped" ? "stopped" : (r.expiresAt ?? "") > now ? "active" : "expired",
+              r.expiresAt ?? "-",
+            ]))
+            : `(no delegated runs for ${actingFor})`,
+          stopped.length ? `stopped ${stopped.length} active run(s)` : "",
+        ].filter(Boolean).join("\n"));
     }
 
     case "query": {

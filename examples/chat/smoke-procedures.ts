@@ -11,7 +11,7 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
-import { bootstrap } from "./space/roles.ts";
+import { bootstrap, mintSession } from "./space/roles.ts";
 import { ToolSet } from "./client/turn.ts";
 import { readWorkspace } from "../../extensions/ts/workspace.ts";
 
@@ -66,8 +66,15 @@ const worker = new Deno.Command(Deno.execPath(), {
 const convA = (await admin.put({ kind: "conversation", body: { title: "A" } })).id;
 const convB = (await admin.put({ kind: "conversation", body: { title: "B" } })).id;
 
+// Calls are written as a PERSON, not as the operator, because that is how they arrive in the real
+// fleet and because exec resolves who it is acting for from the call's author: an operator has no
+// grant set to narrow to, so a delegated mint for one is refused (agent_docs/plan-delegation.md).
+// The harness wrote them as `admin` until delegation existed, and that made this suite the only
+// place a tool_call had a privileged author.
+const session = new RadiaClient(url, { token: await mintSession(admin, "human:smoke") });
+
 async function callTool(tool: string, args: unknown, conversationId: string, timeoutMs = 20_000) {
-  const { id } = await admin.put({ kind: "tool_call", body: { tool, args, conversationId }, parentIds: [conversationId] });
+  const { id } = await session.put({ kind: "tool_call", body: { tool, args, conversationId }, parentIds: [conversationId] });
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const r = await admin.readOne({ kind: "tool_result", match: { callId: id } });

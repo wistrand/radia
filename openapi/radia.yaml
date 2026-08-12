@@ -818,6 +818,56 @@ paths:
                   expiresAt: { type: string }
         "401": { $ref: "#/components/responses/Problem" }
 
+  /agent-runs/delegated:
+    post:
+      operationId: createDelegatedRun
+      summary: Mint a run bounded by both the worker's grants and its caller's
+      x-stability: experimental
+      x-phase: "M1"
+      description: |
+        Authenticated as the WORKER, unlike the two mints above: the caller already holds a
+        credential and is asking for a narrower one. The returned run's authority is
+        `grants(worker) INTERSECT grants(caller)`, computed once at mint and stored on its own
+        `agent_run` record, so it is a subset of what the worker already held.
+
+        `for` names a record the worker holds a lease on, or may read. The CALLER is resolved from
+        that record rather than asserted: `created_by` names a run, and a run whose body carries
+        `actingFor` reports that instead, so a chain of workers relaying one session collapses to
+        the person at its head. A worker holds two credentials afterwards and picks per operation:
+        its own for its own capability, this one for anything touching the caller's data.
+
+        422 when the two grant sets share nothing (`empty_delegation`) or when the pattern cross
+        product explodes (`delegation_too_large`); 403 for a privileged or supervisor worker, whose
+        runs skip attenuation, and for a privileged caller, who has no grant set to narrow to.
+        See agent_docs/plan-delegation.md.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [for]
+              properties:
+                for: { type: string, description: "id of a record naming the caller to act for" }
+      responses:
+        "201":
+          description: delegated run minted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run, agent, runToken, expiresAt, actingFor]
+                properties:
+                  run: { type: string }
+                  agent: { type: string, description: "the WORKER's agent; delegation does not change identity" }
+                  runToken: { type: string }
+                  expiresAt: { type: string }
+                  actingFor: { type: string, description: "the caller whose reach bounds this run" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/Problem" }
+
   /sessions/oidc:
     post:
       operationId: createOidcSession

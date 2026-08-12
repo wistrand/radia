@@ -231,6 +231,11 @@ export interface WriteInput {
 export async function writeWorkspace(
   client: RadiaClient,
   input: WriteInput,
+  /** Who READS the predecessor, when that is a different credential from the one that writes.
+   *  A caller under DELEGATION holds two: authoring a tree is the worker's own capability, while
+   *  looking at the tree it is superseding must be bounded by the person it belongs to. Defaults to
+   *  `client`, so every existing caller is unchanged. See agent_docs/plan-delegation.md. */
+  reader: RadiaClient = client,
 ): Promise<{ id: string; treeDigest: string; files: WorkspaceFile[]; deduped: boolean; forked: boolean; entrypoint?: string }> {
   // Validate EVERY path before writing ANY bytes. A tree with one bad path must not leave half its
   // artifacts behind: the manifest is what makes them reachable, and there will be no manifest.
@@ -283,7 +288,7 @@ export async function writeWorkspace(
   if (input.entrypoint) validateEntrypoint(input.entrypoint, files);
   const treeDigest = await treeDigestOf(files);
 
-  const before = await readWorkspace(client, input.name, input.conversationId);
+  const before = await readWorkspace(reader, input.name, input.conversationId);
   // The entrypoint is part of the comparison, and it has to be: it is deliberately OUTSIDE the tree
   // digest, so "same files, different entry" is a real change that this would otherwise dedupe into
   // doing nothing. Re-pointing a tree at another file is a version, not a no-op.
@@ -348,7 +353,7 @@ export async function writeWorkspace(
     treeDigest,
     files,
     deduped: false,
-    forked: await isForked(client, input.name, input.conversationId),
+    forked: await isForked(reader, input.name, input.conversationId),
     ...(input.entrypoint ? { entrypoint: input.entrypoint } : {}),
   };
 }
@@ -1289,6 +1294,10 @@ export async function commitWorkspace(
    *  reached the network). Inheritance from the predecessor happens through `parentIds` below and
    *  needs nothing here. */
   opts: { taint?: string[]; parentIds?: string[] } = {},
+  /** Who reads, when that is a different credential from the one that writes: the fork check below
+   *  is a `workspace` query, and under delegation authoring is the worker's own capability while
+   *  reading is bounded by the caller. Defaults to `client`. */
+  reader: RadiaClient = client,
 ): Promise<{ id: string; treeDigest: string; forked: boolean } | null> {
   if (captured.unchanged) return null;
   const treeDigest = await treeDigestOf(captured.files);
@@ -1314,5 +1323,5 @@ export async function commitWorkspace(
     },
     `workspace:${manifest.name}:${treeDigest}:after:${manifest.id}`,
   );
-  return { id, treeDigest, forked: await isForked(client, manifest.name, manifest.conversationId) };
+  return { id, treeDigest, forked: await isForked(reader, manifest.name, manifest.conversationId) };
 }

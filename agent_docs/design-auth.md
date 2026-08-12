@@ -430,8 +430,10 @@ cannot), so M1 enforces the acting agent's own `put` grant and keeps the chain a
 record. Intersection composes with taint (M3): sensitive consumers may constrain both lineages.
 
 **A different mechanism now has a concrete caller** ([plan-scaling.md](plan-scaling.md) item 3a),
-and it is NOT this policy arriving early: a DELEGATED RUN. A worker holding a lease mints a run
-whose authority is `grants(worker) INTERSECT grants(caller)`, computed once, and then holds two
+and it is NOT this policy arriving early: a DELEGATED RUN, BUILT 2026-08-12
+([plan-delegation.md](plan-delegation.md); `Space.mintDelegatedRun`,
+`POST /v0/agent-runs/delegated`). A worker mints a run whose authority is
+`grants(worker) INTERSECT grants(caller)`, computed once, and then holds two
 credentials — its own for its own capability, the delegated one for anything touching the caller's
 data. Intersecting grant SETS as a blanket rule would delete the properties workers exist to
 provide (`EXEC_GRANTS` holds `check: put` where the session has `query`, precisely so the model
@@ -443,14 +445,24 @@ Minting rather than annotating each call is where AWS session policies, OAuth 2.
 `effectivePermissions` a flat list — ask the delegated run. It is the same family as the
 capability below, one scope up: authority that narrows as it travels and never widens.
 
-Two things about it are counter-intuitive enough to state here. The caller is resolved through the
-RUN (`created_by` names a `run:*`, and its `agent_run` body carries `actingFor`), never from the
-triggering record's author or an `owner` field: in the chat the record a worker claims was written
-by ANOTHER worker, and an `owner` written under an unpatterned `put` grant is an unconstrained body
-value. And a plain intersection cannot remove the worker's ambient authority, because
-`grants(worker) INTERSECT grants(caller)` is a subset of the worker's own grants, so narrowing the
-worker empties the delegated run too. That needs a grant only a delegated run may exercise. Both
-are worked through in [plan-scaling.md](plan-scaling.md) item 3a.
+Three things about it are counter-intuitive enough to state here.
+
+The caller is resolved through the RUN (`created_by` names a `run:*`, and its `agent_run` body
+carries `actingFor`), never from the triggering record's author or an `owner` field: in the chat
+the record a worker claims was written by ANOTHER worker, and an `owner` written under an
+unpatterned `put` grant is an unconstrained body value.
+
+A plain intersection cannot remove the worker's ambient authority, because
+`grants(worker) INTERSECT grants(caller)` is a SUBSET of the worker's own grants, so narrowing the
+worker empties the delegated run too. What closes that is a grant only a delegated run may
+exercise, held under the principal `delegable:<agent>` — a prefix no credential can ever resolve
+to, since `grantSubject` answers `agent:`/`human:`/`run:` and both mints refuse anything else.
+
+And the same subset property bounds what delegation can ever cover: it can only carry authority the
+CALLER already holds, so a worker capability the caller deliberately lacks (`check: put`, or
+authoring a workspace on their behalf) stays on the worker's own credential by construction, not by
+choice. `ack` is the other boundary: it is performed by the lease owner, so no ack-emitted record
+can carry a delegated author.
 
 ## Download capabilities: a delegated read, not a credential
 

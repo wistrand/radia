@@ -132,23 +132,29 @@ const TOOLS_GRANTS: Grant[] = [
 const EXEC_GRANTS: Grant[] = [
   { kind: "interest", operations: ["put", "query"] }, // agentLoop declares what this worker listens for
   { kind: "tool_call", operations: ["take"] },
+  // Both of these are written through `ack`, under the LEASE, so they cannot be delegated: an ack
+  // is performed by the lease owner and no other credential can make it. They stay ambient, and
+  // that is a real remaining reach on the write side, stated rather than hidden.
   { kind: "tool_result", operations: ["put"] }, // bare (un-slotted) calls only, since 2b
   { kind: "message", operations: ["put"] }, // a slotted call's reply IS the tool message (workers/reply.ts)
-  { kind: "artifact", operations: ["put", "read_one"] },
   // `query` as well as `put`: it must know every tool name ANY worker advertises, to refuse a
   // saved procedure that would shadow one (see `capabilityNames` in workers/exec.ts).
   { kind: "capability", operations: ["put", "query"] },
   { kind: "progress", operations: ["put"] },
-  { kind: "procedure", operations: ["put", "query"] },
   // The verdict on a run, written from what actually happened. Only this worker may put one: the
   // session has `query` and nothing more, so "the code did what was claimed" is never a record the
-  // model authored about itself.
+  // model authored about itself. Deliberately NOT delegable, for the same reason.
   { kind: "check", operations: ["put"] },
-  // Reads a manifest to materialise it, and writes a successor when a run with `write: true`
-  // changed the tree. `put` was deliberately withheld at first, on the reasoning that this worker
-  // only SERVES trees; write-back made that false, and the grant had to follow the capability
-  // rather than the other way round.
-  { kind: "workspace", operations: ["query", "put"] },
+  // The WRITE half of the three kinds below stays here, and the reason is the mechanism rather
+  // than caution: a delegated run's authority is `worker INTERSECT caller`, so it can never exceed
+  // the CALLER, and the session deliberately holds no `workspace: put` or `procedure: put` (only
+  // this worker may author a tree or store a procedure, which is what makes "the assistant saved
+  // this" mean it went through the sandbox). Delegating those would intersect to nothing.
+  // What that leaves ambient is authoring INTO another session's scope, an integrity reach rather
+  // than a confidentiality one, and the read half below is where the cross-user exposure was.
+  { kind: "artifact", operations: ["put"] },
+  { kind: "workspace", operations: ["put"] },
+  { kind: "procedure", operations: ["put"] },
   // Reads the operator's declaration, and declares the backends whose AVAILABILITY only it can
   // determine: whether bubblewrap exists on this host is not something the launcher knows, and a
   // jail is only declared here after its probe passed. The declare-versus-verify split still holds
@@ -156,6 +162,24 @@ const EXEC_GRANTS: Grant[] = [
   // but the earlier comment overstated it: `query` alone could not express a backend the operator
   // cannot see.
   { kind: "sandbox", operations: ["query", "put"] },
+];
+
+/**
+ * READING session data, moved off the worker's own identity (agent_docs/plan-delegation.md phase
+ * 4). These were unscoped grants here, so ONE shared exec process could read every person's
+ * workspaces, procedures and artifacts, and delegation would have been decoration while they
+ * stayed.
+ *
+ * They live under `delegable:agent:chat-exec`, a principal nothing can authenticate as, so this
+ * worker's own token cannot touch them and the only path is a delegated run bounded by whoever
+ * asked. Narrowing them instead would have emptied the intersection, since that is a SUBSET of
+ * what the worker holds: under the delegated run `readWorkspace` gets the SESSION's pattern, which
+ * is what makes one worker safe for many people.
+ */
+const EXEC_DELEGABLE: Grant[] = [
+  { kind: "artifact", operations: ["read_one"] },
+  { kind: "workspace", operations: ["query"] },
+  { kind: "procedure", operations: ["query"] },
 ];
 
 // plain user (the REPL): may drive its own conversations and read its own results, nothing more.
@@ -355,5 +379,14 @@ export async function bootstrap(
   const imagesToken = (await mint(admin, "agent:chat-images", IMAGE_GRANTS)).definitionToken;
   const execToken = (await mint(admin, "agent:chat-exec", EXEC_GRANTS)).definitionToken;
   const turnToken = (await mint(admin, "agent:chat-turn", TURN_GRANTS)).definitionToken;
+  // Assigned to a principal, not to a definition: `delegable:agent:chat-exec` has no definition and
+  // never will, which is exactly why the worker cannot authenticate as it. Written directly, the
+  // way any grant is.
+  for (const g of EXEC_DELEGABLE) {
+    await admin.put({
+      kind: "grant",
+      body: { principal: "delegable:agent:chat-exec", kind: g.kind, operations: g.operations },
+    }, `chat-delegable:exec:${g.kind}`);
+  }
   return { inferenceToken, routerToken, toolsToken, imagesToken, execToken, turnToken };
 }

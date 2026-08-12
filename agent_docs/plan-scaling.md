@@ -105,9 +105,10 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
      near-term answer is to move `space_*` into the SESSION process, where the property holds by
      construction and the plumbing is deleted rather than generalised. It does not generalise, and
      that is item 3a.
-3a. **Scope delegation, as a DELEGATED RUN.** The general form of the problem above, and what a
-   shared worker needs: act with my own capability, under my caller's reach. The build sequence is
-   [plan-delegation.md](plan-delegation.md); the design and the rejected alternatives are here. `space_*` can move
+3a. **BUILT (2026-08-12): scope delegation, as a DELEGATED RUN.** The general form of the problem
+   above, and what a shared worker needs: act with my own capability, under my caller's reach. The
+   build record is [plan-delegation.md](plan-delegation.md), including where it changed this
+   design; the reasoning and the rejected alternatives stay here. `space_*` can move
    into the session because they are reads the session could make itself; exec cannot (it needs
    the jail, its own permissions, `--allow-run`) yet runs model-written code ON BEHALF OF a
    session. Images is the same shape, and the marketplace (M2) is entirely this shape.
@@ -248,12 +249,10 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
    so the credential behind any record is itself a readable record; and `delegation_context` is
    RFC 8693's `act` chain by another name, for the lease-emitted half.
 
-   **Left to decide:** where the attenuation lives, materialized grant records per delegated run
-   (many records, but they are records) versus an inline constraint on the `agent_run` body that
-   `authorize` ANDs in. The latter looks right: one field and one AND, against intersecting two
-   grant sets per request. Mint per (worker, caller) pair and reuse until expiry, never per call,
-   which bounds the growth. And whether `delegable` is a field on `grant` or a kind of its own; a
-   field keeps one registry and one projection.
+   **Decided in the build:** the attenuation is INLINE on the `agent_run` body (a delegated run
+   reads no grant record at all), and `delegable` is neither a field nor a kind but a PRINCIPAL,
+   `delegable:<agent>`, which nothing can authenticate as. Both in plan-delegation.md with the
+   alternatives they beat.
 
    **Do NOT take:** unconstrained impersonation (Kerberos's original mode, Kubernetes' `impersonate`
    verb) — full authority transfer with no attenuation, where the failure mode is total. And

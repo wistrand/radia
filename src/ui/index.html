@@ -2025,9 +2025,13 @@ async function loadAuth() {
   const grantChips = (gs) => gs.length
     ? gs.map((g) => `<span class="tag tag-grant" title="${esc(g.pattern ? "pattern-scoped: " + JSON.stringify(g.pattern) : "kind-scoped")}">${esc(g.kind)}: ${esc((g.operations || []).join(", "))}${g.pattern ? " ⋔" : ""}</span>`).join(" ")
     : `<span class="muted">none</span>`;
+  // A DELEGATED run is listed under the worker that minted it, because that is whose agent it is;
+  // what it is bounded BY is the other half of the answer and has to be on the line, or the row
+  // reads as an ordinary run of a worker holding far more than it does.
   const runLines = (rs) => rs.length
     ? rs.map((r) => `<div class="mono" style="font-size:12px;margin-top:3px">${esc(r.run.slice(0, 22))}… `
         + `<span class="badge ${r.status === "stopped" ? "st-dead_letter" : "st-available"}">${esc(r.status || "active")}</span> `
+        + (r.actingFor ? `<span class="tag tag-deleg" title="delegated: bounded by this caller's grants as well as the worker's">acting for ${esc(r.actingFor)}</span> ` : "")
         + `<span class="muted">${r.expiresAt ? "expires " + esc(r.expiresAt.slice(11, 19)) : ""}</span></div>`).join("")
     : `<span class="muted">none</span>`;
 

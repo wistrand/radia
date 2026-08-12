@@ -436,7 +436,15 @@ export const META_RESERVED: KindDef[] = [
   { kind: AGENT_DEFINITION, indexedPaths: [{ path: "agent", type: "keyword" }, { path: "tokenHash", type: "keyword" }], claimable: false },
   {
     kind: AGENT_RUN,
-    indexedPaths: [{ path: "run", type: "keyword" }, { path: "agent", type: "keyword" }, { path: "tokenHash", type: "keyword" }],
+    // `actingFor` is indexed so "every delegated run for this caller" is one query, which is what
+    // makes a deprovisioning cascade possible (plan-delegation.md phase 2). Absent on every
+    // ordinary run, so nothing needs backfilling: matching is an expression over the body.
+    indexedPaths: [
+      { path: "run", type: "keyword" },
+      { path: "agent", type: "keyword" },
+      { path: "tokenHash", type: "keyword" },
+      { path: "actingFor", type: "keyword" },
+    ],
     claimable: false,
   },
   // Indexed on `kind`: the dry-run matcher asks "which interests target the kind of this record",
