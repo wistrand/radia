@@ -57,16 +57,21 @@ export function makeSaveTools(client: RadiaClient): Record<string, Tool> {
  * it did instead was quote the id URL (which 401s in a browser, and downloads rather than renders
  * even with a token) or invent a capability URL it had no way to mint.
  *
- * Takes the SESSION's client, never the worker's. `POST /v0/artifacts/{id}/capability` authorizes
- * at MINT time against the caller's read grant, so running it as the session is what stops a scoped
- * user from converting an artifact it cannot read into a link that needs no token at all. Handing
- * this the worker's credential would do exactly that.
+ * Runs as the CALLER, never as the worker. `POST /v0/artifacts/{id}/capability` authorizes at MINT
+ * time against the caller's read grant, so acting as them is what stops a scoped user from
+ * converting an artifact it cannot read into a link that needs no token at all. Handing this the
+ * worker's credential would do exactly that.
+ *
+ * `ctx.caller()` is a DELEGATED RUN, resolved server-side from the claimed record's author. This
+ * used to be the session's own token, held by the worker process for its lifetime, which is what
+ * kept the fleet to one user (agent_docs/plan-delegation.md).
  */
-export function makeShareTools(session: RadiaClient): Record<string, Tool> {
+export function makeShareTools(worker: RadiaClient): Record<string, Tool> {
   return {
-    share_artifact: async (a) => {
+    share_artifact: async (a, ctx?: ToolContext) => {
       const id = typeof a.artifact_id === "string" ? a.artifact_id : "";
       if (!id) return { error: "share_artifact needs `artifact_id`" };
+      const session = (await ctx?.caller?.()) ?? worker;
       const { url, expiresAt } = await session.artifactCapability(id);
       // Absolute, always. The server returns a RELATIVE url when no isolated artifact origin is
       // running (`--artifact-port 0`), which the console can resolve against its own origin and an
@@ -187,6 +192,9 @@ function siteHint(paths: string[]): { site?: true; note?: string } {
   };
 }
 
+/** Authors trees as the WORKER (it holds `workspace: put`, which no session does) and READS them as
+ *  the caller (`ctx.caller()`). The split is forced rather than chosen: a delegated run is
+ *  `worker INTERSECT caller`, so it can never carry an operation the caller lacks. */
 export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
   return {
     save_workspace: async (a, ctx?: ToolContext) => {
@@ -204,7 +212,11 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
         contents[path] = v;
       }
       try {
-        const prev = await readWorkspace(client, name, ctx?.conversationId);
+        // READ as the caller, WRITE as the worker. Authoring a tree is the worker's own capability
+        // (the session holds no `workspace: put`, so a delegated run could never carry it), while
+        // looking at the tree being superseded must be bounded by whoever it belongs to.
+        const reader = (await ctx?.caller?.()) ?? client;
+        const prev = await readWorkspace(reader, name, ctx?.conversationId);
         const w = await writeWorkspace(client, {
           name,
           owner: ctx?.owner ?? "",
@@ -218,7 +230,7 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
             ? { entrypoint: prev.entrypoint }
             : {}),
           basedOn: prev?.id,
-        });
+        }, reader);
         const paths = w.files.map((f) => f.path);
         return {
           workspace: name,
@@ -287,7 +299,11 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
       const remove = Array.isArray(a.remove) ? (a.remove as unknown[]).map(String) : undefined;
       try {
         const entrypoint = typeof a.entrypoint === "string" && a.entrypoint.trim() ? a.entrypoint.trim() : undefined;
-        const r = await editWorkspace(client, { name, conversationId: ctx?.conversationId, edits, add, attach, remove, entrypoint });
+        const r = await editWorkspace(
+          client,
+          { name, conversationId: ctx?.conversationId, edits, add, attach, remove, entrypoint },
+          (await ctx?.caller?.()) ?? client, // reads the tree being edited as the caller
+        );
         const touched = new Set([...r.changed, ...r.added]);
         return {
           workspace: name,
@@ -340,8 +356,10 @@ export function makeWorkspaceTools(client: RadiaClient): Record<string, Tool> {
       const name = typeof a.workspace === "string" ? a.workspace.trim() : "";
       const path = typeof a.path === "string" ? a.path.trim() : "";
       if (!name || !path) return { error: "read_workspace needs a `workspace` and a `path`" };
-      const manifest = await readWorkspace(client, name, ctx?.conversationId) ??
-        await readWorkspace(client, name);
+      // Read as the CALLER: which trees exist for you is bounded by your grants, not the worker's.
+      const reader = (await ctx?.caller?.()) ?? client;
+      const manifest = await readWorkspace(reader, name, ctx?.conversationId) ??
+        await readWorkspace(reader, name);
       if (!manifest) return { error: `no workspace named ${JSON.stringify(name)} that you can see` };
       const file = manifest.files.find((f) => f.path === path);
       if (!file) {

@@ -628,6 +628,10 @@ export interface EditInput {
 export async function editWorkspace(
   client: RadiaClient,
   input: EditInput,
+  /** Who READS, when that differs from who writes. Same split as `writeWorkspace`: under delegation
+   *  authoring a tree is the worker's own capability and reading the one being edited is bounded by
+   *  the caller. Covers the predecessor, its file bytes, and the fork check. Defaults to `client`. */
+  reader: RadiaClient = client,
 ): Promise<
   {
     id: string;
@@ -652,8 +656,8 @@ export async function editWorkspace(
   // whatever this passes, and a conversation-scoped session still cannot reach another
   // conversation's. The successor keeps `...head`'s own `conversationId`, so an edit adds a
   // version where the tree lives rather than moving it here.
-  const head = await readWorkspace(client, input.name, input.conversationId) ??
-    await readWorkspace(client, input.name);
+  const head = await readWorkspace(reader, input.name, input.conversationId) ??
+    await readWorkspace(reader, input.name);
   if (!head) throw new Error(`no workspace named ${JSON.stringify(input.name)} to edit`);
 
   const edits = input.edits ?? [];
@@ -683,7 +687,7 @@ export async function editWorkspace(
     }
     let bytes: Uint8Array;
     try {
-      bytes = await client.getArtifact(file.artifactId);
+      bytes = await reader.getArtifact(file.artifactId);
     } catch (e) {
       const gone = (e as { status?: number }).status === 410;
       problems.push(
@@ -908,7 +912,8 @@ export async function editWorkspace(
     // and a live session spent eight rounds hunting a missing record that was there all along.
     let meta;
     try {
-      meta = await client.artifactMeta(artifactId);
+      // The CALLER's read: attaching an artifact to a tree must not reach one they cannot see.
+      meta = await reader.artifactMeta(artifactId);
     } catch (e) {
       // NAME THE LIKELY CAUSE. A refusal and an absence look identical from here, and "not found"
       // alone is what sent that session looking in the wrong place.
@@ -1040,7 +1045,7 @@ export async function editWorkspace(
     preview,
     // REPORTED, never refused: consistent with every other writer here. Both heads survive, and an
     // edit inherits every file it did not mention, so the caller needs to know its base moved.
-    forked: await isForked(client, input.name, input.conversationId),
+    forked: await isForked(reader, input.name, input.conversationId),
   };
 }
 

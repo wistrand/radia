@@ -21,6 +21,16 @@ export interface ToolContext {
   conversationId?: string;
   /** The identity the call was made on behalf of. Stamped by the session, enforced by its pattern. */
   owner?: string;
+  /**
+   * A client bounded by the CALLER's reach as well as this worker's: a delegated run, minted from
+   * the claimed record and cached per caller (`serveTools`). Use it for anything that touches the
+   * caller's data, and the worker's own client for what is the worker's own doing.
+   *
+   * Unlike `owner`, which the session stamps and a pattern merely enforces, who this acts for is
+   * SERVER-RESOLVED from the record's author. Absent when the harness offers no delegation, so a
+   * tool falls back to its worker's client. See agent_docs/plan-delegation.md.
+   */
+  caller?: () => Promise<RadiaClient>;
 }
 
 export type Tool = (args: Record<string, unknown>, ctx?: ToolContext) => Promise<unknown>;

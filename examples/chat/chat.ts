@@ -46,6 +46,7 @@ import { retireProviderCapabilities } from "../../extensions/ts/capability.ts";
 import { denoSandbox } from "../../extensions/ts/sandbox.ts";
 import { declareSandbox } from "../../extensions/ts/sandbox-registry.ts";
 import { ToolSet } from "./client/turn.ts";
+import { SESSION_TOOL_SCHEMAS, serveSessionTools } from "./client/session-tools.ts";
 import { Thread } from "./client/thread.ts";
 import { cancelTurn, runTurn, TurnCancelled } from "./client/turn.ts";
 import { watchWakeups } from "./client/waiting.ts";
@@ -64,9 +65,12 @@ if (toolRoots.length === 0) {
   console.error("No readable sandbox directories (RADIA_CHAT_DIRS).");
   Deno.exit(1);
 }
-// Both credentials are REQUIRED. Neither falls back to the space's open-mode no-header shortcut,
-// which answers as the operator and would silently give a session the whole control plane.
-if (!loginToken) {
+// A SESSION credential is required, and never falls back to the space's open-mode no-header
+// shortcut, which answers as the operator and would silently give a session the whole control
+// plane. `--serve` is the exception and it is not a loophole: that mode has no person at the
+// keyboard, runs no REPL, and does the deployment half only. It needs the OPERATOR credential
+// instead, checked where the split is made.
+if (!loginToken && !Deno.args.includes("--serve")) {
   console.error("Set RADIA_CHAT_TOKEN (or --token) to your session token.");
   console.error("  Mint one:  radia login human:<you>");
   console.error("  There is no default identity: the chat will not run as an unnamed principal.");
@@ -131,34 +135,103 @@ if (!usingRunning) {
 //
 // Resolved here rather than at import: a space this process just spawned writes its credential file
 // during startup, so reading earlier always misses.
+// SETUP AND SESSION ARE DIFFERENT JOBS, and only the first one is privileged. Registering kinds,
+// minting the worker definitions and launching the fleet is a DEPLOYMENT step; sitting down to
+// talk is not. While the two were one step, every person who opened the chat had to hold the
+// control plane, which is the opposite of what the rest of this example argues for and is what
+// kept a fleet to one user (agent_docs/plan-scaling.md item 3).
+//
+// So the operator credential is now OPTIONAL, and its absence selects JOIN MODE: no bootstrap, no
+// fleet, no privileged read — just the REPL on the person's own token, against a space somebody
+// else set up (`--serve`, below, or `deno task chat` on the same machine).
+const serveOnly = Deno.args.includes("--serve");
 const opToken = operatorToken();
-if (!opToken) {
-  console.error(`No operator credential for ${url}.`);
+const admin = opToken ? new RadiaClient(url, { token: opToken }) : undefined;
+if (!admin && serveOnly) {
+  console.error(`--serve sets a space up for others, which is privileged, and there is no operator credential for ${url}.`);
   console.error("  `radia dev` provisions one automatically; set RADIA_TOKEN to override.");
-  console.error("  The chat bootstraps the fleet, which is privileged, and will not do it unauthenticated.");
   cleanup();
   Deno.exit(1);
 }
-const admin = new RadiaClient(url, { token: opToken });
 
-// Bootstrap as operator, then hand each worker its own least-privilege run token.
-await registerChatKinds(admin);
-// Which conversation this session is for, decided BEFORE its credential exists: the session's
-// grants are scoped to it, and a grant is minted with the run token. Resolved (and created) with
-// the OPERATOR client on purpose: enumerating conversations would otherwise need a
-// `conversation: query` grant on the scoped session, which would let a user session list every
-// conversation on the space. That is a real widening to save a keystroke.
+// Bootstrap as operator, then hand each worker its own least-privilege run token. Skipped entirely
+// in join mode: the space is already set up, and a session that could do this would be an operator.
+if (admin) await registerChatKinds(admin);
+
+/** The DEPLOYMENT half: worker credentials, the jail declaration, the fleet, and the boot sweep.
+ *  Shared by both paths so `--serve` and a solo `deno task chat` cannot drift into setting a space
+ *  up differently. Nothing here is per-person; the one thing that is (`assignUserGrants`) stays
+ *  with the session, which is the whole point of the split. */
+async function setUpSpace(a: RadiaClient): Promise<void> {
+  const tokens = await bootstrap(a, {});
+  // The OPERATOR declares the jail it is about to launch a worker into. Not the worker: a manifest
+  // claim is descriptive by definition, and an execution guarantee must not be. This process
+  // configured the flags, so it is the one that can honestly say what they are.
+  await declareSandbox(a, denoSandbox({ name: "deno", readRoots: execRoots, timeoutMs: Number(EXEC_TIMEOUT_MS) }));
+  // No session credential goes to the fleet. The tools worker used to be handed one so its
+  // `space_*` verbs ran as a person; those verbs are served in the REPL now, which is what lets
+  // these workers serve everybody.
+  procs.push(...launchFleet(tokens));
+  // The retention sweep, at the one moment this app reliably has an operator credential in hand.
+  // Best-effort in the background: a chat that cannot sweep is a chat, not an error.
+  a.gc().then((r) => {
+    if (r.swept > 0) notice(dim(`swept ${r.swept} expired records (${Object.keys(r.byKind).join(", ")})`));
+  }).catch(() => {/* not the session's problem */});
+}
+
+// SERVE MODE: the deployment half, once, with no person at the keyboard. It parks holding the
+// fleet so everyone else can join with nothing but their own login. This is the split — the
+// privileged work happens here instead of once per session.
+if (serveOnly && admin) {
+  await setUpSpace(admin);
+  write(`\nfleet serving ${url}. Sessions join with:  deno task chat\n`);
+  write(`Ctrl-C to stop the workers.\n\n`);
+  await new Promise<void>((r) => shutdown.signal.addEventListener("abort", () => r(), { once: true }));
+  cleanup();
+  try {
+    await retireProviderCapabilities(admin, FLEET_PROVIDERS);
+  } catch { /* the space may already be gone */ }
+  await sleep(100);
+  Deno.exit(0);
+}
+// Which conversation this session is for. Resolved AFTER the session's credential exists, because
+// in join mode there is no operator client to resolve it with, and still before grants are
+// assigned, because a conversation-scoped grant binds to this id.
+//
+// READING conversations stays operator-only on purpose: enumerating them needs
+// `conversation: query`, which would let any session list every conversation on the space. That is
+// a real widening to save a keystroke.
 async function resolveConversation(): Promise<{ id: string; resumed: boolean }> {
   if (resume && resume !== "last") return { id: resume, resumed: true };
   if (resume === "last") {
-    // Newest first. That is the keyset direction, which is the only way to ask for the most recent.
-    const recent = await admin.query({ kind: "conversation" }, 1, { dir: "desc" });
-    if (recent.length > 0) return { id: recent[0].id, resumed: true };
-    write("no conversation to resume; starting a new one\n");
+    if (!admin) {
+      // `last` needs to ENUMERATE, which is the half a session deliberately cannot do. Naming the
+      // id works in join mode, and so does starting fresh.
+      write("--conversation last needs the operator credential this session does not hold; starting a new one\n");
+    } else {
+      // Newest first. That is the keyset direction, which is the only way to ask for the most recent.
+      const recent = await admin.query({ kind: "conversation" }, 1, { dir: "desc" });
+      if (recent.length > 0) return { id: recent[0].id, resumed: true };
+      write("no conversation to resume; starting a new one\n");
+    }
   }
-  return { id: (await admin.put({ kind: "conversation", body: {} })).id, resumed: false };
+  // CREATED by whoever is here. A session holds `conversation: put` and no read of any kind, which
+  // is the safe half of the pair: starting a thread of your own tells you nothing about anyone
+  // else's, while `query` would list every conversation on the space.
+  try {
+    return { id: (await (admin ?? session).put({ kind: "conversation", body: {} })).id, resumed: false };
+  } catch (e) {
+    // The commonest join-mode failure, and it used to be a raw `forbidden` from four frames down.
+    // `radia login` assigns the CLI's grants, not this app's: a person minted that way has a valid
+    // credential and none of what the chat needs, which looks identical to a broken token.
+    console.error(`\ncannot start a conversation as ${owner}: ${(e as Error).message}`);
+    console.error(`  This session has a valid credential but not this app's grants.`);
+    console.error(`  Someone holding the operator credential assigns them:  deno task chat -- --serve`);
+    console.error(`  Or join an existing thread you already have access to:  --conversation <id>\n`);
+    cleanup();
+    Deno.exit(1);
+  }
 }
-const conversation = await resolveConversation();
 
 // Who is at the keyboard, resolved from the SPACE rather than taken on trust: the token names a
 // run, and its subject is the person. Nothing the caller says is consulted, so a forged body field
@@ -192,7 +265,10 @@ try {
   }
   Deno.exit(1);
 }
-const perms = await admin.permissions(who) as { subject: string; privileged: boolean };
+// Asked of the SESSION, not the operator: any principal may read its OWN permissions, including
+// one holding none (CLAUDE.md). That is what makes this work in join mode, and it was never a
+// reason to hold the operator credential in the first place.
+const perms = await session.permissions(who) as { subject: string; privileged: boolean };
 const owner = perms.subject;
 const privileged = perms.privileged;
 setSessionOwner(owner);
@@ -202,14 +278,14 @@ setSessionOwner(owner);
 // session claims about itself. Banner decoration only; every record still carries the principal.
 let displayName = "";
 try {
-  for (const r of await admin.query({ kind: "oidc_identity" }, 200, { dir: "desc" })) {
+  for (const r of await (admin ?? session).query({ kind: "oidc_identity" }, 200, { dir: "desc" })) {
     const b = r.body as { principal?: string; profile?: string; name?: string; username?: string; retired?: boolean };
     if (b.principal !== owner) continue;
     if (!b.retired) {
       if (typeof b.profile === "string") {
         // Display claims live in a PROFILE ARTIFACT so they are erasable (plan-oidc.md); a
         // shredded one simply reads as no name, which is the erasure doing its job.
-        const p = JSON.parse(new TextDecoder().decode(await admin.getArtifact(b.profile))) as { name?: string; username?: string };
+        const p = JSON.parse(new TextDecoder().decode(await (admin ?? session).getArtifact(b.profile))) as { name?: string; username?: string };
         displayName = p.name ?? p.username ?? "";
       } else {
         displayName = b.name ?? b.username ?? ""; // enrolled before claims moved out of line
@@ -219,41 +295,52 @@ try {
   }
 } catch { /* nothing enrolled, a shredded profile, or no read: the principal alone is fine */ }
 
+// JOIN MODE diagnostics, BEFORE the first thing that can fail on a missing grant. This process
+// starts no workers and holds no authority beyond what was granted to this person, so two absences
+// are worth naming at boot rather than leaving to be discovered:
+//
+//   - it cannot assign grants. A session with none cannot work, and the fix is somebody holding
+//     the operator credential, not anything this process can do.
+//   - it cannot APPROVE a grant request. `request_grant` still writes one; it is answered
+//     elsewhere.
+if (!admin) {
+  const mine = await session.permissions(who) as { kinds: { kind: string }[] };
+  if (!privileged && !mine.kinds.some((k) => k.kind === "message")) {
+    write(`\n${owner} holds no 'message' grant on this space, so a turn cannot even start.\n`);
+    write(`  Someone with the operator credential assigns this app's grants:  deno task chat -- --serve\n`);
+    write(`  (a plain 'radia login' mints a valid credential with the CLI's grants, not this app's)\n\n`);
+  }
+  // A fleet nobody started answers nothing, and the symptom is a turn that hangs rather than an
+  // error. Say so at boot instead.
+  const serving = await session.query({ kind: "capability" }, 1).catch(() => []);
+  if (serving.length === 0) {
+    write(`no worker is advertising a capability on ${url}; turns will wait forever.\n`);
+    write(`  Start the fleet:  deno task chat -- --serve\n\n`);
+  }
+}
+
+const conversation = await resolveConversation();
+
 // What the session's grants bind to. `owner` is this identity across all its conversations;
 // `conversationId` is this thread only. See RADIA_CHAT_SCOPE.
 const scope = scopeMode === "conversation"
   ? { conversationId: conversation.id }
   : { owner };
-// The session brought its own credential, so the bootstrap mints only the WORKER tokens. The
-// operator still assigns this person's grants: a session chooses its credential, never its
-// authority.
-const tokens = await bootstrap(admin, scope);
-await assignUserGrants(admin, owner, scope);
-// The OPERATOR declares the jail it is about to launch a worker into. Not the worker: a manifest
-// claim is descriptive by definition, and an execution guarantee must not be. This process
-// configured the flags, so it is the one that can honestly say what they are.
-await declareSandbox(admin, denoSandbox({
-  name: "deno",
-  readRoots: execRoots,
-  timeoutMs: Number(EXEC_TIMEOUT_MS),
-}));
-// The session's CURRENT token, never the one read off disk. `session.health()` above has already
-// forced an exchange if the stored half had lapsed, which is the normal case for `--conversation
-// last` a few hours later: the REPL recovers in memory and `loginToken` stays dead. Handing the
-// stale one to the tools worker is what made every `space_*` call answer `token_expired` for the
-// whole session, with nothing the worker could do about it.
-procs.push(...launchFleet(tokens, session.bearerToken ?? loginToken));
+// ---- DEPLOYMENT SETUP: everything below this line needs the operator, and only runs with one ----
+// SOLO MODE: one process is both halves, which is what `deno task chat` on its own should be. The
+// only per-person step is here rather than in `setUpSpace`, because a session chooses its
+// credential and never its authority.
+if (admin) {
+  await setUpSpace(admin);
+  await assignUserGrants(admin, owner, scope);
+}
 
-// The retention sweep, at the one moment this app reliably has an operator credential in hand.
-// The sweep is on demand by design (an idle space holds no background work), so somebody has to
-// run it, and "the launcher, at boot" is the somebody a chat actually gets: yesterday's chunks and
-// progress records go before today's pile on. Best-effort in the background — a chat that cannot
-// sweep is a chat, not an error.
-admin.gc().then((r) => {
-  if (r.swept > 0) notice(dim(`swept ${r.swept} expired records (${Object.keys(r.byKind).join(", ")})`));
-}).catch(() => {/* not the session's problem */});
-
-const tools = new ToolSet(session);
+// The inspection tools run HERE, on the session's own credential, because a delegated run can
+// carry neither the ops plane nor a self-scoped grant (client/session-tools.ts). Claimed like any
+// other work, so nothing is left unanswered in the queue; offered to the model directly, because a
+// tool only this process can serve has no business in a shared advertisement registry.
+serveSessionTools(session, shutdown.signal).catch((e) => notice(dim(`[session tools stopped: ${e}]`)));
+const tools = new ToolSet(session, SESSION_TOOL_SCHEMAS);
 tools.watch(shutdown.signal); // background: keep the tool set live from capability records
 watchWakeups(session, shutdown.signal); // background: let the runtime push instead of polling
 // background: keep the session's credential alive. Run tokens last 15 minutes, so without this a
@@ -468,7 +555,9 @@ while (true) {
     // Ctrl-C keeps working at the prompt.
     stopWatching = watchCancel(cancelTurn);
     await runTurn(session, thread, tools, async (tool) => {
-      if (tool !== "request_grant" || Date.now() - lastReview < 1000) return;
+      // Only an operator can answer one. In join mode the request is still WRITTEN and still
+      // visible; somebody holding the credential approves it from elsewhere.
+      if (tool !== "request_grant" || !admin || Date.now() - lastReview < 1000) return;
       lastReview = Date.now();
       try {
         await reviewGrantRequests(session, admin, owner, thread.id, nextLine);
@@ -500,11 +589,13 @@ while (true) {
   // through the blocking tool (or one whose turn died) would otherwise sit pending forever.
   // `admin` is the operator credential this process bootstrapped with. The session itself cannot
   // write a grant, which is the point.
-  try {
-    await reviewGrantRequests(session, admin, owner, thread.id, nextLine);
-    await tools.scopeTo(thread.id); // a new grant may have changed what is reachable
-  } catch (e) {
-    write(`\n[grant review failed] ${e}\n`);
+  if (admin) {
+    try {
+      await reviewGrantRequests(session, admin, owner, thread.id, nextLine);
+      await tools.scopeTo(thread.id); // a new grant may have changed what is reachable
+    } catch (e) {
+      write(`\n[grant review failed] ${e}\n`);
+    }
   }
 }
 
@@ -513,8 +604,10 @@ cleanup();
 // actually being served rather than the union of every fleet that ever ran here. Awaited, which is
 // why it is here and not in `cleanup()`: that one is called from paths that exit immediately, and a
 // withdrawal nobody waits for is a withdrawal that usually does not land.
+// Only the process that STARTED the fleet withdraws it. A joining session that retired these would
+// take the advertisements away from everybody else still talking.
 try {
-  await retireProviderCapabilities(admin, FLEET_PROVIDERS);
+  if (admin) await retireProviderCapabilities(admin, FLEET_PROVIDERS);
 } catch { /* the space may already be gone; shutting down regardless */ }
 await sleep(100);
 Deno.exit(0);

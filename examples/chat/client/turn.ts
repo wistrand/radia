@@ -633,7 +633,16 @@ export class ToolSet {
    *  disagreement is mentioned once and a NEW one still gets through. */
   private readonly warned = new Map<string, string>();
 
-  constructor(private readonly client: RadiaClient) {}
+  /**
+   * Tools this PROCESS serves for itself, which are therefore not advertised and cannot be
+   * discovered (client/session-tools.ts).
+   *
+   * The exception to "discovered, never hard-coded", and a narrow one: what a session serves is a
+   * fact about this process, not knowledge about the substrate. Advertising them instead would put
+   * one `capability` record per session per tool into a shared registry, visible to every other
+   * session and claimable by none of them.
+   */
+  constructor(private readonly client: RadiaClient, private readonly local: ToolDef[] = []) {}
 
   /** What to offer the model this turn. */
   all(): ToolDef[] {
@@ -712,6 +721,9 @@ export class ToolSet {
       notice(dim(`[tool '${tool}' is advertised differently by ${e.providers.join(", ")}; using the newest]`));
     }
     const tools = [...caps.values()].map((e) => e.def);
+    // What this process serves for itself. An advertised tool of the same name WINS, so a fleet
+    // that starts serving one of these takes it over without a change here.
+    for (const def of this.local) if (!caps.has(def.function.name)) tools.push(def);
 
     if (this.conversationId) {
       // `activeByKey`, not `newestByKey`: retirement is dropped by the shared projection, so this
@@ -722,9 +734,10 @@ export class ToolSet {
       );
       for (const [name, rec] of procs) {
         const body = rec.body as ProcedureBody;
-        // A procedure never shadows a worker's tool: the built-in is the one with a worker behind
-        // it, and a saved name that collided would silently change what a call does.
-        if (caps.has(name)) continue;
+        // A procedure never shadows a BUILT-IN, whether a worker advertises it or this process
+        // serves it: the built-in is the one with something behind it, and a saved name that
+        // collided would silently change what a call does.
+        if (caps.has(name) || this.local.some((d) => d.function.name === name)) continue;
         tools.push({
           type: "function",
           function: {

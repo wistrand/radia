@@ -92,19 +92,31 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
    one process: replicas buy true parallelism, which matters for CPU-bound work (exec), not for a
    socket wait. Still the answer for spreading load across machines.
 3. **One shared process serving many sessions**, rather than a fleet per user bootstrapping as
-   operator. The remaining app-shape item, and the one that makes "N users" a deployment rather
-   than N copies of a dev harness. Two decisions inside it, one of which is item 3a:
-   - WHO ASSIGNS a session's grants once the session is not an operator. The substrate already
-     answers this: the SUPERVISOR carve-out (`space.ts`, `authorize`) may write `grant`/`signal`
-     and nothing else, and is mintable since ops-tiers phase 5. A session broker in the fleet runs
-     as it. The alternative is assigning at `radia login` time, which needs no component and makes
-     onboarding manual.
-   - HOW `space_*` keeps running as the caller. Today `tools.ts` takes `--session-token` and acts
-     as the one session it was launched for, which is exactly what stops a scoped user laundering
-     ops access through a privileged worker. One worker serving many callers cannot do that. The
-     near-term answer is to move `space_*` into the SESSION process, where the property holds by
-     construction and the plumbing is deleted rather than generalised. It does not generalise, and
-     that is item 3a.
+   operator. BUILT 2026-08-13: the operator credential is OPTIONAL, and its absence selects JOIN
+   MODE — no bootstrap, no fleet, no privileged read, just the REPL on the person's own token.
+   `deno task chat -- --serve` is the other half: set the space up, start the workers, park. The
+   privileged work now happens once per deployment instead of once per person, which is what "N
+   users" required. Guard: `examples/chat/smoke-join.ts`, which asserts both halves — a joining
+   session starts its own thread and takes turns, and cannot register a kind, mint a worker, grant
+   itself anything, reach the ops plane or enumerate another conversation.
+   Two decisions were inside it. One is settled; the other was DEFERRED by taking the cheaper
+   branch, and is the piece still outstanding:
+   - WHO ASSIGNS a session's grants once the session is not an operator. The join-mode build takes
+     the manual branch: grants are assigned at `radia login`/setup time by somebody holding the
+     credential, and a session that has none is TOLD so at boot with the command that fixes it,
+     rather than failing on its first read. That needs no new component and is honest for a
+     deployment with an administrator. The other branch is still open and still the right one for
+     self-service: a session broker on the SUPERVISOR identity (`space.ts`, `authorize`), which may
+     write `grant`/`signal` and nothing else and is mintable since ops-tiers phase 5. Note the
+     interaction if it is built: `mintDelegatedRun` refuses a supervisor agent outright, so a broker
+     can assign grants but can never delegate — fine for a broker that only writes grants, and a
+     trap if it ever grows a second job.
+   - HOW `space_*` keeps running as the caller. SETTLED, and the near-term answer was the right one
+     for a reason nobody had yet: those tools read the ops plane, and a delegated run holds NO ops
+     powers and drops self-scoped grants, so no worker can ever serve them for somebody else. They
+     moved into the SESSION process (`client/session-tools.ts`), `--session-token` is deleted, and
+     the rest of the tools worker reads as the caller through a delegated run. Delegation was always
+     the answer for data reads and never for inspection. See plan-delegation.md phase 4.
 3a. **BUILT (2026-08-12): scope delegation, as a DELEGATED RUN.** The general form of the problem
    above, and what a shared worker needs: act with my own capability, under my caller's reach. The
    build record is [plan-delegation.md](plan-delegation.md), including where it changed this
@@ -197,20 +209,21 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
    - "The caller holds no grant on this kind" stops being a hole: the delegated run simply cannot
      do it, which is correct, and the worker does it with its own token, deliberately.
 
-   **What turns the mechanism into a guarantee: REMOVE THE AMBIENT AUTHORITY.** `EXEC_GRANTS`
-   (`examples/chat/space/roles.ts`) holds five UNSCOPED grants over session data (`artifact:
-   put/read_one`, `workspace: query/put`, `procedure: put/query`, `message: put`, `tool_result:
-   put`), so one shared exec worker reads every user's tree today and minting a delegated run stays
-   optional. Somebody will forget, which is setuid's failure mode exactly. This half is larger than
-   the endpoint, and until it lands the delegated run is decoration.
+   **What turned the mechanism into a guarantee: REMOVING THE AMBIENT AUTHORITY** (done; the
+   reasoning is kept because it is the part that generalises). `EXEC_GRANTS`
+   (`examples/chat/space/roles.ts`) held five UNSCOPED grants over session data, so one shared exec
+   worker read every user's tree and minting a delegated run stayed optional. Somebody forgets,
+   which is setuid's failure mode exactly. This half was larger than the endpoint, and until it
+   landed the delegated run was decoration.
 
-   It also cannot be done by plain narrowing, and that contradiction has to be resolved first:
+   It also cannot be done by plain narrowing, and that contradiction had to be resolved first:
    `grants(worker) INTERSECT grants(caller)` is a SUBSET of the worker's own grants, so removing
    exec's `artifact: read_one` empties the intersection and the delegated run cannot read the
-   attachment either. The resolution is a grant only a delegated run may exercise (`delegable:
-   true`, refused to a run carrying no `actingFor`): exec's own token cannot touch session data,
-   the delegated run can, and the caller's pattern bounds it. That is AWS's role/principal split as
-   one grant field, a container of authority you can only exercise by assuming it.
+   attachment either. The resolution is authority only a delegated run may exercise, held under a
+   `delegable:<agent>` principal nothing can authenticate as: exec's own token cannot touch session
+   data, the delegated run can, and the caller's pattern bounds it. That is AWS's role/principal
+   split, a container of authority you can only exercise by assuming it. (A `delegable: true` FIELD
+   was the shape first drafted here; plan-delegation.md phase 3 records why the principal beat it.)
    `effectivePermissions` must render it MARKED, or it is one more promise that does not match
    enforcement.
 
@@ -358,10 +371,67 @@ writes anyway), then drop the two registry streams, then consider this.
 - **Per-request JWT-style stateless auth to save round trips.** Same objection as OIDC's: fencing,
   lease ownership, idempotency scope and the event log's `runId` all key off run identity.
 
-## The measurement that is still missing
+## The chat load test: TAKEN (2026-08-12), `bench/suites/chatload.ts`
 
-A chat load test: N simulated sessions against one space, each holding its 5 streams and taking
-turns, reporting queries/s and p99 turn latency as N grows. The fan-out harness already parks N
-faithful stream loops (`bench/suites/fanout.ts`), so this is an extension of existing scaffolding
-rather than new infrastructure. Until it exists, every user-count here is arithmetic over measured
-single-op costs, not an observed limit.
+N sessions against one space, five parked streams each, all taking turns through one shared
+inference worker. Scoped principals rather than the privileged default, so every verb pays its
+grant read; the turn is the real record chain (put `message`, put `llm_call`, take, 20 `llm_chunk`
+puts, ack the assistant `message`), and each stream runs the SSE handler's own loop body. In
+process, so latency is a floor.
+
+|  N | streams | sqlite turns/s | p50 | pg turns/s | p50 | q/turn |
+|---:|--------:|---------------:|----:|-----------:|----:|-------:|
+|  1 |       5 |            113 |   9ms |          9.6 |   105ms | 126 |
+|  5 |      25 |            161 |  29ms |         11.1 |   458ms | 122 |
+| 20 |     100 |            133 | 149ms |         10.0 |  1978ms | 123 |
+| 40 |     200 |             77 | 487ms |          8.2 |  4447ms | 122 sqlite / **344 pg** |
+
+**A turn costs ~122 database queries, and that holds to 100 streams.** Flat from 1 to 20 sessions
+on every adapter, and to 40 on sqlite: per turn the counters read ~22 puts, ~22 `getEvents` and ~24
+`getRecord`, which is ONE log read and ONE record fetch per WRITE rather than per stream. The
+fan-out fix is confirmed under a real workload rather than inferred from a microbench.
+
+**Then it breaks, and where it breaks is the interesting part.** 40 sessions on live Postgres cost
+**344** q/turn, and the excess is entirely one column: `getRecord` goes from 24 per turn to 242,
+while puts (22), `getEvents` (25) and grant reads stay exactly where they were. Nothing regressed
+in the coalescer. Single-flight collapses reads that are IN FLIGHT TOGETHER, and at 200 streams on
+a store slow enough to queue, wakeups stop arriving in the same tick: with full collapse a turn
+fetches 22 records and with none it fetches 880, and 242 is the middle of that range.
+
+This is the condition `src/core/coalesce.ts` names as its own limit — "a broadcast tailer would only
+be needed if wakeups ever became staggered enough that the burst stops overlapping; nothing in the
+design does that today". Something does, and it is load rather than design: the stagger is caused by
+the queueing, and the queueing is caused by the slow store. So the tailer is not needed yet, but the
+trigger for it is now a measured number instead of a hypothetical — `A x U` around 200 on a store
+whose turns are already seconds deep.
+
+**Throughput is flat and latency is queueing.** Every row satisfies `turns/s × p50 ≈ N`: the
+system is saturated at N=1, so adding sessions adds waiting rather than work. The per-instance
+ceiling is ~130 turns/s on embedded sqlite and ~10 on a live Postgres, single process. At 22 puts
+per turn that is ~2.9k puts/s, which lands on the 3.1k puts/s measured independently in
+`bench/deployment.ts` — the write rate really is the binding constraint, as this doc predicted.
+
+**What the number is made of.** Of ~122 queries: 22 puts, 46 fan-out reads, ~24 grant reads (one
+`authorize` per write, which is one per REQUEST in production and therefore correct rather than
+waste), and ~23 clock reads — `storage.now()`, once per write.
+
+**The clock is NOT worth fixing, and the reason is a trap worth naming.** 23 of 122 queries is 19%
+of the count, so moving the stamp into the insert looked like the cheapest win available. Measured
+instead of reasoned — same sweep, `now()` replaced by a host clock so the round trip disappears
+entirely — it is worth **~2%** of turn latency (390ms → 382ms at N=4, 771ms → 753ms at N=8; the
+N=1 delta is inside a 16% run-to-run variance and says nothing). The 19% estimate came from dividing
+total latency by total query COUNT and attributing that average to the cheapest query class:
+`select now()` is nothing beside a put, which is a transaction writing a record row, a runtime row
+and an event row. **Never size a query class by the mean cost of all classes** when they differ by
+an order of magnitude. A `StorageAdapter.put` contract change across three adapters, touching the
+timestamps that ordering, retention, leases and the event chain all rest on, is not a 2% trade.
+
+**What this does NOT measure.** One process drives the sessions, the streams, the worker and the
+space, so the absolute throughput is a floor and the latency includes the harness's own event loop.
+HTTP, SSE framing and the provider are all absent. What it does measure honestly is the SHAPE:
+queries per turn against N, which is the term a second instance would divide.
+
+That caveat cuts both ways on the 344 row. A real deployment puts the sessions in other processes,
+which removes this harness's own event-loop contention and may keep the wakeups overlapping longer
+— or it adds network jitter and staggers them sooner. Nothing here can tell which, and the honest
+statement is that the collapse is load-dependent rather than that it fails at 200 streams.

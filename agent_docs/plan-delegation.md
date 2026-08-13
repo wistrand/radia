@@ -234,8 +234,27 @@ unchanged). Missing one of `writeWorkspace`'s two internal reads produced a `for
 frames deep in an extension, which is worth knowing before splitting a credential anywhere else:
 grep the function for reads rather than trusting its name.
 
-`agent:chat-tools` can follow the same treatment, at which point `--session-token`
-(`examples/chat/workers/tools.ts`) is deleted rather than generalised. Not done here.
+**The tools worker: BUILT, and it split in two rather than being delegated.** `--session-token` is
+gone, which is what made a fleet serve one person. The split is forced by the same subset property:
+
+- The inspection tools (`space_*`, `request_grant`, the remediate set) moved into the SESSION
+  process (`examples/chat/client/session-tools.ts`). A delegated run can carry neither the ops
+  plane (`opsPowers` refuses one outright) nor a self-scoped grant (`intersectGrants` drops it), and
+  those two refusals are exactly what these tools need. Both refusals are right, so this set has no
+  delegated future and had to move to where the property holds by construction.
+- Everything else stays in the worker and reads as the caller through `ToolContext.caller()`, a
+  delegated run minted from the claimed record and cached per author-run. `share_artifact` is the
+  clearest case: a download capability is authorized at mint time against the CALLER's read grant,
+  so minting it as the worker would turn an unreadable artifact into a link needing no token.
+
+Two consequences worth knowing. The session now CLAIMS work, so it needs `interest: put` (without
+it `agentLoop` skips publishing and claims nothing, silently) and `tool_call: take` — the latter
+scoped by `$in` to the tool NAMES it serves, because a bare `take` would let a session claim its own
+`run_javascript` call and write the result, and a `tool_result` has to keep meaning "a worker
+produced this". And these tools are served WITHOUT being advertised: one `capability` record per
+session per tool would be a registry entry per user for something no other session can claim, so the
+client injects the definitions into its own `ToolSet` instead. That is the narrow exception to
+"discovered, never hard-coded" — what a process serves is a fact about that process.
 
 **The harness had to change too, and the change is the point.** `smoke-procedures.ts` and
 `smoke-runners.ts` wrote their `tool_call` records as the OPERATOR, so every call had a privileged
@@ -257,11 +276,14 @@ conversation B's artifact, asserted through the real fleet; `save_procedure` sti
 is still written by exec as itself; a session whose grants were revoked mid-turn loses the
 delegated run's reach on the next mint.
 
-## Phase 5: docs
+## Phase 5: docs — DONE
 
-`design-auth.md` (the delegation section already points here), `plan-scaling.md` item 3a marked
-BUILT with the phase record, `architecture-ops-tiers.md` if the ops-power refusal changes its
-table, CLAUDE.md's `src/core` and reserved-kind touchpoints, and this file's status line.
+`design-auth.md` (the three counter-intuitive properties), `plan-scaling.md` items 3 and 3a,
+`architecture-ops-tiers.md` (a delegated run holds NO ops powers, and why that refusal has to come
+first), `plan-milestones.md` (M1), `gotchas.md` (four entries: the subset property, read-then-write
+helpers needing two credentials, `agent_run` growth, and a harness acting as the operator),
+`conformance/README.md`, `extensions/README.md` (the `reader` split), `sdk/README.md` (the parity
+row), the chat's README and CLAUDE.md, plus `docs/authorization.html` for the reader-facing summary.
 
 ## The token is DERIVED, because a mint per call is permanent growth
 

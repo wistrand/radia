@@ -12,6 +12,7 @@ import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { bootstrap, CHAT_USER, mintSession } from "./space/roles.ts";
 import { ToolSet } from "./client/turn.ts";
+import { SESSION_TOOL_SCHEMAS, serveSessionTools } from "./client/session-tools.ts";
 import { reviewGrantRequests } from "./client/grants.ts";
 
 const PORT = 7797;
@@ -60,24 +61,11 @@ for (let i = 0; i < 520; i++) {
 
 // The tools worker, running space_* as the SESSION principal: the arrangement that produces the
 // 403s, and the one that serves request_grant.
-const worker = new Deno.Command(Deno.execPath(), {
-  args: [
-    "run",
-    `--allow-net=127.0.0.1:${PORT}`,
-    "--allow-read=examples/chat/sandbox",
-    "examples/chat/workers/tools.ts",
-    "--url",
-    url,
-    "--token",
-    toolsToken,
-    "--session-token",
-    sessionToken!,
-    "--dir",
-    "examples/chat/sandbox",
-  ],
-  stdout: "null",
-  stderr: "inherit",
-}).spawn();
+// IN PROCESS, on the session's own credential, which is where these tools now live: a delegated
+// run can carry neither the ops plane nor a self-scoped grant, so a worker cannot serve them for
+// somebody else (agent_docs/plan-delegation.md). This is the same call the REPL makes.
+const sessionTools = new AbortController();
+serveSessionTools(session, sessionTools.signal).catch(() => {/* aborted on shutdown */});
 
 const check = (label: string, pass: boolean, detail = "") => console.log(`  ${pass ? "OK  " : "FAIL"} ${label}${detail ? `  ${detail}` : ""}`);
 
@@ -114,26 +102,27 @@ for (let i = 0; i < 3; i++) {
 check("a scoped session cannot reach ops/stats", await forbidden(() => session.getStats()));
 check("…nor diagnostics", await forbidden(() => session.diagnostics()));
 
-// 2. The escalation tool is DISCOVERABLE. The transcript's failure was a tool that existed but
-//    was never reached, so its presence in the published capability set is worth asserting.
-//    Waiting on the tool ITSELF, not on "any capability": the fillers above mean the set is never
-//    empty, and a wait that only checks for non-emptiness returns before the worker has published
-//    (which is also how the chat's own startup wait was too weak).
-let published: string[] = [];
-for (let i = 0; i < 60; i++) {
-  published = (await admin.query({ kind: "capability" }, 500, { dir: "desc" }))
-    .map((c) => (c.body as { tool: string }).tool);
-  if (published.includes("request_grant")) break;
-  await new Promise((r) => setTimeout(r, 250));
-}
-check("request_grant is published as a capability", published.includes("request_grant"));
+// 2. The escalation tool REACHES THE MODEL. The transcript's failure was a tool that existed but
+//    was never offered, so what matters is that it lands in the set the turn is given.
+//    It is served BY THIS PROCESS and deliberately NOT advertised (client/session-tools.ts): one
+//    `capability` record per session per tool would be a registry entry per user for something no
+//    other session could claim. So the assertion moved from "published" to "offered", and the
+//    absence from the registry is asserted too, because that is the property that lets one fleet
+//    serve many people.
+const published = (await admin.query({ kind: "capability" }, 500, { dir: "desc" }))
+  .map((c) => (c.body as { tool: string }).tool);
+check("request_grant is NOT advertised: only this session can serve it", !published.includes("request_grant"));
 
-const discovered = new ToolSet(session);
+const discovered = new ToolSet(session, SESSION_TOOL_SCHEMAS);
 await discovered.scopeTo(conv);
 check(
-  "the newest tools are still discovered on a space past the page cap",
+  "…and is offered to the model anyway, beside the discovered ones",
   discovered.all().some((t) => t.function.name === "request_grant"),
   `${discovered.all().length} tools visible, ${published.length} newest records read`,
+);
+check(
+  "the newest advertised tools are still discovered on a space past the page cap",
+  discovered.all().some((t) => published.includes(t.function.name)),
 );
 
 // 3. It asks THROUGH THE TOOL, as the session. It cannot grant, only ask.
@@ -351,10 +340,13 @@ check("…while re-granting a live grant is still deduped", third.id === second.
 //
 // This is the payoff of interests-as-records: a real worker is running above, `agentLoop` published
 // what it listens for without the worker author doing anything, and the operator can now see it.
+// The serving principal here is the SESSION itself, since these tools are served in-process now.
+// That is the same mechanism seen from the other side: whoever claims work publishes what it
+// listens for, worker or not.
 const opDigest = await admin.digest();
-const edge = opDigest.interests.find((i) => i.kind === "tool_call" && i.agent === "agent:chat-tools");
+const edge = opDigest.interests.find((i) => i.kind === "tool_call" && i.agent === CHAT_USER);
 check(
-  "a running worker's interest is visible to the operator",
+  "a running server's interest is visible to the operator",
   Boolean(edge),
   `${opDigest.interests.length} edges: ${opDigest.interests.map((i) => `${i.agent}->${i.kind}`).join(", ")}`,
 );
@@ -365,8 +357,10 @@ check(
 );
 check("the operator's digest withholds nothing", opDigest.interestsWithheld === undefined);
 
-// The scoped session sees only its own, which is none: it is not a worker. Reporting that as an
-// empty list would have the model announce an idle fleet while five workers are running.
+// The scoped session sees only its OWN, which is now exactly the tools it serves for itself. A
+// FLEET's interest stands in for the rest: the session must not be shown it, and must be told the
+// list is partial rather than left to report an idle fleet while workers are running.
+await admin.put({ kind: "interest", body: { kind: "llm_call", agent: "agent:chat-inference", run: "run:elsewhere" } });
 const sessionDigest = await session.digest();
 check(
   "a scoped session is TOLD its interest list is partial",
@@ -455,7 +449,7 @@ check("the wider read is genuinely gone afterwards", after !== "readable", after
 check("…and answers 404, so it is not an existence oracle", /not_found/.test(after), after.slice(0, 60));
 
 try {
-  worker.kill();
+  sessionTools.abort();
   space.kill();
 } catch { /* already gone */ }
 Deno.exit(0);

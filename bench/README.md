@@ -48,6 +48,7 @@ constant result size is the signal.
 | `suites/gc.ts` | what housekeeping costs: the retention sweep, registry compaction, and the phase-4 blob pass |
 | `suites/oidc.ts` | the one UNAUTHENTICATED write path: what a rejected flood costs vs a first login vs a replay |
 | `suites/fanout.ts` | the watch fan-out: queries one write triggers as N streams park, counting the kind-blind `notify` tax directly |
+| `suites/chatload.ts` | N chat sessions against one space, five parked streams each, taking real turns through one shared worker. Reports turns/s, p99 turn latency and QUERIES PER TURN as N grows; `CHATLOAD_DEBUG=1` prints the per-method breakdown that says which term moved |
 | `profile.ts` | `deno task profile <script> [args…]`: CPU-profile any workload with zero external tooling (see Profiling below) |
 | `deployment.ts` | standalone: one space over HTTP against whatever storage it was started with, re-measured as it fills. Takes a `--url` instead of an adapter, so it measures the thing the suites above cannot. **It writes records and cannot delete them**; point it at a throwaway space |
 | `edit-cost.ts` | standalone: what an edit costs versus rewriting a tree, in emitted characters and in records written. Not a timing suite, so it is run directly rather than through the harness |
@@ -334,7 +335,7 @@ Two notes on what did NOT turn out to matter:
 
 Guards: `conformance/notifier.test.ts` (notify(kind) wakes the kind + any-set, not foreign kinds;
 a re-registered same-kind waiter wakes again), both proven red against a kind-blind `notify`; the
-whole turn still delivers over watches (`deno task chat-test`, 21 suites).
+whole turn still delivers over watches (`deno task chat-test`).
 
 **Two things this run changed about the bench itself**, both discovered by wanting them mid-run.
 It prints each checkpoint's table AS IT COMPLETES, because a version that renders once at the end

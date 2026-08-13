@@ -75,10 +75,10 @@ function spawn(name: string, args: string[]): Deno.ChildProcess {
 /**
  * Start every worker; returns the processes so the caller can kill them on exit.
  *
- * `sessionToken` is REQUIRED, and it is the session's own credential rather than anything minted
- * here. The tools-worker runs the `space_*` verbs under it, so a scoped session cannot launder /ops
- * access through a worker that happens to hold more. It used to be optional, which meant the
- * privileged path was the one you got by not passing it.
+ * NO SESSION CREDENTIAL travels here any more. The tools worker used to be handed the person's own
+ * token so its `space_*` verbs ran as them, which is what kept a fleet to one user: those verbs now
+ * run in the REPL process (client/session-tools.ts), and a worker that needs a caller's reach mints
+ * a delegated run for it. Nothing this launcher starts is bound to one person.
  */
 /** Where materialised workspace trees live for the life of this chat. One directory, created here
  *  so the exec worker's write grant can name it exactly. */
@@ -94,7 +94,7 @@ export const FLEET_PROVIDERS = [
   "agent:chat-inference",
 ];
 
-export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.ChildProcess[] {
+export function launchFleet(tokens: Bootstrapped): Deno.ChildProcess[] {
   const { inferenceToken, routerToken, toolsToken, imagesToken, execToken, turnToken } = tokens;
   const procs: Deno.ChildProcess[] = [];
 
@@ -141,16 +141,16 @@ export function launchFleet(tokens: Bootstrapped, sessionToken: string): Deno.Ch
     "--vision-types", VISION_MEDIA_TYPES.join(","),
   ]));
 
-  // Tools: reads only the sandbox dirs, reaches only the local space, and gets NO env. Its space_*
-  // tools act as the SESSION principal (--session-token) so a scoped user cannot launder /ops
-  // access through a privileged worker.
+  // Tools: reads only the sandbox dirs, reaches only the local space, and gets NO env. It holds NO
+  // session credential: the `space_*` tools moved into the REPL process (client/session-tools.ts),
+  // and anything that reads a caller's data mints a delegated run per caller. That is what makes
+  // this worker shareable between people rather than launched per person.
   procs.push(spawn("tools", [
     `--allow-net=127.0.0.1:${port}`,
     `--allow-read=${toolRoots.join(",")}`,
     "examples/chat/workers/tools.ts",
     "--url", local,
     "--token", toolsToken,
-    "--session-token", sessionToken,
     "--concurrency", String(LOCAL_CONCURRENCY),
     ...toolRoots.flatMap((r) => ["--dir", r]),
   ]));

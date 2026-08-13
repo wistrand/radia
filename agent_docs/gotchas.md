@@ -344,6 +344,13 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   and a shared result must still be AUTHORIZED per caller — the shared record is evaluated against
   each watch's own scope, so sharing changes how often it is read, never who may see it.
   Guard: `conformance/coalesce.test.ts`.
+- **Coalescing collapses reads that OVERLAP, so its benefit decays as load staggers the wakeups**
+  (`bench/suites/chatload.ts`). Measured: 40 sessions / 200 streams on live Postgres cost 344
+  queries per turn against 122 at 100 streams, and the whole excess is `getRecord` (24/turn → 242)
+  while puts, `getEvents` and grant reads stay flat. Nothing regressed; the burst simply stopped
+  landing in one tick once turns queued for seconds. Do not read "1 query per write however many
+  streams" as unconditional — it holds while the streams wake together, and the fix if it ever
+  binds is the broadcast tailer that file's header describes.
 - **`notify(kind)` is kind-aware, and a new wake site must pass the right kind or wake everyone**
   (`src/core/notifier.ts`, `Space.putRaw`/`ack`). A watch matches only its own kind, so a write
   wakes only that kind's parked streams plus the any-set; waking foreign kinds was the O(U)
@@ -1793,6 +1800,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   `capability` records the running fleet publishes — a fix never republished changes nothing.
 
 ### Method: how these were found
+
+- **Never size one query class by the MEAN cost of all classes.** A turn costs ~122 Postgres
+  queries, 23 of them `storage.now()`, so the clock looked like 19% of the latency and the cheapest
+  win going. Measured with a throwaway host-clock patch (the round trip gone entirely) it is ~2%:
+  `select now()` is nothing beside a put, which is a transaction writing a record, a runtime row and
+  an event. The 19% came from dividing total latency by total query COUNT. Cost the change before
+  building it — that hack took two minutes and saved a `StorageAdapter.put` contract change across
+  three adapters, over the timestamps ordering, retention, leases and the event chain all rest on.
 
 - **A test for a race proves nothing until the pre-fix code fails it, and the first draft usually
   does not.** Both guards in `conformance/concurrency.test.ts` passed against the exact defect they

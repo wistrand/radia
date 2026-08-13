@@ -422,8 +422,6 @@ const toolsWorker = new Deno.Command(Deno.execPath(), {
     url,
     "--token",
     tokens.toolsToken,
-    "--session-token",
-    tokens.toolsToken,
     "--dir",
     ".",
   ],

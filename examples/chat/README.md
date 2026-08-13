@@ -11,6 +11,16 @@ deno task chat
 deno task chat -- --conversation last    # …or pick up where you left off
 ```
 
+**Setup and session are separate jobs, and only the first is privileged.** Run alone, `deno task
+chat` does both: it registers kinds, mints the workers' credentials, starts the fleet, and then
+talks to you. For more than one person, split them — `deno task chat -- --serve` does the
+privileged half ONCE and parks holding the fleet, and everyone else runs `deno task chat` with
+nothing but their own `radia login`. Join mode is selected by the ABSENCE of an operator
+credential, so there is no flag to forget: a session that cannot bootstrap simply does not, and
+says what it cannot do (assign its own grants, approve a grant request, or list conversations)
+instead of failing at the first read. While the two halves were one, opening the chat meant holding
+the control plane, which is how "N users" came to mean "N operators".
+
 **Conversations survive a restart, because they were never in the process.** The thread is
 `message` records on the space, so resuming is just recovering the one piece of client-held state
 (`nextIndex`). That is one query, since `index` is a declared sortable path. Two things it depends on: a
@@ -43,7 +53,7 @@ outside world).
 ## Testing it without a model
 
 ```bash
-deno task chat-test              # all twenty suites, ~60s
+deno task chat-test              # every suite, ~70s
 deno task chat-test longthread   # one by name
 ```
 
@@ -141,6 +151,7 @@ real assembly, with no API key:
 | `iterate` | the code-gen loop as records: attempts that link into a chain, and a verdict the session has no grant to author |
 | `save` | the routes to a stored file, read back out of the `capability` records the running fleet publishes rather than imported, since a fix nobody republished changes nothing for the model. Ends with one pass through a LIVE tools worker over real `tool_call` records: the rest drives the tools in process with an OPERATOR client, which cannot catch a worker missing a grant — exactly how `read_workspace` shipped unable to read |
 | `login` | a person's own credential: who the session is, and that two people on one space cannot read each other |
+| `join` | a session holding NO operator credential: it starts its own thread, reads its own permissions and takes turns, and cannot register a kind, mint a worker, grant itself anything, reach the ops plane or enumerate another conversation. The second half is why the first is safe to allow |
 | `runners` | a second language as a capability: a jail the host cannot start is UNDISCOVERABLE rather than a runtime error, and each tool name reaches its own runtime. The Python half skips itself where `bwrap` is absent |
 | `fleet` | model advertisements: publish, restart without growing the space, withdraw on shutdown, revive |
 | `input` | the REPL's stdin, which has no space and no model in it: the keystroke that went missing between a turn ending and the next prompt (two readers on one exclusive stream), type-ahead during a turn, and Escape versus an arrow key |
@@ -186,6 +197,7 @@ flowchart TB
     I -->|"llm_chunk · message (the ack)"| SP
     I -.->|"escalate → next tier by rank"| SP
     SP -->|"take {tool_call, tool}"| T["tools<br/>agent:chat-tools<br/>sandboxed reads, no env"]
+    SP -->|"take {tool_call, space_* · request_grant}"| SS["the REPL itself<br/>your own credential<br/>served, never advertised"]
     SP -->|"take {tool_call, generate_image · analyze_image}"| G["images<br/>agent:chat-images<br/>API key, no files"]
     SP -->|"take {tool_call, run_javascript · run_python · save_procedure · &lt;saved name&gt;}"| X["exec<br/>agent:chat-exec<br/>--allow-run, no key, no files"]
     X -->|"snippet on stdin · or a workspace tree"| SB["deno run<br/>jailed, confined"]
@@ -877,17 +889,19 @@ also silently handed the REPL the whole control plane.
 Your grants are ASSIGNED by the operator (`assignUserGrants`), never chosen by the session, so
 bringing your own credential does not let you widen yourself. You get the conversational kinds and
 nothing else: `space_stats`/`space_doctor`/`space_reclaim`/`declassify` return **403** (try "is the
-space healthy?"), and `space_query {kind: grant}` is denied too. The tools-worker runs every
-`space_*` verb under YOUR token, so a scoped session cannot launder /ops access through a worker
-that holds more.
+space healthy?"), and `space_query {kind: grant}` is denied too.
 
-That handoff has a clock, and getting it wrong is silent. The worker is given the session's token as
-it stands at launch, never the one read off disk: a stored login whose short half lapsed is repaired
-in the REPL's memory through the durable half, and passing the disk value shipped a dead credential
-to the worker, which answered `token_expired` to every `space_*` call for the whole session. The
-worker then renews its copy itself, because `agentLoop` only keeps alive the client it is given and
-this is a second one. It deliberately holds no definition token, since a worker that can mint your
-sessions can be you at will, so it lives to the 12-hour run ceiling and then says so.
+**The `space_*` verbs run in the REPL, on your own credential**, so a scoped session cannot launder
+/ops access through a worker that holds more. They used to run in the tools worker, which was handed
+your token at launch and held it for its lifetime — the thing that kept a fleet to one person, and a
+clock nobody could see: a stored login whose short half had lapsed was repaired in the REPL's memory
+but shipped dead to the worker, which then answered `token_expired` to every `space_*` call for the
+rest of the session. Serving them here deletes the handoff rather than fixing it.
+
+They stayed put for a reason that only became provable once delegation existed: these tools read the
+ops plane, and a delegated run holds no ops powers and drops self-scoped grants, so no worker can
+ever serve them on someone else's behalf. Everything the tools worker still serves reads as YOU
+through a delegated run instead (`agent_docs/plan-delegation.md`).
 
 The chat resolves who the token belongs to from the SPACE, never from a body field, so it cannot be
 told to be someone else. What that buys, covered by `deno run -A examples/chat/smoke-login.ts`: two

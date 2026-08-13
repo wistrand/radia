@@ -12,6 +12,11 @@
 // only the grants it needs to do its job.
 
 import { RadiaClient } from "../../../sdk/ts/client.ts";
+import { INSPECT_SCHEMAS, REMEDIATE_SCHEMAS } from "../../../extensions/ts/agent-tools.ts";
+
+/** The tools the SESSION serves in its own process (client/session-tools.ts), derived from the
+ *  same schemas that file serves so the grant and the server cannot disagree about the list. */
+const SESSION_SERVED = [...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS].map((s) => s.function.name);
 
 /** The scoped principal a `user`-role session runs as. Exported because the REPL grants TO it when
  *  a human approves a request. The subject comes from what this process minted, never from the
@@ -226,6 +231,22 @@ export function userGrants(scope?: Record<string, unknown>): Grant[] {
     // finds the one the turn worker emitted (`nextCall`) to know which stream to follow.
     { kind: "llm_call", operations: ["put", "query"], ...scoped },
     { kind: "tool_call", operations: ["put"], ...scoped },
+    // TAKE, but only for the tools the session SERVES ITSELF (client/session-tools.ts). The
+    // inspection tools moved into the REPL process because a delegated run can never carry the ops
+    // plane, and serving means claiming: an unclaimed claimable record would otherwise sit in the
+    // queue forever, since nothing else answers these names.
+    //
+    // Scoped to the NAMES, not just to the session, and that is the whole safety of it. With a bare
+    // `tool_call: take` a session could claim its own `run_javascript` call and write the result,
+    // and a `tool_result` would stop meaning "a worker produced this" — the same property that
+    // keeps `check: put` off this list. `$in` over an indexed path, ANDed with the session's own
+    // scope, so it can claim these and nothing else.
+    { kind: "tool_call", operations: ["take"], pattern: { ...(scope ?? {}), tool: { $in: SESSION_SERVED } } },
+    // A claimant declares what it listens for, and `agentLoop` treats a refused publish as "no
+    // grant" and skips the remaining patterns SILENTLY: without this the session claims nothing and
+    // says nothing. Unscoped, like the fleet's, because an interest is about a kind rather than
+    // about anyone's records; the per-principal ceiling bounds it.
+    { kind: "interest", operations: ["put", "query"] },
     // Keyed by `callId`, so these carry the scope field purely so a grant can bind them: a session
     // that learned a callId from elsewhere could otherwise read another session's streamed tokens,
     // model output, or tool results.
@@ -237,7 +258,15 @@ export function userGrants(scope?: Record<string, unknown>): Grant[] {
     { kind: "turn_complete", operations: ["read_one", "query"], ...scoped },
     // Escape: the person's intent, which only they can declare.
     { kind: "cancel", operations: ["put", "query"], ...scoped },
-    { kind: "tool_result", operations: ["read_one"], ...scoped },
+    // `put` as well as `read_one` since the inspection tools moved in-process: a BARE call is
+    // answered with a `tool_result`, while a slotted one replies as a `message` (granted above).
+    // `asTurnReply` picks by `tool_call_id`, so a session that serves tools needs both shapes.
+    { kind: "tool_result", operations: ["put", "read_one"], ...scoped },
+    // PUT ONLY, and the asymmetry is the point. A session in join mode has no operator to create
+    // its thread, so it creates its own; `query` stays withheld because enumerating conversations
+    // would list every one on the space. Starting a thread of your own reveals nothing about
+    // anyone else's. Unscoped because a `conversation` record has no field a pattern could bind.
+    { kind: "conversation", operations: ["put"] },
     { kind: "capability", operations: ["query"] }, // a registry: the fleet's tools, not session data
     // Same category, and the grant `space_kinds` runs on: what kinds EXIST is reference data,
     // and the model is told to discover kinds rather than be taught them (CLAUDE.md, the

@@ -1,8 +1,10 @@
 # Plan: milestones
 
 > Status: M0 (Phases 0–7) built and verified; M1 largely built (watches, the authorization stack,
-> the Postgres adapter, the tamper-evident event chain, resource limits, credential exchange, and
-> OIDC sign-in for humans — server, console and CLI, [plan-oidc.md](plan-oidc.md)); a real M2
+> the Postgres adapter, the tamper-evident event chain, resource limits, credential exchange,
+> OIDC sign-in for humans — server, console and CLI, [plan-oidc.md](plan-oidc.md) — and DELEGATED
+> RUNS, so one worker fleet can serve many people without holding anyone's credential,
+> [plan-delegation.md](plan-delegation.md)); a real M2
 > slice is built too (GC + compaction, event-log retention, ops-plane tiers, revocation,
 > pushdown + the scan budget); the rest of M2/M3 is unbuilt. Workspaces and the git projection
 > are complete beside the list, bar push. Origin: outline §11.
@@ -180,7 +182,7 @@ crypto-shredding deletes a body while the event chain still verifies.
 
 - [ ] scheduler-enforced atomic admission (see [design-scheduler.md](design-scheduler.md))
 - [ ] semantic matching
-- [~] delegation contexts end-to-end. **Built (M1):** `delegation_context` is server-derived from the lease on ack-emitted work (authority chain accumulates per hop; never data parents); ack authorizes the acting agent's `put`. Remaining for M3: the stricter chain-intersection policy composed with taint.
+- [~] delegation contexts end-to-end. **Built (M1):** `delegation_context` is server-derived from the lease on ack-emitted work (authority chain accumulates per hop; never data parents); ack authorizes the acting agent's `put`. Since 2026-08-12 a worker can also ACT for its caller: `POST /v0/agent-runs/delegated` mints a run whose authority is `grants(worker) INTERSECT grants(caller)`, resolved through the run behind `created_by` rather than any body field, with the authority a worker may use only on somebody's behalf held under a `delegable:<agent>` principal nothing can authenticate as ([plan-delegation.md](plan-delegation.md)). Remaining for M3: the stricter chain-intersection policy composed with taint, which this deliberately does NOT anticipate — it intersects two principals at mint, and says nothing about a chain of five.
 - [~] taint + declassification. **Built (M1):** taint is a closed set of BARRIER labels (`file`/`net`/`foreign`, `TAINT_LABELS`) that UNION along data parents (put + ack); clients may raise but never clear one; `take {allowTaint}` and a grant's `scope.taint` are claim-time ALLOWLISTS; a privileged `declassify` clears named labels and emits a successor carrying the remainder. It began as one boolean, which saturated after the first tool call and therefore barred nothing; see [design-taint.md](design-taint.md). Remaining for M3: per-principal trust classification and taint-composed access checks.
 - [ ] repeated-shape livelock detection
 - [ ] re-execution tooling
