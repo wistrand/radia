@@ -370,7 +370,21 @@ export function intersectGrants(worker: GrantDef[], caller: GrantDef[]): Delegat
       for (const pattern of patterns) out.push({ kind, operations: [op], pattern, ...scope });
     }
   }
-  return out;
+  // CANONICAL ORDER, because this array is hashed into the delegated run's token so that an
+  // unchanged delegation reuses its run instead of writing a permanent record. Kinds and ops are
+  // already sorted above, but the PATTERNS for one (kind, op) come out in grant-registry iteration
+  // order — stable in practice and an unguarded assumption otherwise, and if it ever varied the
+  // digest would differ per call, every mint would write a fresh run, and no test would notice
+  // because they all mint back to back against an unchanged registry.
+  return out.sort((a, b) =>
+    a.kind !== b.kind
+      ? (a.kind < b.kind ? -1 : 1)
+      : a.operations[0] !== b.operations[0]
+      ? (a.operations[0] < b.operations[0] ? -1 : 1)
+      : JSON.stringify(a.pattern ?? null) < JSON.stringify(b.pattern ?? null)
+      ? -1
+      : 1
+  );
 }
 
 /** The patterns grants permitting `op` impose, or `null` when one of them is unrestricted (which
@@ -1582,6 +1596,11 @@ export class Space {
    */
   private async mayActOn(principal: string, record: RadiaRecord, opts: { requireLease?: boolean } = {}): Promise<boolean> {
     const env = await this.storage.getEnvelope(record.id);
+    // The STATE, not `leasedUntil > now`, and the difference is deliberate: expiry is lazy here, so
+    // a just-expired lease still reads `leased` and its holder can still mint. That window is
+    // harmless — the caller resolved from the record is the same person either way, and the moment
+    // another worker reclaims it the owner no longer matches — and closing it would cost a clock
+    // round trip on the one path that is otherwise read-only.
     if (env?.state === "leased" && env.leaseOwner === principal) return true;
     if (opts.requireLease) return false;
     // EITHER read op, because they are separate grants and a worker commonly holds one. Asking only

@@ -29,9 +29,11 @@ Without `--auto-grant` an SSO identity arrives with **zero** grants and somebody
 person in — `deno run -A examples/chat/grant-user.ts <their principal>`, and a session that has not
 been let in prints that exact line, principal included, so it can be forwarded rather than
 reconstructed. With the flag the `--serve` process assigns the standard set as each person enrols,
-and **the ban becomes the mapping**: revoking someone's grants only lasts until the next sweep, so
-keeping them out means retiring their `oidc_identity` (`retire is a ban`, agent_docs/plan-oidc.md).
-A deliberate NARROWING survives, because the sweep only ever touches a principal holding nothing.
+and **the ban becomes the mapping**: keeping somebody out means retiring their `oidc_identity`
+(`retire is a ban`, agent_docs/plan-oidc.md). Revoking their grants is not a ban and fails in the
+awkward way — a sweep decides each principal once per process, so it holds until the fleet
+restarts and then they are admitted again. A deliberate NARROWING does survive, because the sweep
+only ever touches a principal holding nothing.
 
 Join mode is selected by the ABSENCE of an operator credential, so there is no flag to forget: a
 session that cannot bootstrap simply does not, and says what it cannot do (assign its own grants,

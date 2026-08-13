@@ -1078,8 +1078,12 @@ const sessions = new Map<string, { client: RadiaClient; until: number }>();
 async function sessionClient(rec: RadiaRecord, c: RadiaClient): Promise<RadiaClient> {
   const author = rec.runtimeMeta?.createdBy;
   if (!author) return c;
+  const now = Date.now();
   const hit = sessions.get(author);
-  if (hit && hit.until > Date.now() + 60_000) return hit.client;
+  if (hit && hit.until > now + 60_000) return hit.client;
+  // Author runs ROTATE (a 12h ceiling, and a fresh run per login), so evict what has lapsed or a
+  // worker that stays up accumulates one dead entry per run forever.
+  for (const [k, v] of sessions) if (v.until <= now) sessions.delete(k);
   // The claimed record is the entitlement: this worker holds its lease, which is what a delegable
   // grant requires. A mint that fails because the caller cannot be resolved (an old-style
   // `tool_call` written by a worker rather than under a delegated run) falls back to this worker's

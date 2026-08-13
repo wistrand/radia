@@ -115,37 +115,47 @@ export interface ServeOptions {
  * own death (./capability.ts).
  */
 /**
- * A client bounded by the caller as well as by this worker, for `ToolContext.caller`.
+ * Delegated clients for one worker, keyed on the claimed record's AUTHOR RUN.
  *
- * Cached on the claimed record's AUTHOR RUN, which is server-assigned (`created_by`): a run's
- * delegation is immutable, so two calls from one author resolve to the same caller. Keying on a
- * body field would be an escalation, since a body naming somebody else's conversation would then
- * reuse their credential. The mint itself reuses a live run rather than writing a record per call
- * (`Space.mintDelegatedRun`), so this cache saves a round trip and not much else.
+ * PER `serveTools` CALL, never module-level, and that is a correctness rule rather than tidiness:
+ * the key is the author alone, so a module-level map shared by two workers in one process would
+ * hand worker A the credential worker B minted — a different worker's authority, under the same
+ * caller. One process runs one tool worker today; nothing enforces that, and the failure would be
+ * silent.
  *
- * A failed mint FALLS BACK to the worker's own client and says so. It is safe — the grants a worker
- * may only exercise for a caller live under a `delegable:` principal its own token cannot reach —
- * but the later `forbidden` reads as a grant bug unless the cause is on the record.
+ * The author run is server-assigned (`created_by`) and its delegation is immutable, so two calls
+ * from one author resolve to the same caller. Keying on a body field would be an escalation, since
+ * a body naming somebody else's conversation would then reuse their credential.
  */
-const delegatedByAuthor = new Map<string, { client: RadiaClient; until: number }>();
-
-async function callerClient(rec: RadiaRecord, c: RadiaClient): Promise<RadiaClient> {
-  const author = rec.runtimeMeta?.createdBy;
-  if (!author) return c;
-  const hit = delegatedByAuthor.get(author);
-  if (hit && hit.until > Date.now() + 60_000) return hit.client;
-  try {
-    const d = await c.delegatedClient(rec.id);
-    delegatedByAuthor.set(author, { client: d.client, until: Date.parse(d.expiresAt) });
-    return d.client;
-  } catch (e) {
-    console.error(`[tool-worker] no delegated run for ${author} (${e}); this call runs with the worker's own reach`);
-    return c;
-  }
+function delegatedClients(c: RadiaClient) {
+  const byAuthor = new Map<string, { client: RadiaClient; until: number }>();
+  return async function callerClient(rec: RadiaRecord): Promise<RadiaClient> {
+    const author = rec.runtimeMeta?.createdBy;
+    if (!author) return c;
+    const now = Date.now();
+    const hit = byAuthor.get(author);
+    if (hit && hit.until > now + 60_000) return hit.client;
+    // Drop what has lapsed before adding. Author runs ROTATE (a person's run has a 12h ceiling and
+    // a fresh one per login), so without this a long-lived shared worker — the deployment this
+    // whole mechanism exists for — accumulates one dead entry per run for as long as it runs.
+    for (const [k, v] of byAuthor) if (v.until <= now) byAuthor.delete(k);
+    try {
+      const d = await c.delegatedClient(rec.id);
+      byAuthor.set(author, { client: d.client, until: Date.parse(d.expiresAt) });
+      return d.client;
+    } catch (e) {
+      // Safe to fall back — the grants a worker may exercise only for a caller live under a
+      // `delegable:` principal its own token cannot reach — but the later `forbidden` reads as a
+      // grant bug unless the cause is on the record.
+      console.error(`[tool-worker] no delegated run for ${author} (${e}); this call runs with the worker's own reach`);
+      return c;
+    }
+  };
 }
 
 export async function serveTools(client: RadiaClient, opts: ServeOptions): Promise<string[]> {
   const provider = opts.provider;
+  const callerClient = delegatedClients(client);
   const served: string[] = [];
   for (const name of Object.keys(opts.tools)) {
     const def = opts.schemas.find((s) => s.function.name === name);
@@ -164,7 +174,7 @@ export async function serveTools(client: RadiaClient, opts: ServeOptions): Promi
     handle: async (rec: RadiaRecord, c: RadiaClient) => {
       const b = rec.body as ToolCallBody;
       const callId = rec.id;
-      const ctx: ToolContext = { callId, conversationId: b.conversationId, owner: b.owner, caller: () => callerClient(rec, c) };
+      const ctx: ToolContext = { callId, conversationId: b.conversationId, owner: b.owner, caller: () => callerClient(rec) };
       const stage = opts.stage?.(b.tool ?? "");
       if (stage) await progress(c, { ...ctx, stage, by: provider, note: b.tool }, [callId]);
       let a: ToolAnswer;

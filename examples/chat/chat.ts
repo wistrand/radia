@@ -203,7 +203,8 @@ if (serveOnly && admin) {
   write(
     autoGrant
       ? `Auto-granting every enrolled identity. To keep somebody out, RETIRE THEIR MAPPING\n` +
-        `  (radia put oidc_identity …{retired:true}) — revoking their grants only lasts until the next sweep.\n`
+        `  (radia put oidc_identity …{retired:true}). Revoking their grants is NOT a ban: it holds\n` +
+        `  until this process restarts, and then they are admitted again.\n`
       : `New SSO identities arrive with no grants. Let one in with:\n` +
         `  deno run -A examples/chat/grant-user.ts <their human:oidc-… principal>\n` +
         `  …or restart with --auto-grant to admit everyone the IdP vouches for.\n`,
@@ -339,9 +340,11 @@ if (!admin) {
     write(`   a fleet started with --auto-grant would have admitted you already)\n\n`);
   }
   // A fleet nobody started answers nothing, and the symptom is a turn that hangs rather than an
-  // error. Say so at boot instead.
-  const serving = await session.query({ kind: "capability" }, 1).catch(() => []);
-  if (serving.length === 0) {
+  // error. Say so at boot instead — but only when the registry was actually READABLE and empty. A
+  // session with no grants cannot read it at all, and reporting that as "nobody is serving" sends
+  // someone to restart a fleet that is running fine.
+  const serving = await session.query({ kind: "capability" }, 1).then((r) => r.length).catch(() => -1);
+  if (serving === 0) {
     write(`no worker is advertising a capability on ${url}; turns will wait forever.\n`);
     write(`  Start the fleet:  deno task chat -- --serve\n\n`);
   }

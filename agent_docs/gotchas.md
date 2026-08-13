@@ -923,6 +923,12 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   move), so an unchanged one is found by its `tokenHash` and writes nothing. Put anything that can
   CHANGE into the derivation, or reuse would mutate a run whose authority is memoized as immutable.
   Guard: conformance/delegation.test.ts "REUSES its run".
+- **A per-caller credential cache keyed only by the CALLER belongs to one worker, not the module**
+  (`delegatedClients`, extensions/ts/tool-worker.ts). A module-level map shared by two `serveTools`
+  calls in one process hands worker A the delegated client worker B minted — a different worker's
+  authority under the same caller, silently. It is per-call now. Evict on lookup too: author runs
+  rotate (12h ceiling, a fresh run per login), so a long-lived shared worker otherwise accumulates
+  one dead entry per run for as long as it runs.
 - **A read-then-write helper needs two credentials, and its name will not tell you**
   (`writeWorkspace`, extensions/ts/workspace.ts). It reads the predecessor AND asks whether the
   tree forked, two separate reads inside one write call; passing only the writing credential
