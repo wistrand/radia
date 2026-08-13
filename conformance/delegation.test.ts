@@ -540,6 +540,47 @@ Deno.test("delegation: reuse never revives a STOPPED run, so the cascade holds",
   }
 });
 
+// --- the refusal a guessing caller actually reads -----------------------------------------------
+
+Deno.test("authorize: a refusal SAYS when the kind does not exist, without changing the status", async () => {
+  const t = await newSpace();
+  try {
+    const handler = makeHandler(t.space, "<html>c</html>", true);
+    const alice = await agentRun(t.space, "human:alice", [grant("human:alice", "note", ["query"])]);
+
+    // A DECLARED kind it holds nothing on: the plain refusal, unchanged.
+    const declared = await assertRejects(() => t.space.authorize(alice.run, "put", "memo"), RadiaError);
+    assertEquals(declared.code, "forbidden");
+    assertStringIncludes(declared.message, "has no 'put' grant for kind 'memo'");
+    assert(!declared.message.includes("is declared"), "a real kind must not be reported as missing");
+
+    // A kind nobody ever declared. Authorization runs BEFORE pattern compilation, so this is the
+    // only thing the caller is ever told — and "you lack a grant" sends it looking for permission
+    // that would not help. A live session burned two calls on exactly this.
+    const invented = await assertRejects(() => t.space.authorize(alice.run, "query", "file"), RadiaError);
+    assertEquals(invented.code, "forbidden", "still a refusal, and still 403: the wire contract does not move");
+    assertStringIncludes(invented.message, "not a declared kind on this space");
+    // The remedy must be sayable through any surface. A CLI verb is not: the reader that hits this
+    // is a model holding tools, and `src/core` naming `radia kinds` would be it reaching into a
+    // surface's vocabulary for a reader that cannot use it.
+    assertStringIncludes(invented.message, "kind_def");
+    assert(!invented.message.includes("radia "), "the substrate must not prescribe a CLI command");
+
+    // Over the wire, so the status is pinned rather than inferred from the code.
+    const res = await handler(
+      new Request("http://t/v0/records/query", {
+        method: "POST",
+        headers: { "content-type": "application/json", "Authorization": `Bearer ${alice.runToken}` },
+        body: JSON.stringify({ kind: "file" }),
+      }),
+    );
+    assertEquals(res.status, 403);
+    assertStringIncludes(await res.text(), "not a declared kind on this space");
+  } finally {
+    t.close();
+  }
+});
+
 // --- phase 2: enumerate and revoke -------------------------------------------------------------
 
 Deno.test("delegation: runs are ENUMERABLE by caller, which is what makes a cascade possible", async () => {

@@ -859,6 +859,36 @@ export class Space {
     };
   }
 
+  /**
+   * The refusal every "you hold nothing here" path throws, and it SAYS WHEN THE KIND DOES NOT EXIST.
+   *
+   * Authorization runs before pattern compilation, so a caller naming a kind nobody ever declared
+   * is told it lacks a GRANT — and acts on that, because it is the only thing it was told. A live
+   * session asked for `file` (a kind this space has never had), read "no 'query' grant for kind
+   * 'file'" as a permissions problem, and spent its next two calls guessing around it. The
+   * information to say so was right here: `this.kinds` is what authorization is standing next to.
+   *
+   * The status and the code do NOT change (403 `forbidden`), because they are wire contract and
+   * because an undeclared kind is still a refusal. Only the sentence gets longer.
+   *
+   * The tradeoff, stated rather than assumed: the extra clause lets a caller with no grants tell a
+   * declared kind from an undeclared one, so kind names are enumerable by probing. That is
+   * acceptable here because kind names are SCHEMA, not data — the console lists them, `space_kinds`
+   * serves them to any session holding `kind_def: query`, and nothing in design-auth.md treats
+   * their existence as secret. Revisit if a space ever needs its vocabulary hidden.
+   */
+  private noGrant(principal: string, what: string, kind: string): RadiaError {
+    // The remedy is in the SUBSTRATE's vocabulary, not a surface's. The first version said "list
+    // them with 'radia kinds'", which is useless to the reader that actually hits this — a model
+    // holding tools, not a shell — and is `src/core` naming a CLI verb it should not know exists.
+    // "Query kind_def" is true through every surface and directly actionable by anything holding
+    // the read, because kinds ARE records.
+    const undeclared = this.kinds.get(kind)
+      ? ""
+      : `; '${kind}' is not a declared kind on this space, so no grant would help — query 'kind_def' for the ones that are`;
+    return new RadiaError("forbidden", `principal '${principal}' has no ${what} kind '${kind}'${undeclared}`);
+  }
+
   /** The pattern constraint an already-read grant set imposes. Split from the read so `readAccess`
    *  can answer three questions from ONE view; the rule is unchanged. */
   private constraintFrom(
@@ -868,9 +898,7 @@ export class Space {
     kind: string,
   ): Record<string, unknown>[] | null {
     const applicable = grants.filter((g) => Array.isArray(g.operations) && g.operations.includes(op));
-    if (applicable.length === 0) {
-      throw new RadiaError("forbidden", `principal '${principal}' has no '${op}' grant for kind '${kind}'`);
-    }
+    if (applicable.length === 0) throw this.noGrant(principal, `'${op}' grant for`, kind);
     const patterns: Record<string, unknown>[] = [];
     for (const g of applicable) {
       const t = g.pattern;
@@ -1136,9 +1164,7 @@ export class Space {
     if (access.privileged) return { constraint: null };
     const grants = access.defs as (GrantDef & { scope?: { createdBy?: string } })[];
     const subject = access.delegated ? this.grantSubject(access.delegated.actingFor) : this.grantSubject(principal);
-    if (grants.length === 0) {
-      throw new RadiaError("forbidden", `principal '${principal}' has no grant to watch kind '${kind}'`);
-    }
+    if (grants.length === 0) throw this.noGrant(principal, "grant to watch", kind);
     // A self scope narrows a watch for the same reason it narrows `query`: otherwise approving
     // "its own records" streams every author's record ids, kinds and activity timing on the kind.
     // Applied only when EVERY grant on the kind is self-scoped, matching `authorScope`. Grants

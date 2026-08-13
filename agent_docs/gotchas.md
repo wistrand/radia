@@ -938,6 +938,18 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   It wrote `tool_call` records as `admin`, so every call had a privileged author; delegation
   refuses those (an operator has no grant set to narrow to) and the whole suite failed at once.
   Write records as the principal production uses.
+- **A refusal for an UNDECLARED kind must say so, or a guessing agent reads it as a permissions
+  problem** (`Space.noGrant`). Authorization runs before pattern compilation, so a caller naming a
+  kind nobody declared is told only "no 'query' grant for kind 'file'" — and goes looking for a
+  grant that would never help. Observed live: a session invented `file`, read the refusal as
+  missing permission, and burned its next two calls guessing around it. The status and code stay
+  403 `forbidden` (wire contract, and it IS still a refusal); only the sentence grows. Say the
+  remedy in the SUBSTRATE's vocabulary: the first draft said "list them with `radia kinds`", which
+  the reader that hits this cannot run — it is a model holding tools, not a shell — and which is
+  `src/core` naming a surface's verb. "Query `kind_def`" is true through every surface. The
+  tradeoff taken: kind names become enumerable by probing, which is fine because they are SCHEMA.
+  Guard: conformance/delegation.test.ts "a refusal SAYS when the kind does not exist", proved red
+  both ways (clause missing, and clause on every kind).
 - **A one-off manual grant to a long-lived principal hides gaps in the standard set**
   (`userGrants`, examples/chat/space/roles.ts). `kind_def:query` was hand-granted to one person
   in August and never added to the set, so `space_kinds` worked for them and 403'd for every
