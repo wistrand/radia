@@ -13,13 +13,32 @@ deno task chat -- --conversation last    # …or pick up where you left off
 
 **Setup and session are separate jobs, and only the first is privileged.** Run alone, `deno task
 chat` does both: it registers kinds, mints the workers' credentials, starts the fleet, and then
-talks to you. For more than one person, split them — `deno task chat -- --serve` does the
-privileged half ONCE and parks holding the fleet, and everyone else runs `deno task chat` with
-nothing but their own `radia login`. Join mode is selected by the ABSENCE of an operator
-credential, so there is no flag to forget: a session that cannot bootstrap simply does not, and
-says what it cannot do (assign its own grants, approve a grant request, or list conversations)
-instead of failing at the first read. While the two halves were one, opening the chat meant holding
-the control plane, which is how "N users" came to mean "N operators".
+talks to you. For more than one person, split them:
+
+```bash
+# ONCE, by whoever holds the operator credential. Parks holding the fleet.
+OPENROUTER_API_KEY=sk-or-... deno task chat -- --serve
+
+# ONCE PER PERSON, by the same operator: an SSO identity arrives with ZERO grants.
+deno run -A examples/chat/grant-user.ts human:oidc-a9189…      # radia query oidc_identity --json
+
+# EVERY PERSON, holding nothing but their own login. No operator, no API key.
+radia login --sso        # …or: radia login human:you
+deno task chat
+```
+
+Join mode is selected by the ABSENCE of an operator credential, so there is no flag to forget: a
+session that cannot bootstrap simply does not, and says what it cannot do (assign its own grants,
+approve a grant request, list conversations) instead of failing at the first read. Two consequences
+worth knowing. **The provider key belongs to the `--serve` process**, because the inference and
+image workers are the only things that call a provider — asking every person for a shared secret
+they never use would undo the point. And **granting is manual**, deliberately: `grant-user.ts`
+writes grant records and never an `agent_definition`, so an SSO identity gains no durable
+credential and deprovisioning at the IdP still bites within one run ceiling. Self-service granting
+wants a broker on the supervisor identity, which is not built (agent_docs/plan-scaling.md item 3).
+
+While the two halves were one, opening the chat meant holding the control plane, which is how "N
+users" came to mean "N operators".
 
 **Conversations survive a restart, because they were never in the process.** The thread is
 `message` records on the space, so resuming is just recovering the one piece of client-held state

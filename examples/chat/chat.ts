@@ -57,8 +57,15 @@ import { staging } from "./client/attachments.ts";
 import { mediaTypeFor } from "./util.ts";
 import { sleep } from "./util.ts";
 
-if (!apiKey) {
+// The key belongs to whoever LAUNCHES THE FLEET, because the inference and image workers are the
+// only processes that call a provider. A joining session starts no workers, so demanding one of it
+// would be asking every person for a credential they never use — and asking them to hold a shared
+// secret is the opposite of what the deployment split is for. Checked against the same condition
+// that decides whether this process launches anything (an operator credential is present).
+if (!apiKey && operatorToken()) {
   console.error("Set OPENROUTER_API_KEY (get one at https://openrouter.ai/keys).");
+  console.error("  It is needed HERE because this process starts the workers that call the provider.");
+  console.error("  A session joining a fleet somebody else started needs no key.");
   Deno.exit(1);
 }
 if (toolRoots.length === 0) {
