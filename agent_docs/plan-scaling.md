@@ -101,16 +101,26 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
    itself anything, reach the ops plane or enumerate another conversation.
    Two decisions were inside it. One is settled; the other was DEFERRED by taking the cheaper
    branch, and is the piece still outstanding:
-   - WHO ASSIGNS a session's grants once the session is not an operator. The join-mode build takes
-     the manual branch: grants are assigned at `radia login`/setup time by somebody holding the
-     credential, and a session that has none is TOLD so at boot with the command that fixes it,
-     rather than failing on its first read. That needs no new component and is honest for a
-     deployment with an administrator. The other branch is still open and still the right one for
-     self-service: a session broker on the SUPERVISOR identity (`space.ts`, `authorize`), which may
-     write `grant`/`signal` and nothing else and is mintable since ops-tiers phase 5. Note the
-     interaction if it is built: `mintDelegatedRun` refuses a supervisor agent outright, so a broker
-     can assign grants but can never delegate — fine for a broker that only writes grants, and a
-     trap if it ever grows a second job.
+   - WHO ASSIGNS a session's grants once the session is not an operator. Answered in two halves,
+     both built. MANUALLY: `examples/chat/grant-user.ts <principal>` writes the grant records and
+     deliberately no `agent_definition`, so an SSO identity gains no durable credential and IdP
+     deprovisioning still bites within one run ceiling; a session that has not been let in prints
+     that exact command, principal included, because it is the one thing that knows its own
+     principal and an SSO one is 32 hex characters nobody retypes. AS A POLICY:
+     `--serve --auto-grant` (`examples/chat/space/auto-grant.ts`) assigns the standard set as each
+     identity enrols. Opt-in, because it converts "authenticated" into "authorized", which the
+     substrate deliberately refuses to decide for you.
+     Two properties make the policy safe to leave running, and both are guarded by tests proved red
+     by a plant: a RETIRED mapping is never granted (`activeByKey` drops it, so retire-as-ban still
+     works and is the ONLY way to keep someone out once the flag is on — revoking grants lasts
+     until the next sweep), and a principal already holding something is never touched, because
+     `RadiaClient.grant` REVIVES a retired grant and a blind re-assign would undo an operator's
+     narrowing. The plant restored all 19 grants over a deliberate one-grant narrowing.
+     What is still open is the self-service case for a space with no administrator at all: a
+     session broker on the SUPERVISOR identity, which may write `grant`/`signal` and nothing else
+     and is mintable since ops-tiers phase 5. Note the interaction if it is built:
+     `mintDelegatedRun` refuses a supervisor agent outright, so a broker can assign grants but can
+     never delegate — fine for one that only writes grants, and a trap if it grows a second job.
    - HOW `space_*` keeps running as the caller. SETTLED, and the near-term answer was the right one
      for a reason nobody had yet: those tools read the ops plane, and a delegated run holds NO ops
      powers and drops self-scoped grants, so no worker can ever serve them for somebody else. They

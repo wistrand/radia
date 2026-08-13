@@ -13,6 +13,7 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { assignUserGrants, bootstrap, mintSession } from "./space/roles.ts";
+import { sweepAutoGrants } from "./space/auto-grant.ts";
 
 const PORT = 7807;
 const url = `http://127.0.0.1:${PORT}`;
@@ -111,6 +112,52 @@ await otherSession.put({ kind: "message", body: { conversationId: conv.id, owner
 check(
   "two joined sessions on one space read only their own records",
   (await session.query({ kind: "message", match: { conversationId: conv.id } }, 10)).length === 1,
+);
+
+// ---- --auto-grant: the policy that removes the per-person chore ----
+//
+// Three behaviours, and the last two are the ones that make it safe to leave running.
+console.log("");
+const enrol = (sub: string, principal: string, extra: Record<string, unknown> = {}) =>
+  admin.put({ kind: "oidc_identity", body: { iss: "https://idp.test", sub, principal, auto: true, ...extra } });
+
+await enrol("s-new", "human:oidc-newcomer");
+const first = await sweepAutoGrants(admin, () => {});
+check("an enrolled identity holding nothing is granted", first.includes("human:oidc-newcomer"), first.join(","));
+check(
+  "…and can then write its own messages",
+  ((await admin.permissions("human:oidc-newcomer") as { kinds: { kind: string }[] }).kinds).some((k) => k.kind === "message"),
+);
+
+// IDEMPOTENT: a second sweep must find nothing to do, or every enrolment wakeup re-writes the set.
+check("a second sweep grants nobody again", (await sweepAutoGrants(admin, () => {})).length === 0);
+
+// A RETIRED mapping is the ban (plan-oidc.md). `activeByKey` drops it, so it is never granted —
+// and this is the one that keeps somebody out, not revoking their grants.
+// NO sweep between the enrolment and the retirement, deliberately. Granting them first would let
+// the "holds something already" test do the work and this would pass without the tombstone ever
+// being consulted — which is exactly how the first version of this check passed against a planted
+// `view.newest` (retirements included).
+await enrol("s-banned", "human:oidc-banned");
+await admin.put({ kind: "oidc_identity", body: { iss: "https://idp.test", sub: "s-banned", principal: "human:oidc-banned", retired: true } });
+const afterBan = await sweepAutoGrants(admin, () => {});
+check("a RETIRED mapping is never granted: retire is the ban", !afterBan.includes("human:oidc-banned"), afterBan.join(","));
+check(
+  "…and it holds nothing at all, so the ban is real rather than a skipped write",
+  ((await admin.permissions("human:oidc-banned") as { kinds: unknown[] }).kinds).length === 0,
+);
+
+// A NARROWED principal is left alone. `RadiaClient.grant` revives a retired grant, so a blind
+// re-assign would undo an operator's deliberate narrowing. The "holds nothing" test is what stops it.
+await enrol("s-narrow", "human:oidc-narrowed");
+await admin.grant("human:oidc-narrowed", "message", ["query"], { owner: "human:oidc-narrowed" });
+const afterNarrow = await sweepAutoGrants(admin, () => {});
+check("a principal that already holds something is NOT re-granted", !afterNarrow.includes("human:oidc-narrowed"));
+const narrowed = await admin.permissions("human:oidc-narrowed") as { kinds: { kind: string; operations: string[] }[] };
+check(
+  "…so a deliberate narrowing survives the sweep",
+  narrowed.kinds.length === 1 && narrowed.kinds[0].kind === "message" && !narrowed.kinds[0].operations.includes("put"),
+  JSON.stringify(narrowed.kinds),
 );
 
 console.log(`\n${failures === 0 ? "ok" : `FAILED (${failures})`}\n`);

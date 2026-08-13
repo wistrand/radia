@@ -40,6 +40,7 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { assignUserGrants, bootstrap, setSessionOwner } from "./space/roles.ts";
+import { watchAutoGrants } from "./space/auto-grant.ts";
 import { apiKey, EXEC_TIMEOUT_MS, execRoots, loginDefinitionToken, loginSource, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
 import { FLEET_PROVIDERS, launchFleet, spawnSpace } from "./client/fleet.ts";
 import { retireProviderCapabilities } from "../../extensions/ts/capability.ts";
@@ -191,7 +192,22 @@ async function setUpSpace(a: RadiaClient): Promise<void> {
 // privileged work happens here instead of once per session.
 if (serveOnly && admin) {
   await setUpSpace(admin);
+  // `--auto-grant`: everyone the IdP vouches for may use this chat, said once here instead of one
+  // `grant-user.ts` per person. Opt-in because it is a policy decision, and it changes what a ban
+  // is — see space/auto-grant.ts.
+  const autoGrant = Deno.args.includes("--auto-grant");
+  if (autoGrant) {
+    watchAutoGrants(admin, shutdown.signal, (m) => notice(dim(m)));
+  }
   write(`\nfleet serving ${url}. Sessions join with:  deno task chat\n`);
+  write(
+    autoGrant
+      ? `Auto-granting every enrolled identity. To keep somebody out, RETIRE THEIR MAPPING\n` +
+        `  (radia put oidc_identity …{retired:true}) — revoking their grants only lasts until the next sweep.\n`
+      : `New SSO identities arrive with no grants. Let one in with:\n` +
+        `  deno run -A examples/chat/grant-user.ts <their human:oidc-… principal>\n` +
+        `  …or restart with --auto-grant to admit everyone the IdP vouches for.\n`,
+  );
   write(`Ctrl-C to stop the workers.\n\n`);
   await new Promise<void>((r) => shutdown.signal.addEventListener("abort", () => r(), { once: true }));
   cleanup();
@@ -313,9 +329,14 @@ try {
 if (!admin) {
   const mine = await session.permissions(who) as { kinds: { kind: string }[] };
   if (!privileged && !mine.kinds.some((k) => k.kind === "message")) {
+    // The EXACT command, principal included. This session is the one thing that knows its own
+    // principal, and an SSO one is 32 hex characters nobody retypes: printing the line to forward
+    // is the difference between "ask your admin" and a copyable fix.
     write(`\n${owner} holds no 'message' grant on this space, so a turn cannot even start.\n`);
-    write(`  Someone with the operator credential assigns this app's grants:  deno task chat -- --serve\n`);
-    write(`  (a plain 'radia login' mints a valid credential with the CLI's grants, not this app's)\n\n`);
+    write(`  Send this to whoever holds the operator credential:\n\n`);
+    write(`    deno run -A examples/chat/grant-user.ts ${owner}\n\n`);
+    write(`  (a plain 'radia login' mints a valid credential with the CLI's grants, not this app's;\n`);
+    write(`   a fleet started with --auto-grant would have admitted you already)\n\n`);
   }
   // A fleet nobody started answers nothing, and the symptom is a turn that hangs rather than an
   // error. Say so at boot instead.

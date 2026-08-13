@@ -17,15 +17,21 @@ talks to you. For more than one person, split them:
 
 ```bash
 # ONCE, by whoever holds the operator credential. Parks holding the fleet.
-OPENROUTER_API_KEY=sk-or-... deno task chat -- --serve
-
-# ONCE PER PERSON, by the same operator: an SSO identity arrives with ZERO grants.
-deno run -A examples/chat/grant-user.ts human:oidc-a9189…      # radia query oidc_identity --json
+# --auto-grant: everyone the IdP vouches for may use this chat.
+OPENROUTER_API_KEY=sk-or-... deno task chat -- --serve --auto-grant
 
 # EVERY PERSON, holding nothing but their own login. No operator, no API key.
 radia login --sso        # …or: radia login human:you
 deno task chat
 ```
+
+Without `--auto-grant` an SSO identity arrives with **zero** grants and somebody has to let each
+person in — `deno run -A examples/chat/grant-user.ts <their principal>`, and a session that has not
+been let in prints that exact line, principal included, so it can be forwarded rather than
+reconstructed. With the flag the `--serve` process assigns the standard set as each person enrols,
+and **the ban becomes the mapping**: revoking someone's grants only lasts until the next sweep, so
+keeping them out means retiring their `oidc_identity` (`retire is a ban`, agent_docs/plan-oidc.md).
+A deliberate NARROWING survives, because the sweep only ever touches a principal holding nothing.
 
 Join mode is selected by the ABSENCE of an operator credential, so there is no flag to forget: a
 session that cannot bootstrap simply does not, and says what it cannot do (assign its own grants,
@@ -170,7 +176,7 @@ real assembly, with no API key:
 | `iterate` | the code-gen loop as records: attempts that link into a chain, and a verdict the session has no grant to author |
 | `save` | the routes to a stored file, read back out of the `capability` records the running fleet publishes rather than imported, since a fix nobody republished changes nothing for the model. Ends with one pass through a LIVE tools worker over real `tool_call` records: the rest drives the tools in process with an OPERATOR client, which cannot catch a worker missing a grant — exactly how `read_workspace` shipped unable to read |
 | `login` | a person's own credential: who the session is, and that two people on one space cannot read each other |
-| `join` | a session holding NO operator credential: it starts its own thread, reads its own permissions and takes turns, and cannot register a kind, mint a worker, grant itself anything, reach the ops plane or enumerate another conversation. The second half is why the first is safe to allow |
+| `join` | a session holding NO operator credential: it starts its own thread, reads its own permissions and takes turns, and cannot register a kind, mint a worker, grant itself anything, reach the ops plane or enumerate another conversation. The second half is why the first is safe to allow. Plus `--auto-grant`'s two safety properties: a retired mapping is never granted (retire is the ban), and a principal already holding something is left alone, so a deliberate narrowing is not silently restored |
 | `runners` | a second language as a capability: a jail the host cannot start is UNDISCOVERABLE rather than a runtime error, and each tool name reaches its own runtime. The Python half skips itself where `bwrap` is absent |
 | `fleet` | model advertisements: publish, restart without growing the space, withdraw on shutdown, revive |
 | `input` | the REPL's stdin, which has no space and no model in it: the keystroke that went missing between a turn ending and the next prompt (two readers on one exclusive stream), type-ahead during a turn, and Escape versus an arrow key |
