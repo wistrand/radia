@@ -74,7 +74,7 @@ const INFERENCE_GRANTS: Grant[] = [
   // read is conjoined with the CALLER's owner at the call site rather than trusted from the body
   // it was named in (package V). The record NAMES the wraps; they live in an artifact so that
   // destroying them is possible at all (phase 5), which is why the read below comes with it.
-  { kind: "conversation_key", operations: ["read_one"] },
+  { kind: "conversation_key", operations: ["read_one", "query"] },
   { kind: "artifact", operations: ["read_one"] },
 ];
 
@@ -113,7 +113,7 @@ const IMAGE_GRANTS: Grant[] = [
   // under the same key (plan-encryption.md phase 4). Unscoped because the fleet serves everyone, so
   // the read is bounded by the CALLER at the call site rather than trusted from the body it was
   // named in (package V).
-  { kind: "conversation_key", operations: ["read_one"] },
+  { kind: "conversation_key", operations: ["read_one", "query"] },
 ];
 
 // tool-worker: claims tool_call, emits tool_result, and publishes its capability records.
@@ -135,7 +135,7 @@ const TOOLS_GRANTS: Grant[] = [
   // under the same key (plan-encryption.md phase 4). Unscoped because the fleet serves everyone, so
   // the read is bounded by the CALLER at the call site rather than trusted from the body it was
   // named in (package V).
-  { kind: "conversation_key", operations: ["read_one"] },
+  { kind: "conversation_key", operations: ["read_one", "query"] },
 ];
 
 // exec-worker: claims `tool_call{run_javascript}` (and `{run_python}` where the jail probes clean)
@@ -188,7 +188,7 @@ const EXEC_GRANTS: Grant[] = [
   // under the same key (plan-encryption.md phase 4). Unscoped because the fleet serves everyone, so
   // the read is bounded by the CALLER at the call site rather than trusted from the body it was
   // named in (package V).
-  { kind: "conversation_key", operations: ["read_one"] },
+  { kind: "conversation_key", operations: ["read_one", "query"] },
 ];
 
 /**
@@ -243,8 +243,14 @@ const TURN_GRANTS: Grant[] = [
   { kind: "cancel", operations: ["read_one"] }, // checked before every emission
 ];
 
-export function userGrants(scope?: Record<string, unknown>): Grant[] {
+export function userGrants(scope?: Record<string, unknown>, principal?: string): Grant[] {
   const scoped = scope ? { pattern: scope } : {};
+  // WHOSE keys this session may publish. Taken from the caller, never from `sessionOwner()`: that
+  // is process-local state only the REPL sets, so an operator assigning grants from a script or a
+  // suite would bind every person's `person_key` pattern to `agent:chat-user`. The scope's own
+  // `owner` is the fallback, and in conversation-scope mode there is none, which is why the
+  // principal is passed explicitly.
+  const me = principal ?? (typeof scope?.owner === "string" ? scope.owner : undefined);
   return [
     // `read_one` because the assistant reply is awaited BY CALL (`{kind: message, match: {callId}}`):
     // the assistant message IS the inference worker's ack (plan-chat-turn.md).
@@ -291,7 +297,17 @@ export function userGrants(scope?: Record<string, unknown>): Grant[] {
     { kind: "conversation", operations: ["put"] },
     // Its key material, which DOES carry fields a pattern binds (plan-encryption.md phase 2). Both
     // scope modes work here, unlike on the anchor: the record names its conversation and its owner.
-    { kind: "conversation_key", operations: ["put", "read_one"], ...scoped },
+    // `query` as well as `read_one`: enrolling a machine writes a SUCCESSOR, so a reader has to ask
+    // for the NEWEST rather than for any match, and ordering is a query.
+    { kind: "conversation_key", operations: ["put", "read_one", "query"], ...scoped },
+    // This person's own machines: they publish their public halves and read them back to seal a
+    // conversation to all of them. Bound to `{principal: them}` so nobody can publish a key CLAIMING
+    // to be somebody else's — that would put a reader they control into every conversation sealed
+    // afterwards. Reading is scoped the same way: whose machines exist is their business.
+    // Bound to `{principal: them}` so nobody can publish a key CLAIMING to be somebody else's —
+    // that would put a reader they control into every conversation sealed afterwards. Omitted
+    // entirely when the principal is unknown, because an UNBOUND pattern here is exactly that hole.
+    ...(me ? [{ kind: "person_key", operations: ["put", "query"], pattern: { principal: me } }] : []),
     { kind: "capability", operations: ["query"] }, // a registry: the fleet's tools, not session data
     // The fleet's PUBLIC wrapping key. Unscoped and unremarkable: a public key is public, and a
     // session that cannot read it cannot start an encrypted conversation at all.
@@ -363,7 +379,7 @@ export async function assignUserGrants(
   principal: string,
   scope?: Record<string, unknown>,
 ): Promise<void> {
-  for (const g of userGrants(scope)) await admin.grant(principal, g.kind, g.operations, g.pattern);
+  for (const g of userGrants(scope, principal)) await admin.grant(principal, g.kind, g.operations, g.pattern);
 }
 
 /**
@@ -378,7 +394,7 @@ export async function mintSession(
   principal: string,
   scope?: Record<string, unknown>,
 ): Promise<string> {
-  return (await mint(admin, principal, userGrants(scope))).runToken;
+  return (await mint(admin, principal, userGrants(scope, principal))).runToken;
 }
 
 /** Operator action: define an agent with its grants and mint a short-lived run token. */

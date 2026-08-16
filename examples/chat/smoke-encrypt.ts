@@ -14,7 +14,7 @@ import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { assignUserGrants, bootstrap, mintSession, setSessionOwner } from "./space/roles.ts";
 import { Thread } from "./client/thread.ts";
-import { NoConversationKeyError, openBody, openConversation, sealConversation } from "../../extensions/ts/encrypted.ts";
+import { newFleetKeyPair, NoConversationKeyError, openBody, openConversation, sealConversation } from "../../extensions/ts/encrypted.ts";
 import { serveTools } from "../../extensions/ts/tool-worker.ts";
 
 const PORT = 7811;
@@ -61,8 +61,11 @@ const admin = new RadiaClient(url, { token: operatorToken(url) });
 const tmp = await Deno.makeTempDir({ prefix: "radia-encrypt-" });
 Deno.env.set("RADIA_CREDENTIALS", `${tmp}/credentials.json`);
 Deno.env.set("RADIA_DIR", tmp);
-const { CONVERSATION_KEY_KIND, ConversationErasedError, conversationKeys, currentFleetKey, fleetKeyPair, personKey, publishFleetKey, writeConversationKey } =
+const { CONVERSATION_KEY_KIND, ConversationErasedError, conversationKeys, currentFleetKey, fleetKeyPair, eraseConversation, livePersonKeys, personKeyPair, publishFleetKey, publishPersonKey, writeConversationKey } =
   await import("./space/keys.ts");
+/** Alice, reading on one of her machines. */
+const asAlice = (k: { keyId: string; privateKey: string }) =>
+  ({ kind: "person", principal: alice, keyId: k.keyId, privateKey: k.privateKey }) as const;
 
 await registerChatKinds(admin);
 const { inferenceToken, turnToken, toolsToken, routerToken } = await bootstrap(admin, {});
@@ -87,13 +90,20 @@ check("republishing the same key writes nothing new", (await admin.query({ kind:
 
 // ---- a session seals its own conversation ----
 const conv = await aliceC.put({ kind: "conversation", body: {} });
-const aliceKey = personKey(url, alice);
-const { encryption, key: sealedKey } = await sealConversation((await currentFleetKey(aliceC))!, { [alice]: aliceKey });
+// ALICE'S LAPTOP: a key pair whose public half is published, so any session of hers can seal to it.
+const laptop = await personKeyPair(url, alice);
+await publishPersonKey(aliceC, alice, laptop);
+const { encryption, key: sealedKey } = await sealConversation(
+  (await currentFleetKey(aliceC))!,
+  await livePersonKeys(aliceC, alice),
+);
 const written = await writeConversationKey(aliceC, conv.id, alice, encryption);
 check("a session writes its own conversation's key material", true, conv.id);
 
-// Her key is STABLE across sessions, or a later one could not read what this one wrote.
-check("her person key is remembered", [...personKey(url, alice)].join() === [...aliceKey].join());
+// Her key is STABLE across sessions on this machine, or a later one could not read what this wrote.
+check("her machine's key is remembered", (await personKeyPair(url, alice)).keyId === laptop.keyId);
+check("…and only its PUBLIC half is on the space",
+  !JSON.stringify(await aliceC.query({ kind: "person_key" }, 5)).includes(laptop.privateKey.slice(0, 40)));
 
 // ---- she reads it back, which is the whole point of a record over a client-side file ----
 const back = await aliceC.readOne({ kind: CONVERSATION_KEY_KIND, match: { conversationId: conv.id } });
@@ -103,7 +113,7 @@ check(
   (back!.body as { keys?: string }).keys === written.keys && !JSON.stringify(back!.body).includes(encryption.fleet),
 );
 const wraps = JSON.parse(new TextDecoder().decode(await aliceC.getArtifact(written.keys)));
-const hers = await openConversation(wraps, { kind: "person", principal: alice, key: aliceKey });
+const hers = await openConversation(wraps, { kind: "person", principal: alice, keyId: laptop.keyId, privateKey: laptop.privateKey });
 const iv = crypto.getRandomValues(new Uint8Array(12));
 const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, sealedKey.content, new TextEncoder().encode("probe"));
 check(
@@ -122,10 +132,10 @@ check(
   "…and it is scoping that does it, not an absence of grants",
   !(await refused(() => bobC.readOne({ kind: CONVERSATION_KEY_KIND, match: { conversationId: "nothing" } }))),
 );
-const bobKey = personKey(url, bob);
+const bobKey = await personKeyPair(url, bob);
 let opened = false;
 try {
-  await openConversation(wraps, { kind: "person", principal: bob, key: bobKey });
+  await openConversation(wraps, { kind: "person", principal: bob, keyId: bobKey.keyId, privateKey: bobKey.privateKey });
   opened = true;
 } catch (e) {
   check("…and handed the record anyway, his key does not open it", e instanceof NoConversationKeyError, String(e));
@@ -194,7 +204,7 @@ const awaitOne = async (pattern: { kind: string; match?: Record<string, unknown>
 try {
   setSessionOwner(alice);
   const who = { principal: alice, privileged: false };
-  const dek = await conversationKeys(aliceC, { kind: "person", principal: alice, key: aliceKey })(conv.id);
+  const dek = await conversationKeys(aliceC, asAlice(laptop))(conv.id);
   const thread = await Thread.open(aliceC, who, conv.id, dek);
   await thread.append({ role: "user", content: "the secret question" });
 
@@ -325,9 +335,9 @@ const toolWorker = serveTools(new RadiaClient(url, { definitionToken: toolsToken
 
 try {
   const conv2 = await aliceC.put({ kind: "conversation", body: {} });
-  const { encryption: e2 } = await sealConversation((await currentFleetKey(aliceC))!, { [alice]: aliceKey });
+  const { encryption: e2 } = await sealConversation((await currentFleetKey(aliceC))!, await livePersonKeys(aliceC, alice));
   await writeConversationKey(aliceC, conv2.id, alice, e2);
-  const dek2 = await conversationKeys(aliceC, { kind: "person", principal: alice, key: aliceKey })(conv2.id);
+  const dek2 = await conversationKeys(aliceC, asAlice(laptop))(conv2.id);
   const t2 = await Thread.open(aliceC, { principal: alice, privileged: false }, conv2.id, dek2);
   await t2.append({ role: "user", content: "look at the file" });
   // SEED-SHAPED, exactly as the client writes it: no `tier` (the router assigns one) and a
@@ -369,6 +379,41 @@ try {
   await fake2.shutdown();
 }
 
+// ---- a SECOND MACHINE for the same person ----
+//
+// The property this exists to prove: Alice reads her own conversation from a machine that was not
+// involved in creating it, without copying a file. Her desktop publishes its own public key; the
+// laptop, which can already read, extends the conversation to it.
+
+{
+  const desktop = await newFleetKeyPair();
+  await publishPersonKey(aliceC, alice, desktop);
+  check("a second machine publishes its own public key", (await livePersonKeys(aliceC, alice)).length === 2);
+
+  // Not yet: publishing does not retroactively open anything, and this must be true or the wrap
+  // would be doing nothing.
+  const early = await conversationKeys(aliceC, asAlice(desktop))(conv.id).then(() => "opened", (e) => e.constructor.name);
+  check("…which does not by itself open a conversation sealed before it", early === "NoConversationKeyError", String(early));
+
+  // The LAPTOP opens the conversation with enrolment on, which is what a real session does.
+  await conversationKeys(aliceC, asAlice(laptop), alice)(conv.id);
+
+  const nowOnDesktop = await conversationKeys(aliceC, asAlice(desktop))(conv.id).catch((e) => e);
+  check("…and after the laptop next opens it, the desktop can read it too",
+    nowOnDesktop !== undefined && !(nowOnDesktop instanceof Error), String(nowOnDesktop));
+  check("…without re-encrypting anything: the transcript is untouched",
+    (await admin.query({ kind: "message", match: { conversationId: conv.id } }, 20))
+      .every((r) => (r.body as { enc?: string }).enc === "v1"));
+  // Bob publishing a key of his own must not put him in her conversation.
+  const bobDesktop = await newFleetKeyPair();
+  await publishPersonKey(bobC, bob, bobDesktop).catch(() => {});
+  const asBobKey = await conversationKeys(aliceC, { kind: "person", principal: bob, keyId: bobDesktop.keyId, privateKey: bobDesktop.privateKey })(conv.id)
+    .then(() => "opened", (e) => e.constructor.name);
+  check("…and enrolment is per PERSON: bob's machine is not one of hers", asBobKey === "NoConversationKeyError", String(asBobKey));
+  check("…nor can he publish a key claiming to be her",
+    await refused(() => bobC.put({ kind: "person_key", body: { principal: alice, keyId: "forged", publicKey: bobDesktop.publicKey } })));
+}
+
 // ---- phase 5: ERASURE by destroying the key ----
 //
 // The only deletion path a record body has. Bodies are immutable and permanent, which is why the
@@ -380,11 +425,18 @@ try {
   const before = await admin.query({ kind: "message", match: { conversationId: conv.id } }, 20);
   const lineageBefore = await admin.getLineage(before[0].id).catch(() => null);
 
-  await admin.shredArtifact(written.keys, { reason: "erase the conversation" });
-
-  check("the key artifact is gone", await aliceC.getArtifact(written.keys).then(() => false, () => true));
+  // EVERY key artifact, not just the one the conversation started with. Enrolling the desktop wrote
+  // a successor, so there are two, and both hold the same DEK — shredding one would leave the
+  // conversation readable while the erasure looked done.
+  const erased = await eraseConversation(admin, conv.id);
+  check("erasure destroys every key artifact the conversation accumulated", erased.shredded.length === 2,
+    `${erased.shredded.length} shredded`);
+  // The reader-facing check below is NOT sufficient evidence on its own: it reads the newest key
+  // record, so shredding only that one makes the conversation look erased while the DEK survives in
+  // an earlier artifact. Enumerating them is what actually proves it.
+  check("the original key artifact is gone", await aliceC.getArtifact(written.keys).then(() => false, () => true));
   // A FRESH resolver: the point is that nobody can open it any more, not that one cache went cold.
-  const after = await conversationKeys(aliceC, { kind: "person", principal: alice, key: aliceKey })(conv.id)
+  const after = await conversationKeys(aliceC, asAlice(laptop))(conv.id)
     .then(() => null, (e) => e);
   check("…so the conversation is ERASED, named as that rather than as a failure", after instanceof ConversationErasedError, String(after));
   const asFleetNow = await conversationKeys(admin, { kind: "fleet", privateKey: fleet!.privateKey })(conv.id)
@@ -401,6 +453,9 @@ try {
   // shredded artifact appears, so `radia erasures` and `radia doctor` can say this key is gone.
   const erasures = JSON.stringify(await admin.erasures());
   check("…and the erasure is reported on the ops plane", erasures.includes(written.keys), erasures.slice(0, 160));
+  // Converges: erasing an already-erased conversation is success, not a fault.
+  check("…and erasing twice is a no-op rather than an error",
+    await eraseConversation(admin, conv.id).then(() => true, () => false));
 }
 
 console.log(`\n${failures === 0 ? "ok" : `${failures} FAILED`}`);

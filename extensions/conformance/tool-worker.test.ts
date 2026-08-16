@@ -208,7 +208,7 @@ Deno.test("[tool-worker] an undecryptable call is ANSWERED, not run and not nack
 
 Deno.test("[tool-worker] an encrypted call opens for the tool and seals on the way back", async () => {
   await withSpace(async (c) => {
-    const { key } = await sealConversation(await newFleetKeyPair(), {});
+    const { key } = await sealConversation(await newFleetKeyPair(), []);
     const stop = new AbortController();
     let saw: Record<string, unknown> | undefined;
     const serving = serveTools(c, {

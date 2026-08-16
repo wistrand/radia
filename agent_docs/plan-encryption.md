@@ -421,6 +421,41 @@ grants and matching read them. An `enc` badge joins the taint and delegation tag
 nothing: it renders event metadata, never bodies. Graph, flows, lineage and diagnostics keep working
 throughout, because they mine structure.
 
+## A person's machines: the key is a PAIR, and wraps are per KEY
+
+Built after the phases, because the question that exposed it was "does this need a shared
+filesystem". Between the fleet and a session, no: the session needs the fleet's PUBLIC key (a
+record), its own key, and an artifact. But a PERSON was tied to one machine — their key was
+symmetric and lived in one credential file, so a second machine minted a different one and could not
+open its own conversations. Copying a file between machines was the only way, which is the same
+shared-filesystem requirement one layer down.
+
+The fix is the fleet's own shape applied to people: **a key PAIR per machine**, private half local,
+public half published as a `person_key` record bound by grant to `{principal: them}` — so nobody can
+publish a key claiming to be somebody else, which would put a reader they control into every
+conversation sealed afterwards. Wraps are then keyed by KEY ID rather than by principal, because a
+person is several machines. Both wrap algorithms collapse into one (RSA-OAEP); AES-KW is gone.
+
+**Sealing covers every machine already published. ENROLMENT reaches the earlier conversations**:
+when a session opens a conversation and finds one of its own principal's published keys without a
+wrap, it adds one and writes a successor. Only a holder can — adding a wrap needs the DEK — so
+access spreads from a machine that has it, never from one that wants it. Best-effort: a session that
+cannot write still works, and the other machine waits for one that can.
+
+Three consequences worth knowing:
+
+- **The key record is read NEWEST-first.** Enrolment writes a successor, so the unordered read that
+  worked before returned the original wrap set forever and the new machine never appeared. `readOne`
+  answers with the oldest match; this is the trap CLAUDE.md names, hit again.
+- **Erasure must destroy EVERY key artifact**, not the newest. A conversation read on two machines
+  has two, both holding the same DEK. `eraseConversation` enumerates them. The failure mode if it
+  did not is the worst kind: the reader consults the newest record, so the conversation would LOOK
+  erased while the key survived in an earlier artifact — a plant confirmed that the reader-facing
+  check passes in exactly that state, which is why the guard enumerates instead.
+- **Losing every machine is still unrecoverable BY THE PERSON.** The fleet can open the conversation
+  and `withWrapsFor` accepts a fleet holder, so a fleet-side re-enrolment would fix it; that is not
+  built, and it is the one case where the person's half still cannot be recovered.
+
 ## Rejected
 
 - **Whole-body encryption.** `bodyMatchesGrant` matches grant patterns against the body on write,
@@ -439,6 +474,8 @@ throughout, because they mine structure.
 - **Leaving `llm_chunk` to phase 4.** The plan put it there; a day of retained plaintext says
   otherwise.
 - **Fleet KEK only.** See phase 2.
+- **A symmetric per-person key.** Shipped in phase 2 and replaced: it ties a person to one machine,
+  because the sealer would have to hold the opener's secret. See the section above.
 - **Indexing an encrypted field.** It would buy equality matching on ciphertext and nothing else,
   and search was never available: patterns are data.
 - **Calling this end-to-end.** It is not, and saying so would be the most damaging line in the

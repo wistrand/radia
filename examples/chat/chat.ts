@@ -47,7 +47,9 @@ import {
   conversationKeys,
   currentFleetKey,
   fleetKeyPair,
-  personKey,
+  livePersonKeys,
+  personKeyPair,
+  publishPersonKey,
   publishFleetKey,
   writeConversationKey,
 } from "./space/keys.ts";
@@ -257,7 +259,13 @@ async function sealConversationKey(conversationId: string): Promise<void> {
         `Whoever runs the fleet publishes it:  deno task chat -- --serve`,
     );
   }
-  const { encryption } = await sealConversation(fleet, { [owner]: personKey(url, owner) });
+  // To EVERY machine this person reads on, not just this one. That is the whole of the multi-machine
+  // fix at seal time: a key published from a laptop is in the registry, so a conversation started on
+  // a desktop is readable there without anyone copying a file. Earlier conversations are reached by
+  // enrolment instead (`conversationKeys(..., enrolFor)`), which needs a session that can already
+  // open them.
+  const mine = await livePersonKeys(session, owner);
+  const { encryption } = await sealConversation(fleet, mine);
   await writeConversationKey(admin ?? session, conversationId, owner, encryption);
 }
 
@@ -343,6 +351,14 @@ const perms = await session.permissions(who) as { subject: string; privileged: b
 const owner = perms.subject;
 const privileged = perms.privileged;
 setSessionOwner(owner);
+
+// THIS MACHINE's key pair for this person, and its public half published so any session of theirs
+// can seal to it (plan-encryption.md, the multi-machine fix). Done once at startup rather than at
+// first encryption, because publishing has to happen BEFORE a conversation is sealed for the key to
+// be included; content-keyed, so a machine used daily writes one record ever. Best-effort: a
+// session without the grant simply cannot be enrolled, and says so only if it later asks to encrypt.
+const myKey = await personKeyPair(url, owner);
+await publishPersonKey(session, owner, myKey).catch(() => {});
 
 // The person's display name, when their identity enrolled through OIDC: read from the
 // enrollment record (the substrate's answer, agent_docs/plan-oidc.md), never from anything the
@@ -452,7 +468,11 @@ if (admin) {
 // tool only this process can serve has no business in a shared advertisement registry.
 // ONE resolver, shared by the thread and by the tools this session serves itself, so both hold the
 // same cached DEK rather than unwrapping per consumer.
-const sessionKeys = conversationKeys(session, { kind: "person", principal: owner, key: personKey(url, owner) });
+const sessionKeys = conversationKeys(
+  session,
+  { kind: "person", principal: owner, keyId: myKey.keyId, privateKey: myKey.privateKey },
+  owner,
+);
 serveSessionTools(session, shutdown.signal, sessionKeys).catch((e) => notice(dim(`[session tools stopped: ${e}]`)));
 const tools = new ToolSet(session, SESSION_TOOL_SCHEMAS);
 tools.watch(shutdown.signal); // background: keep the tool set live from capability records

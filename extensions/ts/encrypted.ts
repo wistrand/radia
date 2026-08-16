@@ -108,7 +108,13 @@ export interface ConversationEncryption {
   /** Which fleet key that wrap targets, so a rotated fleet reports a MISS rather than a decrypt
    *  failure — the two want different fixes and look identical without this. */
   fleetKeyId: string;
-  /** The DEK wrapped under each person's own key, AES-KW (base64), by principal. */
+  /**
+   * The DEK wrapped to each person KEY (base64), by key id.
+   *
+   * By KEY, not by principal: a person uses more than one machine, each holds its own private half,
+   * and one entry per principal would mean one machine per person. Which keys belong to whom is the
+   * `person_key` registry's business, not this record's — a reader looks up its OWN id.
+   */
   people: Record<string, string>;
 }
 
@@ -129,7 +135,7 @@ export interface ConversationKey {
  *  in a map and asking for someone else's is a bug worth naming rather than a decrypt failure. */
 export type KeyHolder =
   | { kind: "fleet"; privateKey: string; keyId?: string }
-  | { kind: "person"; principal: string; key: Uint8Array };
+  | { kind: "person"; principal: string; keyId: string; privateKey: string };
 
 /** Raised when a holder has no wrap on this conversation, or holds the wrong key for the one it has. */
 export class NoConversationKeyError extends Error {
@@ -157,32 +163,16 @@ const b64 = {
   },
 };
 
-/** Key-encryption keys are 32 raw bytes, whatever they wrap. */
-export const KEY_BYTES = 32;
-
-/** A fresh key-encryption key, for a fleet or a person. */
-export function newKeyBytes(): Uint8Array {
-  return crypto.getRandomValues(new Uint8Array(KEY_BYTES));
-}
-
-export const keyToBase64 = (raw: Uint8Array): string => b64.encode(raw);
-
-/** Parse a stored key, refusing a wrong-sized one HERE rather than at a confusing crypto error. */
-export function keyFromBase64(text: string, what: string): Uint8Array {
-  const raw = b64.decode(text.trim());
-  if (raw.byteLength !== KEY_BYTES) {
-    throw new Error(`${what} must decode to ${KEY_BYTES} bytes, got ${raw.byteLength}`);
-  }
-  return raw;
-}
-
-const asKek = (raw: Uint8Array): Promise<CryptoKey> =>
-  crypto.subtle.importKey("raw", buf(raw), "AES-KW", false, ["wrapKey", "unwrapKey"]);
-
 const RSA: RsaHashedImportParams = { name: "RSA-OAEP", hash: "SHA-256" };
 
-/** The fleet's key pair, in the forms that get stored: SPKI for the public half (published as a
- *  record, so every session can wrap to it) and PKCS#8 for the private half (the fleet's secret). */
+/**
+ * A key pair, in the forms that get stored: SPKI for the public half (published as a record, so
+ * anyone can wrap TO it) and PKCS#8 for the private half (kept by whoever it belongs to).
+ *
+ * The fleet has one, and so does each of a person's machines. Same shape and same reason: the party
+ * that SEALS is not the party that opens, so a symmetric key would mean the sealer holds the
+ * opener's secret. For a person that is what tied their conversations to one machine.
+ */
 export interface FleetKeyPair {
   publicKey: string; // base64 SPKI
   privateKey: string; // base64 PKCS#8
@@ -222,17 +212,14 @@ export async function fleetKeyId(publicKey: string): Promise<string> {
  */
 export async function sealConversation(
   fleet: { publicKey: string; keyId?: string },
-  people: Record<string, Uint8Array>,
+  people: readonly { keyId: string; publicKey: string }[],
   version = ENC_V1,
 ): Promise<{ encryption: ConversationEncryption; key: ConversationKey }> {
   // Extractable, because wrapping requires it. This is the one process that could export the key
   // anyway: it just generated it.
   const dek = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
   const pub = await crypto.subtle.importKey("spki", buf(b64.decode(fleet.publicKey)), RSA, false, ["wrapKey"]);
-  const wrapped: Record<string, string> = {};
-  for (const [principal, key] of Object.entries(people)) {
-    wrapped[principal] = b64.encode(new Uint8Array(await crypto.subtle.wrapKey("raw", dek, await asKek(key), "AES-KW")));
-  }
+  const wrapped: Record<string, string> = { ...(await wrapForPeople(dek, people)) };
   return {
     encryption: {
       v: version,
@@ -266,12 +253,18 @@ export async function openConversation(
   holder: KeyHolder,
 ): Promise<ConversationKey> {
   if (holder.kind === "person") {
-    const wrapped = encryption.people?.[holder.principal];
-    if (!wrapped) throw new NoConversationKeyError(`this conversation carries no key wrapped for ${holder.principal}`);
+    const wrapped = encryption.people?.[holder.keyId];
+    if (!wrapped) {
+      // By KEY, so this is "this machine was not among the readers when it was sealed" rather than
+      // "not for you". A session that can open the conversation elsewhere can add a wrap for it.
+      throw new NoConversationKeyError(
+        `this conversation carries no key wrapped for ${holder.principal}'s key ${holder.keyId}`,
+      );
+    }
     try {
-      const kek = await asKek(holder.key);
+      const priv = await crypto.subtle.importKey("pkcs8", buf(b64.decode(holder.privateKey)), RSA, false, ["unwrapKey"]);
       return await bothHandles((alg, usages) =>
-        crypto.subtle.unwrapKey("raw", buf(b64.decode(wrapped)), kek, "AES-KW", alg, false, usages)
+        crypto.subtle.unwrapKey("raw", buf(b64.decode(wrapped)), priv, RSA, alg, false, usages)
       );
     } catch {
       throw new NoConversationKeyError(`the key held for ${holder.principal} does not open this conversation`);
@@ -292,6 +285,60 @@ export async function openConversation(
   } catch {
     throw new NoConversationKeyError("the fleet's key does not open this conversation");
   }
+}
+
+/** Wrap a DEK to each of a person's published public keys, by key id. */
+async function wrapForPeople(
+  dek: CryptoKey,
+  people: readonly { keyId: string; publicKey: string }[],
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const p of people) {
+    const pub = await crypto.subtle.importKey("spki", buf(b64.decode(p.publicKey)), RSA, false, ["wrapKey"]);
+    out[p.keyId] = b64.encode(new Uint8Array(await crypto.subtle.wrapKey("raw", dek, pub, RSA)));
+  }
+  return out;
+}
+
+/**
+ * The same key material, with wraps added for keys that had none.
+ *
+ * This is how a person's SECOND machine reaches a conversation sealed before it existed: whoever
+ * can already open the thread re-wraps the DEK to the newly published key. It needs the DEK, so
+ * only a holder can do it — the wraps cannot be added by someone who cannot read the conversation.
+ *
+ * Returns the input unchanged when nothing is missing, so a caller can use identity to decide
+ * whether a write is needed at all.
+ */
+export async function withWrapsFor(
+  encryption: ConversationEncryption,
+  holder: KeyHolder,
+  people: readonly { keyId: string; publicKey: string }[],
+): Promise<ConversationEncryption> {
+  const missing = people.filter((p) => !encryption.people?.[p.keyId]);
+  if (missing.length === 0) return encryption;
+  // A dedicated EXTRACTABLE unwrap, done here and nowhere else. The handles `openConversation`
+  // hands out are deliberately not extractable, and wrapping a key requires that it is — so rather
+  // than weaken every reader for the sake of this one path, it re-opens the DEK from the holder's
+  // own wrap. Same authority as reading: only someone who can already open the conversation can
+  // extend it to another key.
+  const dek = await unwrapExtractable(encryption, holder);
+  return { ...encryption, people: { ...encryption.people, ...(await wrapForPeople(dek, missing)) } };
+}
+
+async function unwrapExtractable(encryption: ConversationEncryption, holder: KeyHolder): Promise<CryptoKey> {
+  const wrapped = holder.kind === "fleet" ? encryption.fleet : encryption.people?.[holder.keyId];
+  if (!wrapped) throw new NoConversationKeyError("this conversation carries no key this holder can open");
+  const priv = await crypto.subtle.importKey("pkcs8", buf(b64.decode(holder.privateKey)), RSA, false, ["unwrapKey"]);
+  return await crypto.subtle.unwrapKey(
+    "raw",
+    buf(b64.decode(wrapped)),
+    priv,
+    RSA,
+    { name: "AES-GCM" },
+    true,
+    ["encrypt", "decrypt"],
+  );
 }
 
 /** Unwrap the same DEK twice, once per algorithm. Web Crypto binds a key to one algorithm, and this

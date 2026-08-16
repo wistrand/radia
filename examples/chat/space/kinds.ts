@@ -53,6 +53,14 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     claimable: false,
   });
   await client.registerKind({ kind: "conversation", indexedPaths: [], claimable: false });
+  // A person's PUBLIC keys, one per machine they read on. Public by nature, and what makes a
+  // conversation readable from more than one place: a session seals to every live key here, so a
+  // second machine is reachable without anyone copying a file.
+  await client.registerKind({
+    kind: "person_key",
+    indexedPaths: [{ path: "principal", type: "keyword" }, { path: "keyId", type: "keyword" }],
+    claimable: false,
+  });
   // A conversation's wrapped DEKs (plan-encryption.md phase 2), as their OWN record rather than a
   // field on the anchor the plan proposed. The anchor's only identifier is its record id, and a
   // session cannot fetch by id — get-by-id is the ops plane, and every public read is a pattern

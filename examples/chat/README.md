@@ -959,8 +959,14 @@ directory everything else defaults into).
 (No tier setting: the router dispatches, escalation promotes. No role setting either: the session is
 whoever `RADIA_CHAT_TOKEN` belongs to.)
 
+**Your conversations follow you between machines.** Each machine holds its own key PAIR and
+publishes the public half as a `person_key` record; a conversation is sealed to every machine you
+have published, and one opened on a machine that can already read it is extended to the others. No
+file is ever copied. Losing every machine at once is the one case the fleet cannot hand back to you.
+
 **Erasing an encrypted conversation** destroys its key: `radia shred <the conversation_key
-artifact>`. Its bodies become permanently unreadable — by the owner and by the fleet alike — while
+artifact>` — every one of them, since enrolling a machine writes a successor and each holds the same
+key (`eraseConversation` in `space/keys.ts` enumerates them). Its bodies become permanently unreadable — by the owner and by the fleet alike — while
 every record, its lineage and the event chain survive, which is the difference between an erasure
 and a permission change.
 

@@ -23,15 +23,13 @@ import { RadiaClientError, readRegistry } from "../../../sdk/ts/client.ts";
 import {
   type ConversationEncryption,
   type ConversationKey,
+  withWrapsFor,
   encryptionOf,
   type FleetKeyPair,
   fleetKeyId,
-  keyFromBase64,
   type KeyHolder,
   KeyRing,
-  keyToBase64,
   newFleetKeyPair,
-  newKeyBytes,
 } from "../../../extensions/ts/encrypted.ts";
 import { saveContentKey, storedContentKey } from "../../../src/credentials.ts";
 
@@ -131,20 +129,63 @@ export async function currentFleetKey(
   return live ? { keyId: (live.body as Body).keyId, publicKey: (live.body as Body).publicKey } : undefined;
 }
 
-/** This person's own key for this space, generated and stored on first use. */
-export function personKey(url: string, principal: string): Uint8Array {
+/** The kind a person's PUBLIC keys are published under, one per machine. A registry: latest wins
+ *  per key id, and a retired entry is a machine that no longer reads. */
+export const PERSON_KEY_KIND = "person_key";
+
+/**
+ * This machine's key PAIR for this person, generated and stored on first use.
+ *
+ * A pair rather than a secret, and that is what lets a person use more than one machine. With a
+ * symmetric key the sealer had to hold the opener's secret, so a conversation could only ever be
+ * read where it was created; with a pair, any session can wrap TO a machine it will never be.
+ * The private half never leaves this file.
+ */
+export function personKeyPair(url: string, principal: string): FleetKeyPair | Promise<FleetKeyPair> {
   const stored = storedContentKey(url, principal);
-  if (stored) return keyFromBase64(stored, "the stored content key");
-  const key = newKeyBytes();
-  const saved = saveContentKey(url, principal, keyToBase64(key));
-  if (!saved.ok) {
-    // Not fatal, and deliberately not silent. The conversation is still readable through the fleet
-    // wrap, so the session works; what is lost is the property that made the second wrap worth
-    // having, and only saying so at the moment it happens makes that visible.
-    console.error(`warning: could not store your conversation key in ${saved.path}: ${saved.error}`);
-    console.error(`  This session's conversations will be readable by the fleet but not by a later session of yours.`);
-  }
-  return key;
+  if (stored) return JSON.parse(atob(stored)) as FleetKeyPair;
+  return newFleetKeyPair().then((pair) => {
+    const saved = saveContentKey(url, principal, btoa(JSON.stringify(pair)));
+    if (!saved.ok) {
+      // Not fatal, and deliberately not silent. The conversation stays readable through the fleet
+      // wrap, so the session works; what is lost is that this machine will mint a NEW key next
+      // time and lose access to everything sealed for this one.
+      console.error(`warning: could not store your conversation key in ${saved.path}: ${saved.error}`);
+      console.error(`  This machine will not be able to reopen what it writes now.`);
+    }
+    return pair;
+  });
+}
+
+/** Publish this machine's PUBLIC half, so any session of this person can seal to it. Content-keyed,
+ *  so a machine that runs daily writes one record ever. */
+export async function publishPersonKey(c: RadiaClient, principal: string, pair: FleetKeyPair): Promise<void> {
+  await c.put(
+    { kind: PERSON_KEY_KIND, body: { principal, keyId: pair.keyId, publicKey: pair.publicKey } },
+    `person-key:${principal}:${pair.keyId}`,
+  );
+}
+
+/**
+ * Every machine this person can still read on, newest wins per key id, tombstones dropped.
+ *
+ * Through `readRegistry`, never a bounded query: a page that missed a key would seal a conversation
+ * the person cannot open on that machine, and they would find out later and elsewhere.
+ */
+export async function livePersonKeys(
+  c: RadiaClient,
+  principal: string,
+): Promise<{ keyId: string; publicKey: string }[]> {
+  type Body = { principal: string; keyId: string; publicKey: string; retired?: boolean };
+  const view = await readRegistry<Body>(
+    (limit, after) => c.query({ kind: PERSON_KEY_KIND, match: { principal } }, limit, { after }),
+    (b) => b.keyId,
+  );
+  if (!view.complete) throw new Error(`could not read ${principal}'s key registry completely; refusing to seal`);
+  return [...view.entries.values()].map((r) => ({
+    keyId: (r.body as Body).keyId,
+    publicKey: (r.body as Body).publicKey,
+  }));
 }
 
 /** Re-derive a key id from a stored public half, for callers that hold one without its id. */
@@ -167,10 +208,18 @@ export const idOf = fleetKeyId;
 export function conversationKeys(
   c: RadiaClient,
   holder: KeyHolder,
+  /** When set, a successful open also ENROLS any of this person's published keys that had no wrap
+   *  (see `enrolMissingKeys`). Sessions pass it; workers do not — a fleet worker re-wrapping on
+   *  every claim would write a record per turn for no one's benefit. */
+  enrolFor?: string,
 ): (conversationId: string, owner?: string) => Promise<ConversationKey | undefined> {
   const ring = new KeyRing(holder);
+  const enrolled = new Set<string>();
   return async (conversationId, owner) => {
-    const rec = await c.readOne({ kind: CONVERSATION_KEY_KIND, match: { conversationId } });
+    // NEWEST, and that is not a detail. Enrolling another machine writes a SUCCESSOR key record, so
+    // an unordered read — which returns the oldest — would keep handing back the original wrap set
+    // and the newly enrolled machine would never appear. Latest wins, like every registry here.
+    const rec = (await c.query({ kind: CONVERSATION_KEY_KIND, match: { conversationId } }, 1, { dir: "desc" }))[0];
     if (!rec) return undefined;
     const body = rec.body as { owner?: string; keys?: string };
     if (owner !== undefined && body.owner !== owner) {
@@ -189,8 +238,74 @@ export function conversationKeys(
     }
     const encryption = encryptionOf(JSON.parse(new TextDecoder().decode(raw)));
     if (!encryption) throw new Error(`conversation ${conversationId}'s key artifact carries no key material`);
-    return await ring.dek(conversationId, encryption);
+    const dek = await ring.dek(conversationId, encryption);
+    if (enrolFor && !enrolled.has(conversationId)) {
+      enrolled.add(conversationId);
+      await enrolMissingKeys(c, conversationId, enrolFor, encryption, holder);
+    }
+    return dek;
   };
+}
+
+/**
+ * Give this person's other machines a wrap on a conversation this one can already open.
+ *
+ * The second half of the multi-machine fix. Publishing a public key lets every LATER conversation
+ * be sealed to it; this is what reaches the earlier ones. Only a holder can do it, because adding a
+ * wrap needs the DEK — so access spreads from a machine that has it, never from one that wants it.
+ *
+ * Best-effort by design: a session that cannot write a key record still WORKS, it just leaves the
+ * other machine waiting for the next session that can. Failing the open over it would trade a
+ * working conversation for a convenience.
+ */
+async function enrolMissingKeys(
+  c: RadiaClient,
+  conversationId: string,
+  principal: string,
+  encryption: ConversationEncryption,
+  holder: KeyHolder,
+): Promise<void> {
+  try {
+    const keys = await livePersonKeys(c, principal);
+    const grown = await withWrapsFor(encryption, holder, keys);
+    if (grown === encryption) return; // identity means nothing was missing
+    await writeConversationKey(c, conversationId, principal, grown);
+  } catch { /* the other machine waits for a session that can write */ }
+}
+
+/**
+ * Erase a conversation: destroy EVERY artifact holding its key.
+ *
+ * Every one, because enrolling a machine writes a successor rather than editing the original — a
+ * record is immutable — so a conversation read on two machines has two artifacts and both hold the
+ * same DEK. Shredding only the newest leaves the key alive in the one before it, and the erasure
+ * would look done while the conversation stayed readable.
+ *
+ * Operator work: shredding needs that or the `purge` ops power. Returns what it destroyed, so a
+ * caller can report it rather than assume.
+ */
+export async function eraseConversation(
+  admin: RadiaClient,
+  conversationId: string,
+): Promise<{ shredded: string[] }> {
+  const records = await readRegistry<{ keys?: string }>(
+    (limit, after) => admin.query({ kind: CONVERSATION_KEY_KIND, match: { conversationId } }, limit, { after }),
+    (_b, r) => r.id, // every version, not the newest: each names an artifact that must go
+  );
+  if (!records.complete) {
+    throw new Error(`could not enumerate every key record for ${conversationId}; refusing a partial erasure`);
+  }
+  const shredded: string[] = [];
+  for (const rec of records.entries.values()) {
+    const id = (rec.body as { keys?: string }).keys;
+    if (!id || shredded.includes(id)) continue;
+    // Already-shredded is success, not a failure: erasing twice must converge rather than throw.
+    await admin.shredArtifact(id, { reason: `erase conversation ${conversationId}` }).catch((e) => {
+      if (!(e instanceof RadiaClientError && e.code === "erased")) throw e;
+    });
+    shredded.push(id);
+  }
+  return { shredded };
 }
 
 /** Raised when a conversation's key artifact has been shredded. Its bodies are ciphertext nobody
@@ -221,11 +336,20 @@ export async function writeConversationKey(
     mediaType: "application/json",
     filename: `conversation-key-${conversationId}.json`,
     meta: { conversationId, owner },
-    idempotencyKey: `conversation-key-bytes:${conversationId}`,
+    // Keyed by the SET OF READERS, for the same reason the record below is: a key naming only the
+    // conversation would replay the first artifact when a machine is enrolled, so the write would
+    // report success and change nothing. Sorted, so the key does not depend on map order.
+    idempotencyKey: `conversation-key-bytes:${conversationId}:${
+      [encryption.fleetKeyId, ...Object.keys(encryption.people).sort()].join(",")
+    }`,
   });
+  // Keyed by the WRAP SET, not by the conversation. Enrolling another machine writes a successor
+  // (latest wins), and a key naming only the conversation would dedupe that successor away — the
+  // second machine would publish its key, be told the write succeeded, and still not be able to
+  // read. Re-running with an unchanged set is still a no-op, which is what the key is for.
   const rec = await c.put(
     { kind: CONVERSATION_KEY_KIND, body: { conversationId, owner, v: encryption.v, keys: art.id } },
-    `conversation-key:${conversationId}`,
+    `conversation-key:${conversationId}:${art.digest}`,
   );
   return { record: rec.id, keys: art.id };
 }

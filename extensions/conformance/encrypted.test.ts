@@ -31,15 +31,20 @@ import {
   fleetKeyId,
   KeyRing,
   newFleetKeyPair,
-  newKeyBytes,
   NoConversationKeyError,
   openConversation,
   sealConversation,
+  withWrapsFor,
 } from "../ts/encrypted.ts";
 import { contextForTest } from "../ts/inference.ts";
 
 const PORT = 7841;
 const url = `http://127.0.0.1:${PORT}`;
+
+/** A person holder from a key pair. Their machines are addressed by KEY ID, so the principal is
+ *  only there to name whose machine it is when something is refused. */
+const asPerson = (principal: string, k: { keyId: string; privateKey: string }) =>
+  ({ kind: "person", principal, keyId: k.keyId, privateKey: k.privateKey }) as const;
 
 const row = (index: number, role: string, content: string, enc?: string): ThreadRow =>
   ({ index, role, content, ...(enc ? { enc } : {}) }) as ThreadRow;
@@ -199,34 +204,37 @@ async function sameKey(sealed: ConversationKey, opened: ConversationKey): Promis
 
 Deno.test("[encrypted] a person opens their own conversation, and only their own", async () => {
   const fleet = await newFleetKeyPair();
-  const alice = newKeyBytes();
-  const bob = newKeyBytes();
+  const alice = await newFleetKeyPair();
+  const bob = await newFleetKeyPair();
 
-  const hers = await sealConversation(fleet, { "human:alice": alice });
-  const his = await sealConversation(fleet, { "human:bob": bob });
+  const hers = await sealConversation(fleet, [alice]);
+  const his = await sealConversation(fleet, [bob]);
 
-  const opened = await openConversation(hers.encryption, { kind: "person", principal: "human:alice", key: alice });
+  const opened = await openConversation(hers.encryption, asPerson("human:alice", alice));
   assert(await sameKey(hers.key, opened), "her own thread opens");
 
   // HANDED THE RECORD, which is the case worth pinning: grants stop her fetching his, and this is
   // what is left if one ever reaches her anyway.
+  // Her key id is not among his readers, so this is "no wrap for this key" rather than a decrypt
+  // failure — and either way she does not get in.
   await assertRejects(
-    () => openConversation(his.encryption, { kind: "person", principal: "human:bob", key: alice }),
-    NoConversationKeyError,
-    "does not open",
-  );
-  await assertRejects(
-    () => openConversation(his.encryption, { kind: "person", principal: "human:alice", key: alice }),
+    () => openConversation(his.encryption, asPerson("human:alice", alice)),
     NoConversationKeyError,
     "no key wrapped for",
+  );
+  // …and a forged holder that names HIS key id with HER private half fails at the crypto.
+  await assertRejects(
+    () => openConversation(his.encryption, { kind: "person", principal: "human:alice", keyId: bob.keyId, privateKey: alice.privateKey }),
+    NoConversationKeyError,
+    "does not open",
   );
 });
 
 Deno.test("[encrypted] the fleet opens both, and a session cannot wrap ITSELF into the fleet's place", async () => {
   const fleet = await newFleetKeyPair();
-  const alice = newKeyBytes(), bob = newKeyBytes();
-  const hers = await sealConversation(fleet, { "human:alice": alice });
-  const his = await sealConversation(fleet, { "human:bob": bob });
+  const alice = await newFleetKeyPair(), bob = await newFleetKeyPair();
+  const hers = await sealConversation(fleet, [alice]);
+  const his = await sealConversation(fleet, [bob]);
 
   for (const [conv, sealed] of [[hers, "alice"], [his, "bob"]] as const) {
     const dek = await openConversation(conv.encryption, { kind: "fleet", privateKey: fleet.privateKey });
@@ -244,14 +252,13 @@ Deno.test("[encrypted] the fleet opens both, and a session cannot wrap ITSELF in
 
 Deno.test("[encrypted] rotating a person's key leaves the fleet wrap intact", async () => {
   const fleet = await newFleetKeyPair();
-  const before = newKeyBytes();
-  const conv = await sealConversation(fleet, { "human:alice": before });
+  const before = await newFleetKeyPair();
+  const conv = await sealConversation(fleet, [before]);
 
-  const after = newKeyBytes(); // she rotates; the record is untouched
+  const after = await newFleetKeyPair(); // she rotates; the record is untouched
   await assertRejects(
-    () => openConversation(conv.encryption, { kind: "person", principal: "human:alice", key: after }),
+    () => openConversation(conv.encryption, asPerson("human:alice", after)),
     NoConversationKeyError,
-    "does not open",
   );
   // The point of the second wrap: the conversation is not lost, it is merely no longer hers to open.
   const dek = await openConversation(conv.encryption, { kind: "fleet", privateKey: fleet.privateKey });
@@ -260,7 +267,7 @@ Deno.test("[encrypted] rotating a person's key leaves the fleet wrap intact", as
 
 Deno.test("[encrypted] a rotated FLEET key is named as a rotation, not as a decrypt failure", async () => {
   const old = await newFleetKeyPair();
-  const conv = await sealConversation(old, { "human:alice": newKeyBytes() });
+  const conv = await sealConversation(old, [await newFleetKeyPair()]);
   const now = await newFleetKeyPair();
 
   const e = await openConversation(conv.encryption, { kind: "fleet", privateKey: now.privateKey, keyId: now.keyId })
@@ -273,7 +280,7 @@ Deno.test("[encrypted] a rotated FLEET key is named as a rotation, not as a decr
 
 Deno.test("[encrypted] key material reads back off a record body, and a half-written one reads as none", async () => {
   const fleet = await newFleetKeyPair();
-  const { encryption } = await sealConversation(fleet, { "human:alice": newKeyBytes() });
+  const { encryption } = await sealConversation(fleet, [await newFleetKeyPair()]);
   // The shape the key record stores: the block flattened beside its routing fields.
   const body = { conversationId: "conv-1", owner: "human:alice", ...encryption };
   assertEquals(encryptionOf(body)?.fleet, encryption.fleet);
@@ -286,9 +293,9 @@ Deno.test("[encrypted] key material reads back off a record body, and a half-wri
 
 Deno.test("[encrypted] a KeyRing unwraps once per conversation and forgets a failure", async () => {
   const fleet = await newFleetKeyPair();
-  const alice = newKeyBytes();
-  const a = await sealConversation(fleet, { "human:alice": alice });
-  const ring = new KeyRing({ kind: "person", principal: "human:alice", key: alice });
+  const alice = await newFleetKeyPair();
+  const a = await sealConversation(fleet, [alice]);
+  const ring = new KeyRing(asPerson("human:alice", alice));
 
   const [x, y] = await Promise.all([ring.dek("conv-a", a.encryption), ring.dek("conv-a", a.encryption)]);
   assertEquals(x, y, "concurrent claims on one conversation unwrap once");
@@ -296,9 +303,9 @@ Deno.test("[encrypted] a KeyRing unwraps once per conversation and forgets a fai
 
   // A rejection is evicted rather than cached: a holder that was briefly wrong must not have that
   // remembered as this conversation's answer.
-  const other = await sealConversation(fleet, { "human:bob": newKeyBytes() });
+  const other = await sealConversation(fleet, [await newFleetKeyPair()]);
   await assertRejects(() => ring.dek("conv-b", other.encryption), NoConversationKeyError);
-  const fixed = await sealConversation(fleet, { "human:alice": alice });
+  const fixed = await sealConversation(fleet, [alice]);
   assert(await sameKey(fixed.key, await ring.dek("conv-b", fixed.encryption)));
 });
 
@@ -309,7 +316,7 @@ Deno.test("[encrypted] a KeyRing unwraps once per conversation and forgets a fai
 // looks like it works, and chunks are retained for a day.
 
 const conversationKey = async (): Promise<ConversationKey> =>
-  (await sealConversation(await newFleetKeyPair(), { "human:alice": newKeyBytes() })).key;
+  (await sealConversation(await newFleetKeyPair(), [await newFleetKeyPair()])).key;
 
 Deno.test("[encrypted] a sealed body round-trips, and the marker is what a reader keys on", async () => {
   const key = await conversationKey();
@@ -480,4 +487,68 @@ Deno.test("[encrypted] a check keeps its verdict clear and its observations seal
   const opened = await openBody(sealed, "check", key);
   assertEquals(opened.stdout, "the actual output");
   assertEquals(opened.expected, { stdout_equals: "the secret" });
+});
+
+// ---- a person's SECOND machine ----
+//
+// The wrap is per KEY, not per principal, and that is what unties a conversation from the machine
+// it was created on. A symmetric person key could not do this: the sealer would have needed the
+// opener's secret, so only the machine holding it could ever read.
+
+Deno.test("[encrypted] a conversation seals to every machine a person has published", async () => {
+  const fleet = await newFleetKeyPair();
+  const laptop = await newFleetKeyPair(), desktop = await newFleetKeyPair();
+  const conv = await sealConversation(fleet, [laptop, desktop]);
+
+  for (const [name, k] of [["laptop", laptop], ["desktop", desktop]] as const) {
+    assert(await sameKey(conv.key, await openConversation(conv.encryption, asPerson("human:alice", k))), name);
+  }
+  // A machine that was not published when it was sealed is not a reader, and says which key.
+  const phone = await newFleetKeyPair();
+  const e = await openConversation(conv.encryption, asPerson("human:alice", phone)).then(() => null, (x) => x);
+  assert(e instanceof NoConversationKeyError);
+  assert(e.message.includes(phone.keyId), "names the KEY, since the person may hold several");
+});
+
+Deno.test("[encrypted] enrolling a new machine reaches conversations sealed before it existed", async () => {
+  const fleet = await newFleetKeyPair();
+  const laptop = await newFleetKeyPair();
+  const conv = await sealConversation(fleet, [laptop]);
+  const desktop = await newFleetKeyPair();
+
+  // Nothing yet: publishing a key does not retroactively open anything.
+  await assertRejects(() => openConversation(conv.encryption, asPerson("human:alice", desktop)), NoConversationKeyError);
+
+  // The laptop, which CAN read, extends the conversation to the desktop. Only a holder can: adding
+  // a wrap needs the DEK, so access spreads from a machine that has it, never from one that wants it.
+  const grown = await withWrapsFor(conv.encryption, asPerson("human:alice", laptop), [laptop, desktop]);
+  assert(await sameKey(conv.key, await openConversation(grown, asPerson("human:alice", desktop))));
+  assert(await sameKey(conv.key, await openConversation(grown, asPerson("human:alice", laptop))), "and the laptop still reads");
+
+  // Nothing was re-encrypted: the same DEK, one more wrap. The old wrap is byte-identical, so the
+  // records the conversation already holds are untouched.
+  assertEquals(grown.people[laptop.keyId], conv.encryption.people[laptop.keyId]);
+  assertEquals(grown.fleet, conv.encryption.fleet);
+
+  // Idempotent, and IDENTITY is the signal: a caller uses it to skip the write entirely.
+  assertEquals(await withWrapsFor(grown, asPerson("human:alice", laptop), [laptop, desktop]), grown);
+
+  // The FLEET can enrol too, which is what makes recovery possible when every machine is gone.
+  const phone = await newFleetKeyPair();
+  const byFleet = await withWrapsFor(grown, { kind: "fleet", privateKey: fleet.privateKey }, [phone]);
+  assert(await sameKey(conv.key, await openConversation(byFleet, asPerson("human:alice", phone))));
+});
+
+Deno.test("[encrypted] a machine that cannot read the conversation cannot enrol itself", async () => {
+  const fleet = await newFleetKeyPair();
+  const laptop = await newFleetKeyPair();
+  const conv = await sealConversation(fleet, [laptop]);
+  const intruder = await newFleetKeyPair();
+
+  // The whole safety of enrolment being a client operation: it needs the DEK, so a holder who
+  // cannot open the conversation cannot add themselves to it.
+  await assertRejects(
+    () => withWrapsFor(conv.encryption, asPerson("human:mallory", intruder), [intruder]),
+    NoConversationKeyError,
+  );
 });
