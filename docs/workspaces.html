@@ -46,6 +46,7 @@
   <a href="#tier">Not part of the runtime</a>
   <a href="#tree">What a tree is</a>
   <a href="#run">Running it</a>
+  <a href="#promote">Promoting it</a>
   <a href="#out">Getting it out</a>
   <a href="#worth">What this buys</a>
 </aside>
@@ -235,6 +236,42 @@ scraper           9        22  t1:07b3e5c918&#8230;  human:alice</code></pre>
       writes into the tree it runs <em>from</em>. That tree is the code, shared between everything
       running the same version and named by its own digest, so a program editing it would change
       what that name refers to while its neighbours were still reading it.
+    </p>
+  </div>
+</section>
+
+<section id="promote">
+  <div class="container">
+    <h2>Promoting it: an agent whose code is a tree</h2>
+    <p>
+      Once code lives in a tree named by its digest, "which code runs in production" stops being a
+      deployment question and becomes an authorization one. A binding record says which tree an
+      agent runs. A generic host reads the binding, materialises exactly that version, runs it in
+      the jail, and claims work as the agent the code belongs to. The code inside gets a channel to
+      propose actions and no credential of its own, so it cannot lie about who it is, and the host
+      stamps what it touched where the code cannot reach.
+    </p>
+    <p>
+      Promotion is then a grant rotation pinned to a digest: the permission that lets production
+      work be claimed carries the digest it applies to, so authorizing the work and authorizing the
+      code are one record.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">what is prod running, answered from the enforcement path</div>
+      <pre class="terminal"><code>$ radia promote t1:07b3e5c918&#8230; --tier prod --pin agent:scraper:take,ack
+$ radia pins agent:scraper --tier prod
+agent:scraper on 'prod': t1:07b3e5c918&#8230;</code></pre>
+    </div>
+
+    <p>
+      The answer comes from the same records that do the refusing, so it cannot disagree with what
+      is actually enforced the way a deploy log can. A binding that names a tree the grant does not
+      pin is refused rather than run. Rolling back is the same verb pointed at the previous digest,
+      and stopping an agent is a record write, so both leave the audit trail everything else does.
+      The founding use case for all of this is model-written code over data it must not exfiltrate,
+      which is why the pieces compose the way they do: the jail bounds what the code can reach, the
+      binding bounds which code runs, and the grant bounds what its output may claim to be.
     </p>
   </div>
 </section>

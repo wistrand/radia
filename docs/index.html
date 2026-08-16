@@ -252,7 +252,9 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
     <p>
       The CLI has no private door into the runtime. Every one of those commands goes through the same
       public API your own code would use, which is a deliberate constraint: if the CLI can do it, so
-      can you.
+      can you. The same is true of every other way in: the TypeScript and Python SDKs, the web
+      console, and an MCP adapter that lets a model you already talk to browse the space, all
+      clients of the same frozen API.
     </p>
 
     <p>Here is that summarizer as a real worker, and this is the whole file.</p>
@@ -296,8 +298,9 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
       </div>
       <div class="card">
         <h3>Authorization</h3>
-        <p>Grants scoped to a kind and a pattern, labels that follow data through the system, and
-        credentials that replace themselves so nobody signs in twice.
+        <p>Grants scoped to a kind and a pattern, labels that follow data through the system,
+        credentials that replace themselves so nobody signs in twice, and sign-in from an identity
+        provider you already run.
         <a href="authorization.html">How it works &#8594;</a></p>
       </div>
       <div class="card">

@@ -53,8 +53,8 @@
   <div class="container">
     <h1>Examples</h1>
     <p class="subtitle">
-      Three of them ship with the source. Two need no API key at all, which means you can watch the
-      whole thing work before deciding whether you believe any of this.
+      They ship with the source, and all but the chat need no API key at all, which means you can
+      watch the whole thing work before deciding whether you believe any of this.
     </p>
   </div>
 </div>
@@ -133,9 +133,9 @@
     <h2>A real agent, with everything as records</h2>
     <p>
       The chat example is a command-line assistant, and it is where this design gets stress-tested.
-      Ten separate processes, each with its own credential and its own operating system permissions.
-      The one that reads files cannot reach the network. The one that runs code holds no credential
-      at all.
+      A fleet of separate processes, with separate credentials and separate operating system
+      permissions. The one that reads files cannot reach the network. The one that runs code holds
+      no credential at all.
     </p>
     <p>
       The program you type into makes no external calls whatsoever. It writes a record saying a
@@ -169,9 +169,19 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
       obeys, and a bare "continue" keeps the tier the last turn ran on, because eight characters of
       text say nothing about how hard the work is.
     </p>
+    <p>
+      A conversation can also be sealed end to end. Start one with <code>--encrypt</code> and the
+      prose of every message, tool argument and tool output is ciphertext to everyone but its owner,
+      while the records still route, because nothing ever matched on prose. The keys live in
+      destroyable payloads, so erasing the conversation means destroying its key, and the records,
+      their lineage and the audit chain all survive the erasure. The design was forced rather than
+      invented: every wrong place to keep the keys, a shared fleet secret, the conversation record
+      itself, an ordinary record body, broke a rule the substrate already had, until the one shape
+      that satisfied them all was left standing.
+    </p>
 
     <div class="callout">
-      <strong>Twenty-three test suites, none of which need a model.</strong> Because a tool call is a
+      <strong>A shelf of test suites, none of which needs a model.</strong> Because a tool call is a
       record and assembling the context is a plain function, the tests drive the real thing with no
       API key. Most bugs in this project have surfaced here first.
     </div>
@@ -184,7 +194,9 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
     <p>
       The analysis example is a web app: sign in, upload a CSV, watch each stage run, follow any
       record into the console. What makes it worth reading is what it does <em>not</em> have — no
-      replay verb, no invalidation pass, no "mark stale" flag.
+      replay verb, no invalidation pass, no "mark stale" flag. The app itself holds no credential
+      either: it relays the browser's own token, so the space applies the signed-in person's grants
+      and the app cannot exceed them or leak what it never held.
     </p>
     <p>
       Work is identified by its content: which dataset, the digest of the input, the digest of the
@@ -197,6 +209,8 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
       <strong>The one thing the substrate cannot decide for you is which work is stale</strong>, and
       that is the whole of <code>planner.ts</code>. Deciding it depends on what you consider an
       input. Everything else — the DAG, the routing, the leases, the audit — is already there.
+      That split is the property to look for in any substrate: the part left to you should be the
+      part only you could know.
     </div>
   </div>
 </section>
@@ -209,9 +223,13 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
       so it can only show you what any other client could ask for.
     </p>
     <p>
-      Feed is a live view of everything happening. Graph draws how records connect: a conversation
-      and its messages, a job and its pieces. Space arranges every record by what it is rather than
-      by what it links to, which is a surprisingly good way to spot a fleet doing something odd. Auth
+      Overview ranks what deserves attention, and every finding links to the records it rests on.
+      Feed is a live view of everything happening. Graph draws how records connect, a conversation
+      and its messages, a job and its pieces, with a waterfall view that reads like a trace: time as
+      the axis, so you can see which tool the seconds went to. Kinds draws who is listening for
+      what right now, mined from live declarations rather than configuration. Space arranges every
+      record by what it is rather than by what it links to, which is a surprisingly good way to spot
+      a fleet doing something odd. Flows renders the recurring shapes with their evidence. Auth
       shows who exists and what they may do.
     </p>
     <p>

@@ -34,11 +34,18 @@ transaction that performed it, and finalized events are sealed into a signed has
 - **run token**: the short-lived half, ~15 minutes, and the one that actually carries authority
 - **taint label**: a closed set (`file`, `net`, `foreign`) that unions along data parents; a grant's allowlist can bar one
 - **delegation context**: the authority chain, derived from the claimed lease and never from data parents
+- **delegated run**: a run minted for a worker acting for a caller; its authority is the intersection
+  of both sides' grants, computed at mint, and it can only ever be smaller than either
+- **ops power**: a named slice of the operator (observe, remediate, sweep, declassify, purge),
+  granted as a record and revocable; writing grants themselves is deliberately never a power
 - **artifact**: content-addressed bytes outside a record; the only thing that can be erased
 - **interest**: a record saying what a run is listening for, so the routing topology is queryable
 - **flow**: a recurring shape of work, mined from lineage rather than declared
 - **workspace**: a multi-file tree as a manifest record plus one artifact per file. An EXTENSION
   convention, not a runtime concept: the runtime has no idea what a file or a path is
+- **binding**: a record naming which workspace digest an agent runs; a generic host runs that code
+  jailed and credential-free under the agent's own identity, and promotion pins the digest a tier's
+  grant applies to, so "what is prod running" is read from the enforcement path
 
 ## Where the source of truth lives
 

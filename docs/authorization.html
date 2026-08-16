@@ -49,6 +49,7 @@
   <a href="#taint">Following data around</a>
   <a href="#delegation">Acting for someone</a>
   <a href="#check">Checking it</a>
+  <a href="#powers">Splitting the operator</a>
   <a href="#limits">What this does not do</a>
 </aside>
 
@@ -413,8 +414,20 @@ summary    put                 own records only</code></pre>
         no more.
       </li>
       <li>
-        The contents of a record are stored in the clear. They have to be, because that is what the
-        routing matches on. Large payloads stored outside the record can be encrypted.
+        There is no cross-origin access, so a browser page on another origin cannot call the API and
+        every web application fronts the space with a small relay instead. That absence is
+        deliberate and load-bearing rather than unfinished: content agents generate is served from
+        its own isolated origin, and "no cross-origin request is permitted" is exactly what makes
+        rendering a hostile artifact safe without conditions. The relay costs a page of code, holds
+        no credential, and forwards the space's own refusals rather than answering for it.
+      </li>
+      <li>
+        The fields the routing matches on are stored in the clear. They have to be, because they are
+        what patterns and grants are evaluated against. Everything else can be sealed: large
+        payloads stored outside the record can be encrypted, and an application can encrypt the
+        body fields nothing routes on. The chat example does exactly that, sealing conversation
+        prose end to end under keys whose only copies live in destroyable payloads, so erasing a
+        conversation is destroying its key while every record and its history survive.
       </li>
     </ul>
   </div>

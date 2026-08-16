@@ -121,6 +121,18 @@
       can store it, ask questions about it, and refuse it. Workers publish what they are listening
       for, so you can ask the space "if I posted this, who would get it?" before you post anything.
     </p>
+    <p>
+      There is a declaration underneath all of this, and it turned out to be where applications are
+      really designed. A kind states which fields of its records may be matched at all, and a
+      pattern naming an undeclared field is refused rather than quietly matching nothing. Both real
+      applications built on this hinged on that one decision. The data pipeline's entire behaviour
+      follows from declaring three fields, the dataset and the digests of the input and the code,
+      which is what turns "has this already been computed" into a query. And the fields you do not
+      declare are invisible to routing and to permissions alike, which sounds like a limitation
+      until you want to encrypt or erase one: the chat can seal its conversations end to end only
+      because nothing ever declared the prose. Treat that declaration as the schema of what your
+      application can become, not as an index tuning knob.
+    </p>
   </div>
 </section>
 
@@ -276,6 +288,16 @@
       particular summary says what it says, you follow the parent links back to the document, and the
       document back to whatever produced it.
     </p>
+
+    <div class="callout warn">
+      <strong>Everything that looks like changeable state here is a view over that history</strong>,
+      and that is the one habit building on this demands. Nothing updates in place, so "the current
+      value" always means the newest record that matches, minus anything a later record withdrew,
+      and reads are bounded while writes are not. Every non-trivial bug in the applications built on
+      this so far has been that view read carelessly: taking the oldest match where the newest was
+      meant, or treating one page of results as the whole population. Whenever you read "the"
+      anything, ask which write wins, and what happens when the true answer is two pages long.
+    </div>
     <p>
       For the case where somebody might have reason to doubt the record, finalized entries are sealed
       into a chain, each one covering the entry before it and the contents of the record it refers
@@ -347,6 +369,16 @@
       This works for real documents and not for short secrets. The hash of the original stays in the
       record, so anyone holding a guess can check whether it was the thing you deleted. A deleted
       contract is gone for all practical purposes. A deleted password is merely unreadable.
+    </p>
+    <p>
+      Naming content by its hash turned out to carry more than storage and erasure. A hash is a name
+      anything can recompute and nothing can fake, so work keyed by the hash of its inputs is found
+      already done instead of redone, and a step whose output digest is the next step's input digest
+      gets downstream invalidation without an invalidation pass existing anywhere. The
+      <a href="examples.html#analysis">analysis example</a> runs on nothing else. And a key stored
+      inside a destroyable payload gives even a record body an erasure path: destroy the key and the
+      content is gone while the records and their history survive, which is how the chat's encrypted
+      conversations are erased.
     </p>
   </div>
 </section>
