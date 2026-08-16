@@ -34,6 +34,7 @@ import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { liveModels } from "../../../extensions/ts/model.ts";
 import { progress } from "../../../extensions/ts/progress.ts";
+import { encMarker } from "../../../extensions/ts/encrypted.ts";
 import { arg, sleep } from "../util.ts";
 import type { ChatMessage } from "../provider/openrouter.ts";
 
@@ -155,7 +156,7 @@ async function currentTurn(
   conversationId: string | undefined,
   owner: string | undefined,
   upToIndex: number,
-): Promise<{ text: string; toolCalls: number; index?: number }> {
+): Promise<{ text: string; toolCalls: number; index?: number; encrypted?: boolean }> {
   let limit = 8;
   for (;;) {
     const rows = (await c.query(
@@ -172,10 +173,16 @@ async function currentTurn(
     )).map((r) => r.body as { index: number; role: string; content?: string | null });
     const at = rows.findIndex((m) => m.role === "user"); // rows are newest-first
     if (at >= 0) {
+      // NEVER the ciphertext. This worker holds no key and must not (phase 0 exists so it does not
+      // have to), so an encrypted row yields no text at all rather than base64 — which would be
+      // scored by `heuristicIndex` as if it were the question, and its length is not the question's.
+      // Empty text is already the "unknown question" input that heuristic is written to handle.
+      const encrypted = encMarker(rows[at]) !== undefined;
       return {
-        text: rows[at].content ?? "",
+        text: encrypted ? "" : rows[at].content ?? "",
         toolCalls: rows.slice(0, at).filter((m) => m.role === "tool").length,
         index: rows[at].index,
+        ...(encrypted ? { encrypted } : {}),
       };
     }
     const atThreadStart = rows.length === 0 || rows[rows.length - 1].index <= 1;
@@ -190,13 +197,16 @@ async function currentTurn(
  *  failure so the caller falls back. The call is `stream:false` (no chunk records for a routing
  *  decision) and carries `model`, which overrides whichever tier-worker picks it up. */
 async function classifyLLM(
-  turn: { text: string; toolCalls: number; index?: number },
+  turn: { text: string; toolCalls: number; index?: number; encrypted?: boolean },
   ref: { conversationId?: string; owner?: string },
   tiers: string[],
   c: RadiaClient,
 ): Promise<string | null> {
   const { text, toolCalls } = turn;
-  if (!text.trim() || tiers.length === 0) return null;
+  // An encrypted turn has no text HERE and is still classifiable: the reference goes to the
+  // inference worker, which holds the fleet key and reads the message itself.
+  if (tiers.length === 0) return null;
+  if (!turn.encrypted && !text.trim()) return null;
   const live = new Set(tiers);
   // The bands are POSITIONAL, so this scales with however many tiers the fleet advertises and still
   // names none of them. It has to: with a fourth tier added, a three-band guide left "the most
@@ -241,6 +251,9 @@ async function classifyLLM(
   // need a get-by-id, which is the ops plane, and would hand this worker a dereference no grant
   // narrows.
   const classifyOf = turn.index === undefined ? undefined : { ...ref, index: turn.index, context };
+  // No reference and nothing readable to inline: fall back to the heuristic rather than send the
+  // classifier an empty prompt and route on its guess about nothing.
+  if (!classifyOf && turn.encrypted) return null;
   const messages: ChatMessage[] | undefined = classifyOf
     ? undefined
     : [{ role: "system", content: system }, { role: "user", content: text + context }];

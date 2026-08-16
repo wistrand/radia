@@ -183,6 +183,32 @@ export function saveObserver(base: string, cred: StoredCredential): { path: stri
   return writeEntry(baseKey(base) + OBSERVER, cred);
 }
 
+// ---- an app's per-person content key ----
+//
+// A slot, not a feature: key material an APP wraps its own payloads with (the chat's per-person
+// conversation wrap, agent_docs/plan-encryption.md). The runtime never reads it and holds no copy;
+// what this file contributes is the one place that already knows the per-user path, creates the
+// directory and sets 0600.
+//
+// Keyed by (base URL, principal) and kept OUT of the `#login` entry on purpose. A login is replaced
+// wholesale on every `radia login` — last login wins — so a key stored inside it would be destroyed
+// by re-authenticating, and the loss is silent: the fleet wrap still opens every conversation, so
+// nothing fails, and the person half quietly stops existing.
+
+const CONTENT_KEY = "#enckey:";
+
+/** An app's content key for this person on this space, if one was stored. */
+export function storedContentKey(base: string, principal: string): string | undefined {
+  const entry = read(credentialsPath())[baseKey(base) + CONTENT_KEY + principal];
+  return entry?.token || undefined;
+}
+
+/** Store (or rotate) it. Rotating leaves every existing wrap under the old key unreadable BY THIS
+ *  PERSON, which is why an app rotates deliberately rather than on a schedule. */
+export function saveContentKey(base: string, principal: string, key: string): { path: string; ok: boolean; error?: string } {
+  return writeEntry(baseKey(base) + CONTENT_KEY + principal, { token: key, mintedAt: new Date().toISOString() });
+}
+
 /** What provisioning needs from the space: structural on purpose, so this file imports no
  *  runtime value from `src/core` and the surfaces that import IT stay clean under the layering
  *  rule. `Space` satisfies it as-is. */

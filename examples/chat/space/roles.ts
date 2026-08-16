@@ -69,6 +69,11 @@ const INFERENCE_GRANTS: Grant[] = [
   { kind: "capability", operations: ["put"] },
   { kind: "message", operations: ["query"] },
   { kind: "progress", operations: ["put"] }, // reports which tier/model is generating
+  // A conversation's wrapped DEK: inference is the reader that must decrypt, since it calls the
+  // provider (plan-encryption.md phase 2). Unscoped because the fleet serves everyone, so the
+  // read is conjoined with the CALLER's owner at the call site rather than trusted from the body
+  // it was named in (package V).
+  { kind: "conversation_key", operations: ["read_one"] },
 ];
 
 // router-worker: claims UNTIERED llm_calls, classifies the turn with a cheap model, and
@@ -267,7 +272,13 @@ export function userGrants(scope?: Record<string, unknown>): Grant[] {
     // would list every one on the space. Starting a thread of your own reveals nothing about
     // anyone else's. Unscoped because a `conversation` record has no field a pattern could bind.
     { kind: "conversation", operations: ["put"] },
+    // Its key material, which DOES carry fields a pattern binds (plan-encryption.md phase 2). Both
+    // scope modes work here, unlike on the anchor: the record names its conversation and its owner.
+    { kind: "conversation_key", operations: ["put", "read_one"], ...scoped },
     { kind: "capability", operations: ["query"] }, // a registry: the fleet's tools, not session data
+    // The fleet's PUBLIC wrapping key. Unscoped and unremarkable: a public key is public, and a
+    // session that cannot read it cannot start an encrypted conversation at all.
+    { kind: "fleet_key", operations: ["query"] },
     // Same category, and the grant `space_kinds` runs on: what kinds EXIST is reference data,
     // and the model is told to discover kinds rather than be taught them (CLAUDE.md, the
     // corollary). Missing, every fresh identity 403'd on its own discovery tool while

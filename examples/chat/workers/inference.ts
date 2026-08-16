@@ -10,6 +10,7 @@ import { ESCALATE, runInferenceWorker } from "../../../extensions/ts/inference.t
 import { publishCapability } from "../../../extensions/ts/capability.ts";
 import { publishModel, retireModel } from "../../../extensions/ts/model.ts";
 import { streamChat } from "../provider/openrouter.ts";
+import { conversationKeys, fleetKeyPair } from "../space/keys.ts";
 import { arg, onStop } from "../util.ts";
 
 const ME = "agent:chat-inference";
@@ -29,6 +30,9 @@ const window = Number(arg("--window") ?? Deno.env.get("RADIA_CHAT_WINDOW") ?? "4
 const concurrency = Number(arg("--concurrency") ?? Deno.env.get("RADIA_CHAT_CONCURRENCY") ?? "4");
 
 const client = new RadiaClient(url, token ? { definitionToken: token } : {});
+// Never CREATED here: `--serve` generates and publishes it, and a worker that minted its own would
+// hold a private half whose public half nobody sealed to.
+const fleet = await fleetKeyPair();
 
 if (tier) {
   const ad = { tier, model, rank };
@@ -48,4 +52,9 @@ await runInferenceWorker(client, {
   concurrency,
   // The one function that speaks to a vendor. Everything else about this worker is Radia work.
   complete: (req, onDelta) => streamChat({ apiKey, ...req }, onDelta),
+  // The fleet's private half, which is why THIS process can answer an encrypted conversation and a
+  // session holding only a public key cannot (plan-encryption.md phase 2). Absent when no fleet key
+  // was ever generated, in which case an encrypted call fails closed at the context read rather
+  // than answering about ciphertext.
+  ...(fleet ? { keys: conversationKeys(client, { kind: "fleet", privateKey: fleet.privateKey, keyId: fleet.keyId }) } : {}),
 });

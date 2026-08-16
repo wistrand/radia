@@ -5,7 +5,7 @@
 // tool runs, how records relate: those are discovered from the substrate or delegated to a worker
 // (CLAUDE.md, "discover, don't hardcode").
 
-import { arg } from "../util.ts";
+import { arg, argOn } from "../util.ts";
 import { resolveToken, storedLogin } from "../../../src/credentials.ts";
 
 /** Same port as `deno task dev` by default, so a console you already have open shows this run. */
@@ -79,6 +79,16 @@ export function operatorToken(): string | undefined {
  */
 export const scopeMode: "identity" | "conversation" =
   (arg("--scope") ?? Deno.env.get("RADIA_CHAT_SCOPE")) === "conversation" ? "conversation" : "identity";
+
+/**
+ * Encrypt this conversation's content (agent_docs/plan-encryption.md).
+ *
+ * Per SESSION, but the unit is the CONVERSATION: the choice is recorded on the `conversation`
+ * record at creation and every later session inherits it. `--encrypt` against an existing
+ * plaintext thread is REFUSED rather than migrated, because `assembleContext` sends the WHOLE
+ * thread to a provider and a half-encrypted one is a payload no model can be given.
+ */
+export const encryptMode: boolean = argOn("--encrypt") || Deno.env.get("RADIA_CHAT_ENCRYPT") === "1";
 
 /** Where a chat-spawned space keeps its data: under the one runtime directory (`RADIA_DIR`, default
  *  `.radia`), beside everything else a space writes. A space with no `--db` is IN-MEMORY, so

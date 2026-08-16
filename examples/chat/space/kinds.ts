@@ -44,7 +44,25 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     ],
     claimable: false,
   });
+  // The fleet's PUBLIC wrapping key, as a registry (plan-encryption.md phase 2). Public by nature,
+  // so every session reads it unscoped; `keyId` is indexed so a reader can name the one it wants
+  // rather than fold the whole registry to answer "is this the key I sealed to".
+  await client.registerKind({
+    kind: "fleet_key",
+    indexedPaths: [{ path: "keyId", type: "keyword" }],
+    claimable: false,
+  });
   await client.registerKind({ kind: "conversation", indexedPaths: [], claimable: false });
+  // A conversation's wrapped DEKs (plan-encryption.md phase 2), as their OWN record rather than a
+  // field on the anchor the plan proposed. The anchor's only identifier is its record id, and a
+  // session cannot fetch by id — get-by-id is the ops plane, and every public read is a pattern
+  // over declared paths. So key material addressed by `conversationId` is the difference between a
+  // key its owner can fetch and one only an operator can.
+  await client.registerKind({
+    kind: "conversation_key",
+    indexedPaths: [{ path: "conversationId", type: "keyword" }, { path: "owner", type: "keyword" }],
+    claimable: false,
+  });
   // The two kinds the turn CHAIN introduces (extensions/ts/turn.ts owns both shapes): a terminus so
   // a client has something to wait for, and Escape as a fact the worker can read. Both carry
   // `turnAt`, because a conversation accumulates one of each per turn and a per-conversation read

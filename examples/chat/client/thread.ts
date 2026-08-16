@@ -10,6 +10,7 @@
 // claim-and-append protocol, which would obscure the thing this example exists to show.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
+import { type ConversationKey, sealBody } from "../../../extensions/ts/encrypted.ts";
 import { sessionOwner } from "../space/roles.ts";
 
 export interface OutgoingMessage {
@@ -23,7 +24,13 @@ export class Thread {
   private nextIndex = 0;
   private startedAt = 0;
 
-  private constructor(private readonly client: RadiaClient, readonly id: string) {}
+  private constructor(
+    private readonly client: RadiaClient,
+    readonly id: string,
+    /** This conversation's DEK, when it is an encrypted one (plan-encryption.md phase 3). Absent for
+     *  a plaintext thread, which is the default and stays byte-for-byte what it always was. */
+    private readonly key?: ConversationKey,
+  ) {}
 
   /**
    * Attach to a conversation record that ALREADY EXISTS.
@@ -32,8 +39,8 @@ export class Thread {
    * grants are scoped to this conversation and a grant is minted with the token. That also means a
    * user-role session no longer needs `conversation: put` at all.
    */
-  static async open(client: RadiaClient, who: Identity, id: string): Promise<Thread> {
-    const thread = new Thread(client, id);
+  static async open(client: RadiaClient, who: Identity, id: string, key?: ConversationKey): Promise<Thread> {
+    const thread = new Thread(client, id, key);
     // The assistant is told its OWN id, not how to use it. Identity is data an agent needs to act
     // on its own behalf (the same category as handing a worker a run token), while the mechanism
     // (which kind, which match, which order) stays in the tool descriptions. Without it the
@@ -57,13 +64,13 @@ export class Thread {
    * months ago. Two system messages in the thread is the lesser problem: the model reads the later
    * one as the standing instructions, and the earlier is honest history.
    */
-  static async resume(client: RadiaClient, id: string, who: Identity): Promise<Thread> {
+  static async resume(client: RadiaClient, id: string, who: Identity, key?: ConversationKey): Promise<Thread> {
     const last = await client.query(
       { kind: "message", match: { conversationId: id }, orderBy: [{ path: "index", dir: "desc" }] },
       1,
     );
     if (last.length === 0) throw new Error(`no conversation ${id} on this space (or no grant to read it)`);
-    const thread = new Thread(client, id);
+    const thread = new Thread(client, id, key);
     thread.nextIndex = Number((last[0].body as { index?: number }).index ?? 0) + 1;
     thread.startedAt = thread.nextIndex;
     await thread.append({
@@ -72,6 +79,12 @@ export class Thread {
         `This conversation was resumed; everything above happened in an earlier session.`,
     });
     return thread;
+  }
+
+  /** This conversation's DEK, or undefined for a plaintext thread. The turn's render loop needs it
+   *  to open what the workers wrote, and it comes from here so one thread has exactly one key. */
+  get dek(): ConversationKey | undefined {
+    return this.key;
   }
 
   /** How many messages precede this session; 0 for a fresh conversation. */
@@ -99,6 +112,7 @@ export class Thread {
   private lastId: string | undefined;
 
   async append(msg: OutgoingMessage, parentIds: string[] = []): Promise<string> {
+    const body = { conversationId: this.id, owner: sessionOwner(), index: this.nextIndex++, ...msg };
     const { id } = await this.client.put({
       kind: "message",
       // `owner` is the identity binding a grant can scope on, and it is stamped even when the
@@ -106,7 +120,10 @@ export class Thread {
       // either posture, so switching RADIA_CHAT_SCOPE does not blind a session to its own history.
       // The runtime enforces it rather than trusting it: under identity scoping the write pattern
       // is `{owner}`, so a session physically cannot stamp another identity here.
-      body: { conversationId: this.id, owner: sessionOwner(), index: this.nextIndex++, ...msg },
+      //
+      // Sealed HERE rather than by the caller: every message this session writes goes through this
+      // one method, so a new call site cannot forget. Unkeyed, so the nonce is random.
+      body: this.key ? await sealBody(body, "message", this.key) : body,
       parentIds: [this.id, ...parentIds],
     });
     this.lastId = id;

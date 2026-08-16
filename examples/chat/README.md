@@ -175,6 +175,7 @@ real assembly, with no API key:
 | `selfgrant` | forbidden → request → human approval → self-scoped reads, on both the ops and coordination planes. The ask BLOCKS on the human's answer and the answer names the scope actually granted, so the whole escalation fits in one turn instead of two. Also pins what `[own]` COSTS: narrowing retires the wider grant, so the prompt has to say which access it removes BEFORE the choice, never recommend the option that removes it, and the removal has to actually happen (as 404, not 403) or the warning is decorative |
 | `inspect` | session isolation (a session reads only its own conversation), the `space_*` TOOLS on a busy space: paging past a wall of another author's events, answering "what may I do" from the enforcement rather than by inference, and the full escalation loop: a grant approved at the wrong scope authorizes nothing, and the prompt has to say so |
 | `scope` | what a scoped session may read under both postures: identity (all its own conversations, including worker-produced results) vs conversation (this thread only) |
+| `encrypt` | conversation keys: the fleet publishes a public half and keeps the private one, a session seals its own thread and reads the key back, and another person is stopped TWICE — by the grant (his read returns empty, not forbidden, which is scoping rather than an absence of grants) and by the wrap if he is handed the record anyway |
 | `iterate` | the code-gen loop as records: attempts that link into a chain, and a verdict the session has no grant to author |
 | `save` | the routes to a stored file, read back out of the `capability` records the running fleet publishes rather than imported, since a fix nobody republished changes nothing for the model. Ends with one pass through a LIVE tools worker over real `tool_call` records: the rest drives the tools in process with an OPERATOR client, which cannot catch a worker missing a grant — exactly how `read_workspace` shipped unable to read |
 | `login` | a person's own credential: who the session is, and that two people on one space cannot read each other |
@@ -950,10 +951,27 @@ enforced from this one value), `RADIA_CHAT_VISION_MAX_BYTES` and `RADIA_CHAT_VIS
 execution budget, default 5000), `RADIA_CHAT_EXEC_DIRS` (read-only roots for executed code;
 unset = no filesystem, and separate from `RADIA_CHAT_DIRS` on purpose), `RADIA_CHAT_DB` and
 `RADIA_CHAT_SCOPE` (below), `RADIA_CHAT_HISTORY` (the prompt's history file; defaults beside the
-credential file, since history follows the person rather than the space), `RADIA_DIR` (the runtime
+credential file, since history follows the person rather than the space), `RADIA_CHAT_ENCRYPT`
+(equivalently `--encrypt`, below), `RADIA_CHAT_FLEET_KEY` (the fleet's key pair, defaulting to
+`<RADIA_DIR>/chat-fleet-key.json`; the launcher passes it to the inference worker through this
+variable, because that worker holds the API key and is spawned with no filesystem access at all), `RADIA_DIR` (the runtime
 directory everything else defaults into).
 (No tier setting: the router dispatches, escalation promotes. No role setting either: the session is
 whoever `RADIA_CHAT_TOKEN` belongs to.)
+
+**`--encrypt` gives a conversation its own key** (agent_docs/plan-encryption.md phase 2). Nothing is
+encrypted yet: what exists is the key layer, so this flag currently buys a `conversation_key` record
+and the refusal that goes with it. The flag is per session and the unit is the CONVERSATION, so the
+choice is fixed at creation and `--encrypt` is only needed to START an encrypted thread: resuming
+one adopts its key with or without the flag, and the banner reports it. The reverse still refuses —
+`--encrypt` on a plaintext thread would write in clear what you asked to have encrypted, and the
+earlier turns cannot be re-sealed. One DEK, wrapped twice: to the fleet's published public key (inference must decrypt to
+call a provider) and under a key of your own kept beside your credential at 0600. The fleet half is
+asymmetric because in join mode YOUR session creates the conversation, and it must wrap for a fleet
+whose secret it must not hold. What that protects: the store, a dump, the console, ops-plane
+readers, and anyone without a key. What it does not: whoever runs the fleet, and metadata — who
+talks to whom, when, how long, which tools ran, and the whole lineage graph stay clear, because that
+is exactly what the substrate routes on.
 
 Honest edges (documented, not hidden): a crashed inference retries and can double-spend
 (at-least-once; the gateway is the real fix); file contents become records and flow to the

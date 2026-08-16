@@ -36,6 +36,7 @@ import {
   PROVIDER_CONCURRENCY,
 } from "./config.ts";
 import type { Bootstrapped } from "../space/roles.ts";
+import type { FleetKeyPair } from "../../../extensions/ts/encrypted.ts";
 import { dim, notice } from "./terminal.ts";
 
 const local = `http://127.0.0.1:${port}`;
@@ -54,8 +55,14 @@ const local = `http://127.0.0.1:${port}`;
  *  printed twice. Only a short leading bracket group is touched. */
 const unlabel = (line: string) => line.replace(/^\[[^\]\n]{1,48}\] /, "");
 
-function spawn(name: string, args: string[]): Deno.ChildProcess {
-  const proc = new Deno.Command("deno", { args: ["run", ...args], stdout: "null", stderr: "piped", stdin: "null" }).spawn();
+function spawn(name: string, args: string[], env?: Record<string, string>): Deno.ChildProcess {
+  const proc = new Deno.Command("deno", {
+    args: ["run", ...args],
+    ...(env ? { env } : {}),
+    stdout: "null",
+    stderr: "piped",
+    stdin: "null",
+  }).spawn();
   (async () => {
     // Read to exhaustion whatever happens: an unread pipe fills and then BLOCKS the worker, which
     // would turn a chatty process into a hung one.
@@ -94,9 +101,16 @@ export const FLEET_PROVIDERS = [
   "agent:chat-inference",
 ];
 
-export function launchFleet(tokens: Bootstrapped): Deno.ChildProcess[] {
+export function launchFleet(tokens: Bootstrapped, fleetKey?: FleetKeyPair): Deno.ChildProcess[] {
   const { inferenceToken, routerToken, toolsToken, imagesToken, execToken, turnToken } = tokens;
   const procs: Deno.ChildProcess[] = [];
+  // The fleet's private half reaches inference through the ENVIRONMENT, not through the file it
+  // lives in. This worker holds the API key and is spawned with no filesystem access at all
+  // (`--allow-net --allow-env` and nothing else), so a read of the key file is a permission it does
+  // not have — and `fleetKeyPair` cannot tell "denied" from "absent", so the failure was silent: the
+  // worker simply served no encrypted conversation. Passing the value keeps its zero-filesystem
+  // property intact. Absent when no key was generated, which is every plaintext-only deployment.
+  const keyEnv = fleetKey ? { RADIA_CHAT_FLEET_KEY: btoa(JSON.stringify(fleetKey)) } : undefined;
 
   // One inference-worker per tier, all the same agent: each claims only `{llm_call, tier}` and
   // serves its model. Rank follows insertion order (cheap → capable) and drives escalation.
@@ -112,7 +126,7 @@ export function launchFleet(tokens: Bootstrapped): Deno.ChildProcess[] {
       "--model", model,
       "--rank", String(rank++),
       "--concurrency", String(PROVIDER_CONCURRENCY),
-    ]));
+    ], keyEnv));
   }
 
   // Router: claims UNTIERED calls, classifies, re-dispatches. Holds no key, because its classifier

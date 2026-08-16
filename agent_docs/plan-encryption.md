@@ -1,7 +1,9 @@
 # Encrypting chat content, opt-in per session
 
-**Status: phases 0 and 1 BUILT (2026-08-16); 2-5 planned.** Nothing is encrypted yet: what exists
-is the classify-by-reference change and the refusal every reader owes a marker it cannot handle.
+**Status: phases 0-3 BUILT (2026-08-16); 4-5 planned.** `message.content` and `llm_chunk.delta` are
+encrypted end to end for a conversation started with `--encrypt`; the remaining fields
+(`tool_call.args`, `tool_result.output`, `check.stdout`, and a tool worker's reply message) are
+still clear, so a thread that ran tools is partly clear.
 Read
 [design-data-model.md](design-data-model.md) (§2, artifacts and the erasure boundary) and
 [plan-delegation.md](plan-delegation.md) (who holds which credential in a shared fleet) first.
@@ -26,9 +28,9 @@ fields, or they hash whatever bytes they are given.
 | reader | needs plaintext | why |
 |---|---|---|
 | inference workers | YES | they call the provider |
-| the client | YES | it renders, and assembles the provider payload (`client/context.ts`) |
-| tool workers | YES, for `args` | a tool runs on its arguments |
-| the router | yes, TODAY | it copies the text into a classify prompt (`workers/router.ts`) |
+| the client | YES | it renders, and its payload assembly lives in `extensions/ts/context.ts` |
+| tool workers | YES, for `args` | a tool runs on its arguments (still clear; phase 4) |
+| the router | **no**, since phase 0 | it names the message instead of copying it, and holds no key |
 | the turn worker | **no** | `TurnMessage` has no `content` field: the control flow runs on `role`, `index`, `tool_calls`, `i`/`of`/`round`/`turnAt` |
 
 The turn worker needing nothing is the load-bearing fact. The component that performs a
@@ -36,13 +38,30 @@ conversation never sees what the conversation says.
 
 ## The unit is the CONVERSATION, even though the flag is per session
 
-A session opts in; the choice is recorded on the `conversation` record at creation and every later
-session inherits it. Always immutable after creation: `--encrypt` against an existing plaintext
-thread is REFUSED, never a migration.
+A session opts in with `--encrypt`; the choice is recorded at creation, as the presence of a
+`conversation_key` record, and every later session INHERITS it. The flag is therefore needed only to
+CREATE an encrypted thread: resuming one adopts its key whether or not the flag is passed, and the
+banner says so, because a resumed session can be encrypted without anyone having asked in that
+session.
+
+The two directions are not symmetric, and only one of them refuses:
+
+- **encrypted thread, no flag: adopt it.** Strictly more protection than was asked for, and the only
+  thing that could work anyway: writing plaintext into it produces the half-encrypted thread that
+  the mechanics below rule out.
+- **plaintext thread, `--encrypt`: REFUSE.** Adopting the thread here would silently write in clear
+  what someone explicitly asked to have encrypted, which is the one direction that turns a promise
+  into a lie. There is no migration: the earlier turns cannot be re-sealed.
+
+An UNVERIFIABLE resume refuses only in that second case: a key record that cannot be READ is not the
+same answer as one that is absent, but refusing every such resume would break plaintext threads on
+any space whose grants predate the `conversation_key` kind. Without the flag it continues in the
+clear and says so; if the thread was encrypted after all, its rows carry the marker and the readers
+refuse them, so the failure stays closed.
 
 The reason is not policy but mechanics. A resumed session has to read what earlier ones wrote, and
-`client/context.ts` assembles the WHOLE thread for the provider, so a half-encrypted thread is one
-the model cannot be given. Per-session-per-record opt-in would produce exactly that.
+`assembleContext` sends the WHOLE thread to the provider, so a half-encrypted thread is one the
+model cannot be given. Per-session-per-record opt-in would produce exactly that.
 
 ## Ordering principle
 
@@ -165,51 +184,144 @@ direct converter call.
 to the tested helper, and reaching them needs a running fleet plus a provider that stamps a marker
 `finished()` does not write. Review, not a test, is what holds them.
 
-## Phase 2: keys, DUAL-WRAPPED
+## Phase 2: keys, DUAL-WRAPPED — BUILT 2026-08-16
 
-Per-conversation DEK, stored wrapped on the `conversation` record (which indexes nothing today, so
-it gains a body field and no indexed path). This is the blob store's own shape lifted to bodies:
-`BlobCipher` and `SealedKey` in `src/storage/crypto.ts`, a KEK loaded beside the database
-(`loadKek`, `--blob-kek`).
+Per-conversation DEK (AES-GCM-256), wrapped twice, because the shared-fleet split
+(plan-scaling.md item 3) forces the second wrap:
 
-**Wrapped twice**, and the second wrap is what the shared-fleet split (plan-scaling.md item 3)
-forces:
-
-- under the FLEET KEK, because inference must decrypt to call a provider;
+- to the FLEET, because inference must decrypt to call a provider;
 - under a PER-PERSON key held beside their credential (`src/credentials.ts`, already `0600`).
 
-Wrapping only under the fleet KEK would mean every joining session needs that KEK to render its own
-messages, so every person would hold the key to every conversation. Their grants still stop them
-FETCHING anyone else's records, so it is not an immediate breach, but it dissolves the
-safe-against-a-dump property for anyone who has ever run a session.
+Fleet-only would mean every joining session needs the fleet's key to render its own messages, so
+every person would hold the key to every conversation. Their grants still stop them FETCHING anyone
+else's records, so it is not an immediate breach; it dissolves the safe-against-a-dump property for
+anyone who has ever run a session.
 
-Workers cache the unwrapped DEK per conversation; it never changes, so this is one read per
-conversation per process.
+`extensions/ts/encrypted.ts` holds the crypto and `KeyRing` (unwrapped DEK cached per conversation,
+one unwrap per process, the promise cached so concurrent claims coalesce and a rejection evicts).
+`examples/chat/space/keys.ts` holds the policy: which env var, which file, which record.
 
-Verify: a session decrypts its own conversation and cannot decrypt another person's even when
-handed the record; the fleet decrypts both; a rotated person-key leaves the fleet wrap intact.
+### Two things the plan got wrong, both found by building it
 
-## Phase 3: one field, end to end
+**The fleet half cannot be a symmetric KEK.** In join mode the SESSION creates the conversation —
+there is no operator in that process — so whoever creates it must wrap the DEK for a fleet whose
+secret they must not hold, and wrapping to a symmetric KEK IS holding it. So the fleet keeps an
+RSA-OAEP key pair, publishes the PUBLIC half as an ordinary `fleet_key` record, and a session wraps
+to it and can never unwrap. `fleetKeyId` (a digest of the public half, computed by both sides from
+what they hold) makes a rotation report itself as a rotation instead of as a decrypt failure; the
+two want different fixes and are otherwise indistinguishable. The person half stays symmetric,
+because there the wrapper and the reader are the same party.
 
-`message.content` only. The smallest thing that proves the whole loop: a session encrypts, the
-inference worker decrypts and answers, the session renders, and a RETRY REPLAYS rather than
-conflicting.
+**Key material cannot live on the `conversation` record.** An anchor's only identifier is its record
+id, and a session cannot fetch by id: get-by-id is the ops plane, and every public read is a pattern
+over declared paths. A key only an operator can reach is no key. So the wraps live in a
+`conversation_key` record addressed by `conversationId`, which a scoped grant binds exactly like
+every other kind in this app.
 
-**Nonce = HKDF(DEK, idempotency key).** Deterministic per logical write, distinct across records.
-This is the resolution of the one trap that would otherwise surface late and look like a substrate
-bug: `Space.idem` hashes `{kind, body, parentIds}` into `requestHash` to detect a DIFFERENT request
-under the same key, so a re-encrypted retry (the turn worker's keyed `turn:${id}` re-put) would hit
-`idempotency_conflict` instead of replaying. A random nonce breaks retries; a fully deterministic
-scheme leaks equality between identical messages; deriving the nonce from the idempotency key does
-neither.
+### Who holds what
+
+| key | held by | where |
+|---|---|---|
+| fleet private half | whoever runs `--serve` | `RADIA_CHAT_FLEET_KEY`, else `<RADIA_DIR>/chat-fleet-key.json`, 0600, generated at setup |
+| fleet public half | everyone | the `fleet_key` registry, content-keyed so a restart republishes nothing |
+| a person's key | that person | the credential file, under `#enckey:<principal>`, generated on first use |
+
+The person key is kept OUT of the `#login` entry deliberately: a login is replaced wholesale on
+every `radia login`, so a key stored inside it would be destroyed by re-authenticating, and the loss
+is SILENT — the fleet wrap still opens everything, so nothing fails and the person half quietly
+stops existing.
+
+`--encrypt` is per session, the unit is the conversation, and a mismatch on resume is refused in
+both directions rather than migrated. An unverifiable resume (the key record unreadable) also
+refuses: `--encrypt` is a promise about where content goes, and a session that silently wrote a
+plaintext thread would break it in the one way nobody checks.
+
+Guards: `extensions/conformance/encrypted.test.ts` for the crypto (the four properties, plus the
+fleet-rotation message and the KeyRing's eviction), and `examples/chat/smoke-encrypt.ts` for the
+half a pure test cannot reach — whether the app's GRANTS let the right party fetch the key record.
+Both halves have to hold: the wrap protects a dump, the grant protects a live space, and each looks
+fine on its own while the other is broken. Proved red by planting a shared person key, a KeyRing
+that remembers failures, a loose validator, and an unscoped `conversation_key` grant (under which
+Bob reads Alice's entire key record).
+
+## Phase 3: one field, end to end — BUILT 2026-08-16
+
+`message.content`, and `llm_chunk.delta` beside it. A session encrypts, the inference worker
+decrypts to call a provider, seals its answer and its stream, and the session opens both.
+
+**The stream was not in this phase and had to be.** Encrypting the final answer while the same text
+goes past in clear as chunks is a feature that looks like it works: chunks carry
+`defaultRetentionSeconds: 24 * 3600`, so the whole conversation would sit on the space in the clear
+for a day. `ENCRYPTED_FIELDS` names the fields per kind in one place, because a writer and a reader
+that disagree produce a thread that renders half as ciphertext and nothing says so.
+
+**Nonce = HKDF(DEK, idempotency key), for a KEYED write; random otherwise.** `Space.idem` hashes
+`{kind, body, parentIds}` into `requestHash` to detect a different request under one key, so a
+random nonce would make every keyed retry an `idempotency_conflict` — a substrate error for
+something the substrate got right. A fully deterministic scheme leaks equality between identical
+messages; deriving from the idempotency key does neither. An unkeyed write has no replay to match
+and takes a random one. The nonce TRAVELS with the ciphertext (`base64(nonce || ct)`) rather than
+being re-derived, or every reader would need the idempotency key the record was written under.
 
 Never put an encrypted field in a CONTENT KEY. `procedure`, `workspace` and `capability` dedupe on
 keys derived from body fields, and a value that varies per write turns a latest-wins registry into
 an append-only one.
 
-Verify: a full turn end to end with encryption on; the same turn with it off; a keyed re-put
-produces byte-identical ciphertext and replays; the stored record contains no plaintext (asserted
-against the row, not the API).
+### Two things the build changed
+
+**`READABLE` stays empty; DECRYPTING clears the marker.** Phase 1 said phase 3 would add `ENC_V1`
+to the readable set once readers had keys. That turns the refusal off for every reader at once,
+including one that forgot to decrypt — which would then pass ciphertext along in exactly the silence
+the marker exists to prevent. Instead `openBody` strips `enc` from the copy it returns, so the
+refusals downstream stop firing precisely where a key was applied and nowhere else. The plant
+confirms it: with the worker's decrypt removed, it never reached the provider at all, because
+`assembleContext` refused the rows.
+
+**The router had to stop reading `.content`, and the classifier had to keep working.** Phase 0 moved
+the user's text out of the classify record so the router would not need a key; it still read
+`.content` to decide whether there was a question and to score `heuristicIndex`. On an encrypted row
+that is base64, and its length is not the question's. It now yields no text for a marked row, which
+is already the "unknown question" input that heuristic handles. Classification still happens, by
+REFERENCE: the classify call is deliberately unscoped, so the inference worker resolves its key from
+`classifyOf.conversationId` — with `classifyOf.owner`, so the lookup stays bounded by the caller.
+
+**The DEK is never extractable.** The nonce needs HKDF over the DEK, and exporting raw bytes for it
+would leave key material in a JS variable for the life of every worker. Unwrapping the same blob
+twice — once as AES-GCM, once as HKDF — gives both handles and keeps `extractable: false`.
+
+Guards: seven cases in `extensions/conformance/encrypted.test.ts` (round trip, the marker rule, the
+nonce rule in both directions, the stream, an absent field, a wrong key and a flipped byte) and an
+end-to-end turn in `examples/chat/smoke-encrypt.ts` through the REAL inference worker against a fake
+provider that echoes its prompt — so "the worker decrypted" is asserted from what the provider saw,
+not from what the reader returned. The stored rows are checked as the operator sees them. Proved red
+by planting a random nonce, a marker that survives opening, a worker that skips the decrypt, and
+unsealed chunks.
+
+### Two wiring bugs no test could see, found by running the chat
+
+Both were in the launcher, which every suite bypasses by constructing what it needs directly.
+
+**The fleet key must be published before a conversation can be created.** A solo `deno task chat`
+resolves its conversation and sets the space up AFTERWARDS, so a key published in `setUpSpace` did
+not exist yet when `--encrypt` went to seal against it. It is published beside `registerChatKinds`
+now, which is the last point before anything can write a conversation.
+
+**The inference worker has no filesystem and must be HANDED the key.** `launchFleet` spawns it with
+`--allow-net --allow-env` and nothing else, deliberately: it holds the API key. So its read of the
+key file was a permission it does not have, and `fleetKeyPair` cannot tell "denied" from "absent" —
+the worker simply served no encrypted conversation and said nothing. It now receives
+`RADIA_CHAT_FLEET_KEY` from the launcher, which keeps its zero-filesystem property.
+
+The suite missed the second because it spawned the worker under `-A`. It now spawns with exactly
+the deployment's permissions and environment; a harness more privileged than the deployment cannot
+see the deployment's failures. What is still uncovered is `launchFleet`'s own wiring: the suite
+spawns its own worker, so removing that env would not fail anything.
+
+### Not covered by phase 3
+
+Tool messages. A slotted `tool_call`'s reply is a `message` written by a tool worker, which holds no
+key until phase 4, so a thread that ran tools is partly clear. Mixed threads read correctly —
+`openBody` is a no-op on an unmarked body — but the gap is real and is what phase 4 closes.
 
 ## Phase 4: the remaining fields
 
@@ -240,8 +352,17 @@ lineage and diagnostics keep working, because they mine structure.
   so an encrypted `owner` or `conversationId` fails authorization instead of protecting anything.
 - **A key derived by HKDF from the conversation id, with nothing stored.** Zero plumbing, no extra
   read, no extra grant, and no way to destroy one conversation's key. Rejected for phase 5.
+- **A symmetric fleet KEK, and key material on the `conversation` anchor.** Both were in this plan
+  and both are wrong; see phase 2.
+- **Refusing `--encrypt` in join mode**, which is what a symmetric fleet KEK would have forced. Join
+  mode is the deployment shape the scaling work exists to produce, so a feature that skips it is a
+  feature nobody deploys.
 - **Random nonces**, and **fully deterministic encryption**. See phase 3: the first breaks
   idempotent retries, the second leaks equality.
+- **Whitelisting the marker once readers hold keys.** Phase 1 planned it; see phase 3. It disarms
+  the refusal for a reader that forgot to decrypt, which is the failure the marker is for.
+- **Leaving `llm_chunk` to phase 4.** The plan put it there; a day of retained plaintext says
+  otherwise.
 - **Fleet KEK only.** See phase 2.
 - **Indexing an encrypted field.** It would buy equality matching on ciphertext and nothing else,
   and search was never available: patterns are data.

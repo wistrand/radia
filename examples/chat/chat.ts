@@ -41,7 +41,9 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { assignUserGrants, bootstrap, setSessionOwner } from "./space/roles.ts";
 import { watchAutoGrants } from "./space/auto-grant.ts";
-import { apiKey, EXEC_TIMEOUT_MS, execRoots, loginDefinitionToken, loginSource, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
+import { CONVERSATION_KEY_KIND, conversationKeys, currentFleetKey, fleetKeyPair, personKey, publishFleetKey } from "./space/keys.ts";
+import { type ConversationKey, NoConversationKeyError, sealConversation } from "../../extensions/ts/encrypted.ts";
+import { apiKey, encryptMode, EXEC_TIMEOUT_MS, execRoots, loginDefinitionToken, loginSource, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
 import { FLEET_PROVIDERS, launchFleet, spawnSpace } from "./client/fleet.ts";
 import { retireProviderCapabilities } from "../../extensions/ts/capability.ts";
 import { denoSandbox } from "../../extensions/ts/sandbox.ts";
@@ -165,6 +167,13 @@ if (!admin && serveOnly) {
 // Bootstrap as operator, then hand each worker its own least-privilege run token. Skipped entirely
 // in join mode: the space is already set up, and a session that could do this would be an operator.
 if (admin) await registerChatKinds(admin);
+// The fleet's wrapping key, published BEFORE anything can create a conversation. It belongs with
+// the kinds rather than with `setUpSpace`, and the ordering is the reason: a solo `deno task chat`
+// resolves its conversation first and sets the space up afterwards, so a key published in
+// `setUpSpace` does not exist yet when `--encrypt` needs to seal against it. Generated here because
+// this is the process holding the private half; a joining session only ever reads the public one.
+const fleetKey = admin ? await fleetKeyPair({ create: true }) : undefined;
+if (admin && fleetKey) await publishFleetKey(admin, fleetKey);
 
 /** The DEPLOYMENT half: worker credentials, the jail declaration, the fleet, and the boot sweep.
  *  Shared by both paths so `--serve` and a solo `deno task chat` cannot drift into setting a space
@@ -179,7 +188,7 @@ async function setUpSpace(a: RadiaClient): Promise<void> {
   // No session credential goes to the fleet. The tools worker used to be handed one so its
   // `space_*` verbs ran as a person; those verbs are served in the REPL now, which is what lets
   // these workers serve everybody.
-  procs.push(...launchFleet(tokens));
+  procs.push(...launchFleet(tokens, fleetKey));
   // The retention sweep, at the one moment this app reliably has an operator credential in hand.
   // Best-effort in the background: a chat that cannot sweep is a chat, not an error.
   a.gc().then((r) => {
@@ -219,6 +228,33 @@ if (serveOnly && admin) {
   Deno.exit(0);
 }
 // Which conversation this session is for. Resolved AFTER the session's credential exists, because
+/**
+ * Give a new conversation its key material: one DEK, wrapped to the fleet's published public key
+ * and under this person's own key (plan-encryption.md phase 2).
+ *
+ * A record of its own rather than a field on the anchor, because a session cannot fetch a record by
+ * id — get-by-id is the ops plane — so key material has to be addressed by content like everything
+ * else here.
+ *
+ * Refuses rather than falling back to plaintext. `--encrypt` is a promise about where the content
+ * goes, and a session that silently wrote a plaintext thread because a key was missing would break
+ * it in the one way nobody checks.
+ */
+async function sealConversationKey(conversationId: string): Promise<void> {
+  const fleet = await currentFleetKey(admin ?? session).catch(() => undefined);
+  if (!fleet) {
+    throw new Error(
+      `--encrypt needs the fleet's public key, and no live 'fleet_key' record is on ${url}. ` +
+        `Whoever runs the fleet publishes it:  deno task chat -- --serve`,
+    );
+  }
+  const { encryption } = await sealConversation(fleet, { [owner]: personKey(url, owner) });
+  await (admin ?? session).put(
+    { kind: CONVERSATION_KEY_KIND, body: { conversationId, owner, ...encryption } },
+    `conversation-key:${conversationId}`,
+  );
+}
+
 // in join mode there is no operator client to resolve it with, and still before grants are
 // assigned, because a conversation-scoped grant binds to this id.
 //
@@ -243,7 +279,12 @@ async function resolveConversation(): Promise<{ id: string; resumed: boolean }> 
   // is the safe half of the pair: starting a thread of your own tells you nothing about anyone
   // else's, while `query` would list every conversation on the space.
   try {
-    return { id: (await (admin ?? session).put({ kind: "conversation", body: {} })).id, resumed: false };
+    const id = (await (admin ?? session).put({ kind: "conversation", body: {} })).id;
+    // AFTER the anchor, because the key record names the conversation and the id is the server's
+    // to assign. A failure here throws before a single message is written, which is the ordering
+    // that matters: `--encrypt` must never leave a usable thread with no key.
+    if (encryptMode) await sealConversationKey(id);
+    return { id, resumed: false };
   } catch (e) {
     // The commonest join-mode failure, and it used to be a raw `forbidden` from four frames down.
     // `radia login` assigns the CLI's grants, not this app's: a person minted that way has a valid
@@ -352,6 +393,39 @@ if (!admin) {
 
 const conversation = await resolveConversation();
 
+// THE UNIT IS THE CONVERSATION, even though the flag is per session (plan-encryption.md), so a
+// RESUMED thread decides for itself and `--encrypt` is only needed to CREATE one. The two
+// directions are not symmetric, and that asymmetry is the whole rule:
+//
+//   encrypted thread, no flag  -> adopt it. Strictly more protection than was asked for, and the
+//     only thing that could work anyway: writing plaintext into it makes a half-encrypted thread,
+//     which is a payload no provider will take.
+//   plaintext thread, --encrypt -> REFUSE. Adopting the thread here would silently write content in
+//     clear that someone explicitly asked to have encrypted, which is the one direction that turns
+//     a promise into a lie. There is no migration: the earlier turns cannot be re-sealed.
+if (conversation.resumed) {
+  // A read, never an absence: "no key record" and "no grant to look" are different answers, and
+  // only one of them means the thread is plaintext.
+  const sealed = await (admin ?? session)
+    .readOne({ kind: CONVERSATION_KEY_KIND, match: { conversationId: conversation.id } })
+    .then((r) => r !== null)
+    .catch(() => undefined);
+  if (sealed === false && encryptMode) {
+    console.error(`\nconversation ${conversation.id} was created without encryption, and that cannot be changed.`);
+    console.error(`  Resume it without --encrypt (its earlier turns cannot be re-sealed), or start a new thread.\n`);
+    cleanup();
+    Deno.exit(1);
+  }
+  if (sealed === undefined && encryptMode) {
+    // The read itself failed: no grant, or a space set up before this kind existed. `--encrypt` is
+    // a promise about where the content goes, so an unverifiable resume refuses instead of guessing.
+    console.error(`\ncannot read conversation ${conversation.id}'s key to check whether it is encrypted.`);
+    console.error(`  Ask for 'conversation_key: read_one' on this space, or start a new thread.\n`);
+    cleanup();
+    Deno.exit(1);
+  }
+}
+
 // What the session's grants bind to. `owner` is this identity across all its conversations;
 // `conversationId` is this thread only. See RADIA_CHAT_SCOPE.
 const scope = scopeMode === "conversation"
@@ -423,11 +497,39 @@ field("files", toolRoots.join(", "));
 field("exec", execRoots.length ? execRoots.join(", ") : dim("no filesystem (RADIA_CHAT_EXEC_DIRS)"));
 if (!privileged) field("auth", dim("scoped: space_* tools that touch /ops will 403"));
 
+// This session's key for this conversation, resolved through the same path a worker uses: read the
+// key record, unwrap under what this holder has. No owner is passed because the session's own
+// `conversation_key` grant is already scoped to it — the conjunction IS the check.
+let dek: ConversationKey | undefined;
+try {
+  dek = await conversationKeys(session, { kind: "person", principal: owner, key: personKey(url, owner) })(
+    conversation.id,
+  );
+} catch (e) {
+  // A key that exists and will not open is fatal: the thread is somebody else's, or sealed under a
+  // key this machine no longer has, and either way its content cannot be read or extended.
+  if (e instanceof NoConversationKeyError) {
+    holdLine(false);
+    console.error(`\ncannot open conversation ${conversation.id}: ${e.message}`);
+    console.error(`  Its content was encrypted for someone else, or under a key this machine no longer has.\n`);
+    cleanup();
+    Deno.exit(1);
+  }
+  // The LOOKUP failed instead — no `conversation_key` grant, typically a space whose grants predate
+  // this kind. Continue as plaintext rather than refusing every resume on such a space; if the
+  // thread turns out to be encrypted after all, its rows carry the marker and the readers refuse
+  // them (phase 1), so the failure stays closed rather than becoming ciphertext on a screen.
+  notice(dim(`could not check whether ${conversation.id} is encrypted (${(e as Error).message}); continuing unencrypted`));
+}
+// Say it in the banner. A resumed thread adopts its own setting, so this can be on without anyone
+// having asked for it in this session, and "is my content encrypted" should not need a query.
+if (dek) field("content", "encrypted (this conversation's own key)");
+
 let thread: Thread;
 try {
   thread = conversation.resumed
-    ? await Thread.resume(session, conversation.id, { principal: owner, privileged })
-    : await Thread.open(session, { principal: owner, privileged }, conversation.id);
+    ? await Thread.resume(session, conversation.id, { principal: owner, privileged }, dek)
+    : await Thread.open(session, { principal: owner, privileged }, conversation.id, dek);
 } catch (e) {
   // Release the banner hold FIRST: the fleet's boot lines are queued behind it, and one of them is
   // often the actual reason this failed (a worker refusing to serve, a space gone away).

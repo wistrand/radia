@@ -15,7 +15,7 @@ import { agentLoop } from "../../sdk/ts/loop.ts";
 import type { RadiaClient } from "../../sdk/ts/client.ts";
 import { type ChatMessage, assembleContext, selectWindow, type ThreadRow, toMessage } from "./context.ts";
 import { type ToolDef } from "./capability.ts";
-import { assertReadable } from "./encrypted.ts";
+import { assertReadable, type ConversationKey, openBody, sealBody } from "./encrypted.ts";
 import { liveModels } from "./model.ts";
 import { progress } from "./progress.ts";
 
@@ -81,6 +81,15 @@ export interface InferenceOptions {
    */
   concurrency?: number;
   signal?: AbortSignal;
+  /**
+   * This worker's way to a conversation's DEK (plan-encryption.md phase 3), or absent for a fleet
+   * that serves plaintext conversations only.
+   *
+   * A PORT rather than a key, for the reason `complete` is one: how a key is fetched and who is
+   * allowed to is app policy, and this layer stays dependency-free. `owner` is passed so the
+   * implementation can bound the lookup by the CALLER rather than trust the id it was named with.
+   */
+  keys?: (conversationId: string, owner?: string) => Promise<ConversationKey | undefined>;
 }
 
 /** The body of an `llm_call`, in the fields this worker reads. */
@@ -142,6 +151,20 @@ function finished(
   };
 }
 
+/**
+ * Seal an ack's body, when the ack is a transcript entry and the conversation has a key.
+ *
+ * Only the `message` shape: an INLINE call's `llm_result` belongs to no conversation and has no key
+ * to seal under. `sealBody` is a no-op for a kind carrying no encrypted fields, so this reads as
+ * one rule rather than a branch per shape.
+ */
+async function sealAck(
+  ack: { kind: string; body: Record<string, unknown> },
+  key: ConversationKey | undefined,
+): Promise<{ kind: string; body: Record<string, unknown> }> {
+  return key ? { ...ack, body: await sealBody(ack.body, ack.kind, key) } : ack;
+}
+
 /** Rebuild what the model should see, from `message` records rather than from the call body. */
 /** `contextFor` under test. Exported for `extensions/conformance/inference.test.ts`, which pins
  *  WHOSE conversation a call may load: the check lives in this function's query, so a test that
@@ -151,8 +174,9 @@ export function contextForTest(
   body: CallBody,
   window: number,
   cap: number,
+  key?: ConversationKey,
 ): Promise<{ messages: ChatMessage[]; hidden: number }> {
-  return contextFor(c, body, window, cap);
+  return contextFor(c, body, window, cap, key);
 }
 
 async function contextFor(
@@ -160,7 +184,12 @@ async function contextFor(
   body: CallBody,
   window: number,
   cap: number,
+  key?: ConversationKey,
 ): Promise<{ messages: ChatMessage[]; hidden: number }> {
+  // Every row this function returns passes through here. Without a key it is the identity function
+  // and a marked row reaches `assertReadable` downstream, which is the phase-1 wall; with one the
+  // marker is REMOVED, so the same wall stops objecting exactly where a key was applied.
+  const open = (b: ThreadRow): Promise<ThreadRow> => key ? openBody(b as never, "message", key) : Promise.resolve(b);
   // The call body carries prose in two shapes (inline `messages`, and `system` beside a reference),
   // so it is a reader's input like any record body and gets the same refusal.
   assertReadable(body, "contextFor(llm_call)");
@@ -173,8 +202,9 @@ async function contextFor(
   if (body.classifyOf) {
     const { conversationId, owner, index, context } = body.classifyOf;
     const rows = await c.query({ kind: "message", match: { conversationId, owner, index } }, 1);
-    if (rows[0]) assertReadable(rows[0].body, "contextFor(classifyOf)");
-    const text = (rows[0]?.body as ThreadRow | undefined)?.content ?? "";
+    const referenced = rows[0] ? await open(rows[0].body as ThreadRow) : undefined;
+    if (referenced) assertReadable(referenced, "contextFor(classifyOf)");
+    const text = referenced?.content ?? "";
     if (!text) return { messages: [], hidden: 0 };
     return {
       messages: [
@@ -206,8 +236,9 @@ async function contextFor(
       { kind: "message", match: mine, orderBy: [{ path: "index" }] },
       2000,
     );
+    const opened = await Promise.all(rows.map((r) => open(r.body as ThreadRow)));
     return {
-      messages: rows.map((r) => toMessage(r.body as ThreadRow)).filter((_, i) => (rows[i].body as ThreadRow).index <= upTo),
+      messages: opened.filter((m) => m.index <= upTo).map(toMessage),
       hidden: 0,
     };
   }
@@ -224,6 +255,7 @@ async function contextFor(
       }, limit)).map((r) => r.body as ThreadRow),
     { window, cap },
   );
+  const opened = await Promise.all(tail.map(open));
   // The standing instructions are the NEWEST system message, not index 0: that is what lets a
   // RESUMED conversation run under a current disposition rather than whatever was written when it
   // started. One indexed query, because `role` is a declared path.
@@ -232,7 +264,7 @@ async function contextFor(
     match: { ...mine, role: "system", index: { $lte: upTo } },
     orderBy: [{ path: "index", dir: "desc" }],
   }, 1)).map((r) => r.body as ThreadRow)[0];
-  return assembleContext(newestSystem, tail);
+  return assembleContext(newestSystem ? await open(newestSystem) : undefined, opened);
 }
 
 /** Claim and serve this tier's `llm_call`s until aborted. */
@@ -256,6 +288,20 @@ export async function runInferenceWorker(client: RadiaClient, opts: InferenceOpt
       const resultKey = body.replyTo ?? callId;
       let index = body.indexOffset ?? 0;
       const reportModel = body.model ?? model;
+      // Once per claim, before the first read OR write of prose. A conversation with no key is
+      // plaintext and every seal below is a no-op; a conversation WITH one that this worker cannot
+      // open never gets here, because `contextFor` refuses its rows (phase 1).
+      //
+      // A CLASSIFY call names its conversation only inside `classifyOf`: the record itself is
+      // deliberately unscoped (phase 0), so without this second source an encrypted conversation
+      // would be unclassifiable — the referenced message would come back sealed and be refused.
+      // The owner travels with the id so the lookup is bounded by the CALLER either way.
+      const keyOf = body.conversationId
+        ? { id: body.conversationId, owner: body.owner }
+        : body.classifyOf?.conversationId
+        ? { id: body.classifyOf.conversationId, owner: body.classifyOf.owner }
+        : undefined;
+      const key = keyOf && opts.keys ? await opts.keys(keyOf.id, keyOf.owner) : undefined;
       await progress(c, {
         conversationId: body.conversationId,
         owner: body.owner,
@@ -267,15 +313,16 @@ export async function runInferenceWorker(client: RadiaClient, opts: InferenceOpt
 
       const chunk = async (delta: string, reset = false) => {
         if (body.stream === false) return; // a one-off call emits no chunk records
+        const chunkBody = { callId: resultKey, conversationId: body.conversationId, owner: body.owner, index: index++, delta, ...(reset ? { reset: true } : {}) };
         await c.put({
           kind: "llm_chunk",
-          body: { callId: resultKey, conversationId: body.conversationId, owner: body.owner, index: index++, delta, ...(reset ? { reset: true } : {}) },
+          body: key ? await sealBody(chunkBody, "llm_chunk", key) : chunkBody,
           parentIds: [callId],
         });
       };
 
       try {
-        const { messages, hidden } = await contextFor(c, body, window, cap);
+        const { messages, hidden } = await contextFor(c, body, window, cap, key);
         // Can this turn escalate? The next live tier above this rank, from the SAME projection a
         // router routes by, so the ladder cannot offer a tier the router considers gone. Offer
         // `escalate` only when a stronger tier exists; otherwise strip it, so the top model answers
@@ -348,10 +395,10 @@ export async function runInferenceWorker(client: RadiaClient, opts: InferenceOpt
           };
         }
         // `context` makes the window observable: what was sent, what was left behind, on the record.
-        return finished(body, resultKey, tier, message, finishReason, { usage, context: { sent: messages.length, hidden } });
+        return sealAck(finished(body, resultKey, tier, message, finishReason, { usage, context: { sent: messages.length, hidden } }), key);
       } catch (e) {
         // Never nack: a retry re-runs the model and spends again. The error IS the answer.
-        return finished(body, resultKey, tier, { role: "assistant", content: `[inference error: ${e}]` }, "error", {});
+        return sealAck(finished(body, resultKey, tier, { role: "assistant", content: `[inference error: ${e}]` }, "error", {}), key);
       }
     },
   });

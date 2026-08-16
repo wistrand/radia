@@ -18,11 +18,15 @@ export const ENC_FIELD = "enc";
 export const ENC_V1 = "v1";
 
 /**
- * Markers this build can read.
+ * Markers this build can read WITHOUT decrypting.
  *
- * EMPTY, and that is the phase-1 contract rather than an oversight: nothing encrypts yet, so every
- * marker is one no reader can handle. Phase 3 adds `ENC_V1` here in the same change that gives the
- * readers a key.
+ * EMPTY, and it stays empty. Phase 1 said phase 3 would add `ENC_V1` here once readers had keys;
+ * building phase 3 showed that would be the wrong move, because it turns the refusal off for every
+ * reader at once — including one that forgot to decrypt, which would then pass ciphertext along in
+ * exactly the silence this file exists to prevent.
+ *
+ * What clears the marker is DECRYPTING: `openBody` strips `enc` from the copy it returns, so the
+ * refusals downstream stop firing precisely where a key was actually applied, and nowhere else.
  */
 const READABLE: ReadonlySet<string> = new Set<string>();
 
@@ -60,4 +64,395 @@ export function assertReadable(body: unknown, where: string): void {
 /** The same check over a batch, so a reader asserts once rather than per row inside its own loop. */
 export function assertAllReadable(bodies: Iterable<unknown>, where: string): void {
   for (const b of bodies) assertReadable(b, where);
+}
+
+// ---- keys: one DEK per conversation, WRAPPED TWICE ----
+//
+// Envelope encryption, the shape `src/storage/crypto.ts` already uses for blobs, lifted to bodies
+// rather than imported: an extension never imports `src/`, and the two are the same idea over
+// different material. Per-conversation DEK, AES-GCM-256.
+//
+// TWICE, and the second wrap is what a shared fleet forces (plan-scaling.md item 3):
+//
+//   - to the FLEET, because inference must decrypt to call a provider;
+//   - under a PER-PERSON key, so a joining session can read its own conversation.
+//
+// Fleet-only would mean every joining session needs the fleet's key to render its own messages, so
+// every person would hold the key to every conversation. Their grants still stop them FETCHING
+// anyone else's records, so it is not an immediate breach — it dissolves the safe-against-a-dump
+// property for anyone who has ever run a session.
+//
+// THE FLEET HALF IS ASYMMETRIC, and that is forced rather than chosen. In join mode the SESSION
+// creates the conversation (there is no operator in that process), so whoever creates it must be
+// able to wrap the DEK for a fleet whose secret they must not hold. A symmetric KEK cannot do that:
+// wrapping to it IS holding it. So the fleet publishes an RSA-OAEP PUBLIC key as an ordinary record
+// and keeps the private half; a session wraps to it and can never unwrap. The person half stays
+// symmetric, because there the wrapper and the reader are the same party.
+//
+// The wrapped DEKs live in their own record, addressed by `conversationId` — NOT on the
+// conversation anchor, which the plan proposed and which cannot work: an anchor's only identifier
+// is its record id, and a session cannot fetch by id (get-by-id is the ops plane, and every public
+// read is a pattern over declared paths). Key material only an operator can reach is no key.
+//
+// That record NEVER carries `enc`. The two fields say different things: `enc` on a body means "my
+// prose is ciphertext" and every reader refuses it, while key material is plaintext by definition.
+// Overloading the marker would make a reader raise on the one record it needs to proceed.
+
+/** Key material as it is stored, flattened onto the key record beside `conversationId`/`owner`.
+ *  Wrapped DEKs only; no plaintext key ever reaches the space. */
+export interface ConversationEncryption {
+  /** Marker version, matching what writers stamp on the bodies this key protects. */
+  v: string;
+  /** The DEK wrapped to the fleet's public key, RSA-OAEP (base64). */
+  fleet: string;
+  /** Which fleet key that wrap targets, so a rotated fleet reports a MISS rather than a decrypt
+   *  failure — the two want different fixes and look identical without this. */
+  fleetKeyId: string;
+  /** The DEK wrapped under each person's own key, AES-KW (base64), by principal. */
+  people: Record<string, string>;
+}
+
+/**
+ * A conversation's DEK as a reader holds it: two handles over one key.
+ *
+ * `content` seals and opens bodies. `nonce` derives each write's nonce (below). Two handles because
+ * Web Crypto binds a key to one algorithm, and unwrapping twice keeps the DEK NON-EXTRACTABLE —
+ * deriving the nonce from exported raw bytes would have meant the key material sitting in a JS
+ * variable for the life of every worker.
+ */
+export interface ConversationKey {
+  content: CryptoKey;
+  nonce: CryptoKey;
+}
+
+/** Which key a holder is offering. A person also names themselves, because their wrap is one entry
+ *  in a map and asking for someone else's is a bug worth naming rather than a decrypt failure. */
+export type KeyHolder =
+  | { kind: "fleet"; privateKey: string; keyId?: string }
+  | { kind: "person"; principal: string; key: Uint8Array };
+
+/** Raised when a holder has no wrap on this conversation, or holds the wrong key for the one it has. */
+export class NoConversationKeyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NoConversationKeyError";
+  }
+}
+
+/** Deno's lib types declare `BufferSource` as `ArrayBufferView<ArrayBuffer>`, which a plain
+ *  `Uint8Array` does not satisfy. Runtime-identical; the cast keeps every crypto call readable. */
+const buf = (b: Uint8Array): BufferSource => b as unknown as BufferSource;
+
+const b64 = {
+  encode(bytes: Uint8Array): string {
+    let s = "";
+    for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    return btoa(s);
+  },
+  decode(text: string): Uint8Array {
+    const binary = atob(text);
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+    return out;
+  },
+};
+
+/** Key-encryption keys are 32 raw bytes, whatever they wrap. */
+export const KEY_BYTES = 32;
+
+/** A fresh key-encryption key, for a fleet or a person. */
+export function newKeyBytes(): Uint8Array {
+  return crypto.getRandomValues(new Uint8Array(KEY_BYTES));
+}
+
+export const keyToBase64 = (raw: Uint8Array): string => b64.encode(raw);
+
+/** Parse a stored key, refusing a wrong-sized one HERE rather than at a confusing crypto error. */
+export function keyFromBase64(text: string, what: string): Uint8Array {
+  const raw = b64.decode(text.trim());
+  if (raw.byteLength !== KEY_BYTES) {
+    throw new Error(`${what} must decode to ${KEY_BYTES} bytes, got ${raw.byteLength}`);
+  }
+  return raw;
+}
+
+const asKek = (raw: Uint8Array): Promise<CryptoKey> =>
+  crypto.subtle.importKey("raw", buf(raw), "AES-KW", false, ["wrapKey", "unwrapKey"]);
+
+const RSA: RsaHashedImportParams = { name: "RSA-OAEP", hash: "SHA-256" };
+
+/** The fleet's key pair, in the forms that get stored: SPKI for the public half (published as a
+ *  record, so every session can wrap to it) and PKCS#8 for the private half (the fleet's secret). */
+export interface FleetKeyPair {
+  publicKey: string; // base64 SPKI
+  privateKey: string; // base64 PKCS#8
+  keyId: string;
+}
+
+/** A fleet key pair. 3072-bit RSA-OAEP: generated once per fleet, so keygen cost is paid at setup
+ *  and every later operation is a single wrap or unwrap of 32 bytes. */
+export async function newFleetKeyPair(): Promise<FleetKeyPair> {
+  const pair = await crypto.subtle.generateKey(
+    { name: "RSA-OAEP", modulusLength: 3072, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    true,
+    ["wrapKey", "unwrapKey"],
+  ) as CryptoKeyPair;
+  const publicKey = b64.encode(new Uint8Array(await crypto.subtle.exportKey("spki", pair.publicKey)));
+  return {
+    publicKey,
+    privateKey: b64.encode(new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey))),
+    keyId: await fleetKeyId(publicKey),
+  };
+}
+
+/** A fleet key's identity: the digest of its PUBLIC half, so both sides compute it from what they
+ *  hold and a rotation is visible without anyone publishing a version number. */
+export async function fleetKeyId(publicKey: string): Promise<string> {
+  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", buf(b64.decode(publicKey))));
+  return [...d.subarray(0, 8)].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Mint a conversation's DEK, wrap it to the fleet's public key and under each person's own key.
+ *
+ * `people` is a map rather than one principal because the shape has to survive a second reader
+ * being added later; today a conversation is created with exactly its owner in it. Adding one
+ * afterwards needs that person's key, which is why a SECOND participant would want the asymmetric
+ * treatment the fleet half already has.
+ */
+export async function sealConversation(
+  fleet: { publicKey: string; keyId?: string },
+  people: Record<string, Uint8Array>,
+  version = ENC_V1,
+): Promise<{ encryption: ConversationEncryption; key: ConversationKey }> {
+  // Extractable, because wrapping requires it. This is the one process that could export the key
+  // anyway: it just generated it.
+  const dek = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+  const pub = await crypto.subtle.importKey("spki", buf(b64.decode(fleet.publicKey)), RSA, false, ["wrapKey"]);
+  const wrapped: Record<string, string> = {};
+  for (const [principal, key] of Object.entries(people)) {
+    wrapped[principal] = b64.encode(new Uint8Array(await crypto.subtle.wrapKey("raw", dek, await asKek(key), "AES-KW")));
+  }
+  return {
+    encryption: {
+      v: version,
+      fleet: b64.encode(new Uint8Array(await crypto.subtle.wrapKey("raw", dek, pub, RSA))),
+      fleetKeyId: fleet.keyId ?? await fleetKeyId(fleet.publicKey),
+      people: wrapped,
+    },
+    key: {
+      content: dek,
+      nonce: await crypto.subtle.importKey(
+        "raw",
+        await crypto.subtle.exportKey("raw", dek),
+        "HKDF",
+        false,
+        ["deriveBits"],
+      ),
+    },
+  };
+}
+
+/**
+ * Unwrap a conversation's DEK with whichever key the caller holds.
+ *
+ * Throws `NoConversationKeyError` for "there is no wrap for you" and for "your key does not open
+ * the wrap there is" alike. Between those two the distinction is deliberately not reported: it is
+ * a missing entry versus a wrong key, and a caller can act on neither. A fleet key ROTATION is the
+ * exception and is named, because it is the one case with an operator fix.
+ */
+export async function openConversation(
+  encryption: ConversationEncryption,
+  holder: KeyHolder,
+): Promise<ConversationKey> {
+  if (holder.kind === "person") {
+    const wrapped = encryption.people?.[holder.principal];
+    if (!wrapped) throw new NoConversationKeyError(`this conversation carries no key wrapped for ${holder.principal}`);
+    try {
+      const kek = await asKek(holder.key);
+      return await bothHandles((alg, usages) =>
+        crypto.subtle.unwrapKey("raw", buf(b64.decode(wrapped)), kek, "AES-KW", alg, false, usages)
+      );
+    } catch {
+      throw new NoConversationKeyError(`the key held for ${holder.principal} does not open this conversation`);
+    }
+  }
+  if (!encryption.fleet) throw new NoConversationKeyError("this conversation carries no key wrapped for the fleet");
+  if (holder.keyId && encryption.fleetKeyId && holder.keyId !== encryption.fleetKeyId) {
+    throw new NoConversationKeyError(
+      `this conversation was sealed to fleet key ${encryption.fleetKeyId}, and the fleet now holds ${holder.keyId}. ` +
+        `The old private key still opens it; a rotation that discards it discards these conversations.`,
+    );
+  }
+  try {
+    const priv = await crypto.subtle.importKey("pkcs8", buf(b64.decode(holder.privateKey)), RSA, false, ["unwrapKey"]);
+    return await bothHandles((alg, usages) =>
+      crypto.subtle.unwrapKey("raw", buf(b64.decode(encryption.fleet)), priv, RSA, alg, false, usages)
+    );
+  } catch {
+    throw new NoConversationKeyError("the fleet's key does not open this conversation");
+  }
+}
+
+/** Unwrap the same DEK twice, once per algorithm. Web Crypto binds a key to one algorithm, and this
+ *  is what lets the nonce be derived from the DEK without the DEK ever becoming extractable. */
+async function bothHandles(
+  unwrap: (alg: AlgorithmIdentifier, usages: KeyUsage[]) => Promise<CryptoKey>,
+): Promise<ConversationKey> {
+  return {
+    content: await unwrap({ name: "AES-GCM" }, ["encrypt", "decrypt"]),
+    nonce: await unwrap("HKDF", ["deriveBits"]),
+  };
+}
+
+/**
+ * Read key material off a key record's body, or undefined if it carries none.
+ *
+ * Checks the fields it will USE rather than trusting the kind: a body reaching here is whatever a
+ * writer put on the space, and a half-written one must read as "no key" instead of failing later
+ * inside a decrypt with nothing naming the cause.
+ */
+export function encryptionOf(body: unknown): ConversationEncryption | undefined {
+  if (typeof body !== "object" || body === null) return undefined;
+  const b = body as Partial<ConversationEncryption>;
+  if (typeof b.v !== "string" || typeof b.fleet !== "string") return undefined;
+  return { v: b.v, fleet: b.fleet, fleetKeyId: b.fleetKeyId ?? "", people: b.people ?? {} };
+}
+
+// ---- sealing a body's prose ----
+//
+// Which fields, per kind, in ONE place: a writer and a reader that disagree about the list produce
+// a thread that renders half as ciphertext, and the disagreement is invisible until someone reads
+// it. Routing and scope fields are never in here and never can be — `bodyMatchesGrant` matches
+// grant patterns against the BODY on write, so encrypting `owner` or `conversationId` would break
+// authorization rather than hide anything.
+
+export const ENCRYPTED_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  message: ["content"],
+  // The stream, not only the answer. Encrypting the final message while the same text goes past in
+  // clear as chunks is a feature that looks like it works: chunks are retained for a day, so the
+  // whole conversation would sit on the space in the clear.
+  llm_chunk: ["delta"],
+};
+
+const NONCE_BYTES = 12;
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+
+/**
+ * The nonce for one write.
+ *
+ * A KEYED write derives it: HKDF over the DEK with the idempotency key as info. Deterministic, so a
+ * re-put under the same key produces BYTE-IDENTICAL ciphertext and replays. `Space.idem` hashes
+ * `{kind, body, parentIds}` into `requestHash` to detect a different request under the same key, so
+ * a random nonce would make every retry an `idempotency_conflict` — a substrate error for something
+ * the substrate got right.
+ *
+ * An UNKEYED write takes a random one. There is no replay to be identical to, and randomness is the
+ * stronger default.
+ *
+ * Fully deterministic encryption (nonce from the plaintext) is the other trap and is not used: it
+ * leaks equality between identical messages.
+ */
+async function nonceFor(key: ConversationKey, idempotencyKey?: string): Promise<Uint8Array> {
+  if (idempotencyKey === undefined) return crypto.getRandomValues(new Uint8Array(NONCE_BYTES));
+  const bits = await crypto.subtle.deriveBits(
+    { name: "HKDF", hash: "SHA-256", salt: enc.encode("radia/chat/nonce"), info: enc.encode(idempotencyKey) },
+    key.nonce,
+    NONCE_BYTES * 8,
+  );
+  return new Uint8Array(bits);
+}
+
+/** Seal one string. The nonce travels with the ciphertext, so a reader needs the DEK and nothing
+ *  else — deriving it again would mean every reader knowing the idempotency key it was written under. */
+export async function encryptText(key: ConversationKey, plaintext: string, idempotencyKey?: string): Promise<string> {
+  const nonce = await nonceFor(key, idempotencyKey);
+  const ct = new Uint8Array(
+    await crypto.subtle.encrypt({ name: "AES-GCM", iv: buf(nonce) }, key.content, buf(enc.encode(plaintext))),
+  );
+  const packed = new Uint8Array(nonce.length + ct.length);
+  packed.set(nonce, 0);
+  packed.set(ct, nonce.length);
+  return b64.encode(packed);
+}
+
+/** Open one sealed string. Throws on a wrong key or tampered bytes; AES-GCM authenticates. */
+export async function decryptText(key: ConversationKey, packed: string): Promise<string> {
+  const raw = b64.decode(packed);
+  const pt = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: buf(raw.subarray(0, NONCE_BYTES)) },
+    key.content,
+    buf(raw.subarray(NONCE_BYTES)),
+  );
+  return dec.decode(pt);
+}
+
+/**
+ * A copy of `body` with this kind's prose sealed and the marker stamped.
+ *
+ * A `null`/absent field stays as it is: an assistant message with no content carries none, and
+ * encrypting the absence would invent a value the reader then has to un-invent.
+ */
+export async function sealBody<T extends Record<string, unknown>>(
+  body: T,
+  kind: string,
+  key: ConversationKey,
+  idempotencyKey?: string,
+): Promise<T> {
+  const fields = ENCRYPTED_FIELDS[kind];
+  if (!fields) return body;
+  const out: Record<string, unknown> = { ...body, [ENC_FIELD]: ENC_V1 };
+  for (const f of fields) {
+    if (typeof body[f] === "string") out[f] = await encryptText(key, body[f] as string, idempotencyKey);
+  }
+  return out as T;
+}
+
+/**
+ * A copy of `body` with this kind's prose opened and the marker REMOVED.
+ *
+ * Removing it is the load-bearing half. `READABLE` is empty, so every downstream `assertReadable`
+ * refuses a marked body; a body that has been through here is unmarked, so those refusals stop
+ * firing exactly where a key was applied. A reader that forgot to decrypt still hits the wall.
+ */
+export async function openBody<T extends Record<string, unknown>>(
+  body: T,
+  kind: string,
+  key: ConversationKey,
+): Promise<T> {
+  if (encMarker(body) === undefined) return body;
+  const out: Record<string, unknown> = { ...body };
+  delete out[ENC_FIELD];
+  for (const f of ENCRYPTED_FIELDS[kind] ?? []) {
+    if (typeof body[f] === "string") out[f] = await decryptText(key, body[f] as string);
+  }
+  return out as T;
+}
+
+/**
+ * One holder's view of the conversations it can open, with the unwrapped DEK cached per id.
+ *
+ * A DEK never changes, so this is one unwrap per conversation per process — the point being that
+ * a worker serving many conversations does not repeat the KEK work per record. Cached by
+ * conversation id, never by the `encryption` block: two blocks that differ are two conversations,
+ * and keying on the material would hide a record that was swapped underneath.
+ */
+export class KeyRing {
+  private readonly cache = new Map<string, Promise<ConversationKey>>();
+  constructor(private readonly holder: KeyHolder) {}
+
+  /** The DEK for `conversationId`, given that conversation's stored key material. */
+  dek(conversationId: string, encryption: ConversationEncryption): Promise<ConversationKey> {
+    const hit = this.cache.get(conversationId);
+    if (hit) return hit;
+    // Cached as the PROMISE, so concurrent claims on one conversation unwrap once. A rejection is
+    // evicted: a transient holder mistake must not be remembered as this conversation's answer.
+    const pending = openConversation(encryption, this.holder).catch((e) => {
+      this.cache.delete(conversationId);
+      throw e;
+    });
+    this.cache.set(conversationId, pending);
+    return pending;
+  }
 }

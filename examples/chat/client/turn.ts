@@ -12,7 +12,7 @@ import type { ChatMessage, ToolDef } from "../provider/openrouter.ts";
 import type { Thread } from "./thread.ts";
 import { sessionOwner } from "../space/roles.ts";
 import { type CapabilityBody, capabilityKey, collapseByTool } from "../../../extensions/ts/capability.ts";
-import { assertReadable } from "../../../extensions/ts/encrypted.ts";
+import { assertReadable, type ConversationKey, openBody } from "../../../extensions/ts/encrypted.ts";
 import { answerStream, columns, dim, endStatus, ensureLine, holdLine, notice, showArtifact, statusLineOn, trunc, write } from "./terminal.ts";
 import { Waiter, waitWake } from "./waiting.ts";
 
@@ -143,7 +143,7 @@ export async function runTurn(
       if (round === 0) write("\n");
       else ensureLine();
       write("assistant> ");
-      const { message, finishReason, streamed, tier, context, usage, announced, heldLabel, index } = await streamResult(client, callId);
+      const { message, finishReason, streamed, tier, context, usage, announced, heldLabel, index } = await streamResult(client, callId, thread.dek);
       turnTokens += usage?.total_tokens ?? 0;
       turnCost += usage?.cost ?? 0;
       if (usage?.total_tokens) turnRounds++;
@@ -356,7 +356,7 @@ interface StreamedResult {
 /** Follow one call: print `llm_chunk` deltas as they land, return when the assistant `message`
  *  arrives. The message IS the inference worker's ack (plan-chat-turn.md), so this client never
  *  appends the assistant's side of the conversation: it observes the record the worker wrote. */
-async function streamResult(client: RadiaClient, callId: string): Promise<StreamedResult> {
+async function streamResult(client: RadiaClient, callId: string, key?: ConversationKey): Promise<StreamedResult> {
   const stall = "no worker claimed this call. Is the router/inference fleet running?";
   let lastIndex = -1; // watermark over ONE monotonic stream: an escalation hands it on, never resets
   let printed = false; // any visible text on the line yet
@@ -415,8 +415,11 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
       500,
     );
     for (const chunk of chunks) {
-      const b = chunk.body as { index: number; delta: string; reset?: boolean };
+      const raw = chunk.body as { index: number; delta: string; reset?: boolean };
       // A delta goes straight to the terminal, so it is the one prose read with no later checkpoint.
+      // Opened first, then asserted: `openBody` strips the marker it could read, so what reaches the
+      // assert is either plaintext or something no key here opens.
+      const b = key ? await openBody(raw, "llm_chunk", key) : raw;
       assertReadable(b, "streamResult(llm_chunk)");
       if (b.index <= lastIndex) continue;
       lastIndex = b.index;
@@ -518,7 +521,7 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
   await printNew(); // flush any stragglers
   answer.end(); // and anything the renderer was holding back for the next character
   if (!printed) endStatus(waiter.prefix); // nothing streamed (tool-call turn, or an error)
-  const b = outcome.body;
+  const b = key ? await openBody(outcome.body, "message", key) : outcome.body;
   // The record this client renders and feeds back into the next turn's context.
   assertReadable(b, "streamResult");
   return {

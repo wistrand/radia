@@ -29,6 +29,7 @@ const SUITES = [
   { name: "login", file: "smoke-login.ts", about: "a person's own credential: who the session is, and that two people on one space cannot read each other" },
   { name: "join", file: "smoke-join.ts", about: "a session holding NO operator credential: it starts its own thread and takes turns, and cannot register a kind, mint a worker, grant itself anything or enumerate another conversation" },
   { name: "scope", file: "smoke-scope.ts", about: "what a scoped session may read: identity (all its own conversations) vs conversation (this thread only)" },
+  { name: "encrypt", file: "smoke-encrypt.ts", about: "conversation keys: who can fetch one and who can open it, with the grant and the wrap each doing half" },
   { name: "runners", file: "smoke-runners.ts", about: "a second language as a capability: an unstartable jail is undiscoverable, and each name reaches its own runtime" },
   { name: "turnlink", file: "smoke-turnlink.ts", about: "the fenced turn link: a conversation call's answer IS the assistant message (the worker's ack), an inline call stays an RPC" },
   { name: "fleet", file: "smoke-fleet.ts", about: "model advertisements the router discovers: publish, restart, withdraw, revive" },
