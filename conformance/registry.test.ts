@@ -18,6 +18,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { activeByKey, grantKey } from "../src/core/registry.ts";
 import { kindDefKey } from "../sdk/ts/wire.ts";
+import { contentKey } from "../sdk/ts/registry.ts";
 import type { RadiaRecord } from "../src/storage/adapter.ts";
 
 /** A record with a hand-made id. `ms` is the ULID's 10-character timestamp half; `low` stands in
@@ -162,4 +163,50 @@ Deno.test("registry: kindDefKey is byte-stable for declarations that predate eve
   const retained = kindDefKey({ ...legacy, defaultRetentionSeconds: 3600 });
   assertEquals(retained, "kind_def:task:a:integer,b:keyword:a:work:rt=3600");
   assert(kindDefKey({ ...legacy, defaultRetentionSeconds: 7200 }) !== retained, "a changed default is a changed declaration");
+});
+
+// ---- contentKey: the WRITE-side key, and why it is not one of the identity keys above ----
+//
+// Every key function above answers "which registry entry is this", deliberately from a SUBSET of
+// the body, so a successor — a retirement especially — shares the key and supersedes. `contentKey`
+// answers the opposite question: "is this the same write", from the whole body. Confusing the two
+// produces a write that returns 200 and changes nothing, which is how it was found.
+
+Deno.test("registry: contentKey is stable across field order and nesting", async () => {
+  const a = await contentKey("ck1", { b: 1, a: "x", z: { q: [1, 2], p: true } });
+  const b = await contentKey("ck1", { z: { p: true, q: [1, 2] }, a: "x", b: 1 });
+  assertEquals(a, b, "object key order is not content");
+  // An array's order IS content: [1,2] and [2,1] are different values, not the same one shuffled.
+  assert(await contentKey("ck1", [1, 2]) !== await contentKey("ck1", [2, 1]));
+});
+
+Deno.test("registry: contentKey changes when ANY part of the content changes", async () => {
+  const base = { conversationId: "c1", owner: "human:alice", people: { laptop: "wrapA" } };
+  const grown = { ...base, people: { laptop: "wrapA", desktop: "wrapB" } };
+  // The live case: enrolling a machine must be a SUCCESSOR. A key naming only `conversationId`
+  // replayed the first write, so the second machine was told it had a key and did not.
+  assert(await contentKey("ck1", base) !== await contentKey("ck1", grown));
+  // …and a nested change counts, which is the whole reason to hash the body rather than list
+  // the fields you remembered.
+  assert(await contentKey("ck1", base) !== await contentKey("ck1", { ...base, people: { laptop: "other" } }));
+});
+
+Deno.test("registry: a tag separates two kinds that share a body shape", async () => {
+  assert(await contentKey("aa1", { x: 1 }) !== await contentKey("bb1", { x: 1 }));
+  assert((await contentKey("aa1", { x: 1 })).startsWith("aa1:"), "the tag stays readable in the key");
+});
+
+Deno.test("registry: contentKey is bounded, because idem_key is part of a PRIMARY KEY", async () => {
+  // A canonical string would have been simpler and would cross Postgres's btree tuple limit on a
+  // body of a few KB — an insert failure naming neither the key nor the body.
+  const big = { blob: "x".repeat(200_000), rows: Array.from({ length: 5_000 }, (_, i) => i) };
+  const key = await contentKey("ck1", big);
+  assert(key.length < 64, `bounded regardless of body size, got ${key.length}`);
+  assertEquals(key, await contentKey("ck1", big), "and still deterministic");
+});
+
+Deno.test("registry: an absent field and an undefined one key the same", async () => {
+  // `JSON.stringify` drops undefined members, so a body built with a spread of optional fields
+  // must not key differently from one that omitted them.
+  assertEquals(await contentKey("ck1", { a: 1, b: undefined }), await contentKey("ck1", { a: 1 }));
 });

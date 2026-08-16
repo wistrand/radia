@@ -110,12 +110,25 @@ DESIGN-FIRST means the open question below has to be answered before code.
 
 | # | Action | Why | Size | Lands in |
 |---|---|---|---|---|
-| 1 | `readNewest(pattern)` on both SDKs | the hazard's commonest instance; makes the correct call as cheap as the wrong one, and lets `readOne`'s doc say "oldest match; you probably want readNewest". No new endpoint: it is `query(p, 1, {dir:"desc"})[0]` | SMALL | `sdk/ts/client.ts`, `sdk/py/radia.py`, pointer from gotchas |
-| 2 | A generic `contentKey(prefix, body)` | the second instance. `kindDefKey`/`grantKey`/`opsGrantKey` already do this per kind; apps re-derive it per site and get it wrong by naming the container instead of the content | SMALL | `sdk/ts/registry.ts`, beside the existing keys |
+| 1 | ~~`readNewest(pattern)` on both SDKs~~ **BUILT 2026-08-16** | the hazard's commonest instance; makes the correct call as cheap as the wrong one, and lets `readOne`'s doc say "oldest match; you probably want readNewest". No new endpoint: it is `query(p, 1, {dir:"desc"})[0]` | SMALL | `sdk/ts/client.ts`, `sdk/py/radia.py`, pointer from gotchas |
+| 2 | ~~A generic `contentKey(prefix, body)`~~ **BUILT 2026-08-16** | the second instance. `kindDefKey`/`grantKey`/`opsGrantKey` already do this per kind; apps re-derive it per site and get it wrong by naming the container instead of the content | SMALL | `sdk/ts/registry.ts`, beside the existing keys |
 | 3 | Opt-in CORS (`--allow-origin <origin>`) | removes an entire proxy layer from every browser app. Bearer tokens rather than cookies, so the surface is narrow; default off and echoed at startup like other posture flags | SMALL/MEDIUM | `src/server/http.ts`, `conformance/defaults.test.ts`; check whether a preflight OPTIONS needs an openapi entry |
 | 4 | Plan from bulk reads, in memory | O(1) queries per wake instead of O(datasets x stages); `ui.html` is the worked example | SMALL | `examples/analysis/planner.ts` |
 | 5 | Pin stage code with promotion instead of self-report | turns the memo's foundation from a claim into an enforced fact, and would be the first worked composition of promotion with something other than an exec runner | MEDIUM | `examples/analysis/`, `extensions/ts/promotion.ts` |
 | 6 | A scoped ops READ tier | the one gap both apps hit independently and neither can work around | DESIGN-FIRST | `architecture-ops-tiers.md`, then `src/server/http.ts` + `handlers/ops.ts` |
+
+**Actions 1 and 2 are built** (`sdk/ts/client.ts`, `sdk/ts/registry.ts`, `sdk/py/radia.py`;
+guards in `conformance/registry.test.ts` and `conformance/http.test.ts`, both proved red). Two
+things the build settled that the proposal had not:
+
+- `contentKey` HASHES rather than returning a canonical string, because `idem_key` is part of a
+  PRIMARY KEY and a few kilobytes of body would cross Postgres's btree tuple limit. That forces it
+  async in TS (Web Crypto) while Python's is sync (hashlib), which is an asymmetry the parity table
+  now records rather than hides.
+- The two SDKs have to compute the SAME key or a TS writer and a Python writer each write their own
+  record. They diverged on two axes when first written — Python escaped non-ASCII and rendered
+  `1.0` where JavaScript renders `1` — and now agree. It is agreement by discipline: the suites are
+  Deno-only and CI runs no Python, so nothing checks it.
 
 **The open question in 6, which is why it is design-first.** A lineage or graph walk that stops at a
 record the caller may not see still tells them it exists: the shape leaks even when the bodies do

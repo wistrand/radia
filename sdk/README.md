@@ -25,6 +25,8 @@ imports.
 | Delegation  | `createDelegatedRun` / `delegatedClient`                    | `create_delegated_run` / `delegated_client`                     |
 | Credential  | `{definitionToken}` exchanges on expiry; `keepAlive(signal, onLost)` renews at half-life | `keep_alive(stop, on_lost)`, renewal only (see below) |
 | Children    | `getChildren` / `getChildrenPage` (paged) | `get_children` / `get_children_page` (paged) |
+| Reads       | `readOne` (the OLDEST match) / `readNewest` | `read_one` (the OLDEST match) / `read_newest` |
+| Content key | `contentKey(tag, body)`, async (Web Crypto) | `content_key(tag, body)`, sync (hashlib) |
 | Dependencies| none beyond the runtime | none, standard library only (3.9+) |
 
 **The credential renews itself, and can also replace itself.** `keepAlive` renews a run token
@@ -38,6 +40,27 @@ one each. The SSE watch goes through the same path, since it is a raw request th
 everything else a client does. A definition token cannot read or write anything — the space refuses
 it for coordination — which is exactly what makes it safe to keep on disk; `radia revoke` is its off
 switch. Pinned by `conformance/exchange.test.ts`.
+
+**`readOne` answers with the OLDEST match; reach for `readNewest`.** With no ordering the answer is
+the first record ever written for that pattern, which for anything carrying SUCCESSORS — a registry
+entry, a versioned record, key material a later write extends — is the stale one, silently. Reading
+the oldest match is the most repeated mistake against this API, and `readOne` was the
+obvious-looking call. Note the grant: `readNewest` is a `query`, so a principal holding only
+`read_one` on the kind is refused. Ordering is a query.
+
+**`contentKey(tag, body)` keys an idempotent write by its CONTENT.** The key functions in
+`registry.ts` (`grantKey`, `opsGrantKey`, `kindDefKey`, `oidcIdentityKey`) answer a different
+question: a logical IDENTITY, deliberately a subset of the body, so a successor shares the key and
+supersedes — which is what makes a `retired: true` tombstone replace the entry it withdraws.
+`contentKey` hashes everything, so any change is a new record. Choose by what a re-put should MEAN.
+Keying on the container rather than the content dedupes writes that were meant to change something:
+the call returns 200 and nothing happened.
+
+The two SDKs compute the SAME key for the same body, which matters because a TS writer and a Python
+writer would otherwise each write their own record. Python normalises to JavaScript's number
+rendering (`1.0` → `1`), leaves non-ASCII unescaped and refuses NaN/Infinity. It is agreement by
+discipline, not by test: the conformance suites are Deno-only and CI runs no Python. Numbers beyond
+double precision still diverge and are not worth putting in a key.
 
 **Two helpers that are not verbs**, both extracted from a client that learned them the hard way.
 `readRegistry` reads a registry projection, paging to exhaustion and reporting `complete: false`

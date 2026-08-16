@@ -236,13 +236,18 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   using it kept being refused the ops plane. Anything meant for EVERYONE enumerates
   `enrolledPrincipals` instead; the sweep answers a different question.
 - **An idempotency key must name the CONTENT it dedupes, not just the thing it belongs to.**
+  `contentKey(tag, body)` (`sdk/ts/registry.ts`, `content_key` in Python) hashes the whole body so
+  you cannot forget a field; the identity keys beside it (`grantKey`, `oidcIdentityKey`) key on a
+  SUBSET on purpose, so a retirement supersedes. Choose by what a re-put should mean.
   `conversation-key:<id>` looked right and silently replayed the first write forever, so enrolling a
   machine reported success and changed nothing. The key carries the wrap set (and the artifact's, its
   sorted reader ids) so an unchanged re-put is still free while a changed one is a successor. The
   symptom is always the same: a write that returns 200 and leaves the state it was meant to change.
-- **`readOne` answers with the OLDEST match, so a superseded record needs a newest-first query.**
-  Any kind whose entries are replaced by successors — a registry, or key material a later write
-  extends — is read with `query(..., 1, {dir: "desc"})`, never `readOne`. Hit again by conversation
+- **`readOne` answers with the OLDEST match; use `readNewest`.** Any kind whose entries are
+  replaced by successors — a registry, or key material a later write extends — is read with
+  `readNewest` (both SDKs), never `readOne`. It is a `query`, so a principal holding only
+  `read_one` on the kind is refused: ordering is a query. Guard:
+  `conformance/http.test.ts`, "read-one answers with the OLDEST match". Hit again by conversation
   keys: enrolling a second machine wrote a successor, the unordered read kept returning the original
   wrap set, and the new machine was told it had no key while the record granting it sat one row
   later. The write reported success, which is what made it hard to see.

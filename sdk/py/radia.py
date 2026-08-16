@@ -21,6 +21,7 @@ Typical use::
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import os
@@ -74,6 +75,50 @@ def credentials_path() -> str:
     if home:
         return os.path.join(home, ".radia", "credentials.json")
     return os.path.join(".", ".radia-credentials.json")
+
+
+def content_key(tag: str, body: Any) -> str:
+    """An idempotency key that names the CONTENT, so a re-put of the same thing dedupes and a
+    changed one is a new record.
+
+    Key on CONTENT when writing the same thing twice must be free and writing something different
+    must be a new record. Key on a logical IDENTITY (a subset of the body, written by hand) when a
+    re-put must supersede -- that is what makes a ``retired: true`` tombstone replace the entry it
+    withdraws rather than sit beside it. A key that names the container rather than the content
+    dedupes writes that were meant to change something: the call returns 200 and nothing happened.
+
+    Hashed because ``idem_key`` is part of a primary key and Postgres has a btree tuple limit.
+
+    Always pass a body that is a pure function of the logical write: a timestamp in it makes every
+    key unique, which turns the dedupe off as silently as naming the container turns it on.
+    """
+    canon = json.dumps(
+        _js_numbers(body),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,   # JS does not escape non-ASCII; escaping here would diverge
+        allow_nan=False,      # NaN/Infinity are not JSON: fail loudly rather than key on nonsense
+        default=str,
+    )
+    return f"{tag}:{hashlib.sha256(canon.encode()).hexdigest()[:32]}"
+
+
+def _js_numbers(v: Any) -> Any:
+    """``1.0`` -> ``1``, recursively.
+
+    JavaScript has one number type, so ``JSON.stringify({n: 1.0})`` is ``{"n":1}`` while Python's
+    is ``{"n":1.0}``. Without this the two SDKs key the same body differently and each writes its
+    own record. Floats too large for a double still diverge; see the parity note in sdk/README.md.
+    """
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    if isinstance(v, dict):
+        return {k: _js_numbers(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_js_numbers(x) for x in v]
+    return v
 
 
 def _base_key(base: str) -> str:
@@ -439,7 +484,24 @@ class RadiaClient:
         return self._req("POST", "/v0/records", request, headers)
 
     def read_one(self, pattern: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """ONE matching record, and it is the OLDEST one.
+
+        With no ``order_by`` the order is the oracle's ``id`` tie-break, so a pattern matching
+        several records answers with the first ever written. For anything that accumulates
+        SUCCESSORS -- a registry entry, a versioned record -- that is the stale answer, silently.
+        Use :meth:`read_newest`.
+        """
         return self._req("POST", "/v0/records/read-one", pattern)
+
+    def read_newest(self, pattern: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """The NEWEST record matching ``pattern``, or ``None``.
+
+        The safe half of the pair above and the one to reach for by default. Note the grant: this
+        is a ``query``, not a ``read_one``, so a principal holding only ``read_one`` on the kind is
+        refused. Ordering is a query.
+        """
+        rows = self.query(pattern, limit=1, dir="desc")
+        return rows[0] if rows else None
 
     def query(
         self,

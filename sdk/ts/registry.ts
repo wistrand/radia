@@ -165,6 +165,53 @@ export function oidcIdentityKey(body: unknown): string | undefined {
   return JSON.stringify(["oi1", m.iss, m.sub]);
 }
 
+/**
+ * An idempotency key that names the CONTENT, so a re-put of the same thing dedupes and a changed
+ * one is a new record.
+ *
+ * The other key functions here answer a different question and the two are easy to confuse, which
+ * is how the mistake this exists to prevent gets made:
+ *
+ *   `grantKey`, `opsGrantKey`, `kindDefKey`, `oidcIdentityKey` give a LOGICAL IDENTITY — a SUBSET
+ *     of the body — so every successor shares the key, including a `retired: true` tombstone. That
+ *     is what makes latest-wins work: a withdrawal must supersede rather than sit beside.
+ *   `contentKey` gives the WHOLE content, so any change at all is a different key.
+ *
+ * Choose by what a re-put should MEAN. If writing it again must supersede, key on identity. If
+ * writing the same thing twice must be free and writing something different must be a new record,
+ * key on content. A key that names the container rather than the content dedupes writes that were
+ * meant to change something: the call returns 200, and nothing happened.
+ *
+ * A record can need both. The chat's `conversation_key` is read latest-wins by `conversationId` and
+ * written keyed by its wrap set, because enrolling a machine must produce a successor rather than
+ * replay the first write (agent_docs/plan-encryption.md).
+ *
+ * HASHED, not the canonical string itself: `idem_key` is part of a PRIMARY KEY, and Postgres has a
+ * btree tuple limit that a few kilobytes of body would cross. Async for the same reason it is
+ * hashed — Web Crypto's digest is async, and a non-cryptographic hash cannot be used for a key
+ * whose collision means two different requests silently become one.
+ *
+ * Always pass a body that is a pure function of the logical write. A timestamp or a random id in
+ * it makes every key unique, which turns the dedupe off silently — the failure this has in common
+ * with naming the container, in the opposite direction.
+ */
+export async function contentKey(tag: string, body: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(canonicalJson(body));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  // 128 bits: short enough for an index, far past birthday range for anything one space writes.
+  return `${tag}:${[...digest.subarray(0, 16)].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** JSON with object keys sorted, so field order cannot change the key. Arrays keep their order:
+ *  there, order is content. `undefined` members are dropped, as `JSON.stringify` drops them. */
+function canonicalJson(v: unknown): string {
+  if (v === null || typeof v !== "object") return JSON.stringify(v) ?? "null";
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(",")}]`;
+  const o = v as Record<string, unknown>;
+  const keys = Object.keys(o).filter((k) => o[k] !== undefined).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(o[k])}`).join(",")}}`;
+}
+
 /** What a registry read produced, and whether it saw everything. */
 export interface RegistryView {
   /** Current entry per key, retired ones dropped. */

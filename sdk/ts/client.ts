@@ -508,8 +508,31 @@ export class RadiaClient {
     return this.req("POST", `/v0/agent-runs/${encodeURIComponent(run)}/stop`);
   }
 
+  /**
+   * ONE matching record, and it is the OLDEST one.
+   *
+   * With no `orderBy` the order is the oracle's `id` tie-break, so a pattern matching several
+   * records answers with the first ever written. For anything that accumulates SUCCESSORS — a
+   * registry entry, a versioned record, key material a later write extends — that is the stale
+   * answer, and it is stale silently. Use `readNewest`.
+   */
   readOne(pattern: Pattern): Promise<RadiaRecord | null> {
     return this.req("POST", "/v0/records/read-one", pattern);
+  }
+
+  /**
+   * The NEWEST record matching `pattern`, or null.
+   *
+   * The safe half of the pair above, and the one to reach for by default: anything written as a
+   * successor (latest-wins registries, key material, any record whose "current value" is the last
+   * one) is read with this. It exists because reading the oldest match is the single most repeated
+   * mistake against this API and `readOne` was the obvious-looking call.
+   *
+   * NOTE THE GRANT. This is a `query`, not a `read_one`, so a principal holding only `read_one` on
+   * the kind gets `forbidden` here. That is not a bug to route around: ordering IS a query.
+   */
+  async readNewest(pattern: Pattern): Promise<RadiaRecord | null> {
+    return (await this.query(pattern, 1, { dir: "desc" }))[0] ?? null;
   }
 
   async query(pattern: Pattern, limit = 100, page?: Page): Promise<RadiaRecord[]> {

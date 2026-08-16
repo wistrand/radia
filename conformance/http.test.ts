@@ -1270,3 +1270,39 @@ Deno.test("http: each ops power opens exactly its verbs; none confers the identi
     await close();
   }
 });
+
+Deno.test("records: read-one answers with the OLDEST match, and a newest-first query with the newest", async () => {
+  // The distinction `RadiaClient.readNewest` exists for, pinned at the boundary rather than in the
+  // SDK, because the SDK method is a one-liner over these two endpoints and it is the ENDPOINTS'
+  // behaviour that surprises people.
+  //
+  // Three records that all match one pattern is the shape of every registry, every versioned
+  // record, and any key material a later write extends. `read-one` returning the first ever
+  // written is correct and is almost never what the caller wanted; it cost this codebase a bug
+  // where an enrolled machine was told it had no key while the record granting it sat one row
+  // later (agent_docs/research-substrate-lessons.md).
+  const { handler, close } = await newHandler();
+  try {
+    const ids: string[] = [];
+    for (const v of ["first", "second", "third"]) {
+      const r = await handler(post("/v0/records", { kind: "task", body: { tag: "t", v } }));
+      ids.push((await r.json()).id);
+    }
+
+    const oldest = await (await handler(post("/v0/records/read-one", { kind: "task", match: { tag: "t" } }))).json();
+    assertEquals(oldest.id, ids[0], "read-one is the oldest match");
+    assertEquals(oldest.body.v, "first");
+
+    const newest = await (await handler(
+      post("/v0/records/query", { kind: "task", match: { tag: "t" }, limit: 1, dir: "desc" }),
+    )).json();
+    assertEquals(newest.records[0].id, ids[2], "a newest-first query is the newest");
+    assertEquals(newest.records[0].body.v, "third");
+
+    // And they genuinely differ, which is the whole point: a caller that swapped one for the other
+    // by accident would read a stale record with no error anywhere.
+    assert(oldest.id !== newest.records[0].id);
+  } finally {
+    await close();
+  }
+});
