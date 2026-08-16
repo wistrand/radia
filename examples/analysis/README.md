@@ -108,6 +108,18 @@ substrate could tell.
 and expires with `idempotencyRetentionSeconds` (7 days), after which a re-put is a fresh record and
 the stage silently recomputes. A memo that quietly stops memoizing is worse than none.
 
+**A stage's code digest is SELF-REPORTED, and nothing verifies it.** A worker writes its own
+`stage_code` record, so one could report digest X while running Y and every result would be filed
+and cached under a version that never produced it. The whole memo rests on that claim. Radia has the
+answer already and this example does not use it: `extensions/ts/promotion.ts` pins which digest a
+tier may run, and a `binding` that disagrees with the pin is refused rather than run. Composing the
+two is the honest next step (research-substrate-lessons.md, action 5).
+
+**The planner re-plans every dataset on every wake**, and the watch discards the `Wakeup` naming
+what changed, so cost is O(datasets x stages) queries per stage completion. Fine for a demo, wrong
+at scale; `ui.html` beside it already does the right thing with three bulk reads and in-memory
+planning.
+
 **A person cannot write a `stage_result`.** That is what makes a result evidence rather than a
 claim: it says a worker computed this, from that input, under that code.
 

@@ -224,6 +224,11 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   entry said six, then eight, each time updated only after drifting). Anything answering "does
   this kind exist" must add them, or it will report that
   `artifact` is not a kind while the caller is successfully counting artifacts.
+- **All four traps below are ONE trap, and it has a name.** A projection over an append-only log,
+  read as if it were state. Two applications hit it four times in one week, none of them caught by
+  a type. If you are writing a read against something that has successors, you are in this family:
+  see [research-substrate-lessons.md](research-substrate-lessons.md) for the proposed ergonomics
+  fix (`readNewest`, a generic `contentKey`).
 - **An "already decided" sweep admits people once; it does not APPLY LATER WIDENINGS to them.**
   `sweepEnrolments` skips a principal that already holds something, which is what stops it undoing
   an operator's narrowing — and it means a power added on a later run reaches nobody already

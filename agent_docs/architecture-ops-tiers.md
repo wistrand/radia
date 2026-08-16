@@ -11,6 +11,15 @@
 > [design-auth.md](design-auth.md) "The operator bit: a power taxonomy". Read
 > [gotchas.md](gotchas.md#grants-scopes-and-narrowed-answers) before touching enforcement.
 
+
+**The one gap two applications hit independently.** Neither the chat nor the analysis pipeline can
+give a person a scoped ops READ. `observe` opens every read unscoped, and the self-scope tier needs
+`createdBy: "self"` on every applicable grant, which fails whenever a WORKER authors the records a
+person wants to look at (tool output; stage results). What both want is "the ops plane, filtered to
+what my coordination grants already cover". Before widening the tier, answer the leak it inherits: a
+lineage walk that stops at a record you may not see still tells you it exists. See
+[research-substrate-lessons.md](research-substrate-lessons.md).
+
 ## The problem it solves
 
 `Space.isPrivileged` was one bit, and the deployment default handed it out ambiently: the

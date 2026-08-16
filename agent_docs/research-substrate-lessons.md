@@ -1,0 +1,143 @@
+# What two applications taught the substrate
+
+**Status: analysis, with proposed actions. Nothing here is scheduled.** The findings are evidence
+from building [examples/chat/](../examples/chat/) and [examples/analysis/](../examples/analysis/)
+against `src/`; the actions at the bottom are proposals, sized, not a plan of record. Where a claim
+was checked, the ledger at the end says how.
+
+This doc synthesizes. It does not restate: the recurring traps live in
+[gotchas.md](gotchas.md), the ops tiers in
+[architecture-ops-tiers.md](architecture-ops-tiers.md), the extension admission rule in
+[extensions/README.md](../extensions/README.md).
+
+## Why these two
+
+They fail differently, which is what makes the overlap interesting.
+
+The chat is long-lived, conversational, and model-driven: its hard parts are context, credentials
+and turn control flow. The analysis pipeline is short-lived, deterministic and batch: its hard part
+is deciding what to recompute. Neither shares code with the other. A property both hit is a property
+of the substrate rather than of an app.
+
+## What held up
+
+**The substrate is complete for coordination and empty for meaning, and the line is in the right
+place.** The pipeline needed exactly one thing Radia does not provide: which work is stale. The DAG
+(`parent_ids`), the routing, the leases, the audit and content-addressed storage were all already
+there. That decision is about 60 lines and cannot be provided, because "what counts as an input" is
+the application. The chat reaches the same split from the other side: the substrate routes records,
+and a turn is a worker. Neither app had to fight the boundary.
+
+**Indexed paths are the real API surface.** Both apps' central design decision was the same one:
+which fields go in `indexedPaths`. The pipeline's entire behaviour follows from indexing
+`(dataset, inputDigest, codeDigest)`, which is what makes "has this been computed" a query. The
+chat's encryption is possible for the mirror reason: nothing indexes prose, so `content` can be
+ciphertext and the runtime never notices. `kind_def` is not metadata. It is the schema of what is
+designable.
+
+**Content addressing carries more than it advertises.** The docs present artifacts as "bytes too
+large for a body" plus the erasure boundary. Three unrelated features fell out of the same
+mechanism instead: the pipeline gets memoization AND downstream invalidation by chaining an output
+digest to the next input digest, and encryption gets a deletion path for record bodies by putting
+wraps in an artifact. None of those is the use the doc leads with.
+
+**"A client that happens to listen" scales as a pattern.** `git-serve`, `otlp` and now the analysis
+web app all bind their own port and need no runtime change and no wire-contract entry. The `/v0`
+surface is complete enough that a UI is a client. The analysis app additionally holds no credential:
+it relays the browser's own token, so the space applies that person's grants and the app cannot
+exceed them.
+
+**The invariants force correct designs rather than merely forbidding wrong ones.** The encryption
+arc is the evidence: each phase's storage choice was wrong until the next requirement appeared, and
+every wrong turn was caught by an EXISTING invariant rather than by taste. A symmetric fleet key
+broke on "the session creates the conversation" (deployment shape). Key material on the anchor broke
+on "a session cannot fetch by id" (the ops-plane boundary). Wraps in a record body broke on "a body
+has no erasure path" (the erasure invariant). Following the invariants produced the design.
+
+## The dominant hazard, and it is one hazard
+
+Every non-trivial bug across both apps this session was the same shape: **a projection over an
+append-only log, read as if it were state.** Four instances, all found by running the thing or by a
+planted test, none by the type system:
+
+- `readOne` answers with the OLDEST match, so a successor written by enrolment was invisible.
+- An idempotency key naming the conversation rather than the wrap set replayed the first write.
+- Content-key idempotency expires, so a memo built on it silently stops memoizing.
+- A bounded `query` where `readRegistry` was needed.
+
+CLAUDE.md already names this as the stopping rule for expressing features through the substrate.
+Two independent applications hitting it four times says the rule is real and under-enforced: it is
+documented prose defending against an ergonomics problem. Actions 1 and 2 below are the cheap half
+of the fix.
+
+## What is missing
+
+**There is no scoped ops READ tier, and both apps want the same one.** Coordination grants are
+finely scoped: per kind, per operation, pattern-matched against the body. The ops plane is a cliff.
+`observe` opens every read unscoped, and the self-scope tier requires `createdBy: "self"` on EVERY
+applicable grant, which fails whenever a WORKER authors your results. The chat hits this with tool
+output, the pipeline with stage results. What both want is "the ops plane, filtered to records my
+coordination grants already cover", and it does not exist.
+
+**No CORS means every browser application proxies.** The space sends no `Access-Control-*` headers,
+so a page on another origin cannot call `/v0`. The analysis app's relay exists for that reason alone
+and says so in its header.
+
+**"Which code version is live" has two mechanisms and no convention.** `extensions/ts/promotion.ts`
+answers it as authorization (which digest a tier MAY run, pinned in a grant). The analysis example
+invented a `stage_code` advertisement to answer it as discovery (which digest IS running). They are
+complementary rather than duplicative, but nothing says so and nothing composes them.
+
+## Where the apps are weaker than the substrate allows
+
+Recorded because the gap is the app's, not Radia's, and both are worth fixing.
+
+**The pipeline trusts a self-reported code digest.** A stage worker writes its own `stage_code`
+record, and nothing verifies it. A worker could report digest X while running Y, and every result
+would be filed and cached under a version that never produced it. The whole memo rests on an
+unverified claim. Radia already has the answer: promotion pins which digest may run, a `binding`
+names the digest a host runs, and a mismatch is refused rather than run.
+
+**The planner re-plans every dataset on every wake.** `planAll` walks all datasets and issues
+per-dataset queries, and the watch discards the `Wakeup` that says which record changed. Cost is
+O(datasets x stages) queries per stage completion. The page beside it already does the right thing:
+three bulk reads, then plan in memory.
+
+## Suggested actions
+
+Ranked by value over cost. Sizes are relative: SMALL is a contained change with an obvious guard,
+DESIGN-FIRST means the open question below has to be answered before code.
+
+| # | Action | Why | Size | Lands in |
+|---|---|---|---|---|
+| 1 | `readNewest(pattern)` on both SDKs | the hazard's commonest instance; makes the correct call as cheap as the wrong one, and lets `readOne`'s doc say "oldest match; you probably want readNewest". No new endpoint: it is `query(p, 1, {dir:"desc"})[0]` | SMALL | `sdk/ts/client.ts`, `sdk/py/radia.py`, pointer from gotchas |
+| 2 | A generic `contentKey(prefix, body)` | the second instance. `kindDefKey`/`grantKey`/`opsGrantKey` already do this per kind; apps re-derive it per site and get it wrong by naming the container instead of the content | SMALL | `sdk/ts/registry.ts`, beside the existing keys |
+| 3 | Opt-in CORS (`--allow-origin <origin>`) | removes an entire proxy layer from every browser app. Bearer tokens rather than cookies, so the surface is narrow; default off and echoed at startup like other posture flags | SMALL/MEDIUM | `src/server/http.ts`, `conformance/defaults.test.ts`; check whether a preflight OPTIONS needs an openapi entry |
+| 4 | Plan from bulk reads, in memory | O(1) queries per wake instead of O(datasets x stages); `ui.html` is the worked example | SMALL | `examples/analysis/planner.ts` |
+| 5 | Pin stage code with promotion instead of self-report | turns the memo's foundation from a claim into an enforced fact, and would be the first worked composition of promotion with something other than an exec runner | MEDIUM | `examples/analysis/`, `extensions/ts/promotion.ts` |
+| 6 | A scoped ops READ tier | the one gap both apps hit independently and neither can work around | DESIGN-FIRST | `architecture-ops-tiers.md`, then `src/server/http.ts` + `handlers/ops.ts` |
+
+**The open question in 6, which is why it is design-first.** A lineage or graph walk that stops at a
+record the caller may not see still tells them it exists: the shape leaks even when the bodies do
+not. The existing `createdBy: "self"` tier has the same property and nobody has decided whether that
+is acceptable, so widening the tier without answering it widens the leak too. Answer that first, in
+the doc, with the two candidate semantics written down (truncate the walk and SAY so, versus refuse
+the whole read).
+
+## Claim ledger
+
+| Claim | How it was checked |
+|---|---|
+| `readOne` returns the oldest match | Empirically: enrolment wrote a successor and the reader kept returning the original wrap set until the query became `dir: "desc"`; a plant reproduced it |
+| The space sends no CORS headers | `grep -c "Access-Control" src/server/http.ts` is 0 |
+| Neither SDK has `readNewest` | grep, both files |
+| `observe` opens every read unscoped | `src/server/http.ts` ops gate, plus architecture-ops-tiers.md |
+| Self-scope needs `createdBy: "self"` on every grant | `src/core/kinds.ts`: "`authorScope` restricts only when every applicable grant says `createdBy: \"self\"`" |
+| Nothing verifies a `stage_code` digest | By construction: the worker writes its own advertisement |
+| The planner is O(datasets) per wake | `planAll` iterates `datasets(c)`; the watch binds the `Wakeup` to `_` |
+| A person cannot forge a `stage_result` | `examples/analysis/roles.ts` withholds it; asserted in `smoke.ts` |
+| Encryption's three redesigns | Each is recorded with its cause in [plan-encryption.md](plan-encryption.md) |
+
+**Not checked, and stated as inference:** that the substrate's boundary is in "the right place" is a
+judgement from two apps, not a measurement. A third application with a different shape (streaming
+ingest, or anything with a hard latency budget) is the test that would falsify it.
