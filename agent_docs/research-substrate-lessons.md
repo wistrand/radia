@@ -127,6 +127,21 @@ still plans every dataset rather than the one the `Wakeup` names, and only the 5
 larger space can leave an older stale dataset unplanned. Both want the same thing — incremental
 planning from the record that changed.
 
+## From the test harness: shared spaces, and an unexplained history penalty
+
+Added 2026-08-16, from the extension-suite refactor rather than the two apps. The suites booted
+`src/main.ts dev` PER TEST: ~1.4s of subprocess start around milliseconds of assertion, ~150
+boots, 3m44s in CI. They now boot one space per FILE (`extensions/conformance/space.ts`) with
+isolation moved to NAMES (`uniq()` per test), which cut the suite to ~1m15s locally. One
+substrate-shaped observation surfaced: a ~13k-write burst (workspace.test.ts's manifest-cap case)
+took 21s on a fresh space and 42s on one carrying the file's accumulated history — on CI
+hardware, twice, in different regions — while the same comparison is only 17s vs 21s locally.
+The amortized GC is ruled out by its measured costs (plan-gc.md: ≤9ms per trigger, ~13 triggers
+here). What remains suspected, NOT shown: heap growth in the long-lived space process, or
+per-request overhead compounding on a constrained 2-core VM. Worked around rather than explained
+(that one test boots a private space); a long-lived space taking large write bursts is the
+production shape that would meet this, so profile before trusting any theory.
+
 ## Suggested actions
 
 Ranked by value over cost. Sizes are relative: SMALL is a contained change with an obvious guard,
@@ -216,6 +231,8 @@ would have shown nothing.
 | The planner is O(datasets) per wake | `planAll` iterates `datasets(c)`; the watch binds the `Wakeup` to `_` |
 | A person cannot forge a `stage_result` | `examples/analysis/roles.ts` withholds it; asserted in `smoke.ts` |
 | Encryption's three redesigns | Each is recorded with its cause in [plan-encryption.md](plan-encryption.md) |
+| A history-carrying space doubles a 13k-write burst on CI | Measured twice (two Azure regions): 41s/43s shared vs 21s on the old per-test spaces; locally 21s shared vs 17s fresh |
+| The amortized GC is not that penalty's cause | plan-gc.md's measured table: 0.36–9ms per trigger, one trigger per 1000 writes |
 
 **Not checked, and stated as inference:** that the substrate's boundary is in "the right place" is a
 judgement from two apps, not a measurement. A third application with a different shape (streaming

@@ -418,7 +418,44 @@ Deno.test("workspace: edit reaches the same trees read does, and versions them w
 });
 
 Deno.test("workspace: the record body limit caps a manifest, which forces dependencies out of line", async () => {
-  await withSpace(async (c) => {
+  // A PRIVATE space, the one exception to the shared boot: this test writes ~13k artifacts, and
+  // on a shared space those weigh on every later test AND on this one (measured: 21s fresh vs
+  // 42s shared on CI, where the history penalty doubles; the artifacts it strands would sit in
+  // the artifact kind for the rest of the file). Booted and killed inline, the pre-refactor shape.
+  const heavyPort = 7818;
+  const heavyUrl = `http://127.0.0.1:${heavyPort}`;
+  const space = new Deno.Command(Deno.execPath(), {
+    args: ["run", "-A", "src/main.ts", "dev", "--port", String(heavyPort), "--artifact-port", "0"],
+    stdout: "null",
+    stderr: "inherit",
+  }).spawn();
+  try {
+    const probe = new RadiaClient(heavyUrl);
+    for (let i = 0; i < 400; i++) {
+      try {
+        await probe.health();
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    }
+    const c = new RadiaClient(heavyUrl, { token: operatorToken(heavyUrl) });
+    await c.registerKind({
+      kind: "workspace",
+      indexedPaths: [
+        { path: "name", type: "keyword" },
+        { path: "owner", type: "keyword" },
+        { path: "treeDigest", type: "keyword" },
+        { path: "basedOn", type: "keyword" },
+      ],
+      claimable: false,
+    });
+    await c.registerKind({
+      kind: "artifact",
+      indexedPaths: [{ path: "digest", type: "keyword" }, { path: "mediaType", type: "keyword" }],
+      claimable: false,
+    });
+
     // The number this phase owed. A manifest is a record body, and a body cannot be erased, so the
     // limit is what turns "put the dependency tree beside the manifest" from a preference into a
     // wall. Two points bracket it rather than a full ladder: the contract is that a limit EXISTS
@@ -440,7 +477,10 @@ Deno.test("workspace: the record body limit caps a manifest, which forces depend
       refused = (e as Error).message;
     }
     assert(/record_too_large/.test(refused), `10000 files must be refused, got: ${refused || "accepted"}`);
-  });
+  } finally {
+    space.kill();
+    await space.status;
+  }
 });
 
 // ── Phase 2: materialise, read-only ──────────────────────────────────────────────────────────────
