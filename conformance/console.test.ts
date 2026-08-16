@@ -819,3 +819,22 @@ Deno.test("console: the Graph root picker serves an OBSERVER through the event l
   assertEquals(t2.calls.length, 1, "only a 403 reroutes; a 500 is an error to show");
   assert(t2.els["g-roots"].innerHTML.includes("note err"));
 });
+
+Deno.test("console: an encrypted body is shown as «encrypted», never as its ciphertext", () => {
+  const isEncrypted = new Function(`${extractFunction(html, "isEncrypted")}; return isEncrypted;`)() as (
+    rec: unknown,
+  ) => boolean;
+
+  assert(isEncrypted({ body: { enc: "v1", content: "Y2lwaGVy" } }));
+  assert(!isEncrypted({ body: { content: "hello" } }));
+  assert(!isEncrypted({ body: {} }));
+  assert(!isEncrypted({}), "a record with no body is not encrypted, it is empty");
+  assert(!isEncrypted(null));
+
+  // The console holds no key and never will, so the RULE is that it recognises the marker rather
+  // than trying to read past it. Both render paths consult the same predicate.
+  const src = html.slice(html.indexOf("function renderRecordList"));
+  assert(/isEncrypted\(rec\)\s*\?\s*`<span class="muted">«encrypted»<\/span>`/.test(src),
+    "the list preview masks a marked body");
+  assert(html.includes("«encrypted» — this body's prose is ciphertext"), "the detail view says why");
+});

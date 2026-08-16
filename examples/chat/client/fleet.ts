@@ -104,12 +104,18 @@ export const FLEET_PROVIDERS = [
 export function launchFleet(tokens: Bootstrapped, fleetKey?: FleetKeyPair): Deno.ChildProcess[] {
   const { inferenceToken, routerToken, toolsToken, imagesToken, execToken, turnToken } = tokens;
   const procs: Deno.ChildProcess[] = [];
-  // The fleet's private half reaches inference through the ENVIRONMENT, not through the file it
-  // lives in. This worker holds the API key and is spawned with no filesystem access at all
-  // (`--allow-net --allow-env` and nothing else), so a read of the key file is a permission it does
-  // not have — and `fleetKeyPair` cannot tell "denied" from "absent", so the failure was silent: the
-  // worker simply served no encrypted conversation. Passing the value keeps its zero-filesystem
-  // property intact. Absent when no key was generated, which is every plaintext-only deployment.
+  // The fleet's private half reaches its workers through the ENVIRONMENT, not through the file it
+  // lives in. Every one of them is spawned with a deliberately narrow permission set — inference has
+  // no filesystem at all, the exec worker sees only its jail root — so a read of the key file is a
+  // permission none of them has, and `fleetKeyPair` cannot tell "denied" from "absent", so the
+  // failure was silent: the worker simply served no encrypted conversation. Passing the value keeps
+  // those permission sets intact.
+  //
+  // WHO GETS IT is the blast radius of the accepted gap ("the fleet can read everything"): every
+  // worker that must read prose to do its job — inference to call a provider, tools and images to
+  // act on arguments, exec to run and judge code. The router and the turn worker are NOT on the
+  // list and must not be: they route an encrypted conversation without ever opening one.
+  // Absent when no key was generated, which is every plaintext-only deployment.
   const keyEnv = fleetKey ? { RADIA_CHAT_FLEET_KEY: btoa(JSON.stringify(fleetKey)) } : undefined;
 
   // One inference-worker per tier, all the same agent: each claims only `{llm_call, tier}` and
@@ -153,7 +159,7 @@ export function launchFleet(tokens: Bootstrapped, fleetKey?: FleetKeyPair): Deno
     "--model", IMAGE_MODEL,
     "--vision-model", VISION_MODEL,
     "--vision-types", VISION_MEDIA_TYPES.join(","),
-  ]));
+  ], keyEnv));
 
   // Tools: reads only the sandbox dirs, reaches only the local space, and gets NO env. It holds NO
   // session credential: the `space_*` tools moved into the REPL process (client/session-tools.ts),
@@ -167,7 +173,7 @@ export function launchFleet(tokens: Bootstrapped, fleetKey?: FleetKeyPair): Deno
     "--token", toolsToken,
     "--concurrency", String(LOCAL_CONCURRENCY),
     ...toolRoots.flatMap((r) => ["--dir", r]),
-  ]));
+  ], keyEnv));
 
   // Exec: may spawn `deno` and `bwrap` and reach the space, nothing else. The child it spawns gets no
   // permissions at all (extensions/ts/sandbox.ts), so the dangerous half of the pair holds no credential.
@@ -203,7 +209,10 @@ export function launchFleet(tokens: Bootstrapped, fleetKey?: FleetKeyPair): Deno
   procs.push(spawn("exec", [
     `--allow-net=127.0.0.1:${port}`,
     "--allow-run=deno,bwrap,mkfifo",
-    "--allow-env=HOME", // only to give the sandboxed child a module-cache home
+    // HOME gives the sandboxed child a module-cache home; the fleet key is how this worker opens the
+    // arguments it runs and seals the verdict it writes (plan-encryption.md phase 4). Named
+    // individually rather than `--allow-env`, because this is the worker that spawns a jail.
+    "--allow-env=HOME,RADIA_CHAT_FLEET_KEY",
     `--allow-write=${workspaceRoot}`,
     `--allow-read=${workspaceRoot}`, // to read back what it just wrote, and nothing else
     "examples/chat/workers/exec.ts",
@@ -230,7 +239,7 @@ export function launchFleet(tokens: Bootstrapped, fleetKey?: FleetKeyPair): Deno
         `${Deno.env.get("HOME")}/.radia`,
       ]
       : []),
-  ]));
+  ], keyEnv));
 
   return procs;
 }

@@ -25,7 +25,9 @@
 import { agentLoop } from "../../../sdk/ts/loop.ts";
 import { activeByKey, newestByKey, RadiaClient, type RadiaRecord } from "../../../sdk/ts/client.ts";
 import { dryRunEntrypoint } from "../../../extensions/ts/broker.ts";
-import { asTurnReply } from "../../../extensions/ts/turn.ts";
+import { asTurnReply, parseArgs } from "../../../extensions/ts/turn.ts";
+import { type ConversationKey, openBody, sealBody } from "../../../extensions/ts/encrypted.ts";
+import { conversationKeys, fleetKeyPair } from "../space/keys.ts";
 import { runCode, runEntry } from "../../../extensions/ts/sandbox.ts";
 import { captureWorkspace, commitWorkspace, materialize, readWorkspace, validateEntrypoint, writeWorkspace } from "../../../extensions/ts/workspace.ts";
 import { bwrapSandbox, defaultConfiner, denoSandbox, macosPython, runBwrap, runSeatbelt, seatbeltPythonSandbox } from "../../../extensions/ts/sandbox.ts";
@@ -76,6 +78,9 @@ const denyRead = argAll("--deny-dir").filter(Boolean);
  */
 const requireConfinement = argOn("--require-confinement");
 const client = new RadiaClient(url, token ? { definitionToken: token } : {});
+// The fleet's private half, handed over by the launcher (never read from disk: this worker's jail
+// permissions are the point of it). Absent for a plaintext-only deployment.
+const fleet = await fleetKeyPair();
 
 /** Stdout longer than this is stored rather than inlined: a large payload in a `tool_result` lands
  *  in the message thread and is re-sent on every later turn. The reference costs ~40 characters. */
@@ -1011,6 +1016,7 @@ async function storeStdout(c: RadiaClient, b: Call, callId: string, r: Run) {
  */
 async function judgeRun(
   c: RadiaClient,
+  key: ConversationKey | undefined,
   b: Call,
   callId: string,
   jail: "python" | "javascript",
@@ -1021,27 +1027,30 @@ async function judgeRun(
   if (!expectation) return undefined;
   const j = judge(expectation, r);
   try {
+    // The verdict stays clear; what it OBSERVED does not. `stdout` is the program's output and
+    // `expected` is the text it was compared against, which is the same content by another name.
+    const body = {
+      callId,
+      conversationId: b.conversationId,
+      owner: b.owner,
+      tool: b.tool ?? "run_javascript",
+      // WHAT was verified, not just that something was. A verdict against a tree digest is an
+      // attestation of a reproducible input; against a call id it is a note about an event.
+      ...(tree.digest ? { workspace: tree.name, treeDigest: tree.digest } : {}),
+      // WHERE it was verified. A verdict from a jail with a filesystem and one from a jail with
+      // none are not the same evidence, and nothing else in the record says which.
+      sandbox: jail === "python" ? "python" : "deno",
+      verdict: j.verdict,
+      expected: expectation,
+      reasons: j.reasons,
+      // The observed side, capped: enough to see WHY it failed without copying a payload into a
+      // record that has to stay queryable JSON.
+      exitCode: r.exitCode,
+      stdout: r.stdout.slice(0, 500),
+    };
     await c.put({
       kind: "check",
-      body: {
-        callId,
-        conversationId: b.conversationId,
-        owner: b.owner,
-        tool: b.tool ?? "run_javascript",
-        // WHAT was verified, not just that something was. A verdict against a tree digest is an
-        // attestation of a reproducible input; against a call id it is a note about an event.
-        ...(tree.digest ? { workspace: tree.name, treeDigest: tree.digest } : {}),
-        // WHERE it was verified. A verdict from a jail with a filesystem and one from a jail with
-        // none are not the same evidence, and nothing else in the record says which.
-        sandbox: jail === "python" ? "python" : "deno",
-        verdict: j.verdict,
-        expected: expectation,
-        reasons: j.reasons,
-        // The observed side, capped: enough to see WHY it failed without copying a payload into a
-        // record that has to stay queryable JSON.
-        exitCode: r.exitCode,
-        stdout: r.stdout.slice(0, 500),
-      },
+      body: key ? await sealBody(body, "check", key) : body,
       // The call is the parent, so a check hangs off the attempt it judges and rides the same
       // attempt chain the retry lineage builds.
       parentIds: [callId],
@@ -1112,11 +1121,32 @@ await agentLoop(client, {
   // over, run it, capture what it changed, judge what it claimed. This was one 265-line function,
   // which is longer than most files in the runtime and was the hardest thing here to follow.
   // A slotted call's reply IS the tool message (workers/reply.ts); a bare call keeps tool_result.
-  handle: async (rec, c) => asTurnReply(rec, await serve(rec, c)),
+  handle: async (rec, c) => {
+    // One key per claim, for both directions: the arguments this worker runs on, and the answer
+    // plus verdict it writes back (plan-encryption.md phase 4).
+    const b = rec.body as { conversationId?: string; owner?: string };
+    const key = b.conversationId && fleet
+      ? await conversationKeys(c, { kind: "fleet", privateKey: fleet.privateKey, keyId: fleet.keyId })(
+        b.conversationId,
+        b.owner,
+      ).catch(() => undefined)
+      : undefined;
+    const opened = key ? { ...rec, body: await openBody(rec.body as Record<string, unknown>, "tool_call", key) } : rec;
+    const ob = opened.body as { args?: unknown };
+    // An opened `args` is the model's RAW argument string: the turn worker copied a blob it could
+    // not read rather than parsing it. The parse happens on the far side of the key.
+    const claim = typeof ob.args === "string"
+      ? { ...opened, body: { ...opened.body as Record<string, unknown>, args: parseArgs(ob.args) } }
+      : opened;
+    const reply = asTurnReply(claim, await serve(claim as typeof rec, c, key));
+    return key && reply && typeof reply.kind === "string" && reply.body
+      ? { ...reply, body: await sealBody(reply.body as Record<string, unknown>, reply.kind, key) }
+      : reply;
+  },
 });
 
 // deno-lint-ignore no-explicit-any
-async function serve(rec: any, c: RadiaClient): Promise<{ kind: string; body: Record<string, unknown>; [extra: string]: unknown }> {
+async function serve(rec: any, c: RadiaClient, key?: ConversationKey): Promise<{ kind: string; body: Record<string, unknown>; [extra: string]: unknown }> {
   {
     const callId = rec.id;
     const b = rec.body as Call;
@@ -1262,7 +1292,7 @@ async function serve(rec: any, c: RadiaClient): Promise<{ kind: string; body: Re
     // `c`, not `s`: the verdict IS exec's, which is the whole reason the session holds `check:
     // query` and not `check: put`. Delegating it would let the model's own reach decide whether
     // its run passed.
-    const checked = await judgeRun(c, b, callId, jail, tree, r);
+    const checked = await judgeRun(c, key, b, callId, jail, tree, r);
 
     return {
       kind: "tool_result",

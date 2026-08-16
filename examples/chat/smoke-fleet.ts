@@ -194,19 +194,52 @@ check("the rule holds at three tiers too", ["fast", "balanced", "deep"][heuristi
 {
   const fleetSrc = Deno.readTextFileSync(new URL("./client/fleet.ts", import.meta.url));
   // Each spawn(...) call: its permission flags plus the worker file it runs.
-  const spawns = [...fleetSrc.matchAll(/spawn\(\s*[`"'][^`"']*[`"']\s*,\s*\[([\s\S]*?)\]\s*\)/g)];
+  // The optional trailing argument is the environment the launcher passes (the fleet key), so the
+  // closing bracket is not always followed by the closing paren.
+  const spawns = [...fleetSrc.matchAll(/spawn\(\s*[`"'][^`"']*[`"']\s*,\s*\[([\s\S]*?)\]\s*(?:,[^)]*)?\)/g)];
   check("the fleet's spawns are parseable (this guard is not silently testing nothing)", spawns.length >= 5, `${spawns.length} spawns`);
   for (const m of spawns) {
     const args = m[1];
     const file = args.match(/["'](examples\/chat\/workers\/[a-z-]+\.ts)["']/)?.[1];
     if (!file) continue;
     const src = Deno.readTextFileSync(new URL("../../" + file, import.meta.url));
-    const readsEnv = /Deno\.env\./.test(src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, ""));
+    const strip = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    const readsEnv = /Deno\.env\./.test(strip(src));
     const mayReadEnv = /--allow-env/.test(args);
     check(
       `${file.split("/").pop()}: reads env only if spawned with --allow-env`,
       !readsEnv || mayReadEnv,
       readsEnv ? (mayReadEnv ? "reads env, permitted" : "READS ENV WITHOUT --allow-env") : "no env reads",
+    );
+
+    // And WHICH variables, when the flag names a list. `--allow-env` bare permits everything;
+    // `--allow-env=HOME` permits one, and reading any other THROWS rather than returning undefined.
+    // That is a startup crash, and it happened: the exec worker gained the fleet key through an
+    // imported module and stopped advertising anything. So the worker's own source is not enough —
+    // the app modules it imports are followed one level, which is where that read lived.
+    //
+    // LITERAL reads only. `Deno.env.get(SOME_CONST)` is invisible here, which is exactly the shape
+    // the exec worker's read has, so this does not cover that case and must not be read as doing
+    // so; what closes that one is `env()` in space/keys.ts answering "unset" instead of throwing.
+    const allowed = args.match(/--allow-env=([A-Za-z0-9_,]+)/)?.[1]?.split(",");
+    if (!allowed) continue;
+    const workerUrl = new URL("../../" + file, import.meta.url);
+    // `import type` is ERASED, so the module never loads and its reads never run. Following one is
+    // how this guard first reported the exec worker for a variable it cannot touch.
+    const imports = [...strip(src).matchAll(/\bimport\s+(?!type\b)[^;]*?from\s+["']((?:\.\.?\/)[^"']+\.ts)["']/g)]
+      .map((i) => i[1]);
+    let scanned = strip(src);
+    for (const rel of imports) {
+      try {
+        scanned += strip(Deno.readTextFileSync(new URL(rel, workerUrl)));
+      } catch { /* outside the app, or unreadable: its own suite covers it */ }
+    }
+    const named = [...scanned.matchAll(/Deno\.env\.get\(\s*["']([A-Za-z0-9_]+)["']/g)].map((m2) => m2[1]);
+    const missing = [...new Set(named)].filter((n) => !allowed.includes(n));
+    check(
+      `${file.split("/").pop()}: every variable it reads is in its --allow-env list`,
+      missing.length === 0,
+      missing.length ? `NOT PERMITTED: ${missing.join(", ")} (allowed: ${allowed.join(", ")})` : allowed.join(", "),
     );
   }
 }

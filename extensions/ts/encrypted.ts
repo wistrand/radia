@@ -327,12 +327,37 @@ export function encryptionOf(body: unknown): ConversationEncryption | undefined 
 // grant patterns against the BODY on write, so encrypting `owner` or `conversationId` would break
 // authorization rather than hide anything.
 
-export const ENCRYPTED_FIELDS: Readonly<Record<string, readonly string[]>> = {
-  message: ["content"],
+/**
+ * Which fields a kind seals, split by how the value survives the round trip.
+ *
+ * `text` is a string and is sealed as itself. `json` is anything else — an object, or a field whose
+ * type varies by call — and is sealed as its JSON, so opening restores the value rather than a
+ * string that looks like one. The split is static per field because every field here has one shape,
+ * and a tag inside the ciphertext would have changed the format strings already use.
+ */
+export interface SealedFields {
+  text?: readonly string[];
+  json?: readonly string[];
+}
+
+export const ENCRYPTED_FIELDS: Readonly<Record<string, SealedFields>> = {
+  // `tool_calls` is sealed one level down, at `function.arguments`: the turn worker routes on `id`
+  // and `function.name` and must keep reading them (see `sealToolCalls`).
+  message: { text: ["content"] },
   // The stream, not only the answer. Encrypting the final message while the same text goes past in
   // clear as chunks is a feature that looks like it works: chunks are retained for a day, so the
   // whole conversation would sit on the space in the clear.
-  llm_chunk: ["delta"],
+  llm_chunk: { text: ["delta"] },
+  // A tool ACTS on its arguments. What arrives here is already sealed: the inference worker sealed
+  // `function.arguments` when it wrote the assistant message, and the turn worker copied the blob
+  // without reading it, so this opens to the model's RAW argument string rather than to an object.
+  tool_call: { text: ["args"] },
+  // `output` is whatever a tool returned — a string, an object, a number — so it round-trips as JSON.
+  tool_result: { json: ["output"] },
+  // A code runner's verdict. `stdout` is the program's output and `expected` holds the text it was
+  // compared against, which is the same content by another name. `verdict` stays clear: it is an
+  // indexed routing field, and it is the half an operator needs without reading anyone's data.
+  check: { text: ["stdout"], json: ["expected"] },
 };
 
 const NONCE_BYTES = 12;
@@ -403,10 +428,51 @@ export async function sealBody<T extends Record<string, unknown>>(
   const fields = ENCRYPTED_FIELDS[kind];
   if (!fields) return body;
   const out: Record<string, unknown> = { ...body, [ENC_FIELD]: ENC_V1 };
-  for (const f of fields) {
+  for (const f of fields.text ?? []) {
     if (typeof body[f] === "string") out[f] = await encryptText(key, body[f] as string, idempotencyKey);
   }
+  for (const f of fields.json ?? []) {
+    if (body[f] !== undefined && body[f] !== null) {
+      out[f] = await encryptText(key, JSON.stringify(body[f]), idempotencyKey);
+    }
+  }
+  // The one NESTED case, and it is nested because the turn worker must keep routing on what
+  // surrounds it: a tool call's `id` and `function.name` say which worker answers where, while
+  // `arguments` is the model's prose. Sealed here, at the only writer that holds a key, so the turn
+  // worker can copy the blob into a `tool_call` without ever being able to read it.
+  if (kind === "message" && Array.isArray(body.tool_calls)) {
+    out.tool_calls = await sealToolCalls(body.tool_calls as ToolCallish[], key, idempotencyKey);
+  }
   return out as T;
+}
+
+/** The shape this file needs from a tool call. Structural rather than imported, so `turn.ts` and
+ *  this one do not depend on each other. */
+interface ToolCallish {
+  id?: string;
+  function?: { name?: string; arguments?: string };
+}
+
+async function sealToolCalls(
+  calls: ToolCallish[],
+  key: ConversationKey,
+  idempotencyKey?: string,
+): Promise<ToolCallish[]> {
+  const out: ToolCallish[] = [];
+  for (const [i, c] of calls.entries()) {
+    const args = c.function?.arguments;
+    if (typeof args !== "string") {
+      out.push(c);
+      continue;
+    }
+    // The per-call index joins the idempotency key, or two calls in one round would derive one
+    // nonce under one DEK.
+    out.push({
+      ...c,
+      function: { ...c.function, arguments: await encryptText(key, args, idempotencyKey && `${idempotencyKey}#${i}`) },
+    });
+  }
+  return out;
 }
 
 /**
@@ -424,8 +490,24 @@ export async function openBody<T extends Record<string, unknown>>(
   if (encMarker(body) === undefined) return body;
   const out: Record<string, unknown> = { ...body };
   delete out[ENC_FIELD];
-  for (const f of ENCRYPTED_FIELDS[kind] ?? []) {
+  const fields = ENCRYPTED_FIELDS[kind];
+  for (const f of fields?.text ?? []) {
     if (typeof body[f] === "string") out[f] = await decryptText(key, body[f] as string);
+  }
+  for (const f of fields?.json ?? []) {
+    if (typeof body[f] === "string") out[f] = JSON.parse(await decryptText(key, body[f] as string));
+  }
+  if (kind === "message" && Array.isArray(body.tool_calls)) {
+    const opened: ToolCallish[] = [];
+    for (const c of body.tool_calls as ToolCallish[]) {
+      const args = c.function?.arguments;
+      opened.push(
+        typeof args === "string"
+          ? { ...c, function: { ...c.function, arguments: await decryptText(key, args) } }
+          : c,
+      );
+    }
+    out.tool_calls = opened;
   }
   return out as T;
 }

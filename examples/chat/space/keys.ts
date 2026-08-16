@@ -19,8 +19,9 @@
 // No private key is ever written to the space. What the space holds is the DEK wrapped under each.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
-import { readRegistry } from "../../../sdk/ts/client.ts";
+import { RadiaClientError, readRegistry } from "../../../sdk/ts/client.ts";
 import {
+  type ConversationEncryption,
   type ConversationKey,
   encryptionOf,
   type FleetKeyPair,
@@ -37,9 +38,19 @@ import { saveContentKey, storedContentKey } from "../../../src/credentials.ts";
 /** The kind the fleet's public half is published under. A registry: latest wins, retirable. */
 export const FLEET_KEY_KIND = "fleet_key";
 
-/** A conversation's wrapped DEKs, keyed by `conversationId` because a session cannot fetch the
- *  anchor by id: get-by-id is the ops plane, and every public read is a pattern over declared
- *  paths. Body = `{conversationId, owner, ...ConversationEncryption}`. */
+/**
+ * A conversation's key material, keyed by `conversationId` because a session cannot fetch the anchor
+ * by id: get-by-id is the ops plane, and every public read is a pattern over declared paths.
+ *
+ * The record POINTS at the wraps; it does not hold them. Body = `{conversationId, owner, v, keys}`,
+ * where `keys` is an artifact id. That indirection is the whole of phase 5: a record body has no
+ * erasure path (the erasure invariant is what pushes erasable data into artifacts), so wraps stored
+ * inline could never be destroyed and a conversation could never be crypto-shredded. Shredding that
+ * artifact destroys the only copy of the key, and every body it protected becomes permanently
+ * unreadable while the records, their lineage and the event chain survive.
+ *
+ * Same precedent as an OIDC profile artifact, and the same reason.
+ */
 export const CONVERSATION_KEY_KIND = "conversation_key";
 
 const KEY_ENV = "RADIA_CHAT_FLEET_KEY";
@@ -47,7 +58,17 @@ const KEY_ENV = "RADIA_CHAT_FLEET_KEY";
 /** Where a generated fleet key pair is kept: the one runtime directory, beside everything else a
  *  space writes. Not the per-user credential file — this is the FLEET's secret, not a person's. */
 export function fleetKeyPath(): string {
-  return `${Deno.env.get("RADIA_DIR") ?? ".radia"}/chat-fleet-key.json`;
+  return `${env("RADIA_DIR") ?? ".radia"}/chat-fleet-key.json`;
+}
+
+/** `Deno.env.get` that answers "unset" for a variable this process may not read. A worker under a
+ *  narrow `--allow-env` must degrade to having no key, never fail to start. */
+function env(name: string): string | undefined {
+  try {
+    return Deno.env.get(name);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -59,7 +80,11 @@ export function fleetKeyPath(): string {
  * fleet cannot match and seal conversations nobody can read.
  */
 export async function fleetKeyPair(opts: { create?: boolean } = {}): Promise<FleetKeyPair | undefined> {
-  const fromEnv = Deno.env.get(KEY_ENV);
+  // Every read here is permission-guarded, because the callers are workers with deliberately narrow
+  // permission sets: a `Deno.env.get` for a variable outside `--allow-env` THROWS, and one of these
+  // runs at module scope, so an unguarded read does not degrade to "no key" — it stops the worker
+  // before it advertises anything. That is how the exec worker went silent once.
+  const fromEnv = env(KEY_ENV);
   if (fromEnv) return JSON.parse(atob(fromEnv)) as FleetKeyPair;
   const path = fleetKeyPath();
   try {
@@ -147,12 +172,60 @@ export function conversationKeys(
   return async (conversationId, owner) => {
     const rec = await c.readOne({ kind: CONVERSATION_KEY_KIND, match: { conversationId } });
     if (!rec) return undefined;
-    const body = rec.body as { owner?: string };
+    const body = rec.body as { owner?: string; keys?: string };
     if (owner !== undefined && body.owner !== owner) {
       throw new Error(`conversation ${conversationId} does not belong to ${owner}; refusing to open its key`);
     }
-    const encryption = encryptionOf(rec.body);
-    if (!encryption) throw new Error(`conversation ${conversationId} has a key record carrying no key material`);
+    if (!body.keys) throw new Error(`conversation ${conversationId} has a key record naming no key material`);
+    let raw: Uint8Array;
+    try {
+      raw = await c.getArtifact(body.keys);
+    } catch (e) {
+      // `erased` is the erasure doing its job, and it must not read like a transient failure: the
+      // bytes are gone, so this conversation is unreadable by anyone, forever, and no retry changes
+      // that. Matched on the CODE the space returns, never on the prose of the message.
+      if (e instanceof RadiaClientError && e.code === "erased") throw new ConversationErasedError(conversationId);
+      throw e;
+    }
+    const encryption = encryptionOf(JSON.parse(new TextDecoder().decode(raw)));
+    if (!encryption) throw new Error(`conversation ${conversationId}'s key artifact carries no key material`);
     return await ring.dek(conversationId, encryption);
   };
+}
+
+/** Raised when a conversation's key artifact has been shredded. Its bodies are ciphertext nobody
+ *  can open, which is the intended end state rather than a fault to retry. */
+export class ConversationErasedError extends Error {
+  constructor(readonly conversationId: string) {
+    super(
+      `conversation ${conversationId} was ERASED: its key was destroyed, so its content is permanently ` +
+        `unreadable. The records, their lineage and the event chain remain.`,
+    );
+    this.name = "ConversationErasedError";
+  }
+}
+
+/**
+ * Write a conversation's key material: the wraps as a SHREDDABLE artifact, and a record naming it.
+ *
+ * Both carry `conversationId` and `owner` so a grant pattern binds them, which is what stops the
+ * artifact being readable by anyone holding its id.
+ */
+export async function writeConversationKey(
+  c: RadiaClient,
+  conversationId: string,
+  owner: string,
+  encryption: ConversationEncryption,
+): Promise<{ record: string; keys: string }> {
+  const art = await c.putArtifact(new TextEncoder().encode(JSON.stringify(encryption)), {
+    mediaType: "application/json",
+    filename: `conversation-key-${conversationId}.json`,
+    meta: { conversationId, owner },
+    idempotencyKey: `conversation-key-bytes:${conversationId}`,
+  });
+  const rec = await c.put(
+    { kind: CONVERSATION_KEY_KIND, body: { conversationId, owner, v: encryption.v, keys: art.id } },
+    `conversation-key:${conversationId}`,
+  );
+  return { record: rec.id, keys: art.id };
 }

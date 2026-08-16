@@ -18,8 +18,8 @@ import { agentLoop } from "../../sdk/ts/loop.ts";
 import type { RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
 import { publishCapability, type ToolDef } from "./capability.ts";
 import { progress } from "./progress.ts";
-import { assertReadable } from "./encrypted.ts";
-import { asTurnReply, type TurnKinds } from "./turn.ts";
+import { assertReadable, type ConversationKey, openBody, sealBody } from "./encrypted.ts";
+import { asTurnReply, parseArgs, type TurnKinds } from "./turn.ts";
 import type { Tool, ToolContext } from "./agent-tools.ts";
 
 /** A `tool_call` body, in the fields this harness reads. */
@@ -82,6 +82,21 @@ export function toolResult(
   };
 }
 
+/**
+ * Seal a worker's reply under the conversation's key, whichever shape it took.
+ *
+ * The kind decides the fields (`ENCRYPTED_FIELDS`), so this is one call rather than a branch: a
+ * bare call's `tool_result.output` and a slotted call's transcript `message.content` are both
+ * covered, and a reply of any other shape passes through untouched.
+ */
+async function sealReply<T extends { kind?: string; body?: unknown }>(
+  reply: T,
+  key: ConversationKey | undefined,
+): Promise<T> {
+  if (!key || typeof reply?.kind !== "string" || typeof reply.body !== "object" || reply.body === null) return reply;
+  return { ...reply, body: await sealBody(reply.body as Record<string, unknown>, reply.kind, key) };
+}
+
 export interface ServeOptions {
   /** This worker's principal. Namespaces its advertisements, so two workers serving one name are
    *  distinguishable rather than silently replacing each other (./capability.ts). */
@@ -106,6 +121,15 @@ export interface ServeOptions {
   concurrency?: number;
   kinds?: Partial<TurnKinds>;
   signal?: AbortSignal;
+  /**
+   * This worker's way to a conversation's DEK (plan-encryption.md phase 4), or absent for a fleet
+   * serving plaintext conversations only.
+   *
+   * A PORT, for the reason the inference worker's is: how a key is fetched and who may is app
+   * policy. `owner` goes with the id so the lookup is bounded by the CALLER rather than trusting a
+   * reference that arrived in a body.
+   */
+  keys?: (conversationId: string, owner?: string) => Promise<ConversationKey | undefined>;
 }
 
 /**
@@ -173,19 +197,31 @@ export async function serveTools(client: RadiaClient, opts: ServeOptions): Promi
     ...(opts.leaseSeconds ? { leaseSeconds: opts.leaseSeconds } : {}),
     ...(opts.concurrency ? { concurrency: opts.concurrency } : {}),
     handle: async (rec: RadiaRecord, c: RadiaClient) => {
-      const b = rec.body as ToolCallBody;
+      const raw = rec.body as ToolCallBody;
       const callId = rec.id;
-      const ctx: ToolContext = { callId, conversationId: b.conversationId, owner: b.owner, caller: () => callerClient(rec) };
-      const stage = opts.stage?.(b.tool ?? "");
-      if (stage) await progress(c, { ...ctx, stage, by: provider, note: b.tool }, [callId]);
+      const ctx: ToolContext = { callId, conversationId: raw.conversationId, owner: raw.owner, caller: () => callerClient(rec) };
+      const stage = opts.stage?.(raw.tool ?? "");
+      if (stage) await progress(c, { ...ctx, stage, by: provider, note: raw.tool }, [callId]);
       let a: ToolAnswer;
+      let b = raw;
+      // Resolved before anything reads the arguments, and OUTSIDE the try: a conversation whose key
+      // this worker cannot reach must not look like a tool that failed. `assertReadable` below is
+      // what turns that into a refusal naming the reader.
+      const key = raw.conversationId && opts.keys
+        ? await opts.keys(raw.conversationId, raw.owner).catch(() => undefined)
+        : undefined;
       try {
         // A tool ACTS on its arguments, so ciphertext reaching one is not a garbled read: it is a
         // file written or a service called with bytes nobody meant (plan-encryption.md phase 1).
         // The refusal is an ANSWER rather than a nack, per this file's rule and because a body this
         // build cannot decrypt will not become decryptable on redelivery — raising to the loop
         // would poison the queue with one record forever.
-        assertReadable(b, `tool ${b.tool}`);
+        if (key) b = await openBody(raw as Record<string, unknown>, "tool_call", key) as ToolCallBody;
+        assertReadable(b, `tool ${raw.tool}`);
+        // What an opened `args` holds is the model's RAW argument string: the turn worker copied a
+        // blob it could not read rather than parsing it (./turn.ts), so the parse happens here, on
+        // the far side of the key. An unencrypted call already arrives parsed.
+        if (typeof b.args === "string") b = { ...b, args: parseArgs(b.args) };
         const bad = b.args?._unparsed !== undefined ? b.args : null;
         if (bad) {
           // Refuse BEFORE the tool, and name the real problem. Handed `{_unparsed}`, a tool reports
@@ -204,7 +240,10 @@ export async function serveTools(client: RadiaClient, opts: ServeOptions): Promi
       } catch (e) {
         a = answer(e instanceof Error ? e.message : String(e), { ok: false });
       }
-      return asTurnReply(rec, toolResult(callId, b, a), opts.kinds);
+      // Sealed on the way back under the SAME key, so a tool's output does not undo the thread's
+      // encryption. `sealReply` covers both shapes an answer takes: a `tool_result` for a bare call
+      // and a transcript `message` for a slotted one.
+      return await sealReply(asTurnReply(rec, toolResult(callId, b, a), opts.kinds), key);
     },
     ...(opts.signal ? { signal: opts.signal } : {}),
   });

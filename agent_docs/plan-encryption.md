@@ -1,9 +1,10 @@
 # Encrypting chat content, opt-in per session
 
-**Status: phases 0-3 BUILT (2026-08-16); 4-5 planned.** `message.content` and `llm_chunk.delta` are
-encrypted end to end for a conversation started with `--encrypt`; the remaining fields
-(`tool_call.args`, `tool_result.output`, `check.stdout`, and a tool worker's reply message) are
-still clear, so a thread that ran tools is partly clear.
+**Status: ALL PHASES BUILT (2026-08-16).** A conversation started with `--encrypt` seals its prose
+end to end — messages, streamed chunks, tool arguments, tool output, a code runner's observations —
+and destroying its key artifact erases it permanently while the records, their lineage and the event
+chain survive. Read the accepted gaps at the bottom before treating this as confidentiality: the
+fleet can read everything, and metadata is not protected.
 Read
 [design-data-model.md](design-data-model.md) (§2, artifacts and the erasure boundary) and
 [plan-delegation.md](plan-delegation.md) (who holds which credential in a shared fleet) first.
@@ -29,7 +30,7 @@ fields, or they hash whatever bytes they are given.
 |---|---|---|
 | inference workers | YES | they call the provider |
 | the client | YES | it renders, and its payload assembly lives in `extensions/ts/context.ts` |
-| tool workers | YES, for `args` | a tool runs on its arguments (still clear; phase 4) |
+| tool workers | YES, for `args` | a tool runs on its arguments |
 | the router | **no**, since phase 0 | it names the message instead of copying it, and holds no key |
 | the turn worker | **no** | `TurnMessage` has no `content` field: the control flow runs on `role`, `index`, `tool_calls`, `i`/`of`/`round`/`turnAt` |
 
@@ -319,32 +320,106 @@ spawns its own worker, so removing that env would not fail anything.
 
 ### Not covered by phase 3
 
-Tool messages. A slotted `tool_call`'s reply is a `message` written by a tool worker, which holds no
-key until phase 4, so a thread that ran tools is partly clear. Mixed threads read correctly —
-`openBody` is a no-op on an unmarked body — but the gap is real and is what phase 4 closes.
+Tool messages: a slotted `tool_call`'s reply is a `message` written by a tool worker, which held no
+key at this point. Closed by phase 4. Mixed threads read correctly regardless — `openBody` is a
+no-op on an unmarked body — which is what makes a thread that predates a phase still readable.
 
-## Phase 4: the remaining fields
+## Phase 4: the remaining fields — BUILT 2026-08-16
 
-`llm_chunk.text`, `tool_call.args`, `tool_result.output`, `check.stdout`. Routing and scope fields
-stay clear, always: `bodyMatchesGrant` matches grant patterns against the BODY on write, and every
+`tool_call.args`, `tool_result.output`, `check.stdout` and `check.expected`, plus the tool
+ARGUMENTS inside an assistant message (`llm_chunk` landed in phase 3). Routing and scope fields stay
+clear, always: `bodyMatchesGrant` matches grant patterns against the BODY on write, and every
 session scope is `{owner}` or `{conversationId}`, so encrypting either breaks authorization rather
-than hiding anything.
+than hiding anything. So do `verdict`, `callId`, `index` and a tool call's `id`/`name`.
 
 `tool_call.args` is the one to think about rather than pattern-match. A tool acts on its arguments,
 so a tool that writes a file or calls a network service moves that content OUT of the encrypted
 set by doing its job. Encryption bounds what the SPACE holds, never what a tool does with what it
 is given.
 
-## Phase 5: erasure, and what the console shows
+### The turn worker still holds no key, and that took a design
 
-Storing the wrapped DEK rather than deriving it is what makes this phase possible: destroying a
-conversation's key crypto-shreds its bodies, which is the only deletion path a record body has
-(the erasure invariant pushes erasable data into artifacts precisely because bodies have none).
-Same caveat as `shredArtifact`: it protects HIGH-ENTROPY content, and anyone holding a candidate
-plaintext plus the ciphertext can still test a guess.
+Sealing `tool_call.args` naively means the TURN WORKER encrypts them, since it is what turns an
+assistant message into tool calls — and it reaches them through `parseArgs(call.function.arguments)`.
+That would hand a key to the one component the design keeps blind: "the component that PERFORMS a
+conversation never sees what the conversation says."
 
-The console's Feed and Records browser show `«encrypted»` for a body it cannot read. Graph, flows,
-lineage and diagnostics keep working, because they mine structure.
+So the arguments are sealed ONE LEVEL DOWN, inside the assistant message, by the INFERENCE worker
+that wrote it and already holds a key. A tool call's `id` and `function.name` stay clear because the
+turn worker routes on them; only `function.arguments` is ciphertext. The turn worker then copies
+that blob into `tool_call.args` verbatim, carries the marker across so the tool worker knows to open
+it, and parses nothing. The parse happens on the far side of the key, in the tool worker.
+
+One consequence worth knowing: an OPENED `tool_call.args` is the model's raw argument STRING, where
+an unencrypted one is already an object. Both readers handle both shapes in one line.
+
+The per-call index joins the idempotency key (`${key}#${i}`), or two calls in one round would derive
+one nonce under one DEK — a guard caught exactly that when the index was left out.
+
+### Who holds the fleet's private half now
+
+Phase 2's accepted gap ("the fleet can read everything") gets a blast radius in this phase. It goes
+to every worker that must read prose to do its job: inference (to call a provider), tools and images
+(to act on arguments), exec (to run and judge code). The ROUTER and the TURN WORKER are deliberately
+not on that list and must not be — they route an encrypted conversation without ever opening one.
+It travels by ENVIRONMENT from the launcher, never read from disk, because each of those workers is
+spawned with a deliberately narrow permission set.
+
+### A third wiring bug, and the guard that now catches its class
+
+Giving the exec worker a key broke it: the fleet spawns that one with `--allow-env=HOME`, and
+`Deno.env.get` for a variable outside the list THROWS rather than returning undefined. The read runs
+at module scope, so the worker died before advertising anything — five suite failures, none of them
+mentioning the environment. Two fixes: the variable joins its allow-list, and every env read in
+`space/keys.ts` goes through a helper that answers "unset" for a variable this process may not read,
+so a narrow permission set degrades to having no key instead of failing to start.
+
+`smoke-fleet.ts` already had the structural guard for this class, and its self-check ("this guard is
+not silently testing nothing") caught that the new spawn argument had broken its parsing. It now also
+checks WHICH variables a restricted worker reads, following its imports one level — skipping
+`import type`, which is erased and whose reads never run. It sees LITERAL reads only, so the exec
+worker's own indirected read stays invisible to it; that one is closed by the helper above, not here.
+
+Guards: four cases in `extensions/conformance/encrypted.test.ts` (the JSON codec, arguments sealed
+with routing intact, the per-call nonce, a check keeping its verdict clear), one in
+`tool-worker.test.ts` (a sealed call opens for the tool and the answer is sealed under the same
+key), and the FULL CHAIN in `examples/chat/smoke-encrypt.ts`: inference, turn and router workers
+plus a tool worker, on an encrypted conversation, with a fake provider that reports what it was
+shown. That last one is the only place the turn worker's blindness is observable, because a
+worker-level test writes the `tool_call` itself. Proved red by planting a whole-array seal, a
+missing per-call index, a turn worker that parses sealed arguments, and a tool worker that leaves
+its reply in clear.
+
+## Phase 5: erasure, and what the console shows — BUILT 2026-08-16
+
+Destroying a conversation's key crypto-shreds its bodies, which is the only deletion path a record
+body has. Same caveat as `shredArtifact`: it protects HIGH-ENTROPY content, and anyone holding a
+candidate plaintext plus the ciphertext can still test a guess.
+
+**The wraps had to move into an ARTIFACT, and phases 2-4 stored them in a record body.** That is the
+erasure invariant restated: a body has no erasure path, which is precisely why erasable data belongs
+in an artifact. Wraps stored inline could never be destroyed, so the conversation could never be
+erased. The `conversation_key` record now NAMES the wraps (`{conversationId, owner, v, keys}`, where
+`keys` is an artifact id) and the artifact holds them — the same shape, and the same reason, as an
+OIDC profile artifact.
+
+Erasing is then `radia shred <that artifact id>`, which already existed and needed nothing new. What
+it costs at read time is one extra fetch per conversation per process, cached by the `KeyRing` after
+the first.
+
+**Both halves are asserted, and the second is the point.** After the shred: the person cannot open
+the conversation, the FLEET cannot either (which is what makes it an erasure and not a permission
+change), and both are told so by name — `ConversationErasedError`, matched on the space's `erased`
+CODE rather than on the prose of a message. What SURVIVES: every record with its id and ordering,
+the lineage walk, the event chain's verification (an erasure is not tampering), and the shred itself
+on the ops plane, so `radia erasures` and `radia doctor` can report it.
+
+**The console recognises the marker; it holds no key and never will.** The Records browser shows
+`«encrypted»` in place of a body preview — sixty characters of base64 is noise that looks like data
+— and the detail view says why, above the record as stored, whose routing fields are clear because
+grants and matching read them. An `enc` badge joins the taint and delegation tags. The Feed needed
+nothing: it renders event metadata, never bodies. Graph, flows, lineage and diagnostics keep working
+throughout, because they mine structure.
 
 ## Rejected
 

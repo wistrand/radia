@@ -959,9 +959,15 @@ directory everything else defaults into).
 (No tier setting: the router dispatches, escalation promotes. No role setting either: the session is
 whoever `RADIA_CHAT_TOKEN` belongs to.)
 
-**`--encrypt` gives a conversation its own key** (agent_docs/plan-encryption.md phase 2). Nothing is
-encrypted yet: what exists is the key layer, so this flag currently buys a `conversation_key` record
-and the refusal that goes with it. The flag is per session and the unit is the CONVERSATION, so the
+**Erasing an encrypted conversation** destroys its key: `radia shred <the conversation_key
+artifact>`. Its bodies become permanently unreadable — by the owner and by the fleet alike — while
+every record, its lineage and the event chain survive, which is the difference between an erasure
+and a permission change.
+
+**`--encrypt` seals a conversation's content** (agent_docs/plan-encryption.md): the messages, the
+streamed chunks, tool arguments, tool output, and a code runner's captured stdout. What stays clear
+is what the substrate routes on — who, when, which tool, which verdict — and that is not a small
+exception: metadata says a great deal. The flag is per session and the unit is the CONVERSATION, so the
 choice is fixed at creation and `--encrypt` is only needed to START an encrypted thread: resuming
 one adopts its key with or without the flag, and the banner reports it. The reverse still refuses —
 `--encrypt` on a plaintext thread would write in clear what you asked to have encrypted, and the

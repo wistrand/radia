@@ -72,8 +72,10 @@ const INFERENCE_GRANTS: Grant[] = [
   // A conversation's wrapped DEK: inference is the reader that must decrypt, since it calls the
   // provider (plan-encryption.md phase 2). Unscoped because the fleet serves everyone, so the
   // read is conjoined with the CALLER's owner at the call site rather than trusted from the body
-  // it was named in (package V).
+  // it was named in (package V). The record NAMES the wraps; they live in an artifact so that
+  // destroying them is possible at all (phase 5), which is why the read below comes with it.
   { kind: "conversation_key", operations: ["read_one"] },
+  { kind: "artifact", operations: ["read_one"] },
 ];
 
 // router-worker: claims UNTIERED llm_calls, classifies the turn with a cheap model, and
@@ -107,6 +109,11 @@ const IMAGE_GRANTS: Grant[] = [
   { kind: "capability", operations: ["put"] },
   { kind: "model", operations: ["put"] }, // advertises itself as modalities:["image"]
   { kind: "progress", operations: ["put"] },
+  // A conversation's wrapped DEK: this worker reads the arguments it acts on and seals its answer
+  // under the same key (plan-encryption.md phase 4). Unscoped because the fleet serves everyone, so
+  // the read is bounded by the CALLER at the call site rather than trusted from the body it was
+  // named in (package V).
+  { kind: "conversation_key", operations: ["read_one"] },
 ];
 
 // tool-worker: claims tool_call, emits tool_result, and publishes its capability records.
@@ -124,6 +131,11 @@ const TOOLS_GRANTS: Grant[] = [
   { kind: "capability", operations: ["put"] },
   { kind: "progress", operations: ["put"] }, // reports which tool it is running
   { kind: "workspace", operations: ["put", "query"] }, // save_workspace: authors a tree for a session
+  // A conversation's wrapped DEK: this worker reads the arguments it acts on and seals its answer
+  // under the same key (plan-encryption.md phase 4). Unscoped because the fleet serves everyone, so
+  // the read is bounded by the CALLER at the call site rather than trusted from the body it was
+  // named in (package V).
+  { kind: "conversation_key", operations: ["read_one"] },
 ];
 
 // exec-worker: claims `tool_call{run_javascript}` (and `{run_python}` where the jail probes clean)
@@ -172,6 +184,11 @@ const EXEC_GRANTS: Grant[] = [
   // but the earlier comment overstated it: `query` alone could not express a backend the operator
   // cannot see.
   { kind: "sandbox", operations: ["query", "put"] },
+  // A conversation's wrapped DEK: this worker reads the arguments it acts on and seals its answer
+  // under the same key (plan-encryption.md phase 4). Unscoped because the fleet serves everyone, so
+  // the read is bounded by the CALLER at the call site rather than trusted from the body it was
+  // named in (package V).
+  { kind: "conversation_key", operations: ["read_one"] },
 ];
 
 /**

@@ -328,7 +328,7 @@ async function showToolReply(
 
   const prefix = `  · ${call.function.name}(${trunc(showArgs(args), 60)}) `;
   write(prefix);
-  const reply = await awaitToolReply(client, thread.id, call.id, prefix, call.function.name, tools, onToolWait);
+  const reply = await awaitToolReply(client, thread.id, call.id, prefix, call.function.name, tools, onToolWait, thread.dek);
   // From the record, not from a prediction: it says where it landed.
   thread.noteExternal(reply.index);
   // Capped as well as fitted: on a wide terminal "fits the window" is 200 characters of JSON, which
@@ -545,6 +545,7 @@ async function awaitToolReply(
   tool: string,
   tools: ToolSet,
   onToolWait?: ToolWaitHook,
+  key?: ConversationKey,
 ): Promise<{ ok: boolean; output: unknown; index: number }> {
   const waiter = new Waiter(client, prefix);
   // WHAT THIS CAN ACTUALLY KNOW, which is less than it used to claim. The old hint read "no worker
@@ -597,14 +598,15 @@ async function awaitToolReply(
     );
   }
   endStatus(prefix);
-  assertReadable(outcome.body, "toolReply");
+  const replyBody = key ? await openBody(outcome.body, "message", key) : outcome.body;
+  assertReadable(replyBody, "toolReply");
   // The reply is a tool MESSAGE now: `content` is the same JSON string this client used to write,
   // so the structured output for rendering comes back out of it.
   const parsed = ((): unknown => {
     try {
-      return JSON.parse(outcome.body.content);
+      return JSON.parse(replyBody.content);
     } catch {
-      return outcome.body.content;
+      return replyBody.content;
     }
   })();
   return outcome.body.ok

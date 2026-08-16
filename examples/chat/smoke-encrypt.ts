@@ -15,6 +15,7 @@ import { registerChatKinds } from "./space/kinds.ts";
 import { assignUserGrants, bootstrap, mintSession, setSessionOwner } from "./space/roles.ts";
 import { Thread } from "./client/thread.ts";
 import { NoConversationKeyError, openBody, openConversation, sealConversation } from "../../extensions/ts/encrypted.ts";
+import { serveTools } from "../../extensions/ts/tool-worker.ts";
 
 const PORT = 7811;
 const url = `http://127.0.0.1:${PORT}`;
@@ -60,11 +61,11 @@ const admin = new RadiaClient(url, { token: operatorToken(url) });
 const tmp = await Deno.makeTempDir({ prefix: "radia-encrypt-" });
 Deno.env.set("RADIA_CREDENTIALS", `${tmp}/credentials.json`);
 Deno.env.set("RADIA_DIR", tmp);
-const { CONVERSATION_KEY_KIND, conversationKeys, currentFleetKey, fleetKeyPair, personKey, publishFleetKey } =
+const { CONVERSATION_KEY_KIND, ConversationErasedError, conversationKeys, currentFleetKey, fleetKeyPair, personKey, publishFleetKey, writeConversationKey } =
   await import("./space/keys.ts");
 
 await registerChatKinds(admin);
-const { inferenceToken } = await bootstrap(admin, {});
+const { inferenceToken, turnToken, toolsToken, routerToken } = await bootstrap(admin, {});
 const alice = "human:alice", bob = "human:bob";
 await assignUserGrants(admin, alice, { owner: alice });
 await assignUserGrants(admin, bob, { owner: bob });
@@ -88,10 +89,7 @@ check("republishing the same key writes nothing new", (await admin.query({ kind:
 const conv = await aliceC.put({ kind: "conversation", body: {} });
 const aliceKey = personKey(url, alice);
 const { encryption, key: sealedKey } = await sealConversation((await currentFleetKey(aliceC))!, { [alice]: aliceKey });
-await aliceC.put(
-  { kind: CONVERSATION_KEY_KIND, body: { conversationId: conv.id, owner: alice, ...encryption } },
-  `conversation-key:${conv.id}`,
-);
+const written = await writeConversationKey(aliceC, conv.id, alice, encryption);
 check("a session writes its own conversation's key material", true, conv.id);
 
 // Her key is STABLE across sessions, or a later one could not read what this one wrote.
@@ -100,7 +98,12 @@ check("her person key is remembered", [...personKey(url, alice)].join() === [...
 // ---- she reads it back, which is the whole point of a record over a client-side file ----
 const back = await aliceC.readOne({ kind: CONVERSATION_KEY_KIND, match: { conversationId: conv.id } });
 check("she fetches her key record", back !== null);
-const hers = await openConversation(back!.body as never, { kind: "person", principal: alice, key: aliceKey });
+check(
+  "…and the record NAMES the wraps rather than holding them, which is what makes them destroyable",
+  (back!.body as { keys?: string }).keys === written.keys && !JSON.stringify(back!.body).includes(encryption.fleet),
+);
+const wraps = JSON.parse(new TextDecoder().decode(await aliceC.getArtifact(written.keys)));
+const hers = await openConversation(wraps, { kind: "person", principal: alice, key: aliceKey });
 const iv = crypto.getRandomValues(new Uint8Array(12));
 const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, sealedKey.content, new TextEncoder().encode("probe"));
 check(
@@ -122,7 +125,7 @@ check(
 const bobKey = personKey(url, bob);
 let opened = false;
 try {
-  await openConversation(back!.body as never, { kind: "person", principal: bob, key: bobKey });
+  await openConversation(wraps, { kind: "person", principal: bob, key: bobKey });
   opened = true;
 } catch (e) {
   check("…and handed the record anyway, his key does not open it", e instanceof NoConversationKeyError, String(e));
@@ -130,7 +133,7 @@ try {
 check("…he never opens it", !opened);
 
 // ---- the fleet opens it, because inference must ----
-const asFleet = await openConversation(back!.body as never, { kind: "fleet", privateKey: fleet!.privateKey });
+const asFleet = await openConversation(wraps, { kind: "fleet", privateKey: fleet!.privateKey });
 check(
   "the fleet opens what a session sealed, which is what lets inference answer",
   new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, asFleet.content, ct)) === "probe",
@@ -239,6 +242,165 @@ try {
   worker.kill();
   await worker.status;
   await fake.shutdown();
+}
+
+// ---- the FULL CHAIN on an encrypted conversation: a tool round ----
+//
+// The property phase 4 rests on, and the only place it can be seen: the TURN WORKER routes an
+// encrypted conversation without a key. It reads the assistant message to find the tool calls,
+// copies the sealed `arguments` blob into a `tool_call` without parsing it, and the tool worker —
+// which does hold a key — opens it. A worker-level test cannot show this, because it writes the
+// `tool_call` itself.
+
+let round = 0;
+const fake2 = Deno.serve({ port: 0, hostname: "127.0.0.1", onListen: () => {} }, async (req) => {
+  const sent = await req.json().catch(() => ({})) as { messages?: { role?: string; content?: string }[] };
+  const msgs = sent.messages ?? [];
+  // A tool call first, then prose once the reply is in the transcript. The provider ALSO reports
+  // what it was shown, which is how "the tool's output came back decrypted" is asserted.
+  // The ROUTER's classifier arrives here too, by reference (phase 0), and must not be answered with
+  // a tool call. Told apart by the system prompt: the chat's own starts "You are a concise
+  // assistant"; the router's does not.
+  const isTurn = msgs.some((m) => m.role === "system" && (m.content ?? "").includes("concise assistant"));
+  if (!isTurn) {
+    return new Response(frames([{ content: "fast" }]), { headers: { "content-type": "text/event-stream" } });
+  }
+  const sawToolReply = msgs.some((m) => (m.content ?? "").includes("SECRET-OUTPUT"));
+  if (!sawToolReply && round++ === 0) {
+    return new Response(
+      frames([{ tool_calls: [{ index: 0, id: "call_x", type: "function", function: { name: "peek", arguments: '{"path":"/etc/secret"}' } }] }]),
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  }
+  return new Response(frames([{ content: sawToolReply ? "saw the tool output" : "no tool output" }]), {
+    headers: { "content-type": "text/event-stream" },
+  });
+});
+const apiBase2 = `http://127.0.0.1:${(fake2.addr as Deno.NetAddr).port}`;
+
+const chainWorkers = [
+  new Deno.Command(Deno.execPath(), {
+    args: [
+      "run", "--allow-net", "--allow-env",
+      "examples/chat/workers/inference.ts",
+      "--url", url, "--token", inferenceToken, "--tier", "fast", "--model", "fake/model",
+    ],
+    env: { RADIA_CHAT_API_BASE: apiBase2, OPENROUTER_API_KEY: "unused", RADIA_CHAT_FLEET_KEY: btoa(JSON.stringify(fleet!)) },
+    stdout: "null",
+    stderr: "inherit",
+  }).spawn(),
+  // NO KEY, and that is the assertion: this process is given neither the fleet key nor any other,
+  // and the turn still completes.
+  new Deno.Command(Deno.execPath(), {
+    args: ["run", `--allow-net=127.0.0.1:${PORT}`, "examples/chat/workers/turn.ts", "--url", url, "--token", turnToken],
+    stdout: "null",
+    stderr: "inherit",
+  }).spawn(),
+  // The router too: the turn worker emits UNTIERED calls deliberately, so each round is classified
+  // afresh, and without it round 2 would never be picked up. It holds NO key either.
+  new Deno.Command(Deno.execPath(), {
+    args: [
+      "run", "--allow-net", "--allow-env",
+      "examples/chat/workers/router.ts", "--url", url, "--token", routerToken, "--classify-model", "fake/model",
+    ],
+    env: { RADIA_CHAT_API_BASE: apiBase2, OPENROUTER_API_KEY: "unused" },
+    stdout: "null",
+    stderr: "inherit",
+  }).spawn(),
+];
+
+let toolSaw: unknown;
+const toolStop = new AbortController();
+const toolWorker = serveTools(new RadiaClient(url, { definitionToken: toolsToken }), {
+  provider: "agent:chat-tools",
+  tools: { peek: (a) => { toolSaw = a.path; return Promise.resolve("SECRET-OUTPUT for " + a.path); } },
+  schemas: [{ type: "function", function: { name: "peek", description: "peek", parameters: { type: "object", properties: {} } } }],
+  keys: conversationKeys(new RadiaClient(url, { definitionToken: toolsToken }), {
+    kind: "fleet",
+    privateKey: fleet!.privateKey,
+    keyId: fleet!.keyId,
+  }),
+  signal: toolStop.signal,
+});
+
+try {
+  const conv2 = await aliceC.put({ kind: "conversation", body: {} });
+  const { encryption: e2 } = await sealConversation((await currentFleetKey(aliceC))!, { [alice]: aliceKey });
+  await writeConversationKey(aliceC, conv2.id, alice, e2);
+  const dek2 = await conversationKeys(aliceC, { kind: "person", principal: alice, key: aliceKey })(conv2.id);
+  const t2 = await Thread.open(aliceC, { principal: alice, privileged: false }, conv2.id, dek2);
+  await t2.append({ role: "user", content: "look at the file" });
+  // SEED-SHAPED, exactly as the client writes it: no `tier` (the router assigns one) and a
+  // `deadlineAt`, which is what `currentCall` looks for. A tiered call is not a seed and the turn
+  // worker will not resume from it.
+  await aliceC.put({
+    kind: "llm_call",
+    body: { conversationId: conv2.id, owner: alice, upToIndex: t2.upToIndex, turnAt: t2.upToIndex, round: 0, tools: [] },
+    deadlineAt: new Date(Date.now() + 120_000).toISOString(),
+    parentIds: [conv2.id],
+  });
+
+  const done = await awaitOne({ kind: "message", match: { conversationId: conv2.id, role: "assistant", round: 1 } }, 200);
+  check("the turn completed a second round, so the whole chain ran", done !== null);
+  check("the TOOL saw plaintext arguments", toolSaw === "/etc/secret", String(toolSaw));
+
+  const calls = await admin.query({ kind: "tool_call", match: { conversationId: conv2.id } }, 5);
+  check("the tool_call is marked and carries no plaintext argument", calls.length > 0 &&
+    calls.every((r) => (r.body as { enc?: string }).enc === "v1") &&
+    !JSON.stringify(calls.map((r) => r.body)).includes("/etc/secret"));
+
+  const all = await admin.query({ kind: "message", match: { conversationId: conv2.id } }, 20);
+  const dump = JSON.stringify(all.map((r) => r.body));
+  check("…and neither the tool's output nor its arguments are in the transcript",
+    !dump.includes("SECRET-OUTPUT") && !dump.includes("/etc/secret"));
+  check("…while the tool call's ROUTING stayed readable, which is what let the turn worker route it",
+    dump.includes("call_x") && dump.includes("peek"));
+  if (done) {
+    check("the model was shown the tool's output, so the round trip decrypted both ways",
+      (await openBody(done.body as Record<string, unknown>, "message", dek2!)).content === "saw the tool output");
+  }
+} finally {
+  toolStop.abort();
+  await toolWorker.catch(() => {});
+  for (const w of chainWorkers) {
+    w.kill();
+    await w.status;
+  }
+  await fake2.shutdown();
+}
+
+// ---- phase 5: ERASURE by destroying the key ----
+//
+// The only deletion path a record body has. Bodies are immutable and permanent, which is why the
+// erasure invariant pushes erasable data into artifacts; the wraps live in one, so shredding it
+// destroys the sole copy of the key and every body it protected becomes permanently unreadable.
+// What must SURVIVE is as much the point as what goes: the records, their lineage and the chain.
+
+{
+  const before = await admin.query({ kind: "message", match: { conversationId: conv.id } }, 20);
+  const lineageBefore = await admin.getLineage(before[0].id).catch(() => null);
+
+  await admin.shredArtifact(written.keys, { reason: "erase the conversation" });
+
+  check("the key artifact is gone", await aliceC.getArtifact(written.keys).then(() => false, () => true));
+  // A FRESH resolver: the point is that nobody can open it any more, not that one cache went cold.
+  const after = await conversationKeys(aliceC, { kind: "person", principal: alice, key: aliceKey })(conv.id)
+    .then(() => null, (e) => e);
+  check("…so the conversation is ERASED, named as that rather than as a failure", after instanceof ConversationErasedError, String(after));
+  const asFleetNow = await conversationKeys(admin, { kind: "fleet", privateKey: fleet!.privateKey })(conv.id)
+    .then(() => null, (e) => e);
+  check("…for the FLEET too, which is what makes it an erasure and not a permission", asFleetNow instanceof ConversationErasedError);
+
+  // The paper trail is the half that must not go.
+  const still = await admin.query({ kind: "message", match: { conversationId: conv.id } }, 20);
+  check("the records survive, with their ids and ordering", still.length === before.length &&
+    still[0].id === before[0].id);
+  check("…and their lineage still walks", JSON.stringify(await admin.getLineage(before[0].id).catch(() => null)) === JSON.stringify(lineageBefore));
+  check("…and the space still verifies, so an erasure is not tampering", (await admin.integrity()).ok);
+  // Reported as an erasure, by whatever field the ops plane names it with: what matters is that the
+  // shredded artifact appears, so `radia erasures` and `radia doctor` can say this key is gone.
+  const erasures = JSON.stringify(await admin.erasures());
+  check("…and the erasure is reported on the ops plane", erasures.includes(written.keys), erasures.slice(0, 160));
 }
 
 console.log(`\n${failures === 0 ? "ok" : `${failures} FAILED`}`);

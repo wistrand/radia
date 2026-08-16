@@ -25,6 +25,7 @@ import { progress } from "../../../extensions/ts/progress.ts";
 // per-tool stage string cannot say.
 import { answer, serveTools } from "../../../extensions/ts/tool-worker.ts";
 import { readToolArtifact, storeToolArtifact } from "../../../extensions/ts/media.ts";
+import { conversationKeys, fleetKeyPair } from "../space/keys.ts";
 import { arg, onStop } from "../util.ts";
 import { publishCapability } from "../../../extensions/ts/capability.ts";
 import { publishModel, retireModel } from "../../../extensions/ts/model.ts";
@@ -58,6 +59,7 @@ const safetySettings = (Deno.env.get("RADIA_CHAT_IMAGE_SAFETY") ?? "")
   .filter((p) => p.length === 2)
   .map(([category, threshold]) => ({ category: category.trim(), threshold: threshold.trim() }));
 const client = new RadiaClient(url, token ? { definitionToken: token } : {});
+const fleet = await fleetKeyPair();
 
 const GENERATE_IMAGE: ToolDef = {
   type: "function",
@@ -143,6 +145,10 @@ interface Call {
 // from, so taint rides lineage rather than being asserted.
 await serveTools(client, {
   provider: ME,
+  // A tool ACTS on its arguments, so this worker must open them; its answer is sealed under the
+  // same key on the way back (plan-encryption.md phase 4). The private half comes from the
+  // launcher's environment, never from disk.
+  ...(fleet ? { keys: conversationKeys(client, { kind: "fleet", privateKey: fleet.privateKey, keyId: fleet.keyId }) } : {}),
   tools: {
     generate_image: (a, ctx) =>
       drawImage(ctx!.callId, { args: a, conversationId: ctx!.conversationId, owner: ctx!.owner }, client),

@@ -24,6 +24,7 @@ import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import { INSPECT_SCHEMAS, makeInspectTools, makeRemediateTools, REMEDIATE_SCHEMAS } from "../../../extensions/ts/agent-tools.ts";
 import type { ToolDef } from "../provider/openrouter.ts";
 import { serveTools } from "../../../extensions/ts/tool-worker.ts";
+import type { ConversationKey } from "../../../extensions/ts/encrypted.ts";
 
 /** The definitions the session serves, for the client to offer the model directly. */
 export const SESSION_TOOL_SCHEMAS: ToolDef[] = [...INSPECT_SCHEMAS, ...REMEDIATE_SCHEMAS];
@@ -40,11 +41,18 @@ export const SESSION_TOOL_NAMES: string[] = SESSION_TOOL_SCHEMAS.map((s) => s.fu
  * asking is allowed to see: a scoped session gets 403 on `/ops` here, which is the correct answer
  * and the same one it got when a worker held its token.
  */
-export function serveSessionTools(session: RadiaClient, signal: AbortSignal): Promise<string[]> {
+export function serveSessionTools(
+  session: RadiaClient,
+  signal: AbortSignal,
+  keys?: (conversationId: string, owner?: string) => Promise<ConversationKey | undefined>,
+): Promise<string[]> {
   return serveTools(session, {
     provider: "session",
     name: "session-tools",
     tools: { ...makeInspectTools(session), ...makeRemediateTools(session) },
+    // These run in the REPL on the SESSION's credential, so the key is the person's own rather than
+    // the fleet's: this process holds no fleet secret and should not (plan-encryption.md phase 4).
+    ...(keys ? { keys } : {}),
     schemas: [], // served, never advertised: see the header
     // These WAIT (a query, an ops read) rather than work, and a turn can ask for several at once.
     concurrency: 4,

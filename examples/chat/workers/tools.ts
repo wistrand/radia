@@ -13,6 +13,7 @@
 import { RadiaClient } from "../../../sdk/ts/client.ts";
 import { makeTools, TOOL_SCHEMAS } from "../tools/files.ts";
 import { makeSaveTools, makeShareTools, makeWorkspaceTools, SAVE_SCHEMAS, SHARE_SCHEMAS, WORKSPACE_SCHEMAS } from "../tools/save.ts";
+import { conversationKeys, fleetKeyPair } from "../space/keys.ts";
 import { arg, argAll } from "../util.ts";
 import { serveTools } from "../../../extensions/ts/tool-worker.ts";
 
@@ -28,6 +29,7 @@ if (!token) {
 // The DURABLE half: this worker re-mints its own run whenever the short one lapses, so a space
 // restart or the twelve-hour ceiling does not end it.
 const client = new RadiaClient(url, { definitionToken: token });
+const fleet = await fleetKeyPair();
 
 // File/compute tools (sandboxed, no client) + the two that write.
 // `save_content` writes artifacts as the WORKER (its own `artifact: put`): storing a file is the
@@ -50,6 +52,10 @@ const tools = {
 // `retireProviderCapabilities` in `client/fleet.ts` does it by provider.
 await serveTools(client, {
   provider: "agent:chat-tools",
+  // A tool ACTS on its arguments, so this worker must open them; its answer is sealed under the
+  // same key on the way back (plan-encryption.md phase 4). The private half comes from the
+  // launcher's environment, never from disk.
+  ...(fleet ? { keys: conversationKeys(client, { kind: "fleet", privateKey: fleet.privateKey, keyId: fleet.keyId }) } : {}),
   tools,
   schemas: [...TOOL_SCHEMAS, ...SAVE_SCHEMAS, ...SHARE_SCHEMAS, ...WORKSPACE_SCHEMAS],
   // A file search can take seconds; say who picked it up and what is running.

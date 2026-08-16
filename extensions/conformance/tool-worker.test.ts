@@ -14,6 +14,7 @@ import { operatorToken } from "../../examples/operator.ts";
 import { CAPABILITY_KIND, type ToolDef } from "../ts/capability.ts";
 import { PROGRESS_KIND } from "../ts/progress.ts";
 import { answer, serveTools, toolResult } from "../ts/tool-worker.ts";
+import { ENC_V1, encryptText, newFleetKeyPair, openBody, sealConversation } from "../ts/encrypted.ts";
 import { parseArgs } from "../ts/turn.ts";
 
 const PORT = 7827;
@@ -198,6 +199,46 @@ Deno.test("[tool-worker] an undecryptable call is ANSWERED, not run and not nack
       assert(body.output.includes("encrypted"), body.output);
       assert(body.output.includes("tool edit"), "the refusal names the reader");
       assertEquals(ran, 0, "the tool must not see arguments it cannot read");
+    } finally {
+      stop.abort();
+      await serving.catch(() => {});
+    }
+  });
+});
+
+Deno.test("[tool-worker] an encrypted call opens for the tool and seals on the way back", async () => {
+  await withSpace(async (c) => {
+    const { key } = await sealConversation(await newFleetKeyPair(), {});
+    const stop = new AbortController();
+    let saw: Record<string, unknown> | undefined;
+    const serving = serveTools(c, {
+      provider: "w1",
+      tools: { edit: (a) => { saw = a; return Promise.resolve({ wrote: a.path }); } },
+      schemas: [def("edit")],
+      keys: () => Promise.resolve(key),
+      signal: stop.signal,
+    });
+    try {
+      // EXACTLY what the turn worker writes for an encrypted conversation: `args` is the model's
+      // raw argument string, still sealed, copied from the assistant message without being read
+      // (extensions/ts/turn.ts). The marker rides along so this worker knows to open it.
+      const call = await c.put({
+        kind: "tool_call",
+        body: {
+          tool: "edit",
+          args: await encryptText(key, JSON.stringify({ path: "/secret" })),
+          enc: ENC_V1,
+          conversationId: "c1",
+        },
+      });
+      const reply = await awaitOne(c, { kind: "tool_result", match: { callId: call.id } });
+      assertEquals(saw?.path, "/secret", "the tool ran on PARSED plaintext, not on a blob");
+
+      const body = reply?.body as { enc?: string; output?: unknown };
+      assertEquals(body.enc, ENC_V1, "the answer is sealed under the same key");
+      assert(!JSON.stringify(body).includes("/secret"), "…so the tool's output does not undo the thread");
+      const opened = await openBody(body as Record<string, unknown>, "tool_result", key);
+      assertEquals(opened.output, { wrote: "/secret" });
     } finally {
       stop.abort();
       await serving.catch(() => {});

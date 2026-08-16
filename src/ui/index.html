@@ -668,7 +668,16 @@ function metaFlags(rec) {
   if (m.delegationContext && m.delegationContext.chain && m.delegationContext.chain.length) {
     h += `<span class="tag tag-deleg" title="authority chain, derived from the lease">deleg: ${esc(m.delegationContext.chain.join(" → "))}</span>`;
   }
+  if (isEncrypted(rec)) {
+    h += `<span class="tag" title="this body's prose is ciphertext; the console holds no key and never will">enc</span>`;
+  }
   return h;
+}
+/** An app-level convention the console only has to RECOGNISE (agent_docs/plan-encryption.md): a
+ *  body carrying `enc` has ciphertext where its prose was. The console holds no key, deliberately —
+ *  it is a reader like any other, and the whole point is that reading does not require trusting it. */
+function isEncrypted(rec) {
+  return !!(rec && rec.body && rec.body.enc);
 }
 /** SVG dots for a node's labels, one per label, coloured by classification. */
 function taintMarks(labels, x, y) {
@@ -1040,7 +1049,9 @@ function renderRecordList(el, records, onClick, paths = []) {
   const cols = paths.map((p) => `<th class="mono">${esc(p)}</th>`).join("");
   const rows = records.map((rec) => {
     window._recs[rec.id] = rec;
-    const preview = esc(JSON.stringify(rec.body)).slice(0, 60);
+    // Never the ciphertext: sixty characters of base64 is noise that looks like data, and the one
+    // thing worth saying about this row is that its content is unreadable here.
+    const preview = isEncrypted(rec) ? `<span class="muted">«encrypted»</span>` : esc(JSON.stringify(rec.body)).slice(0, 60);
     const flags = metaFlags(rec);
     const cells = paths.map((p) => {
       const v = p.split(".").reduce((o, k) => (o == null ? undefined : o[k]), rec.body);
@@ -1106,7 +1117,12 @@ async function showDetail(id, target = "rec-detail") {
     + ` <button class="btn ghost" style="padding:1px 8px;font-size:11px" onclick="navigate('graph','${esc(id)}')" title="this record's relationship graph">graph</button></div>`
     + authHtml
     + artifactHtml
-    + `<b>Body</b><pre>${esc(JSON.stringify(rec.body, null, 2))}</pre>`
+    + (isEncrypted(rec)
+      ? `<b>Body</b><div class="muted" style="margin-bottom:6px">«encrypted» — this body's prose is ciphertext and the console `
+        + `holds no key. What follows is the record as stored: the routing fields are clear (they have to be, since `
+        + `grants and matching read them), and the rest is unreadable here.</div>`
+      : `<b>Body</b>`)
+    + `<pre>${esc(JSON.stringify(rec.body, null, 2))}</pre>`
     + `<b>Runtime meta</b><pre>${esc(JSON.stringify(rec.runtimeMeta, null, 2))}</pre>`
     + (e ? `<b>Envelope</b><pre>${esc(JSON.stringify(e, null, 2))}</pre>` : "")
     + lineageHtml;

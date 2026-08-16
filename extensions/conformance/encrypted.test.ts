@@ -405,3 +405,79 @@ Deno.test("[encrypted] the wrong conversation's key does not open a body", async
   bytes[bytes.length - 1] = String.fromCharCode(bytes[bytes.length - 1].charCodeAt(0) ^ 1);
   await assertRejects(() => decryptText(mine, btoa(bytes.join(""))));
 });
+
+// ---- phase 4: the remaining fields ----
+
+Deno.test("[encrypted] a JSON field round-trips as its VALUE, not as a string of one", async () => {
+  const key = await conversationKey();
+  // `tool_result.output` is whatever a tool returned, so it is sealed as JSON and must come back
+  // the same shape. A codec that returned the string would make every reader parse defensively.
+  for (const output of [{ rows: [1, 2], note: "hi" }, "plain", 42, ["a"], true] as unknown[]) {
+    const sealed = await sealBody({ callId: "c", ok: true, output }, "tool_result", key);
+    assert(typeof sealed.output === "string", "on the wire it is ciphertext");
+    assertEquals((await openBody(sealed, "tool_result", key)).output, output);
+  }
+  // A text field keeps phase 3's format: sealed as itself, not as JSON of itself.
+  const msg = await sealBody({ role: "user", content: "hi" }, "message", key);
+  assertEquals(await decryptText(key, String(msg.content)), "hi");
+});
+
+Deno.test("[encrypted] tool ARGUMENTS seal inside the assistant message, leaving routing readable", async () => {
+  const key = await conversationKey();
+  const calls = [
+    { id: "call_1", type: "function", function: { name: "read_file", arguments: '{"path":"/secret"}' } },
+    { id: "call_2", type: "function", function: { name: "run_js", arguments: '{"code":"1+1"}' } },
+  ];
+  const sealed = await sealBody({ role: "assistant", content: null, tool_calls: calls }, "message", key);
+  const out = sealed.tool_calls as typeof calls;
+
+  // What the TURN WORKER routes on has to survive in the clear, or it needs a key — and the design
+  // rests on it not needing one.
+  assertEquals(out.map((c) => c.id), ["call_1", "call_2"]);
+  assertEquals(out.map((c) => c.function.name), ["read_file", "run_js"]);
+  assert(!JSON.stringify(out).includes("/secret"), "the arguments are not");
+  assert(!JSON.stringify(out).includes("1+1"));
+  // Two calls in one round must not share a nonce under one DEK.
+  assert(out[0].function.arguments !== out[1].function.arguments);
+
+  const opened = (await openBody(sealed, "message", key)).tool_calls as typeof calls;
+  assertEquals(opened.map((c) => c.function.arguments), calls.map((c) => c.function.arguments));
+});
+
+Deno.test("[encrypted] the same idempotency key seals two tool calls differently, and repeatably", async () => {
+  const key = await conversationKey();
+  const calls = [
+    { id: "a", function: { name: "t", arguments: '{"x":1}' } },
+    { id: "b", function: { name: "t", arguments: '{"x":1}' } },
+  ];
+  const body = { role: "assistant", tool_calls: calls };
+  const one = await sealBody(body, "message", key, "turn:K");
+  const two = await sealBody(body, "message", key, "turn:K");
+  const a = (one.tool_calls as typeof calls).map((c) => c.function.arguments);
+  const b = (two.tool_calls as typeof calls).map((c) => c.function.arguments);
+  assertEquals(a, b, "a keyed re-put is byte-identical, calls included, so a retry replays");
+  assert(a[0] !== a[1], "…while IDENTICAL arguments in one round still differ, so no nonce repeats");
+});
+
+Deno.test("[encrypted] a check keeps its verdict clear and its observations sealed", async () => {
+  const key = await conversationKey();
+  const sealed = await sealBody({
+    callId: "c",
+    verdict: "fail",
+    sandbox: "deno",
+    exitCode: 1,
+    expected: { stdout_equals: "the secret" },
+    stdout: "the actual output",
+  }, "check", key);
+
+  // An operator triaging a space needs to see WHICH checks failed without reading anyone's data.
+  assertEquals(sealed.verdict, "fail");
+  assertEquals(sealed.sandbox, "deno");
+  assertEquals(sealed.exitCode, 1);
+  assert(!JSON.stringify(sealed).includes("the secret"), "the expectation is content too");
+  assert(!JSON.stringify(sealed).includes("the actual output"));
+
+  const opened = await openBody(sealed, "check", key);
+  assertEquals(opened.stdout, "the actual output");
+  assertEquals(opened.expected, { stdout_equals: "the secret" });
+});

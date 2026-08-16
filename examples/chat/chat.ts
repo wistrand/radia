@@ -41,7 +41,16 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { assignUserGrants, bootstrap, setSessionOwner } from "./space/roles.ts";
 import { watchAutoGrants } from "./space/auto-grant.ts";
-import { CONVERSATION_KEY_KIND, conversationKeys, currentFleetKey, fleetKeyPair, personKey, publishFleetKey } from "./space/keys.ts";
+import {
+  CONVERSATION_KEY_KIND,
+  ConversationErasedError,
+  conversationKeys,
+  currentFleetKey,
+  fleetKeyPair,
+  personKey,
+  publishFleetKey,
+  writeConversationKey,
+} from "./space/keys.ts";
 import { type ConversationKey, NoConversationKeyError, sealConversation } from "../../extensions/ts/encrypted.ts";
 import { apiKey, encryptMode, EXEC_TIMEOUT_MS, execRoots, loginDefinitionToken, loginSource, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
 import { FLEET_PROVIDERS, launchFleet, spawnSpace } from "./client/fleet.ts";
@@ -249,10 +258,7 @@ async function sealConversationKey(conversationId: string): Promise<void> {
     );
   }
   const { encryption } = await sealConversation(fleet, { [owner]: personKey(url, owner) });
-  await (admin ?? session).put(
-    { kind: CONVERSATION_KEY_KIND, body: { conversationId, owner, ...encryption } },
-    `conversation-key:${conversationId}`,
-  );
+  await writeConversationKey(admin ?? session, conversationId, owner, encryption);
 }
 
 // in join mode there is no operator client to resolve it with, and still before grants are
@@ -444,7 +450,10 @@ if (admin) {
 // carry neither the ops plane nor a self-scoped grant (client/session-tools.ts). Claimed like any
 // other work, so nothing is left unanswered in the queue; offered to the model directly, because a
 // tool only this process can serve has no business in a shared advertisement registry.
-serveSessionTools(session, shutdown.signal).catch((e) => notice(dim(`[session tools stopped: ${e}]`)));
+// ONE resolver, shared by the thread and by the tools this session serves itself, so both hold the
+// same cached DEK rather than unwrapping per consumer.
+const sessionKeys = conversationKeys(session, { kind: "person", principal: owner, key: personKey(url, owner) });
+serveSessionTools(session, shutdown.signal, sessionKeys).catch((e) => notice(dim(`[session tools stopped: ${e}]`)));
 const tools = new ToolSet(session, SESSION_TOOL_SCHEMAS);
 tools.watch(shutdown.signal); // background: keep the tool set live from capability records
 watchWakeups(session, shutdown.signal); // background: let the runtime push instead of polling
@@ -502,12 +511,17 @@ if (!privileged) field("auth", dim("scoped: space_* tools that touch /ops will 4
 // `conversation_key` grant is already scoped to it — the conjunction IS the check.
 let dek: ConversationKey | undefined;
 try {
-  dek = await conversationKeys(session, { kind: "person", principal: owner, key: personKey(url, owner) })(
-    conversation.id,
-  );
+  dek = await sessionKeys(conversation.id);
 } catch (e) {
   // A key that exists and will not open is fatal: the thread is somebody else's, or sealed under a
   // key this machine no longer has, and either way its content cannot be read or extended.
+  if (e instanceof ConversationErasedError) {
+    holdLine(false);
+    console.error(`\n${e.message}`);
+    console.error(`  Nothing can recover it; start a new conversation.\n`);
+    cleanup();
+    Deno.exit(1);
+  }
   if (e instanceof NoConversationKeyError) {
     holdLine(false);
     console.error(`\ncannot open conversation ${conversation.id}: ${e.message}`);

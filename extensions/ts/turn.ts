@@ -74,6 +74,10 @@ export interface TurnMessage {
   index?: number;
   role?: string;
   tool_calls?: ToolCall[];
+  /** The encryption marker, READ but never opened here: it says the tool arguments below are
+   *  ciphertext to be copied onward, which is what lets this worker route an encrypted conversation
+   *  without a key (plan-encryption.md). */
+  enc?: string;
   /** Which call of which round, carried so the next reaction addresses by identity. */
   i?: number;
   of?: number;
@@ -305,11 +309,18 @@ export async function runTurnWorker(
     // Emitted under the caller's delegated run, so the record the tool worker claims names a
     // resolvable person rather than this worker.
     const as = await callerClient(m.conversationId!, (await currentCall(m.conversationId!)).seedId);
+    // ENCRYPTED ARGUMENTS TRAVEL OPAQUE, and this is what keeps the turn worker key-free — the
+    // property the whole design rests on (plan-encryption.md). The inference worker sealed
+    // `function.arguments` when it wrote the assistant message; this copies the blob verbatim,
+    // carries the marker across so the tool worker knows to open it, and parses nothing. Reading
+    // the arguments here would mean the component that PERFORMS a conversation could also read it.
+    const sealed = m.enc;
     await as.put({
       kind: k.toolCall,
       body: {
         tool: call.function.name,
-        args: parseArgs(call.function.arguments),
+        args: sealed ? call.function.arguments : parseArgs(call.function.arguments),
+        ...(sealed ? { enc: sealed } : {}),
         conversationId: m.conversationId,
         owner: m.owner,
         tool_call_id: call.id, // the slot: this call's answer IS the transcript reply
