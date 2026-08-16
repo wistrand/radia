@@ -2824,7 +2824,11 @@ export class Space {
    * answer cannot change while it is in flight.
    */
   getEvents(afterCursor = "0", limit = 200): Promise<SpaceEvent[]> {
-    return this.reads.run(`ev ${afterCursor} ${limit}`, () => this.storage.getEvents(afterCursor, limit));
+    // The key is JSON rather than a delimited string, and the delimiter used to be NUL. Two NUL
+    // bytes made this whole FILE binary to grep, which then answers every search over it with
+    // silence: the largest file in the repo, invisible to the tool anyone reaches for first.
+    // Cost two wrong conclusions before it was noticed. Collision-free either way.
+    return this.reads.run(JSON.stringify(["ev", afterCursor, limit]), () => this.storage.getEvents(afterCursor, limit));
   }
 
   /** The newest `limit` final events, ascending: the tail a live view starts from. */

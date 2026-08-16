@@ -94,7 +94,7 @@ consider an input, which no runtime can know. That is the only piece.
 | `planner.ts` | what is stale, and the only thing that asks for work |
 | `roles.ts` | three principals; a person cannot write a `stage_result` |
 | `serve.ts` | the web app: serves one page and relays `/v0`, holding no credential |
-| `ui.html` | sign-in, upload, the stage table, links into the console |
+| `ui.html` | sign-in, upload, the stage table, links into the console (a dataset links to its uploaded ARTIFACT, which is the record everything descends from; the dataset record is a sibling of the first request, not their ancestor) |
 | `run.ts` | brings it all up |
 | `smoke.ts` | the proof: `deno run -A examples/analysis/smoke.ts` |
 

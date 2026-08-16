@@ -938,6 +938,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Grants, scopes and narrowed answers
 
+- **`put` never checks that a parent is READABLE, so ancestry is forgeable.** A scoped principal may
+  name any record id in `parentIds`, including one it cannot read. Every upward walk therefore stops
+  at a foreign ancestor rather than skipping past it (`getLineage`, `getGraph`), or naming a
+  victim's record as your parent would hand back its whole upstream, bodies included. Two
+  consequences for anything new: an ancestor-based scope is unsafe by construction, and a
+  DESCENDANT-based one is safe, because you cannot make someone else's record your child. See
+  [research-substrate-lessons.md](research-substrate-lessons.md) action 6.
+
 - **A delegated run can never exceed its CALLER, so a worker capability cannot be delegated**
   (`intersectGrants`, src/core/space.ts). The authority is `worker INTERSECT caller`, so anything
   the caller deliberately lacks intersects to nothing: exec's `check: put` and `workspace: put`
@@ -1872,6 +1880,13 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Method: how these were found
 
+- **A NUL byte anywhere in a source file makes `grep` silent about the WHOLE file.** `space.ts`
+  used `\0` as a cache-key separator, so the largest and most central file in the repo answered
+  every search with nothing — not an error, nothing. Two wrong conclusions were drawn from it in one
+  session ("no `subject` field in `src/`", "`effectivePermissions` is not implemented") before a
+  `wc -l` against a `grep -c` that disagreed gave it away. If a grep over a big file returns
+  suspiciously little, check `python3 -c "print(open(f,'rb').read().count(b'\0'))"` before believing
+  it. Separators that are collision-free without going binary: `JSON.stringify([...])`.
 - **A harness more privileged than the deployment cannot see the deployment's failures.** Three bugs
   in one feature hid behind this: a suite spawning a worker under `-A` while the fleet gives it
   `--allow-net --allow-env` and no filesystem, and twice more where the test constructed the worker

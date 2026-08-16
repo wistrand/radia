@@ -72,12 +72,19 @@ of the fix.
 
 ## What is missing
 
-**There is no scoped ops READ tier, and both apps want the same one.** Coordination grants are
-finely scoped: per kind, per operation, pattern-matched against the body. The ops plane is a cliff.
-`observe` opens every read unscoped, and the self-scope tier requires `createdBy: "self"` on EVERY
-applicable grant, which fails whenever a WORKER authors your results. The chat hits this with tool
-output, the pipeline with stage results. What both want is "the ops plane, filtered to records my
-coordination grants already cover", and it does not exist.
+**The scoped ops READ tier is AUTHOR-scoped, and the apps want work done FOR them.** Analysed in
+full under action 6; the summary is that the tier exists, is opt-in, and answers a different
+question than either app asks. `Space.opsScope` throws unless some grant carries both `query` and
+`scope.createdBy: "self"`, then scopes to `runPrincipalsOf(subject)` — every run of that person, so
+a later session still sees its earlier records. Its intended reader is an AGENT inspecting its own
+work. A pipeline user authors two records (the upload artifact, the dataset) while requests,
+results and outputs are worker-authored, so they would see a two-node view.
+
+The demand is weaker than it first looks, and this is the part to hold onto: **both apps already
+satisfy their users' inspection needs without the ops plane at all.** The analysis page renders the
+whole pipeline — stages, states, digests, ids — from coordination queries; the chat serves its own
+`space_*` tools. What neither can do is REUSE THE CONSOLE. The actionable gap is therefore a console
+that assumes an operator, not an authorization model that is missing a tier.
 
 **No CORS means every browser application proxies, and that is a TRADE rather than a gap.** The
 space sends no `Access-Control-*` headers, so a page on another origin cannot call `/v0`. Proposed
@@ -132,7 +139,7 @@ DESIGN-FIRST means the open question below has to be answered before code.
 | 3 | ~~Opt-in CORS (`--allow-origin <origin>`)~~ **REJECTED 2026-08-16** | the absence of CORS is load-bearing, not an oversight: it is what makes the isolated artifact origin safe. See below | — | — |
 | 4 | ~~Plan from bulk reads, in memory~~ **BUILT 2026-08-16** | O(1) queries per wake instead of O(datasets x stages); `ui.html` is the worked example | SMALL | `examples/analysis/planner.ts` |
 | 5 | Pin stage code with promotion instead of self-report | turns the memo's foundation from a claim into an enforced fact, and would be the first worked composition of promotion with something other than an exec runner | MEDIUM | `examples/analysis/`, `extensions/ts/promotion.ts` |
-| 6 | A scoped ops READ tier | the one gap both apps hit independently and neither can work around | DESIGN-FIRST | `architecture-ops-tiers.md`, then `src/server/http.ts` + `handlers/ops.ts` |
+| 6 | A scoped ops READ tier | **ANALYSED 2026-08-16, recommendation: do not build.** Both apps already inspect their own work through the coordination plane; what they cannot reuse is the console. See below | — | a console that degrades for a scoped principal, if anything |
 
 **Actions 1 and 2 are built** (`sdk/ts/client.ts`, `sdk/ts/registry.ts`, `sdk/py/radia.py`;
 guards in `conformance/registry.test.ts` and `conformance/http.test.ts`, both proved red). Two
@@ -147,12 +154,49 @@ things the build settled that the proposal had not:
   `1.0` where JavaScript renders `1` — and now agree. It is agreement by discipline: the suites are
   Deno-only and CI runs no Python, so nothing checks it.
 
-**The open question in 6, which is why it is design-first.** A lineage or graph walk that stops at a
-record the caller may not see still tells them it exists: the shape leaks even when the bodies do
-not. The existing `createdBy: "self"` tier has the same property and nobody has decided whether that
-is acceptable, so widening the tier without answering it widens the leak too. Answer that first, in
-the doc, with the two candidate semantics written down (truncate the walk and SAY so, versus refuse
-the whole read).
+### Action 6, analysed: the open question already has an answer, and it is sharper than the question
+
+The traversal worry was the wrong worry. `getLineage` says why walks stop at a boundary:
+
+> Stop at a foreign ancestor rather than skipping past it: **`put` never checks that a parent is
+> readable**, so a scoped principal can name any id as a parent of its own record, and an
+> unfiltered walk then hands back that record's whole upstream, bodies included.
+
+Ancestry is FORGEABLE. Anyone may name any record as their parent, so an upward walk must stop at
+the boundary rather than skip past it, and it does. That also settles the two candidate semantics I
+had written down: truncate-and-say-so is already chosen, and refuse-the-whole-read would let a
+forged parent deny you your own lineage.
+
+Three designs, given that:
+
+**A. Mirror the coordination pattern into the ops scope** ("ops never widens what you can already
+see"). REJECT. The aggregates — stats, events, flows, diagnostics — would need per-row body
+matching where `createdBy` is a column filter, and any record carrying no scoping field becomes
+invisible. That is precisely the structural hubs: a `conversation` anchor has an empty body, a
+`stage_code` advertisement has no owner. Walks would truncate at the joints. Touches all twelve ops
+read endpoints.
+
+**B. Subtree scope: you may read what descends from a record you authored.** The shape to build if
+this is ever built. It matches what both apps mean by "my work" (the pipeline descends from the
+uploaded artifact, a chat turn from the seed the session wrote), costs one ancestry check per
+request, and is safe against forged ancestry BECAUSE it is down-only: you can attach yourself to
+someone else's record as a child, but you cannot make their record your descendant. Touches the six
+rooted endpoints; the aggregates stay closed.
+
+**C. No runtime change.** The ops plane is for operators; applications expose what their users may
+see through the coordination plane, which is what `extensions/ts/agent-tools.ts` already splits
+along and what both apps already do.
+
+**Recommendation: C, with B recorded as the shape and A rejected.** Before treating this as a
+substrate gap, notice that the thing actually missing is a console that degrades honestly for a
+scoped principal — showing what it can read and naming what it cannot — which is a page change
+rather than an authorization change.
+
+One concrete finding from the analysis, already fixed: the analysis app linked to the DATASET
+record, but that record and the first `stage_request` are both children of the upload artifact, so
+the dataset's own subtree is empty. It looked right only because the console's default walk goes
+both ways and reaches the pipeline by going up to the artifact first. Under any down-only scope it
+would have shown nothing.
 
 ## Claim ledger
 

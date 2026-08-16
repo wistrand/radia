@@ -260,10 +260,15 @@ async function refresh() {
       broken = true;
       break;
     }
+    // The ARTIFACT, not the dataset record. Both the dataset record and the first stage_request
+    // are children of the upload, so the dataset's own subtree is empty: a "from here down" walk
+    // from it shows nothing, and only the console's default both-ways walk reaches the pipeline at
+    // all, by going up to the artifact first. The root of this pipeline is the bytes it started
+    // from.
     html += `<div style="margin-bottom:14px">
       <div style="margin-bottom:4px"><b>${esc(ds.body.name)}</b>
         <span class="muted mono">${esc(ds.body.digest.slice(0, 12))}…</span>
-        <a class="mono" href="${consoleLink(ds.id)}" target="_blank" title="open this dataset's subtree in the console">console ↗</a></div>
+        <a class="mono" href="${consoleLink(ds.body.artifactId)}" target="_blank" title="this pipeline's root: the uploaded bytes everything descends from">console ↗</a></div>
       <table><thead><tr><th>stage</th><th>state</th><th>detail</th><th>record</th></tr></thead><tbody>${rows.join("")}</tbody></table>
     </div>`;
   }
