@@ -150,9 +150,14 @@ things the build settled that the proposal had not:
   async in TS (Web Crypto) while Python's is sync (hashlib), which is an asymmetry the parity table
   now records rather than hides.
 - The two SDKs have to compute the SAME key or a TS writer and a Python writer each write their own
-  record. They diverged on two axes when first written — Python escaped non-ASCII and rendered
-  `1.0` where JavaScript renders `1` — and now agree. It is agreement by discipline: the suites are
-  Deno-only and CI runs no Python, so nothing checks it.
+  record. They diverged on two axes when first written (non-ASCII escaping, `1.0` vs `1`), were
+  reconciled, and a THIRD axis then surfaced exactly as this entry predicted: float FORM. Python
+  switches to exponent notation at 1e-5 and zero-pads it (`1e-05`) where JavaScript writes
+  `0.00001`, so any body carrying a small float keyed differently. Fixed 2026-08-16: `_js_number`
+  in `sdk/py/radia.py` renders per ECMA-262 (verified against `JSON.stringify` over 30k doubles),
+  ints beyond 2**53 are refused since JavaScript rounds them, and the discipline is now a guard:
+  `conformance/py-parity.test.ts` feeds one corpus of raw JSON texts through both implementations
+  wherever python3 exists, including CI.
 
 ### Action 6, analysed: the open question already has an answer, and it is sharper than the question
 

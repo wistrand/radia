@@ -57,10 +57,14 @@ Keying on the container rather than the content dedupes writes that were meant t
 the call returns 200 and nothing happened.
 
 The two SDKs compute the SAME key for the same body, which matters because a TS writer and a Python
-writer would otherwise each write their own record. Python normalises to JavaScript's number
-rendering (`1.0` → `1`), leaves non-ASCII unescaped and refuses NaN/Infinity. It is agreement by
-discipline, not by test: the conformance suites are Deno-only and CI runs no Python. Numbers beyond
-double precision still diverge and are not worth putting in a key.
+writer would otherwise each write their own record. Python renders numbers exactly as JavaScript
+does (`1.0` → `1`, `1e-5` → `0.00001`, exponent form only outside `[1e-6, 1e21)`, never
+zero-padded), sorts object keys in UTF-16 code-unit order, leaves non-ASCII unescaped, and refuses
+what no shared key can exist for: NaN/Infinity, integers beyond 2**53 (JavaScript would silently
+round them), and values that are not JSON. The agreement is a guard, not a discipline:
+`conformance/py-parity.test.ts` runs one corpus of raw JSON texts through both implementations
+wherever `python3` is present, including CI. The small-float divergence it exists to catch
+(`1e-05` vs `0.00001`) shipped and survived precisely because nothing checked.
 
 **Two helpers that are not verbs**, both extracted from a client that learned them the hard way.
 `readRegistry` reads a registry projection, paging to exhaustion and reporting `complete: false`

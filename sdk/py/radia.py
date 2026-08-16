@@ -92,33 +92,96 @@ def content_key(tag: str, body: Any) -> str:
     Always pass a body that is a pure function of the logical write: a timestamp in it makes every
     key unique, which turns the dedupe off as silently as naming the container turns it on.
     """
-    canon = json.dumps(
-        _js_numbers(body),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,   # JS does not escape non-ASCII; escaping here would diverge
-        allow_nan=False,      # NaN/Infinity are not JSON: fail loudly rather than key on nonsense
-        default=str,
-    )
-    return f"{tag}:{hashlib.sha256(canon.encode()).hexdigest()[:32]}"
+    return f"{tag}:{hashlib.sha256(_canonical(body).encode()).hexdigest()[:32]}"
 
 
-def _js_numbers(v: Any) -> Any:
-    """``1.0`` -> ``1``, recursively.
+def _canonical(v: Any) -> str:
+    """Mirrors ``canonicalJson`` in ``sdk/ts/registry.ts``: object keys sorted, arrays in order,
+    numbers rendered exactly as JavaScript renders them. The two SDKs MUST produce identical
+    strings for the same body, or a TS writer and a Python writer key it differently and each
+    writes its own record; ``conformance/py-parity.test.ts`` holds that contract.
 
-    JavaScript has one number type, so ``JSON.stringify({n: 1.0})`` is ``{"n":1}`` while Python's
-    is ``{"n":1.0}``. Without this the two SDKs key the same body differently and each writes its
-    own record. Floats too large for a double still diverge; see the parity note in sdk/README.md.
+    A value with no canonical JSON form (a set, a datetime, NaN, a non-string dict key) raises
+    rather than being coerced: a silently stringified value keys on something JavaScript would
+    never produce.
     """
+    if v is None:
+        return "null"
     if isinstance(v, bool):
-        return v
-    if isinstance(v, float) and v.is_integer():
-        return int(v)
+        return "true" if v else "false"
+    if isinstance(v, str):
+        return json.dumps(v, ensure_ascii=False)
+    if isinstance(v, (int, float)):
+        return _js_number(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ",".join(_canonical(x) for x in v) + "]"
     if isinstance(v, dict):
-        return {k: _js_numbers(x) for k, x in v.items()}
-    if isinstance(v, list):
-        return [_js_numbers(x) for x in v]
-    return v
+        for k in v:
+            if not isinstance(k, str):
+                raise TypeError(f"content_key: object key {k!r} is not a string")
+        # JS sorts keys by UTF-16 code units; Python compares code points, and the two orders
+        # disagree once a key mixes astral characters with U+E000..U+FFFF. Sort the UTF-16 form.
+        keys = sorted(v.keys(), key=lambda k: k.encode("utf-16-be", "surrogatepass"))
+        return "{" + ",".join(f"{json.dumps(k, ensure_ascii=False)}:{_canonical(v[k])}" for k in keys) + "}"
+    raise TypeError(f"content_key: {type(v).__name__} has no canonical JSON form")
+
+
+def _js_number(v: Any) -> str:
+    """A number exactly as JavaScript's ``String(n)`` writes it (ECMA-262 Number::toString).
+
+    Both languages already print shortest-round-trip digits; they disagree only on FORM. Python
+    switches to exponent notation at 1e-5 and zero-pads the exponent (``1e-05``) where JavaScript
+    keeps plain decimals down to 1e-6 and never pads (``0.00001``, ``1e-7``), so any body carrying
+    a small float keyed differently until this reformatted it.
+
+    An int beyond 2**53 is refused: JavaScript would round it, so no shared key can exist.
+    """
+    if isinstance(v, int):
+        if abs(v) > 2 ** 53:
+            raise ValueError(f"content_key: {v} exceeds double precision, JavaScript cannot represent it")
+        return str(v)
+    if v != v or v in (float("inf"), float("-inf")):
+        raise ValueError("content_key: NaN/Infinity are not JSON")
+    if v == 0:
+        return "0"  # JSON.stringify(-0) is "0"
+    sign = "-" if v < 0 else ""
+    digits, n = _shortest_digits(-v if v < 0 else v)
+    k = len(digits)
+    if k <= n <= 21:
+        return sign + digits + "0" * (n - k)
+    if 0 < n <= 21:
+        return sign + digits[:n] + "." + digits[n:]
+    if -6 < n <= 0:
+        return sign + "0." + "0" * (-n) + digits
+    e = n - 1
+    mantissa = digits if k == 1 else digits[0] + "." + digits[1:]
+    return f"{sign}{mantissa}e{'+' if e >= 0 else '-'}{abs(e)}"
+
+
+def _shortest_digits(x: float) -> Tuple[str, int]:
+    """``(digits, n)`` with ``x == 0.digits * 10**n`` and no trailing zeros in ``digits``.
+
+    ``repr`` already gives the shortest digit string for a positive finite float; this only
+    reparses its three shapes (``123.456``, ``0.0001``, ``1.5e+300``) into spec form.
+    """
+    r = repr(x)
+    if "e" in r:
+        mantissa, _, exp = r.partition("e")
+        digits = mantissa.replace(".", "")
+        n = int(exp) + 1  # d.ddd * 10**X == 0.dddd * 10**(X+1)
+    elif "." in r:
+        int_part, _, frac = r.partition(".")
+        if int_part == "0":
+            stripped = frac.lstrip("0")
+            n = len(stripped) - len(frac)
+            digits = stripped
+        else:
+            digits = int_part + frac
+            n = len(int_part)
+    else:
+        digits = r
+        n = len(digits)
+    return digits.rstrip("0") or "0", n
 
 
 def _base_key(base: str) -> str:
