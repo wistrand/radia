@@ -67,7 +67,7 @@ Postgres run was manual, while CLAUDE.md's invariant said the suite runs on ever
 
 | File | Role |
 |------|------|
-| `run.test.ts` | entry point: enumerates implementations, registers every suite against each |
+| `run.test.ts` | entry point: enumerates implementations, registers every suite against each. `RADIA_CONF_ADAPTERS=postgres` (comma list) narrows to the named adapters; CI's pg job uses it so the embedded matrix is not paid for twice |
 | `adapters.ts` | the implementations under test, and how each is isolated per test: SQLite gets a fresh `:memory:` database, PGlite and Postgres get an ephemeral schema on ONE shared server (see below) |
 | `harness.ts`  | the `Suite` / `BlobSuite` / `BlobCryptoSuite` types and setup/teardown |
 | `suites/`     | one file per behavior area (records, matching, **pushdown soundness**, **graph: children + lineage**, leases + claim fairness, idempotency, events, **the integrity chain incl. direct-SQL tamper cases**, **resource limits**, **the orphaned/starving split**, watches, faults, auth, **compartments: a dedicated kind plus pattern-scoped grants, refused on every write path**, taint, admin + selector-driven remediation, blobs + encryption) |

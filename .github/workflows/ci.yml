@@ -4,10 +4,11 @@
 # was invisible on both embedded adapters and appeared only against a live server, so a green
 # embedded run is not evidence about the adapter people deploy.
 #
-# Three jobs on purpose. `embedded` is the fast answer (no services, ~30s); `postgres` is the one
-# the invariant is about, and a failure there names the adapter rather than "the tests";
-# `py-parity` runs the SDK content-key contract against PINNED Python versions, because the other
-# two check it only against whatever python3 the runner image happens to ship.
+# Two jobs on purpose. `embedded` is the broad answer (both embedded adapters, the standalone
+# suites, extensions, and the pinned-python SDK parity containers); `postgres` runs ONLY the
+# postgres adapter column plus the two pg-only files (RADIA_CONF_ADAPTERS narrows it), because
+# re-running the embedded matrix there doubled the paid minutes for zero coverage. A failure in
+# `postgres` therefore always names the adapter, never "the tests".
 
 name: ci
 
@@ -15,6 +16,12 @@ on:
   push:
     branches: [main]
   pull_request:
+
+# A push stream to main was paying for every superseded commit's full run. Only the newest
+# commit's verdict matters; in-flight runs for the same ref are cancelled by the next push.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   embedded:
@@ -27,6 +34,7 @@ jobs:
           # still marked unstable upstream (see agent_docs/gotchas.md), so an upgrade breaking it is
           # something to learn here rather than on someone's machine.
           deno-version: v2.x
+          cache: true
       - run: deno task check
       - run: deno task conformance
       # bubblewrap is an OPTIONAL execution backend (a space advertises it only where its probe comes
@@ -56,6 +64,10 @@ jobs:
             cat /tmp/bwrap.err
           fi
       - run: deno task extensions
+      # The SDK parity containers (docker/py-parity/): python 3.9 and 3.13 pinned beside a pinned
+      # deno, no way to skip. A step here rather than its own job, because GitHub bills each job
+      # rounded UP to a whole minute and this takes ~20 seconds.
+      - run: ./docker/py-parity/run.sh
 
   postgres:
     runs-on: ubuntu-latest
@@ -79,21 +91,14 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      # The suite adds the `postgres` adapter when RADIA_PG_URL is set, each test in an ephemeral
-      # schema dropped on close, so this is the same command with one more column. It is also the
-      # ONLY cover for the pool-only paths: `SKIP LOCKED` claims racing across connections, and the
-      # `xid8` watermark that keeps watch cursors gap-free when transactions commit out of seq order.
-      - run: deno task conformance
+          cache: true
+      # Only what this job uniquely covers: the postgres adapter column (RADIA_CONF_ADAPTERS
+      # narrows conformance/adapters.ts to it) plus the two pg-only files. This is the ONLY cover
+      # for the pool-only paths: `SKIP LOCKED` claims racing across connections, and the `xid8`
+      # watermark that keeps watch cursors gap-free when transactions commit out of seq order.
+      # Everything embedded was already proved by the `embedded` job; re-proving it here cost a
+      # paid minute per push.
+      - run: deno task conformance-pg
         env:
           RADIA_PG_URL: postgres://radia:radia@localhost:5432/radia
-
-  # The SDK parity suite (conformance/py-parity.test.ts) SKIPS wherever python3 is missing, so the
-  # jobs above check it only against the runner image's own python3 — one uncontrolled version.
-  # This job runs the same containers a developer runs locally (docker/py-parity/run.sh): Deno
-  # pinned in the image, python 3.9 (the oldest sdk/README.md claims) and 3.13, repo mounted
-  # read-only, and no way to skip. A failure here names an interpreter version, not "the tests".
-  py-parity:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: ./docker/py-parity/run.sh
+          RADIA_CONF_ADAPTERS: postgres
