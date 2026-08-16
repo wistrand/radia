@@ -10,54 +10,35 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { RadiaClient } from "../../sdk/ts/client.ts";
-import { operatorToken } from "../../examples/operator.ts";
 import { CAPABILITY_KIND, type ToolDef } from "../ts/capability.ts";
 import { PROGRESS_KIND } from "../ts/progress.ts";
 import { answer, serveTools, toolResult } from "../ts/tool-worker.ts";
 import { ENC_V1, encryptText, newFleetKeyPair, openBody, sealConversation } from "../ts/encrypted.ts";
 import { parseArgs } from "../ts/turn.ts";
+import { bootSpace } from "./space.ts";
 
 const PORT = 7827;
-const url = `http://127.0.0.1:${PORT}`;
 
 const def = (name: string): ToolDef => ({
   type: "function",
   function: { name, description: `the ${name} tool`, parameters: { type: "object", properties: {} } },
 });
 
+const shared = await bootSpace(PORT);
+await shared.registerKind(CAPABILITY_KIND);
+await shared.registerKind(PROGRESS_KIND);
+await shared.registerKind({
+  kind: "tool_call",
+  indexedPaths: [{ path: "tool", type: "keyword" }, { path: "conversationId", type: "keyword" }],
+});
+await shared.registerKind({
+  kind: "tool_result",
+  indexedPaths: [{ path: "callId", type: "keyword" }],
+  claimable: false,
+});
+
 async function withSpace<T>(fn: (c: RadiaClient) => Promise<T>): Promise<T> {
-  const space = new Deno.Command(Deno.execPath(), {
-    args: ["run", "-A", "src/main.ts", "dev", "--port", String(PORT), "--artifact-port", "0"],
-    stdout: "null",
-    stderr: "inherit",
-  }).spawn();
-  const probe = new RadiaClient(url);
-  for (let i = 0; i < 100; i++) {
-    try {
-      await probe.health();
-      break;
-    } catch {
-      await new Promise((r) => setTimeout(r, 200));
-    }
-  }
-  const c = new RadiaClient(url, { token: operatorToken(url) });
-  await c.registerKind(CAPABILITY_KIND);
-  await c.registerKind(PROGRESS_KIND);
-  await c.registerKind({
-    kind: "tool_call",
-    indexedPaths: [{ path: "tool", type: "keyword" }, { path: "conversationId", type: "keyword" }],
-  });
-  await c.registerKind({
-    kind: "tool_result",
-    indexedPaths: [{ path: "callId", type: "keyword" }],
-    claimable: false,
-  });
-  try {
-    return await fn(c);
-  } finally {
-    space.kill("SIGTERM");
-    await space.status;
-  }
+  return await fn(shared);
 }
 
 const awaitOne = async (c: RadiaClient, pattern: { kind: string; match?: Record<string, unknown> }) => {

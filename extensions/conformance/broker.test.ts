@@ -13,19 +13,20 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { RadiaClient, type RadiaRecord } from "../../sdk/ts/client.ts";
-import { operatorToken } from "../../examples/operator.ts";
 import { brokeredInvoker, dryRunEntrypoint, labelsForJail } from "../ts/broker.ts";
 import { BINDING, declareBinding, treeCache, type TreeCache, WorkspaceHost } from "../ts/host.ts";
 import { declareExecRequest, EXEC_REQUEST, promote } from "../ts/promotion.ts";
 import { materialize, readWorkspace, writeWorkspace } from "../ts/workspace.ts";
 import { declareSandbox } from "../ts/sandbox-registry.ts";
+import { bootSpace, uniq } from "./space.ts";
 
 const PORT = 7823;
 const url = `http://127.0.0.1:${PORT}`;
-const AGENT = "agent:worker";
 
 interface Ctx {
   operator: RadiaClient;
+  /** This test's own hosted agent: the space is shared, so every test runs a different one. */
+  agent: string;
   /** Stand up an agent bound to a one-file workspace, and return a host that runs it brokered. */
   hostFor: (
     entry: string,
@@ -44,31 +45,22 @@ interface Ctx {
   rebind: (entry: string) => Promise<void>;
 }
 
+const operator = await bootSpace(PORT);
+await declareExecRequest(operator);
+await declareBinding(operator);
+await operator.registerKind({ kind: "note", indexedPaths: [{ path: "tag", type: "keyword" }, { path: "compartment", type: "keyword" }] });
+await operator.registerKind({ kind: "exec_result", indexedPaths: [{ path: "tag", type: "keyword" }] });
+await operator.registerKind({
+  kind: "workspace",
+  indexedPaths: [{ path: "name", type: "keyword" }, { path: "owner", type: "keyword" }, { path: "treeDigest", type: "keyword" }, { path: "basedOn", type: "keyword" }],
+  claimable: false,
+});
+
 async function withSpace<T>(fn: (ctx: Ctx) => Promise<T>): Promise<T> {
-  const space = new Deno.Command(Deno.execPath(), {
-    args: ["run", "-A", "src/main.ts", "dev", "--port", String(PORT), "--artifact-port", "0"],
-    stdout: "null",
-    stderr: "inherit",
-  }).spawn();
-  const probe = new RadiaClient(url);
-  for (let i = 0; i < 100; i++) {
-    try {
-      await probe.health();
-      break;
-    } catch {
-      await new Promise((r) => setTimeout(r, 200));
-    }
-  }
-  const operator = new RadiaClient(url, { token: operatorToken(url) });
-  await declareExecRequest(operator);
-  await declareBinding(operator);
-  await operator.registerKind({ kind: "note", indexedPaths: [{ path: "tag", type: "keyword" }, { path: "compartment", type: "keyword" }] });
-  await operator.registerKind({ kind: "exec_result", indexedPaths: [{ path: "tag", type: "keyword" }] });
-  await operator.registerKind({
-    kind: "workspace",
-    indexedPaths: [{ path: "name", type: "keyword" }, { path: "owner", type: "keyword" }, { path: "treeDigest", type: "keyword" }, { path: "basedOn", type: "keyword" }],
-    claimable: false,
-  });
+  // Per-test namespace on the shared space: a fresh agent and tier mean a later test's host can
+  // never claim an earlier test's nacked or abandoned request, and workspace names never fork.
+  const AGENT = uniq("agent:worker");
+  const TIER = uniq("prod");
   let n = 0;
   let current = "";
   /** Promote the code, bind the agent to it, and queue one request. Shared by `hostFor` and
@@ -77,8 +69,8 @@ async function withSpace<T>(fn: (ctx: Ctx) => Promise<T>): Promise<T> {
   let file = "main.ts";
   let outputWorkspace: string | undefined;
   const install = async (entry: string): Promise<string> => {
-    const ws = await writeWorkspace(operator, { name: `ws${++n}`, owner: "human:alice", files: { [file]: entry } });
-    await promote(operator, { digest: ws.treeDigest, tier: "prod", pins: [{ principal: AGENT, operations: ["take"] }] });
+    const ws = await writeWorkspace(operator, { name: uniq("ws"), owner: "human:alice", files: { [file]: entry } });
+    await promote(operator, { digest: ws.treeDigest, tier: TIER, pins: [{ principal: AGENT, operations: ["take"] }] });
     await operator.put({
       kind: BINDING,
       body: {
@@ -89,45 +81,41 @@ async function withSpace<T>(fn: (ctx: Ctx) => Promise<T>): Promise<T> {
         ...(outputWorkspace ? { outputWorkspace } : {}),
       },
     });
-    await operator.put({ kind: EXEC_REQUEST, body: { workspace: ws.treeDigest, tier: "prod", job: "j" } });
+    await operator.put({ kind: EXEC_REQUEST, body: { workspace: ws.treeDigest, tier: TIER, job: "j" } });
     current = ws.treeDigest;
     return ws.treeDigest;
   };
-  try {
-    return await fn({
-      operator,
-      hostFor: async (entry, o = {}) => {
-        const { definitionToken } = await operator.createAgentDefinition(AGENT, []);
-        await operator.grant(AGENT, "exec_result", ["put"]);
-        await operator.grant(AGENT, "note", ["put"]);
-        if (o.outputWorkspace) {
-          outputWorkspace = o.outputWorkspace;
-          await operator.grant(AGENT, "workspace", ["put", "query"]);
-          await operator.grant(AGENT, "artifact", ["put", "query"]);
-        }
-        if (o.sandbox) {
-          sandboxPattern = o.sandbox;
-          file = "main.py";
-        }
-        await install(entry);
-        return new WorkspaceHost({
-          base: url,
-          credentials: { [AGENT]: definitionToken },
-          reader: operator,
-          invoke: brokeredInvoker(operator, o),
-        });
-      },
-      freshRequest: async () => {
-        await operator.put({ kind: EXEC_REQUEST, body: { workspace: current, tier: "prod", job: `j${++n}` } });
-      },
-      rebind: async (entry) => {
-        await install(entry);
-      },
-    });
-  } finally {
-    space.kill("SIGTERM");
-    await space.status;
-  }
+  return await fn({
+    operator,
+    agent: AGENT,
+    hostFor: async (entry, o = {}) => {
+      const { definitionToken } = await operator.createAgentDefinition(AGENT, []);
+      await operator.grant(AGENT, "exec_result", ["put"]);
+      await operator.grant(AGENT, "note", ["put"]);
+      if (o.outputWorkspace) {
+        outputWorkspace = o.outputWorkspace;
+        await operator.grant(AGENT, "workspace", ["put", "query"]);
+        await operator.grant(AGENT, "artifact", ["put", "query"]);
+      }
+      if (o.sandbox) {
+        sandboxPattern = o.sandbox;
+        file = "main.py";
+      }
+      await install(entry);
+      return new WorkspaceHost({
+        base: url,
+        credentials: { [AGENT]: definitionToken },
+        reader: operator,
+        invoke: brokeredInvoker(operator, o),
+      });
+    },
+    freshRequest: async () => {
+      await operator.put({ kind: EXEC_REQUEST, body: { workspace: current, tier: TIER, job: `j${++n}` } });
+    },
+    rebind: async (entry) => {
+      await install(entry);
+    },
+  });
 }
 
 Deno.test("[broker] the jail cannot reach the space, so the broker is the only way out", async () => {
@@ -164,12 +152,12 @@ Deno.test("[broker] the jail cannot reach the space, so the broker is the only w
     for (const [route, outcome] of Object.entries(tried)) {
       assert(denied.test(outcome), `the jail reached the space through ${route}: ${outcome}`);
     }
-    assertEquals((await operator.query({ kind: "note" }, 5)).length, 1, "the broker is the way that works");
+    assertEquals((await operator.query({ kind: "note", match: { tag: "via-broker" } }, 5)).length, 1, "the broker is the way that works");
   });
 });
 
 Deno.test("[broker] a brokered write is the AGENT's, and carries the claimed record as a parent", async () => {
-  await withSpace(async ({ operator, hostFor }) => {
+  await withSpace(async ({ operator, hostFor, agent }) => {
     const host = await hostFor(`
       export default async (record, space) => {
         await space.put({ kind: "note", body: { tag: "from-jail" } });
@@ -178,10 +166,10 @@ Deno.test("[broker] a brokered write is the AGENT's, and carries the claimed rec
     `);
     assertEquals((await host.tick()).map((o) => o.status), ["acked"]);
 
-    const notes = await operator.query({ kind: "note" }, 5, { dir: "desc" });
+    const notes = await operator.query({ kind: "note", match: { tag: "from-jail" } }, 5, { dir: "desc" });
     assertEquals(notes.length, 1);
     const perms = await operator.permissions(notes[0].runtimeMeta.createdBy) as { subject: string };
-    assertEquals(perms.subject, AGENT, "a proposal is performed under the AGENT, never the host");
+    assertEquals(perms.subject, agent, "a proposal is performed under the AGENT, never the host");
     // Lineage the code never mentioned. A direct put omitting parents is how taint is lost, so
     // the broker prepends the claimed record whatever the entrypoint says.
     const requests = await operator.query({ kind: EXEC_REQUEST }, 5, { dir: "desc" });
@@ -228,14 +216,14 @@ Deno.test("[broker] a retried attempt's writes dedupe, so at-least-once does not
     `);
     const first = await host.tick();
     assertEquals(first.map((o) => o.status), ["failed"], JSON.stringify(first));
-    assertEquals((await operator.query({ kind: "note" }, 5)).length, 1);
+    assertEquals((await operator.query({ kind: "note", match: { tag: "once" } }, 5)).length, 1);
 
     // The nack backs the record off, so wait for it and let the same attempt happen again.
     await new Promise((r) => setTimeout(r, 5200));
     const second = await host.tick();
     assertEquals(second.map((o) => o.status), ["failed"], "the entrypoint fails the same way");
     assertEquals(
-      (await operator.query({ kind: "note" }, 5)).length,
+      (await operator.query({ kind: "note", match: { tag: "once" } }, 5)).length,
       1,
       "the retry's write is a replay, not a second record",
     );
@@ -294,7 +282,7 @@ Deno.test({
   name: "[broker] a PYTHON entrypoint speaks the same frames, jailed by bubblewrap",
   ignore: !hasBwrap || !hasPython,
   fn: async () => {
-    await withSpace(async ({ operator, hostFor }) => {
+    await withSpace(async ({ operator, hostFor, agent }) => {
       // The protocol is the contract and the shim is one language's way of speaking it, so a
       // Python worker is not a second broker: the host side never learns which language asked.
       // The jail is chosen by the sandbox RECORD's isolation, independently of the language.
@@ -338,10 +326,10 @@ Deno.test({
       assertEquals(tried.net, "URLError", `a bubblewrap jail must not reach the space: ${tried.net}`);
 
       // …and the brokered write went through as the AGENT, exactly as it does from JavaScript.
-      const notes = await operator.query({ kind: "note" }, 5, { dir: "desc" });
+      const notes = await operator.query({ kind: "note", match: { tag: "from-python" } }, 5, { dir: "desc" });
       assertEquals((notes[0].body as { tag: string }).tag, "from-python");
       const perms = await operator.permissions(notes[0].runtimeMeta.createdBy) as { subject: string };
-      assertEquals(perms.subject, AGENT);
+      assertEquals(perms.subject, agent);
     });
   },
 });
@@ -364,7 +352,7 @@ Deno.test("[broker] an entrypoint that writes WITHOUT a newline does not break t
     `);
     const outcomes = await host.tick();
     assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
-    assertEquals((await operator.query({ kind: "note" }, 5)).length, 1, "the brokered call must go through");
+    assertEquals((await operator.query({ kind: "note", match: { tag: "after-partial-write" } }, 5)).length, 1, "the brokered call must go through");
     const results = await operator.query({ kind: "exec_result" }, 5, { dir: "desc" });
     assertEquals((results[0].body as { tag: string }).tag, "survived", "…and the result frame too");
   });
@@ -385,7 +373,7 @@ Deno.test("[broker] an entrypoint that floods stdout is ABSORBED, not fatal", as
     `);
     const outcomes = await host.tick();
     assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
-    assertEquals((await operator.query({ kind: "note" }, 5)).length, 1, "12MB of chatter, and the call still lands");
+    assertEquals((await operator.query({ kind: "note", match: { tag: "after-flood" } }, 5)).length, 1, "12MB of chatter, and the call still lands");
   });
 });
 
@@ -396,17 +384,20 @@ Deno.test("[broker] a frame too big for the CHANNEL is refused", async () => {
     // machine complains. Reached the only way jailed code can: an enormous body on a real call.
     const host = await hostFor(`
       export default async (record, space) => {
-        await space.put({ kind: "note", body: { blob: "x".repeat(5 * 1024 * 1024) } });
+        await space.put({ kind: "note", body: { tag: "flood-blob", blob: "x".repeat(5 * 1024 * 1024) } });
         return { kind: "exec_result", body: { tag: "unreachable" } };
       };
     `);
     const outcomes = await host.tick();
     assertEquals(outcomes.map((o) => o.status), ["failed"], JSON.stringify(outcomes));
     assertStringIncludes((outcomes[0] as { error: string }).error, "wrote more than");
-    assertEquals((await operator.query({ kind: "note" }, 5)).length, 0, "and it never became a record");
+    assertEquals((await operator.query({ kind: "note", match: { tag: "flood-blob" } }, 5)).length, 0, "and it never became a record");
     // The work is not lost: a flood is a failure like any other, so it nacks and can be retried.
-    const env = await operator.queryEnvelopes({ state: "available", limit: 50 });
-    assert(env.some((r) => r.record?.kind === EXEC_REQUEST), "the request goes back for another attempt");
+    const env = await operator.queryEnvelopes({ state: "available", limit: 500 });
+    assert(
+      env.some((r) => r.record?.kind === EXEC_REQUEST),
+      `the request goes back for another attempt (page held: ${JSON.stringify(env.map((r) => r.record?.kind))})`,
+    );
   });
 });
 
@@ -500,7 +491,7 @@ Deno.test("[broker] a DRY RUN rehearses the real thing and writes nothing", asyn
     // reading it is checking a different thing than the one that will run.
     const entry = `
       export default async (record, space) => {
-        await space.put({ kind: "note", body: { tag: "from-jail" } });
+        await space.put({ kind: "note", body: { tag: "dry-note" } });
         return { kind: "exec_result", body: { tag: "job:" + record.body.job } };
       };
     `;
@@ -534,8 +525,8 @@ Deno.test("[broker] a DRY RUN rehearses the real thing and writes nothing", asyn
       assertEquals(p.idempotencyKey, "broker:01TESTRECORD:1");
 
       // NOTHING was written. This is the assertion the whole feature rests on.
-      assertEquals((await operator.query({ kind: "note" }, 10)).length, 0, "a dry run must not write");
-      assertEquals((await operator.query({ kind: "exec_result" }, 10)).length, 0);
+      assertEquals((await operator.query({ kind: "note", match: { tag: "dry-note" } }, 10)).length, 0, "a dry run must not write");
+      assertEquals((await operator.query({ kind: "exec_result", match: { tag: "job:j" } }, 10)).length, 0);
     } finally {
       await Deno.remove(root, { recursive: true });
     }
@@ -543,7 +534,7 @@ Deno.test("[broker] a DRY RUN rehearses the real thing and writes nothing", asyn
     // …and the real claim, for the same code, does write, with the same shape.
     const outcomes = await host.tick();
     assertEquals(outcomes.map((o) => o.status), ["acked"], JSON.stringify(outcomes));
-    const notes = await operator.query({ kind: "note" }, 10, { dir: "desc" });
+    const notes = await operator.query({ kind: "note", match: { tag: "dry-note" } }, 10, { dir: "desc" });
     assertEquals(notes.length, 1);
     assertEquals((notes[0].body as { compartment?: string }).compartment, "trial");
   });
@@ -632,6 +623,6 @@ Deno.test("[broker] a put made with POSITIONAL arguments is told the signature",
     const tag = (results[0].body as { tag: string }).tag;
     assertStringIncludes(tag, "space.put({kind, body})");
     assertStringIncludes(tag, "Positional arguments");
-    assertEquals((await operator.query({ kind: "note" }, 5)).length, 0, "and nothing was written");
+    assertEquals((await operator.query({ kind: "note", match: { tag: "positional" } }, 5)).length, 0, "and nothing was written");
   });
 });

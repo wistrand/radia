@@ -15,69 +15,48 @@
 
 import { assertEquals } from "@std/assert";
 import { RadiaClient } from "../../sdk/ts/client.ts";
-import { operatorToken } from "../../examples/operator.ts";
 import { contextForTest } from "../ts/inference.ts";
+import { bootSpace, uniq } from "./space.ts";
 
 const PORT = 7839;
-const url = `http://${"127.0.0.1"}:${PORT}`;
+
+const shared = await bootSpace(PORT);
+await shared.registerKind({
+  kind: "message",
+  indexedPaths: [
+    { path: "conversationId", type: "keyword" },
+    { path: "owner", type: "keyword" },
+    { path: "index", type: "integer" },
+    { path: "role", type: "keyword" },
+  ],
+  sortablePaths: ["index"],
+  claimable: false,
+});
 
 async function withSpace<T>(fn: (c: RadiaClient) => Promise<T>): Promise<T> {
-  const space = new Deno.Command(Deno.execPath(), {
-    args: ["run", "-A", "src/main.ts", "dev", "--port", String(PORT), "--artifact-port", "0"],
-    stdout: "null",
-    stderr: "inherit",
-  }).spawn();
-  const probe = new RadiaClient(url);
-  for (let i = 0; i < 100; i++) {
-    try {
-      await probe.health();
-      break;
-    } catch {
-      await new Promise((r) => setTimeout(r, 200));
-    }
-  }
-  const c = new RadiaClient(url, { token: operatorToken(url) });
-  await c.registerKind({
-    kind: "message",
-    indexedPaths: [
-      { path: "conversationId", type: "keyword" },
-      { path: "owner", type: "keyword" },
-      { path: "index", type: "integer" },
-      { path: "role", type: "keyword" },
-    ],
-    sortablePaths: ["index"],
-    claimable: false,
-  });
-  try {
-    return await fn(c);
-  } finally {
-    try {
-      space.kill();
-    } catch { /* already gone */ }
-    await space.status;
-    await new Promise((r) => setTimeout(r, 50));
-  }
+  return await fn(shared);
 }
 
 Deno.test("inference: a call cannot load a conversation belonging to someone else", async () => {
   await withSpace(async (c) => {
+    const convBob = uniq("conv-bob"), convAlice = uniq("conv-alice");
     // Bob's thread. In the real space these are Bob's records under Bob's grant; here the operator
     // writes them, because what is under test is the WORKER's query, not who wrote the rows.
     for (let i = 0; i < 3; i++) {
       await c.put({
         kind: "message",
-        body: { conversationId: "conv-bob", owner: "human:bob", index: i, role: "user", content: `bob secret ${i}` },
+        body: { conversationId: convBob, owner: "human:bob", index: i, role: "user", content: `bob secret ${i}` },
       });
     }
     await c.put({
       kind: "message",
-      body: { conversationId: "conv-alice", owner: "human:alice", index: 0, role: "user", content: "alice hello" },
+      body: { conversationId: convAlice, owner: "human:alice", index: 0, role: "user", content: "alice hello" },
     });
 
     // The attack: a body Alice's own `llm_call: put` grant accepts under the default identity
     // scope, because the pattern binds `owner` and she is naming herself. The conversation is not
     // hers, and nothing in the write path objects to that.
-    const forged = { conversationId: "conv-bob", owner: "human:alice", upToIndex: 99 };
+    const forged = { conversationId: convBob, owner: "human:alice", upToIndex: 99 };
 
     // BOTH settings. `window <= 0` is the branch that was wrong; 40 is the default that was right.
     for (const window of [0, 40]) {
@@ -94,7 +73,7 @@ Deno.test("inference: a call cannot load a conversation belonging to someone els
     for (const window of [0, 40]) {
       const { messages } = await contextForTest(
         c,
-        { conversationId: "conv-alice", owner: "human:alice", upToIndex: 99 },
+        { conversationId: convAlice, owner: "human:alice", upToIndex: 99 },
         window,
         200_000,
       );
@@ -106,13 +85,14 @@ Deno.test("inference: a call cannot load a conversation belonging to someone els
 
 Deno.test("inference: a classify reference resolves under the caller's scope, never the worker's", async () => {
   await withSpace(async (c) => {
+    const convBob = uniq("conv-bob"), convAlice = uniq("conv-alice");
     await c.put({
       kind: "message",
-      body: { conversationId: "conv-bob", owner: "human:bob", index: 4, role: "user", content: "bob secret question" },
+      body: { conversationId: convBob, owner: "human:bob", index: 4, role: "user", content: "bob secret question" },
     });
     await c.put({
       kind: "message",
-      body: { conversationId: "conv-alice", owner: "human:alice", index: 4, role: "user", content: "alice question" },
+      body: { conversationId: convAlice, owner: "human:alice", index: 4, role: "user", content: "alice question" },
     });
 
     // The router names a message instead of copying its text (plan-encryption.md phase 0). That
@@ -121,7 +101,7 @@ Deno.test("inference: a classify reference resolves under the caller's scope, ne
     // introduced in exchange for a scoping accident.
     const forged = await contextForTest(
       c,
-      { system: "classify", classifyOf: { conversationId: "conv-bob", owner: "human:alice", index: 4 } },
+      { system: "classify", classifyOf: { conversationId: convBob, owner: "human:alice", index: 4 } },
       40,
       200_000,
     );
@@ -129,7 +109,7 @@ Deno.test("inference: a classify reference resolves under the caller's scope, ne
 
     const honest = await contextForTest(
       c,
-      { system: "classify", classifyOf: { conversationId: "conv-alice", owner: "human:alice", index: 4, context: " (ctx)" } },
+      { system: "classify", classifyOf: { conversationId: convAlice, owner: "human:alice", index: 4, context: " (ctx)" } },
       40,
       200_000,
     );

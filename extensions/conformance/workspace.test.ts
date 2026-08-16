@@ -34,61 +34,43 @@ import {
 } from "../ts/workspace.ts";
 import { bwrapSandbox, defaultConfiner, denoSandbox, jailArgs, macosPython, probeSandbox, runBwrap, runCode, runEntry, runSeatbelt, sandboxExecProfile, seatbeltPythonProfile, seatbeltPythonSandbox } from "../ts/sandbox.ts";
 import { declareSandbox, listSandboxes, readSandbox, SANDBOX_KIND, verifySandbox } from "../ts/sandbox-registry.ts";
+import { bootSpace, uniq } from "./space.ts";
 
 const PORT = 7815;
 const url = `http://127.0.0.1:${PORT}`;
 const OWNER = "human:alice";
 
 /** One space for the whole file: these are contract checks, not isolation checks, and a space per
- *  test would spend more time booting than asserting. */
-async function withSpace<T>(fn: (c: RadiaClient) => Promise<T>, opts: { artifactPort?: number } = {}): Promise<T> {
-  // `--artifact-port 0` by default: most of this suite never fetches bytes over HTTP, and an
-  // isolated origin per test is a second listener for nothing. The tree-serving case needs one,
-  // because HTML renders INLINE only there — on the main origin it is always a download, which is
-  // the property that makes serving model-written pages safe at all.
-  const space = new Deno.Command(Deno.execPath(), {
-    args: ["run", "-A", "src/main.ts", "dev", "--port", String(PORT), "--artifact-port", String(opts.artifactPort ?? 0)],
-    stdout: "null",
-    stderr: "inherit",
-  }).spawn();
-  const probe = new RadiaClient(url);
-  for (let i = 0; i < 100; i++) {
-    try {
-      await probe.health();
-      break;
-    } catch {
-      await new Promise((r) => setTimeout(r, 200));
-    }
-  }
-  const c = new RadiaClient(url, { token: operatorToken(url) });
-  await c.registerKind({
-    kind: "workspace",
-    indexedPaths: [
-      { path: "name", type: "keyword" },
-      { path: "owner", type: "keyword" },
-      { path: "conversationId", type: "keyword" },
-      { path: "treeDigest", type: "keyword" },
-      { path: "basedOn", type: "keyword" },
-    ],
-    claimable: false,
-  });
-  await c.registerKind({
-    kind: "artifact",
-    indexedPaths: [
-      { path: "digest", type: "keyword" },
-      { path: "mediaType", type: "keyword" },
-      { path: "owner", type: "keyword" },
-      { path: "conversationId", type: "keyword" },
-      { path: "workspace", type: "keyword" },
-    ],
-    claimable: false,
-  });
-  try {
-    return await fn(c);
-  } finally {
-    space.kill();
-    await space.status;
-  }
+ *  test spent ~1.4s booting around milliseconds of asserting. The artifact origin is on for the
+ *  whole file (the tree-serving case needs it, because HTML renders INLINE only there — on the
+ *  main origin it is always a download, which is what makes serving model-written pages safe);
+ *  the other tests never fetch bytes over HTTP, so the extra listener costs them nothing. */
+const shared = await bootSpace(PORT, { artifactPort: PORT + 1 });
+await shared.registerKind({
+  kind: "workspace",
+  indexedPaths: [
+    { path: "name", type: "keyword" },
+    { path: "owner", type: "keyword" },
+    { path: "conversationId", type: "keyword" },
+    { path: "treeDigest", type: "keyword" },
+    { path: "basedOn", type: "keyword" },
+  ],
+  claimable: false,
+});
+await shared.registerKind({
+  kind: "artifact",
+  indexedPaths: [
+    { path: "digest", type: "keyword" },
+    { path: "mediaType", type: "keyword" },
+    { path: "owner", type: "keyword" },
+    { path: "conversationId", type: "keyword" },
+    { path: "workspace", type: "keyword" },
+  ],
+  claimable: false,
+});
+
+async function withSpace<T>(fn: (c: RadiaClient) => Promise<T>, _opts: { artifactPort?: number } = {}): Promise<T> {
+  return await fn(shared);
 }
 
 /**
@@ -386,7 +368,10 @@ Deno.test("workspace: a summary scoped to a conversation shows only that convers
     // keeps a long-lived space from answering "what am I working on" with every tree anyone made.
     const scoped = await summarizeWorkspaces(c, { conversationId: "conv-a" });
     assertEquals(scoped.workspaces.map((w) => w.name), ["mine"]);
-    assertEquals((await summarizeWorkspaces(c)).workspaces.map((w) => w.name).sort(), ["loose", "mine", "theirs"]);
+    // Unscoped shows everything — including other tests' trees on this shared space, so the check
+    // is containment rather than an exact set.
+    const all = (await summarizeWorkspaces(c)).workspaces.map((w) => w.name);
+    for (const name of ["loose", "mine", "theirs"]) assert(all.includes(name), `unscoped must include ${name}`);
   });
 });
 
@@ -966,16 +951,16 @@ Deno.test("workspace: an edit names ONE form, and a pasted line-number prefix sa
     // "read the file and copy it" is useless advice to one that just did — seen live, a model read
     // the file, edited, failed, and burned a third round before landing it. Name where the text is
     // and what actually differs, the same fix the line-range boundary error got.
-    await writeWorkspace(c, { name: "ws", owner: OWNER, files: { "style.css": ":root {\n    --gold:  #ffd166;\n}\n" } });
+    await writeWorkspace(c, { name: "cssvars", owner: OWNER, files: { "style.css": ":root {\n    --gold:  #ffd166;\n}\n" } });
     const spaced = await assertRejects(
-      () => editWorkspace(c, { name: "ws", edits: [{ path: "style.css", oldString: "--gold: #ffd166;", newString: "--gold: #fff;" }] }),
+      () => editWorkspace(c, { name: "cssvars", edits: [{ path: "style.css", oldString: "--gold: #ffd166;", newString: "--gold: #fff;" }] }),
       Error,
     );
     assert(/WHITESPACE mismatch/.test(spaced.message), spaced.message);
     assert(/from line 2/.test(spaced.message), `expected the line located: ${spaced.message}`);
     // …and it must not claim a whitespace match when the text genuinely is not there.
     const absent = await assertRejects(
-      () => editWorkspace(c, { name: "ws", edits: [{ path: "style.css", oldString: "--silver: #ccc;", newString: "x" }] }),
+      () => editWorkspace(c, { name: "cssvars", edits: [{ path: "style.css", oldString: "--silver: #ccc;", newString: "x" }] }),
       Error,
     );
     assert(!/WHITESPACE mismatch/.test(absent.message), absent.message);
@@ -1342,7 +1327,8 @@ Deno.test("sandbox: the probe actually tries to escape, and the jail holds", asy
 Deno.test("sandbox: a declaration is a record an operator can query and a policy can bind", async () => {
   await withSpace(async (c) => {
     await c.registerKind(SANDBOX_KIND);
-    const spec = denoSandbox({ name: "deno-strict" });
+    const name = uniq("deno-strict");
+    const spec = denoSandbox({ name });
     const { id } = await declareSandbox(c, spec);
     assert(id);
 
@@ -1351,20 +1337,21 @@ Deno.test("sandbox: a declaration is a record an operator can query and a policy
     const again = await declareSandbox(c, spec);
     assertEquals(again.id, id, "the same jail declared twice is one record");
 
-    const read = await readSandbox(c, "deno-strict");
+    const read = await readSandbox(c, name);
     assertEquals(read!.isolation, "deno-permissions");
     assertEquals(read!.network, false);
-    assertEquals((await listSandboxes(c)).length, 1, "one entry per name, latest wins");
+    assertEquals((await listSandboxes(c)).filter((s) => s.name === name).length, 1, "one entry per name, latest wins");
 
     // THE reason this is a record rather than prose: a policy can bind the property that matters.
-    const noNetwork = await c.query({ kind: "sandbox", match: { network: false } }, 10);
+    // (Scoped by this test's own name, because the space — and its sandbox registry — is shared.)
+    const noNetwork = await c.query({ kind: "sandbox", match: { network: false, name } }, 10);
     assertEquals(noNetwork.length, 1, "'which of my sandboxes cannot reach the network' is a query");
 
     // A changed jail is a successor, not a conflict: the guarantee moved, and the old claim stays
     // readable so a verdict reached under it still means something.
     await declareSandbox(c, { ...spec, memoryMb: 64 });
-    assertEquals((await readSandbox(c, "deno-strict"))!.memoryMb, 64);
-    assertEquals((await c.query({ kind: "sandbox", match: { name: "deno-strict" } }, 10)).length, 2);
+    assertEquals((await readSandbox(c, name))!.memoryMb, 64);
+    assertEquals((await c.query({ kind: "sandbox", match: { name } }, 10)).length, 2);
   });
 });
 
@@ -1444,21 +1431,25 @@ Deno.test({ name: "sandbox: the probe catches a jail that lies, which is why fai
 Deno.test("sandbox: two backends coexist as records a policy can tell apart", async () => {
   await withSpace(async (c) => {
     await c.registerKind(SANDBOX_KIND);
-    await declareSandbox(c, denoSandbox({ name: "js" }));
-    await declareSandbox(c, bwrapSandbox({ command: ["python3", "-"], language: "python", name: "py" }));
+    const jsName = uniq("js"), pyName = uniq("py");
+    const mine = (rows: { body: unknown }[]) =>
+      rows.filter((r) => [jsName, pyName].includes((r.body as { name: string }).name));
+    await declareSandbox(c, denoSandbox({ name: jsName }));
+    await declareSandbox(c, bwrapSandbox({ command: ["python3", "-"], language: "python", name: pyName }));
 
-    assertEquals((await listSandboxes(c)).length, 2);
+    assertEquals((await listSandboxes(c)).filter((s) => [jsName, pyName].includes(s.name)).length, 2);
     // The guarantee stopped being uniform, and that is now a QUERY rather than tribal knowledge:
     // an operator asking "which of these can reach a filesystem" gets an answer from the space.
-    const byIsolation = await c.query({ kind: "sandbox", match: { isolation: "bubblewrap" } }, 10);
+    // (Filtered to this test's own declarations, because the registry is shared across the file.)
+    const byIsolation = mine(await c.query({ kind: "sandbox", match: { isolation: "bubblewrap" } }, 50));
     assertEquals(byIsolation.length, 1);
     assertEquals((byIsolation[0].body as { language: string }).language, "python");
 
     // Both still claim no network, which is what makes them comparable at all…
-    assertEquals((await c.query({ kind: "sandbox", match: { network: false } }, 10)).length, 2);
+    assertEquals(mine(await c.query({ kind: "sandbox", match: { network: false } }, 50)).length, 2);
     // …and they differ on the axis that a latency table hides.
-    const js = await readSandbox(c, "js");
-    const py = await readSandbox(c, "py");
+    const js = await readSandbox(c, jsName);
+    const py = await readSandbox(c, pyName);
     assertEquals(js!.readonlyPaths.length, 0);
     assert(py!.readonlyPaths.length > 0, "one of these sees a filesystem and the other does not");
     assertEquals(js!.processes, false);
@@ -1485,18 +1476,18 @@ Deno.test("workspace: an existing artifact can be attached, and no bytes move", 
     });
 
     const v1 = await writeWorkspace(c, {
-      name: "site",
+      name: "attachsite",
       owner: OWNER,
       files: { "index.html": "<img src='cat.png'>\n" },
     });
 
     const v2 = await editWorkspace(c, {
-      name: "site",
+      name: "attachsite",
       attach: { "cat.png": png.id },
     });
     assertEquals(v2.added, ["cat.png"]);
 
-    const tree = await readWorkspace(c, "site");
+    const tree = await readWorkspace(c, "attachsite");
     const cat = tree!.files.find((f) => f.path === "cat.png");
     assert(cat, "the attached file is not in the tree");
     // The SAME artifact, not a copy. That is the whole point: a 1.2 MB image never passes through
@@ -1527,8 +1518,8 @@ Deno.test("workspace: an attached artifact carries its labels into the tree", as
       taint: ["file"],
     });
 
-    await writeWorkspace(c, { name: "mixed", owner: OWNER, files: { "readme.md": "hi\n" } });
-    const v2 = await editWorkspace(c, { name: "mixed", attach: { "notes.txt": secret.id } });
+    await writeWorkspace(c, { name: "attachmix", owner: OWNER, files: { "readme.md": "hi\n" } });
+    const v2 = await editWorkspace(c, { name: "attachmix", attach: { "notes.txt": secret.id } });
 
     const manifest = await c.getRecord(v2.id);
     assert(manifest, "no manifest record");

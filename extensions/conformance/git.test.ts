@@ -28,8 +28,8 @@ import {
   gitObjectId,
 } from "../ts/git.ts";
 import { RadiaClient } from "../../sdk/ts/client.ts";
-import { operatorToken } from "../../examples/operator.ts";
 import { writeWorkspace } from "../ts/workspace.ts";
+import { bootSpace } from "./space.ts";
 import { basicPassword, gitHandler } from "../ts/git-http.ts";
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -264,50 +264,34 @@ const PORT = 7819;
 const url = `http://127.0.0.1:${PORT}`;
 const OWNER = "human:alice";
 
+// One space for the whole file (isolation comes from each test's own workspace NAME, which every
+// query and export here already scopes by).
+const shared = await bootSpace(PORT);
+await shared.registerKind({
+  kind: "workspace",
+  indexedPaths: [
+    { path: "name", type: "keyword" },
+    { path: "owner", type: "keyword" },
+    { path: "conversationId", type: "keyword" },
+    { path: "treeDigest", type: "keyword" },
+    { path: "basedOn", type: "keyword" },
+  ],
+  claimable: false,
+});
+await shared.registerKind({
+  kind: "artifact",
+  indexedPaths: [
+    { path: "digest", type: "keyword" },
+    { path: "mediaType", type: "keyword" },
+    { path: "owner", type: "keyword" },
+    { path: "conversationId", type: "keyword" },
+    { path: "workspace", type: "keyword" },
+  ],
+  claimable: false,
+});
+
 async function withSpace<T>(fn: (c: RadiaClient) => Promise<T>): Promise<T> {
-  const space = new Deno.Command(Deno.execPath(), {
-    args: ["run", "-A", "src/main.ts", "dev", "--port", String(PORT), "--artifact-port", "0"],
-    stdout: "null",
-    stderr: "inherit",
-  }).spawn();
-  const probe = new RadiaClient(url);
-  for (let i = 0; i < 100; i++) {
-    try {
-      await probe.health();
-      break;
-    } catch {
-      await new Promise((r) => setTimeout(r, 200));
-    }
-  }
-  const c = new RadiaClient(url, { token: operatorToken(url) });
-  await c.registerKind({
-    kind: "workspace",
-    indexedPaths: [
-      { path: "name", type: "keyword" },
-      { path: "owner", type: "keyword" },
-      { path: "conversationId", type: "keyword" },
-      { path: "treeDigest", type: "keyword" },
-      { path: "basedOn", type: "keyword" },
-    ],
-    claimable: false,
-  });
-  await c.registerKind({
-    kind: "artifact",
-    indexedPaths: [
-      { path: "digest", type: "keyword" },
-      { path: "mediaType", type: "keyword" },
-      { path: "owner", type: "keyword" },
-      { path: "conversationId", type: "keyword" },
-      { path: "workspace", type: "keyword" },
-    ],
-    claimable: false,
-  });
-  try {
-    return await fn(c);
-  } finally {
-    space.kill();
-    await space.status;
-  }
+  return await fn(shared);
 }
 
 async function git(args: string[]): Promise<{ ok: boolean; out: string; err: string }> {

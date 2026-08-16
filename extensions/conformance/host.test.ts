@@ -18,10 +18,10 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { RadiaClient } from "../../sdk/ts/client.ts";
-import { operatorToken } from "../../examples/operator.ts";
 import { BINDING, declareBinding, sandboxInvoker, WorkspaceHost } from "../ts/host.ts";
 import { declareExecRequest, EXEC_REQUEST, promote } from "../ts/promotion.ts";
 import { materialize, readWorkspace, writeWorkspace } from "../ts/workspace.ts";
+import { bootSpace, uniq } from "./space.ts";
 
 const PORT = 7821;
 const url = `http://127.0.0.1:${PORT}`;
@@ -34,39 +34,21 @@ interface Ctx {
   credential: (agent: string) => Promise<string>;
 }
 
+const operatorClient = await bootSpace(PORT);
+await declareExecRequest(operatorClient);
+await declareBinding(operatorClient);
+await operatorClient.registerKind({ kind: "exec_result", indexedPaths: [{ path: "tag", type: "keyword" }] });
+await operatorClient.registerKind({
+  kind: "workspace",
+  indexedPaths: [{ path: "name", type: "keyword" }, { path: "owner", type: "keyword" }, { path: "treeDigest", type: "keyword" }, { path: "basedOn", type: "keyword" }],
+  claimable: false,
+});
+
 async function withSpace<T>(fn: (ctx: Ctx) => Promise<T>): Promise<T> {
-  const space = new Deno.Command(Deno.execPath(), {
-    args: ["run", "-A", "src/main.ts", "dev", "--port", String(PORT), "--artifact-port", "0"],
-    stdout: "null",
-    stderr: "inherit",
-  }).spawn();
-  const probe = new RadiaClient(url);
-  for (let i = 0; i < 100; i++) {
-    try {
-      await probe.health();
-      break;
-    } catch {
-      await new Promise((r) => setTimeout(r, 200));
-    }
-  }
-  const operator = new RadiaClient(url, { token: operatorToken(url) });
-  await declareExecRequest(operator);
-  await declareBinding(operator);
-  await operator.registerKind({ kind: "exec_result", indexedPaths: [{ path: "tag", type: "keyword" }] });
-  await operator.registerKind({
-    kind: "workspace",
-    indexedPaths: [{ path: "name", type: "keyword" }, { path: "owner", type: "keyword" }, { path: "treeDigest", type: "keyword" }, { path: "basedOn", type: "keyword" }],
-    claimable: false,
+  return await fn({
+    operator: operatorClient,
+    credential: async (agent) => (await operatorClient.createAgentDefinition(agent, [])).definitionToken,
   });
-  try {
-    return await fn({
-      operator,
-      credential: async (agent) => (await operator.createAgentDefinition(agent, [])).definitionToken,
-    });
-  } finally {
-    space.kill("SIGTERM");
-    await space.status;
-  }
 }
 
 const bind = (operator: RadiaClient, agent: string, digest: string, entrypoint = "main.ts") =>
@@ -79,26 +61,27 @@ Deno.test("[host] one host, several agents, and everything is attributed to the 
   await withSpace(async ({ operator, credential }) => {
     // Two agents hosted by ONE process. If the host claimed as itself, both would be
     // indistinguishable in the log and it would need the union of their grants.
+    const TIER = uniq("prod"), TAG = uniq("done");
     const credentials = { "agent:alpha": await credential("agent:alpha"), "agent:beta": await credential("agent:beta") };
     await promote(operator, {
       digest: D1,
-      tier: "prod",
+      tier: TIER,
       pins: [{ principal: "agent:alpha", operations: ["take"] }, { principal: "agent:beta", operations: ["take"] }],
     });
     await operator.grant("agent:alpha", "exec_result", ["put"]);
     await operator.grant("agent:beta", "exec_result", ["put"]);
     await bind(operator, "agent:alpha", D1);
     await bind(operator, "agent:beta", D1);
-    await operator.put({ kind: EXEC_REQUEST, body: { workspace: D1, tier: "prod", job: "one" } });
-    await operator.put({ kind: EXEC_REQUEST, body: { workspace: D1, tier: "prod", job: "two" } });
+    await operator.put({ kind: EXEC_REQUEST, body: { workspace: D1, tier: TIER, job: "one" } });
+    await operator.put({ kind: EXEC_REQUEST, body: { workspace: D1, tier: TIER, job: "two" } });
 
-    const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: echo("done") });
+    const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: echo(TAG) });
     const outcomes = await host.tick();
     assertEquals(outcomes.filter((o) => o.status === "acked").length, 2, "both hosted agents claimed and settled");
 
     // The property: the RESULT is authored by the agent's run, and its delegation chain names the
     // agent. Nothing here mentions the host, which holds no identity of its own in the space.
-    const results = await operator.query({ kind: "exec_result" }, 10, { dir: "desc" });
+    const results = await operator.query({ kind: "exec_result", match: { tag: TAG } }, 10, { dir: "desc" });
     assertEquals(results.length, 2);
     const authors = await Promise.all(results.map(async (r) => {
       const perms = await operator.permissions(r.runtimeMeta.createdBy) as { subject: string };
@@ -116,9 +99,10 @@ Deno.test("[host] a binding with no matching grant claims nothing, and says so",
   await withSpace(async ({ operator, credential }) => {
     // Lock one present, lock two absent: the agent is bound to code and holds no grant. The host
     // must report the refusal rather than dying, because an inert pairing is the design working.
+    const TIER = uniq("prod");
     const credentials = { "agent:ungranted": await credential("agent:ungranted") };
     await bind(operator, "agent:ungranted", D1);
-    await operator.put({ kind: EXEC_REQUEST, body: { workspace: D1, tier: "prod", job: "x" } });
+    await operator.put({ kind: EXEC_REQUEST, body: { workspace: D1, tier: TIER, job: "x" } });
 
     const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: echo("nope") });
     assertEquals(await host.tick(), [{ agent: "agent:ungranted", status: "refused", reason: "forbidden" }]);
@@ -132,9 +116,10 @@ Deno.test("[host] a granted digest with no binding runs nothing", async () => {
   await withSpace(async ({ operator, credential }) => {
     // Lock two present, lock one absent. The agent could claim, but nothing tells the host what
     // code to run, so the host does not act for it at all.
+    const TIER = uniq("prod");
     const credentials = { "agent:unbound": await credential("agent:unbound") };
-    await promote(operator, { digest: D1, tier: "prod", pins: [{ principal: "agent:unbound", operations: ["take"] }] });
-    await operator.put({ kind: EXEC_REQUEST, body: { workspace: D1, tier: "prod", job: "x" } });
+    await promote(operator, { digest: D1, tier: TIER, pins: [{ principal: "agent:unbound", operations: ["take"] }] });
+    await operator.put({ kind: EXEC_REQUEST, body: { workspace: D1, tier: TIER, job: "x" } });
 
     const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: echo("nope") });
     assertEquals(await host.tick(), [], "no binding, no work");
@@ -152,15 +137,16 @@ Deno.test("[host] a binding and a grant that DISAGREE about the digest run nothi
     // Both locks present, pointing at different code. The plan predicted the two inert cases and
     // not this one: the agent may claim D1's work while the binding says run D2, so executing
     // would run code the requester never asked for. The host refuses and releases the claim.
+    const TIER = uniq("prod"), TAG = uniq("must-not-run");
     const credentials = { "agent:drifted": await credential("agent:drifted") };
-    await promote(operator, { digest: D1, tier: "prod", pins: [{ principal: "agent:drifted", operations: ["take"] }] });
+    await promote(operator, { digest: D1, tier: TIER, pins: [{ principal: "agent:drifted", operations: ["take"] }] });
     await bind(operator, "agent:drifted", D2);
     await operator.grant("agent:drifted", "exec_result", ["put"]);
-    const { id } = await operator.put({ kind: EXEC_REQUEST, body: { workspace: D1, tier: "prod", job: "x" } });
+    const { id } = await operator.put({ kind: EXEC_REQUEST, body: { workspace: D1, tier: TIER, job: "x" } });
 
-    const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: echo("must not run") });
+    const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: echo(TAG) });
     assertEquals(await host.tick(), [{ agent: "agent:drifted", status: "digest_mismatch", wanted: D1, bound: D2, recordId: id }]);
-    assertEquals((await operator.query({ kind: "exec_result" }, 10)).length, 0, "nothing may be produced from mismatched code");
+    assertEquals((await operator.query({ kind: "exec_result", match: { tag: TAG } }, 10)).length, 0, "nothing may be produced from mismatched code");
     // Released, not consumed and not dead-lettered: a correctly bound host can still take it.
     const env = await operator.queryEnvelopes({ state: "available", limit: 50 });
     assert(env.some((r) => r.record?.id === id), "the claim must go back");

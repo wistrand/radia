@@ -16,8 +16,8 @@
 
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { RadiaClient } from "../../sdk/ts/client.ts";
-import { operatorToken } from "../../examples/operator.ts";
 import { assembleContext, type ThreadRow, toMessage } from "../ts/context.ts";
+import { bootSpace } from "./space.ts";
 import {
   assertReadable,
   type ConversationKey,
@@ -49,42 +49,21 @@ const asPerson = (principal: string, k: { keyId: string; privateKey: string }) =
 const row = (index: number, role: string, content: string, enc?: string): ThreadRow =>
   ({ index, role, content, ...(enc ? { enc } : {}) }) as ThreadRow;
 
+const shared = await bootSpace(PORT);
+await shared.registerKind({
+  kind: "message",
+  indexedPaths: [
+    { path: "conversationId", type: "keyword" },
+    { path: "owner", type: "keyword" },
+    { path: "index", type: "integer" },
+    { path: "role", type: "keyword" },
+  ],
+  sortablePaths: ["index"],
+  claimable: false,
+});
+
 async function withSpace<T>(fn: (c: RadiaClient) => Promise<T>): Promise<T> {
-  const space = new Deno.Command(Deno.execPath(), {
-    args: ["run", "-A", "src/main.ts", "dev", "--port", String(PORT), "--artifact-port", "0"],
-    stdout: "null",
-    stderr: "inherit",
-  }).spawn();
-  const probe = new RadiaClient(url);
-  for (let i = 0; i < 100; i++) {
-    try {
-      await probe.health();
-      break;
-    } catch {
-      await new Promise((r) => setTimeout(r, 200));
-    }
-  }
-  const c = new RadiaClient(url, { token: operatorToken(url) });
-  await c.registerKind({
-    kind: "message",
-    indexedPaths: [
-      { path: "conversationId", type: "keyword" },
-      { path: "owner", type: "keyword" },
-      { path: "index", type: "integer" },
-      { path: "role", type: "keyword" },
-    ],
-    sortablePaths: ["index"],
-    claimable: false,
-  });
-  try {
-    return await fn(c);
-  } finally {
-    try {
-      space.kill();
-    } catch { /* already gone */ }
-    await space.status;
-    await new Promise((r) => setTimeout(r, 50));
-  }
+  return await fn(shared);
 }
 
 Deno.test("[encrypted] no marker this build can read, and that is the phase-1 contract", () => {
