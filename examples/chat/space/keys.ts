@@ -274,6 +274,76 @@ async function enrolMissingKeys(
 }
 
 /**
+ * OPERATOR RECOVERY: give a person's current machines access to conversations none of them can open.
+ *
+ * For the one case the client-side enrolment cannot reach — every machine that held a wrap is gone,
+ * so no session can extend the conversation, and only the fleet can still open it.
+ *
+ * Deliberately NOT self-service, and that is the whole design. A stolen credential gets an attacker
+ * the records, which are ciphertext, but not the content: their machine's key is not among the
+ * wraps. That is a real second factor. A recovery anyone could REQUEST would convert credential
+ * theft straight into content theft, so this is a verb an operator runs after establishing who is
+ * asking, by some means this space knows nothing about.
+ *
+ * Adding a reader is IRREVERSIBLE — unwrapping cannot be undone without re-keying the whole
+ * conversation, which nothing here does — so `apply` is opt-in and the default only reports.
+ */
+export async function recoverPersonKeys(
+  admin: RadiaClient,
+  principal: string,
+  fleet: FleetKeyPair,
+  opts: { apply?: boolean; conversationId?: string } = {},
+): Promise<{ scanned: number; extend: { conversationId: string; keyIds: string[] }[]; erased: string[] }> {
+  const keys = await livePersonKeys(admin, principal);
+  if (keys.length === 0) {
+    throw new Error(
+      `${principal} has published no machine key, so there is nothing to recover TO. ` +
+        `They start a session first; it publishes one.`,
+    );
+  }
+  // NEWEST per conversation: enrolment writes successors, and only the latest names the artifact
+  // holding every wrap so far.
+  const view = await readRegistry<{ conversationId?: string; keys?: string }>(
+    (limit, after) =>
+      admin.query({
+        kind: CONVERSATION_KEY_KIND,
+        match: { owner: principal, ...(opts.conversationId ? { conversationId: opts.conversationId } : {}) },
+      }, limit, { after }),
+    (b) => b.conversationId,
+  );
+  if (!view.complete) throw new Error(`could not enumerate ${principal}'s conversations; refusing a partial recovery`);
+
+  const holder: KeyHolder = { kind: "fleet", privateKey: fleet.privateKey, keyId: fleet.keyId };
+  const extend: { conversationId: string; keyIds: string[] }[] = [];
+  const erased: string[] = [];
+  for (const rec of view.entries.values()) {
+    const body = rec.body as { conversationId?: string; keys?: string };
+    if (!body.conversationId || !body.keys) continue;
+    let encryption;
+    try {
+      encryption = encryptionOf(JSON.parse(new TextDecoder().decode(await admin.getArtifact(body.keys))));
+    } catch (e) {
+      // An erased conversation is reported rather than skipped in silence: "nothing to do" and
+      // "its key was destroyed" are answers an operator must be able to tell apart.
+      if (e instanceof RadiaClientError && e.code === "erased") {
+        erased.push(body.conversationId);
+        continue;
+      }
+      throw e;
+    }
+    if (!encryption) continue;
+    const missing = keys.filter((k) => !encryption.people?.[k.keyId]).map((k) => k.keyId);
+    if (missing.length === 0) continue;
+    extend.push({ conversationId: body.conversationId, keyIds: missing });
+    if (opts.apply) {
+      const grown = await withWrapsFor(encryption, holder, keys);
+      await writeConversationKey(admin, body.conversationId, principal, grown);
+    }
+  }
+  return { scanned: view.entries.size, extend, erased };
+}
+
+/**
  * Erase a conversation: destroy EVERY artifact holding its key.
  *
  * Every one, because enrolling a machine writes a successor rather than editing the original — a

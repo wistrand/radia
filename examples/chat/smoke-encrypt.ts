@@ -61,7 +61,7 @@ const admin = new RadiaClient(url, { token: operatorToken(url) });
 const tmp = await Deno.makeTempDir({ prefix: "radia-encrypt-" });
 Deno.env.set("RADIA_CREDENTIALS", `${tmp}/credentials.json`);
 Deno.env.set("RADIA_DIR", tmp);
-const { CONVERSATION_KEY_KIND, ConversationErasedError, conversationKeys, currentFleetKey, fleetKeyPair, eraseConversation, livePersonKeys, personKeyPair, publishFleetKey, publishPersonKey, writeConversationKey } =
+const { CONVERSATION_KEY_KIND, ConversationErasedError, conversationKeys, currentFleetKey, fleetKeyPair, eraseConversation, livePersonKeys, personKeyPair, publishFleetKey, publishPersonKey, recoverPersonKeys, writeConversationKey } =
   await import("./space/keys.ts");
 /** Alice, reading on one of her machines. */
 const asAlice = (k: { keyId: string; privateKey: string }) =>
@@ -412,6 +412,48 @@ try {
   check("…and enrolment is per PERSON: bob's machine is not one of hers", asBobKey === "NoConversationKeyError", String(asBobKey));
   check("…nor can he publish a key claiming to be her",
     await refused(() => bobC.put({ kind: "person_key", body: { principal: alice, keyId: "forged", publicKey: bobDesktop.publicKey } })));
+}
+
+// ---- OPERATOR RECOVERY: every machine that could read is gone ----
+//
+// The case client-side enrolment cannot reach. A conversation sealed to a machine that no longer
+// exists opens on none of her current ones, so no session can extend it and only the fleet can.
+
+const lostConv = await aliceC.put({ kind: "conversation", body: {} });
+{
+  // A machine she no longer has: its public half was never published, so nothing else can seal to
+  // it and nothing of hers can open what it sealed.
+  const lost = await newFleetKeyPair();
+  const { encryption: eLost } = await sealConversation((await currentFleetKey(aliceC))!, [lost]);
+  await writeConversationKey(aliceC, lostConv.id, alice, eLost);
+
+  const stuck = await conversationKeys(aliceC, asAlice(laptop), alice)(lostConv.id).then(() => "opened", (e) => e.constructor.name);
+  check("a conversation sealed to a lost machine opens on none of her current ones", stuck === "NoConversationKeyError", String(stuck));
+
+  // REPORTS BY DEFAULT. Adding a reader cannot be undone, so the verb changes nothing until asked.
+  const dry = await recoverPersonKeys(admin, alice, fleet!, { conversationId: lostConv.id });
+  check("recovery reports what it would extend, and writes nothing", dry.extend.length === 1 &&
+    dry.extend[0].conversationId === lostConv.id, JSON.stringify(dry.extend));
+  const stillStuck = await conversationKeys(aliceC, asAlice(laptop), alice)(lostConv.id).then(() => "opened", (e) => e.constructor.name);
+  check("…so the conversation is still unreadable after a report", stillStuck === "NoConversationKeyError");
+
+  await recoverPersonKeys(admin, alice, fleet!, { conversationId: lostConv.id, apply: true });
+  const back = await conversationKeys(aliceC, asAlice(laptop), alice)(lostConv.id).catch((e) => e);
+  check("…and after --apply her current machine reads it", back !== undefined && !(back instanceof Error), String(back));
+
+  // Idempotent, so an operator can run it twice without wondering.
+  const again = await recoverPersonKeys(admin, alice, fleet!, { conversationId: lostConv.id });
+  check("…and a second run has nothing left to do", again.extend.length === 0);
+
+  // It recovers to keys the PERSON published, never to every key on the space. Bob's machine is
+  // PUBLISHED — otherwise this would pass for the wrong reason, by testing a key nothing could have
+  // recovered to.
+  const bobMachine = await newFleetKeyPair();
+  await publishPersonKey(bobC, bob, bobMachine);
+  await recoverPersonKeys(admin, alice, fleet!, { conversationId: lostConv.id, apply: true });
+  const notHers = await conversationKeys(aliceC, { kind: "person", principal: bob, keyId: bobMachine.keyId, privateKey: bobMachine.privateKey })(lostConv.id)
+    .then(() => "opened", (e) => e.constructor.name);
+  check("…and bob's PUBLISHED machine is not among the ones it recovered to", notHers === "NoConversationKeyError", String(notHers));
 }
 
 // ---- phase 5: ERASURE by destroying the key ----

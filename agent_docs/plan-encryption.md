@@ -452,9 +452,14 @@ Three consequences worth knowing:
   did not is the worst kind: the reader consults the newest record, so the conversation would LOOK
   erased while the key survived in an earlier artifact — a plant confirmed that the reader-facing
   check passes in exactly that state, which is why the guard enumerates instead.
-- **Losing every machine is still unrecoverable BY THE PERSON.** The fleet can open the conversation
-  and `withWrapsFor` accepts a fleet holder, so a fleet-side re-enrolment would fix it; that is not
-  built, and it is the one case where the person's half still cannot be recovered.
+- **Losing every machine needs an OPERATOR**, and deliberately so. `recoverPersonKeys` opens each of
+  a person's conversations with the fleet's private half and extends it to the machines they have
+  published; `examples/chat/recover-keys.ts` is the verb. It is not self-service, because a stolen
+  credential already yields the RECORDS (ciphertext) and not the content — the person's key is a
+  real second factor, and a recovery anyone could request would convert credential theft directly
+  into content theft. It reports by default: adding a reader cannot be undone, since nothing here
+  re-keys a conversation. An erased conversation is reported as erased rather than skipped, because
+  "nothing to do" and "its key was destroyed" are answers an operator must tell apart.
 
 ## Rejected
 

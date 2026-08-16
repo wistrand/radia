@@ -175,7 +175,7 @@ real assembly, with no API key:
 | `selfgrant` | forbidden → request → human approval → self-scoped reads, on both the ops and coordination planes. The ask BLOCKS on the human's answer and the answer names the scope actually granted, so the whole escalation fits in one turn instead of two. Also pins what `[own]` COSTS: narrowing retires the wider grant, so the prompt has to say which access it removes BEFORE the choice, never recommend the option that removes it, and the removal has to actually happen (as 404, not 403) or the warning is decorative |
 | `inspect` | session isolation (a session reads only its own conversation), the `space_*` TOOLS on a busy space: paging past a wall of another author's events, answering "what may I do" from the enforcement rather than by inference, and the full escalation loop: a grant approved at the wrong scope authorizes nothing, and the prompt has to say so |
 | `scope` | what a scoped session may read under both postures: identity (all its own conversations, including worker-produced results) vs conversation (this thread only) |
-| `encrypt` | conversation keys: the fleet publishes a public half and keeps the private one, a session seals its own thread and reads the key back, and another person is stopped TWICE — by the grant (his read returns empty, not forbidden, which is scoping rather than an absence of grants) and by the wrap if he is handed the record anyway |
+| `encrypt` | conversation keys end to end: the fleet publishes a public half and keeps the private one, a session seals its own thread and reads it back, and another person is stopped TWICE (by the grant, whose read returns empty rather than forbidden — scoping, not an absence of grants — and by the wrap if handed the record anyway). Then a real turn through the actual workers, a tool round proving the TURN WORKER routes an encrypted conversation with no key, a second machine reaching a conversation sealed before it existed, operator recovery when every machine is gone, and erasure destroying every key artifact the conversation accumulated |
 | `iterate` | the code-gen loop as records: attempts that link into a chain, and a verdict the session has no grant to author |
 | `save` | the routes to a stored file, read back out of the `capability` records the running fleet publishes rather than imported, since a fix nobody republished changes nothing for the model. Ends with one pass through a LIVE tools worker over real `tool_call` records: the rest drives the tools in process with an OPERATOR client, which cannot catch a worker missing a grant — exactly how `read_workspace` shipped unable to read |
 | `login` | a person's own credential: who the session is, and that two people on one space cannot read each other |
@@ -962,7 +962,11 @@ whoever `RADIA_CHAT_TOKEN` belongs to.)
 **Your conversations follow you between machines.** Each machine holds its own key PAIR and
 publishes the public half as a `person_key` record; a conversation is sealed to every machine you
 have published, and one opened on a machine that can already read it is extended to the others. No
-file is ever copied. Losing every machine at once is the one case the fleet cannot hand back to you.
+file is ever copied. Losing every machine at once is the one case a session cannot fix: an operator runs
+`deno run -A examples/chat/recover-keys.ts human:you --apply`, which opens your conversations with
+the fleet's key and extends them to the machines you have published. It is a verb rather than a
+request on purpose — a stolen credential gets someone your records, which are ciphertext, and your
+machine key is what stops it becoming your content.
 
 **Erasing an encrypted conversation** destroys its key: `radia shred <the conversation_key
 artifact>` — every one of them, since enrolling a machine writes a successor and each holds the same
