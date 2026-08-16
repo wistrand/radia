@@ -47,9 +47,9 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~S~~ | ~~Round-two reports, re-derived~~     | ~~P1/P2~~ | **CLOSED 2026-08-04** (11 of 12 reproduced) |
 | **T** | **Module loading escapes the Deno jail's read permission** | **P1** | **CLOSED on Linux + macOS 2026-08-06** (macOS confiner unexecuted in CI); **OPEN on Windows** |
 | ~~U~~ | ~~Idempotency keys scoped to one run token~~ | ~~P2~~ | **CLOSED 2026-08-09** |
-| **V** | **A worker dereferences a body field with its OWN authority** | **P1** | **OPEN** (chat: cross-user conversation read, reachable by config) |
+| ~~V~~ | ~~A worker dereferences a body field with its OWN authority~~ | ~~P1~~ | **CLOSED 2026-08-16** (reproduced, then fixed) |
 
-Every package is closed (A–S, U); **T and V are open**. Their lessons are rules in
+Every package is closed (A–S, U, V); **T is open**. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -91,12 +91,12 @@ a content-derived key), which cannot survive a worker restart while keys are run
 runs of one principal, false for two identities. Three sites now assume a key spans more than it
 does, which is what makes this systemic rather than a broker defect.
 
-## Package V: a worker dereferences a body field with its own authority (P1) — OPEN
+## Package V: a worker dereferences a body field with its own authority (P1) — CLOSED 2026-08-16
 
-**REPORTED 2026-08-16, from reading `extensions/ts/inference.ts`. Not reproduced; confirm before
-trusting the blast radius below.** Found while costing phase 0 of
-[plan-encryption.md](plan-encryption.md), which would have added a second dereference of the
-same shape.
+**VERIFIED and CLOSED 2026-08-16.** Found while costing phase 0 of
+[plan-encryption.md](plan-encryption.md), which would have added a second dereference of the same
+shape. Recorded as REPORTED first, then REPRODUCED: the guard below fails on the pre-fix code with
+a forged owner reaching another conversation's messages at `window=0`, and passes after.
 
 **The defect.** `contextFor` takes the conversation to load from the CALL BODY and reads it with the
 worker's own unscoped `message` grant. Its two branches disagree about whether the caller is checked:
@@ -127,9 +127,15 @@ caller (a delegated run, plan-delegation.md) or conjoin the caller's scope into 
 the windowed branch does. The conjunction is cheaper; the delegated run is the one that stays
 correct when the scope field changes.
 
-**Guard it needs.** A session writing an `llm_call` that names another owner's conversation gets an
-EMPTY context, asserted at both window settings, and proved red by removing the conjunction. The
-existing suites cover neither branch with a foreign conversation.
+**The fix.** One match, built once (`const mine = {conversationId, owner}`) and used by all three
+queries, so the branches cannot drift apart again. The conjunction IS the check: it reduces the
+read to records the caller could have read themselves, because their own put grant is what forced
+`owner` to be them.
+
+**Guard.** `extensions/conformance/inference.test.ts`: a call naming another owner's conversation
+gets an EMPTY context at BOTH window settings, and her own thread still loads. Proved red by
+restoring the unconjoined query — it fails on `window=0` and passes at 40, which is exactly why a
+guard covering only the default would have missed this.
 
 ## Package T: module loading escapes the read permission (P1) — OPEN
 

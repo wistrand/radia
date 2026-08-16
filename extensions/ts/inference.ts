@@ -92,6 +92,11 @@ interface CallBody {
   replyTo?: string;
   /** A raw-prompt override: a one-off call carrying its own messages, with no conversation. */
   messages?: ChatMessage[];
+  /** A one-off prompt BY REFERENCE: `system` plus the one message named here, which this worker
+   *  reads itself. The router's classifier uses it so the user's text is not duplicated into a
+   *  second record (plan-encryption.md phase 0). */
+  system?: string;
+  classifyOf?: { conversationId?: string; owner?: string; index?: number; context?: string };
   stream?: boolean;
   temperature?: number;
   /** Chunk watermark handed over on escalation. */
@@ -137,6 +142,18 @@ function finished(
 }
 
 /** Rebuild what the model should see, from `message` records rather than from the call body. */
+/** `contextFor` under test. Exported for `extensions/conformance/inference.test.ts`, which pins
+ *  WHOSE conversation a call may load: the check lives in this function's query, so a test that
+ *  drove the whole worker would be asserting it three layers away from where it is made. */
+export function contextForTest(
+  c: RadiaClient,
+  body: CallBody,
+  window: number,
+  cap: number,
+): Promise<{ messages: ChatMessage[]; hidden: number }> {
+  return contextFor(c, body, window, cap);
+}
+
 async function contextFor(
   c: RadiaClient,
   body: CallBody,
@@ -144,10 +161,44 @@ async function contextFor(
   cap: number,
 ): Promise<{ messages: ChatMessage[]; hidden: number }> {
   if (body.messages) return { messages: body.messages, hidden: 0 };
+  // A one-off prompt named rather than carried. The read is an ordinary pattern query over declared
+  // indexed paths, and it carries the CALLER's `owner` for the same reason every read below does:
+  // the reference is a body field, so it is a claim, and this worker's `message` grant is unscoped
+  // (package V). A reference that resolves to nothing yields no prompt rather than an empty one, so
+  // a caller cannot use a miss to make the classifier answer about nothing.
+  if (body.classifyOf) {
+    const { conversationId, owner, index, context } = body.classifyOf;
+    const rows = await c.query({ kind: "message", match: { conversationId, owner, index } }, 1);
+    const text = (rows[0]?.body as ThreadRow | undefined)?.content ?? "";
+    if (!text) return { messages: [], hidden: 0 };
+    return {
+      messages: [
+        ...(body.system ? [{ role: "system", content: body.system } as ChatMessage] : []),
+        { role: "user", content: text + (context ?? "") },
+      ],
+      hidden: 0,
+    };
+  }
   const upTo = body.upToIndex ?? 0;
+  /**
+   * WHOSE thread this call may load, built ONCE so no branch can forget half of it.
+   *
+   * `conversationId` and `owner` both come from the call BODY, which is a claim rather than an
+   * authorization: `bodyMatchesGrant` bounds what a caller may WRITE and says nothing about what
+   * this worker can then be induced to read on their behalf. This worker's `message` grant is
+   * unscoped, so the conjunction IS the check — it reduces the read to records the caller could
+   * have read themselves, because their own put grant is what forced `owner` to be them.
+   *
+   * It used to be applied in the windowed branch and omitted in the `window <= 0` one, which made
+   * `RADIA_CHAT_WINDOW=0` (reading like "no limit") load another person's whole conversation into
+   * the model and stream it back stamped for the caller. See package V in
+   * plan-audit-remediation.md; the fix is one match rather than two so the branches cannot drift
+   * apart again.
+   */
+  const mine = { conversationId: body.conversationId, owner: body.owner };
   if (window <= 0) {
     const rows = await c.query(
-      { kind: "message", match: { conversationId: body.conversationId }, orderBy: [{ path: "index" }] },
+      { kind: "message", match: mine, orderBy: [{ path: "index" }] },
       2000,
     );
     return {
@@ -163,7 +214,7 @@ async function contextFor(
     async (limit) =>
       (await c.query({
         kind: "message",
-        match: { conversationId: body.conversationId, owner: body.owner, index: { $lte: upTo } },
+        match: { ...mine, index: { $lte: upTo } },
         orderBy: [{ path: "index", dir: "desc" }],
       }, limit)).map((r) => r.body as ThreadRow),
     { window, cap },
@@ -173,7 +224,7 @@ async function contextFor(
   // started. One indexed query, because `role` is a declared path.
   const newestSystem = (await c.query({
     kind: "message",
-    match: { conversationId: body.conversationId, owner: body.owner, role: "system", index: { $lte: upTo } },
+    match: { ...mine, role: "system", index: { $lte: upTo } },
     orderBy: [{ path: "index", dir: "desc" }],
   }, 1)).map((r) => r.body as ThreadRow)[0];
   return assembleContext(newestSystem, tail);

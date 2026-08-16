@@ -153,21 +153,30 @@ export function heuristicIndex(text: string, n: number, toolCalls: number): numb
 async function currentTurn(
   c: RadiaClient,
   conversationId: string | undefined,
+  owner: string | undefined,
   upToIndex: number,
-): Promise<{ text: string; toolCalls: number }> {
+): Promise<{ text: string; toolCalls: number; index?: number }> {
   let limit = 8;
   for (;;) {
     const rows = (await c.query(
       {
+        // `owner` CONJOINED, for the reason in package V (plan-audit-remediation.md): both fields
+        // come from the call body, which is a claim, and this worker's `message` grant is
+        // unscoped. Without it a session can name somebody else's conversation and have its text
+        // read here and sent to the classifier.
         kind: "message",
-        match: { conversationId, index: { $lte: upToIndex } },
+        match: { conversationId, owner, index: { $lte: upToIndex } },
         orderBy: [{ path: "index", dir: "desc" }],
       },
       limit,
     )).map((r) => r.body as { index: number; role: string; content?: string | null });
     const at = rows.findIndex((m) => m.role === "user"); // rows are newest-first
     if (at >= 0) {
-      return { text: rows[at].content ?? "", toolCalls: rows.slice(0, at).filter((m) => m.role === "tool").length };
+      return {
+        text: rows[at].content ?? "",
+        toolCalls: rows.slice(0, at).filter((m) => m.role === "tool").length,
+        index: rows[at].index,
+      };
     }
     const atThreadStart = rows.length === 0 || rows[rows.length - 1].index <= 1;
     if (atThreadStart || limit >= 200) {
@@ -180,7 +189,13 @@ async function currentTurn(
 /** Ask a cheap model which tier this turn needs. Returns a LIVE tier, or null on timeout/parse
  *  failure so the caller falls back. The call is `stream:false` (no chunk records for a routing
  *  decision) and carries `model`, which overrides whichever tier-worker picks it up. */
-async function classifyLLM(text: string, toolCalls: number, tiers: string[], c: RadiaClient): Promise<string | null> {
+async function classifyLLM(
+  turn: { text: string; toolCalls: number; index?: number },
+  ref: { conversationId?: string; owner?: string },
+  tiers: string[],
+  c: RadiaClient,
+): Promise<string | null> {
+  const { text, toolCalls } = turn;
   if (!text.trim() || tiers.length === 0) return null;
   const live = new Set(tiers);
   // The bands are POSITIONAL, so this scales with however many tiers the fleet advertises and still
@@ -206,11 +221,41 @@ async function classifyLLM(text: string, toolCalls: number, tiers: string[], c: 
     ? `\n\n(Context: ${toolCalls} tool result${toolCalls === 1 ? " is" : "s are"} already available to ` +
       `read. Judge the QUESTION; having tool output to summarise does not by itself make a turn hard.)`
     : "";
-  const messages: ChatMessage[] = [{ role: "system", content: system }, { role: "user", content: text + context }];
+  // BY REFERENCE, not by value: the call names the message to classify and the worker that serves
+  // it reads the text (plan-encryption.md phase 0). Three things follow, and only the third is
+  // about encryption. The user's prose stops being DUPLICATED into a second record — the classify
+  // call embedded the whole thing, untruncated, so a long paste was written and retained twice.
+  // And this worker stops handling prose, so it needs no key if bodies are ever encrypted.
+  //
+  // The reference stays NESTED under `classifyOf`, and the record therefore stays unscoped. Hoisting
+  // `conversationId` to the top level would index it and look tidier, and it would break this path
+  // outright: `conversationId === undefined` is exactly how the reader tells a one-off call from a
+  // conversation call, so a hoisted field would make the classifier ack an assistant `message` into
+  // the user's thread instead of the `llm_result` this polls for. What the change buys is that the
+  // unscoped record no longer CONTAINS anything: it names a message, and only a reader already
+  // holding a `message` grant can resolve it.
+  //
+  // Referenced by (conversationId, owner, index) rather than by record id, deliberately. All three
+  // are declared indexed paths, so the reader resolves it with an ordinary pattern query under its
+  // own `message` grant CONJOINED with the caller's scope — the package V rule. A raw id would
+  // need a get-by-id, which is the ops plane, and would hand this worker a dereference no grant
+  // narrows.
+  const classifyOf = turn.index === undefined ? undefined : { ...ref, index: turn.index, context };
+  const messages: ChatMessage[] | undefined = classifyOf
+    ? undefined
+    : [{ role: "system", content: system }, { role: "user", content: text + context }];
   // temperature 0: the same question must not land on different tiers across rounds of one turn.
   const { id } = await c.put({
     kind: "llm_call",
-    body: { tier: tiers[0], model: classifyModel, messages, tools: [], stream: false, temperature: 0 },
+    body: {
+      tier: tiers[0],
+      model: classifyModel,
+      system,
+      ...(classifyOf ? { classifyOf } : { messages }),
+      tools: [],
+      stream: false,
+      temperature: 0,
+    },
   });
   for (let i = 0; i < 60; i++) { // ~6s budget, then the heuristic
     const result = await c.readOne({ kind: "llm_result", match: { callId: id } });
@@ -279,12 +324,13 @@ await agentLoop(client, {
     await progress(c, { conversationId: body.conversationId, owner: body.owner, callId: rec.id, stage: "routing", by: ME }, [rec.id]);
     const tiers = await liveTiers(c);
     if (tiers.length === 0) throw new Error("no `model` record advertised yet");
-    const { text, toolCalls } = await currentTurn(c, body.conversationId, body.upToIndex ?? 0);
+    const turn = await currentTurn(c, body.conversationId, body.owner, body.upToIndex ?? 0);
+    const { text, toolCalls } = turn;
     // ASKED FOR, then INHERITED, then judged, then guessed. The first two skip the classifier
     // round-trip as well, so the two cases it got wrong are now also the fastest.
     const chosen = explicitTier(text, tiers) ??
       (isContinuation(text) ? await previousTurnTier(c, { conversationId: body.conversationId, turnAt: body.turnAt }, tiers) : null) ??
-      (await classifyLLM(text, toolCalls, tiers, c)) ??
+      (await classifyLLM(turn, { conversationId: body.conversationId, owner: body.owner }, tiers, c)) ??
       tiers[heuristicIndex(text, tiers.length, toolCalls)];
     const tier = await capToTurn(c, body, tiers, chosen);
     await progress(c, { conversationId: body.conversationId, owner: body.owner, callId: rec.id, stage: "routed", by: ME, note: `→ ${tier}` }, [rec.id]);

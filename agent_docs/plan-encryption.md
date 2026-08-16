@@ -50,7 +50,7 @@ nothing in the transcript says why. The second worst is a write no later reader 
 is data loss. So the refusal ships before the thing that needs it, and keys ship before the first
 encrypted field.
 
-## Phase 0: classify BY REFERENCE, worth doing regardless
+## Phase 0: classify BY REFERENCE — BUILT 2026-08-16
 
 `workers/router.ts` copies the user's text into a classify `llm_call` body and writes it as a
 record carrying no `conversationId` and no `owner`. Three consequences, and only the third is about
@@ -77,12 +77,28 @@ accident.
 Always dereference as the CALLER: a delegated run (plan-delegation.md), or the caller's scope
 conjoined into the query. Never the worker's own grant on an id from a body.
 
-**This is not hypothetical, and it is not new.** The same shape already exists in `contextFor`
-(`extensions/ts/inference.ts`), where the `window <= 0` branch reads
-`{conversationId: body.conversationId}` with no owner while the windowed branch conjoins
+**This was not hypothetical, and it was not new.** The same shape already existed in `contextFor`
+(`extensions/ts/inference.ts`), where the `window <= 0` branch read
+`{conversationId: body.conversationId}` with no owner while the windowed branch conjoined
 `owner: body.owner`. Recorded as package V in
-[plan-audit-remediation.md](plan-audit-remediation.md), P1 and OPEN. **Fix V before phase 0**, so
-the rule exists in the code before a second caller depends on it.
+[plan-audit-remediation.md](plan-audit-remediation.md), REPRODUCED, then fixed before this phase
+landed, so the rule existed in the code before a second caller depended on it.
+
+**How it was built.** The reference is `(conversationId, owner, index)`, not a record id: all three
+are declared indexed paths, so the reader resolves it with an ordinary pattern query under its own
+`message` grant with the caller's scope conjoined. A raw id would need a get-by-id, which is the
+ops plane, and would hand the worker a dereference no grant narrows.
+
+The reference stays NESTED under `classifyOf`, so the classify record is still unscoped. Hoisting
+`conversationId` to the top level would index it and read better, and it would break the path:
+`conversationId === undefined` is how the reader tells a one-off call from a conversation call, so
+a hoisted field would make the classifier ack an assistant `message` into the user's thread instead
+of the `llm_result` the router polls for. What the change buys is that the unscoped record no longer
+CONTAINS anything — it names a message, and only a reader already holding a `message` grant can
+resolve it.
+
+The router's own lookup (`currentTurn`) needed the same conjunction and did not have it. It is one
+more instance of package V, in the worker that reads the text before anyone else does.
 
 ### Cost
 
@@ -102,9 +118,11 @@ Small and mostly favourable, and the interesting number is not the one this phas
   phase's one. If the goal is router performance rather than encryption surface, that loop is the
   change to make, and it is independent of everything here.
 
-Verify: the classify `llm_call` body carries no prose; a call naming another owner's message
-classifies NOTHING (proved red by dereferencing with the worker's grant); tier selection is
-unchanged for a fixed input (`smoke-*` router coverage).
+Guards: `extensions/conformance/inference.test.ts`, both proved red. A call naming another owner's
+CONVERSATION gets an empty context at BOTH window settings (the package V regression, which fails
+at `window=0` and passes at 40, which is why a guard covering only the default would have missed
+it). A classify REFERENCE naming another owner's message resolves to nothing, while an honest one
+returns system plus the referenced text.
 
 ## Phase 1: the marker and the FAIL-CLOSED contract, before any encryption
 
