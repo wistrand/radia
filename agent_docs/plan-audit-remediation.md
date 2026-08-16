@@ -47,8 +47,9 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | ~~S~~ | ~~Round-two reports, re-derived~~     | ~~P1/P2~~ | **CLOSED 2026-08-04** (11 of 12 reproduced) |
 | **T** | **Module loading escapes the Deno jail's read permission** | **P1** | **CLOSED on Linux + macOS 2026-08-06** (macOS confiner unexecuted in CI); **OPEN on Windows** |
 | ~~U~~ | ~~Idempotency keys scoped to one run token~~ | ~~P2~~ | **CLOSED 2026-08-09** |
+| **V** | **A worker dereferences a body field with its OWN authority** | **P1** | **OPEN** (chat: cross-user conversation read, reachable by config) |
 
-Every package is closed (A–S, U); **T is open**. Their lessons are rules in
+Every package is closed (A–S, U); **T and V are open**. Their lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -89,6 +90,46 @@ a content-derived key), which cannot survive a worker restart while keys are run
 `summary:<jobId>` key is said to make the emit safe "even if two aggregators race": true for two
 runs of one principal, false for two identities. Three sites now assume a key spans more than it
 does, which is what makes this systemic rather than a broker defect.
+
+## Package V: a worker dereferences a body field with its own authority (P1) — OPEN
+
+**REPORTED 2026-08-16, from reading `extensions/ts/inference.ts`. Not reproduced; confirm before
+trusting the blast radius below.** Found while costing phase 0 of
+[plan-encryption.md](plan-encryption.md), which would have added a second dereference of the
+same shape.
+
+**The defect.** `contextFor` takes the conversation to load from the CALL BODY and reads it with the
+worker's own unscoped `message` grant. Its two branches disagree about whether the caller is checked:
+
+```ts
+// window <= 0                      no owner: the reader's authority is the worker's
+match: { conversationId: body.conversationId }
+// window > 0                       owner conjoined: effectively the caller's reach
+match: { conversationId: body.conversationId, owner: body.owner, index: { $lte: upTo } }
+```
+
+The windowed path is safe, and only by that conjunction. A session's `llm_call: put` grant is
+patterned `{owner: me}` under the default identity scope, so it MAY write
+`{owner: alice, conversationId: <bob's>}` — the body matches its own grant — but the message query
+then demands `owner: alice`, and Bob's messages carry `owner: bob`, so it returns nothing.
+
+**Blast radius.** `window` is `--window` / `RADIA_CHAT_WINDOW`, default 40, and **`0` reads like
+"no limit"**. With it set, Alice writes an `llm_call` naming Bob's conversation, the worker loads
+Bob's whole thread into the model, and streams it back as `llm_chunk` records stamped
+`owner: alice` (copied from the call), which Alice is granted to read. A cross-user read of an
+entire conversation, reachable by configuration, in the shared-fleet deployment
+(plan-scaling.md item 3) that makes two people share one worker at all.
+
+**The rule, which is the general form.** A worker must NEVER read a record named by a body field
+using its own authority. Bodies are claims; `bodyMatchesGrant` only constrains what a caller may
+WRITE, never what a worker may then be induced to read on their behalf. Either dereference as the
+caller (a delegated run, plan-delegation.md) or conjoin the caller's scope into the query the way
+the windowed branch does. The conjunction is cheaper; the delegated run is the one that stays
+correct when the scope field changes.
+
+**Guard it needs.** A session writing an `llm_call` that names another owner's conversation gets an
+EMPTY context, asserted at both window settings, and proved red by removing the conjunction. The
+existing suites cover neither branch with a foreign conversation.
 
 ## Package T: module loading escapes the read permission (P1) — OPEN
 

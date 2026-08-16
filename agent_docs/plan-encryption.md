@@ -65,8 +65,46 @@ Fix: pass the message ID and let the inference worker assemble the classify prom
 is already reading. The router keeps its job (pick a tier, hold no API key) and stops handling
 text at all.
 
-Verify: the classify `llm_call` body carries no prose; the router's grants still work; tier
-selection is unchanged for a fixed input (`smoke-*` router coverage).
+### The rule this phase must land with, or it makes things worse
+
+**A worker must never read a record named by a body field using its own authority.** Passing an id
+instead of the text moves the READ from the writer to the worker, and the worker is unscoped.
+Written naively, Alice writes `{owner: alice, classifyOf: <bob's message>}` — a body that matches
+her own `llm_call: put` grant — and the worker fetches Bob's message and classifies it, stamping
+the result for her. That is a confused deputy, deliberately introduced, in exchange for a scoping
+accident.
+
+Always dereference as the CALLER: a delegated run (plan-delegation.md), or the caller's scope
+conjoined into the query. Never the worker's own grant on an id from a body.
+
+**This is not hypothetical, and it is not new.** The same shape already exists in `contextFor`
+(`extensions/ts/inference.ts`), where the `window <= 0` branch reads
+`{conversationId: body.conversationId}` with no owner while the windowed branch conjoins
+`owner: body.owner`. Recorded as package V in
+[plan-audit-remediation.md](plan-audit-remediation.md), P1 and OPEN. **Fix V before phase 0**, so
+the rule exists in the code before a second caller depends on it.
+
+### Cost
+
+Small and mostly favourable, and the interesting number is not the one this phase changes:
+
+- **+1 indexed read per turn** in the inference worker. Against ~122 queries per turn (measured,
+  `bench/suites/chatload.ts`) and an LLM round trip, under 1% and invisible in latency.
+- **No extra read in the router.** It already queries the messages to count tool results; it stops
+  USING `.content` rather than stopping reading.
+- **One duplicate of every user message leaves the space.** The classify call embeds the full text
+  and `router.ts` truncates nowhere, so a 100 KB paste is written twice, retained twice, and in the
+  event log twice. By reference the worker can also cap what it sends the classifier, which the
+  router cannot.
+- **What actually costs reads here is the wait, not the text.** The router polls
+  `readOne({kind: llm_result, match: {callId}})` every 100 ms for up to 60 iterations, on the path
+  in front of EVERY turn, while the rest of the client uses watches. Sixty reads against this
+  phase's one. If the goal is router performance rather than encryption surface, that loop is the
+  change to make, and it is independent of everything here.
+
+Verify: the classify `llm_call` body carries no prose; a call naming another owner's message
+classifies NOTHING (proved red by dereferencing with the worker's grant); tier selection is
+unchanged for a fixed input (`smoke-*` router coverage).
 
 ## Phase 1: the marker and the FAIL-CLOSED contract, before any encryption
 

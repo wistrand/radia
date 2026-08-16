@@ -950,6 +950,15 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   tradeoff taken: kind names become enumerable by probing, which is fine because they are SCHEMA.
   Guard: conformance/delegation.test.ts "a refusal SAYS when the kind does not exist", proved red
   both ways (clause missing, and clause on every kind).
+- **A worker must never read a record named by a BODY FIELD using its own authority**
+  (`contextFor`, extensions/ts/inference.ts; package V in plan-audit-remediation.md). A body is a
+  claim: `bodyMatchesGrant` constrains what a caller may WRITE, never what a worker can be induced
+  to read for them. `contextFor` takes `conversationId` from the call body; the windowed branch
+  conjoins `owner: body.owner` and is safe, the `window <= 0` branch does not and lets a session
+  name somebody else's conversation and have it streamed back under its own owner. Dereference as
+  the CALLER (a delegated run) or conjoin their scope into the query. Passing an id instead of a
+  value always moves the read from the writer to the worker; that is the moment to ask whose
+  authority performs it.
 - **A principal acts through TWO run classes, and a query for one silently leaves the other alive**
   (`radia runs --for`). Their own sessions are `agent_run{agent: X}`; runs a worker holds on their
   behalf are `agent_run{actingFor: X}`. The offboarding verb shipped matching only `actingFor`, so
