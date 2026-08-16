@@ -79,9 +79,24 @@ applicable grant, which fails whenever a WORKER authors your results. The chat h
 output, the pipeline with stage results. What both want is "the ops plane, filtered to records my
 coordination grants already cover", and it does not exist.
 
-**No CORS means every browser application proxies.** The space sends no `Access-Control-*` headers,
-so a page on another origin cannot call `/v0`. The analysis app's relay exists for that reason alone
-and says so in its header.
+**No CORS means every browser application proxies, and that is a TRADE rather than a gap.** The
+space sends no `Access-Control-*` headers, so a page on another origin cannot call `/v0`. Proposed
+as action 3 and rejected on reading `src/server/http.ts`, where the same fact is what makes the
+isolated artifact origin safe:
+
+> Artifact BYTES get their own origin... its requests back to the API are cross-origin, which no
+> CORS header permits. That is what makes it safe to render an artifact someone's agent generated.
+
+An artifact is content an agent wrote, rendered in a browser. It is served from a second port —
+a different origin — so it can neither read the console's storage nor call the API. Adding CORS
+turns that unconditional sentence into "safe unless somebody allowlists the wrong origin", and
+under `--auth open`, where a request with no Authorization header is answered as the OPERATOR, an
+allowlisted origin could read operator responses. Doing it safely needs three new invariants
+(refuse `*`, refuse in open mode, refuse the artifact's own origin), each of which can be got
+wrong later, to buy an application a convenience that costs about twenty lines.
+
+The relay in `examples/analysis/serve.ts` is that twenty lines, holds no credential, and is
+verified to forward a 401 from the space rather than answering itself. A browser app pays it once.
 
 **"Which code version is live" has two mechanisms and no convention.** `extensions/ts/promotion.ts`
 answers it as authorization (which digest a tier MAY run, pinned in a grant). The analysis example
@@ -114,7 +129,7 @@ DESIGN-FIRST means the open question below has to be answered before code.
 |---|---|---|---|---|
 | 1 | ~~`readNewest(pattern)` on both SDKs~~ **BUILT 2026-08-16** | the hazard's commonest instance; makes the correct call as cheap as the wrong one, and lets `readOne`'s doc say "oldest match; you probably want readNewest". No new endpoint: it is `query(p, 1, {dir:"desc"})[0]` | SMALL | `sdk/ts/client.ts`, `sdk/py/radia.py`, pointer from gotchas |
 | 2 | ~~A generic `contentKey(prefix, body)`~~ **BUILT 2026-08-16** | the second instance. `kindDefKey`/`grantKey`/`opsGrantKey` already do this per kind; apps re-derive it per site and get it wrong by naming the container instead of the content | SMALL | `sdk/ts/registry.ts`, beside the existing keys |
-| 3 | Opt-in CORS (`--allow-origin <origin>`) | removes an entire proxy layer from every browser app. Bearer tokens rather than cookies, so the surface is narrow; default off and echoed at startup like other posture flags | SMALL/MEDIUM | `src/server/http.ts`, `conformance/defaults.test.ts`; check whether a preflight OPTIONS needs an openapi entry |
+| 3 | ~~Opt-in CORS (`--allow-origin <origin>`)~~ **REJECTED 2026-08-16** | the absence of CORS is load-bearing, not an oversight: it is what makes the isolated artifact origin safe. See below | — | — |
 | 4 | ~~Plan from bulk reads, in memory~~ **BUILT 2026-08-16** | O(1) queries per wake instead of O(datasets x stages); `ui.html` is the worked example | SMALL | `examples/analysis/planner.ts` |
 | 5 | Pin stage code with promotion instead of self-report | turns the memo's foundation from a claim into an enforced fact, and would be the first worked composition of promotion with something other than an exec runner | MEDIUM | `examples/analysis/`, `extensions/ts/promotion.ts` |
 | 6 | A scoped ops READ tier | the one gap both apps hit independently and neither can work around | DESIGN-FIRST | `architecture-ops-tiers.md`, then `src/server/http.ts` + `handlers/ops.ts` |

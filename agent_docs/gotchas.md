@@ -1997,6 +1997,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 Do not re-propose these without re-reading the rationale; they were considered and
 rejected for stated reasons.
 
+- **CORS on the API origin, even opt-in.** Rejected 2026-08-16: the absence of it is what makes the
+  isolated artifact origin safe. An artifact is agent-written content rendered in a browser, served
+  from a second port, and "its requests back to the API are cross-origin, which no CORS header
+  permits" (`src/server/http.ts`) is the whole argument. Allowing an origin turns that into "safe
+  unless somebody allowlists the wrong one", and under `--auth open` a no-header request is the
+  OPERATOR, so an allowlisted origin could read operator responses. A browser app proxies instead:
+  `examples/analysis/serve.ts` is ~20 lines, holds no credential, and forwards the space's own 401.
+  See [research-substrate-lessons.md](research-substrate-lessons.md) action 3.
 - **Per-agent record signatures (single-space case).** Rejected: the runtime already
   authenticates every `put` and is the sole writer; an agent's signing key would live
   where its bearer token lives; signatures authenticate origin, not trustworthiness (a
