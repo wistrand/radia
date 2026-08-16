@@ -4,8 +4,10 @@
 # was invisible on both embedded adapters and appeared only against a live server, so a green
 # embedded run is not evidence about the adapter people deploy.
 #
-# Two jobs on purpose. `embedded` is the fast answer (no services, ~30s); `postgres` is the one the
-# invariant is about, and a failure there names the adapter rather than "the tests".
+# Three jobs on purpose. `embedded` is the fast answer (no services, ~30s); `postgres` is the one
+# the invariant is about, and a failure there names the adapter rather than "the tests";
+# `py-parity` runs the SDK content-key contract against PINNED Python versions, because the other
+# two check it only against whatever python3 the runner image happens to ship.
 
 name: ci
 
@@ -84,3 +86,14 @@ jobs:
       - run: deno task conformance
         env:
           RADIA_PG_URL: postgres://radia:radia@localhost:5432/radia
+
+  # The SDK parity suite (conformance/py-parity.test.ts) SKIPS wherever python3 is missing, so the
+  # jobs above check it only against the runner image's own python3 — one uncontrolled version.
+  # This job runs the same containers a developer runs locally (docker/py-parity/run.sh): Deno
+  # pinned in the image, python 3.9 (the oldest sdk/README.md claims) and 3.13, repo mounted
+  # read-only, and no way to skip. A failure here names an interpreter version, not "the tests".
+  py-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./docker/py-parity/run.sh

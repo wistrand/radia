@@ -69,6 +69,7 @@ content, not by addressing.
 | `agent_docs/`                           | design deep dives, one topic per file (linked below)       |
 | `docs/`                                 | the published GitHub Pages site (no build, no framework, inline SVG). Reader-facing, so it summarizes rather than specifies: `agent_docs/` stays the record. Every claim it makes that a machine can check is checked by `conformance/docs.test.ts`, because it sits outside the directory where "update the doc in the same change" is written down and it drifted within a week of being written. `og.png` is generated from `og.svg` (`rsvg-convert`) |
 | `docker/keycloak/`                      | a real OIDC issuer for local SSO (compose + preconfigured realm: PKCE-enforced public client, console + CLI redirect URIs, one demo user). A deployment recipe, not an example; the import runs once per fresh Keycloak database |
+| `docker/py-parity/`                     | a pinned python3 beside a pinned deno for the SDK content-key parity suite (`conformance/py-parity.test.ts` SKIPS wherever python3 is missing, so this is the run that cannot silently skip). `deno task py-parity`, or `run.sh <versions>`; defaults to 3.9 (the oldest the SDK claims) and 3.13 |
 | `notes/radia-runtime-outline-v0.3.md`   | origin design outline; provenance, not maintained doc      |
 
 Build/run: `deno task dev` (no build step; bare `--db` persists under `./.radia`, `--db <path>` to a
