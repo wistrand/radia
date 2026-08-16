@@ -174,6 +174,37 @@ Deno.test("[tool-worker] serves what it advertises, and a THROWN failure is an a
   });
 });
 
+Deno.test("[tool-worker] an undecryptable call is ANSWERED, not run and not nacked", async () => {
+  await withSpace(async (c) => {
+    const stop = new AbortController();
+    let ran = 0;
+    const serving = serveTools(c, {
+      provider: "w1",
+      tools: { edit: () => { ran++; return Promise.resolve("ok"); } },
+      schemas: [def("edit")],
+      signal: stop.signal,
+    });
+    try {
+      // A tool ACTS on its arguments, so ciphertext reaching one writes a file or calls a service
+      // with bytes nobody meant (plan-encryption.md phase 1). An ANSWER rather than a nack, because
+      // this body will not become decryptable on redelivery: raising would replay it forever.
+      const call = await c.put({
+        kind: "tool_call",
+        body: { tool: "edit", args: { path: "Y2lwaGVy" }, enc: "v1", conversationId: "c1" },
+      });
+      const reply = await awaitOne(c, { kind: "tool_result", match: { callId: call.id } });
+      const body = reply?.body as { ok: boolean; output: string };
+      assertEquals(body.ok, false);
+      assert(body.output.includes("encrypted"), body.output);
+      assert(body.output.includes("tool edit"), "the refusal names the reader");
+      assertEquals(ran, 0, "the tool must not see arguments it cannot read");
+    } finally {
+      stop.abort();
+      await serving.catch(() => {});
+    }
+  });
+});
+
 Deno.test("[tool-worker] a tool it does not serve is left for whoever does", async () => {
   await withSpace(async (c) => {
     const stop = new AbortController();

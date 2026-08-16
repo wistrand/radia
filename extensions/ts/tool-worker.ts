@@ -18,6 +18,7 @@ import { agentLoop } from "../../sdk/ts/loop.ts";
 import type { RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
 import { publishCapability, type ToolDef } from "./capability.ts";
 import { progress } from "./progress.ts";
+import { assertReadable } from "./encrypted.ts";
 import { asTurnReply, type TurnKinds } from "./turn.ts";
 import type { Tool, ToolContext } from "./agent-tools.ts";
 
@@ -178,24 +179,30 @@ export async function serveTools(client: RadiaClient, opts: ServeOptions): Promi
       const stage = opts.stage?.(b.tool ?? "");
       if (stage) await progress(c, { ...ctx, stage, by: provider, note: b.tool }, [callId]);
       let a: ToolAnswer;
-      const bad = b.args?._unparsed !== undefined ? b.args : null;
-      if (bad) {
-        // Refuse BEFORE the tool, and name the real problem. Handed `{_unparsed}`, a tool reports
-        // whichever required field it misses first, so a malformed payload is refused as a missing
-        // argument the model did send and it retries the same doomed call (`parseArgs`, ./turn.ts).
-        a = answer(
-          `the arguments for ${b.tool} were not valid JSON and could not be repaired: ${bad._parseError}. ` +
-            `Most often a long string contains a raw newline instead of \\n. Send them again, ` +
-            `escaped, or split the work into smaller calls.`,
-          { ok: false },
-        );
-      } else {
-        try {
+      try {
+        // A tool ACTS on its arguments, so ciphertext reaching one is not a garbled read: it is a
+        // file written or a service called with bytes nobody meant (plan-encryption.md phase 1).
+        // The refusal is an ANSWER rather than a nack, per this file's rule and because a body this
+        // build cannot decrypt will not become decryptable on redelivery — raising to the loop
+        // would poison the queue with one record forever.
+        assertReadable(b, `tool ${b.tool}`);
+        const bad = b.args?._unparsed !== undefined ? b.args : null;
+        if (bad) {
+          // Refuse BEFORE the tool, and name the real problem. Handed `{_unparsed}`, a tool reports
+          // whichever required field it misses first, so a malformed payload is refused as a missing
+          // argument the model did send and it retries the same doomed call (`parseArgs`, ./turn.ts).
+          a = answer(
+            `the arguments for ${b.tool} were not valid JSON and could not be repaired: ${bad._parseError}. ` +
+              `Most often a long string contains a raw newline instead of \\n. Send them again, ` +
+              `escaped, or split the work into smaller calls.`,
+            { ok: false },
+          );
+        } else {
           const out = await opts.tools[b.tool ?? ""](b.args ?? {}, ctx);
           a = isAnswer(out) ? out : answer(out);
-        } catch (e) {
-          a = answer(e instanceof Error ? e.message : String(e), { ok: false });
         }
+      } catch (e) {
+        a = answer(e instanceof Error ? e.message : String(e), { ok: false });
       }
       return asTurnReply(rec, toolResult(callId, b, a), opts.kinds);
     },

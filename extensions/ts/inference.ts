@@ -15,6 +15,7 @@ import { agentLoop } from "../../sdk/ts/loop.ts";
 import type { RadiaClient } from "../../sdk/ts/client.ts";
 import { type ChatMessage, assembleContext, selectWindow, type ThreadRow, toMessage } from "./context.ts";
 import { type ToolDef } from "./capability.ts";
+import { assertReadable } from "./encrypted.ts";
 import { liveModels } from "./model.ts";
 import { progress } from "./progress.ts";
 
@@ -160,6 +161,9 @@ async function contextFor(
   window: number,
   cap: number,
 ): Promise<{ messages: ChatMessage[]; hidden: number }> {
+  // The call body carries prose in two shapes (inline `messages`, and `system` beside a reference),
+  // so it is a reader's input like any record body and gets the same refusal.
+  assertReadable(body, "contextFor(llm_call)");
   if (body.messages) return { messages: body.messages, hidden: 0 };
   // A one-off prompt named rather than carried. The read is an ordinary pattern query over declared
   // indexed paths, and it carries the CALLER's `owner` for the same reason every read below does:
@@ -169,6 +173,7 @@ async function contextFor(
   if (body.classifyOf) {
     const { conversationId, owner, index, context } = body.classifyOf;
     const rows = await c.query({ kind: "message", match: { conversationId, owner, index } }, 1);
+    if (rows[0]) assertReadable(rows[0].body, "contextFor(classifyOf)");
     const text = (rows[0]?.body as ThreadRow | undefined)?.content ?? "";
     if (!text) return { messages: [], hidden: 0 };
     return {

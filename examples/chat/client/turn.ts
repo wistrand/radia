@@ -12,6 +12,7 @@ import type { ChatMessage, ToolDef } from "../provider/openrouter.ts";
 import type { Thread } from "./thread.ts";
 import { sessionOwner } from "../space/roles.ts";
 import { type CapabilityBody, capabilityKey, collapseByTool } from "../../../extensions/ts/capability.ts";
+import { assertReadable } from "../../../extensions/ts/encrypted.ts";
 import { answerStream, columns, dim, endStatus, ensureLine, holdLine, notice, showArtifact, statusLineOn, trunc, write } from "./terminal.ts";
 import { Waiter, waitWake } from "./waiting.ts";
 
@@ -415,6 +416,8 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
     );
     for (const chunk of chunks) {
       const b = chunk.body as { index: number; delta: string; reset?: boolean };
+      // A delta goes straight to the terminal, so it is the one prose read with no later checkpoint.
+      assertReadable(b, "streamResult(llm_chunk)");
       if (b.index <= lastIndex) continue;
       lastIndex = b.index;
       lastChunkAt = Date.now();
@@ -516,6 +519,8 @@ async function streamResult(client: RadiaClient, callId: string): Promise<Stream
   answer.end(); // and anything the renderer was holding back for the next character
   if (!printed) endStatus(waiter.prefix); // nothing streamed (tool-call turn, or an error)
   const b = outcome.body;
+  // The record this client renders and feeds back into the next turn's context.
+  assertReadable(b, "streamResult");
   return {
     message: { role: "assistant", content: b.content ?? null, ...(b.tool_calls?.length ? { tool_calls: b.tool_calls } : {}) },
     finishReason: b.finishReason,
@@ -589,6 +594,7 @@ async function awaitToolReply(
     );
   }
   endStatus(prefix);
+  assertReadable(outcome.body, "toolReply");
   // The reply is a tool MESSAGE now: `content` is the same JSON string this client used to write,
   // so the structured output for rendering comes back out of it.
   const parsed = ((): unknown => {

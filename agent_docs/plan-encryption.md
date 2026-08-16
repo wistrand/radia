@@ -1,6 +1,8 @@
 # Encrypting chat content, opt-in per session
 
-**Status: PLANNED.** Nothing below is built. Read
+**Status: phases 0 and 1 BUILT (2026-08-16); 2-5 planned.** Nothing is encrypted yet: what exists
+is the classify-by-reference change and the refusal every reader owes a marker it cannot handle.
+Read
 [design-data-model.md](design-data-model.md) (§2, artifacts and the erasure boundary) and
 [plan-delegation.md](plan-delegation.md) (who holds which credential in a shared fleet) first.
 
@@ -124,20 +126,44 @@ at `window=0` and passes at 40, which is why a guard covering only the default w
 it). A classify REFERENCE naming another owner's message resolves to nothing, while an honest one
 returns system plus the referenced text.
 
-## Phase 1: the marker and the FAIL-CLOSED contract, before any encryption
+## Phase 1: the marker and the FAIL-CLOSED contract — BUILT 2026-08-16
 
-Add the clear marker `enc: "v1"` to the record body, and make every prose reader refuse a record
-carrying a marker it cannot handle. Nothing is encrypted yet, so this phase is pure refusal and can
-be proved with a hand-written record.
+The clear marker `enc: "v1"` on a body, and every prose reader refusing a marker it cannot handle.
+Nothing is encrypted yet, so this phase is pure refusal, proved with a hand-written record.
 
-Always: a reader that sees `enc` and cannot decrypt raises. Never: pass the field through, and
-never substitute a placeholder into anything a model will read.
+Always: a reader that sees a marker it cannot handle RAISES. Never: pass the field through, and
+never substitute a placeholder into anything a model or a person will read — a placeholder is how
+ciphertext becomes a plausible answer instead of an error.
 
-The readers to cover: `client/context.ts` (the provider payload), `client/thread.ts` (rendering),
-`extensions/ts/inference.ts` (the context window), and the tool workers for `args`.
+`extensions/ts/encrypted.ts` holds the field name, the marker, `assertReadable(body, where)` and
+`EncryptedBodyError`. The handled set is EMPTY and says so in place: phase 3 adds `ENC_V1` to it in
+the same change that gives the readers a key, so there is no window where a marker is written and
+silently tolerated. `where` names the READER, because the useful half of the report is which
+component stopped.
 
-Verify: a planted `{enc: "v1"}` record makes each reader raise, named per reader; a record without
-the marker is untouched. Every guard proved red by removing the check.
+The readers, each asserting at its own boundary rather than trusting a shared helper upstream:
+
+| reader | site |
+|---|---|
+| the provider payload | `assembleContext` (whole batch, head included, before any structural work) |
+| the row converter | `toMessage`, which `contextFor`'s unwindowed branch reaches directly |
+| the call body | `contextFor`, which carries prose inline and beside a reference |
+| the classify reference | `contextFor`, on the message it fetches rather than receives |
+| tool workers | `serveTools`, on `args`, before dispatch |
+| the chat client | `streamResult` (the assistant message and each `llm_chunk` delta) and `toolReply` |
+
+**A tool worker ANSWERS rather than nacks.** The assert sits inside the handler's try, so the
+refusal comes back as `ok: false` naming the reader. Raising to the loop would nack a record that
+cannot become decryptable on redelivery, which is one poisoned queue entry replayed forever.
+
+Guards: `extensions/conformance/encrypted.test.ts` plus one case in `tool-worker.test.ts`, all five
+runtime sites proved red by removing the check. The two context sites OVERLAP, so each was proved
+against the case only it covers: the system head (read directly, never through `toMessage`) and a
+direct converter call.
+
+**Gap:** the three chat-client sites are not covered by an automated guard. They are one-line calls
+to the tested helper, and reaching them needs a running fleet plus a provider that stamps a marker
+`finished()` does not write. Review, not a test, is what holds them.
 
 ## Phase 2: keys, DUAL-WRAPPED
 

@@ -7,6 +7,7 @@
 // worker with an API key.
 
 import type { ToolCall } from "./turn.ts";
+import { assertAllReadable, assertReadable } from "./encrypted.ts";
 
 /**
  * A message as a provider takes it.
@@ -63,6 +64,10 @@ export function assembleContext(
   system: ThreadRow | undefined,
   window: ThreadRow[],
 ): { messages: ChatMessage[]; hidden: number } {
+  // Before any structural work: a payload assembled from a body this build cannot decrypt would be
+  // ciphertext presented to the provider as text (plan-encryption.md phase 1). Whole batch, head
+  // included, so a partial payload is never what raises.
+  assertAllReadable([...(system ? [system] : []), ...window], "assembleContext");
   // Older system messages are history, not instructions: they must not reach the body.
   const body = pairToolCalls(window.filter((m) => m.role !== "system"));
   const hidden = body.length > 0 ? Math.max(0, body[0].index - 1) : 0;
@@ -116,6 +121,10 @@ function pairToolCalls(rows: ThreadRow[]): ThreadRow[] {
 }
 
 export function toMessage(m: ThreadRow): ChatMessage {
+  // Also checked here, not only in `assembleContext`: callers reach this directly (the unwindowed
+  // branch of `contextFor`), and a converter that quietly copies ciphertext into a provider message
+  // is the one path that must not exist.
+  assertReadable(m, "toMessage");
   const cm: ChatMessage = { role: m.role };
   if (m.content !== undefined) cm.content = m.content;
   if (m.tool_calls) cm.tool_calls = m.tool_calls;
