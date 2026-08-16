@@ -9,6 +9,7 @@ recipe, not an example.)
 |---------|---------------|--------------|
 | [`pipeline/`](pipeline/) | Content-routed coordination with no routing table: a job fans out into tasks, workers claim only what matches their pattern, an aggregator fans the results back in. Leases, at-least-once, the event log, a 4-level lineage tree. | no |
 | [`stress/`](stress/) | What a busy space looks like. Waves of activity (poison records retrying into `dead_letter`, abandoned leases, per-op worker agents) to watch develop in the console's **Space** tab. | no |
+| [`analysis/`](analysis/) | A staged data pipeline as a WEB APP with SSO login: upload a CSV, watch each stage run, follow any record into the console. Work is identified by content (dataset, input digest, code digest), so changing an analysis re-runs that stage and everything after it while unchanged stages are found already done — there is no replay verb and no invalidation pass. One command starts its own space, OIDC flags included. | no |
 | [`chat/`](chat/) | The full end-to-end exercise: an LLM agent whose thinking, tool calls, images, saved files, sandboxed code execution *and the turn's own control flow* are all records, served by seven least-privilege worker processes, with the person at the keyboard as a real logged-in principal. The REPL writes one record per turn and renders the rest. `--encrypt` seals a conversation's prose end to end, which the substrate never notices because nothing routes on it. | yes |
 
 ```bash

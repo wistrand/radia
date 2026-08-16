@@ -107,7 +107,8 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
      deprovisioning still bites within one run ceiling; a session that has not been let in prints
      that exact command, principal included, because it is the one thing that knows its own
      principal and an SSO one is 32 hex characters nobody retypes. AS A POLICY:
-     `--serve --auto-grant` (`examples/chat/space/auto-grant.ts`) assigns the standard set as each
+     `--serve --auto-grant` (the generic sweep is `extensions/ts/enrolment.ts`, which the chat and
+     the analysis example both parameterise with their own grants) assigns the standard set as each
      identity enrols. Opt-in, because it converts "authenticated" into "authorized", which the
      substrate deliberately refuses to decide for you.
      Two properties make the policy safe to leave running, and both are guarded by tests proved red
@@ -116,6 +117,9 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
      until the next sweep), and a principal already holding something is never touched, because
      `RadiaClient.grant` REVIVES a retired grant and a blind re-assign would undo an operator's
      narrowing. The plant restored all 19 grants over a deliberate one-grant narrowing.
+     The second property has a cost worth knowing: a power added on a LATER run reaches nobody
+     already admitted, because the sweep never looks at them again. Anything meant for everyone
+     enumerates `enrolledPrincipals` rather than riding the sweep.
      What is still open is the self-service case for a space with no administrator at all: a
      session broker on the SUPERVISOR identity, which may write `grant`/`signal` and nothing else
      and is mintable since ops-tiers phase 5. Note the interaction if it is built:

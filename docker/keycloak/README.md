@@ -12,7 +12,7 @@ docker compose up
 # 2. the space, trusting it (any dev variant works; the flags are the whole wiring)
 deno task dev:pg --oidc-issuer http://localhost:8080/realms/radia --oidc-audience radia-console
 
-# 3. open the console, click "Sign in with SSO", log in as wistrand / radia
+# 3. open the console, click "Sign in with SSO", log in as demo / radia
 ```
 
 What the realm import sets up, and why each piece:
@@ -23,12 +23,25 @@ What the realm import sets up, and why each piece:
 - Public client `radia-console` with PKCE S256 enforced and only the standard (code) flow: the
   console is a public client and sends no secret. `--oidc-audience` is this client id (the
   id_token's `aud`).
-- Redirect URIs and web origins for the console on `127.0.0.1:7788` and `localhost:7788`, plus
-  `http://127.0.0.1:8253/*` for the CLI's loopback sign-in (`radia login --sso`). A different
-  `--port` needs matching entries (admin console → Clients → radia-console). NOTE: the import
-  only runs against a fresh database — an already-imported realm needs these added in the admin
-  UI, or `docker compose down && up` to re-import.
-- One user, `wistrand` / `radia`. Add people in the admin console
+- Redirect URIs and web origins for the console on `127.0.0.1:7788` and `localhost:7788`, the
+  analysis example on `:8081` (both host spellings), plus `http://127.0.0.1:8253/*` for the CLI's
+  loopback sign-in (`radia login --sso`). A different `--port` needs matching entries (admin
+  console → Clients → radia-console). NOTE: the import only runs against a fresh database — an
+  already-imported realm needs these added in the admin UI, or `docker compose down && up` to
+  re-import.
+
+  **Valid Redirect URIs and Web Origins are SEPARATE fields, and a browser sign-in needs both.**
+  They fail at different moments and neither error names the other, which is what makes this cost
+  an afternoon:
+
+  | symptom | missing |
+  |---|---|
+  | Keycloak's own page: "Invalid parameter: redirect_uri" | the URI in **Valid Redirect URIs** |
+  | back on your page, the token exchange fails with no status | the origin in **Web Origins** (CORS) |
+
+  `http://localhost:8081` and `http://127.0.0.1:8081` are different origins to an IdP. The realm
+  lists both for every port it knows; a hand-added entry usually lists one.
+- One user, `demo` / `radia`. Add people in the admin console
   (http://localhost:8080, admin / admin).
 
 First sign-in lands as `human:oidc-<hash>` with zero grants, and ENROLLS itself: the space

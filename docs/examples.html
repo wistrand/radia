@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Radia examples</title>
-  <meta name="description" content="A pipeline that needs no API key, a chat agent whose whole conversation lives in the space, and the console you watch it all through.">
+  <meta name="description" content="A pipeline that needs no API key, a chat agent whose whole conversation lives in the space, a data pipeline that never replays anything, and the console you watch it all through.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
@@ -14,7 +14,7 @@
   <meta property="og:type" content="article">
   <meta property="og:url" content="https://wistrand.github.io/radia/examples.html">
   <meta property="og:title" content="Radia examples">
-  <meta property="og:description" content="A pipeline that needs no API key, a chat agent whose whole conversation lives in the space, and the console you watch it all through.">
+  <meta property="og:description" content="A pipeline that needs no API key, a chat agent whose whole conversation lives in the space, a data pipeline that never replays anything, and the console you watch it all through.">
   <meta property="og:image" content="https://wistrand.github.io/radia/og.png">
   <meta name="twitter:card" content="summary_large_image">
 </head>
@@ -44,6 +44,7 @@
 <aside class="sidebar" id="sidebar">
   <a href="#pipeline">Start here</a>
   <a href="#chat">A real agent</a>
+  <a href="#analysis">A data pipeline</a>
   <a href="#console">Watching it happen</a>
   <a href="#flows">Finding the shape</a>
 </aside>
@@ -170,9 +171,32 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
     </p>
 
     <div class="callout">
-      <strong>Twenty-one test suites, none of which need a model.</strong> Because a tool call is a
+      <strong>Twenty-three test suites, none of which need a model.</strong> Because a tool call is a
       record and assembling the context is a plain function, the tests drive the real thing with no
       API key. Most bugs in this project have surfaced here first.
+    </div>
+  </div>
+</section>
+
+<section id="analysis">
+  <div class="container">
+    <h2>A data pipeline where re-running is not a mechanism</h2>
+    <p>
+      The analysis example is a web app: sign in, upload a CSV, watch each stage run, follow any
+      record into the console. What makes it worth reading is what it does <em>not</em> have — no
+      replay verb, no invalidation pass, no "mark stale" flag.
+    </p>
+    <p>
+      Work is identified by its content: which dataset, the digest of the input, the digest of the
+      code that will run. All three are indexed, so "has this already been computed" is one query.
+      Each stage's output is an artifact, so its content digest is the next stage's input digest.
+      Change an analysis and that stage re-runs along with everything after it, because those keys
+      now miss; change nothing and nothing re-runs, however often the planner executes.
+    </p>
+    <div class="callout">
+      <strong>The one thing the substrate cannot decide for you is which work is stale</strong>, and
+      that is the whole of <code>planner.ts</code>. Deciding it depends on what you consider an
+      input. Everything else — the DAG, the routing, the leases, the audit — is already there.
     </div>
   </div>
 </section>

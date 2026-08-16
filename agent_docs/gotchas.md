@@ -224,6 +224,12 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   entry said six, then eight, each time updated only after drifting). Anything answering "does
   this kind exist" must add them, or it will report that
   `artifact` is not a kind while the caller is successfully counting artifacts.
+- **An "already decided" sweep admits people once; it does not APPLY LATER WIDENINGS to them.**
+  `sweepEnrolments` skips a principal that already holds something, which is what stops it undoing
+  an operator's narrowing — and it means a power added on a later run reaches nobody already
+  admitted. Adding `--observe` to a running app granted it to new sign-ins only, while everyone
+  using it kept being refused the ops plane. Anything meant for EVERYONE enumerates
+  `enrolledPrincipals` instead; the sweep answers a different question.
 - **An idempotency key must name the CONTENT it dedupes, not just the thing it belongs to.**
   `conversation-key:<id>` looked right and silently replayed the first write forever, so enrolling a
   machine reported success and changed nothing. The key carries the wrap set (and the artifact's, its

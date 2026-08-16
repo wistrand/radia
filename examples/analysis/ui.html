@@ -1,0 +1,332 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Radia · analysis pipeline</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --ink:#e6e8ee; --muted:#8b93a7; --line:#252a35;
+          --ok:#4ec9a5; --run:#d8a657; --wait:#8b93a7; --bad:#e06c75; --link:#7aa2f7; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 ui-sans-serif,system-ui,sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:12px 20px; border-bottom:1px solid var(--line); }
+  h1 { font-size:15px; margin:0; font-weight:600; }
+  .grow { flex:1 }
+  .muted { color:var(--muted) }
+  main { padding:20px; max-width:1000px; margin:0 auto; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:16px; }
+  textarea { width:100%; min-height:120px; background:#0b0d11; color:var(--ink); border:1px solid var(--line);
+             border-radius:6px; padding:10px; font:12px/1.5 ui-monospace,monospace; }
+  input[type=text] { background:#0b0d11; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:7px 10px; }
+  button { background:#2b3242; color:var(--ink); border:1px solid var(--line); border-radius:6px;
+           padding:7px 14px; cursor:pointer; font:inherit; }
+  button:hover { background:#343c50 } button:disabled { opacity:.5; cursor:default }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; color:var(--muted); font-weight:500; padding:6px 8px; border-bottom:1px solid var(--line); }
+  td { padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .mono { font-family:ui-monospace,monospace; font-size:12px; }
+  a { color:var(--link); text-decoration:none } a:hover { text-decoration:underline }
+  .tag { display:inline-block; padding:1px 7px; border-radius:99px; font-size:11px; border:1px solid var(--line); }
+  .done { color:var(--ok); border-color:#24503f } .requested { color:var(--run); border-color:#4d3f21 }
+  .asked { color:var(--muted) } .blocked, .failed { color:var(--bad); border-color:#4d2a2c }
+  pre { background:#0b0d11; border:1px solid var(--line); border-radius:6px; padding:12px; overflow:auto; font-size:12px; }
+  .empty { color:var(--muted); padding:12px 0; }
+  .err { color:var(--bad) }
+</style>
+
+<header>
+  <h1>Radia · analysis pipeline</h1>
+  <span class="grow"></span>
+  <span id="who" class="muted"></span>
+  <button id="signin" onclick="signIn()" style="display:none">Sign in with SSO</button>
+  <button id="signout" onclick="signOut()" style="display:none">Sign out</button>
+</header>
+
+<main>
+  <div id="gate" class="panel" style="display:none">
+    <p class="muted" id="gate-note">Sign in to upload a dataset and watch it run.</p>
+  </div>
+
+  <div id="app" style="display:none">
+    <div class="panel">
+      <div style="display:flex; gap:10px; align-items:center; margin-bottom:10px">
+        <input type="text" id="name" placeholder="dataset name" style="flex:1">
+        <button id="upload" onclick="upload()">Upload &amp; run</button>
+      </div>
+      <textarea id="data" placeholder="Paste CSV. First line may be a header.
+a,b,c
+1,2,3
+4,5,9
+2,2,2"></textarea>
+      <div id="upload-note" class="muted" style="margin-top:8px"></div>
+    </div>
+
+    <div class="panel">
+      <div style="display:flex; align-items:center; margin-bottom:8px">
+        <b>Datasets</b><span class="grow"></span>
+        <span class="muted mono" id="live-code"></span>
+      </div>
+      <div id="datasets"><div class="empty">Nothing uploaded yet.</div></div>
+      <div class="muted" style="margin-top:10px; font-size:12px">
+        Console links open the operator console, whose Graph and Feed views are the ops plane. They
+        work for an operator, or if this space was started with <code>--observe</code>.
+      </div>
+    </div>
+
+    <div class="panel" id="result-panel" style="display:none">
+      <b>Report</b>
+      <pre id="report"></pre>
+    </div>
+  </div>
+</main>
+
+<script>
+const SPACE = "__SPACE_URL__";           // the space's own URL, for links INTO the console
+const STAGES = ["clean", "features", "report"];
+let TOKEN = sessionStorage.getItem("analysis.token") || "";
+let ME = "";
+let OIDC = null;
+let timer = null;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[<>&"]/g, (c) => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;", '"':"&quot;" }[c]));
+/**
+ * A record's page in the console. The route lives in the URL as `#tab/id`, so a link is enough.
+ *
+ * The console's Graph and Feed views are the OPS PLANE, which pipeline grants do not include: the
+ * only power that opens them for reading is `observe`, and it opens every read unscoped. So these
+ * links work for an operator, and for a person the space was told to trust that far
+ * (`deno task analysis -- --observe`); for anyone else the console answers "may not access the ops
+ * plane", which is correct rather than broken.
+ */
+const consoleLink = (id, tab = "graph") => `${SPACE}/#${tab}/${id}`;
+
+/** Every call goes through the app's relay, carrying THIS person's token. The app holds none. */
+async function api(method, path, body, headers = {}) {
+  const h = { ...headers };
+  if (TOKEN) h["authorization"] = "Bearer " + TOKEN;
+  if (body !== undefined && !(body instanceof Uint8Array)) h["content-type"] = "application/json";
+  const res = await fetch(path, {
+    method,
+    headers: h,
+    body: body === undefined ? undefined : (body instanceof Uint8Array ? body : JSON.stringify(body)),
+  });
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+  if (!res.ok) throw new Error((data && (data.detail || data.title)) || `${res.status}`);
+  return data;
+}
+
+const query = (kind, match, limit = 50, dir = "desc") =>
+  api("POST", "/v0/records/query", { kind, ...(match ? { match } : {}), limit, dir }).then((r) => r.records);
+
+// ---- sign-in: code + PKCE against the issuer the SPACE advertises ----
+// The same dance the console does, for the same reason: the id_token is exchanged for an ordinary
+// run token by the space, so nothing here invents an identity.
+const randHex = (n) => [...crypto.getRandomValues(new Uint8Array(n))].map((b) => b.toString(16).padStart(2, "0")).join("");
+const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+async function signIn() {
+  if (!OIDC) return note("gate-note", "this space advertises no OIDC issuer; start it with --oidc-issuer");
+  const disco = await fetch(OIDC.issuer.replace(/\/+$/, "") + "/.well-known/openid-configuration")
+    .then((r) => r.ok ? r.json() : null).catch(() => null);
+  if (!disco) return note("gate-note", "the issuer's discovery document is unreachable from this browser");
+  const verifier = randHex(32), state = randHex(16), nonce = randHex(16);
+  sessionStorage.setItem("analysis.oidc", JSON.stringify({
+    verifier, state, nonce, tokenEndpoint: disco.token_endpoint, clientId: OIDC.clientId,
+  }));
+  const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+  const u = new URL(disco.authorization_endpoint);
+  for (const [k, v] of Object.entries({
+    response_type: "code", client_id: OIDC.clientId, redirect_uri: location.origin + "/",
+    scope: "openid profile email", state, nonce, code_challenge: challenge, code_challenge_method: "S256",
+  })) u.searchParams.set(k, v);
+  location.href = u.href;
+}
+
+/** The return leg. The code arrives in the QUERY string, which is correct for a PKCE-bound
+ *  single-use code and required by IdPs; do not "fix" it into a fragment. */
+async function finishSignIn(code, state) {
+  const pending = JSON.parse(sessionStorage.getItem("analysis.oidc") || "null");
+  sessionStorage.removeItem("analysis.oidc");
+  history.replaceState({}, "", "/");           // strip code+state before anything else runs
+  if (!pending || pending.state !== state) return note("gate-note", "the sign-in did not match this browser; try again");
+  // The two failures here are completely different and used to read the same. A THROWN fetch is
+  // the browser refusing to show us a cross-origin response — almost always the issuer not listing
+  // this page's origin in Web Origins, which is a separate field from Valid Redirect URIs and so is
+  // the one people set and forget. A RETURNED error is the IdP declining, and it says why.
+  let res;
+  try {
+    res = await fetch(pending.tokenEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code", code, redirect_uri: location.origin + "/",
+        client_id: pending.clientId, code_verifier: pending.verifier,
+      }).toString(),
+    });
+  } catch {
+    return note("gate-note",
+      `the token endpoint could not be reached from ${location.origin}. The issuer most likely does ` +
+      `not allow this origin: add ${location.origin} to the client's Web Origins (that is a ` +
+      `different field from Valid Redirect URIs, which is already working or you would not be here).`);
+  }
+  const tok = await res.json().catch(() => null);
+  if (!tok || !tok.id_token) {
+    return note("gate-note", `the issuer declined the token exchange (${res.status}): ` +
+      `${(tok && (tok.error_description || tok.error)) || "no id_token in the response"}`);
+  }
+  // The nonce binds the id_token to THIS dance. The space never saw it, so the page must check.
+  const claims = JSON.parse(atob((tok.id_token.split(".")[1] || "").replace(/-/g, "+").replace(/_/g, "/")));
+  if (claims.nonce !== pending.nonce) return note("gate-note", "the id_token does not match this sign-in");
+  const session = await api("POST", "/v0/sessions/oidc", { id_token: tok.id_token }).catch((e) => ({ error: String(e) }));
+  if (!session.runToken) return note("gate-note", "the space refused the sign-in: " + (session.error || ""));
+  TOKEN = session.runToken;
+  sessionStorage.setItem("analysis.token", TOKEN);
+}
+
+function signOut() {
+  TOKEN = "";
+  sessionStorage.removeItem("analysis.token");
+  location.href = "/";
+}
+
+const note = (id, msg) => { const el = $(id); if (el) { el.textContent = msg; el.className = "err"; } };
+
+// ---- upload ----
+async function upload() {
+  const name = $("name").value.trim() || `dataset-${new Date().toISOString().slice(0, 19)}`;
+  const text = $("data").value;
+  if (!text.trim()) return note("upload-note", "paste some data first");
+  $("upload").disabled = true;
+  try {
+    // BYTES GO IN AN ARTIFACT, never in a record body. The content digest it returns is what the
+    // first stage keys on, so the pipeline is content-addressed from the upload onward.
+    const art = await api("POST", "/v0/artifacts", new TextEncoder().encode(text), {
+      "content-type": "text/csv",
+      "x-radia-filename": name + ".csv",
+      "x-radia-meta": JSON.stringify({ owner: ME }),
+    });
+    await api("POST", "/v0/records", {
+      kind: "dataset",
+      body: { name, digest: art.digest, artifactId: art.id, owner: ME },
+      parentIds: [art.id],
+    });
+    $("upload-note").className = "muted";
+    $("upload-note").textContent = `uploaded ${name} (${art.size} bytes, ${art.digest.slice(0, 12)}…)`;
+    $("data").value = "";
+    await refresh();
+  } catch (e) {
+    note("upload-note", String(e.message || e));
+  } finally {
+    $("upload").disabled = false;
+  }
+}
+
+// ---- the view ----
+// The stage table is computed the same way the planner computes it: walk the stages, chain each
+// one's input digest from the last one's output. The page never asks for work — it renders what
+// the planner decided, which is why a read-only viewer sees the truth rather than a guess.
+async function refresh() {
+  const code = new Map();
+  for (const r of await query("stage_code", null, 50)) {
+    if (!code.has(r.body.stage)) code.set(r.body.stage, r.body.codeDigest);  // newest first
+  }
+  $("live-code").textContent = [...code.entries()].map(([s, d]) => `${s} ${d.slice(3, 11)}`).join("  ");
+
+  const sets = await query("dataset", null, 20);
+  if (!sets.length) { $("datasets").innerHTML = `<div class="empty">Nothing uploaded yet.</div>`; return; }
+
+  const results = await query("stage_result", null, 400);
+  const requests = await query("stage_request", null, 400);
+  const find = (rows, d, stage, input, cd) => rows.find((r) =>
+    r.body.dataset === d && r.body.stage === stage && r.body.inputDigest === input && r.body.codeDigest === cd);
+
+  let html = "", latestReport = null;
+  for (const ds of sets) {
+    const rows = [];
+    let input = ds.body.digest, broken = false;
+    for (const stage of STAGES) {
+      const cd = code.get(stage);
+      if (!cd) { rows.push(cell(stage, "blocked", "no worker advertises this stage", null)); break; }
+      const done = find(results, ds.body.name, stage, input, cd);
+      if (done && done.body.ok === "yes") {
+        rows.push(cell(stage, "done", `${done.body.bytes} bytes · ${done.body.outputDigest.slice(0, 10)}…`, done.id));
+        if (stage === "report") latestReport = latestReport || done;
+        input = done.body.outputDigest;
+        continue;
+      }
+      if (done) { rows.push(cell(stage, "failed", done.body.error || "failed", done.id)); broken = true; break; }
+      const asked = find(requests, ds.body.name, stage, input, cd);
+      rows.push(cell(stage, asked ? "requested" : "asked", asked ? "claimed or queued" : "planner has not asked yet", asked ? asked.id : null));
+      broken = true;
+      break;
+    }
+    html += `<div style="margin-bottom:14px">
+      <div style="margin-bottom:4px"><b>${esc(ds.body.name)}</b>
+        <span class="muted mono">${esc(ds.body.digest.slice(0, 12))}…</span>
+        <a class="mono" href="${consoleLink(ds.id)}" target="_blank" title="open this dataset's subtree in the console">console ↗</a></div>
+      <table><thead><tr><th>stage</th><th>state</th><th>detail</th><th>record</th></tr></thead><tbody>${rows.join("")}</tbody></table>
+    </div>`;
+  }
+  $("datasets").innerHTML = html;
+
+  if (latestReport && latestReport.body.outputArtifact) {
+    const bytes = await fetch("/v0/artifacts/" + latestReport.body.outputArtifact, {
+      headers: { authorization: "Bearer " + TOKEN },
+    }).then((r) => r.ok ? r.text() : null).catch(() => null);
+    if (bytes) { $("report").textContent = bytes; $("result-panel").style.display = ""; }
+  }
+}
+
+const cell = (stage, state, detail, id) =>
+  `<tr><td class="mono">${stage}</td>
+       <td><span class="tag ${state}">${state}</span></td>
+       <td class="muted">${esc(detail)}</td>
+       <td>${id ? `<a class="mono" href="${consoleLink(id)}" target="_blank">${esc(id.slice(-8))} ↗</a>` : "<span class=muted>·</span>"}</td></tr>`;
+
+// ---- boot ----
+async function start() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("error")) { show(false); return note("gate-note", "sign-in was refused: " + params.get("error")); }
+  const health = await fetch("/v0/health").then((r) => r.json()).catch(() => null);
+  OIDC = health && health.oidc ? health.oidc : null;
+  if (params.get("code")) await finishSignIn(params.get("code"), params.get("state"));
+
+  if (TOKEN) {
+    // WHO THE SPACE SAYS THIS IS, never a claim from the token, and in TWO steps because they
+    // answer different questions: health names the principal the credential resolves to (a run),
+    // and permissions names its SUBJECT (the person). Records are stamped with the subject, so
+    // that is the owner. A stale token fails here, before anything renders as if it were theirs.
+    //
+    // `?principal=` is required: an ops read with no principal is a question about someone else,
+    // and only an operator may ask it. Naming yourself is the self-read every principal may do.
+    const mine = await fetch("/v0/health", { headers: { authorization: "Bearer " + TOKEN } })
+      .then((r) => r.ok ? r.json() : null).catch(() => null);
+    const perms = mine && mine.principal
+      ? await api("GET", "/v0/ops/permissions?principal=" + encodeURIComponent(mine.principal)).catch(() => null)
+      : null;
+    if (perms && perms.subject) {
+      ME = perms.subject;
+      $("who").textContent = ME;
+      show(true);
+      await refresh();
+      timer = setInterval(() => refresh().catch(() => {}), 1500);
+      return;
+    }
+    TOKEN = "";
+    sessionStorage.removeItem("analysis.token");
+  }
+  show(false);
+}
+
+function show(signedIn) {
+  $("app").style.display = signedIn ? "" : "none";
+  $("gate").style.display = signedIn ? "none" : "";
+  $("signin").style.display = signedIn ? "none" : (OIDC ? "" : "none");
+  $("signout").style.display = signedIn ? "" : "none";
+  if (!signedIn && !OIDC) {
+    $("gate-note").textContent = "This space advertises no OIDC issuer. Start it with --oidc-issuer and --oidc-audience.";
+  }
+}
+
+start();
+</script>

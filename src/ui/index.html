@@ -295,7 +295,7 @@
       <h2>Relationship graph</h2>
       <p class="muted" style="margin-top:0">Pick a record to see its <code>parent_ids</code> graph: how records relate (a conversation and its messages/calls/results, a job fanning out into tasks and back into a summary).</p>
       <div class="row">
-        <div><label>Kind to pick from</label><input id="g-kind" list="kind-list" value="conversation"></div>
+        <div><label>Kind to pick from</label><input id="g-kind" list="kind-list" placeholder="pick a kind"></div>
         <div style="max-width:150px"><label>View</label><select id="g-view" onchange="routeGraphView()">
           <option value="layers">layers</option>
           <option value="waterfall" selected>waterfall</option>
@@ -984,6 +984,21 @@ async function loadKinds() {
   const kinds = [...latest.values()].map((v) => v.def);
   KIND_DEFS = new Map(kinds.map((k) => [k.kind, k]));
   $("kind-list").innerHTML = kinds.map((k) => `<option value="${esc(k.kind)}">`).join("");
+  // The graph picker defaults to a kind THIS SPACE actually declares. It was hardcoded to
+  // `conversation`, which is one app's kind: on any other space the tab opened by querying a kind
+  // that does not exist, and the console — which is app-agnostic and knows kinds only by
+  // discovering them — greeted you with a 403 about somebody else's chat.
+  const g = $("g-kind");
+  if (g && !g.value.trim() && kinds.length) {
+    // An APP kind for preference: the reserved ones are the substrate's own bookkeeping and make a
+    // dull root. Listed here rather than imported because this page has no build step; a name
+    // missing from it costs a slightly worse default and nothing else.
+    const reserved = new Set([
+      "kind_def", "grant", "signal", "agent_definition", "agent_run",
+      "artifact", "interest", "shred", "ops_grant", "oidc_identity",
+    ]);
+    g.value = (kinds.find((k) => !reserved.has(k.kind)) ?? kinds[0]).kind;
+  }
   if (!kinds.length) { $("kinds-list").innerHTML = `<div class="empty">No kinds registered.</div>`; return; }
   $("kinds-list").innerHTML = kinds.map((k) =>
     `<div class="panel" style="background:var(--bg)"><b class="mono">${esc(k.kind)}</b>`
