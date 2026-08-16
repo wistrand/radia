@@ -51,9 +51,11 @@ Inspect
                                       session token alone; --compact-definition prints the
                                       durable one, for a tool that cannot re-authenticate
   shred <artifact-id> [--reason <t>] [--shared]  destroy an artifact's bytes, keep the record
-  revoke <principal> [--reason <t>]   kill an agent definition's token, permanently
-  runs --acting-for <principal> [--stop]  delegated runs minted on someone's behalf; --stop is the
-                                      deprovisioning cascade (revoking a definition leaves runs alive)
+  revoke <principal> [--reason <t>]   stop a definition MINTING, permanently. Not a kill switch:
+                                      runs already minted keep working until they expire
+  runs --for <principal> [--stop]     every run that principal can act through — their OWN sessions
+                                      and the DELEGATED ones workers hold on their behalf. --stop is
+                                      the offboarding cascade; revoke does not stop a live run
   kinds                               declared kinds (a query for kind_def records)
   get <record-id>                     one record
   lineage <record-id>                 ancestry via parent_ids
@@ -440,12 +442,28 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         applied: boolean;
         alreadyRevoked: boolean;
       };
-      return out(ctx, r, () =>
+      // COUNT what this did not stop, and name the command that would. "Revoke" reads as a kill
+      // switch and is not one: it stops MINTING, deliberately, so a rotation does not take every
+      // worker down mid-call. Saying "runs keep working" in the abstract was not enough — a number
+      // and a command are what turn it into something the operator acts on.
+      const now = new Date().toISOString();
+      const seen = new Map<string, { status?: string; expiresAt?: string }>();
+      for (const rec of await client.query({ kind: "agent_run", match: { agent: who } }, 1000)) {
+        const b = rec.body as { run?: string; status?: string; expiresAt?: string };
+        if (typeof b.run === "string" && !seen.has(b.run)) seen.set(b.run, b);
+      }
+      const live = [...seen.values()].filter((b) => b.status !== "stopped" && (b.expiresAt ?? "") > now).length;
+      return out(ctx, { ...r, liveRuns: live }, () =>
         r.alreadyRevoked
           ? `${r.agent}: already revoked, nothing to do`
-          : `revoked the definition token for ${r.agent}\n` +
-            `  it can mint no further runs. Runs already minted keep their own tokens until they\n` +
-            `  expire or are stopped: radia doctor, then stop the ones that matter.`);
+          : [
+            `revoked the definition token for ${r.agent}: it can mint no further runs.`,
+            live > 0
+              ? `  ${live} run(s) minted BEFORE this are still live and keep working until they expire.\n` +
+                `  This is not offboarding on its own. To stop them, and the runs workers hold on\n` +
+                `  their behalf:  radia runs --for ${r.agent} --stop`
+              : `  No live runs remain.`,
+          ].join("\n"));
     }
 
     case "shred": {
@@ -768,32 +786,56 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
     // never consults a definition, so a credential minted on someone's behalf outlives their
     // offboarding until it expires. `--stop` is the cascade, and it is a verb rather than a timer
     // for the same reason `gc` is.
+    // Every run a principal can act through, in BOTH classes, because offboarding is not one verb
+    // and the two are easy to mistake for each other:
+    //
+    //   OWN        `agent_run{agent: X}`      — their own sessions, from `radia login` or SSO
+    //   DELEGATED  `agent_run{actingFor: X}`  — minted BY A WORKER on their behalf
+    //
+    // The first version of this verb took `--acting-for` and matched only the second, so running
+    // the documented offboarding command left the person's own session working for up to twelve
+    // hours. Two indexed queries rather than one `$or`, because the union is trivial here and a
+    // pushed-down disjunction is not something to reason about on a security path.
+    //
+    // Note what this deliberately does NOT do: stop anything re-minting. A definition still mints
+    // (`radia revoke`), and an SSO identity still signs in until its `oidc_identity` mapping is
+    // retired. Both are named below when there is something to name.
     case "runs": {
-      const actingFor = flag(argv, "--acting-for");
-      if (!actingFor) return usage("runs --acting-for <principal> [--stop]");
-      const recs = await client.query({ kind: "agent_run", match: { actingFor } }, 1000);
+      const who = flag(argv, "--for") ?? flag(argv, "--acting-for");
+      if (!who) return usage("runs --for <principal> [--stop]");
+      const recs = [
+        ...await client.query({ kind: "agent_run", match: { agent: who } }, 1000),
+        ...await client.query({ kind: "agent_run", match: { actingFor: who } }, 1000),
+      ].sort((a, b) => (a.id < b.id ? 1 : -1)); // newest first across both reads
       // Newest record per run id wins: a stop and a renewal are both successors carrying the run.
-      const latest = new Map<string, Record<string, unknown>>();
+      const latest = new Map<string, { run: string; agent: string; actingFor?: string; status?: string; expiresAt?: string }>();
       for (const r of recs) {
         const b = r.body as { run?: string };
-        if (typeof b.run === "string" && !latest.has(b.run)) latest.set(b.run, r.body as Record<string, unknown>);
+        if (typeof b.run === "string" && !latest.has(b.run)) latest.set(b.run, r.body as never);
       }
       const now = new Date().toISOString();
-      const rows = [...latest.values()] as { run: string; agent: string; status?: string; expiresAt?: string }[];
+      const rows = [...latest.values()];
       const live = rows.filter((r) => r.status !== "stopped" && (r.expiresAt ?? "") > now);
       const stopped: string[] = [];
       if (has(argv, "--stop")) for (const r of live) if ((await client.stopRun(r.run)).applied) stopped.push(r.run);
-      return out(ctx, { actingFor, runs: rows, active: live.length, stopped }, () =>
+      return out(ctx, { principal: who, runs: rows, active: live.length, stopped }, () =>
         [
           rows.length
-            ? table(["RUN", "WORKER", "STATUS", "EXPIRES"], rows.map((r) => [
+            ? table(["RUN", "CLASS", "AGENT", "STATUS", "EXPIRES"], rows.map((r) => [
               r.run,
+              r.actingFor ? "delegated" : "own",
               r.agent ?? "-",
               r.status === "stopped" ? "stopped" : (r.expiresAt ?? "") > now ? "active" : "expired",
               r.expiresAt ?? "-",
             ]))
-            : `(no delegated runs for ${actingFor})`,
-          stopped.length ? `stopped ${stopped.length} active run(s)` : "",
+            : `(no runs for ${who})`,
+          stopped.length ? `stopped ${stopped.length} live run(s)` : "",
+          // Stopping runs is not offboarding on its own: say what still lets them back in.
+          stopped.length && who.startsWith("human:")
+            ? `stopping runs does not stop RE-MINTING. To close that too:\n` +
+              `  radia revoke ${who}${" ".repeat(Math.max(1, 34 - who.length))}(if they hold a definition)\n` +
+              `  retire their oidc_identity mapping   (an SSO identity holds none)`
+            : "",
         ].filter(Boolean).join("\n"));
     }
 

@@ -622,6 +622,52 @@ Deno.test("delegation: runs are ENUMERABLE by caller, which is what makes a casc
   }
 });
 
+Deno.test("delegation: offboarding needs BOTH run classes, not just the delegated ones", async () => {
+  const t = await newSpace();
+  try {
+    // The shape `radia runs --for` has to cover. A person acts through two kinds of credential and
+    // they live under different fields, so a query for one silently leaves the other working:
+    //   OWN        agent_run{agent: X}      — from `radia login` or SSO
+    //   DELEGATED  agent_run{actingFor: X}  — minted by a worker on their behalf
+    // The verb shipped matching only the second, so the documented offboarding command left the
+    // person's own session alive for up to the run ceiling.
+    const leaver = await agentRun(t.space, "human:leaver", [grant("human:leaver", "note", ["put", "query"])]);
+    const worker = await agentRun(t.space, "agent:w", [grant("agent:w", "note", ["query"])]);
+    const seed = await t.space.put({ kind: "note", body: { owner: "leaver", topic: "x" } }, undefined, leaver.run);
+    const delegated = await t.space.mintDelegatedRun(worker.run, seed.id);
+
+    const byActingFor = await t.space.query({ kind: "agent_run", match: { actingFor: "human:leaver" } }, 50);
+    const byAgent = await t.space.query({ kind: "agent_run", match: { agent: "human:leaver" } }, 50);
+    const runsIn = (rows: { body: unknown }[]) => new Set(rows.map((r) => (r.body as { run: string }).run));
+    assertEquals(runsIn(byActingFor), new Set([delegated.run]), "actingFor finds ONLY the delegated run");
+    assertEquals(runsIn(byAgent), new Set([leaver.run]), "…and the person's own session is under `agent`, not `actingFor`");
+
+    // Stopping only what `actingFor` matched leaves them able to act. This is the regression.
+    await t.space.stopRun(delegated.run);
+    assertEquals(
+      await t.space.authorize(leaver.run, "put", "note"),
+      null,
+      "stopping the delegated run alone leaves their own session working — offboarding must cover both",
+    );
+
+    // Both classes stopped is what actually ends it, and `stopRun` is per-run, so the verb has to
+    // gather them itself.
+    await t.space.stopRun(leaver.run);
+    const cold = new Space(t.adapter, {} as never);
+    await cold.loadKinds();
+    const res = await makeHandler(cold, "<html>c</html>", true)(
+      new Request("http://t/v0/records/query", {
+        method: "POST",
+        headers: { "content-type": "application/json", "Authorization": `Bearer ${leaver.runToken}` },
+        body: JSON.stringify({ kind: "note" }),
+      }),
+    );
+    assertEquals(res.status, 401, "with both classes stopped, their credential resolves no further");
+  } finally {
+    t.close();
+  }
+});
+
 Deno.test("delegation: entitlement is a lease OR read access, never neither", async () => {
   const t = await newSpace();
   try {

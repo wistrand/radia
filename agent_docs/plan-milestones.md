@@ -157,10 +157,19 @@ pinned in `conformance/http.test.ts` and the horizon derivation per adapter in
   `declassify`/`purge`, fail-closed, reported by `effectivePermissions`); the supervisor demoted to
   a `grant`/`signal` carve-out (and thereby mintable); `radia mcp` and the CLI's read-only verbs
   default to a revocable OBSERVER credential instead of the operator token.
-- [x] revocation paths: `Space.revokeDefinition` / `radia revoke <principal>` kills every run of an
-  agent, `Space.stopRun` retires one (`quarantine: true` also force-releases its leases), and a
-  grant is withdrawn by a `retired: true` successor. Credentials resolve from records per request,
-  uncached, which is what makes a revocation take effect on the next call rather than at expiry.
+- [x] revocation paths, and WHICH ONE STOPS WHAT, because reading them as interchangeable is the
+  mistake this line used to invite (it claimed revoke "kills every run of an agent"; it does not).
+  `Space.revokeDefinition` / `radia revoke <principal>` stops a definition MINTING, permanently,
+  and deliberately leaves live runs alone — "stop handing out new authority" and "kill the work in
+  flight" are different decisions with different blast radii, so a rotation does not take every
+  worker down mid-call. It is also a no-op for an identity holding no definition, which is every
+  SSO principal by design (plan-oidc.md). `Space.stopRun` retires ONE run (`quarantine: true` also
+  force-releases its leases), and a grant is withdrawn by a `retired: true` successor.
+  Credentials resolve from records per request, uncached, so a stop or a withdrawal takes effect on
+  the next call rather than at expiry — but only for the credential it actually names.
+  **Offboarding a person is therefore not one verb**: stop their own runs AND the delegated runs
+  minted on their behalf, and for an SSO identity retire the `oidc_identity` mapping so nothing
+  re-mints. See [plan-delegation.md](plan-delegation.md) and `radia runs`.
 - [ ] fault-injection suite
 - [x] **push `$any` into SQL** (`pushdown.ts`, both dialects): a type-guarded `EXISTS` over the
   array's elements for a scalar element predicate, exact, so the caller's LIMIT rides with it.

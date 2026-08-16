@@ -158,7 +158,10 @@ delegated run (simulating `ack` by another instance) does NOT fall back to the w
 `resolveCredential` checks the run's own `status`/`expiresAt`, never its definition's. So a
 delegated run outlives its caller's deprovisioning up to the ceiling unless something stops it.
 
-- `radia runs --acting-for <principal>`: an indexed `agent_run{actingFor, status: "active"}` query.
+- `radia runs --for <principal>`: BOTH classes a principal can act through — `agent_run{agent: X}`
+  (their own sessions) and `agent_run{actingFor: X}` (delegated, held by workers). It shipped
+  matching only the second, under `--acting-for`, which meant the documented offboarding command
+  left the person's own session working for up to twelve hours. Proved by test before the fix.
 - Cascade: stop every active delegated run for a caller, the shape `remediate` already uses for
   leases. A CLI verb, not a timer.
 - The console's Auth tab renders delegated runs as what they are (`acting for X`, stoppable), the

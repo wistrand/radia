@@ -950,6 +950,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   tradeoff taken: kind names become enumerable by probing, which is fine because they are SCHEMA.
   Guard: conformance/delegation.test.ts "a refusal SAYS when the kind does not exist", proved red
   both ways (clause missing, and clause on every kind).
+- **A principal acts through TWO run classes, and a query for one silently leaves the other alive**
+  (`radia runs --for`). Their own sessions are `agent_run{agent: X}`; runs a worker holds on their
+  behalf are `agent_run{actingFor: X}`. The offboarding verb shipped matching only `actingFor`, so
+  following the documented runbook left the person chatting for up to the 12h ceiling — proved by
+  test, not by reading. And `revoke` closes neither: it stops a definition MINTING (deliberately,
+  so a rotation does not kill every worker mid-call) and is a no-op for an SSO identity, which by
+  design holds no definition. Offboarding is stop-both-classes, then remove what re-mints.
+  Guard: conformance/delegation.test.ts "offboarding needs BOTH run classes".
 - **A one-off manual grant to a long-lived principal hides gaps in the standard set**
   (`userGrants`, examples/chat/space/roles.ts). `kind_def:query` was hand-granted to one person
   in August and never added to the set, so `space_kinds` worked for them and 403'd for every
