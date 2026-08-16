@@ -172,6 +172,58 @@ check("planning an in-flight stage repeatedly queues it ONCE", queued === 1, `${
   check("the page is served with the space's URL injected", html.includes(url) && !html.includes("__SPACE_URL__"));
 }
 
+// ---- the pass is FLAT in the number of datasets ----
+//
+// It runs on every result landing, so a per-dataset cost multiplies: it used to ask per dataset per
+// stage, which is O(datasets x stages) queries per stage completion. Counted rather than asserted,
+// because "should be cheaper now" is not a property anything can hold onto.
+//
+// LAST in the file, because it creates datasets and several checks above count records across the
+// whole space. A test that quietly changes what the next one measures is worse than no test.
+{
+  const count = (c: RadiaClient) => {
+    let n = 0;
+    return {
+      client: new Proxy(c, {
+        get(t, prop, recv) {
+          const v = Reflect.get(t, prop, recv);
+          if (prop === "query" && typeof v === "function") {
+            return (...args: unknown[]) => {
+              n++;
+              return (v as (...a: unknown[]) => unknown).apply(t, args);
+            };
+          }
+          return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+        },
+      }) as RadiaClient,
+      reads: () => n,
+    };
+  };
+
+  const one = count(planner);
+  await planAll(one.client, { apply: false });
+  const withOne = one.reads();
+
+  // Four more datasets, already planned to completion by nobody: the point is the READ cost of a
+  // pass, which must not grow with how many there are.
+  for (let i = 0; i < 4; i++) {
+    const a = await admin.putArtifact(new TextEncoder().encode(`a,b\n${i},${i + 1}\n`), {
+      mediaType: "text/csv",
+      meta: { owner: alice },
+    });
+    await admin.put({
+      kind: "dataset",
+      body: { name: `bulk-${i}`, digest: a.digest, artifactId: a.id, owner: alice },
+      parentIds: [a.id],
+    });
+  }
+  const five = count(planner);
+  await planAll(five.client, { apply: false });
+  check("a planning pass costs the same for 5 datasets as for 1", five.reads() === withOne,
+    `${withOne} reads for 1, ${five.reads()} for 5`);
+  check("…and that cost is a handful of reads, not a handful per dataset", withOne <= 6, `${withOne} reads`);
+}
+
 console.log(`\n${failures === 0 ? "ok" : `${failures} FAILED`}`);
 for (const w of workers) {
   try {

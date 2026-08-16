@@ -115,10 +115,15 @@ answer already and this example does not use it: `extensions/ts/promotion.ts` pi
 tier may run, and a `binding` that disagrees with the pin is refused rather than run. Composing the
 two is the honest next step (research-substrate-lessons.md, action 5).
 
-**The planner re-plans every dataset on every wake**, and the watch discards the `Wakeup` naming
-what changed, so cost is O(datasets x stages) queries per stage completion. Fine for a demo, wrong
-at scale; `ui.html` beside it already does the right thing with three bulk reads and in-memory
-planning.
+**A planning pass is FLAT in the number of datasets**: four reads, then map lookups. It used to
+ask per dataset per stage, which is O(datasets x stages) queries on every result landing. Pinned by
+a counting proxy in `smoke.ts` rather than asserted, because "should be cheaper now" is not a
+property anything can hold onto.
+
+Two limits remain, both bounded and neither hidden. A pass still plans every dataset rather than the
+one the `Wakeup` names, which is cheap now but is work nobody asked for. And it plans the 50 NEWEST
+datasets, so a space holding more leaves an older one that goes stale unplanned. Both have the same
+real fix: plan incrementally from the record that changed.
 
 **A person cannot write a `stage_result`.** That is what makes a result evidence rather than a
 claim: it says a worker computed this, from that input, under that code.

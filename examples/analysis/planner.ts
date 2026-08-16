@@ -20,6 +20,7 @@
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { readRegistry } from "../../sdk/ts/client.ts";
+import type { RadiaRecord } from "../../sdk/ts/wire.ts";
 import { STAGES, type StageName } from "./kinds.ts";
 
 export interface PlanStep {
@@ -58,10 +59,56 @@ export async function liveCode(c: RadiaClient): Promise<Map<string, string>> {
  * `apply: false` plans without writing, which is what the web app renders: an operator sees what
  * WOULD run before anything does.
  */
+/**
+ * What one pass reads, once, for every dataset it is about to plan.
+ *
+ * The planner used to ask per dataset per stage, so a pass cost O(datasets x stages) queries and it
+ * ran on EVERY result landing. Three reads now serve the whole pass however many datasets there
+ * are, and the planning itself is map lookups.
+ *
+ * Scoped with `$in` over the datasets in hand and PAGED TO EXHAUSTION, which is the part that has
+ * to be right: a bounded read that missed a result would report a finished stage as still pending,
+ * the walk would stop there, and every stage after it would never be planned. That is a stall, not
+ * a slow answer, so the read reports `complete: false` and this refuses rather than plans on a
+ * prefix.
+ */
+interface PassReads {
+  code: Map<string, string>;
+  results: Map<string, RadiaRecord>;
+  requests: Map<string, RadiaRecord>;
+}
+
+/** The logical identity of one unit of work: which dataset, which stage, on what input, under
+ *  which code. The same four fields the records are indexed on, so a map lookup answers exactly
+ *  what the per-stage query used to. */
+const workKey = (b: { dataset?: string; stage?: string; inputDigest?: string; codeDigest?: string }) =>
+  `${b.dataset}|${b.stage}|${b.inputDigest}|${b.codeDigest}`;
+
+async function readPass(c: RadiaClient, names: string[]): Promise<PassReads> {
+  const code = await liveCode(c);
+  if (names.length === 0) return { code, results: new Map(), requests: new Map() };
+  const bulk = async (kind: string) => {
+    const view = await readRegistry<Record<string, unknown>>(
+      (limit, after) => c.query({ kind, match: { dataset: { $in: names } } }, limit, { dir: "desc", after }),
+      (b) => workKey(b as { dataset?: string }),
+    );
+    if (!view.complete) throw new Error(`could not read every ${kind} for this pass; refusing to plan on a prefix`);
+    return view.newest; // newest per work key, retirements included: nothing here retires
+  };
+  return { code, results: await bulk("stage_result"), requests: await bulk("stage_request") };
+}
+
+/**
+ * Bring one dataset up to date, and report what each stage is doing.
+ *
+ * Pure lookups against `reads` plus, when `apply` is set, at most one write: the next stage's
+ * request. `apply: false` plans without writing, which is what the web app renders — an operator
+ * sees what WOULD run before anything does.
+ */
 export async function planDataset(
   c: RadiaClient,
   dataset: { name: string; digest: string; artifactId: string; owner: string },
-  code: Map<string, string>,
+  reads: PassReads,
   opts: { apply?: boolean } = {},
 ): Promise<PlanStep[]> {
   const steps: PlanStep[] = [];
@@ -69,7 +116,7 @@ export async function planDataset(
   let inputArtifact = dataset.artifactId;
 
   for (const stage of STAGES) {
-    const codeDigest = code.get(stage);
+    const codeDigest = reads.code.get(stage);
     if (!codeDigest) {
       // No worker has advertised this stage. Reported rather than requested: a request naming no
       // live code would sit unclaimed and look like a slow stage rather than a missing one.
@@ -77,9 +124,9 @@ export async function planDataset(
       break;
     }
     const match = { dataset: dataset.name, stage, inputDigest, codeDigest };
-    // THE MEMO, and it is a query rather than an idempotency key on purpose (kinds.ts): this must
-    // still answer correctly a month later.
-    const done = (await c.query({ kind: "stage_result", match }, 1, { dir: "desc" }))[0];
+    // THE MEMO. Still keyed on all four fields, and still not an idempotency key (kinds.ts): this
+    // must answer correctly a month later, and content-key idempotency expires.
+    const done = reads.results.get(workKey(match));
     if (done) {
       const b = done.body as { ok?: string; outputDigest?: string; outputArtifact?: string; error?: string };
       if (b.ok !== "yes") {
@@ -93,7 +140,7 @@ export async function planDataset(
     }
     // Not done. Is it already asked for? Content-keyed, so asking twice is one record.
     const key = `stage:${dataset.name}:${stage}:${inputDigest}:${codeDigest}`;
-    const asked = (await c.query({ kind: "stage_request", match }, 1, { dir: "desc" }))[0];
+    const asked = reads.requests.get(workKey(match));
     if (asked) {
       steps.push({ ...match, state: "requested", requested: asked.id });
     } else if (opts.apply) {
@@ -104,6 +151,8 @@ export async function planDataset(
         // features → report, and `radia children <dataset>` walks the whole run.
         parentIds: [inputArtifact],
       }, key);
+      // Into the pass's own view, so a second dataset sharing this exact work does not ask again.
+      reads.requests.set(workKey(match), req as unknown as RadiaRecord);
       steps.push({ ...match, state: "requested", requested: req.id });
     } else {
       steps.push({ ...match, state: "asked" });
@@ -115,7 +164,15 @@ export async function planDataset(
   return steps;
 }
 
-/** Every dataset this caller can see, newest first. */
+/**
+ * Every dataset this caller can see, newest first.
+ *
+ * BOUNDED, and this is the honest limit of the planner: a space holding more than `limit` datasets
+ * plans only the newest ones, so an older one that becomes stale (its stage's code changed) never
+ * advances. The bound keeps a pass flat; removing it would make every pass cost the whole space.
+ * The real fix is not a bigger number, it is planning INCREMENTALLY from the `Wakeup` that says
+ * which record changed, which this example does not do.
+ */
 export async function datasets(c: RadiaClient, limit = 50): Promise<
   { id: string; name: string; digest: string; artifactId: string; owner: string; createdAt: string }[]
 > {
@@ -126,11 +183,15 @@ export async function datasets(c: RadiaClient, limit = 50): Promise<
   });
 }
 
-/** Plan every dataset once. Returns what it did, so a caller can log or render it. */
+/** Plan every dataset once. Returns what it did, so a caller can log or render it.
+ *
+ *  Cost is FLAT in the number of datasets: four reads for the pass (the datasets, the code
+ *  registry, the results, the requests) plus one write per stage actually dispatched. */
 export async function planAll(c: RadiaClient, opts: { apply?: boolean } = {}): Promise<PlanStep[]> {
-  const code = await liveCode(c);
+  const sets = await datasets(c);
+  const reads = await readPass(c, sets.map((d) => d.name));
   const out: PlanStep[] = [];
-  for (const d of await datasets(c)) out.push(...await planDataset(c, d, code, opts));
+  for (const d of sets) out.push(...await planDataset(c, d, reads, opts));
   return out;
 }
 

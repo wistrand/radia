@@ -98,10 +98,12 @@ would be filed and cached under a version that never produced it. The whole memo
 unverified claim. Radia already has the answer: promotion pins which digest may run, a `binding`
 names the digest a host runs, and a mismatch is refused rather than run.
 
-**The planner re-plans every dataset on every wake.** `planAll` walks all datasets and issues
-per-dataset queries, and the watch discards the `Wakeup` that says which record changed. Cost is
-O(datasets x stages) queries per stage completion. The page beside it already does the right thing:
-three bulk reads, then plan in memory.
+~~**The planner re-plans every dataset on every wake.**~~ FIXED 2026-08-16 (action 4): a pass is
+four reads and then map lookups, measured by a counting proxy at 4 reads for 1 dataset and 4 for 5,
+where the old shape was 7 and 15. What remains is bounded and documented rather than fixed: a pass
+still plans every dataset rather than the one the `Wakeup` names, and only the 50 newest, so a
+larger space can leave an older stale dataset unplanned. Both want the same thing — incremental
+planning from the record that changed.
 
 ## Suggested actions
 
@@ -113,7 +115,7 @@ DESIGN-FIRST means the open question below has to be answered before code.
 | 1 | ~~`readNewest(pattern)` on both SDKs~~ **BUILT 2026-08-16** | the hazard's commonest instance; makes the correct call as cheap as the wrong one, and lets `readOne`'s doc say "oldest match; you probably want readNewest". No new endpoint: it is `query(p, 1, {dir:"desc"})[0]` | SMALL | `sdk/ts/client.ts`, `sdk/py/radia.py`, pointer from gotchas |
 | 2 | ~~A generic `contentKey(prefix, body)`~~ **BUILT 2026-08-16** | the second instance. `kindDefKey`/`grantKey`/`opsGrantKey` already do this per kind; apps re-derive it per site and get it wrong by naming the container instead of the content | SMALL | `sdk/ts/registry.ts`, beside the existing keys |
 | 3 | Opt-in CORS (`--allow-origin <origin>`) | removes an entire proxy layer from every browser app. Bearer tokens rather than cookies, so the surface is narrow; default off and echoed at startup like other posture flags | SMALL/MEDIUM | `src/server/http.ts`, `conformance/defaults.test.ts`; check whether a preflight OPTIONS needs an openapi entry |
-| 4 | Plan from bulk reads, in memory | O(1) queries per wake instead of O(datasets x stages); `ui.html` is the worked example | SMALL | `examples/analysis/planner.ts` |
+| 4 | ~~Plan from bulk reads, in memory~~ **BUILT 2026-08-16** | O(1) queries per wake instead of O(datasets x stages); `ui.html` is the worked example | SMALL | `examples/analysis/planner.ts` |
 | 5 | Pin stage code with promotion instead of self-report | turns the memo's foundation from a claim into an enforced fact, and would be the first worked composition of promotion with something other than an exec runner | MEDIUM | `examples/analysis/`, `extensions/ts/promotion.ts` |
 | 6 | A scoped ops READ tier | the one gap both apps hit independently and neither can work around | DESIGN-FIRST | `architecture-ops-tiers.md`, then `src/server/http.ts` + `handlers/ops.ts` |
 
