@@ -204,7 +204,21 @@ check("the rule holds at three tiers too", ["fast", "balanced", "deep"][heuristi
     if (!file) continue;
     const src = Deno.readTextFileSync(new URL("../../" + file, import.meta.url));
     const strip = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
-    const readsEnv = /Deno\.env\./.test(strip(src));
+    // The worker's own source AND the app modules it loads, because an env read reached through an
+    // import is the same NotCapable crash. Scanning only the worker missed exactly that: the tools
+    // worker was handed the fleet key in its environment with no `--allow-env` to read it, so it
+    // silently served no encrypted conversation. `import type` is ERASED and never loads, so
+    // following one reports a variable the worker cannot touch.
+    const workerUrl = new URL("../../" + file, import.meta.url);
+    const imports = [...strip(src).matchAll(/\bimport\s+(?!type\b)[^;]*?from\s+["']((?:\.\.?\/)[^"']+\.ts)["']/g)]
+      .map((i) => i[1]);
+    let scanned = strip(src);
+    for (const rel of imports) {
+      try {
+        scanned += strip(Deno.readTextFileSync(new URL(rel, workerUrl)));
+      } catch { /* outside the app, or unreadable: its own suite covers it */ }
+    }
+    const readsEnv = /Deno\.env\./.test(scanned);
     const mayReadEnv = /--allow-env/.test(args);
     check(
       `${file.split("/").pop()}: reads env only if spawned with --allow-env`,
@@ -223,17 +237,6 @@ check("the rule holds at three tiers too", ["fast", "balanced", "deep"][heuristi
     // so; what closes that one is `env()` in space/keys.ts answering "unset" instead of throwing.
     const allowed = args.match(/--allow-env=([A-Za-z0-9_,]+)/)?.[1]?.split(",");
     if (!allowed) continue;
-    const workerUrl = new URL("../../" + file, import.meta.url);
-    // `import type` is ERASED, so the module never loads and its reads never run. Following one is
-    // how this guard first reported the exec worker for a variable it cannot touch.
-    const imports = [...strip(src).matchAll(/\bimport\s+(?!type\b)[^;]*?from\s+["']((?:\.\.?\/)[^"']+\.ts)["']/g)]
-      .map((i) => i[1]);
-    let scanned = strip(src);
-    for (const rel of imports) {
-      try {
-        scanned += strip(Deno.readTextFileSync(new URL(rel, workerUrl)));
-      } catch { /* outside the app, or unreadable: its own suite covers it */ }
-    }
     const named = [...scanned.matchAll(/Deno\.env\.get\(\s*["']([A-Za-z0-9_]+)["']/g)].map((m2) => m2[1]);
     const missing = [...new Set(named)].filter((n) => !allowed.includes(n));
     check(

@@ -224,6 +224,17 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   entry said six, then eight, each time updated only after drifting). Anything answering "does
   this kind exist" must add them, or it will report that
   `artifact` is not a kind while the caller is successfully counting artifacts.
+- **An idempotency key must name the CONTENT it dedupes, not just the thing it belongs to.**
+  `conversation-key:<id>` looked right and silently replayed the first write forever, so enrolling a
+  machine reported success and changed nothing. The key carries the wrap set (and the artifact's, its
+  sorted reader ids) so an unchanged re-put is still free while a changed one is a successor. The
+  symptom is always the same: a write that returns 200 and leaves the state it was meant to change.
+- **`readOne` answers with the OLDEST match, so a superseded record needs a newest-first query.**
+  Any kind whose entries are replaced by successors — a registry, or key material a later write
+  extends — is read with `query(..., 1, {dir: "desc"})`, never `readOne`. Hit again by conversation
+  keys: enrolling a second machine wrote a successor, the unordered read kept returning the original
+  wrap set, and the new machine was told it had no key while the record granting it sat one row
+  later. The write reported success, which is what made it hard to see.
 - **Content-key idempotency dedupes for a WINDOW, and a re-put outranks a tombstone.** "Registry
   writes are content-keyed so restarts don't append" is implemented as content-key-as-idempotency-key
   (`kindDefKey`, `opsGrantKey`), and idempotency rows sweep after `idempotencyRetentionSeconds`
@@ -361,14 +372,16 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   everyone too — under-waking stalls a stream until its 15s keepalive, the one failure worse than
   waste. Kind-aware does NOT help watchers that share a kind and differ by predicate (250
   `message` streams still all wake on a `message` write). Guard: `conformance/notifier.test.ts`.
-- **A chat worker reads FLAGS, not the environment, unless the fleet gave it `--allow-env`**
-  (`examples/chat/client/fleet.ts`). Each worker is spawned with the narrowest permissions that
-  let it work, and `tools`, `turn` and `exec` get no env access at all, so `Deno.env.get` there is
-  a NotCapable crash at STARTUP, before any test that does not launch the real fleet can see it.
-  The launcher has the environment and resolves values into arguments (`PROVIDER_CONCURRENCY` /
-  `LOCAL_CONCURRENCY` are the worked example). A `??` chain hides this: `arg("--url") ?? Deno.env.get(...)` never crashed only
-  because the flag was always passed. Guard: `smoke-fleet.ts` correlates each spawn's flags with
-  its worker's source, which is how the `turn.ts` case was found.
+- **A chat worker reads FLAGS, not the environment, unless the fleet named the variable**
+  (`examples/chat/client/fleet.ts`). Each worker gets the narrowest permissions that let it work, so
+  `Deno.env.get` outside its `--allow-env` THROWS rather than returning undefined: a NotCapable
+  crash at STARTUP, before any test that does not launch the real fleet can see it. The launcher has
+  the environment and resolves values into arguments (`PROVIDER_CONCURRENCY` / `LOCAL_CONCURRENCY`);
+  where a value must travel as a variable it is named individually (`RADIA_CHAT_FLEET_KEY` on tools
+  and exec) and PASSING it is not enough — the permission is a separate act, and without it the read
+  is silently "unset". A `??` chain hides the whole class. Guard: `smoke-fleet.ts` correlates each
+  spawn's flags with its worker's source AND the app modules it imports, which is how both the
+  `turn.ts` case and the tools worker's unreadable key were found.
 - **A worker loop must never swallow a handler exception, whatever its logging is configured to
   do.** `agentLoop`'s `log` defaulted to a no-op and the nack path used it, so a throwing handler
   retried invisibly: claimed, nacked, reclaimed, nacked again, with nothing anywhere naming the
@@ -1321,6 +1334,13 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   length, not existence) so damage that exists can still be repaired. "The file is there" is not
   "the bytes are there". Closed in package G.
 
+- **Erasing something means destroying EVERY copy of its key, and a reader-facing check cannot tell
+  you that you did.** A conversation read on two machines has two key artifacts, both holding the
+  same DEK, because enrolling a machine writes a successor rather than editing an immutable record.
+  Shred only the newest and the reader — which consults the newest — reports the conversation
+  erased while the key survives one artifact back. A plant confirmed the false green; the guard
+  enumerates instead (`eraseConversation`, `examples/chat/space/keys.ts`).
+
 ### Executing model-written code
 
 - **A process that executes model-written code must hold nothing; the process that holds a token
@@ -1836,6 +1856,12 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Method: how these were found
 
+- **A harness more privileged than the deployment cannot see the deployment's failures.** Three bugs
+  in one feature hid behind this: a suite spawning a worker under `-A` while the fleet gives it
+  `--allow-net --allow-env` and no filesystem, and twice more where the test constructed the worker
+  IN-PROCESS with what it needed handed in. All three were live-only, and all three were invisible
+  to a green suite. Spawn with exactly the deployment's flags and environment, and when a test
+  builds a collaborator itself, ask what the launcher does differently.
 - **Never size one query class by the MEAN cost of all classes.** A turn costs ~122 Postgres
   queries, 23 of them `storage.now()`, so the clock looked like 19% of the latency and the cheapest
   win going. Measured with a throwaway host-clock patch (the round trip gone entirely) it is ~2%:

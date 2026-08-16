@@ -1,13 +1,16 @@
-// Conversation keys and encrypted content, end to end on a real space (plan-encryption.md 2-3).
+// Encrypted conversations, end to end on a real space (agent_docs/plan-encryption.md).
 //
 // The crypto is pinned in `extensions/conformance/encrypted.test.ts`; what this adds is the half a
 // pure test cannot reach — whether the app's GRANTS let the right party fetch the key record and
 // stop the wrong one. Both halves have to hold: the wrap is what protects a dump, the grant is what
 // protects a live space, and each looks fine on its own while the other is broken.
 //
-// The second half runs a REAL turn through the real inference worker against a fake provider,
-// because the property that matters cannot be seen from either end alone: the worker has to decrypt
-// to call the model, and the stored row has to hold none of it.
+// The later halves run REAL workers against a fake provider, because the properties that matter
+// cannot be seen from either end alone: inference has to decrypt to call the model and the stored
+// row must hold none of it, and the TURN WORKER has to route a tool round holding no key at all.
+// Then the three things that follow from a person having more than one machine: a second machine
+// reaching a conversation sealed before it existed, operator recovery when every machine is gone,
+// and erasure having to destroy every key artifact the conversation accumulated.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";

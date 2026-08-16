@@ -161,13 +161,18 @@ export function launchFleet(tokens: Bootstrapped, fleetKey?: FleetKeyPair): Deno
     "--vision-types", VISION_MEDIA_TYPES.join(","),
   ], keyEnv));
 
-  // Tools: reads only the sandbox dirs, reaches only the local space, and gets NO env. It holds NO
+  // Tools: reads only the sandbox dirs, reaches only the local space, and ONE variable. It holds NO
   // session credential: the `space_*` tools moved into the REPL process (client/session-tools.ts),
   // and anything that reads a caller's data mints a delegated run per caller. That is what makes
   // this worker shareable between people rather than launched per person.
   procs.push(spawn("tools", [
     `--allow-net=127.0.0.1:${port}`,
     `--allow-read=${toolRoots.join(",")}`,
+    // A tool ACTS on its arguments, so this worker opens them, and the key arrives in `keyEnv`
+    // below. Named individually: it had no env access at all, and passing the value without the
+    // permission is silent — the read throws, `fleetKeyPair` reports "no key", and every encrypted
+    // tool call is refused with an answer that names encryption rather than the missing flag.
+    "--allow-env=RADIA_CHAT_FLEET_KEY",
     "examples/chat/workers/tools.ts",
     "--url", local,
     "--token", toolsToken,

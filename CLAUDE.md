@@ -306,8 +306,11 @@ live at the top of the relevant `agent_docs/` file, not here.
   the content address stays valid. A record BODY has no erasure path, because bodies must stay
   plaintext JSON for matching. Precisely: the fields that are MATCHED must, meaning the kind's
   declared indexed paths, which is why encrypting a field nothing routes on is the one crack in
-  this and would give bodies a crypto-shred ([plan-encryption.md](agent_docs/plan-encryption.md),
-  unbuilt). So the existing "artifact bytes never travel inside a record" rule is
+  this — and it is now BUILT at the app layer, giving those bodies a crypto-shred
+  ([plan-encryption.md](agent_docs/plan-encryption.md)): the chat seals its prose under a
+  per-conversation key whose only copies are wrapped inside ARTIFACTS, so destroying them erases the
+  content while every record, its lineage and the chain survive. The rule below is what makes that
+  possible rather than an exception to it. So the existing "artifact bytes never travel inside a record" rule is
   also the erasure boundary: extend it from "too large for a body" to "erasable, whatever its size".
   Erasure is by CONTENT (identical payloads are one blob) and gated: an operator, or the `purge`
   ops power (architecture-ops-tiers.md). **It protects

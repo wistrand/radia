@@ -240,6 +240,13 @@ The convention is still not fully an enforcement. A 900 KiB base64 payload is un
 remains unerasable; the limit bounds the damage rather than closing the path. Closing it needs body
 redaction (below), which is a separate carve-out with its own hard problem.
 
+**There is now one route from a body back to erasability, and it runs through this boundary rather
+than around it.** An app may encrypt the body fields nothing routes on and keep the wraps in an
+ARTIFACT; destroying that artifact crypto-shreds the bodies while the records, their lineage and the
+chain survive. The runtime is unchanged and unaware — matching still reads plaintext indexed paths —
+and the erasable material is out of line exactly as the invariant requires. Built for the chat:
+[plan-encryption.md](plan-encryption.md).
+
 ## Artifact references
 
 **M1 status: built.** `src/storage/blobs.ts` (the `BlobStore` port + memory/filesystem impls),
