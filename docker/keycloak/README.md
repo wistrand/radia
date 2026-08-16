@@ -59,3 +59,4 @@ radia put ops_grant '{"principal":"human:you","operations":["observe"]}'   # the
 Then sign in with SSO again (the principal is resolved at mint, so the running session keeps
 its old name until a fresh id_token mints). A mapping with `retired: true` is a BAN — that
 identity's sign-in is refused until a successor re-admits it.
+
