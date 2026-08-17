@@ -213,12 +213,32 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
       Change an analysis and that stage re-runs along with everything after it, because those keys
       now miss; change nothing and nothing re-runs, however often the planner executes.
     </p>
+    <p>
+      The code that runs is a record too. Each stage lives in a
+      <a href="workspaces.html">workspace tree</a> named by its digest, and that digest is the same
+      value the work request carries and a promotion grant pins. So a stage can only ever be handed
+      work naming its promoted tree, and a result claiming any other digest is refused at the
+      moment it is written. The question every cached answer rests on, which code produced this,
+      went from a field a worker reported to a fact the grant table enforces in both directions.
+      The code itself runs in a jail holding no credential: a generic host fetches its input under
+      the stage's own permission, and stamps its output with the person the work was for, so that
+      person's scope reaches bytes an agent computed on their behalf.
+    </p>
+    <p>
+      And the pipeline's shape is itself data. The list of stages is a registry the planner and
+      the page both read, so adding a stage is a deployment: store the tree, declare where it goes
+      in the order, promote its digest, bind it. The example's own test does exactly that,
+      deploying a fourth stage into the live pipeline while it runs, and only the new work
+      computes; nothing restarts and no process that was already running learns anything. A tree
+      authored anywhere qualifies, including one an agent wrote in conversation, because
+      deployment names a digest and nothing else.
+    </p>
     <div class="callout">
       <strong>The one thing the substrate cannot decide for you is which work is stale</strong>, and
       that is the whole of <code>planner.ts</code>. Deciding it depends on what you consider an
-      input. Everything else — the DAG, the routing, the leases, the audit — is already there.
-      That split is the property to look for in any substrate: the part left to you should be the
-      part only you could know.
+      input. Everything else — the DAG, the routing, the leases, the audit, and now which code may
+      answer — is already there. That split is the property to look for in any substrate: the part
+      left to you should be the part only you could know.
     </div>
   </div>
 </section>
