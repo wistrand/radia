@@ -1,5 +1,5 @@
-// Bring the whole thing up in ONE command: the space, its kinds, worker identities, three stage
-// workers, the planner, and the app.
+// Bring the whole thing up in ONE command: the space, its kinds, the stage agents (their code
+// published as workspaces, pinned by promotion, run by one host), the planner, and the app.
 //
 //   deno task analysis                          # spawns a space if none is running
 //   deno task analysis -- --grant human:you     # …and lets somebody in
@@ -20,7 +20,8 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerAnalysisKinds, STAGES } from "./kinds.ts";
-import { bootstrap, grantObserve, grantUser } from "./roles.ts";
+import { publishStageWorkspaces } from "./stages.ts";
+import { bootstrap, deployStages, grantObserve, grantUser } from "./roles.ts";
 import { enrolledPrincipals, watchEnrolments } from "../../extensions/ts/enrolment.ts";
 
 const arg = (n: string) => {
@@ -81,7 +82,14 @@ if (!health) {
 
 const admin = new RadiaClient(url, { token: operatorToken(url) });
 await registerAnalysisKinds(admin);
-const { workerToken, plannerToken } = await bootstrap(admin);
+// The stage code, as workspaces: idempotent (an identical tree is a no-op), and an edited stage
+// becomes the next version, whose new digest is what makes its work re-run.
+const digests = await publishStageWorkspaces(admin);
+for (const [stage, digest] of Object.entries(digests)) console.error(`[setup] stage-${stage} at ${digest.slice(0, 16)}…`);
+const { agentTokens, readerToken, plannerToken } = await bootstrap(admin);
+// The two locks per stage: promotion pins (take the request, put the result) and the binding the
+// host runs. Re-running with an edited stage rotates its pins to the new digest.
+await deployStages(admin, digests);
 
 // `--observe`: also let them open the console's Graph and Feed views, which are the ops plane.
 // A real widening (`observe` opens every read, unscoped) and therefore separate from being able to
@@ -109,10 +117,19 @@ for (let i = 0; i < Deno.args.length; i++) {
 // is enough; without it a fresh identity signs in successfully and then sees nothing, because
 // authenticated is not authorized.
 // EVERY enrolled identity, not just the ones the sweep would admit. The sweep deliberately skips
-// anyone already holding grants, so a power added on a LATER run would never reach the people
-// already using the app — they would keep being told they may not access the ops plane while the
-// flag said otherwise. Idempotent (the grant is content-keyed), so this costs nothing on a restart.
-if (observe) {
+// anyone already holding grants, so a GRANT added on a LATER run would never reach the people
+// already using the app: `userGrants` grew `binding` and `stage_def` in an upgrade, and a person
+// admitted before it kept the old set — the page then fails with "no 'query' grant for kind
+// 'stage_def'" while the flag says everyone may use the app. Under auto-grant, admission is
+// policy, so the whole CURRENT grant set is re-applied to everyone enrolled. Idempotent (grants
+// are content-keyed), so this costs nothing on a restart. Without auto-grant the same upgrade
+// needs `--grant` re-run per person, which is that policy working as declared.
+for (const p of Deno.args.includes("--auto-grant") ? await enrolledPrincipals(admin).catch(() => []) : []) {
+  await admit(admin, p);
+}
+if (observe && !Deno.args.includes("--auto-grant")) {
+  // Observe alone still reaches everyone enrolled (the console power is meant for whoever is
+  // already using the app), without widening anyone's pipeline grants.
   for (const p of await enrolledPrincipals(admin).catch(() => [])) {
     await grantObserve(admin, p);
   }
@@ -124,9 +141,14 @@ if (Deno.args.includes("--auto-grant")) {
     (p) => `auto-grant: ${p} may now use the pipeline${observe ? " and inspect it in the console" : ""}`);
 }
 
-for (const stage of STAGES) {
-  spawn(["examples/analysis/worker.ts", "--url", url, "--stage", stage, "--token", workerToken]);
-}
+spawn([
+  "examples/analysis/host.ts",
+  "--url",
+  url,
+  "--reader-token",
+  readerToken,
+  ...STAGES.flatMap((stage) => ["--agent", `${stage}=${agentTokens[stage]}`]),
+]);
 spawn(["examples/analysis/planner.ts", "--url", url, "--token", plannerToken]);
 spawn(["examples/analysis/serve.ts", "--url", url, "--port", port]);
 

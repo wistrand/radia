@@ -1,11 +1,11 @@
-# Plan: the analysis pipeline on the workspace-agent deployment
+# The analysis pipeline on the workspace-agent deployment
 
-**Status: step 1 (host input materialisation) BUILT 2026-08-17; the rest PLANNED.** Analysis
-2026-08-17. This is
-[research-substrate-lessons.md](research-substrate-lessons.md) action 5 taken to its full shape:
-not only pinning stage code with promotion, but running the stages as workspace agents
-([architecture-workspace-agents.md](architecture-workspace-agents.md)). It would be the first
-worked composition of promotion with something other than an exec runner, and it DELETES a
+**Status: BUILT, all seven steps, 2026-08-17** (planned and built the same day; renamed from
+`plan-analysis-workspace-agents.md`, keeping the step and gap numbers because source comments cite
+them). This is [research-substrate-lessons.md](research-substrate-lessons.md) action 5 taken to
+its full shape: not only pinning stage code with promotion, but running the stages as workspace
+agents ([architecture-workspace-agents.md](architecture-workspace-agents.md)). It is the first
+worked composition of promotion with something other than an exec runner, and it DELETED a
 registry (`stage_code`) rather than adding one.
 
 ## Why
@@ -41,6 +41,11 @@ it. The same doc records the second wart this closes: "which code is live" has t
   <digest> --tier prod --kind stage_request --pin agent:analysis-clean:take` + `radia bind`; the
   memo keys miss and the cascade re-runs. Rollback is `radia rollback`, "what is prod running"
   is `radia pins`, not an advertisement.
+- **Outputs are stamped for the requester.** Found in build, not in analysis: capture stamps
+  artifacts with the workspace's owner (the AGENT), so a person's `{owner}`-scoped grant stopped
+  reaching the report computed for them. `Binding.outputMeta` names claimed-record fields the host
+  copies onto every captured artifact's meta, winning over the defaults (`["owner", "dataset"]`
+  here), stamped host-side where the code cannot lie about whom the work was for.
 - **The jail upgrades a promise to enforcement.** `stages.ts` rests its caching soundness on
   stages being pure, "and nothing in the substrate could tell" if one lied. Jailed, a stage has
   no net, no env, no filesystem beyond its inputs and output dir. The clock remains reachable,
@@ -48,11 +53,11 @@ it. The same doc records the second wart this closes: "which code is live" has t
 
 ## The pipeline shape as records (last phase)
 
-The planner walks a FIXED `STAGES` array, so everything above swaps implementations of the three
-named stages and can never add a fourth. Making the sequence itself a registry closes that: a
-`stage_def` record per stage ({stage, index, resultKind conventions}), read through
-`readRegistry` (latest-wins, retire to remove, content-keyed writes, paged to exhaustion like
-every registry). This is the kinds-are-records move applied to the pipeline definition. What it
+BUILT (order step 7 below). The planner used to walk a FIXED `STAGES` array, so everything above
+swapped implementations of the three named stages and could never add a fourth. Making the
+sequence itself a registry closed that: a `stage_def` record per stage ({stage, index}), read
+through `readRegistry` (latest-wins, retire to remove, content-keyed writes, paged to
+exhaustion like every registry). This is the kinds-are-records move applied to the pipeline definition. What it
 enables is the chat-to-pipeline path for NEW stages, not only new implementations: a
 conversation authors a tree (`save_procedure` already yields a bindable workspace with the same
 `default(record, space)` contract), and an operator deploys it as `stage_def` + `promote` +
@@ -71,15 +76,15 @@ the binding are all writes only an operator can make.
    flows) into `input/<path>` in the run's cwd (`INPUT_DIR`), which capture excludes. Without an
    output tree the input dir IS the cwd, read-only. `dryRunEntrypoint({inputFiles})` is the
    rehearsal half: caller-supplied sample bytes, same layout, no credential.
-2. **`outputDigest` in the result.** The entrypoint's returned body is acked before the
-   output-workspace capture turns its file into an artifact. Preferred shape: the entrypoint
-   computes the sha256 of the bytes it wrote (crypto works in the jail) and the planner resolves
-   digest to artifact id with one indexed `artifact` query at plan time. Keeps `host.ts`
-   untouched; the alternative (host enriches the ack from the captured version) is a host change.
-3. **Drive the host from work.** `tick()` is one claim per binding per call; wrap it in a watch
-   on `stage_request` (small). Two honest regressions: the host publishes no `interest`, so the
-   console's routing diagram and dry-run lose these listeners; and the planner's "blocked" state
-   becomes "no binding/pin for this stage" instead of "no advertisement".
+2. **`outputDigest` in the result. BUILT** as preferred: the harness computes the sha256 in the
+   jail, and the planner bulk-resolves digest -> artifact id in `readPass` (one `$in` query per
+   pass, so the pass stays flat; `smoke.ts` counts it). The UI and `smoke.ts` resolve the same
+   way, falling back to `outputArtifact` on pre-host records.
+3. **Drive the host from work. BUILT** in the example (`examples/analysis/host.ts`): drain on
+   start, then a watch on `stage_request` under the reader identity; a drain stops when nothing
+   acks or fails, so `digest_mismatch` waits for an operator instead of spinning. The two
+   regressions stand as predicted: no `interest` published, and "blocked" still means "no
+   advertisement" until step 5.
 
 ## Rejected
 
@@ -92,12 +97,40 @@ the binding are all writes only an operator can make.
 
 1. Host input materialisation (`extensions/ts/host.ts` + a conformance case; the one
    substrate-tier prerequisite). BUILT 2026-08-17, gap 1 above.
-2. Split `stages.ts` into three entrypoint trees; bootstrap writes them as workspaces.
+2. Split `stages.ts` into three entrypoint trees; bootstrap writes them as workspaces. BUILT
+   2026-08-17: `examples/analysis/stages/<name>/main.ts` + a shared `harness.ts` (per-tree copy,
+   one artifact by content), `publishStageWorkspaces` at bootstrap, and the worker advertises the
+   treeDigest of its own tree, asserted equal to the published one in `smoke.ts`. Per-stage
+   invalidation arrived with it, and `dryRunEntrypoint({inputFiles})` rehearses a stage tree with
+   no space (the rehearsal cwd is writable, mirroring the host's output-tree layout).
 3. Redeclare `stage_request`/`stage_result` with `workspace` + `tier` indexed paths (additive).
+   BUILT 2026-08-17: bodies renamed `codeDigest` -> `workspace`, requests stamped with
+   `tier` (`PIPELINE_TIER`), `codeDigest` kept declared for pre-rename records and read as a
+   fallback in the memo key and the UI. `smoke.ts` asserts both pin paths are matchable.
 4. Three stage agents; pins on both `take` (request) and `put` (result); bindings; host loop.
-5. Planner reads bindings; delete `stage_code` and its grants from `roles.ts`.
+   BUILT 2026-08-17: `agent:analysis-<stage>` hold only container grants (workspace, artifact);
+   both work grants come from two `promote` calls per stage (results echo `tier` so the hardcoded
+   pin pattern matches), `deployStages` writes pins + bindings (inputs, `outputWorkspace`,
+   `outputMeta`) and the `stage_code` BRIDGE the planner still reads until step 5. `worker.ts` is
+   deleted; `examples/analysis/host.ts` runs all three brokered under a least-privilege reader
+   identity. The smoke's "left unclaimed" check now passes through AUTHORIZATION: no pin matches
+   the bumped digest.
+5. Planner reads bindings; delete `stage_code` and its grants from `roles.ts`. BUILT 2026-08-17:
+   `liveCode` is now `readBindings` keyed by `stageAgent(stage)`, the kind, the bridge write and
+   every `stage_code` grant are gone (persons and the planner read `binding` instead), and the
+   smoke's code-change test rebinds rather than re-advertises — which also demonstrates the two
+   locks: a rebind without a promotion leaves the new digest's work unclaimable.
 6. `smoke.ts` keeps every assertion and adds the one this enables: a result filed under a
-   non-pinned digest is REFUSED, the test the current architecture cannot express.
+   non-pinned digest is REFUSED, the test the current architecture cannot express. BUILT
+   2026-08-17: a forged `stage_result` under the features agent's own credential 403s at the
+   write, with a positive control (identical body, pinned digest, accepted) proving the refusal
+   is about the digest and nothing else.
 7. The `stage_def` registry replaces the `STAGES` constant, and a smoke case deploys a NEW
    stage into a live pipeline: def + promote + bind, then the suffix re-runs because the digest
-   chain changed, and nothing else does.
+   chain changed, and nothing else does. BUILT 2026-08-17: the planner and the UI walk
+   `readStageDefs` (latest-wins, index-ordered, retire to remove), `liveCode` inverts the
+   `agent:analysis-<stage>` convention so a later-deployed stage needs no code change anywhere,
+   the `STAGES` constant survives only as "which trees this repo ships" (deployment writes one
+   def per built-in, indexes gapped by 10), and the smoke deploys a fourth stage (`tldr`) under a
+   SECOND host process — the running one never learns it exists — with nothing already computed
+   re-running.

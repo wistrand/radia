@@ -21,13 +21,16 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { readRegistry } from "../../sdk/ts/client.ts";
 import type { RadiaRecord } from "../../sdk/ts/wire.ts";
-import { STAGES, type StageName } from "./kinds.ts";
+import { readBindings } from "../../extensions/ts/host.ts";
+import { PIPELINE_TIER } from "./kinds.ts";
 
 export interface PlanStep {
   dataset: string;
-  stage: StageName;
+  stage: string;
   inputDigest: string;
-  codeDigest: string;
+  /** The tree digest of the code this step runs under: the pin vocabulary
+   *  (architecture-analysis-workspace-agents.md), carried on requests and results as `workspace`. */
+  workspace: string;
   /** Absent while the stage is still to be asked for; set once a request exists. */
   requested?: string;
   state: "done" | "requested" | "asked" | "blocked" | "failed";
@@ -36,21 +39,41 @@ export interface PlanStep {
   error?: string;
 }
 
-/** What code each stage is currently serving, from the workers' own advertisements. */
+/** What code each stage is currently serving, from its agent's BINDING: the same record the host
+ *  materialises and the promotion pin is checked against, so discovery and enforcement read one
+ *  state and cannot disagree. This replaced the workers' self-advertisement (`stage_code`), which
+ *  nothing verified. Paged to exhaustion inside `readBindings`, latest per agent, retirements
+ *  dropped. Any `agent:analysis-<stage>` binding counts, so a stage deployed after this process
+ *  started needs no code change here. */
 export async function liveCode(c: RadiaClient): Promise<Map<string, string>> {
-  const view = await readRegistry<{ stage: string; codeDigest: string; retired?: boolean }>(
-    (limit, after) => c.query({ kind: "stage_code" }, limit, { after }),
-    (b) => b.stage,
-  );
-  // `entries` is already latest-wins with tombstones dropped, so a retired worker's advertisement
-  // is gone and the newest per stage is what remains.
-  if (!view.complete) throw new Error("could not read the stage_code registry completely");
+  const bindings = await readBindings(c);
   const out = new Map<string, string>();
-  for (const rec of view.entries.values()) {
-    const b = rec.body as { stage: string; codeDigest: string };
-    out.set(b.stage, b.codeDigest);
+  for (const b of bindings) {
+    const m = /^agent:analysis-(.+)$/.exec(b.agent);
+    if (m) out.set(m[1], b.workspaceDigest);
   }
   return out;
+}
+
+/** One entry of the pipeline's SHAPE: which stage, where in the order. A latest-wins registry
+ *  (retire to remove), so adding a stage is a `stage_def` put and never a code change. */
+export interface StageDef {
+  stage: string;
+  index: number;
+  about?: string;
+}
+
+/** The pipeline's stages, in order, from the `stage_def` registry. Paged to exhaustion: a def
+ *  that fell off a page would silently truncate every dataset's pipeline. */
+export async function readStageDefs(c: RadiaClient): Promise<StageDef[]> {
+  const view = await readRegistry<StageDef & { retired?: boolean }>(
+    (limit, after) => c.query({ kind: "stage_def" }, limit, { after }),
+    (b) => b.stage,
+  );
+  if (!view.complete) throw new Error("could not read the stage_def registry completely");
+  return [...view.entries.values()]
+    .map((r) => r.body as StageDef)
+    .sort((a, b) => a.index - b.index);
 }
 
 /**
@@ -73,20 +96,29 @@ export async function liveCode(c: RadiaClient): Promise<Map<string, string>> {
  * prefix.
  */
 interface PassReads {
+  /** The pipeline's shape, in order: what to walk. */
+  defs: StageDef[];
   code: Map<string, string>;
   results: Map<string, RadiaRecord>;
   requests: Map<string, RadiaRecord>;
+  /** outputDigest -> artifact record id, for results whose body names no artifact. A stage run in
+   *  the jail computes its output's DIGEST and cannot know the id the capture assigned; the digest
+   *  is content-addressed, so one indexed query recovers the id (architecture-analysis-workspace-agents.md
+   *  gap 2). Bulk, over every ok result's digest, so a pass stays FLAT however many datasets. */
+  artifacts: Map<string, string>;
 }
 
 /** The logical identity of one unit of work: which dataset, which stage, on what input, under
  *  which code. The same four fields the records are indexed on, so a map lookup answers exactly
- *  what the per-stage query used to. */
-const workKey = (b: { dataset?: string; stage?: string; inputDigest?: string; codeDigest?: string }) =>
-  `${b.dataset}|${b.stage}|${b.inputDigest}|${b.codeDigest}`;
+ *  what the per-stage query used to. `codeDigest` is the field's name on records written before
+ *  the rename to `workspace`; reading both keeps them one population. */
+const workKey = (b: { dataset?: string; stage?: string; inputDigest?: string; workspace?: string; codeDigest?: string }) =>
+  `${b.dataset}|${b.stage}|${b.inputDigest}|${b.workspace ?? b.codeDigest}`;
 
 async function readPass(c: RadiaClient, names: string[]): Promise<PassReads> {
+  const defs = await readStageDefs(c);
   const code = await liveCode(c);
-  if (names.length === 0) return { code, results: new Map(), requests: new Map() };
+  if (names.length === 0) return { defs, code, results: new Map(), requests: new Map(), artifacts: new Map() };
   const bulk = async (kind: string) => {
     const view = await readRegistry<Record<string, unknown>>(
       (limit, after) => c.query({ kind, match: { dataset: { $in: names } } }, limit, { dir: "desc", after }),
@@ -95,7 +127,23 @@ async function readPass(c: RadiaClient, names: string[]): Promise<PassReads> {
     if (!view.complete) throw new Error(`could not read every ${kind} for this pass; refusing to plan on a prefix`);
     return view.newest; // newest per work key, retirements included: nothing here retires
   };
-  return { code, results: await bulk("stage_result"), requests: await bulk("stage_request") };
+  const results = await bulk("stage_result");
+  // Resolve every ok result's output digest to its artifact id in ONE read, skipping results that
+  // carry the id already (records from before the host, whose worker stored the artifact itself).
+  const unresolved = [...results.values()]
+    .map((r) => r.body as { ok?: string; outputDigest?: string; outputArtifact?: string })
+    .filter((b) => b.ok === "yes" && b.outputDigest && !b.outputArtifact)
+    .map((b) => b.outputDigest!);
+  const artifacts = new Map<string, string>();
+  if (unresolved.length > 0) {
+    const view = await readRegistry<{ digest?: string }>(
+      (limit, after) => c.query({ kind: "artifact", match: { digest: { $in: [...new Set(unresolved)] } } }, limit, { dir: "desc", after }),
+      (b) => b.digest,
+    );
+    if (!view.complete) throw new Error("could not resolve every output digest to an artifact; refusing to plan on a prefix");
+    for (const [digest, rec] of view.entries) artifacts.set(digest, rec.id);
+  }
+  return { defs, code, results, requests: await bulk("stage_request"), artifacts };
 }
 
 /**
@@ -115,15 +163,15 @@ export async function planDataset(
   let inputDigest = dataset.digest;
   let inputArtifact = dataset.artifactId;
 
-  for (const stage of STAGES) {
-    const codeDigest = reads.code.get(stage);
-    if (!codeDigest) {
-      // No worker has advertised this stage. Reported rather than requested: a request naming no
+  for (const { stage } of reads.defs) {
+    const workspace = reads.code.get(stage);
+    if (!workspace) {
+      // No binding names this stage's code. Reported rather than requested: a request naming no
       // live code would sit unclaimed and look like a slow stage rather than a missing one.
-      steps.push({ dataset: dataset.name, stage, inputDigest, codeDigest: "", state: "blocked" });
+      steps.push({ dataset: dataset.name, stage, inputDigest, workspace: "", state: "blocked" });
       break;
     }
-    const match = { dataset: dataset.name, stage, inputDigest, codeDigest };
+    const match = { dataset: dataset.name, stage, inputDigest, workspace };
     // THE MEMO. Still keyed on all four fields, and still not an idempotency key (kinds.ts): this
     // must answer correctly a month later, and content-key idempotency expires.
     const done = reads.results.get(workKey(match));
@@ -135,18 +183,23 @@ export async function planDataset(
       }
       steps.push({ ...match, state: "done", resultId: done.id, outputDigest: b.outputDigest });
       inputDigest = b.outputDigest ?? "";
-      inputArtifact = b.outputArtifact ?? "";
+      // The id the next request names: from the result when a worker stored the artifact itself,
+      // else resolved from the digest (the capture stored it before the ack, so it must exist).
+      inputArtifact = b.outputArtifact ?? reads.artifacts.get(inputDigest) ?? "";
+      if (!inputArtifact) throw new Error(`no artifact carries digest ${inputDigest} (${dataset.name}/${stage}); cannot chain`);
       continue;
     }
     // Not done. Is it already asked for? Content-keyed, so asking twice is one record.
-    const key = `stage:${dataset.name}:${stage}:${inputDigest}:${codeDigest}`;
+    const key = `stage:${dataset.name}:${stage}:${inputDigest}:${workspace}`;
     const asked = reads.requests.get(workKey(match));
     if (asked) {
       steps.push({ ...match, state: "requested", requested: asked.id });
     } else if (opts.apply) {
       const req = await c.put({
         kind: "stage_request",
-        body: { ...match, inputArtifact, owner: dataset.owner },
+        // `tier` is what the promotion pin matches alongside `workspace`: a request outside the
+        // pinned tier is one no pinned agent may claim.
+        body: { ...match, tier: PIPELINE_TIER, inputArtifact, owner: dataset.owner },
         // The INPUT is the parent, so lineage reads as the pipeline it is: dataset → clean →
         // features → report, and `radia children <dataset>` walks the whole run.
         parentIds: [inputArtifact],
@@ -212,7 +265,7 @@ if (import.meta.main) {
     try {
       for (const s of await planAll(client, { apply: true })) {
         if (s.state === "requested" && s.requested) console.error(`[plan] ${s.dataset}/${s.stage} -> ${s.requested}`);
-        if (s.state === "blocked") console.error(`[plan] ${s.dataset}/${s.stage}: no worker advertises this stage`);
+        if (s.state === "blocked") console.error(`[plan] ${s.dataset}/${s.stage}: no binding names this stage's code`);
       }
     } catch (e) {
       console.error(`[plan] ${e instanceof Error ? e.message : e}`);

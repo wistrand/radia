@@ -1234,6 +1234,11 @@ export async function captureWorkspace(
   client: RadiaClient,
   manifest: WorkspaceManifest,
   root: string,
+  /** Extra meta merged onto each captured file's artifact, WINNING over the defaults on a shared
+   *  key. The host uses this to stamp outputs with fields from the claimed record (owner, dataset),
+   *  because an output belongs to the request that asked for it, not to the agent that computed
+   *  it, and a grant scoped `{owner}` must reach the bytes a worker produced for that person. */
+  opts: { artifactMeta?: Record<string, string | number | boolean | null> } = {},
 ): Promise<{ files: WorkspaceFile[]; changed: string[]; removed: string[]; unchanged: boolean }> {
   const before = new Map(manifest.files.map((f) => [f.path, f]));
   const found: WorkspaceFile[] = [];
@@ -1275,7 +1280,7 @@ export async function captureWorkspace(
       const art = await client.putArtifact(content, {
         mediaType: mediaTypeFor(rel),
         filename: entry.name,
-        meta: { conversationId: manifest.conversationId ?? "", owner: manifest.owner, workspace: manifest.name },
+        meta: { conversationId: manifest.conversationId ?? "", owner: manifest.owner, workspace: manifest.name, ...(opts.artifactMeta ?? {}) },
       });
       found.push({ path: rel, mode, digest, artifactId: art.id });
       changed.push(rel);

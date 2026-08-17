@@ -71,6 +71,15 @@ export interface Binding {
    */
   inputs?: { field: string; path?: string }[];
   /**
+   * Body FIELDS copied from the claimed record onto every captured output artifact's meta,
+   * winning over the capture defaults on a shared key. `["owner", "dataset"]` is the data-pipeline
+   * shape: the output belongs to the request that asked for it, not to the agent that computed it,
+   * so a person's `{owner}`-scoped artifact grant reaches the bytes a worker produced for them.
+   * Stamped HOST-side from the claimed record, where the code cannot lie about it. Non-scalar
+   * values are skipped: artifact meta is scalars.
+   */
+  outputMeta?: string[];
+  /**
    * The workspace a run's OUTPUT FILES land in, and the only way an entrypoint gets a writable path.
    *
    * A run writes to a different tree than it runs from. The tree it runs from is this binding's
@@ -201,8 +210,9 @@ export interface InvokeContext {
   client: RadiaClient;
   /** The materialised tree, when the invoker was given one. */
   root?: string;
-  /** An empty directory the run may WRITE to, when the binding named an output workspace. The
-   *  invoker's job is to make it the jail's only writable path; the host captures it afterwards. */
+  /** A directory the run may WRITE to, when the binding named an output workspace: empty apart
+   *  from the materialised inputs, which capture excludes. The invoker's job is to make it the
+   *  jail's only writable path; the host captures it afterwards. */
   outDir?: string;
   /** A READ-ONLY directory holding the materialised inputs, when the binding declared inputs but
    *  no output workspace. It becomes the cwd so `input/<path>` resolves the same way in both
@@ -240,6 +250,7 @@ async function captureOutput(
   owner: string,
   dir: string,
   cause: string,
+  artifactMeta?: Record<string, string | number | boolean | null>,
 ): Promise<string | undefined> {
   let prev = await readWorkspace(client, name);
   if (!prev) {
@@ -250,9 +261,28 @@ async function captureOutput(
   }
   // `input/` is the REQUEST's data, materialised by the host, so it is never this run's output:
   // capturing it would store every input a second time, attributed to the wrong producer.
-  const captured = await captureWorkspace(client, { ...prev, files: [], ignore: [...(prev.ignore ?? []), INPUT_DIR] }, dir);
+  const captured = await captureWorkspace(
+    client,
+    { ...prev, files: [], ignore: [...(prev.ignore ?? []), INPUT_DIR] },
+    dir,
+    artifactMeta ? { artifactMeta } : {},
+  );
   const committed = await commitWorkspace(client, prev, captured, { parentIds: [cause] });
   return committed?.id;
+}
+
+/** The `outputMeta` stamp: the named body fields of the claimed record, scalars only. */
+function outputStamp(binding: Binding, record: RadiaRecord): Record<string, string | number | boolean | null> | undefined {
+  if (!binding.outputMeta?.length) return undefined;
+  const body = record.body as Record<string, unknown>;
+  const stamp: Record<string, string | number | boolean | null> = {};
+  for (const field of binding.outputMeta) {
+    const v = body[field];
+    if (v === null || typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+      stamp[field] = v as string | number | boolean | null;
+    }
+  }
+  return Object.keys(stamp).length ? stamp : undefined;
 }
 
 /**
@@ -420,7 +450,7 @@ export class WorkspaceHost {
           ...(inputIds.length ? { inputIds } : {}),
         });
         const outputId = outDir
-          ? await captureOutput(client, binding.outputWorkspace!, binding.agent, outDir, claimed.record.id)
+          ? await captureOutput(client, binding.outputWorkspace!, binding.agent, outDir, claimed.record.id, outputStamp(binding, claimed.record))
           : undefined;
         // The inputs become DATA PARENTS of the result, so their classification flows into it and
         // "what produced this" is a lineage answer rather than a body field to trust.

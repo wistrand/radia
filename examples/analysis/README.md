@@ -60,9 +60,13 @@ auto-grant on, a revoked person is re-admitted by the next sweep after a restart
 Each stage's request names four things, and all four are indexed:
 
 ```
-stage_request { dataset, stage, inputDigest, codeDigest }
-stage_result  { dataset, stage, inputDigest, codeDigest, outputDigest }
+stage_request { dataset, stage, inputDigest, workspace, tier }
+stage_result  { dataset, stage, inputDigest, workspace, outputDigest }
 ```
+
+`workspace` is the treeDigest of the stage's published code tree, and with `tier` it is the exact
+pattern a promotion pin binds (`extensions/ts/promotion.ts`), which is what turns "which code may
+run" into a grant.
 
 A stage's OUTPUT is an artifact, so its content digest is the next stage's `inputDigest`. The chain
 is content-addressed end to end and nobody computes a hash by hand.
@@ -76,10 +80,10 @@ From that, two behaviours fall out rather than being implemented:
 
 ## What the substrate gives you, and what you write
 
-Given: the DAG (`parent_ids`, so `radia children <dataset>` walks a run), routing by pattern so a
-stage worker claims only its own work, leases so a crashed worker's stage is redelivered, the event
-chain as an audit of which code produced which result, and `radia flows` mining the pipeline's shape
-from lineage without anyone declaring it.
+Given: the DAG (`parent_ids`, so `radia children <dataset>` walks a run), routing by GRANT so a
+stage agent can only claim requests naming its pinned tree, leases so a crashed stage is
+redelivered, the event chain as an audit of which code produced which result, and `radia flows`
+mining the pipeline's shape from lineage without anyone declaring it.
 
 You write **the planner** (`planner.ts`, ~60 lines). Deciding what is stale depends on what you
 consider an input, which no runtime can know. That is the only piece.
@@ -89,10 +93,11 @@ consider an input, which no runtime can know. That is the only piece.
 | File | Role |
 |------|------|
 | `kinds.ts` | the record kinds, and the indexed paths the whole design rests on |
-| `stages.ts` | the analysis: three pure `bytes -> bytes` functions, hashed to give the code digest |
-| `worker.ts` | one stage: advertises its code, claims requests naming it, reads and writes artifacts |
+| `stages/` | the analysis itself: one entrypoint tree per stage (`<stage>/main.ts` + `harness.ts`), each a pure `bytes -> bytes` transform |
+| `stages.ts` | the bridge: per-stage tree digests and the bootstrap workspace publisher |
+| `host.ts` | the one process the stage agents run in: a `WorkspaceHost` over their bindings, jailed and brokered, watch-driven |
 | `planner.ts` | what is stale, and the only thing that asks for work |
-| `roles.ts` | three principals; a person cannot write a `stage_result` |
+| `roles.ts` | the principals and the deployment: pins on both sides per stage, bindings, and the grants that stay unpinned |
 | `serve.ts` | the web app: serves one page and relays `/v0`, holding no credential |
 | `ui.html` | sign-in, upload, the stage table, links into the console (a dataset links to its uploaded ARTIFACT, which is the record everything descends from; the dataset record is a sibling of the first request, not their ancestor) |
 | `run.ts` | brings it all up |
@@ -108,12 +113,13 @@ substrate could tell.
 and expires with `idempotencyRetentionSeconds` (7 days), after which a re-put is a fresh record and
 the stage silently recomputes. A memo that quietly stops memoizing is worse than none.
 
-**A stage's code digest is SELF-REPORTED, and nothing verifies it.** A worker writes its own
-`stage_code` record, so one could report digest X while running Y and every result would be filed
-and cached under a version that never produced it. The whole memo rests on that claim. Radia has the
-answer already and this example does not use it: `extensions/ts/promotion.ts` pins which digest a
-tier may run, and a `binding` that disagrees with the pin is refused rather than run. Composing the
-two is the honest next step (research-substrate-lessons.md, action 5).
+**A stage's code digest is ENFORCED on both sides, and discovered from the same records.**
+Promotion pins `{workspace, tier}` on `stage_request: take` (an agent can only claim work naming
+its promoted tree) and on `stage_result: put` (a result naming a different digest is refused at
+the write, so it cannot lie about which code produced it). The stages hold NO unpinned grants on
+either kind; the host refuses a binding that disagrees with the pin (`digest_mismatch`); and the
+planner reads live code from the BINDINGS, so discovery and enforcement cannot drift apart.
+Nothing self-reports anything: the old `stage_code` advertisement is gone.
 
 **A planning pass is FLAT in the number of datasets**: four reads, then map lookups. It used to
 ask per dataset per stage, which is O(datasets x stages) queries on every result landing. Pinned by
@@ -124,6 +130,12 @@ Two limits remain, both bounded and neither hidden. A pass still plans every dat
 one the `Wakeup` names, which is cheap now but is work nobody asked for. And it plans the 50 NEWEST
 datasets, so a space holding more leaves an older one that goes stale unplanned. Both have the same
 real fix: plan incrementally from the record that changed.
+
+**The pipeline's shape is data.** The stages walked are the `stage_def` registry (latest-wins per
+stage, ordered by `index`, retire to remove), not a constant: adding a stage is a deployment (def
++ promote + bind + a host holding the new agent's token) and touches no running process. The
+smoke deploys a fourth stage into the live pipeline and shows only it computes. `STAGES` in
+`kinds.ts` survives only as the list of trees this repo ships.
 
 **A person cannot write a `stage_result`.** That is what makes a result evidence rather than a
 claim: it says a worker computed this, from that input, under that code.
@@ -137,9 +149,10 @@ file server.
 dataset, result and artifact; without a `--db` a space is in-memory and the whole pipeline dies with
 the process.
 
-**Invalidation granularity is a property of how you version, not of the substrate.** All three
-stages hash one file, so editing any of them re-runs all three. Splitting the digest per stage is
-the obvious refinement and is left undone so the trade-off stays visible.
+**Invalidation granularity is a property of how you version, not of the substrate.** Each stage
+versions its own tree, so editing one re-runs that stage and its downstream and nothing else. When
+all three hashed one file, editing any of them re-ran all three; nothing in the substrate changed
+between those two behaviours.
 
 ## The OIDC side is not covered by the smoke test
 

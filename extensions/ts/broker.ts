@@ -710,10 +710,13 @@ export async function dryRunEntrypoint(
     record: RadiaRecord;
     spec?: SandboxSpec | null;
     /**
-     * Sample inputs for the rehearsal, path -> contents, landing at `input/<path>` in the cwd the
-     * same way a host materialises the real ones. CALLER-SUPPLIED bytes, never fetched: a dry run
-     * holds no credential, and the whole point of rehearsing a data-processing entrypoint is
-     * exercising its transform without touching the data it will be granted later.
+     * Sample inputs for the rehearsal, path -> contents, landing at `input/<path>` in a WRITABLE
+     * rehearsal cwd: the same layout a host with an output tree gives a real run, so an entrypoint
+     * that writes its output beside its input rehearses unchanged. CALLER-SUPPLIED bytes, never
+     * fetched: a dry run holds no credential, and the whole point of rehearsing a data-processing
+     * entrypoint is exercising its transform without touching the data it will be granted later.
+     * Files it writes land in the temp dir and are removed with it; "writes nothing" is about the
+     * space.
      */
     inputFiles?: Record<string, string | Uint8Array>;
   },
@@ -726,12 +729,12 @@ export async function dryRunEntrypoint(
       throw new Error(`a dry run has no space access (tried to use client.${String(prop)})`);
     },
   });
-  let inputDir: string | undefined;
+  let runDir: string | undefined;
   if (opts.inputFiles && Object.keys(opts.inputFiles).length > 0) {
-    inputDir = await Deno.makeTempDir({ dir: opts.bootRoot || undefined, prefix: "radia-in-" });
+    runDir = await Deno.makeTempDir({ dir: opts.bootRoot || undefined, prefix: "radia-rehearse-" });
     for (const [rel, contents] of Object.entries(opts.inputFiles)) {
       validatePath(rel);
-      const target = `${inputDir}/${INPUT_DIR}/${rel}`;
+      const target = `${runDir}/${INPUT_DIR}/${rel}`;
       await Deno.mkdir(target.slice(0, target.lastIndexOf("/")), { recursive: true });
       await Deno.writeFile(target, typeof contents === "string" ? new TextEncoder().encode(contents) : contents);
     }
@@ -740,7 +743,9 @@ export async function dryRunEntrypoint(
     binding: { agent: "dry-run", workspaceDigest: "", entrypoint: opts.entrypoint },
     record: opts.record,
     client,
-    ...(inputDir ? { inputDir } : {}),
+    // As outDir, deliberately: a host materialises real inputs INTO the writable output tree, so
+    // the rehearsal wearing the same shape is what lets the same code run in both.
+    ...(runDir ? { outDir: runDir } : {}),
   };
   try {
     const result = await runBrokered(opts.root, opts.entrypoint, opts.spec ?? null, ctx, {
@@ -749,6 +754,6 @@ export async function dryRunEntrypoint(
     });
     return { result, proposals };
   } finally {
-    if (inputDir) await Deno.remove(inputDir, { recursive: true }).catch(() => {});
+    if (runDir) await Deno.remove(runDir, { recursive: true }).catch(() => {});
   }
 }

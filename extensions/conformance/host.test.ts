@@ -38,6 +38,12 @@ const operatorClient = await bootSpace(PORT);
 await declareExecRequest(operatorClient);
 await declareBinding(operatorClient);
 await operatorClient.registerKind({ kind: "exec_result", indexedPaths: [{ path: "tag", type: "keyword" }] });
+// Extends the reserved declaration ({digest, mediaType}); reserved kinds may grow, never shrink.
+await operatorClient.registerKind({
+  kind: "artifact",
+  indexedPaths: [{ path: "digest", type: "keyword" }, { path: "mediaType", type: "keyword" }, { path: "owner", type: "keyword" }],
+  claimable: false,
+});
 await operatorClient.registerKind({
   kind: "workspace",
   indexedPaths: [{ path: "name", type: "keyword" }, { path: "owner", type: "keyword" }, { path: "treeDigest", type: "keyword" }, { path: "basedOn", type: "keyword" }],
@@ -277,7 +283,7 @@ Deno.test("[host] the CODE tree stays read-only, even with an output tree open",
 
 Deno.test("[host] a declared input is materialised into the cwd, excluded from capture, and a data parent of the result", async () => {
   await withSpace(async ({ operator, credential }) => {
-    // The plan's one substrate-tier prerequisite (plan-analysis-workspace-agents.md gap 1): broker
+    // The plan's one substrate-tier prerequisite (architecture-analysis-workspace-agents.md gap 1): broker
     // frames carry no bytes and the jail has no net, so the HOST fetches the claimed record's
     // declared input under the AGENT's authority and lays it at `input/<path>` in the cwd. Three
     // properties in one run: the bytes arrive, capture does not re-store them as output, and the
@@ -335,6 +341,47 @@ Deno.test("[host] a declared input is materialised into the cwd, excluded from c
     assert(results[0].runtimeMeta.parentIds.includes(art.id), "the input artifact must be a parent of the result");
     assert(results[0].runtimeMeta.taint.includes("file"), "the input's classification must flow into the result");
     assertEquals(results[0].id, resultId);
+  });
+});
+
+Deno.test("[host] outputMeta stamps captured artifacts from the claimed record", async () => {
+  await withSpace(async ({ operator, credential }) => {
+    // The output belongs to the request that asked for it, not to the agent that computed it: a
+    // person's {owner}-scoped artifact grant must reach bytes a worker produced FOR them. The stamp
+    // is host-side, from the claimed record, so the code cannot claim the work was for someone else.
+    const AGENT = "agent:" + uniq("stamper"), TIER = uniq("prod"), PERSON = "human:" + uniq("carol");
+    const ws = await writeWorkspace(operator, {
+      name: uniq("stamper"),
+      owner: "human:alice",
+      files: {
+        "main.ts": `export default async (record) => {
+          await Deno.writeTextFile("result.txt", "for " + record.body.owner);
+          return { kind: "exec_result", body: { tag: "stamped" } };
+        };\n`,
+      },
+    });
+    const digest = ws.treeDigest;
+    const credentials = { [AGENT]: await credential(AGENT) };
+    await promote(operator, { digest, tier: TIER, pins: [{ principal: AGENT, operations: ["take"] }] });
+    await operator.grant(AGENT, "exec_result", ["put"]);
+    await operator.grant(AGENT, "workspace", ["put", "query"]);
+    await operator.grant(AGENT, "artifact", ["put", "query"]);
+    const OUT = uniq("stamper-out");
+    await operator.put({
+      kind: BINDING,
+      body: { agent: AGENT, workspaceDigest: digest, entrypoint: "main.ts", outputWorkspace: OUT, outputMeta: ["owner"] },
+    });
+    await operator.put({ kind: EXEC_REQUEST, body: { workspace: digest, tier: TIER, owner: PERSON } });
+
+    const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: sandboxInvoker(operator) });
+    const [outcome] = await host.tick();
+    assertEquals(outcome.status, "acked", JSON.stringify(outcome));
+
+    // The captured file's artifact carries the REQUEST's owner, winning over the capture default
+    // (the agent), so an {owner}-scoped grant reaches it.
+    const found = await operator.query({ kind: "artifact", match: { owner: PERSON } }, 10, { dir: "desc" });
+    const out = found.find((r) => (r.body as { workspace?: string }).workspace === OUT);
+    assert(out, `no captured artifact carries owner=${PERSON}: ${JSON.stringify(found.map((r) => r.body))}`);
   });
 });
 

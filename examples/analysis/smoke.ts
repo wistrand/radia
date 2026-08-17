@@ -13,10 +13,14 @@
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
-import { registerAnalysisKinds, STAGES } from "./kinds.ts";
-import { bootstrap, grantUser } from "./roles.ts";
+import { registerAnalysisKinds, STAGES, type StageName } from "./kinds.ts";
+import { publishStageWorkspaces } from "./stages.ts";
+import { bootstrap, deployStages, grantUser, stageAgent } from "./roles.ts";
 import { planAll } from "./planner.ts";
 import { makeHandler } from "./serve.ts";
+import { BINDING, readBindings } from "../../extensions/ts/host.ts";
+import { pinnedDigests, promote } from "../../extensions/ts/promotion.ts";
+import { writeWorkspace } from "../../extensions/ts/workspace.ts";
 
 const PORT = 7903;
 const url = `http://127.0.0.1:${PORT}`;
@@ -46,18 +50,29 @@ console.log("   a staged pipeline keyed on content: what re-runs when code chang
 
 const admin = new RadiaClient(url, { token: operatorToken(url) });
 await registerAnalysisKinds(admin);
-const { workerToken, plannerToken } = await bootstrap(admin);
+const published = await publishStageWorkspaces(admin);
+const { agentTokens, readerToken, plannerToken } = await bootstrap(admin);
+await deployStages(admin, published);
 const alice = "human:alice";
 await grantUser(admin, alice);
 
 const planner = new RadiaClient(url, { definitionToken: plannerToken });
-const workers = STAGES.map((stage) =>
+const workers = [
   new Deno.Command(Deno.execPath(), {
-    args: ["run", "-A", "examples/analysis/worker.ts", "--url", url, "--stage", stage, "--token", workerToken],
+    args: [
+      "run",
+      "-A",
+      "examples/analysis/host.ts",
+      "--url",
+      url,
+      "--reader-token",
+      readerToken,
+      ...STAGES.flatMap((stage) => ["--agent", `${stage}=${agentTokens[stage]}`]),
+    ],
     stdout: "null",
     stderr: "piped",
-  }).spawn()
-);
+  }).spawn(),
+];
 // Drain stderr or a chatty worker blocks on a full pipe.
 for (const w of workers) w.stderr.pipeTo(new WritableStream()).catch(() => {});
 
@@ -74,11 +89,23 @@ const settle = async (rounds = 40) => {
   return await planAll(planner, { apply: false });
 };
 
-// Wait for all three workers to advertise, or the planner reports "blocked" for a stage whose
-// worker is merely slow to start.
-for (let i = 0; i < 60; i++) {
-  if ((await planner.query({ kind: "stage_code" }, 10)).length >= STAGES.length) break;
-  await new Promise((r) => setTimeout(r, 250));
+// ---- 0. discovery and enforcement read the same state ----
+//
+// No advertisement exists any more: the planner discovers live code from the BINDINGS, and the
+// promotion pins enforce the same digests. Both must name the published trees, read back from the
+// records that respectively route and refuse. Nothing to wait for, either: deployment is
+// synchronous, where the old self-advertisement needed a worker to boot first.
+{
+  const bindings = await readBindings(admin);
+  const bound = (s: string) => bindings.find((b) => b.agent === stageAgent(s as StageName))?.workspaceDigest;
+  check("each stage's binding names its published treeDigest",
+    STAGES.every((s) => bound(s) === published[s]),
+    STAGES.map((s) => `${s}:${bound(s) === published[s] ? "=" : `${bound(s)?.slice(0, 10)}≠${published[s].slice(0, 10)}`}`).join(" "));
+  const pinsOk = await Promise.all(STAGES.map(async (s) => {
+    const pins = await pinnedDigests(admin, { principal: stageAgent(s), tier: "prod", kind: "stage_request" });
+    return pins.length === 1 && pins[0] === published[s];
+  }));
+  check("…and each stage's take-pin enforces the same digest", pinsOk.every(Boolean));
 }
 
 // ---- 1. an upload runs every stage ----
@@ -104,14 +131,36 @@ check("…chained by content digest",
   steps.slice(1).every((s, i) => s.inputDigest === steps[i].outputDigest),
   steps.map((s) => `${s.inputDigest.slice(0, 6)}→${(s.outputDigest ?? "").slice(0, 6)}`).join(" "));
 
+// The pin vocabulary: requests and results carry {workspace, tier}, the exact paths promotion's
+// grant pattern binds, which is what step 4's enforcement claims and refuses on.
+{
+  const [req] = await admin.query({ kind: "stage_request", match: { workspace: published.clean, tier: "prod" } }, 1);
+  check("requests carry the pin vocabulary {workspace, tier}, matchable", req !== undefined);
+  const [res] = await admin.query({ kind: "stage_result", match: { workspace: published.report } }, 1);
+  check("results name the tree that produced them, matchable", res !== undefined);
+}
+
+// A stage run in the jail knows its output's DIGEST, not the artifact id the capture assigned, so
+// readers resolve content-addressed: the same move the planner makes when chaining.
 const reportOf = async () => {
   const r = (await admin.query({ kind: "stage_result", match: { stage: "report", ok: "yes" } }, 1, { dir: "desc" }))[0];
-  const b = r?.body as { outputArtifact?: string } | undefined;
-  return b?.outputArtifact ? JSON.parse(new TextDecoder().decode(await admin.getArtifact(b.outputArtifact))) : null;
+  const b = r?.body as { outputDigest?: string } | undefined;
+  if (!b?.outputDigest) return null;
+  const [art] = await admin.query({ kind: "artifact", match: { digest: b.outputDigest } }, 1, { dir: "desc" });
+  return art ? JSON.parse(new TextDecoder().decode(await admin.getArtifact(art.id))) : null;
 };
 const first = await reportOf();
 check("the report names the most variable column", first?.headline?.startsWith("c "), JSON.stringify(first?.headline));
 check("…and the bad row was dropped by clean", first?.rows === 3, `rows=${first?.rows}`);
+
+// The host stamped the output artifact with the REQUEST's owner (binding.outputMeta), which is
+// what keeps the person's {owner}-scoped artifact grant reaching bytes an agent authored.
+{
+  const r = (await admin.query({ kind: "stage_result", match: { stage: "report", ok: "yes" } }, 1, { dir: "desc" }))[0];
+  const digest = (r?.body as { outputDigest?: string })?.outputDigest ?? "";
+  const [mine] = await admin.query({ kind: "artifact", match: { digest, owner: alice } }, 1);
+  check("the report artifact carries the person as owner, not the agent", mine !== undefined);
+}
 
 // ---- 2. changing NOTHING re-runs nothing ----
 const before = (await admin.query({ kind: "stage_result" }, 100)).length;
@@ -122,36 +171,149 @@ check("re-planning an unchanged pipeline computes nothing", after === before, `$
 
 // ---- 3. changing a STAGE's code re-runs it and everything downstream ----
 //
-// Simulated the way a real change works: a worker advertising a DIFFERENT digest. Editing
-// stages.ts would do it too, and cannot be done from inside a running test.
+// Simulated the way a real change works: the operator REBINDING the stage to a different digest.
+// Editing a stage's tree and redeploying would do it too, and cannot be done from inside a
+// running test.
 const bumped = "s1:deadbeefdeadbeefdeadbeefdeadbeef";
 const cleanResultsBefore = (await admin.query({ kind: "stage_result", match: { stage: "clean" } }, 50)).length;
-await admin.put(
-  { kind: "stage_code", body: { stage: "features", codeDigest: bumped, about: "a changed analysis" } },
-  `stage-code:features:${bumped}`,
-);
+await admin.put({
+  kind: BINDING,
+  body: { agent: stageAgent("features"), workspaceDigest: bumped, entrypoint: "features/main.ts" },
+});
 steps = await planAll(planner, { apply: true });
 const featuresStep = steps.find((s) => s.stage === "features");
-check("the planner asks for the CHANGED stage", featuresStep?.state === "requested" && featuresStep.codeDigest === bumped,
+check("the planner asks for the CHANGED stage", featuresStep?.state === "requested" && featuresStep.workspace === bumped,
   JSON.stringify(featuresStep));
 check("…and leaves the stage before it alone",
   (await admin.query({ kind: "stage_result", match: { stage: "clean" } }, 50)).length === cleanResultsBefore);
 check("…and nothing downstream is asked for yet, because its input does not exist",
   !steps.some((s) => s.stage === "report" && s.state === "requested"));
 
-// Nothing serves that digest, so the request sits unclaimed — which is itself the correct
-// behaviour and worth pinning: a stage whose code nobody runs must not silently use another version.
+// The pin still says the OLD digest, so no agent may claim the bumped request: rebinding without
+// promoting deploys nothing, by construction, and the request waits for the missing half of the
+// two locks rather than being answered by whatever code is around.
 await new Promise((r) => setTimeout(r, 800));
-const orphan = (await admin.query({ kind: "stage_result", match: { stage: "features", codeDigest: bumped } }, 5)).length;
-check("a request for code nobody serves is left unclaimed, never answered by the wrong version", orphan === 0);
+const orphan = (await admin.query({ kind: "stage_result", match: { stage: "features", workspace: bumped } }, 5)).length;
+check("a request whose digest no pin covers is left unclaimed, never answered by the wrong version", orphan === 0);
 
 // ASKING TWICE IS ONE REQUEST. The planner runs on every result, so an in-flight stage is planned
 // over and over; without dedupe each pass would queue the same work again and the stage would run
 // as many times as the planner woke. This is the only place that path is reachable — everywhere
 // else the stages finish, and a finished stage returns before the request code.
 for (let i = 0; i < 4; i++) await planAll(planner, { apply: true });
-const queued = (await admin.query({ kind: "stage_request", match: { stage: "features", codeDigest: bumped } }, 20)).length;
+const queued = (await admin.query({ kind: "stage_request", match: { stage: "features", workspace: bumped } }, 20)).length;
 check("planning an in-flight stage repeatedly queues it ONCE", queued === 1, `${queued} requests`);
+
+// ---- 4. a result cannot lie about which code produced it ----
+//
+// The check the old architecture could not express: `stage_result: put` comes ONLY from the
+// promotion pin {workspace, tier}, so a result naming any other digest is refused at the door by
+// `bodyMatchesGrant` — not filed and doubted later. Every "has this version already run" answer
+// rests on this field, and it is now enforced rather than reported.
+{
+  const features = new RadiaClient(url, { definitionToken: agentTokens.features });
+  const forged = {
+    stage: "features",
+    dataset: "smoke-forged", // no such dataset, so the control write below cannot poison the memo
+    inputDigest: "x",
+    workspace: bumped,
+    tier: "prod",
+    outputDigest: "y",
+    owner: alice,
+    ok: "yes",
+  };
+  const status = await features.put({ kind: "stage_result", body: forged })
+    .then(() => "accepted", (e) => String((e as { status?: number }).status ?? e));
+  check("a result under a NON-pinned digest is REFUSED at the write", status === "403", status);
+  // The control: identical body, pinned digest, accepted — so the refusal above is about the
+  // digest and nothing else.
+  const control = await features.put({ kind: "stage_result", body: { ...forged, workspace: published.features } })
+    .then(() => "accepted", (e) => String((e as { status?: number }).status ?? e));
+  check("…and the same result under the pinned digest is accepted", control === "accepted", control);
+}
+
+// ---- 5. the pipeline's SHAPE is data: a NEW stage deploys into the live pipeline ----
+//
+// The chat-to-pipeline path, end to end: a workspace authored like any other (save_procedure
+// yields exactly this shape) becomes a fourth stage by DEPLOYMENT alone — def + promote + bind
+// plus a host holding its token — and only the new suffix computes. No planner edit, no constant,
+// no restart of anything already running.
+{
+  // First undo test 3's drift: rebind features to its real tree (rollback is a binding write),
+  // or every walk stalls there and the new stage is unreachable.
+  await admin.put({
+    kind: BINDING,
+    body: {
+      agent: stageAgent("features"),
+      workspaceDigest: published.features,
+      entrypoint: "features/main.ts",
+      inputs: [{ field: "inputArtifact", path: "data" }],
+      outputWorkspace: "stage-features-out",
+      outputMeta: ["owner", "dataset"],
+    },
+  });
+  const countOf = async (stage: string) => (await admin.query({ kind: "stage_result", match: { stage } }, 50)).length;
+  const before: Record<string, number> = {};
+  for (const s of STAGES) before[s] = await countOf(s);
+
+  // The new stage's tree: the same harness beside its own entry module.
+  const harness = await Deno.readFile(new URL("./stages/harness.ts", import.meta.url));
+  const tldr = await writeWorkspace(admin, {
+    name: "stage-tldr",
+    owner: "analysis",
+    files: {
+      "harness.ts": harness,
+      "tldr/main.ts": `import { runStage } from "../harness.ts";
+export default (record) => runStage(record, (input) => {
+  const { headline } = JSON.parse(new TextDecoder().decode(input));
+  return new TextEncoder().encode(headline + "\\n");
+});
+`,
+    },
+    entrypoint: "tldr/main.ts",
+  });
+
+  // Deployment, all operator writes: the def (where in the shape), the agent, both pins, the
+  // binding. Index 40 lands it after report.
+  await admin.put({ kind: "stage_def", body: { stage: "tldr", index: 40 } }, "stage-def:tldr:40");
+  const def = await admin.createAgentDefinition("agent:analysis-tldr", [
+    { principal: "agent:analysis-tldr", kind: "workspace", operations: ["put", "query"] },
+    { principal: "agent:analysis-tldr", kind: "artifact", operations: ["put", "read_one"] },
+  ]);
+  await promote(admin, { digest: tldr.treeDigest, tier: "prod", kind: "stage_request", pins: [{ principal: "agent:analysis-tldr", operations: ["take"] }] });
+  await promote(admin, { digest: tldr.treeDigest, tier: "prod", kind: "stage_result", pins: [{ principal: "agent:analysis-tldr", operations: ["put"] }] });
+  await admin.put({
+    kind: BINDING,
+    body: {
+      agent: "agent:analysis-tldr",
+      workspaceDigest: tldr.treeDigest,
+      entrypoint: "tldr/main.ts",
+      inputs: [{ field: "inputArtifact", path: "data" }],
+      outputWorkspace: "stage-tldr-out",
+      outputMeta: ["owner", "dataset"],
+    },
+  });
+  // A SECOND host, because hosting is only holding the definition token: the one already running
+  // needs no restart and never learns the new stage exists.
+  const tldrHost = new Deno.Command(Deno.execPath(), {
+    args: ["run", "-A", "examples/analysis/host.ts", "--url", url, "--reader-token", readerToken, "--agent", `tldr=${def.definitionToken}`],
+    stdout: "null",
+    stderr: "piped",
+  }).spawn();
+  tldrHost.stderr.pipeTo(new WritableStream()).catch(() => {});
+  workers.push(tldrHost);
+
+  const steps5 = await settle();
+  const tldrStep = steps5.find((s) => s.stage === "tldr");
+  const reportStep = steps5.find((s) => s.stage === "report");
+  check("the NEW stage runs to done", tldrStep?.state === "done", JSON.stringify(tldrStep));
+  check("…chained onto report's output", tldrStep !== undefined && tldrStep.inputDigest === reportStep?.outputDigest);
+  const untouched = await Promise.all(STAGES.map(async (s) => (await countOf(s)) === before[s]));
+  check("…and nothing already computed re-ran", untouched.every(Boolean));
+  const [tldrArt] = await admin.query({ kind: "artifact", match: { digest: tldrStep?.outputDigest ?? "" } }, 1, { dir: "desc" });
+  const text = tldrArt ? new TextDecoder().decode(await admin.getArtifact(tldrArt.id)) : "";
+  check("…and its output is the headline alone", text.startsWith("c varies most"), JSON.stringify(text.slice(0, 40)));
+}
 
 // ---- the web app's relay: it holds nothing, and forwards what it is given ----
 {

@@ -79,7 +79,8 @@ a,b,c
 
 <script>
 const SPACE = "__SPACE_URL__";           // the space's own URL, for links INTO the console
-const STAGES = ["clean", "features", "report"];
+// The pipeline's shape is DATA (the stage_def registry), fetched per refresh: a stage deployed
+// while this page is open appears in the table on the next poll, no page change anywhere.
 let TOKEN = sessionStorage.getItem("analysis.token") || "";
 let ME = "";
 let OIDC = null;
@@ -226,9 +227,26 @@ async function upload() {
 // one's input digest from the last one's output. The page never asks for work — it renders what
 // the planner decided, which is why a read-only viewer sees the truth rather than a guess.
 async function refresh() {
+  // The shape: latest def per stage, retirements dropped, ordered by index.
+  const STAGES = [];
+  {
+    const seen = new Set();
+    const defs = [];
+    for (const r of await query("stage_def", null, 100)) {
+      if (!r.body.stage || seen.has(r.body.stage)) continue;  // newest first
+      seen.add(r.body.stage);
+      if (!r.body.retired) defs.push(r.body);
+    }
+    defs.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+    STAGES.push(...defs.map((d) => d.stage));
+  }
+
+  // Live code comes from each agent's BINDING: the record the host runs and the pin is checked
+  // against, so this line cannot disagree with what actually executes.
   const code = new Map();
-  for (const r of await query("stage_code", null, 50)) {
-    if (!code.has(r.body.stage)) code.set(r.body.stage, r.body.codeDigest);  // newest first
+  for (const r of await query("binding", null, 50)) {
+    const stage = (r.body.agent || "").split("analysis-")[1];
+    if (stage && !code.has(stage)) code.set(stage, r.body.workspaceDigest);  // newest first
   }
   $("live-code").textContent = [...code.entries()].map(([s, d]) => `${s} ${d.slice(3, 11)}`).join("  ");
 
@@ -238,7 +256,8 @@ async function refresh() {
   const results = await query("stage_result", null, 400);
   const requests = await query("stage_request", null, 400);
   const find = (rows, d, stage, input, cd) => rows.find((r) =>
-    r.body.dataset === d && r.body.stage === stage && r.body.inputDigest === input && r.body.codeDigest === cd);
+    r.body.dataset === d && r.body.stage === stage && r.body.inputDigest === input &&
+    (r.body.workspace ?? r.body.codeDigest) === cd);  // `codeDigest` on records from before the rename
 
   let html = "", latestReport = null;
   for (const ds of sets) {
@@ -274,10 +293,18 @@ async function refresh() {
   }
   $("datasets").innerHTML = html;
 
-  if (latestReport && latestReport.body.outputArtifact) {
-    const bytes = await fetch("/v0/artifacts/" + latestReport.body.outputArtifact, {
-      headers: { authorization: "Bearer " + TOKEN },
-    }).then((r) => r.ok ? r.text() : null).catch(() => null);
+  if (latestReport) {
+    // A jailed stage knows its output's digest, not the artifact id the capture assigned, so the
+    // id is resolved content-addressed. Old results carry the id directly. The read runs under the
+    // person's own token; it reaches the bytes because the host stamped the artifact with their
+    // owner (binding.outputMeta).
+    const artId = latestReport.body.outputArtifact ??
+      (await query("artifact", { digest: latestReport.body.outputDigest }, 1))[0]?.id;
+    const bytes = artId
+      ? await fetch("/v0/artifacts/" + artId, {
+        headers: { authorization: "Bearer " + TOKEN },
+      }).then((r) => r.ok ? r.text() : null).catch(() => null)
+      : null;
     if (bytes) { $("report").textContent = bytes; $("result-panel").style.display = ""; }
   }
 }

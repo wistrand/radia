@@ -12,9 +12,16 @@
 
 import type { RadiaClient } from "../../sdk/ts/client.ts";
 
-/** The stages, in order. The planner walks this list; a worker serves one entry. */
+/** The stages this repo SHIPS, in order. Only deployment iterates this (publish the trees, write
+ *  the defs, mint the agents): the pipeline's live shape is the `stage_def` REGISTRY, which the
+ *  planner and the UI read, so a new stage is a deployment (def + promote + bind) and never an
+ *  edit here. */
 export const STAGES = ["clean", "features", "report"] as const;
 export type StageName = typeof STAGES[number];
+
+/** The tier every request is stamped with, and the one promotion pins. One tier, because this
+ *  example deploys one environment; the vocabulary allows more. */
+export const PIPELINE_TIER = "prod";
 
 export async function registerAnalysisKinds(client: RadiaClient): Promise<void> {
   // Bytes live in artifacts, never in bodies (the erasure boundary, CLAUDE.md). A dataset record
@@ -45,26 +52,52 @@ export async function registerAnalysisKinds(client: RadiaClient): Promise<void> 
     claimable: false,
   });
 
-  // What CODE a stage worker is running, advertised by the worker itself. A registry: latest wins
-  // per stage, so restarting a worker writes nothing and deploying a new one is a successor.
-  //
-  // The planner reads this rather than holding a version table. That is the same rule the chat's
-  // model tiers follow: a worker advertises what it serves, and nothing hardcodes it.
+  // The stage code itself: each stage is an entrypoint tree (stages/<name>/), published at
+  // bootstrap as a workspace named `stage-<name>`. Declared here because `workspace` is an
+  // EXTENSION convention, not a reserved kind: the runtime has no idea what a file is, so any
+  // space that stores trees declares this itself (architecture-analysis-workspace-agents.md step 2).
   await client.registerKind({
-    kind: "stage_code",
-    indexedPaths: [{ path: "stage", type: "keyword" }, { path: "codeDigest", type: "keyword" }],
+    kind: "workspace",
+    indexedPaths: [
+      { path: "name", type: "keyword" },
+      { path: "owner", type: "keyword" },
+      { path: "treeDigest", type: "keyword" },
+      { path: "basedOn", type: "keyword" },
+    ],
+    claimable: false,
+  });
+
+  // There is deliberately no `stage_code` kind. Which code is live is read from the BINDINGS
+  // (the same records the host runs, `liveCode` in planner.ts) and enforced by the promotion
+  // pins; a separate self-advertisement was a second mechanism that nothing verified and that
+  // could disagree with both.
+
+  // The pipeline's SHAPE: one def per stage, a latest-wins registry ordered by `index` (gaps left
+  // for insertion), retire to remove. The planner walks THIS, not a constant, which is what lets
+  // a workspace authored anywhere (the chat's save_procedure yields the right shape) become a new
+  // stage by deployment alone.
+  await client.registerKind({
+    kind: "stage_def",
+    indexedPaths: [{ path: "stage", type: "keyword" }],
     claimable: false,
   });
 
   // The unit of work. CLAIMABLE, so a worker takes it under a lease and at-least-once delivery
   // applies. Every field the planner matches on is indexed, which is what makes the existence
   // check a query rather than a scan.
+  //
+  // `workspace` + `tier` are the PIN vocabulary: promotion's grant pattern is hardcoded to those
+  // two paths (extensions/ts/promotion.ts), so indexing them is what lets a grant bind "this agent
+  // may only claim requests naming the promoted tree". `codeDigest` stays declared so records
+  // written before the rename remain matchable; new records carry `workspace`.
   await client.registerKind({
     kind: "stage_request",
     indexedPaths: [
       { path: "stage", type: "keyword" },
       { path: "dataset", type: "keyword" },
       { path: "inputDigest", type: "keyword" },
+      { path: "workspace", type: "keyword" },
+      { path: "tier", type: "keyword" },
       { path: "codeDigest", type: "keyword" },
       { path: "owner", type: "keyword" },
     ],
@@ -77,12 +110,17 @@ export async function registerAnalysisKinds(client: RadiaClient): Promise<void> 
   // Dedupe is by THIS QUERY, never by idempotency key: content-keyed idempotency expires with
   // `idempotencyRetentionSeconds` (7 days), after which a re-put is a fresh record and the stage
   // recomputes silently. A memo that quietly stops memoizing is worse than none.
+  // `workspace` + `tier` indexed here are the RESULT-side pin: granting `stage_result: put` with
+  // promotion's pattern `{workspace: <digest>, tier}` makes `bodyMatchesGrant` refuse a result
+  // that lies about which code produced it, which self-reporting never could.
   await client.registerKind({
     kind: "stage_result",
     indexedPaths: [
       { path: "stage", type: "keyword" },
       { path: "dataset", type: "keyword" },
       { path: "inputDigest", type: "keyword" },
+      { path: "workspace", type: "keyword" },
+      { path: "tier", type: "keyword" },
       { path: "codeDigest", type: "keyword" },
       { path: "outputDigest", type: "keyword" },
       { path: "owner", type: "keyword" },
