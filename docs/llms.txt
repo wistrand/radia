@@ -40,12 +40,18 @@ transaction that performed it, and finalized events are sealed into a signed has
   granted as a record and revocable; writing grants themselves is deliberately never a power
 - **artifact**: content-addressed bytes outside a record; the only thing that can be erased
 - **interest**: a record saying what a run is listening for, so the routing topology is queryable
+- **capability**: a tool advertised as a record, schema and description included; agents build their
+  tool list by watching these, and a `tool_call` routes to whichever worker claims that tool's name
+- **compartment**: containment for a class of data as a dedicated kind plus pattern-scoped grants;
+  crossing data out is reserved to a principal deliberately granted both sides
 - **flow**: a recurring shape of work, mined from lineage rather than declared
 - **workspace**: a multi-file tree as a manifest record plus one artifact per file. An EXTENSION
   convention, not a runtime concept: the runtime has no idea what a file or a path is
 - **binding**: a record naming which workspace digest an agent runs; a generic host runs that code
   jailed and credential-free under the agent's own identity, and promotion pins the digest a tier's
-  grant applies to, so "what is prod running" is read from the enforcement path
+  grant applies to, so "what is prod running" is read from the enforcement path. A binding can also
+  declare which request fields name input payloads; the host fetches those under the agent's own
+  permission into the run's directory, and they become data parents of the result
 
 ## Where the source of truth lives
 

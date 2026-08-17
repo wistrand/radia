@@ -137,6 +137,48 @@
       implementations is a hole rather than an inconsistency. Both ship with a conformance suite that
       any implementation in any language has to pass.
     </div>
+
+    <h3>Workspaces are one convention on a longer shelf</h3>
+    <p>
+      The same tier holds every other convention more than one application wanted and the runtime
+      had no business knowing. Each is a small library over the same public API, and each earns its
+      place by answering a question the applications kept re-answering badly:
+    </p>
+    <ul>
+      <li>
+        <strong>Tool workers.</strong> A worker advertises each tool as a record carrying its schema
+        and description, an agent builds its tool list by watching for those records, and a call
+        routes to whichever worker claimed that tool's name. Adding a worker adds a capability with
+        no configuration anywhere, which is the promise on the front page made concrete. A failed
+        call comes back as an <em>answer</em>, never as silence, so a caller is told what went wrong
+        instead of waiting out its deadline.
+      </li>
+      <li>
+        <strong>A model turn as records.</strong> The chat's conversation loop does not live in the
+        terminal: the client writes one request and renders whatever arrives, while workers emit
+        each next step as a record. Kill the terminal mid-turn and the turn finishes without it.
+        Model tiers are records too, so the router and the escalation ladder read the same list.
+      </li>
+      <li>
+        <strong>Sealed conversations.</strong> Prose is encrypted end to end while the records still
+        route, because nothing ever matched on prose. The keys live in destroyable payloads, which
+        is what gives an immutable history an erasure path.
+        <a href="examples.html#chat">The chat uses it &#8594;</a>
+      </li>
+      <li>
+        <strong>Compartments.</strong> Containment for a class of data: a dedicated kind plus
+        pattern-scoped grants, so being outside it means writes are refused by construction, and
+        getting data out is reserved to a principal deliberately granted both sides.
+      </li>
+      <li>
+        <strong>Traces for your existing tools.</strong> Threads export as OTLP traces, attempts as
+        spans, so Jaeger or Tempo can render what happened without learning anything about records.
+      </li>
+    </ul>
+    <p>
+      The rest of this page walks the largest of them: the tree itself, running code from it, and
+      promoting a tree to be an agent's code.
+    </p>
   </div>
 </section>
 
@@ -272,6 +314,15 @@ agent:scraper on 'prod': t1:07b3e5c918&#8230;</code></pre>
       The founding use case for all of this is model-written code over data it must not exfiltrate,
       which is why the pieces compose the way they do: the jail bounds what the code can reach, the
       binding bounds which code runs, and the grant bounds what its output may claim to be.
+    </p>
+    <p>
+      Data gets in the same governed way it gets out. The code cannot fetch its input, because the
+      jail has no network and the channel out carries no bytes, so the binding declares which fields
+      of a claimed request name stored payloads, and the host lays those bytes into the run's
+      directory before the code starts. The fetch happens under the <em>agent's</em> permission, not
+      the host's, so a request naming a payload its handler may not read fails as a refusal instead
+      of smuggling data past the grants, and everything the run produces lists that input as a
+      parent, so the labels it carries follow along.
     </p>
   </div>
 </section>

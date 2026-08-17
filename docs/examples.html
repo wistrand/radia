@@ -163,6 +163,14 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
       checks and records the answer. The assistant has no permission to write that record.
     </p>
     <p>
+      The assistant's tool list is not configured anywhere either. Each tool worker advertises what
+      it offers as a record, description included, and the assistant watches for those records to
+      build the list it shows the model. Start a new worker mid-conversation and the next turn has
+      its tool. The client knows the names of nothing: not the tools, not the models, not the record
+      kinds beyond its own, which is the discipline that keeps a capability an act of deployment
+      rather than a code change.
+    </p>
+    <p>
       The reply carries what it cost, in the provider's own numbers, and those fields are declared
       sortable, so "which call used the most tokens" is a query with an answer rather than a guess.
       Model choice reads the same way in the other direction: say a tier's name and the router
