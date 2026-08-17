@@ -155,20 +155,37 @@ outcomes decided things here:
 
 
 **The convergent contemporaries (Flock, PatchBoard), added 2026-08-17.** Both surfaced by an
-external review ([notes/radia-similar-systems-research.md](../notes/radia-similar-systems-research.md));
-the claims below are from their published material, UNVERIFIED against source. **Flock**
-(whiteducksoftware, self-described "Declarative Blackboard Multi-Agent Orchestration", v0.5)
-is the closest living relative: agents declare typed artifacts they consume and publish, with
-predicate and semantic subscriptions, a persistent blackboard, visibility controls and OTLP
-export. It is a framework where this is a substrate, but the two-cell gap claim above is
-CHECKABLE against it (does it store routing as data a policy can refuse? does it authorize at the
-granularity of one record's contents?) and has not been checked; until someone does, do not
-repeat the gap claim against Flock specifically. **PatchBoard** (arXiv 2605.29313, 2026) shares
-the deeper thesis, that LLMs must not be the ones enforcing the protocol: agents submit JSON
-Patch proposals against shared structured state and a deterministic kernel validates schema, role
-contracts and invariants before committing transactionally with replayable logs. The fork is the
-state model, one mutable world state there against many immutable causal records here, and it is
-the most direct architectural comparison now available.
+external review ([notes/radia-similar-systems-research.md](../notes/radia-similar-systems-research.md)).
+
+**Flock** (whiteducksoftware, "declarative type contracts and blackboard architecture", v0.5.0)
+is the closest living relative in routing philosophy: agents declare typed artifacts they consume
+and publish, with predicate and semantic subscriptions, Dapr-backed persistent blackboards,
+per-record visibility controls, a dashboard and OTLP export. The two-cell gap claim was CHECKED
+against its published docs 2026-08-17 and both cells stand, each on a documented fact:
+
+- Routing is not stored data a policy can refuse. Predicate subscriptions are Python callables
+  (`.consumes(BugReport, where=lambda bug: bug.severity in [...])`), required only to be pure and
+  fast, with no documented serialization, storage or inspection surface — a search predicate that
+  is code, the exact axis this design inverted (the LuaTS lesson above). Type and semantic
+  subscriptions are declarative parameters (local-embedding cosine match with a threshold), but
+  nothing shows a queryable subscription registry or a policy that can refuse one.
+- Authorization is per record but DISCRETIONARY: "the agent producing the artifact controls who
+  can consume it" (five visibility types, publisher-chosen, including a label allowlist), with
+  explicitly no content-based filtering and no administrator-assigned grants. Grants here are
+  assigned, never self-declared, and evaluated against record contents; that line is the cell.
+
+One finding the review missed: no claim semantics. A matching artifact triggers EVERY subscribed
+agent in parallel ("when a matching artifact appears, subscribed agents execute"), in process,
+with no lease, acknowledgement, redelivery or fencing documented — a framework's dispatch, not
+competitive claiming over durable work. So Flock converges on the routing thesis while occupying
+neither the trust cell nor the work-queue half of the substrate.
+
+**PatchBoard** (arXiv 2605.29313, 2026; claims from the paper, UNVERIFIED against its code)
+shares the deeper thesis, that LLMs must not be the ones enforcing the protocol: agents submit
+JSON Patch proposals against shared structured state and a deterministic kernel validates schema,
+role contracts and invariants before committing transactionally with replayable logs. The fork is
+the state model, one mutable world state there against many immutable causal records here, and it
+is the most direct architectural comparison now available.
 
 **The adoption risk this lineage actually names.** Both ancestries were technically sound and both
 lost to orchestration. Spring beat OSGi by offering the registry's benefits with the dynamism
