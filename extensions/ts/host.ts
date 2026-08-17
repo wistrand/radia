@@ -34,6 +34,7 @@ import {
   commitWorkspace,
   materialize,
   readWorkspace,
+  validatePath,
   type WorkspaceManifest,
   writeWorkspace,
 } from "./workspace.ts";
@@ -57,6 +58,18 @@ export interface Binding {
    * posture with no external dependency.
    */
   sandboxPattern?: Record<string, unknown>;
+  /**
+   * Artifact BYTES the run needs on disk before it starts, fetched by the host because no other
+   * path exists: broker frames never carry bytes and the jail has no net.
+   *
+   * Each entry names a body FIELD on the claimed record holding an artifact record id, and the
+   * host materialises those bytes at `input/<path>` (default `input/<field>`) in the run's cwd
+   * before invoking. The fetch runs under the AGENT's client, never the host's reader: a body
+   * field is a CLAIM (plan-encryption.md phase 0 rule), so the agent's own grants decide whether
+   * the read happens, and the artifact becomes a data parent of the result, so taint flows.
+   * The `input` directory is never captured as output.
+   */
+  inputs?: { field: string; path?: string }[];
   /**
    * The workspace a run's OUTPUT FILES land in, and the only way an entrypoint gets a writable path.
    *
@@ -86,6 +99,10 @@ export interface Binding {
 export const RESULT_MARK = "RADIA-RESULT/1:";
 
 export const BINDING = "binding";
+
+/** Where materialised inputs land, relative to the run's cwd, in every language and every jail.
+ *  One fixed directory rather than free paths, so output capture can exclude it wholesale. */
+export const INPUT_DIR = "input";
 
 /**
  * The kind. NO `contentKey`, deliberately: compaction only touches keyed kinds, so a binding's
@@ -187,6 +204,14 @@ export interface InvokeContext {
   /** An empty directory the run may WRITE to, when the binding named an output workspace. The
    *  invoker's job is to make it the jail's only writable path; the host captures it afterwards. */
   outDir?: string;
+  /** A READ-ONLY directory holding the materialised inputs, when the binding declared inputs but
+   *  no output workspace. It becomes the cwd so `input/<path>` resolves the same way in both
+   *  postures; with an output tree the inputs live inside `outDir` instead and this is unset. */
+  inputDir?: string;
+  /** The artifact records behind the materialised inputs. An invoker that writes on the run's
+   *  behalf adds them as PARENTS, the same forced-lineage rule as the claimed record: what the
+   *  code read flows into what it wrote whether it says so or not. */
+  inputIds?: string[];
 }
 
 /** How the entrypoint is run. Pluggable because the identity properties above are independent of
@@ -223,9 +248,42 @@ async function captureOutput(
     const created = await writeWorkspace(client, { name, owner, files: {} });
     prev = { id: created.id, name, owner, treeDigest: created.treeDigest, files: [] };
   }
-  const captured = await captureWorkspace(client, { ...prev, files: [] }, dir);
+  // `input/` is the REQUEST's data, materialised by the host, so it is never this run's output:
+  // capturing it would store every input a second time, attributed to the wrong producer.
+  const captured = await captureWorkspace(client, { ...prev, files: [], ignore: [...(prev.ignore ?? []), INPUT_DIR] }, dir);
   const committed = await commitWorkspace(client, prev, captured, { parentIds: [cause] });
   return committed?.id;
+}
+
+/**
+ * Fetch the claimed record's declared inputs into `<dir>/input/`, and return the artifact ids.
+ *
+ * Under the AGENT's client, deliberately: the record body names the artifact, and a body is a
+ * claim, so the agent's own grants decide whether the read happens. A request naming an artifact
+ * its handler may not read fails HERE, as a permission error, instead of smuggling bytes past the
+ * grant table under the host's broader authority.
+ */
+async function materializeInputs(
+  client: RadiaClient,
+  specs: NonNullable<Binding["inputs"]>,
+  record: RadiaRecord,
+  dir: string,
+): Promise<string[]> {
+  const ids: string[] = [];
+  for (const spec of specs) {
+    const value = (record.body as Record<string, unknown>)[spec.field];
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(`input field '${spec.field}' on the claimed record is ${JSON.stringify(value ?? null)}, not an artifact record id`);
+    }
+    const rel = spec.path ?? spec.field;
+    validatePath(rel);
+    const bytes = await client.getArtifact(value);
+    const target = `${dir}/${INPUT_DIR}/${rel}`;
+    await Deno.mkdir(target.slice(0, target.lastIndexOf("/")), { recursive: true });
+    await Deno.writeFile(target, bytes);
+    ids.push(value);
+  }
+  return ids;
 }
 
 export interface HostOptions {
@@ -264,11 +322,12 @@ export function sandboxInvoker(reader: RadiaClient, opts: { timeoutMs?: number; 
         `console.log(${JSON.stringify(RESULT_MARK)} + JSON.stringify(out ?? null));\n`;
       const run = await runCode(boot, {
         // The OUTPUT tree is the working directory when there is one, so `writeFile("chart.png")`
-        // lands in it with nothing passed to the entrypoint and nothing language-specific. The code
-        // tree is reached by absolute path (`import.meta.dirname`), which is how a module should
-        // find its own data anyway.
-        cwd: ctx.outDir ?? root,
-        readRoots: [root, ...(ctx.outDir ? [ctx.outDir] : [])],
+        // lands in it with nothing passed to the entrypoint and nothing language-specific; a run
+        // with only inputs gets the input dir as cwd instead, so `input/<path>` reads the same
+        // either way. The code tree is reached by absolute path (`import.meta.dirname`), which is
+        // how a module should find its own data anyway.
+        cwd: ctx.outDir ?? ctx.inputDir ?? root,
+        readRoots: [root, ...(ctx.outDir ? [ctx.outDir] : []), ...(ctx.inputDir ? [ctx.inputDir] : [])],
         // Writable, and `root` never is: see `Binding.outputWorkspace`.
         ...(ctx.outDir ? { writeRoots: [ctx.outDir] } : {}),
         timeoutMs: opts.timeoutMs ?? 10_000,
@@ -344,12 +403,28 @@ export class WorkspaceHost {
       const outDir = binding.outputWorkspace
         ? await Deno.makeTempDir({ dir: this.#opts.outRoot || undefined, prefix: "radia-out-" })
         : undefined;
+      // Declared inputs need a cwd even when no output tree was asked for; read-only in the jail.
+      const inputDir = !outDir && binding.inputs?.length
+        ? await Deno.makeTempDir({ dir: this.#opts.outRoot || undefined, prefix: "radia-in-" })
+        : undefined;
       try {
-        const result = await invoke({ binding, record: claimed.record, client, ...(outDir ? { outDir } : {}) });
+        const inputIds = binding.inputs?.length
+          ? await materializeInputs(client, binding.inputs, claimed.record, (outDir ?? inputDir)!)
+          : [];
+        const result = await invoke({
+          binding,
+          record: claimed.record,
+          client,
+          ...(outDir ? { outDir } : {}),
+          ...(inputDir ? { inputDir } : {}),
+          ...(inputIds.length ? { inputIds } : {}),
+        });
         const outputId = outDir
           ? await captureOutput(client, binding.outputWorkspace!, binding.agent, outDir, claimed.record.id)
           : undefined;
-        const acked = await client.ack(claimed.lease, result);
+        // The inputs become DATA PARENTS of the result, so their classification flows into it and
+        // "what produced this" is a lineage answer rather than a body field to trust.
+        const acked = await client.ack(claimed.lease, inputIds.length ? { ...result, parentIds: inputIds } : result);
         out.push({
           agent: binding.agent,
           status: "acked",
@@ -368,6 +443,7 @@ export class WorkspaceHost {
         out.push({ agent: binding.agent, status: "failed", recordId: claimed.record.id, error: String(e).slice(0, 1200) });
       } finally {
         if (outDir) await Deno.remove(outDir, { recursive: true }).catch(() => {});
+        if (inputDir) await Deno.remove(inputDir, { recursive: true }).catch(() => {});
       }
     }
     return out;

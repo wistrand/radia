@@ -275,6 +275,134 @@ Deno.test("[host] the CODE tree stays read-only, even with an output tree open",
   });
 });
 
+Deno.test("[host] a declared input is materialised into the cwd, excluded from capture, and a data parent of the result", async () => {
+  await withSpace(async ({ operator, credential }) => {
+    // The plan's one substrate-tier prerequisite (plan-analysis-workspace-agents.md gap 1): broker
+    // frames carry no bytes and the jail has no net, so the HOST fetches the claimed record's
+    // declared input under the AGENT's authority and lays it at `input/<path>` in the cwd. Three
+    // properties in one run: the bytes arrive, capture does not re-store them as output, and the
+    // artifact's classification flows into the result through lineage the code never mentions.
+    const AGENT = "agent:" + uniq("stage"), TIER = uniq("prod"), TAG = uniq("counted");
+    const art = await operator.putArtifact(new TextEncoder().encode("h\n1\n2\n3\n"), {
+      mediaType: "text/csv",
+      taint: ["file"],
+    });
+    const ws = await writeWorkspace(operator, {
+      name: uniq("counter"),
+      owner: "human:alice",
+      files: {
+        "main.ts": `export default async (record) => {
+          const csv = await Deno.readTextFile("input/data.csv");
+          await Deno.writeTextFile("rows.txt", String(csv.trim().split("\\n").length - 1));
+          return { kind: "exec_result", body: { tag: ${JSON.stringify(TAG)}, got: csv } };
+        };\n`,
+      },
+    });
+    const digest = ws.treeDigest;
+    const credentials = { [AGENT]: await credential(AGENT) };
+    await promote(operator, { digest, tier: TIER, pins: [{ principal: AGENT, operations: ["take"] }] });
+    await operator.grant(AGENT, "exec_result", ["put"]);
+    await operator.grant(AGENT, "workspace", ["put", "query"]);
+    // `read_one` is what the input fetch needs, and it is the AGENT's grant that decides: the
+    // host's reader never touches the bytes.
+    await operator.grant(AGENT, "artifact", ["put", "query", "read_one"]);
+    const OUT = uniq("counter-out");
+    await operator.put({
+      kind: BINDING,
+      body: {
+        agent: AGENT,
+        workspaceDigest: digest,
+        entrypoint: "main.ts",
+        outputWorkspace: OUT,
+        inputs: [{ field: "inputArtifact", path: "data.csv" }],
+      },
+    });
+    await operator.put({ kind: EXEC_REQUEST, body: { workspace: digest, tier: TIER, inputArtifact: art.id } });
+
+    const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: sandboxInvoker(operator) });
+    const [outcome] = await host.tick();
+    assertEquals(outcome.status, "acked", JSON.stringify(outcome));
+    const resultId = (outcome as { resultId?: string }).resultId!;
+
+    const results = await operator.query({ kind: "exec_result", match: { tag: TAG } }, 10);
+    assertEquals(results.length, 1);
+    assertEquals((results[0].body as { got: string }).got, "h\n1\n2\n3\n", "the artifact's bytes, read from input/data.csv");
+    // Capture excluded `input/`: the output version holds the run's file and never the request's data.
+    const out = await readWorkspace(operator, OUT);
+    assertEquals(out?.files.map((f) => f.path), ["rows.txt"], "the input must not be re-stored as output");
+    // The artifact is a DATA PARENT of the result, so its classification flowed without the code
+    // (or the entrypoint's author) saying so.
+    assert(results[0].runtimeMeta.parentIds.includes(art.id), "the input artifact must be a parent of the result");
+    assert(results[0].runtimeMeta.taint.includes("file"), "the input's classification must flow into the result");
+    assertEquals(results[0].id, resultId);
+  });
+});
+
+Deno.test("[host] inputs without an output tree get a read-only cwd", async () => {
+  await withSpace(async ({ operator, credential }) => {
+    // A stage that answers in its result body needs bytes and no writable path. The input dir is
+    // the cwd so `input/<field>` resolves the same as with an output tree, and it stays read-only:
+    // no output workspace means no write capability, inputs or not.
+    const AGENT = "agent:" + uniq("reader"), TIER = uniq("prod"), TAG = uniq("readonly");
+    const art = await operator.putArtifact(new TextEncoder().encode("payload-bytes"), {});
+    const ws = await writeWorkspace(operator, {
+      name: uniq("readonly"),
+      owner: "human:alice",
+      files: {
+        "main.ts": `export default async () => {
+          const got = await Deno.readTextFile("input/src");
+          let wrote = false;
+          try { await Deno.writeTextFile("leak.txt", "x"); wrote = true; } catch { /* expected */ }
+          return { kind: "exec_result", body: { tag: ${JSON.stringify(TAG)}, got, wrote } };
+        };\n`,
+      },
+    });
+    const digest = ws.treeDigest;
+    const credentials = { [AGENT]: await credential(AGENT) };
+    await promote(operator, { digest, tier: TIER, pins: [{ principal: AGENT, operations: ["take"] }] });
+    await operator.grant(AGENT, "exec_result", ["put"]);
+    await operator.grant(AGENT, "artifact", ["read_one"]);
+    await operator.put({
+      kind: BINDING,
+      // No `path`: the field name is the default, so the file lands at input/src.
+      body: { agent: AGENT, workspaceDigest: digest, entrypoint: "main.ts", inputs: [{ field: "src" }] },
+    });
+    await operator.put({ kind: EXEC_REQUEST, body: { workspace: digest, tier: TIER, src: art.id } });
+
+    const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: sandboxInvoker(operator) });
+    const [outcome] = await host.tick();
+    assertEquals(outcome.status, "acked", JSON.stringify(outcome));
+    const [r] = await operator.query({ kind: "exec_result", match: { tag: TAG } }, 10);
+    assertEquals((r.body as { got: string }).got, "payload-bytes");
+    assertEquals((r.body as { wrote: boolean }).wrote, false, "an inputs-only run holds no writable path");
+    assert(r.runtimeMeta.parentIds.includes(art.id), "lineage holds on this posture too");
+  });
+});
+
+Deno.test("[host] a request missing its declared input field fails, and the work goes back", async () => {
+  await withSpace(async ({ operator, credential }) => {
+    // The binding declares what the code needs; a request that does not carry it cannot run. The
+    // failure is an attempt (nack), not a loss, and the error names the field so the requester's
+    // bug reads as the requester's bug.
+    const AGENT = "agent:" + uniq("starved"), TIER = uniq("prod");
+    const credentials = { [AGENT]: await credential(AGENT) };
+    await promote(operator, { digest: D1, tier: TIER, pins: [{ principal: AGENT, operations: ["take"] }] });
+    await operator.grant(AGENT, "exec_result", ["put"]);
+    await operator.grant(AGENT, "artifact", ["read_one"]);
+    await operator.put({
+      kind: BINDING,
+      body: { agent: AGENT, workspaceDigest: D1, entrypoint: "main.ts", inputs: [{ field: "inputArtifact" }] },
+    });
+    const { id } = await operator.put({ kind: EXEC_REQUEST, body: { workspace: D1, tier: TIER, job: "x" } });
+
+    const host = new WorkspaceHost({ base: url, credentials, reader: operator, invoke: echo("must-not-run") });
+    const [outcome] = await host.tick();
+    assertEquals(outcome.status, "failed", JSON.stringify(outcome));
+    assert((outcome as { error: string }).error.includes("inputArtifact"), "the error must name the missing field");
+    assertEquals((outcome as { recordId: string }).recordId, id);
+  });
+});
+
 Deno.test("[host] each version is THAT run's outputs, and a run that writes nothing makes none", async () => {
   await withSpace(async ({ operator, credential }) => {
     // Replace, not accumulate: the directory starts empty every run, so version N answers "what did

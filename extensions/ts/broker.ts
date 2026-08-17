@@ -41,7 +41,8 @@
 import type { RadiaClient, RadiaRecord } from "../../sdk/ts/client.ts";
 import { bwrapArgs, jailArgs, type RunOptions, type SandboxSpec } from "./sandbox.ts";
 import { listSandboxes } from "./sandbox-registry.ts";
-import { type InvokeContext, type Invoker, treeCache, type TreeCache } from "./host.ts";
+import { INPUT_DIR, type InvokeContext, type Invoker, treeCache, type TreeCache } from "./host.ts";
+import { validatePath } from "./workspace.ts";
 
 /**
  * The channel: a PRIVATE pipe pair, not stdout.
@@ -387,16 +388,18 @@ async function runBrokered(
         resp: await Deno.open(chan.resp, { read: true, write: true }),
       };
       await Deno.writeTextFile(bootPath, runtime.boot(`${root}/${entrypoint}`, ctx.record, chan));
-      const readRoots = [root, bootDir, ctlDir, ...(ctx.outDir ? [ctx.outDir] : []), ...(opts.run?.readRoots ?? []), ...(spec?.readonlyPaths ?? [])];
+      const readRoots = [root, bootDir, ctlDir, ...(ctx.outDir ? [ctx.outDir] : []), ...(ctx.inputDir ? [ctx.inputDir] : []), ...(opts.run?.readRoots ?? []), ...(spec?.readonlyPaths ?? [])];
       // The OUTPUT tree, per claim, and the only writable path an entrypoint gets. Never `root`:
       // that directory is the agent's CODE, shared between concurrent claims and pinned by the
       // digest the grant promotes, so a run writing into it races its neighbours and changes the
       // identity the pin refers to. Absent unless the binding asked for one (host.ts).
       const writeRoots = [ctlDir, ...(opts.run?.writeRoots ?? []), ...(ctx.outDir ? [ctx.outDir] : [])];
       // The output tree is the CWD when there is one, so saving a file is `open("chart.png", "wb")`
-      // in any language, with nothing added to the entrypoint signature. The boot program imports
-      // the entrypoint by absolute path, so nothing here depends on the cwd being the code tree.
-      const cwd = ctx.outDir ?? root;
+      // in any language, with nothing added to the entrypoint signature; an inputs-only run gets
+      // its read-only input dir instead, so `input/<path>` resolves the same way in both postures.
+      // The boot program imports the entrypoint by absolute path, so nothing here depends on the
+      // cwd being the code tree.
+      const cwd = ctx.outDir ?? ctx.inputDir ?? root;
       // The BACKEND is chosen by the sandbox's declared isolation, never by the language: the two
       // are independent, and conflating them is how "python means bubblewrap" becomes a rule
       // nobody wrote down. Both spawns leave stdin free, which is what the broker needs and what
@@ -608,8 +611,10 @@ async function perform(
       const req = call.args as { kind: string; body?: unknown; parentIds?: unknown; taint?: unknown };
       const body = { ...(req.body as Record<string, unknown> ?? {}), ...(opts.stamp ?? {}) };
       const declared = Array.isArray(req.taint) ? req.taint.map(String) : [];
-      // Lineage the code does not get to omit, labels it does not get to withhold.
-      const parentIds = [ctx.record.id, ...(Array.isArray(req.parentIds) ? req.parentIds.map(String) : []).filter((p) => p !== ctx.record.id)];
+      // Lineage the code does not get to omit, labels it does not get to withhold. The materialised
+      // inputs are forced alongside the claimed record: what the code READ flows into what it wrote.
+      const forced = [ctx.record.id, ...(ctx.inputIds ?? [])];
+      const parentIds = [...forced, ...(Array.isArray(req.parentIds) ? req.parentIds.map(String) : []).filter((p) => !forced.includes(p))];
       const taint = [...new Set([...declared, ...(opts.labels ?? [])])];
       const out = await ctx.client.put(
         { kind: req.kind, body, parentIds, ...(taint.length ? { taint } : {}) },
@@ -665,11 +670,12 @@ export function recordingPerformer(into: Proposal[]): Performer {
       if (bad) return Promise.resolve({ id: call.id, ok: false, error: bad });
       const req = call.args as { kind: string; body?: unknown; parentIds?: unknown; taint?: unknown };
       const ordinal = nextOrdinal();
+      const forced = [ctx.record.id, ...(ctx.inputIds ?? [])];
       const proposal: Proposal = {
         ordinal,
         kind: req.kind,
         body: { ...(req.body as Record<string, unknown> ?? {}), ...(opts.stamp ?? {}) },
-        parentIds: [ctx.record.id, ...(Array.isArray(req.parentIds) ? req.parentIds.map(String) : []).filter((p) => p !== ctx.record.id)],
+        parentIds: [...forced, ...(Array.isArray(req.parentIds) ? req.parentIds.map(String) : []).filter((p) => !forced.includes(p))],
         taint: [...new Set([...(Array.isArray(req.taint) ? req.taint.map(String) : []), ...(opts.labels ?? [])])],
         idempotencyKey: `broker:${ctx.record.id}:${ordinal}`,
       };
@@ -703,6 +709,13 @@ export async function dryRunEntrypoint(
     entrypoint: string;
     record: RadiaRecord;
     spec?: SandboxSpec | null;
+    /**
+     * Sample inputs for the rehearsal, path -> contents, landing at `input/<path>` in the cwd the
+     * same way a host materialises the real ones. CALLER-SUPPLIED bytes, never fetched: a dry run
+     * holds no credential, and the whole point of rehearsing a data-processing entrypoint is
+     * exercising its transform without touching the data it will be granted later.
+     */
+    inputFiles?: Record<string, string | Uint8Array>;
   },
 ): Promise<{ result: { kind: string; body: unknown }; proposals: Proposal[] }> {
   const proposals: Proposal[] = [];
@@ -713,14 +726,29 @@ export async function dryRunEntrypoint(
       throw new Error(`a dry run has no space access (tried to use client.${String(prop)})`);
     },
   });
+  let inputDir: string | undefined;
+  if (opts.inputFiles && Object.keys(opts.inputFiles).length > 0) {
+    inputDir = await Deno.makeTempDir({ dir: opts.bootRoot || undefined, prefix: "radia-in-" });
+    for (const [rel, contents] of Object.entries(opts.inputFiles)) {
+      validatePath(rel);
+      const target = `${inputDir}/${INPUT_DIR}/${rel}`;
+      await Deno.mkdir(target.slice(0, target.lastIndexOf("/")), { recursive: true });
+      await Deno.writeFile(target, typeof contents === "string" ? new TextEncoder().encode(contents) : contents);
+    }
+  }
   const ctx: InvokeContext = {
     binding: { agent: "dry-run", workspaceDigest: "", entrypoint: opts.entrypoint },
     record: opts.record,
     client,
+    ...(inputDir ? { inputDir } : {}),
   };
-  const result = await runBrokered(opts.root, opts.entrypoint, opts.spec ?? null, ctx, {
-    ...opts,
-    perform: recordingPerformer(proposals),
-  });
-  return { result, proposals };
+  try {
+    const result = await runBrokered(opts.root, opts.entrypoint, opts.spec ?? null, ctx, {
+      ...opts,
+      perform: recordingPerformer(proposals),
+    });
+    return { result, proposals };
+  } finally {
+    if (inputDir) await Deno.remove(inputDir, { recursive: true }).catch(() => {});
+  }
 }

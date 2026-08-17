@@ -540,6 +540,32 @@ Deno.test("[broker] a DRY RUN rehearses the real thing and writes nothing", asyn
   });
 });
 
+Deno.test("[broker] a dry run rehearses the transform on caller-supplied sample inputs", async () => {
+  // The host materialises real inputs under the agent's authority; a dry run holds no credential,
+  // so the SAMPLE comes from the caller and lands the same way (`input/<path>` in the cwd). This
+  // is what lets a data-processing entrypoint be rehearsed before anyone grants it the real data.
+  const root = await Deno.makeTempDir({ prefix: "radia-dry-in-" });
+  try {
+    await Deno.writeTextFile(
+      `${root}/main.ts`,
+      `export default async () => {
+        const csv = await Deno.readTextFile("input/sample.csv");
+        return { kind: "exec_result", body: { rows: csv.trim().split("\\n").length - 1 } };
+      };\n`,
+    );
+    const record = { id: "01DRYINPUT", kind: EXEC_REQUEST, body: {} } as unknown as RadiaRecord;
+    const dry = await dryRunEntrypoint({
+      root,
+      entrypoint: "main.ts",
+      record,
+      inputFiles: { "sample.csv": "h\n1\n2\n" },
+    });
+    assertEquals((dry.result.body as { rows: number }).rows, 2, "the transform ran over the sample");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("[broker] a dry run refuses reads rather than borrowing a credential", async () => {
   await withSpace(async ({ operator, hostFor }) => {
     // The rehearsal has no principal of its own. Answering a query from whatever client is nearby

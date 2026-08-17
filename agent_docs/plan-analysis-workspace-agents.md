@@ -1,6 +1,7 @@
 # Plan: the analysis pipeline on the workspace-agent deployment
 
-**Status: PLANNED, nothing built.** Analysis 2026-08-17. This is
+**Status: step 1 (host input materialisation) BUILT 2026-08-17; the rest PLANNED.** Analysis
+2026-08-17. This is
 [research-substrate-lessons.md](research-substrate-lessons.md) action 5 taken to its full shape:
 not only pinning stage code with promotion, but running the stages as workspace agents
 ([architecture-workspace-agents.md](architecture-workspace-agents.md)). It would be the first
@@ -62,15 +63,14 @@ the binding are all writes only an operator can make.
 
 ## The three gaps
 
-1. **Input bytes into the jail. THE BLOCKER, and a substrate-extension change.** Broker frames
-   are `put | query | read_one`; bytes never travel in a frame; the jail has no net. A stage
-   needs the input artifact's bytes, which `worker.ts` today fetches with its own credential.
-   Design: HOST-SIDE INPUT MATERIALISATION in `extensions/ts/host.ts`. The claimed record names
-   `inputArtifact`; the host fetches it under the AGENT's authority (so the read is authorized
-   and the artifact is a data parent, so taint flows) into the run's cwd beside the code tree.
-   Generic: any data-processing workspace agent needs this, so it passes the extension
-   admission test. `dryRunEntrypoint` needs the same move (materialise a SAMPLE input into the
-   rehearsal cwd), or a chat-authored stage can rehearse its frames but not its transform.
+1. **Input bytes into the jail. BUILT** (`Binding.inputs` + `materializeInputs`, host.ts;
+   cases in `extensions/conformance/host.test.ts`). Broker frames are `put | query | read_one`;
+   bytes never travel in a frame; the jail has no net. The binding declares which body FIELDS
+   name artifact records, and the host fetches them under the AGENT's authority (so the read is
+   authorized, and the artifact is a data parent of the result and every brokered put, so taint
+   flows) into `input/<path>` in the run's cwd (`INPUT_DIR`), which capture excludes. Without an
+   output tree the input dir IS the cwd, read-only. `dryRunEntrypoint({inputFiles})` is the
+   rehearsal half: caller-supplied sample bytes, same layout, no credential.
 2. **`outputDigest` in the result.** The entrypoint's returned body is acked before the
    output-workspace capture turns its file into an artifact. Preferred shape: the entrypoint
    computes the sha256 of the bytes it wrote (crypto works in the jail) and the planner resolves
@@ -91,7 +91,7 @@ the binding are all writes only an operator can make.
 ## Order
 
 1. Host input materialisation (`extensions/ts/host.ts` + a conformance case; the one
-   substrate-tier prerequisite).
+   substrate-tier prerequisite). BUILT 2026-08-17, gap 1 above.
 2. Split `stages.ts` into three entrypoint trees; bootstrap writes them as workspaces.
 3. Redeclare `stage_request`/`stage_result` with `workspace` + `tier` indexed paths (additive).
 4. Three stage agents; pins on both `take` (request) and `put` (result); bindings; host loop.
