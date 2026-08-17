@@ -180,12 +180,20 @@ with no lease, acknowledgement, redelivery or fencing documented — a framework
 competitive claiming over durable work. So Flock converges on the routing thesis while occupying
 neither the trust cell nor the work-queue half of the substrate.
 
-**PatchBoard** (arXiv 2605.29313, 2026; claims from the paper, UNVERIFIED against its code)
+**PatchBoard** (arXiv 2605.29313, 2026; CHECKED against the paper 2026-08-17, code unverified)
 shares the deeper thesis, that LLMs must not be the ones enforcing the protocol: agents submit
 JSON Patch proposals against shared structured state and a deterministic kernel validates schema,
-role contracts and invariants before committing transactionally with replayable logs. The fork is
-the state model, one mutable world state there against many immutable causal records here, and it
-is the most direct architectural comparison now available.
+role-specific write contracts and runtime invariants before committing, with patch-level replay
+(accepted and rejected patches, view hashes, state hashes). It authorizes READS too: "workers
+only observe paths allowed by their read contracts", which puts it closer to this design than
+Flock on that axis, path-scoped over one document where grants here are pattern-scoped over many
+records. Two forks decide the comparison. The state model: one mutable document whose history
+lives in the patch log there, records that ARE the history here. And the TRUST ANCHOR: the
+schemas and role contracts are authored by an "Architect" LLM agent at task start, checked only
+against a hand-crafted meta-schema — the authorization surface is itself model output, which is
+the self-granting shape the operator rule here exists to refuse (grants are assigned, never
+self-declared, and the power-granter is never mintable). No leases, claims or crash recovery;
+"transactional" means validated atomic mutations with logging, not ACID.
 
 **The adoption risk this lineage actually names.** Both ancestries were technically sound and both
 lost to orchestration. Spring beat OSGi by offering the registry's benefits with the dynamism
