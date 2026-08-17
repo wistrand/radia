@@ -274,8 +274,14 @@
     </p>
     <p>
       Both are encouraging, both are specific to their workloads, and neither was run on this system.
-      There is no benchmark of Radia itself yet. So the honest position is that the idea has
-      independent support and the implementation does not.
+      Radia has its own benchmark suite, and it is worth being precise about what it measures:
+      throughput and latency per storage backend, how coalescing holds up as parked chat sessions
+      accumulate on one space, and where the query planner's costs bend at millions of records over
+      real HTTP. Those are measurements of this implementation against itself. What does not exist
+      is a comparison against Temporal or a message broker on a shared workload, a benchmark of the
+      contended case where many workers fight over one hot kind, or any number produced by someone
+      other than the author. So the honest position is that the idea has independent support, the
+      implementation has self-measurements, and nothing yet compares the two worlds directly.
     </p>
   </div>
 </section>

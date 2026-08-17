@@ -154,6 +154,22 @@ outcomes decided things here:
   than in a style guide.
 
 
+**The convergent contemporaries (Flock, PatchBoard), added 2026-08-17.** Both surfaced by an
+external review ([notes/radia-similar-systems-research.md](../notes/radia-similar-systems-research.md));
+the claims below are from their published material, UNVERIFIED against source. **Flock**
+(whiteducksoftware, self-described "Declarative Blackboard Multi-Agent Orchestration", v0.5)
+is the closest living relative: agents declare typed artifacts they consume and publish, with
+predicate and semantic subscriptions, a persistent blackboard, visibility controls and OTLP
+export. It is a framework where this is a substrate, but the two-cell gap claim above is
+CHECKABLE against it (does it store routing as data a policy can refuse? does it authorize at the
+granularity of one record's contents?) and has not been checked; until someone does, do not
+repeat the gap claim against Flock specifically. **PatchBoard** (arXiv 2605.29313, 2026) shares
+the deeper thesis, that LLMs must not be the ones enforcing the protocol: agents submit JSON
+Patch proposals against shared structured state and a deterministic kernel validates schema, role
+contracts and invariants before committing transactionally with replayable logs. The fork is the
+state model, one mutable world state there against many immutable causal records here, and it is
+the most direct architectural comparison now available.
+
 **The adoption risk this lineage actually names.** Both ancestries were technically sound and both
 lost to orchestration. Spring beat OSGi by offering the registry's benefits with the dynamism
 removed; Declarative Services succeeded by hiding it; Temporal and DBOS thrive today on "write your
