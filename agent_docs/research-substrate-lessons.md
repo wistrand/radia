@@ -136,11 +136,17 @@ isolation moved to NAMES (`uniq()` per test), which cut the suite to ~1m15s loca
 substrate-shaped observation surfaced: a ~13k-write burst (workspace.test.ts's manifest-cap case)
 took 21s on a fresh space and 42s on one carrying the file's accumulated history — on CI
 hardware, twice, in different regions — while the same comparison is only 17s vs 21s locally.
-The amortized GC is ruled out by its measured costs (plan-gc.md: ≤9ms per trigger, ~13 triggers
-here). What remains suspected, NOT shown: heap growth in the long-lived space process, or
-per-request overhead compounding on a constrained 2-core VM. Worked around rather than explained
-(that one test boots a private space); a long-lived space taking large write bursts is the
-production shape that would meet this, so profile before trusting any theory.
+Profiled locally 2026-08-16, and every substrate-shaped suspect is EXONERATED, each by
+measurement: the burst is CPU-bound server-side (~1.5ms CPU per file) and FLAT to 13k
+accumulated artifacts, so data volume costs nothing; a replayed history phase changes nothing;
+the amortized GC is ruled out by plan-gc.md's own cost table; and the suite's sibling spaces
+(alive until process exit, since `space.ts` reaps only on unload) idle at 0% CPU — the no-timer
+design holding — at ~400MB RSS each, with NINE of them adding nothing to the burst even confined
+to 2 cores under a 5GB memory cap. The CI doubling therefore does not reproduce under local
+simulation of the runner's CPU and memory, which leaves it ENVIRONMENTAL (vCPU quality, steal,
+or throttling on the shared 2-core VM), not a property of a long-lived space. The workaround
+stands and suffices: the one heavy test boots a private space, and the full suite now runs it at
+18s with an aged client and nine siblings alive. Instrument a CI run before reopening this.
 
 ## Suggested actions
 
@@ -233,6 +239,8 @@ would have shown nothing.
 | Encryption's three redesigns | Each is recorded with its cause in [plan-encryption.md](plan-encryption.md) |
 | A history-carrying space doubles a 13k-write burst on CI | Measured twice (two Azure regions): 41s/43s shared vs 21s on the old per-test spaces; locally 21s shared vs 17s fresh |
 | The amortized GC is not that penalty's cause | plan-gc.md's measured table: 0.36–9ms per trigger, one trigger per 1000 writes |
+| Neither history, data volume, nor idle sibling spaces cause it | Profiled: per-1000-file chunks flat at ~1.35s across 13k artifacts, replay of the file's history ±0, 9 idlers ±0 even under `taskset -c 0,1` with `MemoryMax=5G`; idle space CPU 0% over 15s, before and after writes |
+| The fix holds in context | Full suite, aged client, nine siblings alive: the heavy test runs 18s on its private space vs 21s shared before the fix |
 
 **Not checked, and stated as inference:** that the substrate's boundary is in "the right place" is a
 judgement from two apps, not a measurement. A third application with a different shape (streaming
