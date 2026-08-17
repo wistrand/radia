@@ -16,12 +16,15 @@ export function transform(input: Uint8Array): Uint8Array {
   const ranked = [...columns]
     .map((c) => ({ ...c, cv: c.mean === 0 ? 0 : round(Math.abs(c.sd / c.mean)) }))
     .sort((a, b) => b.cv - a.cv);
-  const top = ranked[0];
+  // Only a column that HELD values may headline. All-garbage input still yields columns (clean
+  // reads a lettered first line as a header), each with n = 0, and "vvv varies most (cv 0, mean 0
+  // over 0 values)" is a confident sentence about nothing.
+  const top = ranked.find((c) => c.n > 0);
   return new TextEncoder().encode(JSON.stringify({
     rows,
     headline: top
       ? `${top.name} varies most (cv ${top.cv}, mean ${top.mean} over ${top.n} values)`
-      : "no numeric columns were found",
+      : "no numeric data was found",
     ranked,
   }, null, 2));
 }

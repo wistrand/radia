@@ -97,6 +97,9 @@ const esc = (s) => String(s ?? "").replace(/[<>&"]/g, (c) => ({ "<":"&lt;", ">":
  * (`deno task analysis -- --observe`); for anyone else the console answers "may not access the ops
  * plane", which is correct rather than broken.
  */
+// Console links share ONE named window (never _blank): the console holds its own sign-in, so a
+// fresh window per click would ask the person to authenticate for every record they open. The
+// route is in the fragment, so navigating the existing window keeps its session and just moves.
 const consoleLink = (id, tab = "graph") => `${SPACE}/#${tab}/${id}`;
 
 /** Every call goes through the app's relay, carrying THIS person's token. The app holds none. */
@@ -287,7 +290,7 @@ async function refresh() {
     html += `<div style="margin-bottom:14px">
       <div style="margin-bottom:4px"><b>${esc(ds.body.name)}</b>
         <span class="muted mono">${esc(ds.body.digest.slice(0, 12))}…</span>
-        <a class="mono" href="${consoleLink(ds.body.artifactId)}" target="_blank" title="this pipeline's root: the uploaded bytes everything descends from">console ↗</a></div>
+        <a class="mono" href="${consoleLink(ds.body.artifactId)}" target="radia-console" title="this pipeline's root: the uploaded bytes everything descends from">console ↗</a></div>
       <table><thead><tr><th>stage</th><th>state</th><th>detail</th><th>record</th></tr></thead><tbody>${rows.join("")}</tbody></table>
     </div>`;
   }
@@ -313,7 +316,7 @@ const cell = (stage, state, detail, id) =>
   `<tr><td class="mono">${stage}</td>
        <td><span class="tag ${state}">${state}</span></td>
        <td class="muted">${esc(detail)}</td>
-       <td>${id ? `<a class="mono" href="${consoleLink(id)}" target="_blank">${esc(id.slice(-8))} ↗</a>` : "<span class=muted>·</span>"}</td></tr>`;
+       <td>${id ? `<a class="mono" href="${consoleLink(id)}" target="radia-console">${esc(id.slice(-8))} ↗</a>` : "<span class=muted>·</span>"}</td></tr>`;
 
 // ---- boot ----
 async function start() {

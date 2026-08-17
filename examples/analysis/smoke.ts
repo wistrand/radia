@@ -162,6 +162,34 @@ check("…and the bad row was dropped by clean", first?.rows === 3, `rows=${firs
   check("the report artifact carries the person as owner, not the agent", mine !== undefined);
 }
 
+// ---- 1b. all-garbage data completes, and the report refuses to headline nothing ----
+//
+// Broken ROWS are dropped and counted (asserted above via the sales CSV). ALL-broken input is the
+// sharper case: clean reads a lettered first line as a header, so columns exist with n=0
+// throughout, and the report used to print "vvv varies most (cv 0, mean 0 over 0 values)" — a
+// confident sentence about nothing. Only a column that held values may headline.
+{
+  const junk = await admin.putArtifact(new TextEncoder().encode("vvv\nooo\n???\n"), {
+    mediaType: "text/csv",
+    meta: { owner: alice },
+  });
+  await admin.put({
+    kind: "dataset",
+    body: { name: "noise", digest: junk.digest, artifactId: junk.id, owner: alice },
+    parentIds: [junk.id],
+  });
+  const steps1b = await settle();
+  const noise = steps1b.filter((s) => s.dataset === "noise");
+  check("an all-garbage upload still runs every stage to done", noise.length === STAGES.length && noise.every((s) => s.state === "done"),
+    noise.map((s) => `${s.stage}:${s.state}`).join(" "));
+  const [r] = await admin.query({ kind: "stage_result", match: { stage: "report", dataset: "noise", ok: "yes" } }, 1, { dir: "desc" });
+  const digest = (r?.body as { outputDigest?: string })?.outputDigest ?? "";
+  const [art] = await admin.query({ kind: "artifact", match: { digest } }, 1, { dir: "desc" });
+  const report = art ? JSON.parse(new TextDecoder().decode(await admin.getArtifact(art.id))) : null;
+  check("…and its report says so instead of headlining a column with no values",
+    report?.headline === "no numeric data was found", JSON.stringify(report?.headline));
+}
+
 // ---- 2. changing NOTHING re-runs nothing ----
 const before = (await admin.query({ kind: "stage_result" }, 100)).length;
 for (let i = 0; i < 3; i++) await planAll(planner, { apply: true });
@@ -201,8 +229,17 @@ check("a request whose digest no pin covers is left unclaimed, never answered by
 // as many times as the planner woke. This is the only place that path is reachable — everywhere
 // else the stages finish, and a finished stage returns before the request code.
 for (let i = 0; i < 4; i++) await planAll(planner, { apply: true });
-const queued = (await admin.query({ kind: "stage_request", match: { stage: "features", workspace: bumped } }, 20)).length;
-check("planning an in-flight stage repeatedly queues it ONCE", queued === 1, `${queued} requests`);
+// PER DATASET, which is the unit the dedupe key covers: each dataset legitimately queues its own
+// features request under the bumped digest, and each must do so exactly once.
+const bumpedReqs = await admin.query({ kind: "stage_request", match: { stage: "features", workspace: bumped } }, 20);
+const perDataset = new Map<string, number>();
+for (const r of bumpedReqs) {
+  const d = (r.body as { dataset: string }).dataset;
+  perDataset.set(d, (perDataset.get(d) ?? 0) + 1);
+}
+check("planning an in-flight stage repeatedly queues it ONCE per dataset",
+  perDataset.size > 0 && [...perDataset.values()].every((n) => n === 1),
+  [...perDataset.entries()].map(([d, n]) => `${d}:${n}`).join(" "));
 
 // ---- 4. a result cannot lie about which code produced it ----
 //
@@ -304,8 +341,10 @@ export default (record) => runStage(record, (input) => {
   workers.push(tldrHost);
 
   const steps5 = await settle();
-  const tldrStep = steps5.find((s) => s.stage === "tldr");
-  const reportStep = steps5.find((s) => s.stage === "report");
+  // Scoped to ONE dataset: several are flowing by now, and chaining assertions only make sense
+  // within a single dataset's walk.
+  const tldrStep = steps5.find((s) => s.dataset === "sales" && s.stage === "tldr");
+  const reportStep = steps5.find((s) => s.dataset === "sales" && s.stage === "report");
   check("the NEW stage runs to done", tldrStep?.state === "done", JSON.stringify(tldrStep));
   check("…chained onto report's output", tldrStep !== undefined && tldrStep.inputDigest === reportStep?.outputDigest);
   const untouched = await Promise.all(STAGES.map(async (s) => (await countOf(s)) === before[s]));
