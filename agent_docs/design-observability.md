@@ -92,7 +92,7 @@ growth; the ledger in plan-gc.md states what each buys and loses.
 
 Orphan records · starving patterns · wakeup amplification · duplicate-execution rate.
 
-Diagnostics are **compositions of substrate queries, not hand-rolled reports.** The building
+Diagnostics are **compositions of ordinary space queries, not hand-rolled reports.** The building
 block is the envelope query (`Space.queryEnvelopes` / `GET /v0/ops/records?state=…`): filter
 records by runtime state, plus `expired` (lapsed lease) and `stale` (seconds sat available).
 Query-where-possible has a real boundary here: the content-routing pattern language matches

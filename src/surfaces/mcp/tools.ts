@@ -1,5 +1,5 @@
 // MCP tool definitions. The descriptions are the documentation: a model learns HOW to use a
-// tool from its description, not from a system prompt that teaches the substrate (see the
+// tool from its description, not from a system prompt that teaches the space (see the
 // "discover, don't hardcode" corollary in CLAUDE.md). Nothing here names a specific record kind:
 // the space's kinds are discovered at runtime through `space_kinds`.
 

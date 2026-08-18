@@ -319,7 +319,7 @@ Deno.test("workspace: a summary answers what EXISTS, which a raw query cannot", 
     await writeWorkspace(c, { name: "single", owner: OWNER, files: { "x.txt": "1\n", "y.txt": "2\n" } });
 
     const raw = await c.query({ kind: "workspace", match: { name: "iterated" } }, 100);
-    assertEquals(raw.length, 3, "three records, as the substrate should have");
+    assertEquals(raw.length, 3, "three records, as the space should hold");
 
     const s = await summarizeWorkspaces(c);
     assert(s.complete, "a complete scan says so");
@@ -578,7 +578,7 @@ Deno.test("workspace: materialising refuses to escape the root, including throug
 Deno.test("workspace: a classified tree does not launder its labels through the filesystem", async () => {
   await withSpace(async (c) => {
     // THE Phase 2 question. Bytes go to disk, code reads them, output comes back — and the
-    // substrate cannot observe a filesystem. So the labels have to travel on the RECORD graph, and
+    // runtime cannot observe a filesystem. So the labels have to travel on the RECORD graph, and
     // the manifest is what makes that affordable: one parent edge instead of one per file.
     await writeWorkspace(c, {
       name: "classified",
@@ -595,7 +595,7 @@ Deno.test("workspace: a classified tree does not launder its labels through the 
     assertEquals((await c.getRecord(m.id))!.runtimeMeta.taint, ["file"]);
 
     // A result that names the manifest inherits it. This is the anti-laundering property: the run
-    // read those bytes off a disk the substrate cannot see, and the classification still arrives.
+    // read those bytes off a disk the runtime cannot see, and the classification still arrives.
     await c.registerKind({ kind: "run_result", indexedPaths: [], claimable: false });
     const result = await c.put({ kind: "run_result", body: { stdout: "from a file read" }, parentIds: [m.id] });
     assertEquals((await c.getRecord(result.id))!.runtimeMeta.taint, ["file"]);

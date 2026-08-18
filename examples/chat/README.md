@@ -203,7 +203,7 @@ and counting rounds; that loop is gone, and a turn is now a chain of records tha
 matching ([plan-chat-turn.md](../../agent_docs/plan-chat-turn.md)). The client seeds an `llm_call`
 carrying its tool list, then only renders what appears. So killing the terminal mid-turn no longer
 kills the turn, two REPLs can watch one conversation, and `radia flows` can mine the shape of a turn,
-none of which was true while the loop lived in a process the substrate could not see.
+none of which was true while the loop lived in a process the runtime could not see.
 
 Two rules the chain rests on, both learned by breaking them: every hop CARRIES what the next one
 needs (`i`, `of`, `round`, `turnAt`), because a field that quietly stops being set turns a round of
@@ -259,9 +259,9 @@ capability record streams in and the chatbot gains the tool on the next turn, no
 change; how to *use* a tool is in its description, not the chat's system prompt. Like `kind_def`
 records, a capability is content-keyed and immutable: a redefined tool is a **successor** record,
 latest-per-tool wins on discovery (so re-running never conflicts). This is "no preconfigured
-routing table" (§7) applied to tools. It is the substrate coordinating its own capabilities.
+routing table" (§7) applied to tools. It is the space coordinating its own capabilities.
 
-**Model selection is content-routing, and the routing is delegated to the substrate.** There are
+**Model selection is content-routing, and the routing is delegated to the space.** There are
 four capability/cost **tiers** (`fast`, `balanced`, `deep`, `ultra`), each served by its own
 inference-worker that claims only its tier's calls (`take {kind:llm_call, match:{tier}}`) and
 advertises a `model` record carrying its `rank` (cheap → capable). **The chat holds no routing
@@ -269,7 +269,7 @@ logic:** it puts an *untiered* `llm_call`. A **router-worker** (`workers/router.
 calls (`match:{tier:{$exists:false}}`), classifies the turn with a **cheap classifier model**, and
 re-dispatches a *tiered* `llm_call`. That classifier is itself a model-overridden `llm_call` served
 by the inference fleet (`--classify-model`, default `google/gemini-2.5-flash-lite`), so the API key
-stays isolated in the workers and classification routes through the substrate like any other call.
+stays isolated in the workers and classification routes through the space like any other call.
 The result stays keyed to the original call (`replyTo`), so the chat is oblivious to the
 indirection; it just sees `[routed → deep]`. Add a tier-worker → a new model is live, no
 orchestrator change.
@@ -554,7 +554,7 @@ and stores exactly what the direct call would have. The rule that still holds is
 records: payloads go out of line as artifacts, while the conversation stays queryable JSON.
 Messages-as-blobs would break matching, pattern scoping, windowing and the Feed at once.
 
-Getting that line wrong is a description bug, not a substrate one, and it shipped. Asked to "create
+Getting that line wrong is a description bug, not the runtime's, and it shipped. Asked to "create
 a web page with a js clock", the assistant wrote the HTML as a JS string literal, `console.log`'d
 it, and stored stdout. `run_javascript` claimed "that is how you save a file" with no condition and never
 mentioned `save_content`, while `save_content` waited for the user to say "save" (which that request
@@ -641,7 +641,7 @@ Three properties, and the third is the one that matters:
   and recomputes `treeDigest` from the entries, refusing a manifest that lies about either, so the
   `{workspace, treeDigest}` on a `check` attests to a reproducible input rather than to an event.
 - **The manifest is a data PARENT of the result.** That is what stops a classified tree from
-  laundering its labels through the filesystem: the substrate cannot see a disk, so the edge is the
+  laundering its labels through the filesystem: the runtime cannot see a disk, so the edge is the
   only thing carrying the classification, and one edge speaks for the whole tree because the
   manifest holds the union.
 
@@ -691,7 +691,7 @@ That is also why the exec worker's artifact grant is `put` only: it may store wh
 (An SVG saved this way downloads rather than rendering inline, by the same rule that keeps
 scriptable media out of the console's origin.)
 
-Three properties fall out of the substrate rather than being bolted on:
+Three properties fall out of the space rather than being bolted on:
 
 - **The result is classified by what the sandbox could REACH**, not by the fact that code ran.
   With read roots the output may carry file contents, so it carries `file`; with none there is
@@ -734,7 +734,7 @@ records, so the model can *look* instead of reconstructing. The prompt carries o
 ("if you are unsure what happened earlier, retrieve it rather than recall it") and the assistant's
 own `conversationId`; the mechanism stays in `space_query`'s description, which already spells out
 `kind 'message'`, `match {conversationId}`, `order_by index`. Identity in the prompt is not
-substrate knowledge. It's the agent's handle on itself, like a run token, and it is what makes
+knowledge of the space. It's the agent's handle on itself, like a run token, and it is what makes
 the disposition usable: the reconstructed thread strips `conversationId`, the `conversation` record
 has an empty body and no indexed path, and a scoped session cannot enumerate conversations, so without
 being told the id the model could not name the thread it is in.
@@ -976,7 +976,7 @@ and a permission change.
 
 **`--encrypt` seals a conversation's content** (agent_docs/plan-encryption.md): the messages, the
 streamed chunks, tool arguments, tool output, and a code runner's captured stdout. What stays clear
-is what the substrate routes on — who, when, which tool, which verdict — and that is not a small
+is what the space routes on — who, when, which tool, which verdict — and that is not a small
 exception: metadata says a great deal. The flag is per session and the unit is the CONVERSATION, so the
 choice is fixed at creation and `--encrypt` is only needed to START an encrypted thread: resuming
 one adopts its key with or without the flag, and the banner reports it. The reverse still refuses —
@@ -987,7 +987,7 @@ asymmetric because in join mode YOUR session creates the conversation, and it mu
 whose secret it must not hold. What that protects: the store, a dump, the console, ops-plane
 readers, and anyone without a key. What it does not: whoever runs the fleet, and metadata — who
 talks to whom, when, how long, which tools ran, and the whole lineage graph stay clear, because that
-is exactly what the substrate routes on.
+is exactly what the space routes on.
 
 Honest edges (documented, not hidden): a crashed inference retries and can double-spend
 (at-least-once; the gateway is the real fix); file contents become records and flow to the

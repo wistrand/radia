@@ -10,7 +10,7 @@
 // which today's `idx_events_xid_seq` made cheap PER read without changing the COUNT.
 //
 // Faithful to the real consumer: `src/server/handlers/watches.ts` (getEvents(cursor,200) -> per
-// event matchesEvent -> waitForEvents). No HTTP; the loop is the substrate work the SSE handler
+// event matchesEvent -> waitForEvents). No HTTP; the loop is the runtime work the SSE handler
 // wraps. Two write shapes isolate the two terms:
 //   - SAME KIND, another conversation: the chat shape. A message in conversation c0 wakes every
 //     watcher of kind `feed`, each getEvents AND getRecord (kind matches its predicate), and only

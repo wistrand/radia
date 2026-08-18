@@ -283,7 +283,7 @@ Deno.test("[host] the CODE tree stays read-only, even with an output tree open",
 
 Deno.test("[host] a declared input is materialised into the cwd, excluded from capture, and a data parent of the result", async () => {
   await withSpace(async ({ operator, credential }) => {
-    // The plan's one substrate-tier prerequisite (architecture-analysis-workspace-agents.md gap 1): broker
+    // The plan's one extension-tier prerequisite (architecture-analysis-workspace-agents.md gap 1): broker
     // frames carry no bytes and the jail has no net, so the HOST fetches the claimed record's
     // declared input under the AGENT's authority and lays it at `input/<path>` in the cwd. Three
     // properties in one run: the bytes arrive, capture does not re-store them as output, and the

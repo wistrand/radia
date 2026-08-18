@@ -79,7 +79,7 @@ const INFERENCE_GRANTS: Grant[] = [
 ];
 
 // router-worker: claims UNTIERED llm_calls, classifies the turn with a cheap model, and
-// re-dispatches a tiered one. Model selection is delegated here (a substrate worker), not decided
+// re-dispatches a tiered one. Model selection is delegated here (a worker in the space), not decided
 // in the chat client. It reads the newest messages (to classify) and its own classifier call's
 // result; it never holds the API key: the classification is itself an llm_call served by the fleet.
 const ROUTER_GRANTS: Grant[] = [

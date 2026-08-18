@@ -37,7 +37,7 @@ How a multi-file working tree lives in a space, and the relationship to git.
 
 The chat's sandbox is a single-file JS evaluator: program on stdin, `--no-remote`, no writes, no
 npm. Real code generation iterates on a PROJECT, and the loop is write, run, read the error, fix,
-rerun across several files. That is a sandbox capability gap, not a substrate one: measured locally,
+rerun across several files. That is a sandbox capability gap, not the runtime's: measured locally,
 a coordination round trip is ~30ms and a sandbox spawn ~27ms against a model round of 1-10 SECONDS,
 so routing this loop through records costs about 1% of an iteration (see
 [gotchas.md](gotchas.md)). The medium is not the constraint. The missing thing is somewhere for a
@@ -110,7 +110,7 @@ tree, which is human-scale and the thing a person reads, stays inline.
 **Rejected alternatives, and why.** One record per file avoids large bodies but makes reading the
 workspace a registry read that must page to exhaustion, putting the loop's correctness on the
 single most repeated bug in this codebase. A single archive artifact per snapshot is simple and
-throws away everything the substrate offers: no per-file dedup, no "which attempts touched this
+throws away everything the space offers: no per-file dedup, no "which attempts touched this
 file", opaque to lineage, and it collides with the 32 MiB artifact cap. It also destroys erasure
 granularity (see below), which is the strongest argument against it.
 
@@ -268,7 +268,7 @@ to design for than to retrofit.
 forced rather than chosen.
 
 The union, because a jailed run is OPAQUE: it can read one file and write those bytes into another,
-and nothing in the substrate sees it. So a changed file inherits the whole tree's labels, not its
+and nothing in the runtime sees it. So a changed file inherits the whole tree's labels, not its
 own file's. Per-file inheritance would be more useful and would be a lie. Labels are therefore sticky
 within a tree and come down only by declassify, which is what monotone means.
 
@@ -307,7 +307,7 @@ artifact belonged to, and it is a per-candidate query on a path measured at ~125
 At that point label the file artifacts too. Until then, do not.
 
 One related asymmetry to keep in view. The union rule is FORCED for a run (the jail is opaque, so
-bytes can move between files unseen) and merely CHOSEN for an edit, where the substrate performs the
+bytes can move between files unseen) and merely CHOSEN for an edit, where the runtime performs the
 change and knows which artifact the bytes came from. They were unified so that one record type has
 one propagation rule. If tree-scope saturation ever becomes the problem the boolean was — every
 workspace carrying every label, and an allowlist grant able to claim none of them — the edit path is
@@ -333,7 +333,7 @@ economics until something removes the incentive.
 
 **BUILT** ([plan-workspaces.md](plan-workspaces.md) §11, verified 2026-08-04 by
 `conformance/tree.test.ts`). A multi-file website is the first case where the tree has to leave the
-substrate as a set rather than a file at a time.
+space as a set rather than a file at a time.
 
 The runtime does NOT learn what a workspace is: a download capability is
 generalised from "one artifact" to "a `path → artifactId` index supplied at mint", which is

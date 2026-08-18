@@ -113,7 +113,7 @@ for (let i = 0; i < Deno.args.length; i++) {
 }
 
 // `--auto-grant`: everyone the IdP vouches for may use this. A policy decision, which is why it is
-// a flag — the substrate refuses to make it for you. With it, signing in as the bundled `demo` user
+// a flag — the runtime refuses to make it for you. With it, signing in as the bundled `demo` user
 // is enough; without it a fresh identity signs in successfully and then sees nothing, because
 // authenticated is not authorized.
 // EVERY enrolled identity, not just the ones the sweep would admit. The sweep deliberately skips

@@ -44,7 +44,7 @@ flowchart LR
 **Workspace agents.** An agent is not a deployed process. It is an `agent_definition` plus a
 **binding** (`{agent, workspaceDigest, entrypoint, sandboxPattern}`) plus a generic host fleet
 that runs any binding, so defining an agent is a `put`. This closes the last dogfooding gap: a
-worker's CODE was the one part of an agent living outside the substrate.
+worker's CODE was the one part of an agent living outside the space.
 
 The dependency runs one way and must not be forgotten. Grants contain whatever the CREDENTIAL
 does, so the compartment is only as good as the jailed code's inability to act under some other
@@ -534,11 +534,11 @@ a second backend is not covered by another backend's probe.
   second mechanism behind it. `auditCompartment` naming both sides is the check; run it as part
   of promotion rather than trusting the grant that was written.
 - **An exporter or declassifier may be an agent, and that is where to be careful.** Nothing in
-  the substrate requires a person, and a deterministic aggregator that provably cannot emit rows
+  the runtime requires a person, and a deterministic aggregator that provably cannot emit rows
   is a better exit gate than a tired human. An LLM-DRIVEN one is different, because prompt
   injection reaches the act that crosses the boundary. Prefer a deterministic exporter or a
   person; give analysis agents compartment grants, never both sides and never the power.
-- **The jail is not the substrate's.** Radia governs authorization and flow; isolation is the
+- **The jail is not the runtime's.** Radia governs authorization and flow; isolation is the
   runner's, and [design-execution.md](design-execution.md)'s measurement (bwrap three orders of
   magnitude weaker than the Deno jail on filesystem) is the real security decision. Radia makes
   the choice legible, not strong.

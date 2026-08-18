@@ -335,7 +335,7 @@ Deno.test("flows: the state scan is scoped to the kinds being mined", async () =
   }
 });
 
-Deno.test("flows: the substrate's own kinds stay out of the mining unless asked for", async () => {
+Deno.test("flows: the runtime's own kinds stay out of the mining unless asked for", async () => {
   // A quiet space's highest-volume kinds are its declarations and grants. Including them by default
   // would make every space's top flow a registry write and bury the work under bookkeeping.
   const { space, close } = await pipelineSpace();

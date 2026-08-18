@@ -1,6 +1,6 @@
 // A multi-file working tree as records: the manifest, and nothing that runs.
 //
-// An EXTENSION, not runtime and not application: the substrate has no opinion about files, and a
+// An EXTENSION, not runtime and not application: the runtime has no opinion about files, and a
 // manifest is built entirely from `put`, `query` and `putArtifact`. It imports the SDK and never
 // `src/`, which is the rule that keeps the tier real (see extensions/README.md).
 //
@@ -373,7 +373,7 @@ async function isForked(client: RadiaClient, name: string, conversationId?: stri
 /**
  * The HEADS of a workspace: versions nothing supersedes. More than one means a fork.
  *
- * There is no compare-and-swap in the substrate, so two writers that read the same manifest both
+ * There is no compare-and-swap in the space, so two writers that read the same manifest both
  * succeed and latest-wins picks one. That is not data loss — the other version is still a record,
  * still addressable, and its whole history is intact, which is a permanent reflog rather than a
  * force-push. What was missing is DETECTION: without it the losing writer's work is merely somewhere

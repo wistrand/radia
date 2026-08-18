@@ -5,7 +5,7 @@
 // not a broken build. It is a number that moved, which is why nothing here asserts.
 //
 // Two rules the suites follow:
-//   - MEASURE THE SUBSTRATE, NOT THE HARNESS. Setup (seeding records, minting tokens) happens
+//   - MEASURE THE RUNTIME, NOT THE HARNESS. Setup (seeding records, minting tokens) happens
 //     outside the timed region, and every suite warms up before it counts.
 //   - REPORT THE SHAPE, NOT ONE NUMBER. A mean hides the tail that actually hurts, so every
 //     measurement carries p50/p95/p99, and scaling suites report cost at several sizes.

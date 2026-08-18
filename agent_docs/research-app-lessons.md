@@ -1,4 +1,4 @@
-# What two applications taught the substrate
+# What two applications taught the runtime
 
 **Status: analysis, with proposed actions. Nothing here is scheduled.** The findings are evidence
 from building [examples/chat/](../examples/chat/) and [examples/analysis/](../examples/analysis/)
@@ -17,15 +17,15 @@ They fail differently, which is what makes the overlap interesting.
 The chat is long-lived, conversational, and model-driven: its hard parts are context, credentials
 and turn control flow. The analysis pipeline is short-lived, deterministic and batch: its hard part
 is deciding what to recompute. Neither shares code with the other. A property both hit is a property
-of the substrate rather than of an app.
+of the runtime rather than of an app.
 
 ## What held up
 
-**The substrate is complete for coordination and empty for meaning, and the line is in the right
+**The runtime is complete for coordination and empty for meaning, and the line is in the right
 place.** The pipeline needed exactly one thing Radia does not provide: which work is stale. The DAG
 (`parent_ids`), the routing, the leases, the audit and content-addressed storage were all already
 there. That decision is about 60 lines and cannot be provided, because "what counts as an input" is
-the application. The chat reaches the same split from the other side: the substrate routes records,
+the application. The chat reaches the same split from the other side: the space routes records,
 and a turn is a worker. Neither app had to fight the boundary.
 
 **Indexed paths are the real API surface.** Both apps' central design decision was the same one:
@@ -65,7 +65,7 @@ planted test, none by the type system:
 - Content-key idempotency expires, so a memo built on it silently stops memoizing.
 - A bounded `query` where `readRegistry` was needed.
 
-CLAUDE.md already names this as the stopping rule for expressing features through the substrate.
+CLAUDE.md already names this as the stopping rule for expressing features through the space.
 Two independent applications hitting it four times says the rule is real and under-enforced: it is
 documented prose defending against an ergonomics problem. Actions 1 and 2 below are the cheap half
 of the fix.
@@ -110,7 +110,7 @@ answers it as authorization (which digest a tier MAY run, pinned in a grant). Th
 invented a `stage_code` advertisement to answer it as discovery (which digest IS running). They are
 complementary rather than duplicative, but nothing says so and nothing composes them.
 
-## Where the apps are weaker than the substrate allows
+## Where the apps are weaker than the runtime allows
 
 Recorded because the gap is the app's, not Radia's, and both are worth fixing.
 
@@ -133,10 +133,10 @@ Added 2026-08-16, from the extension-suite refactor rather than the two apps. Th
 `src/main.ts dev` PER TEST: ~1.4s of subprocess start around milliseconds of assertion, ~150
 boots, 3m44s in CI. They now boot one space per FILE (`extensions/conformance/space.ts`) with
 isolation moved to NAMES (`uniq()` per test), which cut the suite to ~1m15s locally. One
-substrate-shaped observation surfaced: a ~13k-write burst (workspace.test.ts's manifest-cap case)
+runtime-shaped observation surfaced: a ~13k-write burst (workspace.test.ts's manifest-cap case)
 took 21s on a fresh space and 42s on one carrying the file's accumulated history — on CI
 hardware, twice, in different regions — while the same comparison is only 17s vs 21s locally.
-Profiled locally 2026-08-16, and every substrate-shaped suspect is EXONERATED, each by
+Profiled locally 2026-08-16, and every runtime-shaped suspect is EXONERATED, each by
 measurement: the burst is CPU-bound server-side (~1.5ms CPU per file) and FLAT to 13k
 accumulated artifacts, so data volume costs nothing; a replayed history phase changes nothing;
 the amortized GC is ruled out by plan-gc.md's own cost table; and the suite's sibling spaces
@@ -214,7 +214,7 @@ see through the coordination plane, which is what `extensions/ts/agent-tools.ts`
 along and what both apps already do.
 
 **Recommendation: C, with B recorded as the shape and A rejected.** Before treating this as a
-substrate gap, notice that the thing actually missing is a console that degrades honestly for a
+runtime gap, notice that the thing actually missing is a console that degrades honestly for a
 scoped principal — showing what it can read and naming what it cannot — which is a page change
 rather than an authorization change.
 
@@ -242,6 +242,6 @@ would have shown nothing.
 | Neither history, data volume, nor idle sibling spaces cause it | Profiled: per-1000-file chunks flat at ~1.35s across 13k artifacts, replay of the file's history ±0, 9 idlers ±0 even under `taskset -c 0,1` with `MemoryMax=5G`; idle space CPU 0% over 15s, before and after writes |
 | The fix holds in context | Full suite, aged client, nine siblings alive: the heavy test runs 18s on its private space vs 21s shared before the fix |
 
-**Not checked, and stated as inference:** that the substrate's boundary is in "the right place" is a
+**Not checked, and stated as inference:** that the runtime's boundary is in "the right place" is a
 judgement from two apps, not a measurement. A third application with a different shape (streaming
 ingest, or anything with a hard latency budget) is the test that would falsify it.

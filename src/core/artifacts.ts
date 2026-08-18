@@ -114,7 +114,7 @@ export async function readArtifact(h: ArtifactHost, recordId: string): Promise<{
  * pretending otherwise; see the erasure invariant in CLAUDE.md for why neither refusing the write
  * nor refusing the read is the fix.
  *
- * Immutability is the substrate's core property and erasure is a real requirement (a subject
+ * Immutability is the space's core property and erasure is a real requirement (a subject
  * exercising a right, a secret written by accident, a retention deadline), so this is a carve-out
  * with a stated shape rather than a hole. What is destroyed is the PAYLOAD; the record, its id,
  * its lineage and the event chain all survive, and the content address stays valid because the

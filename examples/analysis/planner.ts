@@ -1,4 +1,4 @@
-// The staleness planner: the one piece the substrate does not hand you.
+// The staleness planner: the one piece the runtime does not hand you.
 //
 //   deno run -A examples/analysis/planner.ts --url … --token …
 //

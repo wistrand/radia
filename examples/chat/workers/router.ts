@@ -1,4 +1,4 @@
-// Router-worker: model selection delegated to the substrate. The chat puts an UNTIERED `llm_call`
+// Router-worker: model selection delegated to the space. The chat puts an UNTIERED `llm_call`
 // (no routing logic in the client); this worker claims those (`{tier: {$exists:false}}`), classifies
 // the turn, and re-dispatches a TIERED `llm_call` that the matching inference-worker serves. The
 // result stays keyed to the ORIGINAL call the chat awaits (`replyTo`), so the chat is oblivious to
@@ -7,7 +7,7 @@
 // Classification is itself an `llm_call`: the router puts a cheap, model-overridden call
 // (`--classify-model`) that an inference-worker serves, then reads the tier word back. The API
 // key therefore stays isolated in the inference fleet, and routing is expressed through the
-// substrate rather than a direct model call here.
+// space rather than a direct model call here.
 //
 // WHY A CLASSIFIER, given that escalation exists. This was removed once, on the argument that
 // dispatching to the cheapest tier and letting a worker escalate when out of depth pays for routing

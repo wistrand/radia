@@ -55,9 +55,9 @@ weak one. The grant reads like a policy and is really a proxy for one.
 
 **And it makes the guarantee prose.** The draft identified that the guarantee varies per runner and
 then proposed to fix it by writing the isolation into the capability's DESCRIPTION: text the model
-reads and the runtime cannot act on. That is a documentation fix for a substrate problem, and this
+reads and the runtime cannot act on. That is a documentation fix for a runtime problem, and this
 codebase has a name for the shape (a static table of runners, reachable only out of band; see
-"express features through the substrate" in [CLAUDE.md](../CLAUDE.md)).
+"express features through the space" in [CLAUDE.md](../CLAUDE.md)).
 
 **A sandbox is an execution environment, which is a thing, so it is a record.**
 
@@ -130,7 +130,7 @@ as a pattern and a worker has to do the matching. That case is real and unbuilt.
 
 `workers/router.ts` claims UNTIERED `llm_call`s (`{tier: {$exists: false}}`), classifies the turn,
 and re-dispatches a tiered one that an inference-worker serves. Model selection is delegated to the
-substrate rather than decided in the client.
+space rather than decided in the client.
 
 Execution takes the same shape. A call arrives unassigned:
 
@@ -180,7 +180,7 @@ ms}` out, plus the optional `expect` that produces a `check`. Nothing in it ment
 
 Measured on this machine, since startup cost decides what a tight loop can afford. A model round is
 1-10 SECONDS, so everything here is small by comparison; the numbers matter for how many attempts
-fit in a turn, not for whether the substrate can keep up.
+fit in a turn, not for whether the runtime can keep up.
 
 The table is measured the same way for every row (a shell loop, so each figure carries the same
 process overhead) and is therefore like-for-like within itself. The in-process figure for the

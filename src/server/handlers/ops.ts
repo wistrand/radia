@@ -67,7 +67,7 @@ async function visible(space: Space, recordId: string, scope?: StatsScope | null
 /**
  * Envelope query: records filtered by runtime state (the envelope dimension the content-routing
  * query language deliberately excludes). `?state=leased&expired=1&stale=60&limit=100`. Returns
- * `{records:[{record, envelope}]}`. The substrate primitive diagnostics is a caller of.
+ * `{records:[{record, envelope}]}`. The runtime primitive diagnostics is a caller of.
  */
 export async function handleEnvelopeQuery(space: Space, url: URL, scope?: StatsScope | null): Promise<Response> {
   const state = url.searchParams.get("state");

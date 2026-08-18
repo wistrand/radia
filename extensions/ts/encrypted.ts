@@ -417,8 +417,8 @@ const dec = new TextDecoder();
  * A KEYED write derives it: HKDF over the DEK with the idempotency key as info. Deterministic, so a
  * re-put under the same key produces BYTE-IDENTICAL ciphertext and replays. `Space.idem` hashes
  * `{kind, body, parentIds}` into `requestHash` to detect a different request under the same key, so
- * a random nonce would make every retry an `idempotency_conflict` — a substrate error for something
- * the substrate got right.
+ * a random nonce would make every retry an `idempotency_conflict` — a runtime error for something
+ * the runtime got right.
  *
  * An UNKEYED write takes a random one. There is no replay to be identical to, and randomness is the
  * stronger default.

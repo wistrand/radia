@@ -37,8 +37,8 @@ function code(text: string): string {
 Deno.test("[layering] the runtime imports neither a surface nor an extension", async () => {
   // `src/core`, `src/server` and `src/storage` ARE the runtime. `src/surfaces` (the CLI, the MCP
   // adapter) are `/v0` clients that happen to ship in the same binary, and `extensions/` are
-  // conventions built on the substrate. The runtime knowing about either is how a coordination
-  // substrate acquires an opinion about files, tools, or how a person invokes it.
+  // conventions built on the space. The runtime knowing about either is how a coordination
+  // runtime acquires an opinion about files, tools, or how a person invokes it.
   //
   // The edge is allowed in exactly one direction, which is what makes a workspace verb in the CLI
   // an ordinary client feature rather than a tier violation.

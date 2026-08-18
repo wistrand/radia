@@ -2,7 +2,7 @@
 //
 // Contention is the interesting measurement: a claim is a single-winner gate (`FOR UPDATE …
 // SKIP LOCKED` on Postgres/PGlite), so throughput under N concurrent claimers is the number that
-// says whether the substrate scales with workers or serializes them.
+// says whether the runtime scales with workers or serializes them.
 
 import type { Bench, Measurement } from "../harness.ts";
 import { measure, percentile, timed } from "../harness.ts";
@@ -56,7 +56,7 @@ export const claimBenches: Bench[] = [
         const samples: number[] = [];
         const state = { claimed: 0, empties: 0 };
         const t0 = performance.now();
-        // Concurrent, not parallel: one isolate, so this measures the substrate's serialization,
+        // Concurrent, not parallel: one isolate, so this measures the runtime's serialization,
         // not CPU parallelism. That is the property under test.
         //
         // A null take is NOT proof the queue is drained. `take` locks its whole candidate set

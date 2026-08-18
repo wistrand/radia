@@ -2,7 +2,7 @@
 //
 // The rule these obey: this file is SETUP, meaning which space, which models serve which tier,
 // which directories are readable. It never decides per-turn behaviour. Which tier answers a turn, which
-// tool runs, how records relate: those are discovered from the substrate or delegated to a worker
+// tool runs, how records relate: those are discovered from the space or delegated to a worker
 // (CLAUDE.md, "discover, don't hardcode").
 
 import { arg, argOn } from "../util.ts";

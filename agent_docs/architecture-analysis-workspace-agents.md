@@ -2,7 +2,7 @@
 
 **Status: BUILT, all seven steps, 2026-08-17** (planned and built the same day; renamed from
 `plan-analysis-workspace-agents.md`, keeping the step and gap numbers because source comments cite
-them). This is [research-substrate-lessons.md](research-substrate-lessons.md) action 5 taken to
+them). This is [research-app-lessons.md](research-app-lessons.md) action 5 taken to
 its full shape: not only pinning stage code with promotion, but running the stages as workspace
 agents ([architecture-workspace-agents.md](architecture-workspace-agents.md)). It is the first
 worked composition of promotion with something other than an exec runner, and it DELETED a
@@ -20,7 +20,7 @@ it. The same doc records the second wart this closes: "which code is live" has t
 
 - **Stage code becomes workspaces.** Each stage is a tree with an `entrypoint` exporting
   `default(record, space)`, the contract `WorkspaceHost` + `brokeredInvoker` already run.
-  `codeDigest` becomes the treeDigest, computed by the substrate instead of by the code hashing
+  `codeDigest` becomes the treeDigest, computed by the runtime instead of by the code hashing
   itself. Side effects for free: per-stage invalidation granularity (the one-file coarseness
   `stages.ts` apologises for), multi-file stages, Python stages via the sandbox registry.
 - **`stage_code` is deleted.** The planner's `liveCode()` reads BINDINGS (`readBindings`) for
@@ -47,7 +47,7 @@ it. The same doc records the second wart this closes: "which code is live" has t
   copies onto every captured artifact's meta, winning over the defaults (`["owner", "dataset"]`
   here), stamped host-side where the code cannot lie about whom the work was for.
 - **The jail upgrades a promise to enforcement.** `stages.ts` rests its caching soundness on
-  stages being pure, "and nothing in the substrate could tell" if one lied. Jailed, a stage has
+  stages being pure, "and nothing in the runtime could tell" if one lied. Jailed, a stage has
   no net, no env, no filesystem beyond its inputs and output dir. The clock remains reachable,
   so purity is bounded rather than total.
 
@@ -96,7 +96,7 @@ the binding are all writes only an operator can make.
 ## Order
 
 1. Host input materialisation (`extensions/ts/host.ts` + a conformance case; the one
-   substrate-tier prerequisite). BUILT 2026-08-17, gap 1 above.
+   extension-tier prerequisite). BUILT 2026-08-17, gap 1 above.
 2. Split `stages.ts` into three entrypoint trees; bootstrap writes them as workspaces. BUILT
    2026-08-17: `examples/analysis/stages/<name>/main.ts` + a shared `harness.ts` (per-tree copy,
    one artifact by content), `publishStageWorkspaces` at bootstrap, and the worker advertises the

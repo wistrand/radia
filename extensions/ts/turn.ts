@@ -238,7 +238,7 @@ export async function runTurnWorker(
    * A deadline and not an age. Reconciling on boot is what lets an interrupted turn finish and is
    * also how a worker resumes a conversation from months ago; an age cutoff guesses in both
    * directions, because a clock cannot tell an abandoned turn from a slow one (a grant request
-   * legitimately waits minutes on a person). `deadline_at` is the substrate's field for it,
+   * legitimately waits minutes on a person). `deadline_at` is the runtime's field for it,
    * client-submitted because the one WAITING knows how long the work stays worth doing. A call with
    * NO deadline is never resumed, which is every record written before turns carried one.
    *

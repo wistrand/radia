@@ -105,7 +105,7 @@ surface, the console, the defaults) or knows a specific dialect (the backfill, t
 standalone `*.test.ts`. They still run under `deno task conformance`, which globs the directory.
 
 **What does NOT belong here: extension contracts.** `extensions/` holds conventions built on the
-substrate rather than parts of it, and `extensions/conformance/` (`deno task extensions`) is their
+runtime rather than parts of it, and `extensions/conformance/` (`deno task extensions`) is their
 tier. The split follows the dependency rule: everything in this directory may import `src/`, and
 nothing in an extension may. A test that spawns `radia dev` and drives it over `/v0` is an extension
 test even when it feels like a port test.

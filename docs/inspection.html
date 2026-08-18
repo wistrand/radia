@@ -72,7 +72,7 @@
     </p>
     <p>
       The tempting fix is to ask each agent to declare its place in a pipeline. That is a routing
-      table with extra steps, and the whole point of the substrate is not to have one. So the shape
+      table with extra steps, and the whole point of the space is not to have one. So the shape
       is worked out backwards instead, from what actually happened: take every group of records that
       are causally connected, reduce each group to the sequence of steps it went through, and count
       how often each sequence recurs.
@@ -384,7 +384,7 @@ head 39112 8f3c1d0ba2e47591&#8230;
 
     <p>
       There is one more thing this catches that nothing else would. A payload can be destroyed on
-      request, which the substrate supports precisely because records are otherwise immutable. But
+      request, which the runtime supports precisely because records are otherwise immutable. But
       destroying the copy here does not make those bytes unstorable: anyone still holding them can
       write them again, they land at the same content address, and every record pointing at them
       reads once more. Refusing to store them a second time is not the fix and was tried, because it

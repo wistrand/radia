@@ -71,7 +71,7 @@ export const SHRED = WIRE_SHRED;
 /**
  * Reserved kind: what a run is currently listening for (body `{kind, match?}`).
  *
- * Standing interest is otherwise invisible to the substrate. A worker declares it by polling `take`
+ * Standing interest is otherwise invisible to the runtime. A worker declares it by polling `take`
  * with a pattern the space never retains, so the space can show every past hop and cannot say who
  * would receive the next record. That is the whole reason "where is the workflow?" has no answer.
  *

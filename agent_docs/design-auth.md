@@ -281,7 +281,7 @@ sequenceDiagram
 ```
 
 Definitions and runs **are records** (`agent_definition` / `agent_run`), expressed through the
-substrate like grants and kinds. Only the token *hash* is stored, never the plaintext. Source:
+space like grants and kinds. Only the token *hash* is stored, never the plaintext. Source:
 `src/core/auth.ts` (`CredentialStore`, `mintCredential`), `src/server/handlers/agents.ts`.
 
 Manifest capability claims are descriptive, not authorization. On k8s, prefer workload
@@ -297,7 +297,7 @@ Kind-scoped verbs, never wildcard. Pattern-scoped grants: the effective query is
 A grant **is a record** of the reserved `grant` kind (`{principal, kind, operations}`),
 assigned by a human/supervisor `put`-ing one, discovered by the authorizer via a `query`, not a
 config table or a bespoke endpoint. Another instance of expressing a feature through the
-substrate (see [CLAUDE.md](../CLAUDE.md) "Design principle"): the same immutability, event-log
+space (see [CLAUDE.md](../CLAUDE.md) "Design principle"): the same immutability, event-log
 visibility, and watchability every record has apply to authorization state. Wildcard kinds are
 rejected at `put` (`wildcard_grant`); kind + op scoping is enforced in `Space.authorize`.
 **Pattern scoping is built (read and write):** a grant's optional `pattern` is AND-ed into the

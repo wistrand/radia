@@ -10,7 +10,7 @@
 //     against whoever runs the fleet.
 //   the FLEET'S PUBLIC HALF is published as an ordinary record, because a joining session has to
 //     wrap a new conversation's DEK to a fleet whose secret it must not hold. Out-of-band config
-//     would work and is exactly what the substrate exists to avoid: as a record it is discoverable,
+//     would work and is exactly what the space exists to avoid: as a record it is discoverable,
 //     latest-wins, and retirable.
 //   a PERSON'S KEY belongs to the person, lives beside their credential at 0600, and is generated
 //     on first use. Losing it costs them nothing the fleet cannot recover, which is deliberate: a

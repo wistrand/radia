@@ -93,7 +93,7 @@ flowchart TB
 
 ## Deployment modes
 
-Adoption constraint (strategy, not packaging): a coordination substrate delivers value
+Adoption constraint (strategy, not packaging): a coordination runtime delivers value
 only after multiple agents join, so friction before the first local two-agent demo kills
 the funnel. The bar: **`npx radia dev` → running space + web inspector in under a minute;
 an agent joins from a second terminal.**

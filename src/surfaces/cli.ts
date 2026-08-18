@@ -1210,7 +1210,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
 
     // The ONE verb that reaches outside the runtime, and the reason the surfaces layer exists as a
     // directory rather than an argument. A workspace is a CONVENTION (`extensions/`), not something
-    // the substrate knows about, so the runtime must not import it; the CLI is a `/v0` client and
+    // the runtime knows about, so it must not import it; the CLI is a `/v0` client and
     // may. `conformance/layering.test.ts` holds that line in both directions.
     // `query workspace` cannot answer this: every VERSION is a record, so three rows for one tree
     // read as three trees. The projection is latest-wins-minus-retired, the same rule every registry

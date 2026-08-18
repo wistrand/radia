@@ -6,7 +6,7 @@
 //   deno task bench -- --adapter sqlite one adapter
 //   RADIA_PG_URL=postgres://… deno task bench      adds a live Postgres column
 //
-// What these numbers are: single-process, in-memory storage by default, measuring the SUBSTRATE
+// What these numbers are: single-process, in-memory storage by default, measuring the RUNTIME
 // (core + adapter) with no HTTP, no serialization, no network. They are a floor for latency and a
 // ceiling for throughput. They are useful for spotting hotspots and regressions, not for capacity
 // planning a deployment. A disk-backed or networked space will be slower, and the ordering between adapters

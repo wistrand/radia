@@ -1019,7 +1019,7 @@ paths:
   # There is NO /kinds endpoint. A kind declaration is a record of the reserved `kind_def`
   # kind (body = a KindDef): declare a kind with `POST /records` {kind: kind_def, body: <KindDef>}
   # and discover kinds with `POST /records/query` {kind: kind_def}. Expressing kinds through the
-  # substrate (records + query) rather than a bespoke endpoint. See CLAUDE.md "Design principle".
+  # space primitives (records + query) rather than a bespoke endpoint. See CLAUDE.md "Design principle".
   # Re-declaring a kind emits a successor record (records are immutable; latest per name wins).
   #
   # Likewise there is NO /grants endpoint. Reserved kinds `grant` (body {principal, kind,
@@ -1033,7 +1033,7 @@ paths:
       operationId: envelopeQuery
       summary: Query records by runtime envelope state (leased/available/…), the dimension the content-routing query omits
       description: >
-        The ops-plane substrate primitive for observability: filter by envelope `state`, plus
+        The ops plane primitive for observability: filter by envelope `state`, plus
         optional `expired` (lease has lapsed) and `stale` (seconds sat available). Diagnostics is
         a composition of these. Returns records with their envelopes.
       x-stability: experimental
@@ -1224,7 +1224,7 @@ paths:
         - { name: max_records, in: query, schema: { type: integer }, description: "cap on the scan; reaching it reports complete:false" }
         - { name: min_occurrences, in: query, schema: { type: integer, default: 1 } }
         - { name: hub_degree, in: query, schema: { type: integer, default: 8 }, description: "children a record needs before it is TESTED as a hub whose removal splits the flow; a same-kind version spine is tested the same way regardless; 0 leaves every component whole" }
-        - { name: include_reserved, in: query, schema: { type: boolean, default: false }, description: "include the substrate's own kinds (declarations, grants, run records)" }
+        - { name: include_reserved, in: query, schema: { type: boolean, default: false }, description: "include the runtime's own kinds (declarations, grants, run records)" }
         - { name: include_singletons, in: query, schema: { type: boolean, default: false }, description: "include records linked to nothing; they are counted in `singletons` either way" }
         - { name: sum, in: query, schema: { type: string }, description: "comma-separated body paths (max 4) summed per shape, e.g. `usage.cost,usage.total_tokens`: 'where does the metric go, by shape'. Caller-named, so the runtime learns no app's vocabulary" }
       responses:

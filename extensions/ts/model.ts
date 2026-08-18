@@ -7,7 +7,7 @@
 // not a live worker. Retiring on shutdown covers the ordinary case (the launcher stops the fleet),
 // but a worker that is killed or crashes leaves its advertisement behind, and the router will
 // happily dispatch an `llm_call` to a tier nobody serves: the call sits `available` and the chat
-// reports a stall rather than failing over. Closing that properly needs liveness the substrate does
+// reports a stall rather than failing over. Closing that properly needs liveness the runtime does
 // not have yet: a heartbeat record would reintroduce exactly the unbounded-registry growth this
 // file exists to avoid. The retention sweep now exists (plan-gc.md), so expiring advertisements is
 // BUILDABLE — but expiry alone re-creates the stall as a missing tier instead of a dead one, so it

@@ -564,7 +564,7 @@ Deno.test("authorize: a refusal SAYS when the kind does not exist, without chang
     // is a model holding tools, and `src/core` naming `radia kinds` would be it reaching into a
     // surface's vocabulary for a reader that cannot use it.
     assertStringIncludes(invented.message, "kind_def");
-    assert(!invented.message.includes("radia "), "the substrate must not prescribe a CLI command");
+    assert(!invented.message.includes("radia "), "the runtime must not prescribe a CLI command");
 
     // Over the wire, so the status is pinned rather than inferred from the code.
     const res = await handler(

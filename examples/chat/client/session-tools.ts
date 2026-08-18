@@ -17,7 +17,7 @@
 // session per tool is a registry entry per user for tools nobody else can serve: every other
 // session would see them, offer them, and never be able to claim one. Passing no schemas keeps them
 // callable without advertising ("a tool with no definition is served but never advertised"), and
-// the client injects the definitions into its own `ToolSet` instead. That is setup, not substrate
+// the client injects the definitions into its own `ToolSet` instead. That is setup, not space
 // knowledge: a session genuinely does know what it itself serves.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";

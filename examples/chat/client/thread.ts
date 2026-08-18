@@ -131,7 +131,7 @@ export class Thread {
   }
 }
 
-// Generic role framing only, with NO substrate specifics (kind names, matching patterns, tool usage).
+// Generic role framing only, with NO space specifics (kind names, matching patterns, tool usage).
 // The assistant discovers kinds with space_kinds and learns each tool from its own description.
 // Baking that knowledge here is the anti-pattern the design principle warns against. What a prompt
 // MAY carry is a disposition (when to reach for a tool at all) and the agent's own identity.

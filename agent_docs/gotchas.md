@@ -227,7 +227,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 - **All four traps below are ONE trap, and it has a name.** A projection over an append-only log,
   read as if it were state. Two applications hit it four times in one week, none of them caught by
   a type. If you are writing a read against something that has successors, you are in this family:
-  see [research-substrate-lessons.md](research-substrate-lessons.md) for the proposed ergonomics
+  see [research-app-lessons.md](research-app-lessons.md) for the proposed ergonomics
   fix (`readNewest`, a generic `contentKey`).
 - **An "already decided" sweep admits people once; it does not APPLY LATER WIDENINGS to them.**
   `sweepEnrolments` skips a principal that already holds something, which is what stops it undoing
@@ -315,7 +315,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   is a **successor** record (immutability), so `loadKinds`/`listKinds` take the latest per kind
   name (by ULID id). Re-registering an identical def is idempotent (deterministic key from
   `kindDefKey`), so restarts don't grow records. Don't reintroduce a `kinds` table or a
-  `/v0/kinds` endpoint; that's the side-table-beside-the-substrate this replaced.
+  `/v0/kinds` endpoint; that's the side-table-beside-the-space this replaced.
 - **A reserved kind may be EXTENDED by a redeclaration, never SHRUNK, on every path a declaration
   enters by.** `authorize` compiles against `grant.principal`/`grant.kind` and credential resolution
   against `agent_definition.tokenHash`, so a successor `kind_def` dropping one of those paths failed
@@ -944,7 +944,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   victim's record as your parent would hand back its whole upstream, bodies included. Two
   consequences for anything new: an ancestor-based scope is unsafe by construction, and a
   DESCENDANT-based one is safe, because you cannot make someone else's record your child. See
-  [research-substrate-lessons.md](research-substrate-lessons.md) action 6.
+  [research-app-lessons.md](research-app-lessons.md) action 6.
 
 - **A delegated run can never exceed its CALLER, so a worker capability cannot be delegated**
   (`intersectGrants`, src/core/space.ts). The authority is `worker INTERSECT caller`, so anything
@@ -981,7 +981,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   grant that would never help. Observed live: a session invented `file`, read the refusal as
   missing permission, and burned its next two calls guessing around it. The status and code stay
   403 `forbidden` (wire contract, and it IS still a refusal); only the sentence grows. Say the
-  remedy in the SUBSTRATE's vocabulary: the first draft said "list them with `radia kinds`", which
+  remedy in the SPACE's vocabulary: the first draft said "list them with `radia kinds`", which
   the reader that hits this cannot run — it is a model holding tools, not a shell — and which is
   `src/core` naming a surface's verb. "Query `kind_def`" is true through every surface. The
   tradeoff taken: kind names become enumerable by probing, which is fine because they are SCHEMA.
@@ -1571,11 +1571,11 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   Symptom to catch: a design that answers "how will anyone know what this guarantees?" with "we will
   write it in the description". Descriptions are for a model's benefit; the runtime cannot match on
   prose. See [design-execution.md](design-execution.md).
-- **The cost of an LLM iteration loop is the model, not the substrate.** Measured locally: a full
+- **The cost of an LLM iteration loop is the model, not the runtime.** Measured locally: a full
   put+take+ack round trip is ~30ms, a sandbox spawn ~27ms, and a model round is 1-10 SECONDS. So
   routing an edit-run-test loop through records costs about 1% of an iteration, and optimizing the
   medium is optimizing the wrong end. It also means the argument against coordinating a tight loop
-  through a substrate (true for a compiler) does not transfer to one gated by inference. What DOES
+  through a coordination layer (true for a compiler) does not transfer to one gated by inference. What DOES
   pay is reducing model rounds and making each one more informative.
 - **An inconclusive probe was read as a passing one, which is fail-OPEN in the component whose job
   is to disbelieve.** `escaped = stdout.includes("ESCAPED")` had two outcomes for three cases: a
@@ -1795,7 +1795,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   reply as a timeout does. **Every early exit from a turn is a candidate for the
   unanswered-`tool_calls` bug**, and the fix belongs in the exit path they share. Cancelling stops
   only the WAITING: a claimed `llm_call` still completes and writes its result, so a message
-  implying the work was undone is wrong about an at-least-once substrate.
+  implying the work was undone is wrong about an at-least-once runtime.
 - **An assistant `tool_calls` with no reply BRICKS a conversation, permanently.** OpenAI rejects the
   whole payload, and the thread is durable, so every later turn reassembles the same rejected
   history: 59 messages, none sendable. Produced by any throw between writing the assistant message
@@ -2019,7 +2019,7 @@ rejected for stated reasons.
   unless somebody allowlists the wrong one", and under `--auth open` a no-header request is the
   OPERATOR, so an allowlisted origin could read operator responses. A browser app proxies instead:
   `examples/analysis/serve.ts` is ~20 lines, holds no credential, and forwards the space's own 401.
-  See [research-substrate-lessons.md](research-substrate-lessons.md) action 3.
+  See [research-app-lessons.md](research-app-lessons.md) action 3.
 - **Per-agent record signatures (single-space case).** Rejected: the runtime already
   authenticates every `put` and is the sole writer; an agent's signing key would live
   where its bearer token lives; signatures authenticate origin, not trustworthiness (a
@@ -2063,7 +2063,7 @@ rejected for stated reasons.
   **Related limit, partly closed.** A `model` record advertises a TIER, not a live worker. The
   publish reads before writing (no record per worker per launch) and a worker retires its
   advertisement on SIGINT/SIGTERM. NOT fixed: a `kill -9`ed worker leaves its advertisement behind
-  and the router dispatches into silence. Closing that needs liveness the substrate lacks — a
+  and the router dispatches into silence. Closing that needs liveness the runtime lacks — a
   heartbeat record reintroduces the growth, expiring advertisements need the M2 retention GC. Do not
   "fix" it with a periodic re-publish.
   **The retire/republish trap, general to content-keyed registries.** Withdrawing an entry and

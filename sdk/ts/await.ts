@@ -2,7 +2,7 @@
 //
 // The half of content routing every client re-implements. A caller writes a request record and then
 // has to sit until somebody claims it, does the work, and acks a result — and there is no call
-// stack to block on, because the point of the substrate is that the two sides never met. So every
+// stack to block on, because the point of the space is that the two sides never met. So every
 // client grows a poll loop with a deadline, and every one of them gets the same three details
 // slightly wrong: reading once more after the wake (so a result that landed during it is not lost
 // to the timeout), separating "nothing yet" from "cancelled", and reporting a timeout as an outcome
@@ -62,7 +62,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * Poll for the first record matching `pattern`, until it appears or the deadline passes.
  *
  * The pattern is ordinarily `{kind, match: {callId}}`: the correlation id the requester chose, which
- * is what stands in for a return address in a substrate that has none.
+ * is what stands in for a return address in a space that has none.
  */
 export async function awaitResult<T = unknown>(
   client: RadiaClient,

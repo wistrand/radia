@@ -9,7 +9,7 @@ Every task, fact and result is a record rather than a function call, so you can 
 one at a time: may this payload reach this step. Durable execution engines dispatch by
 function name and treat payloads as opaque, so they have nowhere to ask that question.
 
-Radia is a coordination substrate, not an agent framework. Model calls and agent logic
+Radia is a coordination runtime, not an agent framework. Model calls and agent logic
 stay outside the runtime; Radia owns durability, matching, leasing, authorization and
 lineage.
 

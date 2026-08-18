@@ -22,7 +22,7 @@ Runs are reproducible enough to compare: repeating `take-ack` on the same machin
 
 ## How to read the numbers
 
-They measure the **substrate**: core plus a storage adapter, in-memory, single process, no
+They measure the **runtime**: core plus a storage adapter, in-memory, single process, no
 HTTP, no network, no fsync. That makes them a **floor for latency and a ceiling for
 throughput**, useful for finding hotspots and catching regressions, useless for capacity
 planning a deployment. `deployment.ts` is the other side of that sentence, and the gap between
@@ -418,7 +418,7 @@ waiting), so profile the adapter under load, not a latency bench, when hunting C
 
 Two rules the suites follow, and one thing to avoid:
 
-- **Measure the substrate, not the harness.** Seeding, kind registration and token minting
+- **Measure the runtime, not the harness.** Seeding, kind registration and token minting
   happen outside the timed region, and `measure()` warms up before it counts.
 - **Report a shape, not a number.** If the question is "does this scale", the suite must
   re-measure the same operation at several sizes in one run. A single figure cannot answer it.

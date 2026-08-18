@@ -1,6 +1,6 @@
 # Radia extensions
 
-Conventions built ON the substrate, for things more than one application wants and the runtime has
+Conventions built ON the space, for things more than one application wants and the runtime has
 no business knowing about.
 
 ## The three tiers, and the test for each
@@ -11,7 +11,7 @@ no business knowing about.
 | **Extension** (here) | Would two different apps want the same convention? | workspace manifests, tree digests, path rules, `sandbox` records and runners |
 | **Application** (`examples/*`) | Neither | the chat's `conversation`/`message`/`llm_call` kinds, its grant lists, its REPL |
 
-A workspace is not core: the substrate has no opinion about files, and a manifest is `putArtifact`
+A workspace is not core: the runtime has no opinion about files, and a manifest is `putArtifact`
 plus a `kind_def` plus a projection, built from primitives that already exist. Putting it in `src/`
 would make the runtime claim to know what a path and a file mode are, and every space would carry a
 `workspace` kind whether it wanted one or not.

@@ -332,7 +332,7 @@ Deno.test("[encrypted] a KEYED re-put is byte-identical, so a retry replays inst
 
   // `Space.idem` hashes {kind, body, parentIds} into `requestHash` to detect a DIFFERENT request
   // under one key. A random nonce would make every keyed retry an `idempotency_conflict` — a
-  // substrate error for something the substrate got right.
+  // runtime error for something the runtime got right.
   const a = await sealBody(body, "message", key, "turn:01ABC");
   const b = await sealBody(body, "message", key, "turn:01ABC");
   assertEquals(a.content, b.content, "same key, same body: byte-identical ciphertext");

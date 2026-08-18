@@ -181,7 +181,7 @@ directory outside the root, tries to write through it, and asserts both the refu
 file outside is untouched. Files are written in sorted order rather than concurrently, so a failure
 reproduces.
 
-*Does taint survive a filesystem?* Only if it travels on the RECORD graph, because the substrate
+*Does taint survive a filesystem?* Only if it travels on the RECORD graph, because the runtime
 cannot observe a disk. Naming every file as a parent does not scale (a 5 000-file tree cannot have
 5 000 parents), so **the manifest carries the union of its tree's labels** and one parent edge
 speaks for the whole tree. `writeWorkspace` takes `taint` and raises it on every artifact AND on the
@@ -429,7 +429,7 @@ read path**, so the absence of a reader was a correctness problem, not a conveni
 memory, because `list_workspaces` reported a file COUNT. It reports the paths now. Once a model is
 answering questions about a tree from memory, answering the next one the same way is a short step.
 
-*`query workspace` is not a listing,* which is the substrate-shaped half of the lesson. Every
+*`query workspace` is not a listing,* which is the space-shaped half of the lesson. Every
 version is a record, so three saves of one tree return three rows, and counting them is wrong twice
 over. Anything registry-shaped needs the latest-wins-minus-retired projection, and it belongs in ONE
 place: `summarizeWorkspaces` is shared by the CLI verb and the chat tool precisely so the two cannot
@@ -464,7 +464,7 @@ ergonomics second even though the ergonomics are what was asked for.*
 
 - **The UNION of the tree is the semantics.** A changed file inherits the whole tree's labels, not
   its own file's. This is forced rather than chosen: a jailed run is opaque, so it can read
-  `secret.txt` and write those bytes into `out.txt` with nothing in the substrate able to see it.
+  `secret.txt` and write those bytes into `out.txt` with nothing in the runtime able to see it.
   Per-file precision would be more useful and would be a lie. Labels are therefore sticky within a
   tree, cleared only by declassify — which is what monotone means and is accepted.
 - **The MANIFEST is the carrier.** File artifacts stay bare — the REVERSIBLE choice rather than the
@@ -532,7 +532,7 @@ mechanism that works.
 
 *What an EDIT carries, decided by the same two rules.* The union of the tree, on the successor
 manifest, through `basedOn` — identical to write-back. Per-file would be sound for an edit (unlike a
-run, the substrate performs the change and knows which artifact the bytes came from), and it is
+run, the runtime performs the change and knows which artifact the bytes came from), and it is
 still not worth having: two propagation rules for one kind of record is how the two disagree later.
 
 #### 10.1 `editWorkspace` in `extensions/` — **DONE**
@@ -834,7 +834,7 @@ payload carries its label into the manifest.
 
 **The question:** a workspace can be written, read, edited, run and exported, and it cannot be
 LOOKED AT. A multi-file website is the obvious case — `index.html` referencing `style.css` and
-`script.js` — and it is the first one where the tree has to leave the substrate as a set rather than
+`script.js` — and it is the first one where the tree has to leave the space as a set rather than
 as a file at a time. The phase question is whether that can happen without `src/` learning what a
 workspace is.
 

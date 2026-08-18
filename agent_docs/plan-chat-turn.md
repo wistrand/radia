@@ -1,7 +1,7 @@
 # Plan: the chat turn as a chain of records
 
 BUILT (designed 2026-08-09, revised the same day after a recheck reversed one decision; every step
-shipped the same day). Removing the tool-call loop from the chat client, by letting the substrate route a conversation instead of
+shipped the same day). Removing the tool-call loop from the chat client, by letting the space route a conversation instead of
 re-encoding the loop somewhere else.
 
 Read this before changing `examples/chat/client/turn.ts` or `thread.ts`, before adding a state
@@ -122,7 +122,7 @@ moved under it. It is a sketch of how `extensions/ts/turn.ts` currently behaves,
 reader needs somewhere to start.
 
 The AUTHORITY on what a turn actually was is the MINED flow: `radia flows`, or the Graph tab on a
-conversation. That is not a technicality. This substrate's claim is that a shape emerges from
+conversation. That is not a technicality. This runtime's claim is that a shape emerges from
 content-routed reactions and is discovered afterwards
 ([design-inspection.md](design-inspection.md)), so a state machine written down in prose is the
 thing that claim rejects, and it goes stale the moment a reaction changes.

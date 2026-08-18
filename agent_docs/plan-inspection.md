@@ -4,7 +4,7 @@
 
 Sequence, status and dependencies. The reasoning lives in
 [design-inspection.md](design-inspection.md): why inspection is a distinct problem in a
-content-routed substrate, who each feature is for, what shape each mechanism has to take, and the
+content-routed space, who each feature is for, what shape each mechanism has to take, and the
 constraints that make an inspection feature a defect if violated. Read that first; this file assumes
 it.
 

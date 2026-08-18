@@ -1,4 +1,4 @@
-# Research: applications of the substrate
+# Research: applications of the runtime
 
 > Status: analysis, not a plan. Sources: a full-codebase review against `src/`, and Cal Paterson's
 > ["An Oral History of Bank Python"](https://calpaterson.com/bank-python.html) as prior art.
@@ -17,7 +17,7 @@
 
 - §1 Naming: `pattern`, not `template` (decided and applied)
 - §2 The pattern layer, and why it is the primitive everything rests on
-- §3 What the substrate uniquely provides
+- §3 What the runtime uniquely provides
 - §4 Applications, ranked
 - §5 Gated execution of LLM-generated code (the sharpest specialization)
 - §6 Prior art: Bank Python
@@ -26,7 +26,7 @@
 
 ## Why this doc exists
 
-Two questions kept being answered from memory and from stale docs: *what is this substrate
+Two questions kept being answered from memory and from stale docs: *what is this runtime
 actually good for*, and *which of its advertised properties are real today*. Those interact. An
 application only matters for Radia if it needs something nothing else has, and that judgement is
 worthless if the property turns out to be aspirational. So the applications analysis and the
@@ -86,7 +86,7 @@ lineage walk, and the labels make it a pruned one. It is the same join the graph
 
 **The price is the pushdown contract**, and the applications here are what makes it expensive:
 an unsound pre-filter hides records from `take`, and a false-empty space presents as idleness
-rather than as an error, which is the worst failure mode a coordination substrate can have. Three
+rather than as an error, which is the worst failure mode a coordination runtime can have. Three
 live violations are recorded in [plan-audit-remediation.md](plan-audit-remediation.md) package E.
 
 ### 2.1 Addressing versus content-routing
@@ -97,7 +97,7 @@ one firm's employees share conventions. Radia inverts it: consumers declare *sha
 never learn who consumes. A fleet of independently built agents cannot share naming conventions the
 way one organization's engineers can, which is the whole argument for content-routing.
 
-The interchange format carries the same split. Barbara stores pickles: opaque to the substrate
+The interchange format carries the same split. Barbara stores pickles: opaque to the runtime
 (unmatchable, unauditable) and executing code on load, so the storage format is itself an
 arbitrary-code-execution channel, tolerable only inside a hard perimeter. "Patterns are data, not
 code" is the opposite commitment. **You cannot taint-track a pickle, and you cannot route on one.**
@@ -129,7 +129,7 @@ producer knows the fleet topology. `examples/pipeline/` is the miniature.
 
 ---
 
-## 3. What the substrate uniquely provides
+## 3. What the runtime uniquely provides
 
 - **Dispatch is a queryable artifact.** Queues bury routing in code; agent frameworks bury it in
   the model. Here it is stored, authorizable data.
@@ -285,7 +285,7 @@ the threat that matters here and milestone-gated only for the stronger one.
 **Why this beats the incumbent shapes.** CI systems gate code on checks, but the gate is pipeline
 convention. Nothing prevents a path that skips it, which is why SLSA-style frameworks bolt
 signatures onto artifacts after the fact. Radia inverts it: the medium is the enforcement point, and
-attestation, clearance and audit log are one substrate. And it covers the case the industry has no
+attestation, clearance and audit log are one space. And it covers the case the industry has no
 answer for: code generated at runtime by an agent, seconds before it wants to run, where there is
 no build pipeline to attest.
 
@@ -315,7 +315,7 @@ both make deployment nearly free: "Anyone can put a job into Walpole - you need 
 ini-style config file" is the same gravity as "start a worker, every agent gains the tool."
 
 **The governance divergence is the point.** Bank Python let thousands of people write code straight
-into the production substrate and managed the risk with trusted employment, code ownership and
+into the production system and managed the risk with trusted employment, code ownership and
 compliance process, all controls living entirely outside the system. The article notes no mandatory
 test suite or CI gate before vouching. When Paterson described this to an outside programmer, the
 response was disbelief, "asking who in the world would trust such a bank."
@@ -324,9 +324,9 @@ The answer was: accountable employees inside a legal perimeter. When the code's 
 (unaccountable, prompt-injectable, generating at machine rate), every one of those controls
 evaporates, and the only place left for the gate is the medium itself. **Radia's gated-execution
 story is Barbara's source-in-database pattern with the bank's human change control compiled into the
-substrate.** That is the one-line thesis of this document.
+runtime.** That is the one-line thesis of this document.
 
-**Lessons to take.** Substrates win by gravity, not feature comparison. Barbara became unremovable
+**Lessons to take.** Shared spaces win by gravity, not feature comparison. Barbara became unremovable
 because it was the cheapest place to put anything, so the metric that matters is "seconds until a
 new agent's output lands in the space." Find the Dagger: Minerva was funded by pricing and risk, not
 elegance, and §5 is the candidate here precisely because no organizational control can substitute

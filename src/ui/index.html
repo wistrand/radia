@@ -391,7 +391,7 @@
     </div>
     <div class="panel">
       <h2>Authorization <button class="btn ghost" style="float:right" onclick="loadAuth()">Refresh</button></h2>
-      <p class="muted" style="margin-top:0">The bootstrap chain, read straight from the substrate: <code>agent_definition</code> → its <code>agent_run</code>s (run tokens) → the <code>grant</code> records that scope each principal. All are ordinary records (only the token <i>hash</i> is stored). A definition is an <code>agent:</code> worker or a <code>human:</code> person; the namespace confers no privilege, so a person here holds exactly what was assigned. The chat example creates these on every run (<code>deno task chat</code>).</p>
+      <p class="muted" style="margin-top:0">The bootstrap chain, read straight from the space: <code>agent_definition</code> → its <code>agent_run</code>s (run tokens) → the <code>grant</code> records that scope each principal. All are ordinary records (only the token <i>hash</i> is stored). A definition is an <code>agent:</code> worker or a <code>human:</code> person; the namespace confers no privilege, so a person here holds exactly what was assigned. The chat example creates these on every run (<code>deno task chat</code>).</p>
       <div id="auth-body"><div class="empty">loading…</div></div>
     </div>
   </section>
@@ -990,7 +990,7 @@ async function loadKinds() {
   // discovering them — greeted you with a 403 about somebody else's chat.
   const g = $("g-kind");
   if (g && !g.value.trim() && kinds.length) {
-    // An APP kind for preference: the reserved ones are the substrate's own bookkeeping and make a
+    // An APP kind for preference: the reserved ones are the runtime's own bookkeeping and make a
     // dull root. Listed here rather than imported because this page has no build step; a name
     // missing from it costs a slightly worse default and nothing else.
     const reserved = new Set([
@@ -1033,7 +1033,7 @@ async function putRecord() {
 
 // ---- records browser ----
 /** The kind's own declaration says which body paths matter, so those are the columns: the table
- *  schema is read from the substrate, never invented here. */
+ *  schema is read from the space, never invented here. */
 function indexedPathsOf(kind) {
   const def = KIND_DEFS.get(kind);
   return def ? (def.indexedPaths || []).map((p) => p.path).slice(0, 4) : [];

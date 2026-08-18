@@ -656,7 +656,7 @@ export class RadiaClient {
   }
 
   /** All declared kinds: the latest kind_def record per kind name (a redeclaration is a
-   *  successor record). Discovery through the substrate: a plain query, no kinds endpoint. */
+   *  successor record). Discovery through the space: a plain query, no kinds endpoint. */
   /**
    * Every record matching `pattern`, newest-first, paged to EXHAUSTION.
    *

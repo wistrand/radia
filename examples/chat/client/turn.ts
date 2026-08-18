@@ -23,7 +23,7 @@ import { Waiter, waitWake } from "./waiting.ts";
  * WHAT CANCELLING DOES AND DOES NOT DO, because the difference is not cosmetic. It stops this
  * process WAITING. It does not stop the worker: an `llm_call` already claimed is still being served,
  * and a `tool_call` already claimed still runs to completion and still writes its result. Those
- * records land whether or not anyone is watching, which is what an at-least-once substrate means and
+ * records land whether or not anyone is watching, which is what an at-least-once runtime means and
  * is why the message says so instead of implying the work was undone.
  */
 export class TurnCancelled extends Error {
@@ -649,7 +649,7 @@ export class ToolSet {
    * discovered (client/session-tools.ts).
    *
    * The exception to "discovered, never hard-coded", and a narrow one: what a session serves is a
-   * fact about this process, not knowledge about the substrate. Advertising them instead would put
+   * fact about this process, not knowledge about the space. Advertising them instead would put
    * one `capability` record per session per tool into a shared registry, visible to every other
    * session and claimable by none of them.
    */

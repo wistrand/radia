@@ -194,7 +194,7 @@ self-scoped read tier below that; requests authenticate with `Authorization: Bea
 was started with the explicit `--auth open`). See [design-auth.md](design-auth.md) and
 [architecture-ops-tiers.md](architecture-ops-tiers.md). **Kinds are not a verb:** a kind declaration is a `kind_def`
 record on the coordination plane (`put` it, `query {kind:kind_def}` to discover), with no
-`/v0/kinds` endpoint. Principle: express features through the substrate (records, queries,
+`/v0/kinds` endpoint. Principle: express features through the space (records, queries,
 content-routing) rather than as scattered endpoints; see [CLAUDE.md](../CLAUDE.md)
 "Design principle".
 

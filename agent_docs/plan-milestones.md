@@ -30,7 +30,7 @@ serving a tree over one path capability, git export, and `git clone` over HTTP. 
 Three of those phases came from watching it fail rather than from the plan (git export, the read
 side, attachment), which is the same pattern as this note existing at all.
 
-None of it is in the runtime: the substrate has no idea what a file or a path is. See
+None of it is in the runtime, which has no idea what a file or a path is. See
 [design-workspaces.md](design-workspaces.md) and [extensions/README.md](../extensions/README.md).
 
 ## Current state
@@ -219,6 +219,6 @@ agenda's contribution; semantic matching runs in shadow mode before enforcement.
   **What would reopen it**, in descending order of likelihood: a requirement for PUSH-based
   cross-instance wakeup, since deno-postgres exposes no asynchronous notification API and the
   250ms poll in `src/core/notifier.ts` is the one place the runtime choice shows up in the DESIGN
-  rather than in a workaround; a measurement showing the substrate rather than the model is a real
+  rather than in a workaround; a measurement showing the runtime rather than the model is a real
   bottleneck; or an upstream break in `node:sqlite`, which ships unstable. Preference is not
   evidence — reopen this with a number or a requirement, not with an opinion about TypeScript.

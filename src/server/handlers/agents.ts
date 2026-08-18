@@ -1,7 +1,7 @@
 // The bootstrap-chain endpoints: human/operator creates an agent DEFINITION (assigns grants,
 // gets a definition token); a definition token MINTS a short-lived run token; a run can be
 // STOPPED. Tokens are returned once and never stored (only their hash). These are the auth
-// substrate. Each does its own principal check, so they sit outside the blanket /ops/* gate.
+// primitives. Each does its own principal check, so they sit outside the blanket /ops/* gate.
 
 import type { Space } from "../../core/space.ts";
 import type { GrantDef } from "../../core/kinds.ts";

@@ -18,14 +18,14 @@
 //   worker    ack message{role:assistant} the reply IS the ack (plan-chat-turn.md)
 //   session   wakes on its own predicate, and the turn is over
 //
-// So the timed span is a real round trip through the substrate: a claim, a burst of writes, a
+// So the timed span is a real round trip through the space: a claim, a burst of writes, a
 // fenced ack, and the fan-out every parked stream pays for each of those writes. No provider, no
 // subprocesses, no HTTP — this is the floor, and the README's framing applies: in-process numbers
 // are a floor for latency and a ceiling for throughput.
 //
 // WHAT IT REPORTS. p50/p95/p99 turn latency and turns/s as N grows, plus DATABASE QUERIES PER TURN,
 // which is the number that decides whether this scales. Latency on one machine conflates the
-// substrate with the harness's own concurrency; queries per turn does not, and it is what a second
+// runtime with the harness's own concurrency; queries per turn does not, and it is what a second
 // instance would divide.
 
 import { Space } from "../../src/core/space.ts";

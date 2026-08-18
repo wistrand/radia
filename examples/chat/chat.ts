@@ -361,7 +361,7 @@ const myKey = await personKeyPair(url, owner);
 await publishPersonKey(session, owner, myKey).catch(() => {});
 
 // The person's display name, when their identity enrolled through OIDC: read from the
-// enrollment record (the substrate's answer, agent_docs/plan-oidc.md), never from anything the
+// enrollment record (the runtime's answer, agent_docs/plan-oidc.md), never from anything the
 // session claims about itself. Banner decoration only; every record still carries the principal.
 let displayName = "";
 try {
@@ -737,13 +737,13 @@ while (true) {
     // Cancelling is a thing the user did, not a fault: say what it did and, more importantly, what
     // it did NOT do. The worker keeps its claim, so the answer or the tool result still lands in the
     // space — visible on the Feed and in the thread — and pretending the work was undone would be
-    // the one wrong thing to say about an at-least-once substrate.
+    // the one wrong thing to say about an at-least-once runtime.
     if (e instanceof TurnCancelled) {
       // What cancelling does and does not do, and it changed when the loop left this process: the
       // turn STOPS ADVANCING (a `cancel` record, checked before the worker emits the next link),
       // but a call already claimed still runs to completion and its result still lands. Saying so
       // is the point: pretending the work was undone is the one wrong thing to claim about an
-      // at-least-once substrate.
+      // at-least-once runtime.
       write(dim("\n[cancelled] no further rounds; work already claimed still finishes and lands\n"));
     } else {
       write(`\n[error] ${e}\n`);

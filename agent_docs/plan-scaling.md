@@ -30,7 +30,7 @@ completion, settle, loop. One inference worker holds one `llm_call` for the whol
 of distinct tiers in flight, realistically 1-2 because the router concentrates traffic. Tool calls
 queue behind the single tools worker, code behind the single exec worker.
 
-**The substrate imposes no such rule.** Leases are independently fenced, there is no
+**The runtime imposes no such rule.** Leases are independently fenced, there is no
 max-leases-per-principal (only `maxWatchesPerPrincipal`), and every mechanism a concurrent handler
 needs (per-claim lease, heartbeat, fencing epoch) already exists per claim. One-in-flight is a
 client harness default, not a design property.
@@ -54,10 +54,10 @@ streams are parked, measured flat across 1/25/100/250 watchers (`bench/suites/fa
 own predicate against the shared record, which is a pattern test on an in-memory object.
 
 The load ceiling that replaces it is the write rate itself (~3.1k puts/s measured), so at ~7
-chunks/s per answer the substrate carries ~440 concurrent streaming answers before writes saturate
+chunks/s per answer the runtime carries ~440 concurrent streaming answers before writes saturate
 one instance. The fleet, not the fan-out, is what stops you reaching that.
 
-### The substrate is nowhere near any of this
+### The runtime is nowhere near any of this
 
 3.1k puts/s sustained (~440 concurrent streaming answers of write headroom), ~250 claims/s on
 Postgres (~2000 users at chat's claim rate), reads flat from 1M to 20M records, and `llm_chunk`
@@ -110,7 +110,7 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
      `--serve --auto-grant` (the generic sweep is `extensions/ts/enrolment.ts`, which the chat and
      the analysis example both parameterise with their own grants) assigns the standard set as each
      identity enrols. Opt-in, because it converts "authenticated" into "authorized", which the
-     substrate deliberately refuses to decide for you.
+     runtime deliberately refuses to decide for you.
      Two properties make the policy safe to leave running, and both are guarded by tests proved red
      by a plant: a RETIRED mapping is never granted (`activeByKey` drops it, so retire-as-ban still
      works and is the ONLY way to keep someone out once the flag is on — revoking grants lasts

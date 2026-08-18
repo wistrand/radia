@@ -75,7 +75,7 @@ export interface InferenceOptions {
    *
    * This is the fleet's throughput knob, and the reason it exists (agent_docs/plan-scaling.md):
    * serving a call is 5-60s of awaiting a socket, so a worker at 1 makes the whole tier serve one
-   * answer at a time no matter what the substrate could take. Overlapping costs nothing but
+   * answer at a time no matter what the space could take. Overlapping costs nothing but
    * sockets, since each claim already carries its own fenced lease and heartbeat. The provider's
    * own rate limit is the thing to size it against, not the space.
    */

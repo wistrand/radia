@@ -26,8 +26,9 @@ update when the competitive landscape or evidence base changes.
 Lead with routing and policy. Never with durability.
 
 Radia is a content-routed, policy-aware work and knowledge exchange for independently
-implemented agents: durable and observable. It is a coordination substrate, not an agent
-framework, so model calls and agent logic stay outside the runtime. Durability and
+implemented agents: durable and observable. It is a coordination runtime, not an agent
+framework: a framework tells agents what to do, where a space is where they find each
+other, and model calls and agent logic stay outside the runtime. Durability and
 observability are properties it has, not the pitch. The differentiators are content-based
 routing and record-scoped policy (see the gap below).
 
@@ -178,7 +179,7 @@ One finding the review missed: no claim semantics. A matching artifact triggers 
 agent in parallel ("when a matching artifact appears, subscribed agents execute"), in process,
 with no lease, acknowledgement, redelivery or fencing documented — a framework's dispatch, not
 competitive claiming over durable work. So Flock converges on the routing thesis while occupying
-neither the trust cell nor the work-queue half of the substrate.
+neither the trust cell nor the work-queue half of the runtime.
 
 **PatchBoard** (arXiv 2605.29313, 2026; CHECKED against the paper 2026-08-17, code unverified)
 shares the deeper thesis, that LLMs must not be the ones enforcing the protocol: agents submit
@@ -225,11 +226,11 @@ That list is the closest thing to relevant evidence this project has, and it poi
 that "all bit the chat example": a client branch encoding a decision that should have been delegated
 (the model tier), a hard-coded tool list, a redeclared capability that 409s instead of superseding,
 and tool usage taught in the system prompt. Every one was caught in review rather than by the
-substrate. They are AUTHORING failures by a human, not an agent failing at runtime, so they do not
+runtime. They are AUTHORING failures by a human, not an agent failing at runtime, so they do not
 settle the wager. However, a document that treats other people's failures as a mortality table has
 to carry its own.
 
-And nothing forbids orchestration ON the substrate. The pipeline example's planner already is one.
+And nothing forbids orchestration ON the space. The pipeline example's planner already is one.
 OSGi's own history suggests that is not a betrayal of the model but the thing that makes it
 survivable for people who cannot love it raw.
 

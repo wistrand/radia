@@ -800,7 +800,7 @@ function jailFor(entrypoint: string): "python" | "javascript" {
  * MATERIALISE: turn a named workspace into a real directory the jail may read.
  *
  * The manifest becomes a data PARENT of the result, which is what stops a classified tree from
- * laundering its labels through the filesystem: the substrate cannot see a disk, so the edge is the
+ * laundering its labels through the filesystem: the runtime cannot see a disk, so the edge is the
  * only thing that carries the classification.
  */
 async function openTree(c: RadiaClient, b: Call, callId: string, named?: string): Promise<Tree | Refused> {

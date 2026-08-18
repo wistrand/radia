@@ -78,7 +78,7 @@ From that, two behaviours fall out rather than being implemented:
 - **Change nothing** and nothing re-runs, however often the planner executes. It is a pure function
   of what it reads, so it is safe on a watch, a timer, or by hand.
 
-## What the substrate gives you, and what you write
+## What the runtime gives you, and what you write
 
 Given: the DAG (`parent_ids`, so `radia children <dataset>` walks a run), routing by GRANT so a
 stage agent can only claim requests naming its pinned tree, leases so a crashed stage is
@@ -107,7 +107,7 @@ consider an input, which no runtime can know. That is the only piece.
 
 **A stage must be pure.** `bytes -> bytes`, no clock, no randomness, no I/O. That is what makes the
 memo sound; a stage that read the time would make every cached result a lie and nothing in the
-substrate could tell.
+runtime could tell.
 
 **The memo is a QUERY, not an idempotency key.** Content-keyed idempotency looks like free caching
 and expires with `idempotencyRetentionSeconds` (7 days), after which a re-put is a fresh record and
@@ -149,9 +149,9 @@ file server.
 dataset, result and artifact; without a `--db` a space is in-memory and the whole pipeline dies with
 the process.
 
-**Invalidation granularity is a property of how you version, not of the substrate.** Each stage
+**Invalidation granularity is a property of how you version, not of the runtime.** Each stage
 versions its own tree, so editing one re-runs that stage and its downstream and nothing else. When
-all three hashed one file, editing any of them re-ran all three; nothing in the substrate changed
+all three hashed one file, editing any of them re-ran all three; nothing in the runtime changed
 between those two behaviours.
 
 ## The OIDC side is not covered by the smoke test

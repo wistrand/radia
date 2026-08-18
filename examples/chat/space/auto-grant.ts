@@ -8,7 +8,7 @@
 //
 // WHY IT IS A FLAG AND NOT THE DEFAULT. It converts "authenticated at the IdP" into "authorized to
 // use this app", which is a real policy decision and often the right one (a corporate realm where
-// everyone may chat). The substrate deliberately refuses to make it for you: a fresh identity holds
+// everyone may chat). The runtime deliberately refuses to make it for you: a fresh identity holds
 // nothing until somebody decides. `--auto-grant` is that somebody, saying so once.
 //
 // WHAT THE BAN IS, once this is on. RETIRING THEIR MAPPING, which is the mechanism plan-oidc.md

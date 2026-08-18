@@ -878,7 +878,7 @@ export class Space {
    * their existence as secret. Revisit if a space ever needs its vocabulary hidden.
    */
   private noGrant(principal: string, what: string, kind: string): RadiaError {
-    // The remedy is in the SUBSTRATE's vocabulary, not a surface's. The first version said "list
+    // The remedy is in the SPACE's vocabulary, not a surface's. The first version said "list
     // them with 'radia kinds'", which is useless to the reader that actually hits this — a model
     // holding tools, not a shell — and is `src/core` naming a CLI verb it should not know exists.
     // "Query kind_def" is true through every surface and directly actionable by anything holding
@@ -2095,7 +2095,7 @@ export class Space {
    */
   private validateReservedBody(req: PutRequest): KindDef | undefined {
     // A kind_def record IS a kind declaration: validate its body as a KindDef before commit,
-    // so the substrate coordinates its own schema through the normal write path (no side table).
+    // so the space coordinates its own schema through the normal write path (no side table).
     if (req.kind === KIND_DEF) return this.kindDefFromBody(req.body);
     // A grant record IS an authorization grant: validate its body before commit. Write-protection
     // (that only a privileged principal may put one) is enforced at the API boundary.
@@ -3144,7 +3144,7 @@ export class Space {
   /**
    * Query records by their runtime ENVELOPE state, the dimension the content-routing query
    * language deliberately omits (it matches record bodies, for routing). This is the ops-plane
-   * substrate primitive: `expired` keeps only leased rows whose lease has lapsed; `staleSeconds`
+   * runtime primitive: `expired` keeps only leased rows whose lease has lapsed; `staleSeconds`
    * keeps only first-attempt rows that have sat available longer than that. Diagnostics composes
    * it rather than hand-rolling the same scans. All time math uses the DB clock.
    */

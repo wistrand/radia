@@ -3,7 +3,7 @@
 //
 // None of it is state. Every function here is a COMPOSITION of reads the space already has, which
 // is what `agent_docs/design-inspection.md` argues an inspection feature must be: a content-routed
-// substrate has no workflow to render, so the picture is recovered rather than read, and the moment
+// space has no workflow to render, so the picture is recovered rather than read, and the moment
 // it becomes its own bookkeeping it can disagree with the space it describes.
 //
 // The port below is wide, unlike `flows.ts` or `artifacts.ts`, and that is the honest shape: these

@@ -28,7 +28,7 @@ merely sound but *exact* additionally carries the caller's `LIMIT` into SQL, whi
 `read_one` stop at the first match instead of materializing every one; on a declared indexed path
 its cost is then flat as the space grows rather than linear (`deno task bench -- --suite growth`).
 Postgres pays for the body index on the write side (`put` roughly 1ms → 2.5ms), which is the trade
-a coordination substrate should want: records are matched far more often than written.
+a coordination runtime should want: records are matched far more often than written.
 
 The soundness contract binds anyone extending the language. Every new operator is also an
 extension to the pushdown, and an unsound pushdown does not merely slow a query down: it makes
@@ -134,7 +134,7 @@ normal, not stale. The reserved control kinds (`kind_def`/`grant`/`signal`/`agen
 `claimable:false`.
 
 A declaration is itself a **record** of the reserved `kind_def` kind (body = the contract
-above), expressed through the substrate rather than a bespoke table/endpoint (see
+above), expressed through the space rather than a bespoke table/endpoint (see
 [CLAUDE.md](../CLAUDE.md) "Design principle"). Declare a kind by `put`-ing a `kind_def`
 record; discover kinds by `query {kind: kind_def}`. Records are immutable, so re-declaring a
 kind emits a **successor** `kind_def` record (latest per kind name wins on reload) rather than

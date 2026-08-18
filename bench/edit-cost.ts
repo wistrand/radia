@@ -3,7 +3,7 @@
 //   deno run --allow-net --allow-read --allow-write --allow-env --allow-run bench/edit-cost.ts
 //
 // Phase 10 of agent_docs/plan-workspaces.md was justified by a number nobody had taken. The claim
-// was that whole-tree saves waste the MODEL's output tokens and nothing else, because the substrate
+// was that whole-tree saves waste the MODEL's output tokens and nothing else, because the runtime
 // already dedupes identical bytes. Two things are measured here: what the caller has to emit, and
 // what the space actually stores.
 //

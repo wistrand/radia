@@ -6,7 +6,7 @@
 > (`src/core/kinds.ts`), `Space.opsPowers` (`src/core/space.ts`), `requiredOpsPower` and the gate
 > (`src/server/http.ts`), `provisionObserver` (`src/credentials.ts`). Decided: ops powers are
 > RECORDS assigned by config operators. Rejected: a second config list (breeds a third, and dodges
-> "express it through the substrate") and discipline-only (`radia login` for daily work; already
+> "express it through the space") and discipline-only (`radia login` for daily work; already
 > possible, structurally weak). The powers being split are named in
 > [design-auth.md](design-auth.md) "The operator bit: a power taxonomy". Read
 > [gotchas.md](gotchas.md#grants-scopes-and-narrowed-answers) before touching enforcement.
@@ -18,7 +18,7 @@ give a person a scoped ops READ. `observe` opens every read unscoped, and the se
 person wants to look at (tool output; stage results). What both want is "the ops plane, filtered to
 what my coordination grants already cover". Before widening the tier, answer the leak it inherits: a
 lineage walk that stops at a record you may not see still tells you it exists. See
-[research-substrate-lessons.md](research-substrate-lessons.md).
+[research-app-lessons.md](research-app-lessons.md).
 
 ## The problem it solves
 

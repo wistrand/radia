@@ -21,11 +21,11 @@ export interface LoopOptions {
    * Raise it for a worker whose handler is I/O WAIT rather than work. An inference worker holds
    * one `llm_call` for the whole model response (5-60s) and does nothing but await a socket, so
    * one process serialized the fleet's entire throughput at one answer per tier
-   * (agent_docs/plan-scaling.md: this, not the substrate, is the first ceiling the chat hits).
+   * (agent_docs/plan-scaling.md: this, not the runtime, is the first ceiling the chat hits).
    * Leave it at 1 for a handler that is CPU- or process-heavy (the exec worker spawns a jail per
    * call), where overlapping only trades latency for contention.
    *
-   * The substrate needs nothing for this: leases are independently fenced, there is no
+   * The runtime needs nothing for this: leases are independently fenced, there is no
    * max-leases-per-principal, and every claim already carries its own lease, heartbeat and
    * cancellation. What changes is only how many the harness holds. Records complete OUT OF ORDER
    * above 1, which is already the contract (at-least-once, no ordering guarantee), but a handler

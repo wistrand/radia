@@ -17,7 +17,7 @@ declares an indexed path over text: `message` indexes `conversationId`/`owner`/`
 `tool`/`conversationId`/`owner`/`attempt`/`retryOf`/`turnAt` (`examples/chat/space/kinds.ts`).
 `content`, `args`, `output` and `text` appear nowhere. A pattern naming an undeclared path is
 refused when it compiles (`undeclared_path`), and patterns are data rather than code, so there is
-no `$regex`, `$where` or `$expr` to search with even if a body field were indexed. The substrate
+no `$regex`, `$where` or `$expr` to search with even if a body field were indexed. The runtime
 routes on identifiers and enums; the prose is payload it never inspects.
 
 So the fields carrying prose can be ciphertext without the runtime noticing. Matching, watches,
@@ -258,8 +258,8 @@ that disagree produce a thread that renders half as ciphertext and nothing says 
 
 **Nonce = HKDF(DEK, idempotency key), for a KEYED write; random otherwise.** `Space.idem` hashes
 `{kind, body, parentIds}` into `requestHash` to detect a different request under one key, so a
-random nonce would make every keyed retry an `idempotency_conflict` — a substrate error for
-something the substrate got right. A fully deterministic scheme leaks equality between identical
+random nonce would make every keyed retry an `idempotency_conflict` — a runtime error for
+something the runtime got right. A fully deterministic scheme leaks equality between identical
 messages; deriving from the idempotency key does neither. An unkeyed write has no replay to match
 and takes a random one. The nonce TRAVELS with the ciphertext (`base64(nonce || ct)`) rather than
 being re-derived, or every reader would need the idempotency key the record was written under.
@@ -493,7 +493,7 @@ Three consequences worth knowing:
   against whoever runs the workers.
 - **Metadata is not protected, and it says a lot.** Who talks to whom, when, how long a thread is,
   how many turns, which tools ran, how big each record is, and the full lineage graph all stay in
-  the clear, because that is exactly what the substrate routes on. Anyone treating this as
+  the clear, because that is exactly what the space routes on. Anyone treating this as
   confidentiality against an observer of the space should read that list first.
 - **No per-message opt-out** inside a thread, by construction (see the unit, above).
 - **Debuggability drops.** The Feed stops being the place a bug is diagnosed for encrypted threads.

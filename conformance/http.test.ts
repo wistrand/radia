@@ -877,7 +877,7 @@ Deno.test("http: a run renews itself with its own token, and an expired one cann
 });
 
 Deno.test("http: erasure destroys the payload and keeps the record", async () => {
-  // Immutability is the substrate's core property; erasure is a real requirement (a subject
+  // Immutability is the space's core property; erasure is a real requirement (a subject
   // exercising a right, a secret written by accident). This is the carve-out, and its shape is the
   // point: what dies is the PAYLOAD. The record, its id, its lineage and the event log survive, and
   // the content address stays valid because the digest is over plaintext. A plain delete would take
@@ -1280,7 +1280,7 @@ Deno.test("records: read-one answers with the OLDEST match, and a newest-first q
   // record, and any key material a later write extends. `read-one` returning the first ever
   // written is correct and is almost never what the caller wanted; it cost this codebase a bug
   // where an enrolled machine was told it had no key while the record granting it sat one row
-  // later (agent_docs/research-substrate-lessons.md).
+  // later (agent_docs/research-app-lessons.md).
   const { handler, close } = await newHandler();
   try {
     const ids: string[] = [];

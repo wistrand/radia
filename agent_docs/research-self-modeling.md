@@ -19,7 +19,7 @@ speculative ahead of a first user, so do not build on spec.
 
 ## The claim, stated narrowly
 
-> A substrate where an agent's **report about its own process** and the runtime's
+> A space where an agent's **report about its own process** and the runtime's
 > **authoritative measurement of that same process** live in one medium (same
 > immutability, same provenance, same authorization), so the **discrepancy between them is
 > a query**.
@@ -72,7 +72,7 @@ Four properties exist today and were not built for this:
 
 - **One type universe.** The system's own machinery is expressed in its own medium: kinds
   are `kind_def` records, permissions are `grant` records, capabilities are `capability`
-  records, runs are `agent_run` records (CLAUDE.md, "express features through the substrate").
+  records, runs are `agent_run` records (CLAUDE.md, "express features through the space").
   A `self_state` kind needs no new machinery: it routes, taints, has lineage, is
   grant-gated, is watchable.
 - **Immutability makes revision legible.** A revised belief is a successor record, so "what
@@ -141,7 +141,7 @@ classifier to escalation-only, a tool-heavy analytical session produced **zero e
 while the cheap tier answered an aggregation question from invented numbers. The classifier
 was restored on that evidence ([gotchas.md](gotchas.md), rejected approaches).
 
-Read that as the finding it is: **the self-report was uncalibrated, and the substrate
+Read that as the finding it is: **the self-report was uncalibrated, and the runtime
 measured it.** It took no new kind, no new endpoint and no new worker, only a query over
 records that were already there.
 
@@ -288,7 +288,7 @@ pair in the design, empty until the scheduler (M3) computes the second half. A m
 - **Dual-dispatch for the counterfactual.** This is the one place worth spending real effort:
   the router *chooses* the tier, so tiers never see comparable work and their success rates
   measure the router's sorting, not the models. Put a sampled turn as two `llm_call`s at
-  different tiers and compare. The substrate makes the experiment cheap; the bias is fatal to
+  different tiers and compare. The space makes the experiment cheap; the bias is fatal to
   queries 4 and 5 without it.
 
 ### Emit the measurement as a record

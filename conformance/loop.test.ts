@@ -353,9 +353,9 @@ Deno.test("loop: a space outage is ONE line and a backoff, not a line per tick",
 });
 
 Deno.test("loop: concurrency holds K claims at once, and 1 (the default) still serializes", async () => {
-  // The first ceiling the chat hits is not the substrate, it is this loop: one worker held one
+  // The first ceiling the chat hits is not the runtime, it is this loop: one worker held one
   // `llm_call` for the whole model response because the harness ran claims one at a time
-  // (agent_docs/plan-scaling.md). The substrate never required that — leases are independently
+  // (agent_docs/plan-scaling.md). The runtime never required that — leases are independently
   // fenced and there is no max-leases-per-principal — so concurrency is a harness option, and the
   // DEFAULT must stay sequential or every existing worker's behaviour changes under it.
   const run = async (concurrency: number | undefined, records: number) => {

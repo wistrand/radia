@@ -184,7 +184,7 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
       destroyable payloads, so erasing the conversation means destroying its key, and the records,
       their lineage and the audit chain all survive the erasure. The design was forced rather than
       invented: every wrong place to keep the keys, a shared fleet secret, the conversation record
-      itself, an ordinary record body, broke a rule the substrate already had, until the one shape
+      itself, an ordinary record body, broke a rule the runtime already had, until the one shape
       that satisfied them all was left standing.
     </p>
 
@@ -234,10 +234,10 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
       deployment names a digest and nothing else.
     </p>
     <div class="callout">
-      <strong>The one thing the substrate cannot decide for you is which work is stale</strong>, and
+      <strong>The one thing the runtime cannot decide for you is which work is stale</strong>, and
       that is the whole of <code>planner.ts</code>. Deciding it depends on what you consider an
       input. Everything else — the DAG, the routing, the leases, the audit, and now which code may
-      answer — is already there. That split is the property to look for in any substrate: the part
+      answer — is already there. That split is the property to look for in any coordination runtime: the part
       left to you should be the part only you could know.
     </div>
   </div>

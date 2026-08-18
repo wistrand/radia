@@ -1,6 +1,6 @@
 // Flow mining: recovering the SHAPES of work from what a space actually did.
 //
-// A content-routed substrate has no declared topology, so this is the only way to answer "what does
+// A content-routed space has no declared topology, so this is the only way to answer "what does
 // this space do": walk lineage, abstract each connected subgraph into a signature, and count how
 // often each signature recurs. Nothing here is asserted by the runtime; every claim carries the
 // exemplar ids behind it (see agent_docs/design-inspection.md).
@@ -135,7 +135,7 @@ opts: {
   const notes: string[] = [];
   let complete = true;
 
-  // Reserved kinds are the substrate's own bookkeeping (declarations, grants, run records). They
+  // Reserved kinds are the runtime's own bookkeeping (declarations, grants, run records). They
   // are the highest-volume kinds in a quiet space, so including them by default would make every
   // space's top flow a registry write and bury the work.
   const reserved = new Set(RESERVED_KINDS);

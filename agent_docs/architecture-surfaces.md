@@ -292,7 +292,7 @@ worker blocks a record for an hour) and a model that loses its claim constantly.
 `claimId` stops the heartbeat; a double-settle returns `isError` rather than killing the session.
 
 Tool descriptions in `tools.ts` are the documentation. A model learns *how* to use a tool from
-its description, never from a system prompt that teaches the substrate. Kinds are discovered via
+its description, never from a system prompt that teaches the space. Kinds are discovered via
 `space_kinds`, so a kind declared after startup is immediately usable.
 
 Known gap: neither the CLI nor the MCP adapter has artifact verbs. Bytes are reachable only over

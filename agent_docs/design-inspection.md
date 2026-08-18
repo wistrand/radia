@@ -1,6 +1,6 @@
 # Inspecting emergent flows (design)
 
-Why inspection is a distinct problem in a content-routed substrate, who needs it, and what shape
+Why inspection is a distinct problem in a content-routed space, who needs it, and what shape
 each mechanism has to take. Sequence and status live in
 [plan-inspection.md](plan-inspection.md); this file holds the reasoning that outlives the backlog.
 
@@ -25,7 +25,7 @@ each mechanism has to take. Sequence and status live in
 
 An orchestrated system documents itself: the workflow is a file somebody wrote, and inspecting it
 means reading that file. Radia routes by content, so there is no orchestrator and no DAG to render
-from source. A worker declares a pattern, the substrate matches it, and the shape of the system is
+from source. A worker declares a pattern, the runtime matches it, and the shape of the system is
 whatever those independent declarations add up to at runtime.
 
 That is the design working as intended, and it is also the cost. The system's actual shape exists
@@ -33,7 +33,7 @@ in two places only: what happened, and who is currently listening. Today the con
 first and almost none of the second.
 
 Never solve this by asking agents to declare a topology. A declared topology is a routing table, and
-the substrate exists to not have one. The shape has to be **mined from evidence**, or it will drift
+the space exists to not have one. The shape has to be **mined from evidence**, or it will drift
 from the running system the way every hand-maintained architecture diagram does.
 
 ## Who is asking, and what they ask
@@ -52,7 +52,7 @@ someone in the first ten minutes, unaided, and "where is the workflow?" is the f
 Anything that answers it is adoption work, not polish, and it should be ranked that way.
 
 The agent's question is the one that compounds. Every inspection affordance an agent can reach is
-one a human does not have to perform, and the substrate already routes and authorizes agents. The
+one a human does not have to perform, and the runtime already routes and authorizes agents. The
 inspector is a participant, not an operator console.
 
 ## The root gap: standing interest is invisible
@@ -101,7 +101,7 @@ That one change unlocks a cascade, which is the reason it ranks above features t
 
 ## What each mechanism has to be
 
-The shape of each of these is constrained by something in the substrate. That is what makes them
+The shape of each of these is constrained by something in the runtime. That is what makes them
 design decisions rather than UI choices.
 
 ### The dry-run matcher runs the matching direction backwards
@@ -272,7 +272,7 @@ Three things the build settled that the spec left open:
 
 The dry-run matcher answers who would *receive* a record. The inverse is which principals can
 currently *read* it. `effectivePermissions` computes the per-principal side; running it the other way
-is the question an operator asks before declassifying and an auditor asks afterward. For a substrate
+is the question an operator asks before declassifying and an auditor asks afterward. For a runtime
 whose selling point is per-record policy, it is the more important of the two.
 
 ### The LLM inspector needs the traps moved into the API, not documented
