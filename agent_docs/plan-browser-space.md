@@ -70,8 +70,11 @@ embedding inherits every future tab for free.
 Three facts verified 2026-08-18 decide the technique:
 
 - The console POLLS; it has no EventSource or WebSocket. A `fetch` shim alone runs all of it.
-- Its API calls are root-absolute `/v0/...`, so it cannot be served under the docs site's
-  GitHub Pages path prefix (a SW scoped to `/radia/` cannot own `/v0` at the origin root).
+- Its API calls are root-absolute `/v0/...`. When the site lived under the `/radia/` path prefix
+  that ruled out serving it directly (a SW scoped to `/radia/` cannot own `/v0` at the origin
+  root); since 2026-08-18 the site IS an origin root (`radia.sh`), so a Service Worker scoped at
+  `/` CAN own `/v0`, which makes step 3 cleaner than first planned: the console could be served
+  at a real path with no HTML patching at all. The blob-iframe MVP stays valid either way.
 - It keeps credentials in localStorage/sessionStorage, so a `srcdoc` iframe (OPAQUE origin,
   storage throws) breaks it.
 
