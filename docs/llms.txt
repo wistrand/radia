@@ -12,6 +12,8 @@
 - [Inspection](inspection.html)
 - [Why not X](why.html)
 - [Examples](examples.html)
+- [Playground](playground/) - a real space running in the browser tab: the same runtime on
+  Postgres-in-WASM, with the console embedded; no install, nothing leaves the tab
 
 ## The model in one paragraph
 
