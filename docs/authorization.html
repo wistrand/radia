@@ -42,15 +42,15 @@
 </nav>
 
 <aside class="sidebar" id="sidebar">
-  <a href="#problem">The awkward document</a>
-  <a href="#grants">Where permission lives</a>
-  <a href="#pattern">Narrowing by contents</a>
-  <a href="#identity">Who a worker is</a>
-  <a href="#taint">Following data around</a>
-  <a href="#delegation">Acting for someone</a>
-  <a href="#check">Checking it</a>
-  <a href="#powers">Splitting the operator</a>
-  <a href="#limits">What this does not do</a>
+  <a href="#problem">Enforcement at the runtime boundary</a>
+  <a href="#grants">Grants are records</a>
+  <a href="#pattern">Restrict grants by record content</a>
+  <a href="#identity">Agent definitions and run credentials</a>
+  <a href="#taint">Propagate data-handling labels</a>
+  <a href="#delegation">Delegate a caller's authority</a>
+  <a href="#check">Inspect effective permissions</a>
+  <a href="#powers">Separate operational powers</a>
+  <a href="#limits">Security boundaries and current limits</a>
 </aside>
 
 <div class="hero">
@@ -301,6 +301,53 @@
       The runtime resolves the caller through the run that created the claimed record. The worker
       cannot choose or assert that identity in a request body.
     </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 285" role="img" aria-labelledby="delegation-title delegation-desc">
+        <title id="delegation-title">Delegated authority is the intersection of caller and worker grants</title>
+        <desc id="delegation-desc">Caller grants and worker grants overlap to produce a narrower delegated run. The claimed lease identifies the caller, while parent record links do not transfer authority.</desc>
+        <defs>
+          <marker id="delegation-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+
+        <rect x="20" y="34" width="190" height="58" rx="6" class="box" stroke="#60a5fa"/>
+        <text x="115" y="58" text-anchor="middle" class="label">caller's grants</text>
+        <text x="115" y="77" text-anchor="middle" class="muted">records Alice may reach</text>
+
+        <rect x="20" y="126" width="190" height="58" rx="6" class="box" stroke="#818cf8"/>
+        <text x="115" y="150" text-anchor="middle" class="label">worker's grants</text>
+        <text x="115" y="169" text-anchor="middle" class="muted">operations the tool may perform</text>
+
+        <path d="M 216 63 L 294 91" class="flow" marker-end="url(#delegation-arrow)"/>
+        <path d="M 216 155 L 294 127" class="flow" marker-end="url(#delegation-arrow)"/>
+
+        <rect x="300" y="76" width="180" height="66" rx="8" class="box" stroke="#4ade80"/>
+        <text x="390" y="101" text-anchor="middle" class="label">delegated run</text>
+        <text x="390" y="120" text-anchor="middle" class="muted">only the overlap</text>
+
+        <path d="M 486 109 L 548 109" class="flow" marker-end="url(#delegation-arrow)"/>
+        <rect x="554" y="76" width="186" height="66" rx="8" class="box" stroke="#4ade80"/>
+        <text x="647" y="101" text-anchor="middle" class="label">operation for Alice</text>
+        <text x="647" y="120" text-anchor="middle" class="muted">caller-scoped and tool-bounded</text>
+
+        <line x1="20" y1="214" x2="740" y2="214" stroke="#2a2a31" stroke-dasharray="4 4"/>
+        <text x="20" y="239" class="muted">claimed lease</text>
+        <path d="M 128 235 L 297 235" class="flow" marker-end="url(#delegation-arrow)"/>
+        <text x="310" y="239" class="label">identifies the caller</text>
+
+        <text x="20" y="271" class="muted">record parentage</text>
+        <path d="M 140 267 L 286 267" class="flow" stroke="#f87171" stroke-dasharray="5 4"/>
+        <line x1="292" y1="258" x2="308" y2="274" stroke="#f87171" stroke-width="2"/>
+        <line x1="308" y1="258" x2="292" y2="274" stroke="#f87171" stroke-width="2"/>
+        <text x="322" y="271" class="label">records provenance, never authority</text>
+      </svg>
+      <figcaption>
+        Delegation follows the claimed lease. The delegated run can do only what both the caller
+        and the worker are allowed to do; parent links remain evidence of derivation, not permission.
+      </figcaption>
+    </figure>
   </div>
 </section>
 

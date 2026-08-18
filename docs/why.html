@@ -42,12 +42,12 @@
 </nav>
 
 <aside class="sidebar" id="sidebar">
-  <a href="#short">The short answer</a>
-  <a href="#broker">A queue or a broker</a>
+  <a href="#short">Capability summary</a>
+  <a href="#broker">Queues, streams and topic exchanges</a>
   <a href="#temporal">Temporal</a>
-  <a href="#framework">An agent framework</a>
+  <a href="#framework">Agent frameworks</a>
   <a href="#dbos">DBOS</a>
-  <a href="#evidence">Does any of it work</a>
+  <a href="#evidence">Evidence and current limits</a>
 </aside>
 
 <div class="hero">
@@ -124,35 +124,51 @@
       consumer's output separately.
     </p>
 
-    <figure>
-      <svg viewBox="0 0 760 210" role="img" aria-label="A broker message disappearing once handled, compared with a result that stays as a record">
-        <text x="180" y="26" text-anchor="middle" class="muted">a queue</text>
-        <rect x="40" y="44" width="110" height="40" rx="5" class="box"/>
-        <text x="95" y="69" text-anchor="middle" class="label" font-size="11">message</text>
-        <path d="M 156 64 L 200 64" class="flow"/>
-        <rect x="206" y="44" width="110" height="40" rx="5" class="box"/>
-        <text x="261" y="69" text-anchor="middle" class="label" font-size="11">consumer</text>
-        <path d="M 322 64 L 360 64" class="flow" stroke="#f87171"/>
-        <text x="366" y="68" fill="#f87171" font-size="11">gone</text>
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 260" role="img" aria-labelledby="broker-title broker-desc">
+        <title id="broker-title">A broker and Radia place application results in different abstractions</title>
+        <desc id="broker-desc">In the broker example, a consumer receives a message and stores its result in an application-owned system that downstream code must know. In Radia, the input and result are related records in the same space, and another worker discovers the result by matching it.</desc>
+        <defs>
+          <marker id="broker-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
 
-        <line x1="20" y1="106" x2="740" y2="106" stroke="#2a2a31" stroke-dasharray="3 3"/>
+        <text x="18" y="24" class="muted">broker transport plus application-owned history</text>
+        <rect x="18" y="42" width="130" height="46" rx="5" class="box"/>
+        <text x="83" y="70" text-anchor="middle" class="label">message</text>
+        <path d="M 154 65 L 206 65" class="flow" marker-end="url(#broker-arrow)"/>
+        <rect x="212" y="42" width="130" height="46" rx="5" class="box"/>
+        <text x="277" y="70" text-anchor="middle" class="label">consumer</text>
+        <path d="M 348 65 L 400 65" class="flow" marker-end="url(#broker-arrow)"/>
+        <rect x="406" y="34" width="154" height="62" rx="5" class="box" stroke="#fbbf24"/>
+        <text x="483" y="59" text-anchor="middle" class="label">application store</text>
+        <text x="483" y="78" text-anchor="middle" class="muted">result + relationship</text>
+        <path d="M 566 65 L 618 65" class="flow" marker-end="url(#broker-arrow)"/>
+        <rect x="624" y="42" width="118" height="46" rx="5" class="box"/>
+        <text x="683" y="61" text-anchor="middle" class="label">downstream</text>
+        <text x="683" y="78" text-anchor="middle" class="muted">knows that store</text>
 
-        <text x="180" y="130" text-anchor="middle" class="muted">a space</text>
-        <rect x="40" y="148" width="110" height="40" rx="5" class="box" stroke="#60a5fa"/>
-        <text x="95" y="173" text-anchor="middle" class="label" font-size="11">document</text>
-        <path d="M 156 168 L 200 168" class="flow"/>
-        <rect x="206" y="148" width="110" height="40" rx="5" class="box" stroke="#fbbf24"/>
-        <text x="261" y="173" text-anchor="middle" class="label" font-size="11">summarizer</text>
-        <path d="M 322 168 L 366 168" class="flow" stroke="#818cf8"/>
-        <rect x="372" y="148" width="110" height="40" rx="5" class="box" stroke="#60a5fa"/>
-        <text x="427" y="173" text-anchor="middle" class="label" font-size="11">summary</text>
-        <path d="M 488 168 L 532 168" class="flow" stroke="#818cf8"/>
-        <rect x="538" y="148" width="180" height="40" rx="5" class="box"/>
-        <text x="628" y="173" text-anchor="middle" class="label" font-size="11">whoever wants summaries</text>
+        <line x1="18" y1="124" x2="742" y2="124" stroke="#2a2a31" stroke-dasharray="4 4"/>
+
+        <text x="18" y="152" class="muted">one record space</text>
+        <rect x="18" y="170" width="724" height="70" rx="8" class="box" stroke="#818cf8" stroke-dasharray="5 4"/>
+        <rect x="40" y="185" width="130" height="40" rx="5" class="box" stroke="#60a5fa"/>
+        <text x="105" y="210" text-anchor="middle" class="label">document record</text>
+        <path d="M 176 205 L 238 205" class="flow" marker-end="url(#broker-arrow)"/>
+        <rect x="244" y="185" width="130" height="40" rx="5" class="box" stroke="#fbbf24"/>
+        <text x="309" y="210" text-anchor="middle" class="label">summarizer</text>
+        <path d="M 380 205 L 442 205" class="flow" marker-end="url(#broker-arrow)"/>
+        <rect x="448" y="185" width="130" height="40" rx="5" class="box" stroke="#60a5fa"/>
+        <text x="513" y="210" text-anchor="middle" class="label">summary record</text>
+        <path d="M 584 205 L 628 205" class="flow" marker-end="url(#broker-arrow)"/>
+        <rect x="634" y="185" width="86" height="40" rx="5" class="box"/>
+        <text x="677" y="202" text-anchor="middle" class="label">worker</text>
+        <text x="677" y="217" text-anchor="middle" class="muted">matches it</text>
       </svg>
       <figcaption>
-        Here the summary stays, and it is the same kind of thing the document was, so the next step
-        finds it the same way the first one did. Nobody has to introduce them.
+        Brokers can retain messages; retention is not the distinction. Radia makes the consumer's
+        output another related, routable record instead of requiring a separate application history.
       </figcaption>
     </figure>
 

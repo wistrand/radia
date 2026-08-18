@@ -116,6 +116,25 @@ Deno.test("docs: internal links and anchors resolve", async () => {
   }
 });
 
+Deno.test("docs: sidebar labels are the headings they navigate to", () => {
+  const text = (html: string) =>
+    html.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&#39;|&apos;/g, "'").trim();
+
+  for (const p of pages) {
+    const sidebar = p.html.match(/<aside class="sidebar"[\s\S]*?<\/aside>/)?.[0];
+    assert(sidebar, `${p.name} has no sidebar`);
+
+    for (const link of sidebar.matchAll(/<a href="#([^"]+)">([\s\S]*?)<\/a>/g)) {
+      const [, id, label] = link;
+      const section = p.html.match(new RegExp(`<section[^>]*id="${id}"[^>]*>([\\s\\S]*?)<\\/section>`))?.[1];
+      assert(section, `${p.name}'s sidebar links #${id}, which is not a section`);
+      const heading = section.match(/<h2[^>]*>([\s\S]*?)<\/h2>/)?.[1];
+      assert(heading, `${p.name}'s #${id} section has no h2`);
+      assertEquals(text(label), text(heading), `${p.name}'s #${id} sidebar label drifted from its heading`);
+    }
+  }
+});
+
 Deno.test("docs: the site reaches no external host it has not declared", () => {
   // The console vendors and pins its one browser asset. The site does not go that far, but a NEW
   // third-party dependency should be a decision somebody makes rather than one that arrives in a

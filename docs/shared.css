@@ -183,6 +183,7 @@ figure {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 6px;
+  overflow-x: auto;
 }
 
 figure svg { display: block; width: 100%; height: auto; }
@@ -324,4 +325,13 @@ footer {
   section h2 { font-size: 1.3rem; }
   pre { font-size: 0.78rem; padding: 12px; }
   nav .links { gap: 14px; font-size: 0.82rem; }
+
+  /* Dense diagrams keep readable labels instead of shrinking a 760-unit canvas to phone width. */
+  figure { padding: 14px; }
+  figure svg { min-width: 620px; }
+  figcaption {
+    position: sticky;
+    left: 0;
+    width: calc(100vw - 76px);
+  }
 }

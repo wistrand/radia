@@ -42,13 +42,13 @@
 </nav>
 
 <aside class="sidebar" id="sidebar">
-  <a href="#gap">The gap</a>
-  <a href="#tier">Not part of the runtime</a>
-  <a href="#tree">What a tree is</a>
-  <a href="#run">Running it</a>
-  <a href="#promote">Promoting it</a>
-  <a href="#out">Getting it out</a>
-  <a href="#worth">What this buys</a>
+  <a href="#gap">Why workspaces exist</a>
+  <a href="#tier">An extension over runtime primitives</a>
+  <a href="#tree">Workspace representation</a>
+  <a href="#run">Sandboxed execution</a>
+  <a href="#promote">Promotion and agent bindings</a>
+  <a href="#out">Serving and exporting workspaces</a>
+  <a href="#worth">Capabilities and limits</a>
 </aside>
 
 <div class="hero">
@@ -202,6 +202,60 @@ scraper           9        22  t1:07b3e5c918&#8230;  human:alice</code></pre>
       that directory as a new workspace version. The input tree remains immutable and may be shared
       by concurrent runs.
     </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 330" role="img" aria-labelledby="workspace-run-title workspace-run-desc">
+        <title id="workspace-run-title">A promoted workspace runs across a credential boundary</title>
+        <desc id="workspace-run-desc">A binding and a promotion grant must name the same workspace digest. A trusted host holds the agent run credential and launches untrusted code without a credential. The code writes to a separate directory, which the host captures as a successor workspace.</desc>
+        <defs>
+          <marker id="workspace-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+
+        <rect x="20" y="28" width="205" height="58" rx="6" class="box" stroke="#60a5fa"/>
+        <text x="122" y="52" text-anchor="middle" class="label">binding</text>
+        <text x="122" y="71" text-anchor="middle" class="muted">agent:scraper → digest t1:07b3…</text>
+
+        <rect x="20" y="112" width="205" height="58" rx="6" class="box" stroke="#818cf8"/>
+        <text x="122" y="136" text-anchor="middle" class="label">promotion grant</text>
+        <text x="122" y="155" text-anchor="middle" class="muted">prod may claim with t1:07b3…</text>
+
+        <path d="M 231 57 L 294 91" class="flow" marker-end="url(#workspace-arrow)"/>
+        <path d="M 231 141 L 294 107" class="flow" marker-end="url(#workspace-arrow)"/>
+        <rect x="300" y="68" width="148" height="62" rx="8" class="box" stroke="#4ade80"/>
+        <text x="374" y="93" text-anchor="middle" class="label">digest agrees</text>
+        <text x="374" y="112" text-anchor="middle" class="muted">otherwise refuse</text>
+
+        <path d="M 454 99 L 514 99" class="flow" marker-end="url(#workspace-arrow)"/>
+        <rect x="520" y="58" width="220" height="82" rx="8" class="box" stroke="#fbbf24"/>
+        <text x="630" y="84" text-anchor="middle" class="label">trusted host</text>
+        <text x="630" y="104" text-anchor="middle" class="muted">holds the agent's run credential</text>
+        <text x="630" y="122" text-anchor="middle" class="muted">adds parents, labels and identity</text>
+
+        <rect x="20" y="206" width="720" height="92" rx="8" class="box" stroke="#2a2a31" stroke-dasharray="5 4"/>
+        <text x="38" y="229" class="muted">sandbox boundary</text>
+        <rect x="54" y="244" width="210" height="38" rx="5" class="box" stroke="#f87171"/>
+        <text x="159" y="268" text-anchor="middle" class="label">untrusted code · no credential</text>
+        <path d="M 630 146 L 630 184 L 270 250" class="flow" marker-end="url(#workspace-arrow)"/>
+
+        <rect x="320" y="244" width="170" height="38" rx="5" class="box"/>
+        <text x="405" y="268" text-anchor="middle" class="label">separate output tree</text>
+        <path d="M 270 263 L 314 263" class="flow" marker-end="url(#workspace-arrow)"/>
+
+        <rect x="546" y="244" width="166" height="38" rx="5" class="box" stroke="#60a5fa"/>
+        <text x="629" y="268" text-anchor="middle" class="label">successor workspace</text>
+        <path d="M 496 263 L 540 263" class="flow" marker-end="url(#workspace-arrow)"/>
+        <path d="M 630 238 L 630 146" class="flow" stroke="#818cf8" stroke-dasharray="5 4"/>
+        <text x="646" y="191" class="muted">host captures</text>
+
+        <text x="380" y="322" text-anchor="middle" class="muted">the code tree is immutable; every run writes somewhere new</text>
+      </svg>
+      <figcaption>
+        The binding chooses the code, the grant pins what may claim work, and the host requires the
+        digests to agree. Only the host holds a credential; executed code receives a confined tree.
+      </figcaption>
+    </figure>
   </div>
 </section>
 

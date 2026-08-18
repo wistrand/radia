@@ -42,11 +42,11 @@
 </nav>
 
 <aside class="sidebar" id="sidebar">
-  <a href="#shape">Where is the workflow</a>
-  <a href="#listening">Who is listening</a>
-  <a href="#stuck">What is stuck, and why</a>
-  <a href="#history">What happened</a>
-  <a href="#trust">Whether to believe it</a>
+  <a href="#shape">Mine flows from lineage</a>
+  <a href="#listening">Inspect live routing interests</a>
+  <a href="#stuck">Diagnose waiting and stuck work</a>
+  <a href="#history">Query events and lineage</a>
+  <a href="#trust">Verify event-log integrity</a>
 </aside>
 
 <div class="hero">
@@ -188,6 +188,55 @@
       Interests are live only while their owning runs are active. An empty answer means no live,
       authorized interest currently matches; it does not prove that no worker definition exists.
     </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 270" role="img" aria-labelledby="interest-flow-title interest-flow-desc">
+        <title id="interest-flow-title">Live interests and mined flows answer different questions</title>
+        <desc id="interest-flow-desc">A proposed confidential PDF is compared with active worker interests and their grants to show who could claim it now. Separately, committed records and parent links are mined into recurring shapes that show what actually happened before.</desc>
+        <defs>
+          <marker id="inspection-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+
+        <text x="18" y="24" class="label">now: declared intent</text>
+        <rect x="18" y="42" width="180" height="58" rx="6" class="box" stroke="#60a5fa"/>
+        <text x="108" y="66" text-anchor="middle" class="label">proposed record</text>
+        <text x="108" y="85" text-anchor="middle" class="muted">confidential PDF</text>
+        <path d="M 204 71 L 268 71" class="flow" marker-end="url(#inspection-arrow)"/>
+        <rect x="274" y="42" width="190" height="58" rx="6" class="box" stroke="#818cf8"/>
+        <text x="369" y="66" text-anchor="middle" class="label">interest ∧ grant</text>
+        <text x="369" y="85" text-anchor="middle" class="muted">match active, authorized runs</text>
+        <path d="M 470 71 L 534 71" class="flow" marker-end="url(#inspection-arrow)"/>
+        <rect x="540" y="42" width="202" height="58" rx="6" class="box" stroke="#4ade80"/>
+        <text x="641" y="66" text-anchor="middle" class="label">agent:ocr could claim</text>
+        <text x="641" y="85" text-anchor="middle" class="muted">while its run remains live</text>
+
+        <line x1="18" y1="132" x2="742" y2="132" stroke="#2a2a31" stroke-dasharray="4 4"/>
+
+        <text x="18" y="160" class="label">history: observed behavior</text>
+        <g fill="#17171b" stroke="#9ca3af">
+          <circle cx="54" cy="210" r="10"/><circle cx="104" cy="190" r="10"/>
+          <circle cx="104" cy="230" r="10"/><circle cx="154" cy="190" r="10"/>
+          <circle cx="154" cy="230" r="10"/><circle cx="204" cy="210" r="10"/>
+        </g>
+        <path d="M 64 206 L 94 194 M 64 214 L 94 226 M 114 190 L 144 190 M 114 230 L 144 230 M 164 194 L 194 206 M 164 226 L 194 214" class="flow"/>
+        <text x="111" y="258" text-anchor="middle" class="muted">committed records + parents</text>
+
+        <path d="M 224 210 L 308 210" class="flow" marker-end="url(#inspection-arrow)"/>
+        <rect x="314" y="178" width="170" height="64" rx="6" class="box" stroke="#818cf8"/>
+        <text x="399" y="203" text-anchor="middle" class="label">mine and count</text>
+        <text x="399" y="222" text-anchor="middle" class="muted">collapse repeated shapes</text>
+        <path d="M 490 210 L 548 210" class="flow" marker-end="url(#inspection-arrow)"/>
+        <rect x="554" y="178" width="188" height="64" rx="6" class="box" stroke="#fbbf24"/>
+        <text x="648" y="203" text-anchor="middle" class="label">what actually ran</text>
+        <text x="648" y="222" text-anchor="middle" class="muted">with exemplars as evidence</text>
+      </svg>
+      <figcaption>
+        A dry run predicts present routing from best-effort declarations. A mined flow summarizes
+        committed history and links every reported shape back to records that exhibit it.
+      </figcaption>
+    </figure>
 
     <div class="callout warn">
       <strong>Interests state current intent, not recorded behavior.</strong> Publication is
