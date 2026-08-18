@@ -1,8 +1,7 @@
-# Pipeline example: content-routed coordination, no routing table
+# Pipeline example
 
-Deterministic demo agents that exercise the runtime the way a real agent would: over the public
-HTTP API, via the TS SDK in [`../../sdk/ts`](../../sdk/ts). No LLM keys, no flakiness. The seam
-where a tool runs (`tools.ts`) is where a real agent would call a model.
+This deterministic example exercises content routing, competitive claims, fan-out, fan-in and
+lineage through the public HTTP API. It requires no model provider.
 
 A planner fans a `job` out into per-word `task`s, two workers claim only the ops they can handle,
 and an aggregator reads the `result` facts and emits one `summary`.
@@ -20,27 +19,25 @@ flowchart LR
     A -->|put summary| S
 ```
 
-## Watch it in the web console
+## Run with the web console
 
 ```bash
 deno task dev            # terminal 1: the space + web console at http://127.0.0.1:7788
 deno task demo           # terminal 2: runs the agents against that space
 ```
 
-Open http://127.0.0.1:7788, go to the **Feed** tab, then run `deno task demo`. It detects
-the running space, runs a planner + two workers + an aggregator against it, and you watch
-the events stream in live; open the `summary` record to see its lineage. (If no space is
-running, `demo` starts one and leaves it up so you can open it; Ctrl-C to stop.)
+Open http://127.0.0.1:7788 and select **Feed** before starting the demo. Open the resulting
+`summary` record to inspect its lineage. If no space is running, the demo starts one and leaves it
+available until interrupted.
 
-## One command, self-contained (CI)
+## Run the self-contained smoke test
 
 ```bash
 deno task demo:ci
 ```
 
-Spawns an ephemeral `radia dev`, runs the whole pipeline, prints the summary + event log +
-lineage, and exits. An integration smoke test of the wire contract. Nothing to watch, it
-tears down.
+This command starts an ephemeral space, runs the pipeline, prints the summary, events and lineage,
+then shuts the space down. CI uses it as a wire-contract integration test.
 
 ## What it demonstrates
 
@@ -53,7 +50,7 @@ tears down.
 - **Claim vs. read.** Workers *take* tasks (claimed once, fenced); the aggregator *reads*
   results (facts, never consumed).
 
-## Running the pieces separately (the two-terminal experience)
+## Run each process separately
 
 Point agents at a running space with `RADIA_URL` (default `http://127.0.0.1:7788`, matching the
 host `radia dev` binds; the provisioned credential is keyed by host, so `localhost` is a different

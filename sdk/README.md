@@ -1,15 +1,11 @@
 # Radia SDKs
 
-Client libraries for talking to a Radia space. Both wrap the public `/v0` API and nothing else:
-whatever an SDK can do, a plain HTTP client can too.
+The TypeScript and Python SDKs wrap the public `/v0` API. They provide clients, watches, worker
+loops, artifact transfer and shared wire types without importing runtime internals.
 
-`ts/wire.ts` is where the frozen contract's vocabulary is DEFINED — the shapes that cross `/v0`, and
-the few pure functions a client must compute identically to the server (`kindDefKey`, and the
-latest-wins-minus-retired projection in `ts/registry.ts`). The runtime imports it; it imports nothing.
-That direction is load-bearing rather than tidy: the npm package stages `sdk/` and `extensions/` and
-no `src/`, so an SDK that reached back into the runtime shipped an entry point importing paths that
-were not in the package. `conformance/layering.test.ts` holds the line, in both value and type
-imports.
+`ts/wire.ts` defines the frozen wire vocabulary and pure functions that clients and the server must
+compute identically. The runtime imports these definitions; the SDK imports nothing from `src/`.
+`conformance/layering.test.ts` enforces that direction for value and type imports.
 
 | | TypeScript | Python |
 |-|------------|--------|
@@ -30,26 +26,17 @@ imports.
 | Content key | `contentKey(tag, body)`, async (Web Crypto) | `content_key(tag, body)`, sync (hashlib) |
 | Dependencies| none beyond the runtime | none, standard library only (3.9+) |
 
-**The credential renews itself, and can also replace itself.** `keepAlive` renews a run token
-ahead of expiry, which only works for a process that is awake: a laptop that slept through the
-window wakes holding a token that cannot renew itself, a fresh CLI process never had one, and a
-run's absolute lifetime (12 hours) is a wall no renewal passes. So `ClientAuth` also takes a
-`definitionToken`, the DURABLE half of the bootstrap chain, and the client mints a new run whenever
-the short one stops working: once per failure, only on expiry (never on a 403, which is a grant
-problem), and shared across concurrent calls so a fleet waking together produces one run rather than
-one each. The SSE watch goes through the same path, since it is a raw request that outlives
-everything else a client does. A definition token cannot read or write anything — the space refuses
-it for coordination — which is exactly what makes it safe to keep on disk; `radia revoke` is its off
-switch. Pinned by `conformance/exchange.test.ts`.
+**Credential lifecycle.** `keepAlive` renews an active run before expiry. TypeScript clients may
+also hold a mint-only `definitionToken` and exchange it for a new run after expiry or the absolute
+run ceiling. Concurrent calls share one exchange, and forbidden operations are not retried. Python
+currently supports renewal but not definition-token exchange. `conformance/exchange.test.ts`
+covers the TypeScript behavior.
 
-**`readOne` answers with the OLDEST match; reach for `readNewest`.** With no ordering the answer is
-the first record ever written for that pattern, which for anything carrying SUCCESSORS — a registry
-entry, a versioned record, key material a later write extends — is the stale one, silently. Reading
-the oldest match is the most repeated mistake against this API, and `readOne` was the
-obvious-looking call. Note the grant: `readNewest` is a `query`, so a principal holding only
-`read_one` on the kind is refused. Ordering is a query.
+**Read ordering.** `readOne` returns the oldest matching record. Use `readNewest` for registries,
+versions and other successor-based data. `readNewest` uses the query operation and therefore
+requires a query grant.
 
-**`contentKey(tag, body)` keys an idempotent write by its CONTENT.** The key functions in
+**Content and identity keys.** `contentKey(tag, body)` keys an idempotent write by its full content. The key functions in
 `registry.ts` (`grantKey`, `opsGrantKey`, `kindDefKey`, `oidcIdentityKey`) answer a different
 question: a logical IDENTITY, deliberately a subset of the body, so a successor shares the key and
 supersedes — which is what makes a `retired: true` tombstone replace the entry it withdraws.
@@ -67,20 +54,20 @@ round them), and values that are not JSON. The agreement is a guard, not a disci
 wherever `python3` is present, including CI. The small-float divergence it exists to catch
 (`1e-05` vs `0.00001`) shipped and survived precisely because nothing checked.
 
-**Two helpers that are not verbs**, both extracted from a client that learned them the hard way.
+**Client-side helpers.** Two helpers compose public verbs without adding wire operations.
 `readRegistry` reads a registry projection, paging to exhaustion and reporting `complete: false`
 rather than a plausible prefix. `awaitResult` waits for the record another agent will write: the
 deadline loop, the poll, an injected wake (pass a shared one, or take the default sleep) and a final
 read after the deadline, returning a DISCRIMINATED outcome, because "nobody answered in time" is an
 ordinary result of asking a fleet for something rather than an exception each caller re-invents.
 
-**Beside the SDK: [extensions/](../extensions/README.md).** The SDK is one method per `/v0` verb,
+**Extensions.** The SDK is one method per `/v0` verb,
 with no policy, and carries the wire contract's stability promise. An extension is an opinionated
 CONVENTION built on those verbs (a `workspace` manifest, a `sandbox` record) and evolves
 independently. Both ship in the npm package; only this half is frozen. If something here starts
 making decisions rather than making requests, it belongs one directory over.
 
-**TypeScript is the full surface; Python is frozen to the core.** The table above is the frozen
+**Language coverage.** TypeScript exposes the complete current client surface. Python tracks the frozen
 core: coordination verbs, watches, artifacts, remediation, the basic ops reads, and bootstrap.
 Python tracks that set and nothing more. The inspection surface (`digest`, `thread`, `flows`, `gc`,
 `integrity`, `dryRun`, `queryExplained` / `explain`, `publishInterest`, `queryAll`) is TS-only, because the one consumer

@@ -1,11 +1,10 @@
 # Conformance suite
 
-Port contracts, executed against every implementation. This is the only guard against drift. It is
-the CLAUDE.md invariant that *embedded is never a semantically weaker cousin of Postgres*, applied
-to each port the runtime depends on.
+The conformance suite defines observable contracts for storage and blob implementations. Shared
+suites run against every adapter so embedded and PostgreSQL backends retain the same semantics.
 
-Two ports are under contract, and encryption is treated as an implementation of one of them rather
-than a variant with a weaker contract:
+Two ports are covered. Encrypted blob stores implement the complete blob contract and an additional
+crypto contract.
 
 ```mermaid
 flowchart LR
@@ -29,13 +28,9 @@ scripts/pg-conformance.sh                 # + a live Postgres
 RADIA_PG_URL=postgres://… scripts/pg-conformance.sh   # against your own server
 ```
 
-**`quick` is for the edits that cannot break a port contract**: a doc, a page, a flag, a route, a
-literal. It runs the standalone files that boot no PGlite, bind no socket and wait on no timer,
-which is the whole rule for what belongs in it, so a new test file joins the list only if it meets
-all three. It is 18x faster than the full run and it is not a substitute: anything touching `src/`
-takes `conformance`. Nothing at all is needed for a change under `agent_docs/`, which no test
-reads (`docs/` is the published site and IS checked, by `docs.test.ts`, against `cli.ts` and the
-npm exports map).
+Use `quick` for documentation, static pages, flags, routes and literal defaults. It includes
+standalone suites that do not boot PGlite, bind sockets or wait on timers. Run `conformance` after
+changes under `src/`. The published `docs/` site is checked; internal `agent_docs/` files are not.
 
 Without `RADIA_PG_URL`, `pg-conformance.sh` starts a throwaway Docker Postgres and removes it
 afterwards, on a host port docker picks (it used to hardcode 55432, which is inside Linux's
@@ -53,7 +48,7 @@ extensions) and `postgres` (the same suite against a service container). Until 2
 Postgres run was manual, while CLAUDE.md's invariant said the suite runs on every implementation
 "in CI from day one" — an invariant naming a guard that was not running.
 
-## What "done" means
+## Contract requirements
 
 - **Write the suite before or alongside the behavior**, never after. A contract test written
   afterwards documents what the implementation happens to do.

@@ -1,16 +1,15 @@
 # Radia examples
 
-Three examples, in increasing order of how much of the runtime they touch. Each has its own
-directory and README; start with whichever question you have. (A real OIDC issuer for the
-console's SSO sign-in lives in [`../docker/keycloak/`](../docker/keycloak/) — a deployment
-recipe, not an example.)
+Four runnable applications exercise different parts of the public API. Each directory contains its
+own setup and source guide. The Keycloak configuration in
+[`../docker/keycloak/`](../docker/keycloak/) is a local deployment recipe, not an example.
 
 | Example | What it shows | Needs a key? |
 |---------|---------------|--------------|
-| [`pipeline/`](pipeline/) | Content-routed coordination with no routing table: a job fans out into tasks, workers claim only what matches their pattern, an aggregator fans the results back in. Leases, at-least-once, the event log, a 4-level lineage tree. | no |
-| [`stress/`](stress/) | What a busy space looks like. Waves of activity (poison records retrying into `dead_letter`, abandoned leases, per-op worker agents) to watch develop in the console's **Space** tab. | no |
-| [`analysis/`](analysis/) | A staged data pipeline as a WEB APP with SSO login: upload a CSV, watch each stage run, follow any record into the console. Work is identified by content (dataset, input digest, code digest), so changing an analysis re-runs that stage and everything after it while unchanged stages are found already done — there is no replay verb and no invalidation pass. One command starts its own space, OIDC flags included. | no |
-| [`chat/`](chat/) | The full end-to-end exercise: an LLM agent whose thinking, tool calls, images, saved files, sandboxed code execution *and the turn's own control flow* are all records, served by seven least-privilege worker processes, with the person at the keyboard as a real logged-in principal. The REPL writes one record per turn and renders the rest. `--encrypt` seals a conversation's prose end to end, which the runtime never notices because nothing routes on it. | yes |
+| [`pipeline/`](pipeline/) | Fan-out and fan-in through records, competitive claims, leases and lineage. | no |
+| [`stress/`](stress/) | Retry churn, dead letters and abandoned leases for inspecting the console under load. | no |
+| [`analysis/`](analysis/) | A web application whose stages are keyed by dataset, input digest and code digest. | no |
+| [`chat/`](chat/) | A multi-process LLM application with discovered tools, artifacts, encrypted conversations and sandboxed code. | for live model calls |
 
 ```bash
 deno task dev      # a space + web console at http://127.0.0.1:7788
@@ -22,16 +21,13 @@ radia login human:you                     # chat: the LLM agent needs a session 
 RADIA_CHAT_TOKEN=<token> deno task chat   #       plus OPENROUTER_API_KEY
 ```
 
-Auth is required by default, so every example authenticates. `radia dev` provisions the operator
-credential they bootstrap with, so `demo` and `stress` need no extra step; the chat additionally
-runs as YOU, which is a credential only you can mint.
+Authentication is required by default. `radia dev` provisions the operator credential used to
+bootstrap the pipeline and stress examples. Chat sessions run as separately logged-in principals.
 
-Every example talks to the space over the public `/v0` API through the SDK in
-[`../sdk/ts`](../sdk/ts) and the conventions in [`../extensions`](../extensions/README.md), never
-through a runtime internal. That is deliberate: they model what an
-external agent author writes, so anything they can do, your code can do too.
+Every example coordinates through the public `/v0` API using the TypeScript SDK and shared
+[`extensions`](../extensions/README.md). Runtime internals are not part of the application surface.
 
-Two narrow exceptions, both outside that path and worth naming so nobody widens them:
+Two non-coordination exceptions exist:
 [`operator.ts`](operator.ts) reads the local credential file (`src/credentials.ts`) to get the
 operator token it bootstraps with, rather than reimplementing a path convention that would drift;
 and `chat/smoke-fleet.ts`, a test, imports the registry projection it is asserting about. Neither is
@@ -40,14 +36,11 @@ bug in the example.
 
 ## What each one is for
 
-**`pipeline/`** is the one to read first, and the only one that runs in CI (`deno task demo:ci`).
-It is deterministic and keyless, so it doubles as an integration smoke test of the wire contract.
+**`pipeline/`** is the smallest example and runs in CI through `deno task demo:ci`.
 
-**`stress/`** exists because the Space tab is hard to judge on an empty space. It also exercises
-the parts of the runtime that only appear under load: retry churn, dead-lettering, stuck leases.
+**`stress/`** populates the Space tab and exercises retry churn, dead-lettering and stuck leases.
 
-**`chat/`** is where the design claims get tested against something real. If a coordination
-primitive is awkward, this is where it shows: model choice is delegated to a router-worker, tools
-are discovered from `capability` records rather than configured, payloads become artifacts instead
-of travelling inside records, and every worker runs with the narrowest permissions that let it
-work.
+**`analysis/`** demonstrates content-keyed recomputation and workspace-backed stage promotion.
+
+**`chat/`** exercises the broadest surface: model routing, capability records, turn persistence,
+artifacts, delegation, encryption and sandboxed execution.

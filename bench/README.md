@@ -1,8 +1,7 @@
 # Benchmarks
 
-Where a space is fast, where it stops scaling, and what a change cost. Not a test suite:
-**nothing here asserts**, because a benchmark that moved is a fact to explain, not a failing
-build.
+The benchmark suite measures runtime latency, throughput, scaling curves and storage-query costs.
+It reports measurements without pass/fail thresholds.
 
 ```bash
 deno task bench                          # every suite, both embedded adapters (~3 min)
@@ -14,20 +13,17 @@ RADIA_PG_URL=postgres://… deno task bench    # adds a live Postgres column
 deno run -A bench/deployment.ts --url http://127.0.0.1:7899   # a real server, over HTTP
 ```
 
-Most of the three minutes is the scaling suites filling spaces to 40k records. `--suite` is the
-tight loop while you work on something; the full run is for before and after a change.
+Scaling suites account for most of the run time because they populate spaces with up to 40,000
+records. Use `--suite` for focused iteration and the full run for before/after comparisons.
 
-Runs are reproducible enough to compare: repeating `take-ack` on the same machine moved p50 by
-~1% (633µs vs 626µs). Treat a change under 10% as noise unless it repeats.
+On the same machine, changes below ten percent should be treated as noise unless repeated runs
+confirm them.
 
 ## How to read the numbers
 
-They measure the **runtime**: core plus a storage adapter, in-memory, single process, no
-HTTP, no network, no fsync. That makes them a **floor for latency and a ceiling for
-throughput**, useful for finding hotspots and catching regressions, useless for capacity
-planning a deployment. `deployment.ts` is the other side of that sentence, and the gap between
-them is about 95x on a single `put`. A disk-backed or networked space is slower, and the ordering between
-adapters can change under real fsync.
+The main suites measure the core and one in-memory storage adapter in a single process. They omit
+HTTP, network latency and fsync, so they are useful for implementation comparisons but not
+deployment capacity planning. `deployment.ts` measures a running server over HTTP.
 
 Every row carries p50/p95/p99 rather than a mean, because the tail is what a stalled agent
 feels. Scaling suites re-measure the *same* operation as the space fills; a rising p50 with a
@@ -85,11 +81,11 @@ fixed. `idx_records_kind_id (kind, id)` turns it into an ordered seek that stops
 byte-order ids), which is why only the SQLite side drifted, and why a claim about the SHAPE of a
 number is worth re-running rather than trusting.
 
-What actually bought the speedup is worth separating, because it is not the obvious answer. The
+The speedup came from two separate changes. The
 GIN index over record bodies is *not* used for the benchmark's predicate at all: "rare" matches
 1 record in 7, far too many for an index to beat a scan. The win is that an **exact** filter
 lets the caller's `LIMIT` move into SQL, so the scan stops at the first match instead of
-materializing 5,700 rows to return one. The index earns its keep on genuinely selective matches
+materializing 5,700 rows to return one. The index helps on selective matches
 (1 row in 40k measured at 7.98ms without it, 1.42ms with), which is a different workload than
 this table. Postgres pays about 1ms → 2.5ms on `put` for the parsed-body column and its indexes;
 sqlite's writes are unchanged. See [gotchas.md](../agent_docs/gotchas.md) for the soundness rules

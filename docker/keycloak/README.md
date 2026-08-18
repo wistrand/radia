@@ -1,7 +1,7 @@
-# Keycloak as a real OIDC issuer for a local space
+# Local Keycloak OIDC setup
 
-The in-repo test issuer (`conformance/oidc-issuer.ts`) authenticates nobody; this is the same
-flow against a real IdP with a login page. Dev mode, no TLS, no autorestart. See
+This Compose configuration runs Keycloak with a preconfigured Radia realm, browser login and CLI
+loopback redirects. It is for local development only: dev mode, no TLS and no restart policy. See
 [agent_docs/plan-oidc.md](../../agent_docs/plan-oidc.md) for what the space does with the
 id_token.
 
@@ -15,7 +15,7 @@ deno task dev:pg --oidc-issuer http://localhost:8080/realms/radia --oidc-audienc
 # 3. open the console, click "Sign in with SSO", log in as demo / radia
 ```
 
-What the realm import sets up, and why each piece:
+The imported realm contains:
 
 - Realm `radia`; the issuer URL is `http://localhost:8080/realms/radia`. Use the SAME host in
   `--oidc-issuer` that the browser will use: the `iss` claim mirrors how Keycloak was reached,
@@ -59,4 +59,3 @@ radia put ops_grant '{"principal":"human:you","operations":["observe"]}'   # the
 Then sign in with SSO again (the principal is resolved at mint, so the running session keeps
 its old name until a fresh id_token mints). A mapping with `retired: true` is a BAN — that
 identity's sign-in is refused until a successor re-admits it.
-

@@ -1,40 +1,23 @@
 # Radia
 
-Agent frameworks wire agent A to call agent B. Radia replaces the wiring with a shared
-space: agents post work, and whichever agent said it can handle that work claims it under
-a lease. Start a worker and the system gains a capability, with no code change anywhere
-else.
+Radia is a content-routed coordination runtime for agent systems. Participants publish immutable
+JSON records to a shared space. Workers declare patterns and claim matching records under fenced,
+renewable leases. Results return as new records that downstream workers can match.
 
-Every task, fact and result is a record rather than a function call, so you can authorize
-one at a time: may this payload reach this step. Durable execution engines dispatch by
-function name and treat payloads as opaque, so they have nowhere to ask that question.
-
-Radia is a coordination runtime, not an agent framework. Model calls and agent logic
-stay outside the runtime; Radia owns durability, matching, leasing, authorization and
-lineage.
+The runtime provides durability, matching, authorization, lineage and artifact storage. Model
+calls and application logic remain in external workers. Grants can restrict operations by record
+kind and content, allowing the payload to participate in the authorization decision.
 
 The name honors Radia Perlman, whose Spanning Tree Protocol showed independent nodes
 building a shared structure with no central controller. In the tradition of Linda, it
 is a lineage homage.
 
-> Status: all of M0 built (Phases 0–7) plus a growing M1 slice. That covers
-> put/take/ack/nack/release/renew, record+envelope split, fencing, idempotency, matching,
-> transactional event log + lineage, dead-letter, and SSE watches; the **authorization
-> stack**: kind- and pattern-scoped grants (as records), the run-token bootstrap chain,
-> per-run leases with stop/quarantine, `delegation_context`, and `taint` + declassify; and
-> **artifacts**, a content-addressed blob port with `artifact` records, short-lived download
-> capabilities, and optional encryption at rest (per-blob AES-GCM key wrapped under a space
-> KEK). Running on three storage adapters (embedded PGlite and SQLite, plus real Postgres)
-> behind the frozen wire contract, with a web console, TS and Python SDKs, a CLI, a bundled
-> MCP adapter, and runnable agent examples (including a CLI chatbot with real auth roles,
-> image generation, and code execution in a permissionless sandbox). Also built since: the
-> tamper-evident event chain, mined **flows**, and the resource limits.
-> **Not production-ready, and there is no second user.** Every audit package is closed and no
-> P0 or P1 is open; what remains is a low-severity batch
-> ([agent_docs/plan-audit-remediation.md](agent_docs/plan-audit-remediation.md)).
-> See `agent_docs/` for the structured design and
-> [notes/radia-runtime-outline-v0.3.md](notes/radia-runtime-outline-v0.3.md) for the origin
-> outline (v0.3).
+> **Status:** The coordination kernel, authorization stack, event chain, flow mining, resource
+> limits, three storage adapters, web console, CLI, MCP adapter and TypeScript/Python SDKs are
+> implemented. Radia is not production-ready, the packages are unpublished and the project has no
+> independent adoption. See [the milestone plan](agent_docs/plan-milestones.md) for implemented and
+> remaining work and [the audit record](agent_docs/plan-audit-remediation.md) for known security
+> boundaries.
 
 ```mermaid
 flowchart LR
@@ -46,41 +29,34 @@ flowchart LR
     S -.->|bytes too big for a body| BL[(blob store<br/>artifacts)]
 ```
 
-Nobody addressed anyone. B claimed the work because it *described* what it can handle, and the
-result B acked is itself a record C can match. Work flows by content, through one durable,
-authorized, observable place.
+Agent B claims the record because its pattern matches. Its result is another record that agent C
+can match. No participant names the next worker.
 
-## Why it exists
+## When to use Radia
 
-Multi-agent systems usually coordinate through preconfigured routing tables: agent A
-knows to call agent B. That is brittle and topology-bound. Radia replaces it with
-content-based coordination: an agent publishes a record (a task, a fact, a request),
-and any agent whose registered pattern matches can claim it. Work flows by what it
-is, not by who is wired to whom.
+Radia is intended for systems where participants are deployed independently, discover work by
+description or require different credentials and trust boundaries. Starting a worker adds the
+patterns it serves without changing publishers.
 
-Recent experiments suggest blackboard-style coordination can improve success or token
-efficiency on selected multi-agent reasoning and data-discovery workloads. The results
-are encouraging and workload-specific, not proof of general superiority. See
+For a fixed in-process workflow, a direct function call or agent framework is simpler. For durable
+workflow execution and timers, use a workflow engine. Recent blackboard-style coordination studies
+are workload-specific and do not establish general superiority. See
 [agent_docs/research-positioning.md](agent_docs/research-positioning.md).
 
 ## Core ideas
 
-- **Content-routed:** JSON records matched by patterns (a Mongo-inspired query
-  language with its own strict semantics), not by explicit addressing.
+- **Content-routed:** workers claim JSON records through a bounded pattern language.
 - **Durable and leased:** work is claimed under a fenced, renewable lease with
   at-least-once execution; crashed agents don't lose work.
-- **Policy-aware:** agent-scoped grants, provenance lineage, and classification labels a grant can
-  bar (`file`/`net`/`foreign`) decide what runs and what it may touch. (A cost-aware admission
-  scheduler is designed and unbuilt; see [agent_docs/design-scheduler.md](agent_docs/design-scheduler.md).)
+- **Policy-aware:** kind- and pattern-scoped grants, delegation and data-handling labels constrain
+  each operation.
 - **Payload-aware:** anything too large for a JSON body (an image, an audio clip) is an
   **artifact**: a small record that routes, plus content-addressed bytes in a blob store,
   optionally encrypted at rest under a destroyable per-blob key.
 - **Language-neutral:** one HTTP + JSON protocol (OpenAPI-first) behind SDKs, an MCP
   adapter, and a CLI. Agents can be implemented in any stack.
-- **Zero-setup start:** `deno task dev` brings up a space, a web inspector, and a bundled
-  MCP adapter in one process, with no build step. The wrapped `npx radia dev` / `pipx run`
-  packaging is built (`deno task release`) but unpublished and untested, so today the CLI is
-  `deno run -A src/main.ts` or a `deno task compile` binary.
+- **Embedded-first:** `deno task dev` starts an in-memory space and web console without a build
+  step. SQLite, PGlite and PostgreSQL adapters share one storage contract.
 
 ## Quick start
 

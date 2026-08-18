@@ -1,9 +1,7 @@
-# A staged analysis pipeline, as a web app
+# Staged analysis web application
 
-A data pipeline where **re-running is not a mechanism**. There is no replay verb, no invalidation
-pass, no "mark stale" flag. Work is identified by its content — which dataset, which input digest,
-which code digest — so changing an analysis produces *different work*, and unchanged work is found
-already done.
+This web application identifies stage work by dataset, input digest and code digest. A changed
+input or stage creates a new key; unchanged work is found by query and reused.
 
 ```
 cd docker/keycloak && docker compose up -d && cd -   # an issuer, once
@@ -11,18 +9,15 @@ deno task analysis -- --auto-grant
 open http://127.0.0.1:8081                           # sign in as demo / radia
 ```
 
-One command. It starts its own space if none is running — **with** the OIDC flags, which is the
-point: `--oidc-issuer` and `--oidc-audience` are space-level configuration, so a deployment that
-starts the space can pass them itself instead of asking anyone to remember them. Same move as the
-chat's solo mode.
+The launcher starts a space when none is running and passes the OIDC issuer and audience as
+space-level configuration.
 
 Upload CSV, watch the stages run, follow any record into the console.
 
-Attaching to a space somebody else started still works (`--url`), and is the honest limit of it:
-this cannot reconfigure a running space, so if that one advertises no issuer it says so rather than
-serving a page whose sign-in button cannot work.
+Use `--url` to attach to an existing space. The launcher cannot change that space's OIDC
+configuration and reports when no issuer is advertised.
 
-### Who may use it
+### Access policy
 
 An SSO identity arrives with **zero grants**, under a principal DERIVED from (issuer, subject) —
 `human:oidc-<32 hex>` — which nobody can know before that person's first sign-in. Authenticated is
@@ -103,7 +98,7 @@ consider an input, which no runtime can know. That is the only piece.
 | `run.ts` | brings it all up |
 | `smoke.ts` | the proof: `deno run -A examples/analysis/smoke.ts` |
 
-## Things worth knowing
+## Operational constraints
 
 **A stage must be pure.** `bytes -> bytes`, no clock, no randomness, no I/O. That is what makes the
 memo sound; a stage that read the time would make every cached result a lie and nothing in the

@@ -1,9 +1,7 @@
 # Python parity environment
 
-The SDK content-key parity contract (`conformance/py-parity.test.ts`) skips wherever `python3` is
-missing, so a green run on an arbitrary machine can mean "not checked". This container pins the
-interpreter beside a pinned Deno and runs the suite against it: the same posture CI has (its
-runners ship python3), with the versions made explicit and the skip made impossible.
+This container runs the SDK content-key parity contract against explicit Python and Deno versions.
+It prevents `conformance/py-parity.test.ts` from skipping when the host lacks Python.
 
     ./docker/py-parity/run.sh          # python 3.9 (oldest the SDK claims) and 3.13
     ./docker/py-parity/run.sh 3.11     # any python:<version>-slim tag

@@ -1,9 +1,10 @@
 # Radia extensions
 
-Conventions built ON the space, for things more than one application wants and the runtime has
-no business knowing about.
+Extensions are reusable application conventions built on the public `/v0` API. They provide
+workspaces, sandbox selection, tool workers, inference, encrypted fields, promotion, hosting and
+export without adding those concepts to the runtime kernel.
 
-## The three tiers, and the test for each
+## Dependency tiers
 
 | Tier | Test | Examples |
 |------|-------------------------------------------|-------------------------------------------------|
@@ -11,31 +12,21 @@ no business knowing about.
 | **Extension** (here) | Would two different apps want the same convention? | workspace manifests, tree digests, path rules, `sandbox` records and runners |
 | **Application** (`examples/*`) | Neither | the chat's `conversation`/`message`/`llm_call` kinds, its grant lists, its REPL |
 
-A workspace is not core: the runtime has no opinion about files, and a manifest is `putArtifact`
-plus a `kind_def` plus a projection, built from primitives that already exist. Putting it in `src/`
-would make the runtime claim to know what a path and a file mode are, and every space would carry a
-`workspace` kind whether it wanted one or not.
-
-It is also not one app's: any code-generating agent wants it, path validation is security-critical
-and must not be reimplemented per app, and a tree digest has to be computed identically everywhere
-or attestations do not compare.
+A workspace is an extension because it composes existing records and artifacts, is reusable across
+applications and has security-sensitive path and digest rules. The runtime remains unaware of files
+and directories.
 
 ## Admission rule
 
-An `extensions/` directory is an invitation to become a junk drawer. Three conditions, all of them:
+Code belongs in `extensions/` only when all three conditions hold:
 
-1. **It composes `/v0` and imports only the SDK.** Never `src/`. If it needs a runtime change it is
-   not an extension. This is the same dependency rule [examples/README.md](../examples/README.md)
-   states, and it is what keeps the tiers from collapsing into each other.
-2. **A second consumer exists or is named.** Not "an agent might want this": the chat plus one more,
-   or a stated user.
-3. **If it produces an ATTESTABLE fact, it ships a spec and a conformance test**, not just an
-   implementation.
+1. It composes `/v0` and imports only the SDK, never `src/`.
+2. A second consumer exists or is explicitly identified.
+3. Any trust-boundary output has a specification and conformance test.
 
 ## Normative surfaces
 
-Most of what lives here is a convenience. Two things are not, and the difference matters because
-they cross a trust boundary:
+Four surfaces cross trust boundaries and are normative:
 
 - **`treeDigestOf`** is what a `check` attests to, so a verdict from one language binding and one
   from another are comparable only if both hash the tree byte for byte identically. The digest
