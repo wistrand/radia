@@ -762,7 +762,7 @@ whole-thread behaviour. Each assistant `message` carries `context: {sent, hidden
 the window and the assistant's response to it are both queryable on the transcript itself
 answers "how often does it go back for history?" with no instrumentation.
 
-Beyond recall, the second channel earns its keep on *structure*: lineage/children, another
+Beyond recall, the second channel is the only route to *structure*: lineage/children, another
 agent's records, what a worker actually did, none of which is in the context window at any
 length.
 

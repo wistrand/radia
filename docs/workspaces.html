@@ -85,9 +85,9 @@
   <div class="container">
     <h2>It is a convention, not a feature of the runtime</h2>
     <p>
-      This is the part worth being pedantic about, because it is the whole reason the design stays
-      small. Radia has no idea what a file is. It has no idea what a path, a file mode or a directory
-      is. Nothing in the runtime knows the word workspace.
+      The design stays small because of one refusal. Radia has no idea what a file is. It has no
+      idea what a path, a file mode or a directory is. Nothing in the runtime knows the word
+      workspace.
     </p>
     <p>
       A workspace is a record whose body happens to list files, plus one artifact per file, plus a
@@ -124,8 +124,8 @@
     </figure>
 
     <p>
-      The dependency rule is enforced rather than encouraged: a test greps for it, and an extension
-      that reached into the runtime would fail the build. That direction is what keeps the runtime
+      A test greps for the dependency rule: an extension that reached into the runtime fails the
+      build. That direction is what keeps the runtime
       from slowly growing opinions about filesystems, and it is why exporting a workspace to git is
       an ordinary client command instead of a feature of the server.
     </p>
@@ -223,8 +223,8 @@ scraper           9        22  t1:07b3e5c918&#8230;  human:alice</code></pre>
     </div>
 
     <p>
-      Paths are validated on the way in rather than on the way out, which is the part that sounds
-      boring and is not. There is no filesystem inside the space, so a path is just a string in a
+      Paths are validated on the way in, not on the way out, and the placement is the security
+      decision. There is no filesystem inside the space, so a path is just a string in a
       record until something materialises it, and every rule about what a path may contain gets
       applied at the moment it is written. Materialising the tree revalidates anyway, and checks that
       each resolved file really landed inside the directory it was supposed to.
@@ -261,7 +261,7 @@ scraper           9        22  t1:07b3e5c918&#8230;  human:alice</code></pre>
       spawns gets no permissions and no token, so compromising the dangerous half yields a process
       that can print bytes to its parent.
       <br><br>
-      One caveat, found by measurement rather than reasoning: a permission model bounds the calls a
+      One caveat, found by measurement: a permission model bounds the calls a
       program makes, and in Deno it does <em>not</em> bound what the module loader reads. A jail with
       no filesystem grant can still <code>import</code> any JSON or JavaScript its user can read. So
       the filesystem boundary is a second mechanism underneath the permission one, a mount namespace
@@ -349,7 +349,7 @@ agent:scraper on 'prod': t1:07b3e5c918&#8230;</code></pre>
       extension computes that index from a manifest.
     </p>
     <p>
-      Path traversal is structurally absent here, which is a nicer property than a careful check. The
+      Path traversal is structurally absent here, not checked for: the
       requested path is matched against a fixed index, so there is no filesystem to escape and the
       index is the allowlist. Every artifact is authorized once when the link is minted, so the
       served URL needs no credential and a link cannot outlive the permission that created it.
@@ -392,11 +392,11 @@ $ git clone http://you:&lt;token&gt;@127.0.0.1:7790/landing-page.git</code></pre
       chain, and every commit carries trailers leading back to the record it came from.
     </p>
     <p>
-      Export only. There is no import, and that is a decision rather than a gap. Git hashes with
+      Export only. There is no import, for two reasons. Git hashes with
       SHA-1, and chosen-prefix collisions have been practical since 2017, so adopting its object
-      identity would put SHA-1 into the chain that attestations rest on. Git history is also
-      rewritable by design, and records are not. Borrow the shape, emit the format, refuse the
-      storage.
+      identity would put SHA-1 into the chain that attestations rest on. And git history is
+      rewritable by design, where records are not. Borrow the shape and emit the format; the
+      storage stays Radia's.
     </p>
   </div>
 </section>
@@ -405,7 +405,7 @@ $ git clone http://you:&lt;token&gt;@127.0.0.1:7790/landing-page.git</code></pre
   <div class="container">
     <h2>What this buys that git does not</h2>
     <p>
-      Start with the one that is a genuine operational win. Anyone who has purged a leaked credential
+      Anyone who has purged a leaked credential
       from a repository knows what it costs: every downstream hash changes, every fork force-pushes,
       every clone is invalidated, signed tags die. Here a file is an artifact, so one payload can be
       destroyed while the tree digest still verifies and the history still reads. The blast radius is

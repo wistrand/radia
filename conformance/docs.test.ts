@@ -147,6 +147,39 @@ Deno.test("docs: every page carries the shared head furniture", () => {
   assert(pages.some((p) => p.html.includes("og.png")), "no page references the social card");
 });
 
+Deno.test("docs: no banned prose tells (agent_docs/plan-prose-tells.md)", () => {
+  // The header says nothing here matches wording, and its reason stands: a test that fails on a
+  // rephrase gets deleted the third time it cries wolf. This is the carve-out that keeps the
+  // reason intact: a curated list of phrases with NO legitimate use in this site's prose (drumroll
+  // idioms and unfalsifiable sweeps), plus the em dash the style rules already ban and this site
+  // carried three of within days. A rephrase cannot trip it; only re-introducing a tell can.
+  // Judgment tells ("genuinely", "honest", "this is where") stay OUT, deliberately: they have
+  // semantic uses, and they belong to review, not to a grep.
+  const banned = [
+    "earns its keep",
+    "nothing to offer",
+    "worth pausing",
+    "worth being pedantic",
+    "the interesting part is",
+    "surprisingly good",
+    "genuine operational win",
+    "pulls its weight",
+    "—", // em dash
+  ];
+  const bad: string[] = [];
+  const prose = (html: string) => html.replace(/<pre[\s\S]*?<\/pre>/g, "").replace(/<svg[\s\S]*?<\/svg>/g, "");
+  for (const p of pages) {
+    for (const phrase of banned) {
+      if (prose(p.html).toLowerCase().includes(phrase)) bad.push(`${p.name}: "${phrase === "—" ? "em dash" : phrase}"`);
+    }
+  }
+  const llms = Deno.readTextFileSync(join(docsDir, "llms.txt"));
+  for (const phrase of banned) {
+    if (llms.toLowerCase().includes(phrase)) bad.push(`llms.txt: "${phrase === "—" ? "em dash" : phrase}"`);
+  }
+  assertEquals(bad, [], "drumroll prose or an em dash on the site; see agent_docs/plan-prose-tells.md");
+});
+
 Deno.test("docs: llms.txt lists every page, and every page is reachable from the nav", async () => {
   const llms = await Deno.readTextFile(join(docsDir, "llms.txt"));
   const index = pages.find((p) => p.name === "index.html")!;

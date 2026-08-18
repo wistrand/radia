@@ -235,7 +235,7 @@
       source of truth, stateless processes above it, durability recorded per operation rather than as
       a stream of events to replay. Its published performance numbers are the best evidence available
       for what this shape of architecture can do, and where it slows down is contention on the front
-      of a queue, which is exactly the same wall a single-winner claim hits.
+      of a queue, which is the same wall a single-winner claim hits.
     </p>
     <p>
       The difference is not speed. In DBOS every process talks to Postgres directly, holding database
@@ -257,7 +257,7 @@
   <div class="container">
     <h2>Is there any evidence this works better?</h2>
     <p>
-      Some, and it is worth being precise about how much.
+      Some, and the limits matter as much as the support.
     </p>
     <p>
       Salemi and colleagues
@@ -274,13 +274,13 @@
     </p>
     <p>
       Both are encouraging, both are specific to their workloads, and neither was run on this system.
-      Radia has its own benchmark suite, and it is worth being precise about what it measures:
+      Radia has its own benchmark suite, which measures:
       throughput and latency per storage backend, how coalescing holds up as parked chat sessions
       accumulate on one space, and where the query planner's costs bend at millions of records over
       real HTTP. Those are measurements of this implementation against itself. What does not exist
       is a comparison against Temporal or a message broker on a shared workload, a benchmark of the
       contended case where many workers fight over one hot kind, or any number produced by someone
-      other than the author. So the honest position is that the idea has independent support, the
+      other than the author. So: the idea has independent support, the
       implementation has self-measurements, and nothing yet compares the two worlds directly.
     </p>
   </div>

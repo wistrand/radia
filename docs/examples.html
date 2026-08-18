@@ -68,7 +68,7 @@
       until the results are in and writes a summary.
     </p>
     <p>
-      The interesting part is what you will not find in the source. None of the four imports another.
+      The source contains no wiring. None of the four imports another.
       There is no configuration listing them. The one that splits the job has no idea whether anyone
       is out there to do the pieces, and the one that writes the summary never learns who produced
       the results it read.
@@ -132,9 +132,8 @@
   <div class="container">
     <h2>A real agent, with everything as records</h2>
     <p>
-      The chat example is a command-line assistant, and it is where this design gets stress-tested.
-      A fleet of separate processes, with separate credentials and separate operating system
-      permissions. The one that reads files cannot reach the network. The one that runs code holds
+      The chat example is a command-line assistant run by a fleet of separate processes, with
+      separate credentials and separate operating system permissions. The one that reads files cannot reach the network. The one that runs code holds
       no credential at all.
     </p>
     <p>
@@ -158,9 +157,9 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
 
     <p>
       Because the conversation is records rather than memory, it survives a restart, you can resume
-      it by name, and anyone with permission can inspect it. The verdict is the line worth pausing
-      on: when the assistant runs code and claims it worked, something other than the assistant
-      checks and records the answer. The assistant has no permission to write that record.
+      it by name, and anyone with permission can inspect it. And the verdict is never the
+      assistant's to write: when the assistant runs code and claims it worked, something else
+      checks and records the answer, and the assistant has no permission on that kind.
     </p>
     <p>
       The assistant's tool list is not configured anywhere either. Each tool worker advertises what
@@ -201,10 +200,10 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
     <h2>A data pipeline where re-running is not a mechanism</h2>
     <p>
       The analysis example is a web app: sign in, upload a CSV, watch each stage run, follow any
-      record into the console. What makes it worth reading is what it does <em>not</em> have — no
-      replay verb, no invalidation pass, no "mark stale" flag. The app itself holds no credential
-      either: it relays the browser's own token, so the space applies the signed-in person's grants
-      and the app cannot exceed them or leak what it never held.
+      record into the console. It has no replay verb, no invalidation pass and no "mark stale"
+      flag anywhere in it. The app itself holds no credential either: it relays the browser's own
+      token, so the space applies the signed-in person's grants and the app cannot exceed them or
+      leak what it never held.
     </p>
     <p>
       Work is identified by its content: which dataset, the digest of the input, the digest of the
@@ -236,8 +235,8 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
     <div class="callout">
       <strong>The one thing the runtime cannot decide for you is which work is stale</strong>, and
       that is the whole of <code>planner.ts</code>. Deciding it depends on what you consider an
-      input. Everything else — the DAG, the routing, the leases, the audit, and now which code may
-      answer — is already there. That split is the property to look for in any coordination runtime: the part
+      input. Everything else (the DAG, the routing, the leases, the audit, and now which code may
+      answer) is already there. That split is the property to look for in any coordination runtime: the part
       left to you should be the part only you could know.
     </div>
   </div>
@@ -256,8 +255,8 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
       and its messages, a job and its pieces, with a waterfall view that reads like a trace: time as
       the axis, so you can see which tool the seconds went to. Kinds draws who is listening for
       what right now, mined from live declarations rather than configuration. Space arranges every
-      record by what it is rather than by what it links to, which is a surprisingly good way to spot
-      a fleet doing something odd. Flows renders the recurring shapes with their evidence. Auth
+      record by what it is rather than by what it links to, so a fleet doing something odd shows
+      up as a cluster that should not exist. Flows renders the recurring shapes with their evidence. Auth
       shows who exists and what they may do.
     </p>
     <p>
@@ -272,8 +271,7 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
     <h2>Finding the shape after the fact</h2>
     <p>
       Here is a problem this design creates for itself. If nothing declares how work flows, there is
-      no diagram to look at. New people ask where the workflow is, and the honest answer is that
-      there is not one.
+      no diagram to look at. New people ask where the workflow is, and no file holds one.
     </p>
     <p>
       So it gets worked out from what happened. Take everything that is causally connected, reduce it
