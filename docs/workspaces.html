@@ -76,7 +76,7 @@
       That is a gap in what agents can reach, not in the coordination model underneath. A round trip
       through the space costs about thirty milliseconds and a sandbox start about twenty-seven,
       against a model turn of one to ten seconds. Routing this loop through records costs roughly one
-      percent of an iteration, so the medium was never the constraint.
+      percent of an iteration; the medium was never the constraint.
     </p>
   </div>
 </section>
@@ -167,12 +167,12 @@
       </li>
       <li>
         <strong>Compartments.</strong> Containment for a class of data: a dedicated kind plus
-        pattern-scoped grants, so being outside it means writes are refused by construction, and
+        pattern-scoped grants. Outside it, writes are refused by construction, and
         getting data out is reserved to a principal deliberately granted both sides.
       </li>
       <li>
         <strong>Traces for your existing tools.</strong> Threads export as OTLP traces, attempts as
-        spans, so Jaeger or Tempo can render what happened without learning anything about records.
+        spans; Jaeger or Tempo then renders what happened without learning anything about records.
       </li>
     </ul>
     <p>
@@ -203,15 +203,15 @@
     </div>
 
     <p>
-      Editing the tree writes a new manifest that points at the version before it, so history is a
-      chain of records rather than a mutable directory. Bytes are shared by content, so changing one
+      Editing the tree writes a new manifest that points at the version before it: history is a
+      chain of records, not a mutable directory. Bytes are shared by content, so changing one
       character in one file stores one file, not a tree. Two agents editing the same base produce two
       successors and you can see that they diverged, which beats one of them quietly winning.
     </p>
     <p>
       A file does not have to be written to be added. An image the agent generated earlier is already
       an artifact, so attaching it to a tree moves no bytes at all: the manifest points at what is
-      already there, and the artifact becomes a data parent of the tree, so whatever labels it
+      already there, and the artifact becomes a data parent of the tree; whatever labels it
       carries follow it in.
     </p>
 
@@ -245,8 +245,8 @@ scraper           9        22  t1:07b3e5c918&#8230;  human:alice</code></pre>
       Those are not equivalent, and the difference is not something to paper over in a sentence on a
       web page. So a jail is a record: it states what it actually guarantees, an operator declares it,
       and the worker probes it before serving anything. A bubblewrap jail missing one flag can reach
-      the network while its record claims it cannot, so nothing is advertised on the strength of a
-      claim. Only on a passed probe.
+      the network while its record claims it cannot. Nothing is advertised on the strength of a
+      claim, only on a passed probe.
     </p>
     <p>
       Which means the answer to "what can this space run" is discovered rather than configured. A
@@ -258,7 +258,7 @@ scraper           9        22  t1:07b3e5c918&#8230;  human:alice</code></pre>
     <div class="callout warn">
       <strong>The process that runs the code holds no credential.</strong> The worker that spawns
       jails can start two specific binaries and reach the space, and nothing else. The child it
-      spawns gets no permissions and no token, so compromising the dangerous half yields a process
+      spawns gets no permissions and no token. Compromising the dangerous half yields a process
       that can print bytes to its parent.
       <br><br>
       One caveat, found by measurement: a permission model bounds the calls a
@@ -295,8 +295,8 @@ scraper           9        22  t1:07b3e5c918&#8230;  human:alice</code></pre>
     </p>
     <p>
       Promotion is then a grant rotation pinned to a digest: the permission that lets production
-      work be claimed carries the digest it applies to, so authorizing the work and authorizing the
-      code are one record.
+      work be claimed carries the digest it applies to: authorizing the work and authorizing the
+      code become one record.
     </p>
 
     <div class="code-block">
@@ -310,7 +310,7 @@ agent:scraper on 'prod': t1:07b3e5c918&#8230;</code></pre>
       The answer comes from the same records that do the refusing, so it cannot disagree with what
       is actually enforced the way a deploy log can. A binding that names a tree the grant does not
       pin is refused rather than run. Rolling back is the same verb pointed at the previous digest,
-      and stopping an agent is a record write, so both leave the audit trail everything else does.
+      and stopping an agent is a record write; both leave the audit trail everything else does.
       The founding use case for all of this is model-written code over data it must not exfiltrate,
       which is why the pieces compose the way they do: the jail bounds what the code can reach, the
       binding bounds which code runs, and the grant bounds what its output may claim to be.
@@ -320,9 +320,9 @@ agent:scraper on 'prod': t1:07b3e5c918&#8230;</code></pre>
       jail has no network and the channel out carries no bytes, so the binding declares which fields
       of a claimed request name stored payloads, and the host lays those bytes into the run's
       directory before the code starts. The fetch happens under the <em>agent's</em> permission, not
-      the host's, so a request naming a payload its handler may not read fails as a refusal instead
-      of smuggling data past the grants, and everything the run produces lists that input as a
-      parent, so the labels it carries follow along.
+      the host's: a request naming a payload its handler may not read fails as a refusal instead
+      of smuggling data past the grants. And everything the run produces lists that input as a
+      parent, which carries its labels along.
     </p>
     <p>
       All of this composes into a worked system in the analysis example: its stages are promoted
@@ -351,8 +351,8 @@ agent:scraper on 'prod': t1:07b3e5c918&#8230;</code></pre>
     <p>
       Path traversal is structurally absent here, not checked for: the
       requested path is matched against a fixed index, so there is no filesystem to escape and the
-      index is the allowlist. Every artifact is authorized once when the link is minted, so the
-      served URL needs no credential and a link cannot outlive the permission that created it.
+      index is the allowlist. Every artifact is authorized once when the link is minted; the
+      served URL needs no credential, and a link cannot outlive the permission that created it.
     </p>
 
     <h3>Hand it to git</h3>
@@ -367,7 +367,7 @@ $ git clone /tmp/landing.git &amp;&amp; cd landing &amp;&amp; git log --oneline
     </div>
 
     <p>
-      Or serve them, so the URL is the thing you hand somebody rather than a directory:
+      Or serve them, and hand somebody a URL instead of a directory:
     </p>
 
     <div class="code-block">
@@ -413,7 +413,7 @@ $ git clone http://you:&lt;token&gt;@127.0.0.1:7790/landing-page.git</code></pre
     </p>
 
     <div class="callout warn">
-      <strong>And the guarantee is narrower than it sounds, so here it is in full.</strong> The
+      <strong>And the guarantee is narrower than it sounds; here it is in full.</strong> The
       manifest keeps the path and the hash of the erased file, in a record body that has no erasure
       path of its own. So <code>credentials/prod-db.txt</code> outlives its own contents, and anyone
       holding a candidate secret can hash it and confirm that exact value was in that tree. A

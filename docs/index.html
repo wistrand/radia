@@ -45,15 +45,17 @@
   <div class="container">
     <h1>Agents claim work.<br>Nobody wires them together.</h1>
     <p class="subtitle">
-      Say you have an agent that summarizes documents, and you want to add one that can read scanned
-      PDFs. In an agent framework you go and edit the first agent so it knows the second one exists.
-      In Radia you just start the second worker. It says what it can handle, the summarizer posts a
-      document, and whichever worker matches picks it up. <strong>Neither one knows the other is
-      there.</strong>
+      <strong>Agents in Radia do not call each other. One writes a record into a shared space.
+      Another has declared the pattern of record it handles, and the runtime hands each record to
+      one worker whose pattern matches.</strong> A record is JSON with a kind, and it carries no
+      destination, no queue name, no worker id; the whole of a worker's registration is a pattern
+      like <code>{ kind: "document", match: { type: "scan" } }</code>. So the day you want scanned
+      PDFs handled, you start a worker that says that, and stop: the summarizer that posts
+      documents never learns it exists.
     </p>
 
     <figure>
-      <svg viewBox="0 0 760 260" role="img" aria-label="A document posted to a shared space, claimed by whichever worker matches it">
+      <svg viewBox="0 0 760 360" role="img" aria-label="A wired agent chain replaced by a shared space that matches records to workers">
         <defs>
           <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
@@ -63,46 +65,58 @@
           </marker>
         </defs>
 
-        <rect x="250" y="30" width="260" height="200" rx="8" class="box" stroke-dasharray="4 3"/>
-        <text x="380" y="52" text-anchor="middle" class="muted">the space</text>
+        <rect x="95" y="14" width="130" height="34" rx="6" class="box"/>
+        <text x="160" y="36" text-anchor="middle" class="label">agent A</text>
+        <rect x="315" y="14" width="130" height="34" rx="6" class="box"/>
+        <text x="380" y="36" text-anchor="middle" class="label">agent B</text>
+        <rect x="535" y="14" width="130" height="34" rx="6" class="box"/>
+        <text x="600" y="36" text-anchor="middle" class="label">agent C</text>
+        <path d="M 231 31 L 309 31" class="flow" marker-end="url(#arrow)"/>
+        <path d="M 451 31 L 529 31" class="flow" marker-end="url(#arrow)"/>
+        <text x="380" y="68" text-anchor="middle" class="muted">an agent framework: A calls B, B calls C. Every arrow is code somebody edits.</text>
 
-        <rect x="272" y="66" width="216" height="30" rx="4" fill="#1e1e24" stroke="#60a5fa"/>
-        <text x="284" y="85" class="label">document {type: "pdf"}</text>
-        <text x="476" y="85" text-anchor="end" fill="#60a5fa" font-size="10">waiting</text>
+        <text x="380" y="96" text-anchor="middle" class="label">Radia removes the arrows:</text>
 
-        <rect x="272" y="106" width="216" height="30" rx="4" fill="#1e1e24" stroke="#fbbf24"/>
-        <text x="284" y="125" class="label">document {type: "scan"}</text>
-        <text x="476" y="125" text-anchor="end" fill="#fbbf24" font-size="10">taken</text>
+        <rect x="250" y="112" width="260" height="200" rx="8" class="box" stroke-dasharray="4 3"/>
+        <text x="380" y="134" text-anchor="middle" class="muted">the space</text>
 
-        <rect x="272" y="146" width="216" height="30" rx="4" fill="#1e1e24" stroke="#60a5fa"/>
-        <text x="284" y="165" class="label">document {type: "pdf"}</text>
-        <text x="476" y="165" text-anchor="end" fill="#60a5fa" font-size="10">waiting</text>
+        <rect x="272" y="148" width="216" height="30" rx="4" fill="#1e1e24" stroke="#60a5fa"/>
+        <text x="284" y="167" class="label">document {type: "pdf"}</text>
+        <text x="476" y="167" text-anchor="end" fill="#60a5fa" font-size="10">waiting</text>
 
-        <rect x="272" y="186" width="216" height="30" rx="4" fill="#1e1e24" stroke="#9ca3af"/>
-        <text x="284" y="205" class="label">summary</text>
-        <text x="476" y="205" text-anchor="end" fill="#9ca3af" font-size="10">done</text>
+        <rect x="272" y="188" width="216" height="30" rx="4" fill="#1e1e24" stroke="#fbbf24"/>
+        <text x="284" y="207" class="label">document {type: "scan"}</text>
+        <text x="476" y="207" text-anchor="end" fill="#fbbf24" font-size="10">taken</text>
 
-        <rect x="20" y="60" width="150" height="46" rx="6" class="box"/>
-        <text x="95" y="82" text-anchor="middle" class="label">intake</text>
-        <text x="95" y="97" text-anchor="middle" class="muted">posts documents</text>
-        <path d="M 176 83 L 244 83" class="flow" marker-end="url(#arrow)"/>
+        <rect x="272" y="228" width="216" height="30" rx="4" fill="#1e1e24" stroke="#60a5fa"/>
+        <text x="284" y="247" class="label">document {type: "pdf"}</text>
+        <text x="476" y="247" text-anchor="end" fill="#60a5fa" font-size="10">waiting</text>
 
-        <rect x="590" y="96" width="150" height="52" rx="6" class="box" stroke="#818cf8"/>
-        <text x="665" y="118" text-anchor="middle" class="label">ocr worker</text>
-        <text x="665" y="134" text-anchor="middle" class="muted">handles scans</text>
-        <path d="M 584 121 L 516 121" class="flow" stroke="#818cf8" marker-end="url(#arrow-accent)"/>
+        <rect x="272" y="268" width="216" height="30" rx="4" fill="#1e1e24" stroke="#9ca3af"/>
+        <text x="284" y="287" class="label">summary</text>
+        <text x="476" y="287" text-anchor="end" fill="#9ca3af" font-size="10">done</text>
 
-        <rect x="590" y="160" width="150" height="52" rx="6" class="box"/>
-        <text x="665" y="182" text-anchor="middle" class="label">summarizer</text>
-        <text x="665" y="198" text-anchor="middle" class="muted">handles pdfs</text>
-        <path d="M 584 185 L 516 185" class="flow" marker-end="url(#arrow)"/>
+        <rect x="20" y="142" width="150" height="46" rx="6" class="box"/>
+        <text x="95" y="164" text-anchor="middle" class="label">intake</text>
+        <text x="95" y="179" text-anchor="middle" class="muted">posts documents</text>
+        <path d="M 176 165 L 244 165" class="flow" marker-end="url(#arrow)"/>
 
-        <text x="380" y="248" text-anchor="middle" class="muted">no routing table, no addresses</text>
+        <rect x="590" y="178" width="150" height="52" rx="6" class="box" stroke="#818cf8"/>
+        <text x="665" y="200" text-anchor="middle" class="label">ocr worker</text>
+        <text x="665" y="216" text-anchor="middle" class="muted">claims scans</text>
+        <path d="M 584 203 L 516 203" class="flow" stroke="#818cf8" marker-end="url(#arrow-accent)"/>
+
+        <rect x="590" y="242" width="150" height="52" rx="6" class="box"/>
+        <text x="665" y="264" text-anchor="middle" class="label">summarizer</text>
+        <text x="665" y="280" text-anchor="middle" class="muted">claims pdfs</text>
+        <path d="M 584 267 L 516 267" class="flow" marker-end="url(#arrow)"/>
+
+        <text x="380" y="336" text-anchor="middle" class="muted">no routing table, no addresses: workers claim what matches their pattern</text>
       </svg>
       <figcaption>
         The intake process has no idea a worker exists. The workers have no idea who posted the
         document. Each side describes a <em>shape of record</em> it cares about, and the runtime
-        works out who gets what.
+        works out who gets what. Most of what this site describes follows from that one removal.
       </figcaption>
     </figure>
 

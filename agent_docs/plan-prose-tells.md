@@ -112,6 +112,37 @@ The shared shape of every class, including the drumroll: INVISIBLE TO WORD-LEVEL
 instance is defensible alone; the disease is frequency or staging. That is why the guard bans
 only the always-wrong phrases and the review rule owns the rest.
 
+## The third sweep: rhythm budgets (frequency classes, review-only, never the guard)
+
+Profiled at the sentence level 2026-08-18 (607 sentences, mean 19.6 words). These classes differ
+from everything above: every instance passes the reader-knows test, and the disease is the FORM
+recurring so regularly that the prose scans as generated. The cure is variation, not deletion,
+and none of it belongs in the grep guard, where any of these would cry wolf.
+
+- **The causal chain ", so "** was the site's biggest structural number (74, more than "rather
+  than") and concentrates: workspaces.html carried 28, half its paragraphs, with a run of seven
+  consecutive so-paragraphs. Note the trap: the drumroll cure ("replace verdicts with
+  consequences") FEEDS this class, so fixing sweep one raises pressure on sweep three. Budget:
+  one ", so " per paragraph; vary with a semicolon, a colon, two sentences, or
+  consequence-first. FIXED on workspaces.html (28 -> ~15, the seven-run broken); other pages sit
+  near one per five paragraphs, which is fine.
+- **The punch-fragment closer**: 50 sentences of six words or fewer (8%). The drumroll's mirror:
+  announce-before became certify-after. Keep the fact-carrying slams ("Two jails ship."); cut
+  the verdict-tags that re-assert the paragraph ("which is the point"). Budget: one or two
+  verdict-slams per page. A topic-sentence slam that the paragraph then substantiates ("The cost
+  is real. A tool call here is...") is fine, and is not a closer.
+- **Colon-explication** (~113): partly self-inflicted, since the style rule converts em dashes
+  to colons, making "claim: elaboration" the default sentence shape. Sometimes write two
+  sentences.
+- **The paired-forecast flourish** ("two exits, and they answer different questions", 9 uses of
+  the numbered-forecast move): keep the number, drop the ornamental tail when the following
+  sentences make the difference obvious.
+
+Cleared in this sweep, with reasons: sentence-opener distribution ("The" 14.5%) is ordinary
+technical English; "the one / the only" (x17) are checkable uniqueness claims, the opposite of
+the sweep class; tutorial imperatives ("Suppose", "Notice") are the genre; compound
+so-plus-cleft sentences barely exist (1).
+
 ## Avoiding repetition
 
 - CLAUDE.md Documentation Style gains the structural rule (one bullet, the reader-knows test and
