@@ -22,8 +22,8 @@ flowchart LR
 ```
 
 ```bash
-deno task quick                           # the structural guards only        (102 tests, ~1s)
-deno task conformance                     # sqlite + pglite + the blob port   (554 tests, ~25s)
+deno task quick                           # the structural guards only        (~1s)
+deno task conformance                     # sqlite + pglite + the blob port   (~1min)
 scripts/pg-conformance.sh                 # + a live Postgres
 RADIA_PG_URL=postgres://… scripts/pg-conformance.sh   # against your own server
 ```
