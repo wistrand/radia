@@ -12,6 +12,9 @@
   </script>
   <style>
     .play-wrap { max-width: 1200px; margin: 0 auto; padding: 16px; }
+    .play-head { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; margin: 2px 0 10px; }
+    .play-head h1 { margin: 0; font-size: 22px; }
+    .play-head .note { flex: 1; min-width: 320px; max-width: none; }
     .play-top { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 10px 0 14px; }
     .play-top input { background: #1e1e24; color: inherit; border: 1px solid #2a2a31; border-radius: 6px; padding: 8px 10px; min-width: 220px; }
     .play-top button, .tabs button { background: #1e1e24; color: inherit; border: 1px solid #3b3b46; border-radius: 6px; padding: 8px 12px; cursor: pointer; }
@@ -25,22 +28,14 @@
 <body>
 
 <div class="play-wrap">
-  <p><a href="../index.html">&larr; radia</a></p>
-  <h1>A space in this tab</h1>
-  <p class="note">
-    This page boots the same runtime the server binary runs: Postgres compiled to WASM for
-    storage (persisted in this browser via IndexedDB), the full authorization stack, the event
-    chain, and the actual console, embedded below. Nothing is installed and nothing leaves the
-    tab. The page seeds one claimable kind, <code>document</code>, and one toy worker that claims
-    scans and answers with a <code>summary</code> record; post a document and watch the claim,
-    the lease and the result move through the Feed.
-  </p>
-  <p class="note">
-    The console below starts at its sign-in screen: choose <strong>"Sign in as local
-    operator"</strong>. This space runs in open mode, and the console never assumes authority
-    silently, so the operator session is a labeled button rather than a default, in the browser
-    exactly as on a server.
-  </p>
+  <div class="play-head">
+    <a href="../index.html">&larr; radia</a>
+    <h1>A space in this tab</h1>
+    <span class="note">the real runtime on Postgres-in-WASM, persisted in this browser, console
+    included; nothing leaves the tab. Sign in with <strong>"Sign in as local operator"</strong>,
+    post a document, and watch a worker claim it in the Feed.
+    <a href="#about">More below.</a></span>
+  </div>
 
   <div class="play-top">
     <input id="doc-name" value="page.png" aria-label="document file name">
@@ -59,6 +54,15 @@
 
   <iframe id="console-frame" title="the radia console, running against the space in this tab"></iframe>
 
+  <p class="note" id="about">
+    What this is: the same runtime the server binary runs (storage, matching, leases, the full
+    authorization stack, the event chain), booted in this tab with the actual console embedded
+    above. The page seeds one claimable kind, <code>document</code>, and one toy worker that
+    claims scans and answers with a <code>summary</code> record. The console starts at its
+    sign-in screen because it never assumes authority silently: this space runs in open mode, so
+    the operator session is a labeled button rather than a default, in the browser exactly as on
+    a server.
+  </p>
   <p class="note">
     Limits, stated rather than implied: no code execution (nothing in a page may spawn a
     process), one space per browser profile, and everything here runs as one person, so the
