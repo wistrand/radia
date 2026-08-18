@@ -47,6 +47,7 @@
   <div class="play-top">
     <input id="doc-name" value="page.png" aria-label="document file name">
     <button id="post">Post a document</button>
+    <button id="reset" title="erase this browser's space and start over">Reset the space</button>
     <span id="status">booting&#8230;</span>
   </div>
 
@@ -134,6 +135,58 @@ return { kind: "report", body: { text: "rolled up " + summaries.length + " summa
 <script type="module">
   const status = (m) => document.getElementById("status").textContent = m;
   const VIRT = "http://radia.local";
+  const DB = "radia-playground";
+
+  // ---- reset, wired FIRST and reachable without this page working ------------------------------
+  //
+  // The recovery control must not depend on the thing being recovered. Wiring it after the boot
+  // (where it started) meant that the one state a visitor most needs it in — a space whose
+  // database never opens — was the state where the button had never been connected. So it is
+  // attached before anything that can wait, and it is also reachable BY HAND as `?reset=1`, which
+  // works even if nothing below this line ever runs.
+  document.getElementById("reset").onclick = () => {
+    if (!confirm("Erase this browser's space: every record, artifact and the console sign-in. This cannot be undone.")) return;
+    location.search = "?reset=1";
+  };
+
+  // THE ERASE RUNS BEFORE THE DATABASE IS OPENED, which is the whole ordering. Deleting it from a
+  // page that already booted does not work: PGlite's IDBFS keeps its IndexedDB connection open
+  // across `close()`, so `deleteDatabase` blocks, `blocked` is not guaranteed to fire, and the
+  // page waits forever — and the pending delete then queues ahead of the NEXT tab's open, so the
+  // whole site appears to hang. Here, nothing has opened it yet.
+  if (new URLSearchParams(location.search).has("reset")) {
+    // Strip the parameter first, so a later refresh does not erase again.
+    history.replaceState(null, "", location.pathname);
+    status("erasing the previous space…");
+    // The runtime's small "files" (the credential, the seal key, the KEK) and the console's session
+    // both live in this origin's storage, so keeping them would boot a fresh space holding an older
+    // space's keys. Scoped to this project's prefix rather than clearing the origin, which is not
+    // this button's to do.
+    for (const store of [localStorage, sessionStorage]) {
+      for (const key of Object.keys(store)) if (key.startsWith("radia.")) store.removeItem(key);
+    }
+    // PGlite names its IndexedDB database after the mount point (`/pglite/<dir>`); the enumeration
+    // is a belt-and-braces for a version that names it otherwise, and still only ever touches this
+    // space's own databases.
+    const named = new Set([`/pglite/${DB}`]);
+    try {
+      for (const info of (await indexedDB.databases?.()) ?? []) {
+        if (info.name && (info.name.includes(DB) || info.name.includes("pglite"))) named.add(info.name);
+      }
+    } catch { /* `databases()` is not everywhere; the explicit name above carries the case */ }
+    let blocked = false;
+    await Promise.all([...named].map((name) =>
+      new Promise((resolve) => {
+        const req = indexedDB.deleteDatabase(name);
+        req.onsuccess = req.onerror = () => resolve();
+        // ANOTHER TAB still holds it. Bounded rather than awaited forever: a reset that cannot
+        // finish must still hand the page back, saying what to do, instead of hanging at boot.
+        req.onblocked = () => { blocked = true; resolve(); };
+        setTimeout(() => { blocked = true; resolve(); }, 3000);
+      })
+    ));
+    if (blocked) alert("Another tab still has this space open, so it could not be erased. Close every other tab on this page, then reset again.");
+  }
 
   let boot;
   try {
@@ -144,7 +197,18 @@ return { kind: "report", body: { text: "rolled up " + summaries.length + " summa
     throw e;
   }
 
-  const { handler } = await boot.bootBrowserSpace({ db: "idb://radia-playground" });
+  // A BOOT THAT HANGS MUST SAY SO. Opening the database can queue behind another tab's
+  // connection, or behind a `deleteDatabase` some other tab left pending — and IndexedDB reports
+  // neither, it simply waits. Twice now that presented as a page stuck on "booting…" with nothing
+  // to act on, so the wait names itself and says what to do. Not a failure: if the open completes
+  // later, the boot continues normally.
+  const bootWatch = setTimeout(() => {
+    status(`still opening the database. Another tab probably holds this space open, or a reset is ` +
+      `waiting on one: close every other ${location.pathname} tab, then reload.`);
+  }, 8000);
+  const { handler } = await boot.bootBrowserSpace({ db: `idb://${DB}` });
+  clearTimeout(bootWatch);
+  let stopAuto = null; // the reactor's abort handle, when the auto-run toggle is on
 
   // The wire, one function: requests to the virtual origin go straight to the handler. The
   // console's iframe shim below calls this; so does everything on this page.
@@ -358,7 +422,6 @@ return { kind: "report", body: { text: "rolled up " + summaries.length + " summa
     // on. So the page keeps the host role and `reactorLoop` (agent_docs/plan-reactor-loop.md)
     // drives it: watch, re-read, decide, spawn. `summary` stays a FACT — claiming it would make
     // it vanish from every other reader.
-    let stopAuto = null;
     let lastTrigger = null;
     let autoRuns = 0;
     const AUTO_CAP = 20;

@@ -134,6 +134,18 @@ can break it", which patches `fetch` at the handler and was proven to hang witho
 socket-backed case in that file passes either way, which is why the browser transport is where it
 had to be caught.
 
+**Erasing a persisted space, and the trap under it** (the playground's "Reset the space",
+2026-08-18). Deleting the database from a page that has booted DOES NOT WORK: PGlite's IDBFS
+keeps its IndexedDB connection open across `close()`, so `deleteDatabase` blocks, `blocked` is not
+guaranteed to fire when the holder is your own page, and the reset's own `location.reload()` is
+never reached — leaving a live tab on a closed space. Worse, the pending delete then queues ahead
+of the NEXT tab's `open`, so one click makes every later visit hang at boot. So the erase runs at
+the top of the next load, before anything opens the database, bounded at 3s per delete with
+`blocked` treated as an outcome. Two rules generalise beyond this page: a RECOVERY CONTROL MUST
+NOT DEPEND ON WHAT IT RECOVERS (the button was wired after boot, so it was dead in exactly the
+state that needed it — it is now wired first and reachable by hand as `?reset=1`), and an
+IndexedDB open that waits reports nothing, so it needs its own watchdog to name the cause.
+
 **Running it:** `deno task bundle-browser`, then `deno task serve-docs` (`scripts/serve-docs.ts`,
 dependency-free; it exists because the playground needs `application/wasm` served correctly or
 PGlite's streaming compile is refused) and open `/playground/`. The console starts at its
