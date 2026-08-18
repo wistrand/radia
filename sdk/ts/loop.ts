@@ -1,9 +1,16 @@
+// The two worker harnesses, one per link shape (agent_docs/plan-reactor-loop.md):
+//
 // agentLoop: the take-based worker harness (design §5), event-driven via watches (M1).
 // Background watchers turn matching-kind wakeups into a signal; the claim loop drains all
 // its patterns on each wakeup, then waits for the next one (with a poll fallback so a
 // missed wakeup or a dropped watch can't stall it). Each claim runs the handler under a
 // fenced lease with a renewal heartbeat, acks with a per-attempt idempotency key, nacks on
 // error, and logs when fenced (at-least-once: duplicate work is possible).
+//
+// reactorLoop: the fact-side twin, for readers that never claim (watch, re-read, decide,
+// write under a derived key). It owns the supervision that nine hand-rolled `for await`
+// sites kept dropping; the join itself (completeness test, idempotency key, sweep scoping)
+// stays with the caller, because what "all in" means is app policy no harness can know.
 
 import { RadiaClientError } from "./client.ts";
 import type { PutRequest, RadiaClient, RadiaRecord, Pattern } from "./client.ts";
@@ -390,3 +397,150 @@ function startHeartbeat(
 }
 
 const short = (id: string) => id.slice(-6);
+
+export interface ReactorOptions {
+  name: string;
+  /**
+   * What to wake on. A WAKEUP HINT, never the correctness argument: `reconcile` decides, and
+   * must be correct against a watch that woke it for the wrong record or did not wake it at all.
+   * Write the pattern you mean; a `match` is evaluated server-side today (`Space.matchesEvent`)
+   * and costs one coalesced record fetch per write of that kind, not per stream.
+   *
+   * Wake precision may IMPROVE and will never be exact. Within-kind routing is measured and
+   * deferred (agent_docs/plan-scaling.md); if it lands it is a same-process equality index that
+   * must be provably at least as permissive as the matcher, so `$or`, `$exists`, non-indexed
+   * paths and author scope stay in a wake-always bucket, and the cross-instance path stays
+   * kind-blind by decision rather than by omission. The server also ANDs this run's grant
+   * patterns into the watch, so wakeups can narrow under a grant change this code never sees —
+   * one more reason the watch is a hint.
+   */
+  patterns: Pattern[];
+  /**
+   * The whole of the caller's job: re-read, decide, write under a derived key. Called at boot,
+   * on every wakeup, and on every tick; single-flighted, so a burst of wakeups is one pass with
+   * one trailing pass behind it. A throw is REPORTED and the loop continues — supervision undone
+   * by one unhandled sweep error is the failure this harness exists to end.
+   *
+   * What it must contain, and this harness deliberately cannot supply: the completeness test
+   * (which kinds, what arity, what "all in" means), the idempotency key (the join's identity),
+   * and the sweep's scoping (what NOT to walk). Re-read every time; deciding from remembered
+   * wakeups breaks the first time a watch drops.
+   */
+  reconcile: () => Promise<void>;
+  signal?: AbortSignal;
+  /**
+   * The CORRECTNESS SPINE, not a degradation. The SDK's watch re-creates itself after a server
+   * restart without telling anyone (`client.ts`: events in the gap are "missed by construction"),
+   * so a record written in that gap is healed by this tick and by nothing else. The same
+   * structure as `agentLoop`, whose take-side poll is why ITS watchers can afford to be dumb
+   * hints. Also what a permanently refused watch degrades to. Default 30s, minimum 1s.
+   */
+  pollMs?: number;
+  /** Routine trace goes here or nowhere; failures (a refused watch, a reconcile that threw)
+   *  reach `console.error` when absent, for `LoopOptions.log`'s reason. */
+  log?: (msg: string) => void;
+}
+
+/**
+ * Supervise a fact-side reader: reconcile at boot, on every wakeup, on every tick, forever.
+ *
+ * Owns exactly the seven things the hand-rolled sites dropped: reconcile before the first watch;
+ * one watch per pattern, all merged into one single-flighted reconcile; a re-watch on every
+ * observable drop with a reconcile on the way round; `credential_invalid` re-watched under a
+ * fresh run where a real 403 is reported ONCE and never retried; abort as a clean stop; the
+ * always-on tick; and reconcile errors reported and survived.
+ */
+export async function reactorLoop(client: RadiaClient, o: ReactorOptions): Promise<void> {
+  const pollMs = Math.max(1000, o.pollMs ?? 30_000);
+  const log = o.log ?? (() => {});
+  const report = o.log ?? ((msg: string) => console.error(msg));
+
+  // Same shape as agentLoop, same reason: any process running this loop is by definition
+  // long-lived, and a credential that cannot be renewed makes every further pass a 401.
+  let credentialLost = false;
+  const credential = new AbortController();
+  if (o.signal) o.signal.addEventListener("abort", () => credential.abort(), { once: true });
+  client.keepAlive(credential.signal, (reason) => {
+    log(`[${o.name}] credential ended: ${reason}`);
+    credentialLost = true;
+    credential.abort();
+  });
+
+  // A wakeup during a pass leaves `pending` set, so the pass is followed by exactly one more:
+  // single-flight with a trailing edge, never a stacked pass per wakeup.
+  let wake: (() => void) | null = null;
+  let pending = false;
+  const doWake = () => {
+    pending = true;
+    const w = wake;
+    wake = null;
+    w?.();
+  };
+
+  const watchers = o.patterns.map(async (pattern) => {
+    let drops: { message: string; count: number } | null = null;
+    while (!credential.signal.aborted) {
+      try {
+        for await (const _ of client.watch(pattern, credential.signal)) {
+          drops = null;
+          doWake();
+        }
+        return; // generator ended (signal aborted): clean stop
+      } catch (e) {
+        if (credential.signal.aborted) return;
+        if (e instanceof RadiaClientError && e.code === "credential_invalid") {
+          // The run ended, not the grant: mint another and watch again (agentLoop's split).
+          log(`[${o.name}] watch on '${pattern.kind}' outlived its run; re-watching under a fresh one`);
+          doWake(); // reconcile on the way round: the revocation window may hold missed events
+          continue;
+        }
+        if (e instanceof RadiaClientError && e.status === 403) {
+          report(
+            `[${o.name}] watch on '${pattern.kind}' FORBIDDEN (${e.code}): no grant to watch it; ` +
+              `the ${pollMs}ms tick keeps this reactor correct, just without wakeups. Grant this run a '${pattern.kind}' grant to get them.`,
+          );
+          return;
+        }
+        const message = describeFailure(e, client.base);
+        if (drops === null || drops.message !== message) {
+          drops = { message, count: 1 };
+          log(`[${o.name}] watch on '${pattern.kind}' dropped: ${message}. Retrying`);
+        } else drops.count++;
+        await sleep(Math.min(1000 * 2 ** Math.min(drops.count, 4), 15_000));
+        doWake(); // whatever landed during the outage is reconciled, not stranded
+      }
+    }
+  });
+
+  const pass = async () => {
+    try {
+      await o.reconcile();
+    } catch (e) {
+      report(`[${o.name}] reconcile failed: ${describeFailure(e, client.base)}`);
+    }
+  };
+
+  await pass(); // boot: anything that landed while this process was down waits for nobody
+  while (!o.signal?.aborted && !credentialLost) {
+    if (!pending) {
+      await new Promise<void>((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          credential.signal.removeEventListener("abort", finish);
+          if (wake === finish) wake = null;
+          resolve();
+        };
+        wake = finish;
+        const timer = setTimeout(finish, pollMs);
+        credential.signal.addEventListener("abort", finish);
+      });
+    }
+    if (o.signal?.aborted || credentialLost) break;
+    pending = false;
+    await pass();
+  }
+  await Promise.allSettled(watchers);
+}

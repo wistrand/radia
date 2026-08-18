@@ -27,6 +27,7 @@
 // behind them.
 
 import type { RadiaClient } from "../../sdk/ts/client.ts";
+import { reactorLoop } from "../../sdk/ts/loop.ts";
 import { oidcIdentityKey, readRegistry } from "../../sdk/ts/registry.ts";
 
 interface OidcMapping {
@@ -128,25 +129,24 @@ export async function watchEnrolments(
   announce: (principal: string) => string = (p) => `auto-grant: ${p} may now use this app`,
 ): Promise<void> {
   const decided = new Set<string>();
-  const pass = async () => {
-    try {
-      for (const p of await sweepEnrolments(admin, grant, log, decided)) log(announce(p));
-    } catch (e) {
-      log(`auto-grant: sweep failed (${e}); the next enrolment will retry`);
-    }
-  };
-  // The FIRST sweep is inside the try as well. Outside, a failure there is an unhandled rejection
-  // out of a fire-and-forget call at startup, and the app comes up looking healthy with the policy
-  // silently not running.
-  try {
-    await pass();
-    for await (const _ of admin.watch({ kind: "oidc_identity" }, signal)) await pass();
-  } catch (e) {
-    // Aborted on shutdown is the ordinary case and says nothing. Anything else means this stopped
-    // admitting people while the app kept serving, which is invisible from the outside: the next
-    // person to sign in simply cannot use it and nobody knows why the policy stopped applying.
-    if (!signal.aborted) {
-      log(`auto-grant: STOPPED watching enrolments (${e}); new identities will not be admitted until restart`);
-    }
-  }
+  // A REACTOR (plan-reactor-loop.md), because the bare `for await` here had the failure this
+  // helper exists to end: any watch error stopped admitting people until restart, logged once
+  // into a void, while the app kept serving. reactorLoop re-watches drops, survives a run
+  // turnover, degrades a refused watch to its tick, and reconciles at boot — so a sign-in that
+  // landed while the watch was down is admitted by the next tick, not by the next sign-in.
+  await reactorLoop(admin, {
+    name: "auto-grant",
+    patterns: [{ kind: "oidc_identity" }],
+    signal,
+    log,
+    reconcile: async () => {
+      // Sweep errors are caught HERE so the message stays this policy's own; the loop would
+      // otherwise report them generically and keep going, which is right but says less.
+      try {
+        for (const p of await sweepEnrolments(admin, grant, log, decided)) log(announce(p));
+      } catch (e) {
+        log(`auto-grant: sweep failed (${e}); the next enrolment or tick will retry`);
+      }
+    },
+  });
 }

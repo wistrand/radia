@@ -16,6 +16,7 @@ imports.
 | Path        | [`ts/`](ts/): `wire.ts`, `registry.ts`, `await.ts`, `client.ts`, `loop.ts` | [`py/radia.py`](py/radia.py) |
 | Client      | `RadiaClient`      | `RadiaClient` |
 | Worker loop | `agentLoop`        | `agent_loop` |
+| Reactor loop (fact-side: watch, re-read, decide) | `reactorLoop` | not yet: hand-roll the sweep, or poll |
 | Paging      | `query` / `queryPage` → `{records, nextAfter, scope}` | `query` / `query_page` → `(records, next_after, scope)` |
 | Watches     | `client.watch()` async generator | `client.watch()` generator |
 | Artifacts   | `putArtifact` / `getArtifact` / `artifactMeta` (HEAD: digest and size, no bytes) / `artifactCapability` | `put_artifact` / `get_artifact` / `artifact_capability` |

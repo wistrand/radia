@@ -20,6 +20,7 @@
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { readRegistry } from "../../sdk/ts/client.ts";
+import { reactorLoop } from "../../sdk/ts/loop.ts";
 import type { RadiaRecord } from "../../sdk/ts/wire.ts";
 import { readBindings } from "../../extensions/ts/host.ts";
 import { PIPELINE_TIER } from "./kinds.ts";
@@ -258,30 +259,23 @@ if (import.meta.main) {
   });
   const stop = new AbortController();
   Deno.addSignalListener("SIGTERM", () => stop.abort());
-  // WATCH, not a timer. A result landing is what makes the next stage plannable, so the planner
-  // wakes on the record that changed rather than polling a clock. The first pass runs before the
-  // watch: anything that landed while this was down would otherwise wait for the next write.
-  const pass = async () => {
-    try {
+  console.error(`[plan] watching for datasets and results`);
+  // A REACTOR, not a bare watch loop (plan-reactor-loop.md): the naive `for await` here died on
+  // the run ceiling (`credential_invalid` throws out of the generator) and silently missed
+  // records written while the SDK's watch re-created itself after a space restart. reactorLoop
+  // owns that supervision; the tick is what heals the invisible gaps. BOTH kinds, because both
+  // make new work plannable: a dataset starts a pipeline, and a result is the next stage's input.
+  await reactorLoop(client, {
+    name: "plan",
+    patterns: [{ kind: "dataset" }, { kind: "stage_result" }],
+    pollMs: 15_000,
+    signal: stop.signal,
+    log: (m) => console.error(m),
+    reconcile: async () => {
       for (const s of await planAll(client, { apply: true })) {
         if (s.state === "requested" && s.requested) console.error(`[plan] ${s.dataset}/${s.stage} -> ${s.requested}`);
         if (s.state === "blocked") console.error(`[plan] ${s.dataset}/${s.stage}: no binding names this stage's code`);
       }
-    } catch (e) {
-      console.error(`[plan] ${e instanceof Error ? e.message : e}`);
-    }
-  };
-  await pass();
-  console.error(`[plan] watching for datasets and results`);
-  // BOTH kinds, because both make new work plannable: a dataset starts a pipeline, and a result is
-  // the next stage's input. Watching only results meant an upload sat still until something else
-  // happened to write one.
-  await Promise.all([
-    (async () => {
-      for await (const _ of client.watch({ kind: "dataset" }, stop.signal)) await pass();
-    })(),
-    (async () => {
-      for await (const _ of client.watch({ kind: "stage_result" }, stop.signal)) await pass();
-    })(),
-  ]);
+    },
+  });
 }

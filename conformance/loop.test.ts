@@ -17,7 +17,7 @@ import { makeHandler } from "../src/server/http.ts";
 import { Space } from "../src/core/space.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
 import { RadiaClient } from "../sdk/ts/client.ts";
-import { agentLoop } from "../sdk/ts/loop.ts";
+import { agentLoop, reactorLoop } from "../sdk/ts/loop.ts";
 
 /** A space behind a real port, plus a run credential holding the grants a worker needs.
  *  `intercept` sees every request first and may answer it, which is how the watch cases below
@@ -432,6 +432,146 @@ Deno.test("loop: a concurrent worker settles every claim, and drains them on shu
     const leased = await s.space.queryEnvelopes({ state: "leased", limit: 50 });
     assertEquals(leased.length, 0, "the loop returned while claims were still leased");
   } finally {
+    await s.close();
+  }
+});
+
+// ── reactorLoop: the fact-side twin's contract (agent_docs/plan-reactor-loop.md) ─────────────────
+//
+// A supervision guard nobody has seen fail is one nobody has tested, so each case PLANTS one of
+// the three failure classes: a run revoked under a live watch, a gap no wakeup ever announces,
+// and a watch the space refuses outright.
+
+/** Poll a condition into truth, or fail naming it. The reactor's effects are asynchronous by
+ *  design, so every assertion here is "eventually", bounded. */
+async function eventually(cond: () => boolean, what: string, ms = 8000): Promise<void> {
+  for (let i = 0; i < ms / 50; i++) {
+    if (cond()) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert(cond(), `not eventually: ${what}`);
+}
+
+Deno.test("reactor: a credential_invalid revocation re-watches under a fresh run", async () => {
+  // The run ceiling in miniature: the run behind the watch ends while the process lives. The bare
+  // `for await` this replaces threw here and took the process with it (the analysis planner and
+  // host, before the conversion). The contract: log it, mint a fresh run, watch again, reconcile.
+  const s = await newWorkerSpace();
+  const lines: string[] = [];
+  let seen = 0;
+  const stop = new AbortController();
+  try {
+    const { definitionToken } = await s.space.createAgentDefinition("agent:r", [
+      { principal: "agent:r", kind: "task", operations: ["query"] },
+    ]);
+    const { run, runToken } = await s.space.mintRun(definitionToken);
+    // BOTH halves: the short token dies with the run, and the durable half is what "re-watch
+    // under a fresh run" mints from.
+    const client = new RadiaClient(s.client.base, { token: runToken, definitionToken });
+    await s.space.put({ kind: "task", body: { tag: "a" } });
+    const loop = reactorLoop(client, {
+      name: "r",
+      patterns: [{ kind: "task" }],
+      pollMs: 60_000, // the tick must never be the explanation for anything below
+      signal: stop.signal,
+      log: (m) => lines.push(m),
+      reconcile: async () => {
+        seen = (await client.query({ kind: "task" }, 50)).length;
+      },
+    });
+    await eventually(() => seen === 1, "the boot reconcile ran");
+
+    await s.space.stopRun(run);
+    // The stream notices the dead run when it next carries something, so give it something.
+    await s.space.put({ kind: "task", body: { tag: "b" } });
+    await eventually(() => lines.some((l) => l.includes("outlived its run")), "the revocation was told apart from a refusal");
+    await eventually(() => seen === 2, "the on-the-way-round reconcile saw the write");
+
+    // The loop is ALIVE under the fresh run: a new write's wakeup reconciles, and with a 60s tick
+    // only the re-established watch can explain it.
+    await s.space.put({ kind: "task", body: { tag: "c" } });
+    await eventually(() => seen === 3, "the fresh run's watch delivers wakeups");
+    assertEquals(lines.filter((l) => l.includes("FORBIDDEN")).length, 0, "a run turnover is not a missing grant");
+    stop.abort();
+    await loop;
+  } finally {
+    stop.abort();
+    await s.close();
+  }
+});
+
+Deno.test("reactor: a record no wakeup ever announces is healed by the tick", async () => {
+  // The invisible failure: the SDK's watch re-creates itself after a server restart and events in
+  // the gap are missed BY CONSTRUCTION, with no signal to the caller (client.ts). Simulated at the
+  // transport by ending every SSE stream immediately, so no wakeup is ever delivered and the
+  // reconcile tick is the only mechanism left. This is the case that makes the tick the
+  // correctness spine rather than a fallback.
+  const s = await newWorkerSpace((req) => {
+    if (req.method === "GET" && new URL(req.url).pathname.endsWith("/events")) {
+      return new Response("", { status: 200 });
+    }
+    return undefined;
+  });
+  let seen = 0;
+  let passes = 0;
+  const stop = new AbortController();
+  try {
+    const loop = reactorLoop(s.client, {
+      name: "r",
+      patterns: [{ kind: "task" }],
+      pollMs: 1000,
+      signal: stop.signal,
+      log: () => {},
+      reconcile: async () => {
+        seen = (await s.client.query({ kind: "task" }, 50)).length;
+        passes++;
+      },
+    });
+    // The write lands strictly AFTER the boot pass, or the boot pass explains the heal and the
+    // tick is never actually tested (found by planting a disabled tick and watching this stay
+    // green).
+    await eventually(() => passes >= 1, "the boot reconcile ran");
+    assertEquals(seen, 0, "nothing to see before the write");
+    await s.space.put({ kind: "task", body: { tag: "gap" } });
+    await eventually(() => seen === 1, "the tick reconciled a record nothing announced");
+    stop.abort();
+    await loop;
+  } finally {
+    stop.abort();
+    await s.close();
+  }
+});
+
+Deno.test("reactor: a refused watch is reported ONCE and the tick keeps the reactor correct", async () => {
+  // A real 403 is permanent: retrying it turns a revocation into a silent stall that reads as an
+  // idle space, and re-reporting it every second is a flood that says nothing the first line did
+  // not. The contract: one loud line, no retry, and the reconcile still runs on the tick.
+  const s = await newWorkerSpace();
+  await s.space.registerKind({ kind: "secret", indexedPaths: [] });
+  const lines: string[] = [];
+  let seen = 0;
+  const stop = new AbortController();
+  try {
+    const loop = reactorLoop(s.client, {
+      name: "r",
+      patterns: [{ kind: "secret" }], // agent:w holds no grant on it
+      pollMs: 1000,
+      signal: stop.signal,
+      log: (m) => lines.push(m),
+      reconcile: async () => {
+        seen = (await s.client.query({ kind: "task" }, 50)).length;
+      },
+    });
+    await eventually(() => lines.some((l) => l.includes("FORBIDDEN")), "the refusal is loud");
+    await s.space.put({ kind: "task", body: { tag: "t" } });
+    await eventually(() => seen === 1, "the tick keeps reconciling without wakeups");
+    // Long enough for a retry storm to show itself if one existed.
+    await new Promise((r) => setTimeout(r, 1500));
+    assertEquals(lines.filter((l) => l.includes("FORBIDDEN")).length, 1, "reported once, never retried");
+    stop.abort();
+    await loop;
+  } finally {
+    stop.abort();
     await s.close();
   }
 });

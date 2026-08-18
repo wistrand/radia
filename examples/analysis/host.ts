@@ -14,6 +14,7 @@
 // own least-privilege identity: bindings, trees, file bytes, and the request watch.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
+import { reactorLoop } from "../../sdk/ts/loop.ts";
 import { WorkspaceHost } from "../../extensions/ts/host.ts";
 import { brokeredInvoker } from "../../extensions/ts/broker.ts";
 import { stageAgent } from "./roles.ts";
@@ -73,7 +74,16 @@ try {
   Deno.addSignalListener("SIGTERM", () => stop.abort());
 } catch { /* not on this platform */ }
 
-// Drain first: work that arrived while the host was down must not wait for the next write.
-await drain();
 console.error(`[host] serving ${Object.keys(credentials).join(", ")}; watching stage_request`);
-for await (const _ of reader.watch({ kind: "stage_request" }, stop.signal)) await drain();
+// A REACTOR (plan-reactor-loop.md): the drain runs at boot (work that arrived while the host was
+// down waits for nobody), on every request wakeup, and on a tick that heals what the watch cannot
+// see — a request written while the SDK's watch re-created itself after a space restart, and the
+// death the bare `for await` had here when the reader's run hit its ceiling.
+await reactorLoop(reader, {
+  name: "host",
+  patterns: [{ kind: "stage_request" }],
+  pollMs: 15_000,
+  signal: stop.signal,
+  log: (m) => console.error(m),
+  reconcile: drain,
+});
