@@ -131,3 +131,56 @@ in open mode and the console never assumes authority silently, in a tab exactly 
 
 **Verification constraint:** builds and type-checks are automatable here, but nothing in this
 repo's tooling launches a browser (standing rule). The in-page click-through is the operator's.
+
+## Playground v2: the guided demo (PLANNED 2026-08-18)
+
+Prompted by an external review of v1 and designed around one principle the review circled but
+never stated: **the demo never asserts; every claim is a link to the record that proves it** (the
+inspection doctrine, applied to marketing). One escalating story on one live space, not separate
+experiments, so the Feed and Graph accumulate a single history the visitor built. Five beats,
+~90 seconds, all page-level work over the existing wire; nothing in `src/`.
+
+The prerequisite, and a finding about v1: **the toy worker acts as the operator**, so the full
+authorization stack runs and is never consulted on the claim path. Beat 2 forces the fix: the
+worker becomes a real principal (definition minted through the wire, `take` grant pattern-scoped
+to `classification: public`, `classification` joins the seeded kind's indexed paths).
+
+1. **Routing.** Post a document with the worker's actual pattern shown beside the button.
+   Verdict lines fill from REAL events, each a deep link into the embedded console: published ->
+   the record; matched and claimed -> the lease event; answered -> the summary. Event-driven
+   states, never a scripted animation: the honest version is the more convincing one.
+2. **Authorization, the hero.** Post public vs post confidential. Public flows; confidential
+   shows "pattern matches (link: the interest) / grant permits NOTHING (link:
+   `effectivePermissions`) / still waiting, and it will wait forever". Then the beat that turns
+   four doc pages into one click: a "Grant the clearance" button writes a real `grant` record and
+   the stuck document is claimed within a second, live, no restart, because grants are records
+   read on the claim path and the watch wakes the worker.
+3. **Failure.** "Kill the worker mid-claim" (lease ~5s for pacing): leased by A -> A gone ->
+   lease expired -> claimed by B. Then A "returns" and its late ack is REFUSED `lease_lost`:
+   fencing shown, not described.
+4. **The thesis: add your own worker.** A declarative form (name, claim pattern, produced kind,
+   field-copy template; the translator example) mints a real definition with real grants and
+   starts a real loop. Repost: `document -> summary -> translation` with the first worker
+   untouched, said in exactly those words, linked to the Flows tab where the mined shape changed.
+   "Start a second replica" on any worker shows competition: two claimants, each record claimed
+   once. Declarative on purpose: user-typed JS in their own tab would not violate the no-exec
+   limitation (their code, their machine), but the form teaches the pattern vocabulary and keeps
+   v1 small.
+5. **Look at what you built.** Auto-follow toggle driving the EMBEDDED console's Graph tab by
+   fragment (never a custom lineage view: embed-don't-fork stands). One line, "everything above
+   is a record; this survives reload", and reload proves it.
+
+Frame: the "real runtime, running locally" badge (true, verified); the console collapsed under
+"Open full console"; and the honesty label the review's own proposal needs: "this page acts as
+the local operator (open mode, what any script here gets); the console below asks first", which
+turns the page-vs-console asymmetry into a second authorization lesson.
+
+Rejected from the review: a custom live graph renderer (forks the weekly-changing console); a
+pre-seeded fake OCR/sentiment pipeline (beat 4 grows the graph honestly); auto-playing the tour
+(the visitor pressing the buttons IS the demo, since "you did this without wiring anything" only
+lands if they did).
+
+Build order: worker-as-principal refactor; the experiment rail with event-sourced verdict lines
+replacing the lone post button; add-a-worker; auto-follow graph; badge and labels; then the
+homepage CTA swap ("Add a worker without wiring it into anything. Try it ->"). Every step ends
+at the operator's click-through.
