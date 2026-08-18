@@ -936,6 +936,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   query at all. Token expiry
   uses the **DB clock** (fetched only when a token is actually presented, so the no-auth path stays free).
 
+- **Ops tools are served by the SESSION, in-process; a worker must never hold a person's token**
+  (`examples/chat/client/session-tools.ts`; its header carries the delegation proof — a delegated
+  run holds no ops powers, so no worker can ever serve them for someone else). The failure that
+  enforces it: the tools worker was handed the login at launch and held it for its lifetime, so a
+  lapsed short half was re-minted in the REPL's memory and shipped DEAD to the worker, which
+  answered `token_expired` to every `space_*` call for the rest of the session. Credential repair
+  cannot span processes: delete the handoff rather than fixing it.
+
 ### Grants, scopes and narrowed answers
 
 - **`put` never checks that a parent is READABLE, so ancestry is forgeable.** A scoped principal may

@@ -41,6 +41,14 @@ mechanism instead: the pipeline gets memoization AND downstream invalidation by 
 digest to the next input digest, and encryption gets a deletion path for record bodies by putting
 wraps in an artifact. None of those is the use the doc leads with.
 
+**A bounded context over records degrades to retrieval, not loss.** The chat's inference worker
+sends the newest N messages only (a descending keyset over the sortable `index`, so a turn's cost
+is bounded by the window rather than the thread), and the truncation notice is a POINTER, never a
+summary: the omitted messages are still records and the assistant knows its own conversation id,
+so "[N earlier messages ... not lost; retrieve them]" (`extensions/ts/context.ts`) turns the
+usual lossy window into a cache miss. This is CLAUDE.md's disposition-plus-identity pair doing
+real work, and it exists only because the thread lives in the space rather than in the process.
+
 **"A client that happens to listen" scales as a pattern.** `git-serve`, `otlp` and now the analysis
 web app all bind their own port and need no runtime change and no wire-contract entry. The `/v0`
 surface is complete enough that a UI is a client. The analysis app additionally holds no credential:

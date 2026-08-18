@@ -160,6 +160,11 @@ JavaScript uses the Deno jail. Python is advertised only where a configured sand
 successfully. Files created by a run are captured as a new output-workspace version; runs never
 modify the code tree they execute.
 
+Filesystem read access is the one grantable capability, and it is off by default:
+`RADIA_CHAT_EXEC_DIRS` lists directories the jailed program may read, and unset means no
+filesystem at all. Net, env, run and write stay denied whatever it says. It is separate from
+`RADIA_CHAT_DIRS`, which bounds the file *tools* rather than executed code.
+
 See [the workspace documentation](../../docs/workspaces.html),
 [the execution design](../../agent_docs/design-execution.md) and
 [the confinement plan](../../agent_docs/plan-jail-confinement.md) for the trust boundaries.
