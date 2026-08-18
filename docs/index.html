@@ -51,59 +51,73 @@
       hard-coded agent-to-agent routing.
     </p>
 
-    <figure>
-      <svg viewBox="0 82 760 270" role="img" aria-label="A shared space matches document records to workers by content rather than by address">
+    <figure class="diagram-scroll hero-diagram">
+      <svg viewBox="0 0 760 350" role="img" aria-labelledby="hero-flow-title hero-flow-desc">
+        <title id="hero-flow-title">Work moves through a shared space as matching records</title>
+        <desc id="hero-flow-desc">An intake process publishes a scanned document without naming a worker. An OCR worker claims it by matching its contents and publishes extracted text back into the space. A summarizer then claims that result and returns a summary record.</desc>
         <defs>
-          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <marker id="hero-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
           </marker>
-          <marker id="arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <marker id="hero-arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#818cf8"/>
           </marker>
         </defs>
 
-        <text x="380" y="96" text-anchor="middle" class="label">publishers and workers meet through records</text>
+        <rect x="178" y="18" width="382" height="314" rx="10" class="box" stroke="#818cf8" stroke-dasharray="5 4"/>
+        <text x="198" y="43" class="label" font-weight="600">shared space</text>
+        <text x="540" y="43" text-anchor="end" class="muted">records stay; claims move</text>
 
-        <rect x="250" y="112" width="260" height="200" rx="8" class="box" stroke-dasharray="4 3"/>
-        <text x="380" y="134" text-anchor="middle" class="muted">the space</text>
+        <rect x="18" y="64" width="126" height="64" rx="7" class="box"/>
+        <text x="81" y="89" text-anchor="middle" class="label">intake</text>
+        <text x="81" y="109" text-anchor="middle" class="muted">knows no workers</text>
 
-        <rect x="272" y="148" width="216" height="30" rx="4" fill="#1e1e24" stroke="#60a5fa"/>
-        <text x="284" y="167" class="label">document {type: "pdf"}</text>
-        <text x="476" y="167" text-anchor="end" fill="#60a5fa" font-size="10">waiting</text>
+        <rect x="204" y="62" width="330" height="64" rx="7" fill="#1e1e24" stroke="#fbbf24"/>
+        <circle cx="225" cy="83" r="10" fill="#fbbf24"/>
+        <text x="225" y="87" text-anchor="middle" fill="#0e0e11" font-size="10" font-weight="700">1</text>
+        <text x="246" y="86" class="label">document</text>
+        <text x="246" y="108" class="muted">{ type: "scan", file: "page.png" }</text>
+        <text x="516" y="86" text-anchor="end" fill="#fbbf24" font-size="10">leased</text>
 
-        <rect x="272" y="188" width="216" height="30" rx="4" fill="#1e1e24" stroke="#fbbf24"/>
-        <text x="284" y="207" class="label">document {type: "scan"}</text>
-        <text x="476" y="207" text-anchor="end" fill="#fbbf24" font-size="10">taken</text>
+        <path d="M 150 96 L 198 96" class="flow" marker-end="url(#hero-arrow)"/>
+        <text x="174" y="85" text-anchor="middle" class="muted">put</text>
 
-        <rect x="272" y="228" width="216" height="30" rx="4" fill="#1e1e24" stroke="#60a5fa"/>
-        <text x="284" y="247" class="label">document {type: "pdf"}</text>
-        <text x="476" y="247" text-anchor="end" fill="#60a5fa" font-size="10">waiting</text>
+        <rect x="604" y="58" width="138" height="76" rx="7" class="box" stroke="#818cf8"/>
+        <text x="673" y="82" text-anchor="middle" class="label">OCR worker</text>
+        <rect x="620" y="94" width="106" height="24" rx="12" fill="#1e1e24" stroke="#818cf8"/>
+        <text x="673" y="110" text-anchor="middle" class="muted">type = scan</text>
+        <path d="M 540 92 L 598 92" class="flow" stroke="#818cf8" marker-end="url(#hero-arrow-accent)"/>
+        <text x="569" y="81" text-anchor="middle" class="muted">match + take</text>
 
-        <rect x="272" y="268" width="216" height="30" rx="4" fill="#1e1e24" stroke="#9ca3af"/>
-        <text x="284" y="287" class="label">summary</text>
-        <text x="476" y="287" text-anchor="end" fill="#9ca3af" font-size="10">done</text>
+        <rect x="204" y="156" width="330" height="64" rx="7" fill="#1e1e24" stroke="#60a5fa"/>
+        <circle cx="225" cy="177" r="10" fill="#60a5fa"/>
+        <text x="225" y="181" text-anchor="middle" fill="#0e0e11" font-size="10" font-weight="700">2</text>
+        <text x="246" y="180" class="label">extracted_text</text>
+        <text x="246" y="202" class="muted">{ text: "…", parent: document }</text>
+        <text x="516" y="180" text-anchor="end" fill="#60a5fa" font-size="10">available</text>
+        <path d="M 604 122 C 574 130 574 178 540 184" class="flow" stroke="#818cf8" marker-end="url(#hero-arrow-accent)"/>
+        <text x="577" y="154" text-anchor="middle" class="muted">ack result</text>
 
-        <rect x="20" y="142" width="150" height="46" rx="6" class="box"/>
-        <text x="95" y="164" text-anchor="middle" class="label">intake</text>
-        <text x="95" y="179" text-anchor="middle" class="muted">posts documents</text>
-        <path d="M 176 165 L 244 165" class="flow" marker-end="url(#arrow)"/>
+        <rect x="604" y="174" width="138" height="76" rx="7" class="box" stroke="#818cf8"/>
+        <text x="673" y="198" text-anchor="middle" class="label">summarizer</text>
+        <rect x="614" y="210" width="118" height="24" rx="12" fill="#1e1e24" stroke="#818cf8"/>
+        <text x="673" y="226" text-anchor="middle" class="muted">kind = extracted_text</text>
+        <path d="M 540 190 L 598 205" class="flow" stroke="#818cf8" marker-end="url(#hero-arrow-accent)"/>
+        <text x="568" y="215" text-anchor="middle" class="muted">match</text>
 
-        <rect x="590" y="178" width="150" height="52" rx="6" class="box" stroke="#818cf8"/>
-        <text x="665" y="200" text-anchor="middle" class="label">ocr worker</text>
-        <text x="665" y="216" text-anchor="middle" class="muted">claims scans</text>
-        <path d="M 584 203 L 516 203" class="flow" stroke="#818cf8" marker-end="url(#arrow-accent)"/>
+        <rect x="204" y="250" width="330" height="64" rx="7" fill="#1e1e24" stroke="#4ade80"/>
+        <circle cx="225" cy="271" r="10" fill="#4ade80"/>
+        <text x="225" y="275" text-anchor="middle" fill="#0e0e11" font-size="10" font-weight="700">3</text>
+        <text x="246" y="274" class="label">summary</text>
+        <text x="246" y="296" class="muted">{ text: "…", parent: extracted_text }</text>
+        <text x="516" y="274" text-anchor="end" fill="#4ade80" font-size="10">new record</text>
+        <path d="M 604 238 C 574 246 574 278 540 282" class="flow" stroke="#818cf8" marker-end="url(#hero-arrow-accent)"/>
 
-        <rect x="590" y="242" width="150" height="52" rx="6" class="box"/>
-        <text x="665" y="264" text-anchor="middle" class="label">summarizer</text>
-        <text x="665" y="280" text-anchor="middle" class="muted">claims pdfs</text>
-        <path d="M 584 267 L 516 267" class="flow" marker-end="url(#arrow)"/>
-
-        <text x="380" y="336" text-anchor="middle" class="muted">no routing table, no addresses: workers claim what matches their pattern</text>
+        <text x="380" y="347" text-anchor="middle" class="muted">every result returns to the same routing model</text>
       </svg>
       <figcaption>
-        The intake process publishes records without naming a worker. Each worker declares a
-        pattern, and the runtime assigns matching records. Starting a new worker adds a capability
-        without changing the publisher.
+        Publishers write records without choosing a destination. Workers claim what matches their
+        declared patterns, and each result returns as another record that later workers can discover.
       </figcaption>
     </figure>
 
