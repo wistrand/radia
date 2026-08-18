@@ -86,10 +86,12 @@ open mode; the console's labeled operator button is the sign-in.
 
 ## The suitable limitations, stated up front
 
-1. **No code execution.** Everything that spawns a process (the jails, the broker's FIFO pair,
-   `WorkspaceHost`) does not apply. Sandboxed iframes/Workers could become a NEW jail backend
-   later; the sandbox-as-record design even anticipates backends with different guarantees. Day
-   one: none.
+1. **No PROCESSES** (rewritten 2026-08-18, when the Web Worker backend shipped:
+   plan-webworker-sandbox.md). JavaScript snippets DO run, in a Worker inside a sandboxed iframe
+   — opaque origin, `connect-src 'none'`, probed before it is offered. What still does not apply
+   is anything that spawns: Python, the broker's FIFO pair, `WorkspaceHost`, and multi-file
+   workspace trees (which need module resolution the tab has no filesystem for; the SW step makes
+   that possible). Memory is the one axis a browser cannot cap, and the record says so.
 2. **One space per browser profile.** PGlite is single-connection; multi-instance stays
    Postgres-only. This matches the existing embedded posture rather than adding a restriction.
 3. **Artifact-origin isolation weakens.** The two-port design cannot exist on a static page;
@@ -122,6 +124,15 @@ open mode; the console's labeled operator button is the sign-in.
    requests through the BUILT bundle under Deno (no browser needed in CI); it SKIPS loudly when
    the bundle is absent so a clean checkout's `deno task conformance` stays runnable, and the
    build task is the run that cannot skip (the py-parity stance).
+
+**One SDK fix the browser transport forced** (2026-08-18): `client.watch` ended its stream only
+when the read errored, which a socket does on abort and a DIRECT handler call cannot — the server
+ends an SSE stream from the reader's `cancel()` and nothing else. So an aborted watch parked
+forever, its stream stayed open, and `reactorLoop`'s shutdown never returned. It now cancels the
+reader on abort. Guard: `conformance/loop.test.ts`, "an abort ends the stream even when no socket
+can break it", which patches `fetch` at the handler and was proven to hang without the fix. Every
+socket-backed case in that file passes either way, which is why the browser transport is where it
+had to be caught.
 
 **Running it:** `deno task bundle-browser`, then `deno task serve-docs` (`scripts/serve-docs.ts`,
 dependency-free; it exists because the playground needs `application/wasm` served correctly or

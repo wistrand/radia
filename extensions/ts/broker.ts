@@ -166,6 +166,20 @@ export interface BrokerOptions {
    *  entry cannot be stale: different code is a different digest. Pass one cache to a whole host
    *  so every agent on the same digest shares the fetch. */
   cache?: TreeCache;
+  /**
+   * What else, besides the claimed record, identifies this run's writes.
+   *
+   * A brokered write is keyed `broker:<record id>:<ordinal>`, which assumes ONE CODE PER RECORD —
+   * true for `WorkspaceHost`, where the binding pins a digest, and false for any host that can run
+   * different code against the same record. There the second run sends a different body under the
+   * same key and the space answers `idempotency_conflict`, correctly: the key promised the write
+   * was the same work. The playground hit exactly that, because its code is a textarea.
+   *
+   * So a host that varies the code passes the CODE'S IDENTITY here (a digest, a hash) and the key
+   * becomes `broker:<record id>:<scope>:<ordinal>`. Effectively-once is then per (record, code),
+   * which is what it always meant. Absent leaves every existing key byte-identical.
+   */
+  keyScope?: string;
 }
 
 /** The labels a jail's declared powers imply, so the host stamps them instead of trusting a
@@ -315,11 +329,32 @@ export async function resolveSandbox(
   return match;
 }
 
+/**
+ * Refuse a jail this process cannot build, rather than downgrading to one it can.
+ *
+ * A `web-worker` spec is served in a BROWSER (extensions/ts/sandbox-web.ts), where an opaque
+ * origin and a CSP are the boundary. This host builds a Deno or bwrap process, so running that
+ * code here would execute it under the wrong guarantees while the record still advertised the
+ * browser's. Same reading as the host's `digest_mismatch`: two halves that disagree are a refusal,
+ * never a best effort. One function, two call sites (the invoker and `runBrokered`), because the
+ * dry run reaches only the second.
+ */
+function assertHostCanRun(spec: SandboxSpec | null): void {
+  if (spec?.isolation !== "web-worker") return;
+  throw new Error(
+    `sandbox '${spec.name}' is isolation 'web-worker' and cannot run on this host: it is served ` +
+      `in a browser by extensions/ts/sandbox-web.ts, whose guarantees this process does not have`,
+  );
+}
+
 export function brokeredInvoker(reader: RadiaClient, opts: BrokerOptions = {}): Invoker {
   const cache = opts.cache ?? treeCache(reader);
   return async (ctx: InvokeContext) => {
-    const root = await cache.root(ctx.binding.workspaceDigest);
+    // The jail is resolved BEFORE the tree is materialised: a refusable pairing should cost one
+    // registry read, not a manifest plus an artifact fetch per file.
     const spec = await resolveSandbox(reader, ctx.binding.sandboxPattern);
+    assertHostCanRun(spec);
+    const root = await cache.root(ctx.binding.workspaceDigest);
     return await runBrokered(root, ctx.binding.entrypoint, spec, ctx, opts);
   };
 }
@@ -364,6 +399,7 @@ async function runBrokered(
   opts: BrokerOptions,
 ): Promise<{ kind: string; body: unknown }> {
   {
+    assertHostCanRun(spec); // also reached by `dryRunEntrypoint`, which the invoker above bypasses
     const runtime = RUNTIMES[spec?.language ?? "javascript"];
     if (!runtime) throw new Error(`no broker shim for language '${spec?.language}': add one to RUNTIMES`);
     // The boot program is PER RECORD (it carries the claimed record), so it cannot live in the
@@ -596,8 +632,22 @@ function whyNotAPut(args: unknown): string | undefined {
   return undefined;
 }
 
-/** One proposal, performed as the AGENT. Every host-side rule lives here, because this is the one
- *  place the jail's output becomes a write. */
+/** The idempotency key for one brokered write: the claimed record, the code's identity when the
+ *  host varies it (`keyScope`), and the ordinal. See `BrokerOptions.keyScope` for why the middle
+ *  term exists and why it is optional. */
+function brokerKey(ctx: InvokeContext, opts: BrokerOptions, ordinal: number): string {
+  return `broker:${ctx.record.id}${opts.keyScope ? `:${opts.keyScope}` : ""}:${ordinal}`;
+}
+
+/**
+ * One proposal, performed as the AGENT. Every host-side rule lives here, because this is the one
+ * place the jail's output becomes a write.
+ *
+ * Exported as `brokerPerformer` for a SECOND TRANSPORT (the Web Worker backend, sandbox-web.ts):
+ * the frames are the contract and the transport is not, so a new backend brings a shim and reuses
+ * this. Reimplementing it per transport would fork the stamp, the forced parents, the labels and
+ * the ordinal key — the half that makes any of it safe.
+ */
 async function perform(
   call: BrokerCall,
   ctx: InvokeContext,
@@ -618,7 +668,7 @@ async function perform(
       const taint = [...new Set([...declared, ...(opts.labels ?? [])])];
       const out = await ctx.client.put(
         { kind: req.kind, body, parentIds, ...(taint.length ? { taint } : {}) },
-        `broker:${ctx.record.id}:${nextOrdinal()}`,
+        brokerKey(ctx, opts, nextOrdinal()),
       );
       return { id: call.id, ok: true, result: out };
     }
@@ -637,6 +687,8 @@ async function perform(
     return { id: call.id, ok: false, error: String(e instanceof Error ? e.message : e).slice(0, 300) };
   }
 }
+
+export { perform as brokerPerformer };
 
 // ── the dry run: the same rehearsal a host would give, writing nothing ───────────────────────────
 
@@ -677,7 +729,7 @@ export function recordingPerformer(into: Proposal[]): Performer {
         body: { ...(req.body as Record<string, unknown> ?? {}), ...(opts.stamp ?? {}) },
         parentIds: [...forced, ...(Array.isArray(req.parentIds) ? req.parentIds.map(String) : []).filter((p) => !forced.includes(p))],
         taint: [...new Set([...(Array.isArray(req.taint) ? req.taint.map(String) : []), ...(opts.labels ?? [])])],
-        idempotencyKey: `broker:${ctx.record.id}:${ordinal}`,
+        idempotencyKey: brokerKey(ctx, opts, ordinal),
       };
       into.push(proposal);
       // A recognisably fake id. Code that stores one and looks it up later should fail in the

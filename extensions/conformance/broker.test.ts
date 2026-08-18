@@ -522,7 +522,21 @@ Deno.test("[broker] a DRY RUN rehearses the real thing and writes nothing", asyn
       assertEquals((p.body as { compartment?: string }).compartment, "trial", "the stamp the code never wrote");
       assertEquals(p.parentIds, ["01TESTRECORD"], "the claimed record, which the code cannot omit");
       assertEquals(p.taint, ["file"], "the jail's labels, which the code cannot withhold");
-      assertEquals(p.idempotencyKey, "broker:01TESTRECORD:1");
+      assertEquals(p.idempotencyKey, "broker:01TESTRECORD:1", "the default key: one code per record");
+
+      // …and with a `keyScope`, the CODE's identity joins it. A host that runs varying code
+      // against one record (the playground's textarea) must contribute that identity, or its
+      // second run sends a different body under the same key and is refused. The dry run mirrors
+      // the real performer here, so this is the same string a live write would carry.
+      const scoped = await dryRunEntrypoint({
+        root,
+        entrypoint: "main.ts",
+        record,
+        stamp: { compartment: "trial" },
+        labels: ["file"],
+        keyScope: "sha-1234ab",
+      });
+      assertEquals(scoped.proposals[0].idempotencyKey, "broker:01TESTRECORD:sha-1234ab:1");
 
       // NOTHING was written. This is the assertion the whole feature rests on.
       assertEquals((await operator.query({ kind: "note", match: { tag: "dry-note" } }, 10)).length, 0, "a dry run must not write");

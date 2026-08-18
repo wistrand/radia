@@ -1012,6 +1012,14 @@ export class RadiaClient {
         continue;
       }
       const reader = res.body.getReader();
+      // CANCEL ON ABORT, explicitly. Over a socket the abort errors the body and the read below
+      // rejects, but a transport that hands back a Response DIRECTLY (a browser space calling
+      // `makeHandler`, agent_docs/plan-browser-space.md) has no socket to break: the server ends
+      // its stream from the reader's `cancel()` and nothing else, so without this the read parks
+      // forever, the stream is never closed, and a caller that aborted still waits on it. Found
+      // exactly that way, as a shutdown that never returned.
+      const cancelOnAbort = () => reader.cancel().catch(() => {});
+      signal?.addEventListener("abort", cancelOnAbort, { once: true });
       const dec = new TextDecoder();
       let buf = "";
       let revoked: string | undefined;
@@ -1045,6 +1053,7 @@ export class RadiaClient {
       } catch {
         // stream dropped; reconnect below
       } finally {
+        signal?.removeEventListener("abort", cancelOnAbort);
         reader.cancel().catch(() => {});
       }
       if (revoked) {

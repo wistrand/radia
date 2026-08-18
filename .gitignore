@@ -11,6 +11,7 @@
 # and the PGlite dist staged from deno's npm cache. Built on demand or in CI, never committed;
 # only docs/playground/index.html (the page itself) is source.
 /docs/playground/radia-space.js
+/docs/playground/radia-jail.js
 /docs/playground/console.html
 /docs/playground/vendor/
 

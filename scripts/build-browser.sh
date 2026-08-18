@@ -15,6 +15,20 @@ mkdir -p "$OUT/vendor/pglite/fs" "$OUT/vendor/pglite/contrib"
 #    staged dist below, so PGlite keeps loading its wasm the way its own loader expects.
 deno bundle --minify --external @electric-sql/pglite -o "$OUT/radia-space.js" src/browser.ts
 
+# 1b. The extension tier's browser surface: the Web Worker jail and its probe
+#     (agent_docs/plan-webworker-sandbox.md). Separate from the runtime bundle because it IS
+#     separate: extensions import the SDK and never `src/`, and the page imports both.
+deno bundle --minify -o "$OUT/radia-jail.js" extensions/ts/browser.ts
+
+# The tree-shake is load-bearing rather than incidental: this entry pulls the broker's host-side
+# rules without the FIFO transport that surrounds them. A `Deno.` reference in a browser bundle is
+# a module that would ReferenceError in a tab, so it fails the BUILD instead.
+if grep -q "Deno\." "$OUT/radia-jail.js"; then
+  echo "build-browser: radia-jail.js contains a Deno reference; a browser bundle must not" >&2
+  grep -o "Deno\.[a-zA-Z]*" "$OUT/radia-jail.js" | sort -u >&2
+  exit 1
+fi
+
 # 2. The console, embedded whole by the playground (blob-URL iframe + fetch shim), and the one
 #    asset it loads by <script> at runtime.
 cp src/ui/index.html "$OUT/console.html"

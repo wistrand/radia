@@ -461,8 +461,18 @@ export interface SandboxSpec {
    *  that matters more than the name: `deno-permissions` is safe by ABSENCE (forget every flag and
    *  you get the safe answer), while `bubblewrap` is safe by PRESENCE (forget `--unshare-net` and
    *  the jail is silently open). That flip is why every backend is probed before it is served. */
-  isolation: "deno-permissions" | "bubblewrap" | "sandbox-exec";
+  isolation: "deno-permissions" | "bubblewrap" | "sandbox-exec" | "web-worker";
   network: boolean;
+  /**
+   * BROWSER ORIGIN STORAGE (IndexedDB, Cache, OPFS), which is a different axis from the
+   * filesystem and exists because a browser jail has no filesystem and a very reachable database.
+   *
+   * `false` means an opaque origin refuses it, PROVED by the probe rather than configured: a
+   * blob-URL worker inherits its creator's origin, so a page-created one can open the space's own
+   * IndexedDB. Absent means the axis does not apply (no browser) or was never established, and
+   * never that it is closed — the same reading `importsConfined` takes.
+   */
+  storage?: boolean;
   /** Absolute paths the program may read; empty means no filesystem at all. See `importsConfined`
    *  before believing that: on the Deno backend it bounds file APIS and not module loading. */
   readonlyPaths: string[];
@@ -499,6 +509,8 @@ export interface SandboxSpec {
   writablePaths: string[];
   processes: boolean;
   env: boolean;
+  /** The heap cap, in MB. `0` means UNBOUNDED and is stated rather than omitted: no browser
+   *  exposes a per-worker limit, so the web backend cannot bound this axis and says so. */
   memoryMb: number;
   timeoutMsMax: number;
   runtime: string;

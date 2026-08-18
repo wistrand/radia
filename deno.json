@@ -10,7 +10,7 @@
     "conformance-pg": "deno test --allow-read --allow-write --allow-env --allow-net conformance/run.test.ts conformance/planner.test.ts conformance/concurrency.test.ts",
     "py-parity": "./docker/py-parity/run.sh",
     "quick": "deno test --allow-read --allow-write --allow-env --allow-net conformance/layering.test.ts conformance/docs.test.ts conformance/openapi.test.ts conformance/console.test.ts conformance/defaults.test.ts conformance/registry.test.ts conformance/http.test.ts conformance/flows.test.ts conformance/tree.test.ts",
-    "extensions": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run extensions/conformance/",
+    "extensions": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run --unstable-worker-options extensions/conformance/",
     "workspace-git": "deno run --allow-net --allow-read --allow-write --allow-env extensions/ts/export-git.ts",
     "chat-test": "deno run -A examples/chat/smoke.ts",
     "bench": "deno run --allow-read --allow-write --allow-env --allow-net bench/run.ts",

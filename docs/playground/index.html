@@ -23,6 +23,13 @@
     #console-frame { width: 100%; height: 78vh; border: 1px solid #2a2a31; border-radius: 8px; background: #0e0e11; }
     .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
     .note { color: #9ca3af; font-size: 14px; max-width: 70ch; }
+    .jail { border: 1px solid #2a2a31; border-radius: 8px; padding: 12px; margin: 0 0 14px; }
+    .jail-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 8px; }
+    .jail-head .note { flex: 1; min-width: 260px; max-width: none; }
+    #jail-code { width: 100%; box-sizing: border-box; background: #16161a; color: inherit; border: 1px solid #2a2a31;
+      border-radius: 6px; padding: 10px; font: 12px/1.5 ui-monospace, monospace; resize: vertical; }
+    .held { color: #4ade80; }
+    .broken { color: #f87171; }
   </style>
 </head>
 <body>
@@ -41,6 +48,38 @@
     <input id="doc-name" value="page.png" aria-label="document file name">
     <button id="post">Post a document</button>
     <span id="status">booting&#8230;</span>
+  </div>
+
+  <div class="jail" id="jail" hidden>
+    <div class="jail-head">
+      <strong>Run code in a jail</strong>
+      <span class="note">it reads what the workers wrote and derives a report from it, holding no
+      credential of its own. Each claim below was attempted, not assumed.</span>
+      <span class="note" id="jail-verdict">probing&#8230;</span>
+    </div>
+    <textarea id="jail-code" spellcheck="false" rows="9">// No network, no storage, no credential in here: `space` PROPOSES and the host performs each
+// call under the agent's identity. So this code can read what the workers produced and derive
+// from it, without ever holding a token.
+const summaries = await space.query({ kind: "summary" }, 50);
+const files = summaries.map((s) => s.body.of).filter(Boolean);
+const longest = files.reduce((a, b) => (b.length > a.length ? b : a), "");
+
+await space.put({
+  kind: "report",
+  body: { rolledUp: summaries.length, files: files.join(", "), longestName: longest },
+  // The code names the records it READ. The host adds its own forced parent on top, so the
+  // report's lineage is honest whether or not the code cooperated.
+  parentIds: summaries.map((s) => s.id),
+});
+
+return { kind: "report", body: { text: "rolled up " + summaries.length + " summaries" } };</textarea>
+    <div class="play-top">
+      <button id="jail-run">Run in the jail</button>
+      <label style="font-size:13px;color:#9ca3af">
+        <input type="checkbox" id="jail-auto" style="width:auto"> run it whenever a worker writes a summary
+      </label>
+      <span class="note" id="jail-status"></span>
+    </div>
   </div>
 
   <div class="tabs" aria-label="console views">
@@ -64,9 +103,31 @@
     a server.
   </p>
   <p class="note">
-    Limits, stated rather than implied: no code execution (nothing in a page may spawn a
-    process), one space per browser profile, and everything here runs as one person, so the
-    console's operator button is the sign-in. Erasing the space is clearing this site's storage.
+    The jail above is a Web Worker inside a sandboxed iframe: an opaque origin, so it cannot open
+    this space's database, and a policy of <code>connect-src 'none'</code>, so it has no network.
+    Those two claims are attempted before the button appears, and a browser where either fails is
+    not offered one. The code holds no credential at all; it proposes reads and writes, and this
+    page performs each one under the agent's identity.
+  </p>
+  <p class="note">
+    If you have the browser console open, the probe leaves its evidence there: a
+    <code>Content-Security-Policy</code> message saying a <code>connect-src</code> request to this
+    page's own address was refused. That is the jail's network wall turning away a request the
+    probe made ON PURPOSE, and the reason the verdict above can say <code>network: false</code>
+    rather than assuming it. A run that produced no such message would be the worrying one.
+  </p>
+  <p class="note">
+    Which is why the snippet can still be useful: it queries the summaries the worker produced,
+    rolls them into a <code>report</code>, and names those summaries as its parents. The host adds
+    the record it was run for on top, so the report's lineage is honest whether or not the code
+    cooperated. Open <em>Graph: last record</em> after running it and the fan-in is the picture:
+    documents to summaries to one report.
+  </p>
+  <p class="note">
+    Limits, stated rather than implied: no processes (so no Python and no multi-file workspace
+    trees yet, only JavaScript snippets), memory is the one axis a browser cannot cap, one space
+    per browser profile, and everything here runs as one person, so the console's operator button
+    is the sign-in. Erasing the space is clearing this site's storage.
   </p>
 </div>
 
@@ -90,6 +151,17 @@
   const vfetch = (path, init) => handler(new Request(VIRT + path, init));
   window.__radiaFetch = vfetch;
 
+  // …and the same routing on the PAGE's own `fetch`, so the unmodified SDK client works here:
+  // `RadiaClient` and `reactorLoop` call the global, including the SSE watch, which arrives as a
+  // real streaming Response because the handler returns one. Anything not addressed to the
+  // virtual origin (this page's own assets) passes straight through.
+  const REAL_FETCH = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    const url = typeof input === "string" ? input : (input instanceof URL ? input.href : input.url);
+    if (url.startsWith(VIRT)) return handler(input instanceof Request ? input : new Request(url, init));
+    return REAL_FETCH(input, init);
+  };
+
   const api = async (path, body, headers = {}) => {
     const res = await vfetch(path, {
       method: "POST",
@@ -109,6 +181,10 @@
   await api("/v0/records",
     { kind: "kind_def", body: { kind: "summary", indexedPaths: [], claimable: false } },
     { "Idempotency-Key": "kind_def:summary:::ref" });
+  // What the jail writes: a roll-up derived from the summaries, so the graph gains a third layer.
+  await api("/v0/records",
+    { kind: "kind_def", body: { kind: "report", indexedPaths: [], claimable: false } },
+    { "Idempotency-Key": "kind_def:report:::ref" });
 
   // The toy worker: claim scans, "work", answer. A poll loop rather than the SDK, to keep this
   // page dependency-free; the lease and the fenced ack are the real thing.
@@ -138,6 +214,190 @@
     lastId = rec.id;
     status(`posted document ${rec.id.slice(-6)}; a worker will claim it`);
   };
+
+  // ---- the jail: a Web Worker sandbox, advertised only if it proves itself ---------------------
+  //
+  // agent_docs/plan-webworker-sandbox.md. The page holds the credential and the worker holds none:
+  // jailed code proposes over the broker frames and the HOST performs each one, stamping the
+  // parent and the idempotency key where the code cannot reach them. The probe runs first and the
+  // Run button appears only if every claim held, which is the same rule a server-side backend
+  // follows before publishing `run_javascript`.
+  (async () => {
+    const verdict = document.getElementById("jail-verdict");
+    const panel = document.getElementById("jail");
+    let jail;
+    try {
+      jail = await import("./radia-jail.js");
+    } catch (e) {
+      console.error(e);
+      return; // no jail bundle: the beat stays hidden rather than offering a button that cannot work
+    }
+    panel.hidden = false;
+
+    // A REACHABLE target, or the network claim proves nothing: this page's own URL is certainly
+    // live, and `connect-src 'none'` is what stops the jail reaching it.
+    const results = await jail.probeWebWorker(jail.spawnWebWorkerJail, {
+      networkTarget: new URL("./", location.href).href,
+      timeoutMs: 12_000,
+    });
+    const broken = results.filter((r) => !r.held);
+    verdict.innerHTML = results
+      .map((r) => `<span class="${r.held ? "held" : "broken"}">${r.held ? "✓" : "✗"} ${r.claim}</span>`)
+      .join(" &middot; ");
+
+    if (broken.length) {
+      // Not advertised, and the reason is shown rather than swallowed: a browser where the jail
+      // does not hold is a browser that must not be offered one.
+      document.getElementById("jail-run").disabled = true;
+      document.getElementById("jail-status").textContent =
+        `not offered here: ${broken.map((r) => `${r.claim} (${r.detail ?? "no detail"})`).join("; ")}`;
+      return;
+    }
+
+    // Proved, so the sandbox becomes a RECORD: "what can this space execute, and under what
+    // guarantees" is then a query rather than a property of this page.
+    const spec = jail.webWorkerSandbox("playground-web-worker");
+    await api("/v0/records", { kind: "kind_def", body: jail.SANDBOX_KIND }, {
+      "Idempotency-Key": "kind_def:sandbox:isolation:keyword,language:keyword,name:keyword,network:keyword,processes:keyword::ref",
+    });
+    // THE REAL SDK CLIENT, not a hand-rolled adapter. The first version here was a three-method
+    // stand-in, and it drifted in the way this project keeps writing down: its `query` passed no
+    // `dir`, which DEFAULTS TO OLDEST-FIRST, so "the newest summary" was the oldest one, the
+    // trigger never changed as new work arrived, and the run collided with its own idempotency
+    // key. A bounded read treated as the answer is the most repeated bug here (gotchas.md); the
+    // fix is to use the client that documents its own ordering, which the page's patched `fetch`
+    // makes possible.
+    const client = new jail.RadiaClient(VIRT);
+    await jail.declareSandbox(client, spec);
+
+    const status = document.getElementById("jail-status");
+
+    /**
+     * One jailed run, for one TRIGGER record.
+     *
+     * The trigger is the newest summary, and choosing it is not cosmetic. Every brokered write is
+     * keyed `broker:<trigger id>:<ordinal>`, so the trigger decides what "the same work" means: a
+     * re-run with nothing new replays its write and returns the same report, while a run after a
+     * new summary gets a new key and writes a new one. Keying on the DOCUMENT instead — the first
+     * version here — made the second case a 409 `idempotency_conflict`, because the same key
+     * arrived carrying a different roll-up. Same shape as the chat's keyed links.
+     */
+    const runOnce = async (trigger, why) => {
+      const code = document.getElementById("jail-code").value;
+      const source = jail.webWorkerBoot(code, trigger);
+      // The CODE's identity joins the key. A brokered write is keyed on the record it was run for,
+      // which assumes one code per record — true when a binding pins a digest, false for a
+      // textarea: editing the snippet and re-running would otherwise send a different body under
+      // the same key and be refused as `idempotency_conflict`. Effectively-once is per (trigger,
+      // code), which is what it always meant.
+      const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(code)))]
+        .slice(0, 6).map((b) => b.toString(16).padStart(2, "0")).join("");
+      const before = (await client.query({ kind: "report" }, 1, { dir: "desc" }))[0]?.id;
+      const result = await jail.serveFrames(jail.spawnWebWorkerJail(source), { record: trigger, client }, {
+        timeoutMs: 15_000,
+        keyScope: digest,
+        // The labels the JAIL's powers imply, stamped host-side. Nothing here, because this jail
+        // reaches no file and no network: the empty list is a statement, not an omission.
+        labels: [],
+        stamp: { producedBy: "playground-web-worker" },
+      });
+      const report = (await client.query({ kind: "report" }, 1, { dir: "desc" }))[0];
+      if (report) lastId = report.id;
+      const parents = report?.runtimeMeta?.parentIds?.length ?? 0;
+      const replayed = report && before === report.id;
+      status.textContent = replayed
+        ? `${why}: nothing new to roll up, so the write replayed on its key and the same report came back.`
+        : `${why}: ${result.body.text ?? JSON.stringify(result.body)} — a report with ${parents} parents, ` +
+          `the summaries it read (the trigger among them, forced by the host). Open "Graph: last record".`;
+      return report;
+    };
+
+    /** The newest summary, which is both the input the snippet rolls up and the trigger it is
+     *  keyed to. `dir: "desc"` is load-bearing: the default is oldest-first, and an oldest trigger
+     *  never changes, so every later run reuses one key. Falls back to a document so a first run
+     *  still has a real record to descend from. */
+    const newestTrigger = async () => {
+      const [summary] = await client.query({ kind: "summary" }, 1, { dir: "desc" });
+      if (summary) return { id: summary.id, kind: "summary", body: summary.body ?? {} };
+      let doc = (await client.query({ kind: "document" }, 1, { dir: "desc" }))[0];
+      if (!doc) doc = await client.put({ kind: "document", body: { type: "scan", file: "jail-input.png" } });
+      return { id: doc.id, kind: "document", body: doc.body ?? {} };
+    };
+
+    document.getElementById("jail-run").onclick = async () => {
+      const button = document.getElementById("jail-run");
+      button.disabled = true;
+      status.textContent = "spawning the jail…";
+      try {
+        // The snippet DERIVES from summaries, so give the worker its moment rather than racing it:
+        // a first-time visitor would otherwise roll up nothing and learn nothing from it.
+        if ((await client.query({ kind: "summary" }, 1, { dir: "desc" })).length === 0) {
+          if ((await client.query({ kind: "document" }, 1, { dir: "desc" })).length === 0) {
+            await client.put({ kind: "document", body: { type: "scan", file: "jail-input.png" } });
+          }
+          for (let i = 0; i < 12 && (await client.query({ kind: "summary" }, 1, { dir: "desc" })).length === 0; i++) {
+            status.textContent = "waiting for a worker to summarise a document…";
+            await new Promise((r) => setTimeout(r, 400));
+          }
+        }
+        status.textContent = "spawning the jail…";
+        await runOnce(await newestTrigger(), "ran");
+      } catch (e) {
+        // A jail that refused, threw or timed out is an ANSWER: the message is the diagnosis.
+        status.textContent = String(e.message ?? e);
+      } finally {
+        button.disabled = false;
+      }
+    };
+
+    // ---- the toggle: content-routed execution, driven by a REACTOR ----------------------------
+    //
+    // The watch stays OUTSIDE the jail, deliberately (agent_docs/plan-webworker-sandbox.md): the
+    // broker serves put/query/read_one and nothing else, a jail is a bounded run with no
+    // credential, and a stream inside one would have no lease to redeliver and no key to dedupe
+    // on. So the page keeps the host role and `reactorLoop` (agent_docs/plan-reactor-loop.md)
+    // drives it: watch, re-read, decide, spawn. `summary` stays a FACT — claiming it would make
+    // it vanish from every other reader.
+    let stopAuto = null;
+    let lastTrigger = null;
+    let autoRuns = 0;
+    const AUTO_CAP = 20;
+    document.getElementById("jail-auto").onchange = (ev) => {
+      if (!ev.target.checked) {
+        stopAuto?.abort();
+        stopAuto = null;
+        status.textContent = "auto-run off.";
+        return;
+      }
+      autoRuns = 0;
+      stopAuto = new AbortController();
+      status.textContent = "auto-run on: watching for summaries.";
+      jail.reactorLoop(client, {
+        name: "jail",
+        patterns: [{ kind: "summary" }],
+        pollMs: 4000, // the tick is the correctness path; the watch only makes it prompt
+        signal: stopAuto.signal,
+        log: () => {},
+        reconcile: async () => {
+          const trigger = await newestTrigger();
+          if (trigger.kind !== "summary" || trigger.id === lastTrigger) return; // nothing new
+          // A snippet that WROTE the kind it watches would drive itself forever. The cap makes
+          // that finite and says which mistake it was, rather than melting the tab quietly.
+          if (++autoRuns > AUTO_CAP) {
+            stopAuto?.abort();
+            document.getElementById("jail-auto").checked = false;
+            status.textContent = `auto-run stopped after ${AUTO_CAP} runs. A snippet that writes the ` +
+              `kind it watches (summary) triggers itself; write a different kind, like report.`;
+            return;
+          }
+          lastTrigger = trigger.id;
+          await runOnce(trigger, `auto-run ${autoRuns}`);
+        },
+      }).catch((e) => {
+        status.textContent = `auto-run stopped: ${e.message ?? e}`;
+      });
+    };
+  })();
 
   // The console, embedded whole: fetched as text, given a fetch shim that routes /v0 and /ui to
   // this page's handler, and loaded via a BLOB url (same origin as this page, so the console's

@@ -436,6 +436,48 @@ Deno.test("loop: a concurrent worker settles every claim, and drains them on shu
   }
 });
 
+Deno.test("watch: an abort ends the stream even when no socket can break it", async () => {
+  // The transport a BROWSER space uses: `makeHandler` called directly, no listener anywhere
+  // (agent_docs/plan-browser-space.md). Over a socket an abort errors the response body and the
+  // read below rejects; here nothing does, and the server ends its SSE stream from the reader's
+  // `cancel()` and nothing else. So a watch that did not cancel on abort parked forever, its
+  // stream stayed open, and `reactorLoop`'s shutdown never returned — found as a rehearsal that
+  // ran to completion and then hung, and invisible to every socket-backed case in this file.
+  const adapter = new SqliteAdapter(":memory:");
+  await adapter.init();
+  const space = new Space(adapter);
+  space.registerKind({ kind: "task", indexedPaths: [] });
+  const handler = makeHandler(space, "", false);
+  const base = "http://radia.test";
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.startsWith(base)) return handler(input instanceof Request ? input : new Request(url, init));
+    return realFetch(input as RequestInfo, init);
+  }) as typeof fetch;
+
+  try {
+    const client = new RadiaClient(base);
+    const stop = new AbortController();
+    const drained = (async () => {
+      for await (const _ of client.watch({ kind: "task" }, stop.signal)) { /* wait for the abort */ }
+    })();
+    // Let the stream open before aborting, or the case proves only that a never-started watch ends.
+    await space.put({ kind: "task", body: {} });
+    await new Promise((r) => setTimeout(r, 300));
+
+    stop.abort();
+    const verdict = await Promise.race([
+      drained.then(() => "returned"),
+      new Promise((r) => setTimeout(() => r("still parked"), 3000)),
+    ]);
+    assertEquals(verdict, "returned", "an aborted watch must end its stream, not park on a read nobody will answer");
+  } finally {
+    globalThis.fetch = realFetch;
+    await adapter.close();
+  }
+});
+
 // ── reactorLoop: the fact-side twin's contract (agent_docs/plan-reactor-loop.md) ─────────────────
 //
 // A supervision guard nobody has seen fail is one nobody has tested, so each case PLANTS one of
