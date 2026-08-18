@@ -51,31 +51,26 @@
 
 <div class="hero">
   <div class="container">
-    <h1>What the system can tell you about itself</h1>
+    <h1>Inspecting a running space</h1>
     <p class="subtitle">
-      The shape of a running space is worked out from evidence: what happened, who is listening,
-      what is stuck. It has to be, because nothing here declares how work flows, which is the
-      design working, and also a bill that comes due the first time somebody asks what this system
-      does. Here is how it gets paid.
+      Radia derives operational views from records, live interests, envelopes and the event log.
+      These views show what work occurred, who can receive new work, why records are waiting and
+      whether the audit history verifies.
     </p>
   </div>
 </div>
 
 <section id="shape">
   <div class="container">
-    <h2>Where is the workflow?</h2>
+    <h2>Mine flows from lineage</h2>
     <p>
-      It is the first question every newcomer asks. What exists is behaviour rather than a plan: a
-      worker says what shape of record it handles, the space matches, and the system is whatever
-      those independent declarations add up to while it runs. No file
-      describes it.
+      Radia does not require a declared workflow graph. Workers independently publish interests and
+      produce records, so the observed workflow is the lineage those records form at runtime.
     </p>
     <p>
-      The tempting fix is to ask each agent to declare its place in a pipeline. That is a routing
-      table with extra steps, and removing the routing table is what the space is for. So the shape
-      is worked out backwards instead, from what actually happened: take every group of records that
-      are causally connected, reduce each group to the sequence of steps it went through, and count
-      how often each sequence recurs.
+      Flow mining groups causally connected records, reduces each group to a sequence of kinds and
+      counts recurring shapes. The output describes recorded behavior without introducing a second
+      routing declaration.
     </p>
 
     <figure>
@@ -127,8 +122,8 @@
         </g>
       </svg>
       <figcaption>
-        Shapes are mined from lineage, never declared, so the picture cannot drift from the running
-        system the way a hand-drawn architecture diagram does.
+        Each shape includes exemplar record ids, allowing an operator to inspect the lineage behind
+        the aggregate.
       </figcaption>
     </figure>
 
@@ -143,45 +138,35 @@
     </div>
 
     <p>
-      The columns are how often the shape happened, how often it finished, how many records were
-      involved, and how long it took. The last line is the part that keeps the rest honest.
+      Each shape reports occurrence count, completion rate, record count and elapsed time. The final
+      line reports scan bounds and any structural cuts.
     </p>
     <p>
-      Each shape also reports its totals: summed wall-clock, and, if you name numeric body paths to
-      sum, where a metric goes by shape. On a space whose replies carry the provider's own cost
-      figures, "which workflow spends the money" is one request, and the console draws it as a
-      flame whose width is the metric itself. Never time: cost and tokens add up exactly, where
-      overlapping work makes a time pyramid lie.
+      Callers may also sum numeric body fields by shape. This can attribute additive values such as
+      token count or provider-reported cost. The console renders these sums as a flame view; timing
+      uses a separate waterfall because concurrent durations are not additive.
     </p>
     <p>
-      A shape that starts often and finishes rarely sits next to the ones that work, which is usually
-      the most useful thing on the screen. In a log, a job nobody ever picks up and a job whose worker
-      keeps crashing look identical, and they need opposite fixes. As shapes they are obviously
-      different: one has two steps and never a third, the other has a third that keeps repeating.
+      Completion rates and repeated steps distinguish common failure shapes. An incomplete branch
+      can indicate missing downstream work, while repeated attempts can indicate a failing worker.
     </p>
 
     <div class="callout">
-      <strong>A mined diagram looks equally complete whether it is or not.</strong> So the incomplete
-      cases are printed rather than left to be inferred: a long-lived record that touches everything
-      is cut out and said to be cut, a group whose parent fell outside the scan is counted as a
-      fragment, and anything that would make the picture partial is reported on the same line as the
-      picture.
+      <strong>Flow scans are bounded.</strong> The report identifies hubs removed from a shape,
+      fragments whose parents fell outside the scan and results truncated by a configured limit.
     </div>
   </div>
 </section>
 
 <section id="listening">
   <div class="container">
-    <h2>Who is listening right now</h2>
+    <h2>Inspect live routing interests</h2>
     <p>
-      Mined shapes tell you what the system has done. They cannot tell you what it would do next,
-      because a worker that started a minute ago has no history yet. That is a separate question and
-      it has a separate answer: a run publishes what it is listening for, as a record, so the routing
-      topology is queryable rather than implied.
+      Flow shapes describe past behavior. Live interest records describe the patterns active runs
+      currently listen for.
     </p>
     <p>
-      Which makes a useful thing possible before you commit to anything. Describe a record you are
-      thinking of posting, and ask who would receive it.
+      A dry run matches a proposed record against those interests without writing it.
     </p>
 
     <div class="code-block">
@@ -196,27 +181,25 @@
     </div>
 
     <p>
-      One worker would take it, and the summarizer would not, because its grant is scoped away from
-      confidential documents. You learn that without writing the record, which is the difference
-      between a question and an experiment.
+      The response identifies matching workers after applying their grants, including content scopes
+      that exclude the proposed record.
     </p>
     <p>
-      When nothing matches, the answer says so and says what that does and does not mean: either
-      nothing is listening for this, or the workers that would are not running. An interest is only
-      live while its run is.
+      Interests are live only while their owning runs are active. An empty answer means no live,
+      authorized interest currently matches; it does not prove that no worker definition exists.
     </p>
 
     <div class="callout warn">
-      <strong>An interest is a declaration, not evidence.</strong> A worker publishes one
-      best-effort, so a worker that never published, or has no permission to, is invisible here. That
-      caveat is attached to every answer that depends on it rather than documented once and forgotten.
+      <strong>Interests state current intent, not recorded behavior.</strong> Publication is
+      best-effort, so a worker that cannot publish an interest is absent from this view. Mined flows
+      remain the evidence of what workers actually processed.
     </div>
   </div>
 </section>
 
 <section id="stuck">
   <div class="container">
-    <h2>What is stuck, and why</h2>
+    <h2>Diagnose waiting and stuck work</h2>
     <p>
       An operator asks a narrower question, and wants it answered in one command. Work that has been
       sitting unclaimed for too long is the usual complaint, and the count on its own is close to
@@ -236,32 +219,27 @@ event chain: 39112 links, UNSIGNED (detects corruption, not a rewrite; set RADIA
     </div>
 
     <p>
-      Orphaned means nothing is listening for this shape of record, and you fix it by starting a
-      worker or correcting a pattern. Starving means somebody is listening and not claiming, and you
-      fix it by looking at that worker. A single number for both leaves an operator to guess which
-      one they have, which is where the time goes.
+      <em>Orphaned</em> records have no matching live interest. <em>Starving</em> records have a
+      matching interest but remain unclaimed. The first points to missing workers or patterns; the
+      second points to a worker that is present but not taking work.
     </p>
     <p>
-      The same vocabulary does the repair. The selector that diagnoses is the selector that
-      remediates, so finding expired leases and releasing them are one expression rather than a
-      report followed by a loop over ids.
+      Remediation accepts the same envelope selectors as diagnostics. Operators can reclaim expired
+      leases, dead-letter records or requeue work in bounded batches.
     </p>
   </div>
 </section>
 
 <section id="history">
   <div class="container">
-    <h2>What happened, exactly</h2>
+    <h2>Query events and lineage</h2>
     <p>
-      Underneath all of this is an event log written in the same transaction as the change it
-      records, so there is no window in which a thing happened and the log disagrees. Every claim,
-      every ack, every write.
+      Record and lease mutations append events in the same storage transaction. Claims,
+      settlements, retries and writes therefore have corresponding committed log entries.
     </p>
     <p>
-      Records point at the records they came from, which makes two questions cheap in opposite
-      directions. Ask a record for its ancestors and you get the chain that produced it. Ask it for
-      its children and you get everything derived from it, which is how a conversation lists its own
-      messages without a table joining them.
+      Parent links support bounded traversal in both directions. Ancestor queries show what produced
+      a record; child queries show records derived from it.
     </p>
 
     <div class="code-block">
@@ -272,19 +250,14 @@ event chain: 39112 links, UNSIGNED (detects corruption, not a rewrite; set RADIA
     </div>
 
     <p>
-      Two reads over the same lineage answer different sizes of question. A conversation record is
-      a hub: every turn hangs off it, so the graph around any one message is the whole history, and
-      on a long conversation that picture saturates its node budget. It used to do so silently,
-      which is the worst property a diagram can have. It now says it was cut, and the console
-      offers the narrower read.
+      A graph around a hub record can reach many sibling branches and exhaust its node budget.
+      Descendants-only traversal provides a narrower view from a selected record, and every bounded
+      response reports truncation.
     </p>
     <p>
-      The narrower read exists because every link in a turn points at the record that caused it:
-      the model call at the question, each tool call at the message that asked for it, the next
-      round at the reply that finished the last. One turn is a subtree, so asking for descendants
-      only, starting at the question, returns that turn and nothing else. Drawn with time as the
-      axis it reads like a trace: where the seconds went, which tool stalled, what was happening
-      while nothing visible moved.
+      In the chat example, each turn forms a subtree rooted at the user's message. A descendants-only
+      view isolates that turn. The waterfall view places its records on a time axis to show model and
+      tool latency.
     </p>
 
     <figure>
@@ -333,34 +306,32 @@ event chain: 39112 links, UNSIGNED (detects corruption, not a rewrite; set RADIA
         </g>
       </svg>
       <figcaption>
-        A turn is a subtree because every record points at its cause, so one question opens as its
-        own picture instead of dragging the whole conversation with it.
+        Descendants-only traversal isolates one turn from the conversation hub and its sibling
+        turns.
       </figcaption>
     </figure>
 
     <p>
-      Lineage is data, never authority. A record derived from a privileged one inherits nothing from
-      it. Permission travels a separate chain, derived from the claimed lease, and the two are kept
-      apart on purpose: the alternative is a system where reading a secret quietly makes you trusted.
+      Lineage records data provenance, not authority. Delegation context is derived separately from
+      the claimed lease; a record does not confer the permissions of its parents.
     </p>
 
     <p>
-      If your team already lives in a tracing tool, the same picture exports as OpenTelemetry:
+      The same structure can be exported as OpenTelemetry:
       <code>radia otlp --to http://localhost:4318 --follow</code> streams threads into
       Jaeger or Tempo as traces, with each work attempt as a span, the claiming agent as the
-      service, and the labels and delegation chain as searchable attributes. Nothing is installed
-      on either side; it is one command talking plain OTLP over HTTP.
+      service, and labels and delegation context as searchable attributes. The command sends OTLP
+      over HTTP to an existing collector.
     </p>
   </div>
 </section>
 
 <section id="trust">
   <div class="container">
-    <h2>Whether to believe any of it</h2>
+    <h2>Verify event-log integrity</h2>
     <p>
-      All of the above is computed from the log, so the log had better be intact. Finalized events
-      are sealed into a hash chain, each link covering the one before it, and the result is checkable
-      in one command.
+      Finalized events are sealed into a hash chain. Each link covers the preceding seal, the event
+      and the referenced record's body hash.
     </p>
 
     <div class="code-block">
@@ -371,40 +342,31 @@ head 39112 8f3c1d0ba2e47591&#8230;
     </div>
 
     <p>
-      Sealing waits for the point past which no earlier event can still arrive, so the chain never
-      covers a gap that later fills in. Events above that line are real and simply not sealed yet.
+      Sealing follows the storage finality watermark. Events above the watermark are committed but
+      may not yet be sealed.
     </p>
 
     <div class="callout warn">
-      <strong>Unsigned, this detects corruption and careless edits, not a rewrite.</strong> Anyone who
-      can edit the log can recompute the hashes. Signing the chain under a key held outside the
-      database is what makes an edit detectable, and until that key is set the tool says so on every
-      run rather than letting an unsigned chain be quoted as tamper detection.
+      <strong>An unsigned chain detects corruption but not a deliberate rewrite.</strong> A signing
+      key stored outside the database makes database-only changes detectable. External checkpoint
+      anchoring is not implemented.
     </div>
 
     <p>
-      There is one more thing this catches that nothing else would. A payload can be destroyed on
-      request, which the runtime supports precisely because records are otherwise immutable. But
-      destroying the copy here does not make those bytes unstorable: anyone still holding them can
-      write them again, they land at the same content address, and every record pointing at them
-      reads once more. Refusing to store them a second time is not the fix and was tried, because it
-      poisons that address for everyone. So the state is reported instead, as an erasure that no
-      longer holds. Hiding it is the only unrecoverable option.
+      Integrity inspection also reports erasures that no longer hold. If previously shredded bytes
+      are uploaded again, their content address becomes readable again; the runtime reports this
+      condition instead of silently claiming that erasure still holds.
     </p>
   </div>
 </section>
 
 <section>
   <div class="container">
-    <h2>Seeing it instead of querying it</h2>
+    <h2>Use the web console</h2>
     <p>
-      A newcomer's real question is closer to "show me" than "list the shapes", and the console
-      answers that better than any of these commands. The Space tab streams live activity. The Flows
-      tab renders the mined shapes with the record ids that are the evidence behind each one. The
-      Kinds tab draws who is listening for what right now, from the same live interest records the
-      dry-run reads, so the routing topology is a diagram rather than an inference. And the Overview
-      tab ranks what deserves attention, with every finding linking to the records it rests on,
-      because a finding nobody can open is an assertion.
+      The Space tab streams live activity. Flows renders mined shapes and links to their exemplar
+      records. Kinds draws the current routing topology from live interests. Overview ranks
+      diagnostic findings and links each sample to the records behind it.
     </p>
     <p>
       <a href="examples.html">See it running &#8594;</a>

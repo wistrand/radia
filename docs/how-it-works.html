@@ -56,19 +56,18 @@
   <div class="container">
     <h1>How it works</h1>
     <p class="subtitle">
-      The easiest way to understand this is to follow one document. It gets posted, a worker claims
-      it, the worker crashes halfway through, another one picks it up, and a summary comes out the
-      other end. Every part of the runtime shows up somewhere in that story.
+      This page follows one document from publication to settlement. It shows how matching, leases,
+      crash recovery, result records and lineage fit together.
     </p>
   </div>
 </div>
 
 <section id="posted">
   <div class="container">
-    <h2>Somebody posts a document</h2>
+    <h2>1. Publish a record</h2>
     <p>
-      A record is JSON with a kind. That is the whole data model. The kind is a label like
-      <code>document</code> or <code>summary</code>, and the body is whatever you want to say.
+      A record has a kind and a JSON body. The kind identifies the record's role, such as
+      <code>document</code> or <code>summary</code>. The body contains application data.
     </p>
 
     <div class="code-block">
@@ -80,24 +79,22 @@
     </div>
 
     <p>
-      Notice what is missing. There is no destination, no queue name, no worker id. You are not
-      sending this anywhere. You are putting it down where interested parties can find it.
+      The record has no destination, queue name or worker identifier. Eligible workers find it by
+      matching its kind and body.
     </p>
     <p>
-      The runtime fills in the parts that carry weight: who posted it, when, a hash of the contents.
-      Your process does not get to claim it was somebody else, because those fields are not yours to
-      write. Anything you do send that is a matter of opinion, like a confidence score, stays your
-      opinion and is stored as such.
+      The runtime assigns authoritative metadata, including creation time, creator identity and a
+      body hash. Client-supplied metadata remains separate and cannot override those fields.
     </p>
   </div>
 </section>
 
 <section id="matched">
   <div class="container">
-    <h2>A worker has already said what it wants</h2>
+    <h2>2. Match an eligible worker</h2>
     <p>
-      Somewhere else, a summarizer is running. When it started, it described the shape of record it
-      handles, in the same little JSON language you would use to search:
+      A summarizer publishes the pattern of records it handles. The same pattern language is used
+      for queries and claims:
     </p>
 
     <div class="code-block">
@@ -106,47 +103,37 @@
     </div>
 
     <p>
-      You can say more than equality. Ranges, "one of these values", "this field exists", "any
-      element of this array matches". What you cannot do is write code. There is no regular
-      expression operator and no expression evaluator, and there is not going to be one.
+      Patterns support equality, ranges, membership, existence tests, explicit array predicates and
+      boolean combinations. They do not contain executable expressions or regular expressions.
     </p>
     <p>
-      That restriction has a history. The systems this idea comes from, going back to the 1980s, let
-      you ship a search function to the server, and it was considered a feature. In a space shared by
-      agents that do not trust each other, a search predicate that is code is a way to run code on
-      somebody else's machine.
+      Keeping patterns as data allows the runtime to validate, store, authorize and inspect them. It
+      also avoids executing participant-supplied predicates inside the runtime.
     </p>
     <p>
-      Keeping patterns as plain data buys something else, too. Because a pattern is just a value, you
-      can store it, ask questions about it, and refuse it. Workers publish what they are listening
-      for, so you can ask the space "if I posted this, who would get it?" before you post anything.
+      Workers publish their active interests as records. A dry run can therefore report which live
+      workers would receive a proposed record before the record is written.
     </p>
     <p>
-      There is a declaration underneath all of this, and it turned out to be where applications are
-      really designed. A kind states which fields of its records may be matched at all, and a
-      pattern naming an undeclared field is refused rather than quietly matching nothing. Both real
-      applications built on this hinged on that one decision. The data pipeline's entire behaviour
-      follows from declaring three fields, the dataset and the digests of the input and the code,
-      which is what turns "has this already been computed" into a query. And the fields you do not
-      declare are invisible to routing and to permissions alike, which sounds like a limitation
-      until you want to encrypt or erase one: the chat can seal its conversations end to end only
-      because nothing ever declared the prose. Treat that declaration as the schema of what your
-      application can become, not as an index tuning knob.
+      Each kind declares the body paths that patterns may use. A pattern that names another path is
+      rejected. These declarations define the fields available to routing and content-scoped
+      grants; undeclared fields can hold data that the runtime never examines. For example, the
+      analysis application indexes dataset and digest fields for content-keyed work, while the chat
+      leaves message prose undeclared so the application can encrypt it.
     </p>
   </div>
 </section>
 
 <section id="claimed">
   <div class="container">
-    <h2>The worker claims it, and gets a deadline</h2>
+    <h2>3. Claim the record under a lease</h2>
     <p>
-      Claiming is competitive. If you are running four summarizers, all four match this document and
-      exactly one gets it. The other three are told there was nothing for them rather than handed a
-      copy, so the same document is never worked twice at the same moment.
+      Claims are competitive. If four summarizers request the same document, one receives it and
+      the others receive no claim.
     </p>
     <p>
-      What the winner gets is a lease: the document is theirs, but only for a while. The lease has a
-      deadline, and the worker can push the deadline back for as long as it is genuinely working.
+      The claim includes a lease with a deadline and fencing epoch. The worker renews the lease
+      while it is active.
     </p>
 
     <figure>
@@ -189,8 +176,8 @@
         <text x="652" y="128" class="muted">put back by hand</text>
       </svg>
       <figcaption>
-        Handing work back is normal. A worker that hits a rate limit says so and asks for the
-        document again in thirty seconds, and it goes back to waiting with a delay on it.
+        A worker can release work immediately or nack it with a delay. Repeated failed attempts can
+        move the record to the dead-letter state.
       </figcaption>
     </figure>
   </div>
@@ -198,21 +185,19 @@
 
 <section id="crash">
   <div class="container">
-    <h2>Then the worker dies</h2>
+    <h2>4. Recover from a worker failure</h2>
     <p>
-      Somebody deploys, or the machine goes away. The summarizer is gone in the middle of a document
-      and nobody told the space anything.
+      A worker may exit without releasing its claim because of a deployment, process failure or
+      unavailable host.
     </p>
     <p>
-      The lease already answered this. Its deadline passes, the document goes back to waiting, and
-      the next summarizer claims it. You lose the work in flight and nothing else: nothing special
-      happened, which is the point.
+      When the lease expires, the record becomes claimable again and another worker can take it.
+      Work performed before the failure may be repeated.
     </p>
     <p>
-      There is a subtlety here worth understanding, because it is the one thing that trips people up.
-      A dead worker and a <em>slow</em> worker look identical from the outside. If your summarizer is
-      merely stuck behind a very slow model call, its lease can expire while it is still running.
-      Now two processes are working on the same document, and eventually both will try to answer.
+      A slow worker can also lose its lease. Another worker may then claim the same record while the
+      first is still running. The fencing epoch ensures that only the current lease holder can
+      settle the record.
     </p>
 
     <figure>
@@ -240,69 +225,56 @@
         <text x="380" y="192" text-anchor="middle" class="muted">the first worker keeps going until it tries to answer and is told it lost the job</text>
       </svg>
       <figcaption>
-        Each claim carries a number that goes up when the document changes hands. The slow worker is
-        still holding the old one, so its answer is rejected rather than quietly overwriting the
-        good one.
+        The fencing epoch increases when ownership changes. An answer carrying an older epoch is
+        rejected with <code>lease_lost</code>.
       </figcaption>
     </figure>
 
     <p>
-      This is why work that touches the outside world needs care. Summarizing the same document twice
-      is harmless. Sending the same email twice is not, and that is your problem to handle at the
-      point where the email goes out, not something the runtime can do for you.
+      Delivery is at least once. Workers that perform external effects, such as sending email, must
+      make those effects idempotent or deduplicate them at the external boundary.
     </p>
   </div>
 </section>
 
 <section id="answered">
   <div class="container">
-    <h2>The summary comes back</h2>
+    <h2>5. Settle the claim with a result</h2>
     <p>
-      The second worker finishes and answers. Two things happen at once: the document is marked done,
-      and a new record appears holding the summary, with the document listed as its parent.
+      A successful acknowledgement consumes the document and can create a summary record in the
+      same transaction. The summary names the document as a parent.
     </p>
     <p>
-      That summary is an ordinary record, so anything watching for summaries picks it up. If you
-      later want a step that files summaries into a report, you write it and start it. You do not go
-      back and modify the summarizer to call it, because the summarizer has nobody to call.
+      The summary is available to queries, watches and downstream claims. A new downstream worker
+      can begin processing summaries without changes to the summarizer.
     </p>
     <p>
-      If the answer never arrives, and the worker just keeps failing, the document is eventually set
-      aside rather than retried forever. You can look at what is sitting there and put it back once
-      you have fixed whatever was wrong.
+      After the configured maximum number of attempts, a repeatedly failing record is dead-lettered.
+      Operators can inspect and requeue it after correcting the cause.
     </p>
   </div>
 </section>
 
 <section id="history">
   <div class="container">
-    <h2>What all this leaves behind</h2>
+    <h2>6. Inspect the resulting history</h2>
     <p>
-      Every one of those steps was written to a log as it happened, inside the same database
-      transaction that made the change. Not written afterwards, and not written by an observer that
-      might have missed something. If the change happened, the log entry happened.
+      Each mutation appends an event in the same database transaction. The event log therefore
+      agrees with committed record and lease state.
     </p>
     <p>
-      Two things fall out of that. Workers can be woken by the log rather than polling, and you can
-      replay what occurred without reconstructing it from application logs. When somebody asks why a
-      particular summary says what it says, you follow the parent links back to the document, and the
-      document back to whatever produced it.
+      Watches use the log to wake workers. Parent links provide lineage from a result back to its
+      inputs, while event queries show how each record moved through its runtime states.
     </p>
 
     <div class="callout warn">
-      <strong>Everything that looks like changeable state here is a view over that history</strong>,
-      and that is the one habit building on this demands. Nothing updates in place, so "the current
-      value" always means the newest record that matches, minus anything a later record withdrew,
-      and reads are bounded while writes are not. Every non-trivial bug in the applications built on
-      this so far has been that view read carelessly: taking the oldest match where the newest was
-      meant, or treating one page of results as the whole population. Whenever you read "the"
-      anything, ask which write wins, and what happens when the true answer is two pages long.
+      <strong>Application registries are projections over immutable records.</strong> A current value
+      is normally the newest matching record after applying retirement records. Queries are bounded,
+      so applications must also handle pagination when computing a complete projection.
     </div>
     <p>
-      For the case where somebody might have reason to doubt the record, finalized entries are sealed
-      into a chain, each one covering the entry before it and the contents of the record it refers
-      to. Editing a document in the database after the fact breaks the chain rather than leaving
-      something that still looks consistent.
+      Finalized events can be sealed into a hash chain. Each seal covers the previous link, the event
+      and the referenced record's content hash. Later database edits break verification.
     </p>
 
     <figure>
@@ -333,74 +305,60 @@
         <text x="690" y="72" text-anchor="middle" class="muted">…</text>
       </svg>
       <figcaption>
-        Sealing lags slightly behind, on purpose. Entries are only sealed once no earlier one can
-        still arrive, which keeps the cost off the path your workers are waiting on.
+        Sealing follows the log's finality watermark, outside the record mutation path. Recent events
+        may therefore be valid but not yet sealed.
       </figcaption>
     </figure>
 
     <div class="callout warn">
-      <strong>Be honest about what a chain like this can prove.</strong> It catches corruption, a bad
-      restore, and someone editing a row without knowing to recompute the rest. On its own it does
-      not catch a determined attacker with database access, because they can rebuild the whole chain.
-      Signing each link with a key kept outside the database is what closes that, and only while the
-      key stays somewhere the database is not.
+      <strong>The chain detects corruption and inconsistent edits, but it is not an external
+      attestation.</strong> Links are signed with a key stored outside the database. A party that
+      controls both the database and that key can still rebuild the chain; externally anchored
+      checkpoints are not implemented.
     </div>
   </div>
 </section>
 
 <section id="big">
   <div class="container">
-    <h2>When the payload is too big to be a record</h2>
+    <h2>Store large payloads as artifacts</h2>
     <p>
-      The document in this story was a URL. Suppose it is the PDF itself, or an image a model
-      generated, or an hour of audio. That does not go in the record. It is stored separately,
-      addressed by the hash of its contents, and the record carries the hash, the media type and the
-      size.
+      PDFs, images, audio and other large byte payloads are stored as artifacts. An artifact record
+      carries the content digest, media type and size; the bytes live in the configured blob store.
     </p>
     <p>
-      Partly this is practical: a megabyte of base64 in a body makes matching slow and pages
-      unpredictable. But it also creates the one place in the system where content can be destroyed
-      on demand. Records are permanent unless whoever wrote them declared an expiry, and sweeping
-      those out later is housekeeping that leaves an audit trail, not erasure. Payloads are the
-      opposite: if a customer asks you to erase their file, you can, right then, and the record,
-      its history and everything that referred to it survive.
+      Keeping bytes outside record bodies bounds matching and query costs. It also allows the bytes
+      to be shredded while the artifact record, digest, lineage and event history remain.
     </p>
     <p class="explanation">
-      This works for real documents and not for short secrets. The hash of the original stays in the
-      record, so anyone holding a guess can check whether it was the thing you deleted. A deleted
-      contract is gone for all practical purposes. A deleted password is merely unreadable.
+      The digest remains after erasure. This is suitable for high-entropy documents but does not hide
+      a short, guessable secret from someone who can test candidate hashes.
     </p>
     <p>
-      Naming content by its hash turned out to carry more than storage and erasure. A hash is a name
-      anything can recompute and nothing can fake, so work keyed by the hash of its inputs is found
-      already done instead of redone, and a step whose output digest is the next step's input digest
-      gets downstream invalidation without an invalidation pass existing anywhere. The
-      <a href="examples.html#analysis">analysis example</a> runs on nothing else. And a key stored
-      inside a destroyable payload gives even a record body an erasure path: destroy the key and the
-      content is gone while the records and their history survive, which is how the chat's encrypted
-      conversations are erased.
+      Content digests can also key derived work. The
+      <a href="examples.html#analysis">analysis example</a> uses input and code digests to find
+      completed stages and recompute only affected descendants. Applications can store encryption
+      keys in shreddable artifacts to erase encrypted body fields while retaining record history.
     </p>
   </div>
 </section>
 
 <section id="storage">
   <div class="container">
-    <h2>Where all this actually lives</h2>
+    <h2>Choose a storage adapter</h2>
     <p>
-      One process owns the database, and everything else talks to it over HTTP. That process is the
-      only thing that has to get the concurrency right, which is why claiming, fencing and
-      authorization are all in one place instead of spread across every worker you write.
+      Runtime instances own coordination and authorization. Clients and workers use the HTTP API;
+      they do not access storage directly.
     </p>
     <table>
       <tr><th>Storage</th><th>Good for</th><th>What it is</th></tr>
       <tr><td>SQLite</td><td>local work, tests</td><td>Built into the runtime, nothing to install.</td></tr>
       <tr><td>PGlite</td><td>local work</td><td>Postgres compiled to WebAssembly, same SQL as the real thing.</td></tr>
-      <tr><td>Postgres</td><td>more than one instance</td><td>The only one where workers genuinely compete for claims.</td></tr>
+      <tr><td>Postgres</td><td>multiple runtime instances</td><td>Server database with pooled concurrent connections.</td></tr>
     </table>
     <p>
-      The same test suite runs against all three, in continuous integration, including a real
-      Postgres server. That is not a nicety. Two bugs in the claiming path existed only under real
-      concurrency, and neither of the embedded backends could have shown them.
+      The storage contract suite runs against all three adapters. CI also exercises PostgreSQL-only
+      contention cases that embedded adapters cannot represent.
     </p>
   </div>
 </section>

@@ -43,15 +43,12 @@
 
 <div class="hero">
   <div class="container">
-    <h1>Agents claim work.<br>Nobody wires them together.</h1>
+    <h1>Content-routed coordination<br>for agent systems</h1>
     <p class="subtitle">
-      <strong>Agents in Radia do not call each other. One writes a record into a shared space.
-      Another has declared the pattern of record it handles, and the runtime hands each record to
-      one worker whose pattern matches.</strong> A record is JSON with a kind, and it carries no
-      destination, no queue name, no worker id; the whole of a worker's registration is a pattern
-      like <code>{ kind: "document", match: { type: "scan" } }</code>. So the day you want scanned
-      PDFs handled, you start a worker that says that, and stop: the summarizer that posts
-      documents never learns it exists.
+      <strong>Radia coordinates agents through immutable JSON records in a shared space.</strong>
+      Workers declare which records they handle and claim matching work under renewable leases.
+      The runtime provides durable delivery, content-scoped authorization and lineage without
+      hard-coded agent-to-agent routing.
     </p>
 
     <figure>
@@ -114,9 +111,9 @@
         <text x="380" y="336" text-anchor="middle" class="muted">no routing table, no addresses: workers claim what matches their pattern</text>
       </svg>
       <figcaption>
-        The intake process has no idea a worker exists. The workers have no idea who posted the
-        document. Each side describes a <em>shape of record</em> it cares about, and the runtime
-        works out who gets what. Most of what this site describes follows from that one removal.
+        The intake process publishes records without naming a worker. Each worker declares a
+        pattern, and the runtime assigns matching records. Starting a new worker adds a capability
+        without changing the publisher.
       </figcaption>
     </figure>
 
@@ -137,39 +134,35 @@
 
 <section id="problem">
   <div class="container">
-    <h2>The wiring is the thing that gets expensive</h2>
+    <h2>Routing without agent-to-agent wiring</h2>
     <p>
-      Every agent framework starts the same way. You write an agent, give it a list of tools, and it
-      works. Then you add a second agent, and now the first one needs to know about it. Then a third,
-      and you are maintaining a graph of who calls whom. Adding a capability means editing the code
-      of everything that might want it, and shipping all of it together.
+      Direct calls make each participant depend on the identity and interface of the next one.
+      Adding a capability can require changes to every caller that might use it. This becomes
+      difficult when agents are deployed independently or owned by different teams.
     </p>
     <p>
-      Radia takes the calls out. Workers do not hold references to each other. They post records into
-      a shared space, and they claim records by describing the shape they handle. Your OCR worker
-      says "I take documents where <code>type</code> is <code>scan</code>", and that sentence is the
-      whole of its registration.
+      Radia stores work as records. A worker registers a pattern such as
+      <code>{ kind: "document", match: { type: "scan" } }</code> and claims records that match it.
+      Publishers do not hold references to workers or choose a destination.
     </p>
     <p>
-      What you get for that is a system where deployment is the only integration step. Start the
-      worker and the capability appears. Stop it and the capability goes away, and the documents it
-      would have handled sit in the space waiting for something that can.
+      Starting a worker makes its pattern available to the space. If no eligible worker is running,
+      matching records remain available until one can claim them.
     </p>
   </div>
 </section>
 
 <section id="authorize">
   <div class="container">
-    <h2>Now suppose one of those documents is confidential</h2>
+    <h2>Authorization by record content</h2>
     <p>
-      Your summarizer sends text to a model hosted somewhere else. You are happy for it to read the
-      public filings. You are not happy for it to read the ones marked confidential, and you would
-      like that to be true even if somebody writes a buggy agent next week.
+      A summarizer may be allowed to process public filings but barred from confidential ones. The
+      restriction should hold for every worker implementation, including a faulty or compromised
+      one.
     </p>
     <p>
-      Because the document is a record rather than an argument to a function call, the runtime can
-      look at it. A grant says which principal may claim which kind, and it can carry a pattern that
-      the record's own contents have to satisfy.
+      A grant identifies a principal, an operation and a record kind. An optional pattern restricts
+      the grant to records whose contents match it.
     </p>
 
     <div class="code-block">
@@ -181,24 +174,22 @@
     </div>
 
     <p>
-      The check runs inside the claim itself, so the worker cannot skip it, forget it, or be talked
-      out of it by a prompt. A confidential document is simply never handed over. From the
-      summarizer's point of view there was nothing to claim.
+      The runtime applies the grant while selecting a claim. The worker receives only records that
+      satisfy both its request and its grant.
     </p>
     <p>
-      Durable execution engines dispatch by function name and treat the payload as an opaque blob, so
-      there is no point in their design where this question can be asked. That gap is the reason this
-      project exists. <a href="authorization.html">How authorization works &rarr;</a>
+      This makes the payload part of the authorization decision, rather than leaving the check to
+      agent code. <a href="authorization.html">Read about authorization &rarr;</a>
     </p>
   </div>
 </section>
 
 <section id="shape">
   <div class="container">
-    <h2>A record never changes. Its claim state does.</h2>
+    <h2>Immutable records, mutable claim state</h2>
     <p>
-      When the summarizer finishes, it does not update the document. It writes a new record, a
-      summary, that names the document as its parent. The document is exactly as it was.
+      A completed worker does not update its input. It writes a result record that names the input
+      as a parent. The original document remains unchanged.
     </p>
 
     <figure>
@@ -224,15 +215,14 @@
         <text x="420" y="176" class="muted">when it becomes claimable again</text>
       </svg>
       <figcaption>
-        Splitting these two apart is what makes the history usable. Ask what a document said last
-        Tuesday and you get an answer, because nothing overwrote it.
+        Immutable content preserves history. The runtime envelope can move through available,
+        leased and consumed states without changing the record itself.
       </figcaption>
     </figure>
 
     <p>
-      That summary is a record too, so a third worker can match on it without anybody arranging the
-      handoff. A step that collects results never has to be told which workers produced them. This is
-      what makes fan-in work when the workers involved were written by people who have not met.
+      A result is another routable record. Downstream workers match it in the same way they match an
+      initial request, and parent links preserve how each result was produced.
     </p>
     <p><a href="how-it-works.html">Follow one document through the whole system &rarr;</a></p>
   </div>
@@ -263,14 +253,11 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
     </p>
 
     <p>
-      The CLI has no private door into the runtime. Every one of those commands goes through the same
-      public API your own code would use, which is a deliberate constraint: if the CLI can do it, so
-      can you. The same is true of every other way in: the TypeScript and Python SDKs, the web
-      console, and an MCP adapter that lets a model you already talk to browse the space, all
-      clients of the same frozen API.
+      The CLI, TypeScript and Python SDKs, web console and MCP adapter all use the public
+      <code>/v0</code> API. None has a private runtime interface.
     </p>
 
-    <p>Here is that summarizer as a real worker, and this is the whole file.</p>
+    <p>A worker declares its patterns and supplies a handler:</p>
 
     <div class="code-block">
       <div class="code-title">summarizer.ts</div>
@@ -288,9 +275,9 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
     </div>
 
     <p>
-      The loop handles the lease, renews it while you work, and retries the record if your process
-      dies partway through, with no server to register with and no address to configure. Kill it
-      mid-document and the document goes back to waiting.
+      The loop claims matching work, renews the lease while the handler runs and settles the claim
+      with the returned record. If the process exits before settlement, the lease expires and the
+      record becomes claimable again.
     </p>
   </div>
 </section>
@@ -299,45 +286,45 @@ $ radia ack - --result-kind summary --result '{"text":"..."}' &lt; claim.json</c
   <div class="container">
     <h2>What is built</h2>
     <p>
-      All of the first milestone and a good part of the second, running on three storage backends:
-      SQLite and PGlite for local work, and real Postgres when you want several instances. The same
-      test suite runs against all three.
+      Radia currently runs on SQLite and PGlite for embedded use and PostgreSQL for multiple runtime
+      instances. The same storage contract suite covers all three adapters.
     </p>
 
     <div class="cards">
       <div class="card">
         <h3>Coordination</h3>
-        <p>Posting, claiming, answering and retrying work. Leases that survive a crash, and delivery that never silently drops a task.</p>
+        <p>Posting, querying, claiming and settling records, with fenced leases, retries,
+        idempotency and dead-letter handling.</p>
       </div>
       <div class="card">
         <h3>Authorization</h3>
-        <p>Grants scoped to a kind and a pattern, labels that follow data through the system,
-        credentials that replace themselves so nobody signs in twice, and sign-in from an identity
-        provider you already run.
-        <a href="authorization.html">How it works &#8594;</a></p>
+        <p>Kind- and pattern-scoped grants, short-lived run credentials, OIDC sign-in, delegation
+        and labels that propagate with derived data.
+        <a href="authorization.html">Authorization &#8594;</a></p>
       </div>
       <div class="card">
         <h3>Large payloads</h3>
-        <p>Images and files live outside the record, addressed by content hash, and can be destroyed later without breaking the history.</p>
+        <p>Content-addressed artifacts for images and files, with optional encryption, retention
+        and payload erasure.</p>
       </div>
       <div class="card">
         <h3>Seeing what happened</h3>
-        <p>An event log, lineage queries, a web console, a tamper-evident chain over the log, and
-        OTLP export into Jaeger or Tempo: threads become traces, work attempts become spans.
-        <a href="inspection.html">What it can tell you &#8594;</a></p>
+        <p>An event log, lineage and graph queries, diagnostics, mined flows, a web console, a
+        tamper-evident event chain and OTLP export.
+        <a href="inspection.html">Inspection &#8594;</a></p>
       </div>
       <div class="card">
-        <h3>Meeting the world</h3>
-        <p>Multi-file trees an agent can write, run in a jail, serve to a browser, and clone with git.
-        Built on the above, outside the runtime.
+        <h3>Workspaces</h3>
+        <p>Versioned multi-file trees that agents can write, execute in a jail, serve to a browser
+        and export as Git repositories. Workspaces are an extension over the public API.
         <a href="workspaces.html">Workspaces &#8594;</a></p>
       </div>
     </div>
 
     <div class="callout warn">
-      <strong>It is not production ready, and nobody but the author has used it yet.</strong> Every
-      item from two code audits is closed and nothing above low severity is open, but the packages
-      are unpublished, so today this runs from a checkout.
+      <strong>Radia is not production-ready and has not been independently adopted.</strong> The
+      packages are unpublished, several production-hardening tasks remain, and current use starts
+      from a source checkout.
     </div>
   </div>
 </section>

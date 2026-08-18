@@ -48,31 +48,31 @@
   <a href="#framework">An agent framework</a>
   <a href="#dbos">DBOS</a>
   <a href="#evidence">Does any of it work</a>
-  <a href="#bet">The bet</a>
 </aside>
 
 <div class="hero">
   <div class="container">
-    <h1>Why not just use X?</h1>
+    <h1>Choosing a coordination system</h1>
     <p class="subtitle">
-      Fair question, and there are several good candidates. Most of them do one of these two jobs
-      well. <strong>Almost none of them do both.</strong> Below is where each one is genuinely the
-      better answer, and where it runs out.
+      Radia combines content-based work selection with content-scoped authorization. Other systems
+      often provide stronger workflow execution, messaging ecosystems or in-process orchestration.
+      This page describes when those alternatives are a better fit and where Radia can complement
+      them.
     </p>
   </div>
 </div>
 
 <section id="short">
   <div class="container">
-    <h2>The short answer</h2>
+    <h2>Capability summary</h2>
     <p>
-      Two things are unusual here. Routing is stored data you can look at and refuse, rather than a
-      name in somebody's code. And permission is granted one record at a time, based on what the
-      record contains, rather than per queue or per namespace.
+      Radia stores routing interests as queryable records and can authorize operations using the
+      contents of each record. Results return to the same record space and remain available for
+      downstream matching and lineage queries.
     </p>
     <p>
-      Take almost any comparable system and you will find it has one of these, or neither. That is
-      the whole claim, and it is easy to check.
+      The table compares native abstractions, not every capability that can be added through custom
+      application code or surrounding infrastructure.
     </p>
 
     <table>
@@ -93,19 +93,19 @@
         <td>NATS, RabbitMQ, Kafka</td>
         <td>a key the sender chose</td>
         <td>per topic</td>
-        <td>a message, gone once handled</td>
+        <td>a message in a stream or queue</td>
       </tr>
       <tr>
         <td>DBOS</td>
         <td>function name</td>
-        <td>everything shares one identity</td>
+        <td>application and database identities</td>
         <td>a durable step</td>
       </tr>
       <tr>
         <td>LangGraph, CrewAI</td>
         <td>edges you wrote in code</td>
-        <td>none</td>
-        <td>a value in memory</td>
+        <td>application-defined</td>
+        <td>framework state or messages</td>
       </tr>
     </table>
   </div>
@@ -113,16 +113,15 @@
 
 <section id="broker">
   <div class="container">
-    <h2>Why not a queue, or a topic exchange?</h2>
+    <h2>Queues, streams and topic exchanges</h2>
     <p>
-      This is usually the first thing people say, and it is the strongest challenge on the list.
-      RabbitMQ, NATS and Kafka route by content in some sense, they are everywhere, and they are very
-      good. If your problem is moving messages between services, use one of them.
+      RabbitMQ, NATS and Kafka are established choices for moving messages between services. They
+      offer mature operations, client ecosystems and substantially broader production experience.
     </p>
     <p>
-      The difference shows up when the answer matters as much as the request. When a consumer
-      acknowledges a message, it is gone. Whatever it produced is now somewhere else, in a database
-      you set up for the purpose, and getting the two back together is your job.
+      Radia differs in treating the input, claim and result as related records in one space. A broker
+      can support the same application-level history, but the application must store and relate the
+      consumer's output separately.
     </p>
 
     <figure>
@@ -158,40 +157,36 @@
     </figure>
 
     <p>
-      Two smaller differences. You cannot ask a broker who would receive a message if you sent it,
-      because the bindings live in its configuration rather than in something you can query. And a
-      topic permission covers a topic; there is no way to say that this agent may have this
-      particular message and not that one.
+      Radia also exposes live interests through its record model and applies grants to individual
+      record contents. Broker products vary in routing and authorization features, but commonly
+      scope access at a stream, topic, queue or subject boundary.
     </p>
     <p>
-      Queues stay useful; none of that says otherwise. Bridging one into a space is a normal thing
-      to build, and plenty of systems want both.
+      Choose a broker when message transport, ecosystem maturity or throughput is the primary need.
+      A broker can also feed records into Radia when both abstractions are useful.
     </p>
   </div>
 </section>
 
 <section id="temporal">
   <div class="container">
-    <h2>Why not Temporal?</h2>
+    <h2>Temporal</h2>
     <p>
-      If what you need is durable execution, use Temporal. It has a decade of production behind it,
-      SDKs in every language you are likely to want, a managed cloud, and a long tail of hard
-      problems already solved. Radia does not compete with it and would lose.
+      Temporal is the stronger choice for durable workflow execution, timers, long-running state
+      machines and a mature managed service. Radia does not implement a durable call stack or a
+      general workflow scheduler.
     </p>
     <p>
-      What Temporal does is remember how far a workflow got, so it can pick up after a crash. What it
-      does not do is tell you which worker should handle a piece of work based on what that work
-      contains, or let you refuse a payload to a step. Activities are invoked by name, and the
-      payload is a blob it passes along without opening.
+      Temporal dispatches activities by task queue and activity type. Radia selects work by matching
+      declared record fields and can apply a content-scoped grant during that selection.
     </p>
     <p>
-      For agents that turns into a specific gap. The routing decision moves into the model, where
-      nobody can inspect it beforehand or deny it as it happens, and there is nowhere in the design
-      to ask whether this particular document should reach this particular step.
+      Use Radia where independent participants must discover work by description or where the payload
+      must participate in the authorization decision.
     </p>
 
     <div class="callout">
-      <strong>These stack, and that is the more interesting option.</strong> A Temporal workflow can
+      <strong>The systems can be combined.</strong> A Temporal workflow can
       have activities that are Radia participants, or a space can be the exchange between workflows
       owned by teams that cannot edit each other's code. Temporal keeps the durable call stack, which
       is deliberately not something Radia tries to have.
@@ -201,17 +196,14 @@
 
 <section id="framework">
   <div class="container">
-    <h2>Why not LangGraph or CrewAI?</h2>
+    <h2>Agent frameworks</h2>
     <p>
-      Because in a framework the tool list is the program. Agents and tools are objects you construct
-      and wire, so the shape of the system is a thing you wrote down, and changing it means editing
-      and redeploying.
+      Frameworks such as LangGraph and CrewAI make agents, tools and transitions explicit in
+      application code. This is direct, easy to inspect and usually faster to start.
     </p>
     <p>
-      That is genuinely fine for a lot of work, and it is faster to start. It gets uncomfortable at
-      the point where several teams own several agents, or where you want to add a capability without
-      touching the thing that will use it, or where everything running in one process with one set of
-      credentials becomes a problem you have to explain to somebody.
+      Radia becomes relevant when participants are deployed independently, owned by different teams
+      or require separate credentials and operating-system boundaries.
     </p>
     <p>
       Radia's chat example is the demonstration: its command loop contains no tool list, no model
@@ -229,7 +221,7 @@
 
 <section id="dbos">
   <div class="container">
-    <h2>What about DBOS?</h2>
+    <h2>DBOS</h2>
     <p>
       DBOS is the closest thing to a sibling. It makes the same underlying bets: Postgres as the one
       source of truth, stateless processes above it, durability recorded per operation rather than as
@@ -255,9 +247,10 @@
 
 <section id="evidence">
   <div class="container">
-    <h2>Is there any evidence this works better?</h2>
+    <h2>Evidence and current limits</h2>
     <p>
-      Some, and the limits matter as much as the support.
+      Research on blackboard-style coordination provides workload-specific support for the general
+      approach. It does not establish that Radia outperforms the alternatives above.
     </p>
     <p>
       Salemi and colleagues
@@ -273,47 +266,10 @@
       single-agent prompting and fixed multi-agent setups.
     </p>
     <p>
-      Both are encouraging, both are specific to their workloads, and neither was run on this system.
-      Radia has its own benchmark suite, which measures:
-      throughput and latency per storage backend, how coalescing holds up as parked chat sessions
-      accumulate on one space, and where the query planner's costs bend at millions of records over
-      real HTTP. Those are measurements of this implementation against itself. What does not exist
-      is a comparison against Temporal or a message broker on a shared workload, a benchmark of the
-      contended case where many workers fight over one hot kind, or any number produced by someone
-      other than the author. So: the idea has independent support, the
-      implementation has self-measurements, and nothing yet compares the two worlds directly.
-    </p>
-  </div>
-</section>
-
-<section id="bet">
-  <div class="container">
-    <h2>The bet underneath all of this</h2>
-    <p>
-      This style of coordination is old, and it keeps losing. Systems that let components find each
-      other by description have existed since the 1980s and never took over. Something simpler always
-      won: a framework that let you write the sequence out as ordinary code with a call stack you
-      could step through.
-    </p>
-    <p>
-      The reason seems to be that people think in stories. A workflow you can read top to bottom is
-      easier to hold in your head than a set of independent parts whose behaviour only appears when
-      you run them together, even when the second one is more flexible.
-    </p>
-    <p>
-      So the bet is this: <strong>an LLM agent may not have that problem.</strong> It reads what is
-      available right now, matches on what is in front of it, and does not mind that the arrangement
-      was different an hour ago. That is precisely what these systems asked of people and mostly did
-      not get.
-    </p>
-    <p>
-      It could be wrong, and there are two things that would show it. Somebody builds a second
-      implementation and puts a routing table in it anyway. Or applications keep hardcoding the
-      things they were supposed to discover. On that second one there is already evidence pointing
-      the wrong way: this project's own chat example did it four times and was corrected each time in
-      review. Those were mistakes by a person writing the code rather than by an agent at runtime, so
-      they do not settle it. However, they are the closest thing to evidence anyone has right now,
-      and pretending otherwise would be silly.
+      Both studies use their own systems and workloads. Radia's benchmark suite measures storage
+      throughput, query latency, watch fan-out and application-shaped load, but all published Radia
+      measurements are self-reported. There is no shared-workload comparison with Temporal or a
+      message broker and no independent production deployment.
     </p>
   </div>
 </section>

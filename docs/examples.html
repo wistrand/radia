@@ -53,25 +53,24 @@
   <div class="container">
     <h1>Examples</h1>
     <p class="subtitle">
-      They ship with the source, and all but the chat need no API key at all, which means you can
-      watch the whole thing work before deciding whether you believe any of this.
+      The repository includes a coordination pipeline, a multi-process chat application, a
+      content-keyed analysis application and a load generator. Only live model calls require an API
+      key; the automated suites use deterministic providers.
     </p>
   </div>
 </div>
 
 <section id="pipeline">
   <div class="container">
-    <h2>Start here: a pipeline with no wiring in it</h2>
+    <h2>Coordination pipeline</h2>
     <p>
-      Run <code>deno task demo</code> and four small programs come up. One splits a job into pieces.
-      Two do the work, each handling only the kind of piece it knows how to do. The fourth waits
-      until the results are in and writes a summary.
+      Run <code>deno task demo</code> to start a planner, two workers and an aggregator. The planner
+      emits pieces, each worker claims the kind it handles and the aggregator writes a summary after
+      all results arrive.
     </p>
     <p>
-      The source contains no wiring. None of the four imports another.
-      There is no configuration listing them. The one that splits the job has no idea whether anyone
-      is out there to do the pieces, and the one that writes the summary never learns who produced
-      the results it read.
+      The four programs do not import or address one another. Their integration consists of the
+      kinds and patterns they publish to the shared space.
     </p>
 
     <figure>
@@ -115,9 +114,8 @@
         <text x="380" y="232" text-anchor="middle" class="muted">four programs, none of which imports another</text>
       </svg>
       <figcaption>
-        The workers <em>claim</em> their pieces, so each piece is done once even with several workers
-        running. The summarizer only <em>reads</em> the results, because a finished result is a fact
-        rather than a job, and facts are not claimed.
+        Workers claim task records competitively. The aggregator queries completed result records
+        without claiming them.
       </figcaption>
     </figure>
 
@@ -130,15 +128,15 @@
 
 <section id="chat">
   <div class="container">
-    <h2>A real agent, with everything as records</h2>
+    <h2>Multi-process chat agent</h2>
     <p>
-      The chat example is a command-line assistant run by a fleet of separate processes, with
-      separate credentials and separate operating system permissions. The one that reads files cannot reach the network. The one that runs code holds
-      no credential at all.
+      Run <code>deno task chat-test</code> for the no-key suites, or <code>deno task chat</code> with a
+      configured provider. The application separates the client, model routing, inference, tool
+      execution and code execution into processes with distinct credentials and host permissions.
     </p>
     <p>
-      The program you type into makes no external calls whatsoever. It writes a record saying a
-      question was asked, and reads the records that come back.
+      The terminal client writes a request record and renders result records. Workers perform model
+      and tool calls independently, so a terminal restart does not terminate an active turn.
     </p>
 
     <div class="code-block">
@@ -156,61 +154,43 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
     </div>
 
     <p>
-      Because the conversation is records rather than memory, it survives a restart, you can resume
-      it by name, and anyone with permission can inspect it. And the verdict is never the
-      assistant's to write: when the assistant runs code and claims it worked, something else
-      checks and records the answer, and the assistant has no permission on that kind.
+      Conversations persist as record threads and can be resumed by name. Code checks are written by
+      the runner under a kind the assistant cannot write, keeping model claims separate from
+      execution verdicts.
     </p>
     <p>
-      The assistant's tool list is not configured anywhere either. Each tool worker advertises what
-      it offers as a record, description included, and the assistant watches for those records to
-      build the list it shows the model. Start a new worker mid-conversation and the next turn has
-      its tool. The client knows the names of nothing: not the tools, not the models, not the record
-      kinds beyond its own, which is the discipline that keeps a capability an act of deployment
-      rather than a code change.
+      Tool workers advertise schemas and descriptions as records. The assistant watches those
+      records to build the model's tool list, so a newly deployed worker is available on the next
+      turn without client configuration.
     </p>
     <p>
-      The reply carries what it cost, in the provider's own numbers, and those fields are declared
-      sortable, so "which call used the most tokens" is a query with an answer rather than a guess.
-      Model choice reads the same way in the other direction: say a tier's name and the router
-      obeys, and a bare "continue" keeps the tier the last turn ran on, because eight characters of
-      text say nothing about how hard the work is.
+      Replies retain provider-reported token and cost fields for later queries. Model tiers are also
+      records, allowing routing and escalation workers to read the same active registry.
     </p>
     <p>
-      A conversation can also be sealed end to end. Start one with <code>--encrypt</code> and the
-      prose of every message, tool argument and tool output is ciphertext to everyone but its owner,
-      while the records still route, because nothing ever matched on prose. The keys live in
-      destroyable payloads, so erasing the conversation means destroying its key, and the records,
-      their lineage and the audit chain all survive the erasure. The design was forced rather than
-      invented: every wrong place to keep the keys, a shared fleet secret, the conversation record
-      itself, an ordinary record body, broke a rule the runtime already had, until the one shape
-      that satisfied them all was left standing.
+      With <code>--encrypt</code>, message prose, tool arguments and tool output are encrypted while
+      routing fields remain readable to the runtime. Conversation keys live in shreddable artifacts,
+      allowing the prose to be erased while records, lineage and the event chain remain.
     </p>
 
     <div class="callout">
-      <strong>A shelf of test suites, none of which needs a model.</strong> Because a tool call is a
-      record and assembling the context is a plain function, the tests drive the real thing with no
-      API key. Most bugs in this project have surfaced here first.
+      <strong>The chat suites require no model provider.</strong> Deterministic providers exercise
+      tool routing, context assembly, encryption, workspaces and multi-process behavior.
     </div>
   </div>
 </section>
 
 <section id="analysis">
   <div class="container">
-    <h2>A data pipeline where re-running is not a mechanism</h2>
+    <h2>Content-keyed analysis application</h2>
     <p>
-      The analysis example is a web app: sign in, upload a CSV, watch each stage run, follow any
-      record into the console. It has no replay verb, no invalidation pass and no "mark stale"
-      flag anywhere in it. The app itself holds no credential either: it relays the browser's own
-      token, so the space applies the signed-in person's grants and the app cannot exceed them or
-      leak what it never held.
+      Run <code>deno task analysis</code> to start a web application with sign-in, CSV upload and
+      staged processing. The application relays the browser's token and holds no service credential.
     </p>
     <p>
-      Work is identified by its content: which dataset, the digest of the input, the digest of the
-      code that will run. All three are indexed, so "has this already been computed" is one query.
-      Each stage's output is an artifact, so its content digest is the next stage's input digest.
-      Change an analysis and that stage re-runs along with everything after it, because those keys
-      now miss; change nothing and nothing re-runs, however often the planner executes.
+      Each stage is keyed by dataset, input digest and code digest. Completed work is found by query.
+      Changing code or input creates a new key for that stage and its descendants; unchanged stages
+      reuse their existing artifacts.
     </p>
     <p>
       The code that runs is a record too. Each stage lives in a
@@ -244,7 +224,7 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
 
 <section id="console">
   <div class="container">
-    <h2>Watching it happen</h2>
+    <h2>Inspect the examples</h2>
     <p>
       Start a space and there is a web console at the same address. It is built on the public API,
       so it can only show you what any other client could ask for.
@@ -268,7 +248,7 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
 
 <section id="flows">
   <div class="container">
-    <h2>Finding the shape after the fact</h2>
+    <h2>Mine their flow shapes</h2>
     <p>
       Here is a problem this design creates for itself. If nothing declares how work flows, there is
       no diagram to look at. New people ask where the workflow is, and no file holds one.

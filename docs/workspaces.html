@@ -53,47 +53,39 @@
 
 <div class="hero">
   <div class="container">
-    <h1>Where the work meets the world</h1>
+    <h1>Versioned workspaces for agent output</h1>
     <p class="subtitle">
-      Records are a fine way for agents to talk to each other. They are a poor way to hand a
-      three-file website to a person, or to run a program that expects a directory. A workspace is
-      the seam: a multi-file tree an agent can write, run, look at and export as a real git
-      repository. <strong>None of it is in the runtime.</strong>
+      A workspace represents a multi-file tree as records and artifacts. Agents can create new
+      versions, execute a version in a jail, serve it to a browser and export its history as a Git
+      repository. <strong>Workspaces are an extension over Radia's public API.</strong>
     </p>
   </div>
 </div>
 
 <section id="gap">
   <div class="container">
-    <h2>An agent that writes code needs somewhere to put it</h2>
+    <h2>Why workspaces exist</h2>
     <p>
-      A single-file evaluator gets you further than you would expect and then stops dead. Real work
-      is a project: write a few files, run the thing, read the error, fix one line, run it again. The
-      loop is not the hard part. The missing part is somewhere for the program to live between
-      iterations.
+      Code generation often produces a project rather than one source file. The files must persist
+      between iterations, preserve their version history and materialize as a directory for tools
+      that expect a filesystem.
     </p>
     <p>
-      That is a gap in what agents can reach, not in the coordination model underneath. A round trip
-      through the space costs about thirty milliseconds and a sandbox start about twenty-seven,
-      against a model turn of one to ten seconds. Routing this loop through records costs roughly one
-      percent of an iteration; the medium was never the constraint.
+      Radia stores each tree version durably while using temporary directories only for execution.
+      The record model remains the source of identity, provenance and authorization.
     </p>
   </div>
 </section>
 
 <section id="tier">
   <div class="container">
-    <h2>It is a convention, not a feature of the runtime</h2>
+    <h2>An extension over runtime primitives</h2>
     <p>
-      The design stays small because of one refusal. Radia has no idea what a file is. It has no
-      idea what a path, a file mode or a directory is. Nothing in the runtime knows the word
-      workspace.
+      The runtime has no workspace, file, path or directory abstraction.
     </p>
     <p>
-      A workspace is a record whose body happens to list files, plus one artifact per file, plus a
-      projection that says which version is current. Every one of those is a primitive that already
-      existed for other reasons. The convention lives one tier out, in a library that talks to the
-      space through the same public API your own code would use.
+      The workspace extension combines a manifest record, artifact records for file contents and a
+      latest-version projection. It uses the same public API as an external application.
     </p>
 
     <figure>
@@ -118,76 +110,30 @@
         <text x="720" y="200" text-anchor="end" class="muted">src/</text>
       </svg>
       <figcaption>
-        The test for each tier is a question. Does the runtime have to know? Would two different
-        applications want the same convention? If the answer to both is no, it belongs to the app.
+        Shared conventions live in <code>extensions/</code>. Application-specific behavior stays in
+        the application, and the runtime remains limited to records, leases, grants and artifacts.
       </figcaption>
     </figure>
 
     <p>
-      A test greps for the dependency rule: an extension that reached into the runtime fails the
-      build. That direction is what keeps the runtime
-      from slowly growing opinions about filesystems, and it is why exporting a workspace to git is
-      an ordinary client command instead of a feature of the server.
+      Structural tests prevent extensions from importing runtime internals. Commands such as Git
+      export are therefore ordinary clients, not privileged server operations.
     </p>
 
     <div class="callout">
-      <strong>Two things here are specified, not merely implemented.</strong> The tree digest and the
-      path validator cross a trust boundary: a verdict about a tree is comparable across languages
-      only if every implementation hashes it identically, and a path rule that differs between
-      implementations is a hole rather than an inconsistency. Both ship with a conformance suite that
-      any implementation in any language has to pass.
+      <strong>Tree digests and path validation are normative.</strong> Their exact algorithms cross a
+      trust boundary and are covered by extension conformance tests.
     </div>
 
-    <h3>Workspaces are one convention on a longer shelf</h3>
-    <p>
-      The same tier holds every other convention more than one application wanted and the runtime
-      had no business knowing. Each is a small library over the same public API, and each earns its
-      place by answering a question the applications kept re-answering badly:
-    </p>
-    <ul>
-      <li>
-        <strong>Tool workers.</strong> A worker advertises each tool as a record carrying its schema
-        and description, an agent builds its tool list by watching for those records, and a call
-        routes to whichever worker claimed that tool's name. Adding a worker adds a capability with
-        no configuration anywhere, which is the promise on the front page made concrete. A failed
-        call comes back as an <em>answer</em>, never as silence, so a caller is told what went wrong
-        instead of waiting out its deadline.
-      </li>
-      <li>
-        <strong>A model turn as records.</strong> The chat's conversation loop does not live in the
-        terminal: the client writes one request and renders whatever arrives, while workers emit
-        each next step as a record. Kill the terminal mid-turn and the turn finishes without it.
-        Model tiers are records too, so the router and the escalation ladder read the same list.
-      </li>
-      <li>
-        <strong>Sealed conversations.</strong> Prose is encrypted end to end while the records still
-        route, because nothing ever matched on prose. The keys live in destroyable payloads, which
-        is what gives an immutable history an erasure path.
-        <a href="examples.html#chat">The chat uses it &#8594;</a>
-      </li>
-      <li>
-        <strong>Compartments.</strong> Containment for a class of data: a dedicated kind plus
-        pattern-scoped grants. Outside it, writes are refused by construction, and
-        getting data out is reserved to a principal deliberately granted both sides.
-      </li>
-      <li>
-        <strong>Traces for your existing tools.</strong> Threads export as OTLP traces, attempts as
-        spans; Jaeger or Tempo then renders what happened without learning anything about records.
-      </li>
-    </ul>
-    <p>
-      The rest of this page walks the largest of them: the tree itself, running code from it, and
-      promoting a tree to be an agent's code.
-    </p>
   </div>
 </section>
 
 <section id="tree">
   <div class="container">
-    <h2>What a tree actually is</h2>
+    <h2>Workspace representation</h2>
     <p>
-      One record holds the manifest: a name, a tree digest, the version it was based on, and a list
-      of files. Each entry is a path, a mode, a content hash and the artifact holding the bytes.
+      A manifest record contains a name, tree digest, base version and file list. Each file entry
+      contains a validated path, mode, content digest and artifact id.
     </p>
 
     <div class="code-block">
@@ -203,16 +149,13 @@
     </div>
 
     <p>
-      Editing the tree writes a new manifest that points at the version before it: history is a
-      chain of records, not a mutable directory. Bytes are shared by content, so changing one
-      character in one file stores one file, not a tree. Two agents editing the same base produce two
-      successors and you can see that they diverged, which beats one of them quietly winning.
+      Editing writes a new manifest linked to its base version. File bytes are content-addressed, so
+      unchanged files are shared across versions. Concurrent edits from the same base create visible
+      successor branches.
     </p>
     <p>
-      A file does not have to be written to be added. An image the agent generated earlier is already
-      an artifact, so attaching it to a tree moves no bytes at all: the manifest points at what is
-      already there, and the artifact becomes a data parent of the tree; whatever labels it
-      carries follow it in.
+      Existing artifacts can be attached without copying their bytes. Attached artifacts become
+      data parents of the manifest, propagating their provenance labels.
     </p>
 
     <div class="code-block">
@@ -223,80 +166,55 @@ scraper           9        22  t1:07b3e5c918&#8230;  human:alice</code></pre>
     </div>
 
     <p>
-      Paths are validated on the way in, not on the way out, and the placement is the security
-      decision. There is no filesystem inside the space, so a path is just a string in a
-      record until something materialises it, and every rule about what a path may contain gets
-      applied at the moment it is written. Materialising the tree revalidates anyway, and checks that
-      each resolved file really landed inside the directory it was supposed to.
+      Paths are validated when a manifest is written and again during materialization. The
+      materializer verifies that every resolved file remains within the destination directory.
     </p>
   </div>
 </section>
 
 <section id="run">
   <div class="container">
-    <h2>Running what is in it</h2>
+    <h2>Sandboxed execution</h2>
     <p>
-      A tree is only interesting if something can execute it, and executing model-written code is a
-      question about isolation rather than about languages. Two jails ship. One runs JavaScript in a
-      subprocess with no permissions at all, safe by the absence of every flag. The other runs any
-      interpreter inside bubblewrap, safe by the presence of the right ones.
+      Radia ships a Deno permission jail for JavaScript and a bubblewrap backend for available host
+      interpreters. Sandbox records describe the guarantees of each backend.
     </p>
     <p>
-      Those are not equivalent, and the difference is not something to paper over in a sentence on a
-      web page. So a jail is a record: it states what it actually guarantees, an operator declares it,
-      and the worker probes it before serving anything. A bubblewrap jail missing one flag can reach
-      the network while its record claims it cannot. Nothing is advertised on the strength of a
-      claim, only on a passed probe.
+      A worker probes a sandbox before advertising it. A backend is available only when the probe
+      confirms the guarantees claimed by its record.
     </p>
     <p>
-      Which means the answer to "what can this space run" is discovered rather than configured. A
-      runner publishes <code>run_javascript</code> or <code>run_python</code> only where its backend
-      probed clean, so a language the host cannot isolate is simply absent from the tool list instead
-      of failing after a turn has already committed to it.
+      Successful probes determine which execution tools the worker publishes. A host that cannot
+      provide the required isolation does not advertise that runner.
     </p>
 
     <div class="callout warn">
-      <strong>The process that runs the code holds no credential.</strong> The worker that spawns
-      jails can start two specific binaries and reach the space, and nothing else. The child it
-      spawns gets no permissions and no token. Compromising the dangerous half yields a process
-      that can print bytes to its parent.
+      <strong>The untrusted process holds no Radia credential.</strong> The host performs permitted
+      operations on its behalf and supplies authoritative metadata that the child cannot choose.
       <br><br>
-      One caveat, found by measurement: a permission model bounds the calls a
-      program makes, and in Deno it does <em>not</em> bound what the module loader reads. A jail with
-      no filesystem grant can still <code>import</code> any JSON or JavaScript its user can read. So
-      the filesystem boundary is a second mechanism underneath the permission one, a mount namespace
-      on Linux and a Seatbelt profile on macOS, and each jail record says which one bounds it rather
-      than leaving a reader to assume.
+      Deno permissions alone do not confine module loading. Filesystem confinement therefore uses a
+      mount namespace on Linux and a Seatbelt profile on macOS. Sandbox records state whether this
+      additional boundary is active.
     </div>
 
     <p>
-      Code that runs this way still has to produce something, and the answer is the same tree idea
-      pointed the other way: a run saves <em>files</em>, into a directory that becomes a new version
-      of an output workspace when the run ends. That is what makes a chart, a PDF or a compiled
-      binary expressible at all, since a record holds JSON and the channel back to the space carries
-      lines of text. It also explains a rule that looks arbitrary until you hit it: a run never
-      writes into the tree it runs <em>from</em>. That tree is the code, shared between everything
-      running the same version and named by its own digest, so a program editing it would change
-      what that name refers to while its neighbours were still reading it.
+      A run writes files into a separate output directory. When execution finishes, the host captures
+      that directory as a new workspace version. The input tree remains immutable and may be shared
+      by concurrent runs.
     </p>
   </div>
 </section>
 
 <section id="promote">
   <div class="container">
-    <h2>Promoting it: an agent whose code is a tree</h2>
+    <h2>Promotion and agent bindings</h2>
     <p>
-      Once code lives in a tree named by its digest, "which code runs in production" stops being a
-      deployment question and becomes an authorization one. A binding record says which tree an
-      agent runs. A generic host reads the binding, materialises exactly that version, runs it in
-      the jail, and claims work as the agent the code belongs to. The code inside gets a channel to
-      propose actions and no credential of its own, so it cannot lie about who it is, and the host
-      stamps what it touched where the code cannot reach.
+      A binding record associates an agent with a workspace digest. The generic host materializes
+      that version, executes it in the selected jail and claims work through the agent's run.
     </p>
     <p>
-      Promotion is then a grant rotation pinned to a digest: the permission that lets production
-      work be claimed carries the digest it applies to: authorizing the work and authorizing the
-      code become one record.
+      Promotion rotates grants that are pinned to the workspace digest. The claim permission and
+      executable code version are therefore checked together.
     </p>
 
     <div class="code-block">
@@ -307,55 +225,37 @@ agent:scraper on 'prod': t1:07b3e5c918&#8230;</code></pre>
     </div>
 
     <p>
-      The answer comes from the same records that do the refusing, so it cannot disagree with what
-      is actually enforced the way a deploy log can. A binding that names a tree the grant does not
-      pin is refused rather than run. Rolling back is the same verb pointed at the previous digest,
-      and stopping an agent is a record write; both leave the audit trail everything else does.
-      The founding use case for all of this is model-written code over data it must not exfiltrate,
-      which is why the pieces compose the way they do: the jail bounds what the code can reach, the
-      binding bounds which code runs, and the grant bounds what its output may claim to be.
+      A host refuses a binding whose digest disagrees with the active grant pin. Rollback promotes a
+      previous digest through the same mechanism. The jail bounds host access, the binding selects
+      code and the grant limits the records that code may process and produce.
     </p>
     <p>
-      Data gets in the same governed way it gets out. The code cannot fetch its input, because the
-      jail has no network and the channel out carries no bytes, so the binding declares which fields
-      of a claimed request name stored payloads, and the host lays those bytes into the run's
-      directory before the code starts. The fetch happens under the <em>agent's</em> permission, not
-      the host's: a request naming a payload its handler may not read fails as a refusal instead
-      of smuggling data past the grants. And everything the run produces lists that input as a
-      parent, which carries its labels along.
+      Bindings declare which request fields identify input artifacts. The host fetches those
+      artifacts under the agent's authority and places them in the run directory. Outputs name the
+      inputs as parents so their labels propagate.
     </p>
     <p>
-      All of this composes into a worked system in the analysis example: its stages are promoted
-      trees run by one host, pinned on both the claim and the result, and the pipeline's own shape
-      is a registry a new stage joins by deployment alone.
-      <a href="examples.html#analysis">The pipeline &#8594;</a>
+      The analysis example uses promoted workspace stages through one generic host.
+      <a href="examples.html#analysis">View the analysis example &#8594;</a>
     </p>
   </div>
 </section>
 
 <section id="out">
   <div class="container">
-    <h2>Getting it out</h2>
+    <h2>Serving and exporting workspaces</h2>
+
+    <h3>Serve a tree to a browser</h3>
     <p>
-      Eventually a person has to see the thing. Two exits exist, and they answer different questions.
+      The extension converts a manifest into a path-to-artifact index and mints a short-lived
+      capability over the complete tree. Scriptable content is served from an isolated origin.
+    </p>
+    <p>
+      Requests match entries in the fixed index and never resolve against a filesystem. Artifact
+      access is authorized when the capability is minted, and the URL expires with that capability.
     </p>
 
-    <h3>Look at it</h3>
-    <p>
-      A multi-file page cannot be viewed one file at a time, because the browser will go looking for
-      the stylesheet. So a short-lived link is minted over the whole tree at once, as a
-      <code>path</code> to artifact index, and served from an isolated origin. The runtime never
-      learns what a workspace is: it was taught to serve an index somebody hands it, and the
-      extension computes that index from a manifest.
-    </p>
-    <p>
-      Path traversal is structurally absent here, not checked for: the
-      requested path is matched against a fixed index, so there is no filesystem to escape and the
-      index is the allowlist. Every artifact is authorized once when the link is minted; the
-      served URL needs no credential, and a link cannot outlive the permission that created it.
-    </p>
-
-    <h3>Hand it to git</h3>
+    <h3>Export a Git repository</h3>
     <div class="code-block">
       <div class="code-title">radia workspace-git</div>
       <pre class="terminal"><code>$ radia workspace-git landing-page --dir /tmp/landing.git
@@ -367,7 +267,7 @@ $ git clone /tmp/landing.git &amp;&amp; cd landing &amp;&amp; git log --oneline
     </div>
 
     <p>
-      Or serve them, and hand somebody a URL instead of a directory:
+      The same projection can be served over read-only Git HTTP:
     </p>
 
     <div class="code-block">
@@ -379,31 +279,24 @@ $ git clone http://you:&lt;token&gt;@127.0.0.1:7790/landing-page.git</code></pre
     </div>
 
     <p>
-      That is a read of the space wearing a familiar shape, and it runs as <em>you</em>: the password
-      is a credential that can mint a session and do nothing else, so the clone sees exactly the
-      trees you could see and revoking it stops the next fetch. Push is refused with the reason
-      rather than a 404, because pushing is the one direction this does not go.
+      Git authentication uses a mint-only credential and applies the caller's Radia permissions.
+      Revocation stops subsequent fetches. Push is explicitly unsupported.
     </p>
 
     <p>
-      A real repository, with real objects, that a real <code>git clone</code> reads. No git binary is
-      involved in making it and no dependency was added: hashing and compression are both already in
-      the platform. Each manifest version becomes a commit, the chain of versions becomes the parent
-      chain, and every commit carries trailers leading back to the record it came from.
+      Each manifest version becomes a commit, version links become commit parents and trailers refer
+      back to the source record. The exporter writes Git objects directly without invoking Git.
     </p>
     <p>
-      Export only. There is no import, for two reasons. Git hashes with
-      SHA-1, and chosen-prefix collisions have been practical since 2017, so adopting its object
-      identity would put SHA-1 into the chain that attestations rest on. And git history is
-      rewritable by design, where records are not. Borrow the shape and emit the format; the
-      storage stays Radia's.
+      Export is one-way. Git object identity and rewritable history are not accepted as workspace
+      identity; Radia records and SHA-256 tree digests remain authoritative.
     </p>
   </div>
 </section>
 
 <section id="worth">
   <div class="container">
-    <h2>What this buys that git does not</h2>
+    <h2>Capabilities and limits</h2>
     <p>
       Anyone who has purged a leaked credential
       from a repository knows what it costs: every downstream hash changes, every fork force-pushes,

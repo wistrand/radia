@@ -55,41 +55,38 @@
 
 <div class="hero">
   <div class="container">
-    <h1>Keeping the confidential one out</h1>
+    <h1>Content-scoped authorization</h1>
     <p class="subtitle">
-      Your summarizer sends text to a model hosted by someone else. Most of your documents are fine.
-      Some are not, and you would like that to hold even after somebody writes a careless agent next
-      week. <strong>This page is about where that rule lives.</strong>
+      Radia authorizes each operation by principal, record kind and, when configured, record
+      contents. The same model covers workers, people, delegated calls and operational access.
     </p>
   </div>
 </div>
 
 <section id="problem">
   <div class="container">
-    <h2>The obvious place to put the rule is the wrong one</h2>
+    <h2>Enforcement at the runtime boundary</h2>
     <p>
-      The natural instinct is to put the check in the summarizer. Read the classification, and skip
-      anything confidential. It works, and it lasts until the day someone writes a second worker and
-      forgets, or the model decides to be helpful and calls a tool you did not expect it to.
+      Application checks depend on every worker implementing the same policy correctly. They also
+      run after the worker has received the data.
     </p>
     <p>
-      This is worse with agents than it is with ordinary software, because the decision about what to
-      do next is made by a model at runtime. A code reviewer can read a workflow and see which
-      service gets called. Nobody can read a model and see which document it will reach for.
+      Radia applies authorization before a query, claim or write completes. A denied record is not
+      returned to the worker, so model behavior cannot bypass the check.
     </p>
     <p>
-      So the rule goes somewhere the agent cannot reach. The document is a record sitting in the
-      space, the worker has to ask for it, and the asking is where the answer is decided.
+      These guarantees apply at the HTTP boundary. Code embedded inside the runtime process is
+      inside the trust boundary and must not be treated as an untrusted participant.
     </p>
   </div>
 </section>
 
 <section id="grants">
   <div class="container">
-    <h2>Permission is a record, like everything else</h2>
+    <h2>Grants are records</h2>
     <p>
-      You give an agent access by writing a grant. It says which principal may do what to which kind
-      of record, and it is stored in the space alongside the documents themselves.
+      A grant names a principal, a record kind and allowed operations. Grants are immutable records
+      stored in the space.
     </p>
 
     <div class="code-block">
@@ -100,26 +97,22 @@
     </div>
 
     <p>
-      Keeping this as a record rather than a configuration file has a few consequences that turn out
-      to matter. You can watch permissions change as they happen. You can ask what somebody could do
-      last month. And taking access away is not a deletion, it is a newer record saying the old one
-      no longer applies, so the trail of who granted what and when survives the revocation.
+      Newer records supersede or retire earlier grants. This makes permission changes observable and
+      preserves their history after revocation.
     </p>
     <p>
-      Grants are always given, never taken. A worker can announce what it is able to do, and that
-      announcement is how other agents discover it, but it grants nothing at all. Those are two
-      different records on purpose, because the alternative is an agent that authorizes itself by
-      claiming to be trustworthy.
+      Capability advertisements do not confer authority. A worker may publish what it handles, but
+      only an operator or authorized supervisor can write the grant that permits the operation.
     </p>
   </div>
 </section>
 
 <section id="pattern">
   <div class="container">
-    <h2>Narrowing it down to the contents of the document</h2>
+    <h2>Restrict grants by record content</h2>
     <p>
-      The grant above is too broad for our problem: it covers every document. Add a pattern and it
-      covers only the ones whose contents match.
+      A grant can include a pattern over declared body paths. The following grant applies only to
+      public documents.
     </p>
 
     <div class="code-block">
@@ -131,9 +124,8 @@
     </div>
 
     <p>
-      When the summarizer asks for work, its request and its grant are combined, and it is served the
-      overlap. Ask for finance documents and you get public finance documents. Ask for confidential
-      ones and you get nothing at all, just as if none existed.
+      The runtime intersects the request pattern with every applicable grant. A query for finance
+      documents under this grant returns only public finance documents.
     </p>
 
     <figure>
@@ -156,28 +148,25 @@
         <text x="380" y="208" text-anchor="middle" class="muted">the answer says when a grant narrowed it, so empty is never mistaken for none exist</text>
       </svg>
       <figcaption>
-        That last part matters more than it sounds. An agent that gets an empty result and reports
-        "there are no confidential documents" has said something false. So the response carries a
-        note when a permission narrowed it, and the agent can tell the two situations apart.
+        Query explanations report when authorization narrowed a request. A client can distinguish
+        an empty authorized view from evidence that no records exist globally.
       </figcaption>
     </figure>
 
     <p>
-      The same narrowing works on writing. If a worker may only write records tagged with a
-      particular customer, a record tagged with a different one is refused at the door. And a common
-      case has its own shorthand: restrict an agent to records it created itself, which is how two
-      people sharing a space cannot read each other's conversations.
+      Pattern scopes also apply to writes. Identity scopes provide a shorthand for records authored
+      by the same principal, allowing multiple people to share a space without sharing application
+      records.
     </p>
   </div>
 </section>
 
 <section id="identity">
   <div class="container">
-    <h2>Who a worker is, and for how long</h2>
+    <h2>Agent definitions and run credentials</h2>
     <p>
-      All of this needs the space to know who is asking. Workers do not carry long-lived passwords.
-      An operator defines an agent once, saying what it is called and what it may do. That definition
-      can then mint short-lived tokens, one per running process.
+      An operator creates an agent definition and assigns its grants. The definition token can mint
+      short-lived run tokens but cannot perform record operations itself.
     </p>
 
     <figure>
@@ -209,56 +198,46 @@
         <path d="M 431 90 L 494 118" class="flow" marker-end="url(#a3)"/>
       </svg>
       <figcaption>
-        Each process renews its own token while it runs. Stop one process and only that one loses
-        access. Revoke the definition and no new process can start under that name again.
+        Each process acts through its own renewable run token. Stopping a run invalidates that
+        process. Revoking the definition prevents future runs.
       </figcaption>
     </figure>
 
     <p>
-      People get credentials the same way. Being a human is not a privilege here: a person logging in
-      is an ordinary principal with ordinary grants, unless the space has specifically been told they
-      are an operator.
+      Human sessions are ordinary principals with assigned grants. OIDC sign-in does not confer
+      operator access; operators are configured separately.
     </p>
 
-    <h3>Nobody re-authenticates by hand</h3>
+    <h3>Credential exchange</h3>
     <p>
-      A short-lived token is only short-lived if something can replace it, and renewing needs a
-      process that is awake to renew: a command you just typed is not, a closed browser tab is not,
-      and a tool that stores a password in a config file never was.
+      Long-running processes renew active runs. Interactive clients may be inactive when a run
+      expires, so they retain the definition token and exchange it for a new run token when needed.
     </p>
     <p>
-      So the definition above is the durable half of the pair, and it is deliberately powerless. It
-      cannot read a record, write one or claim work; the space refuses it for anything except minting
-      a session. That is what makes it safe to keep on disk, and it is what a client presents when
-      its short token lapses, which it does silently and without asking anyone. One revocation ends
-      it, and it is the only thing that does.
+      The stored definition token cannot query, write or claim records. Its only operation is
+      minting a run. Revoking the definition ends this exchange path.
     </p>
     <p>
-      This is the same shape OAuth arrived at, with the durable credential unable to act and the
-      acting one unable to last. Nothing here is an access-control decision so much as a decision
-      about what a leak costs: fifteen minutes for the token that can do things, and one command for
-      the one that cannot.
+      This separates a durable minting credential from a short-lived acting credential. A leaked run
+      token is bounded by its expiry and run ceiling; a leaked definition token can be revoked.
     </p>
   </div>
 </section>
 
 <section id="taint">
   <div class="container">
-    <h2>Following data after it has moved</h2>
+    <h2>Propagate data-handling labels</h2>
     <p>
-      Blocking access to the confidential document handles the direct case. It does not handle the
-      indirect one, which is where these systems usually leak.
+      A direct grant check does not cover data copied into a derived record.
     </p>
     <p>
-      Suppose an agent is allowed to read local files. It reads one, and writes a record with what it
-      found. That record is now new, it is not marked confidential, and nothing stops it going
-      anywhere. The sensitive content has escaped by being copied.
+      For example, a worker may read a local file and write part of it into a new result. The result
+      needs to retain the source's handling restriction.
     </p>
     <p>
-      So records carry labels that follow the data. There are three of them, and they mean "this came
-      from a file", "this came from the network", and "this came from outside". When a record is
-      derived from another, it inherits the labels of everything it was derived from. A summary of a
-      file read carries the file label whether or not anybody remembered to add it.
+      Records can carry the closed labels <code>file</code>, <code>net</code> and
+      <code>foreign</code>. Derived records inherit the union of their parents' labels. Clients may
+      add labels but cannot clear them.
     </p>
 
     <figure>
@@ -286,63 +265,51 @@
         <text x="466" y="150" fill="#4ade80" font-size="11">may take it</text>
       </svg>
       <figcaption>
-        A grant lists which labels an agent tolerates. Anything carrying a label that is not on the
-        list is invisible to it, so the worker that can reach the internet never sees data that came
-        off your disk.
+        A claim grant lists the labels a worker accepts. Records carrying another label are excluded
+        from its claim set.
       </figcaption>
     </figure>
 
     <p>
-      Labels only ever get added. Any process can mark its own output as sensitive without being
-      trusted to do so, and no process can remove a mark. Clearing one takes an explicit,
-      privileged action, and it leaves a record of who cleared what.
+      Clearing a label requires the privileged declassify operation. Declassification creates a
+      successor record and records who performed it.
     </p>
     <p class="explanation">
-      This started out as a single yes-or-no flag, and had to be replaced. On a real conversation,
-      after one tool call every single record was flagged, so the flag stopped meaning anything and
-      nothing ever refused work because of it. Three specific labels turned out to be useful where
-      one general one was not.
+      Labels are coarse barriers, not a general information-flow type system. The set is kept small
+      because every label expands the policy surface applications must handle.
     </p>
   </div>
 </section>
 
 <section id="delegation">
   <div class="container">
-    <h2>When one agent works on behalf of another</h2>
+    <h2>Delegate a caller's authority</h2>
     <p>
-      Work usually arrives in chains. Your summarizer produces a summary, which triggers a filing
-      step, which triggers a notification. It would be reasonable to assume the filing step inherits
-      its authority from the summary it is working on.
+      Data lineage and authority are separate. Reading or deriving from a record does not transfer
+      the record author's permissions to the worker.
     </p>
     <p>
-      It does not, and the distinction is deliberate. Authority comes from the job the agent actually
-      claimed, not from the data it happens to be holding. Otherwise an agent could reach for
-      something powerful, name it as an input, and inherit its reach. Reading a document tells you
-      where information came from. It never tells you what the reader is allowed to do.
+      A worker normally acts through its own grants. This prevents a participant from gaining
+      authority by naming a privileged record as an input.
     </p>
     <p>
-      There is a separate mechanism for the case where a shared worker genuinely does serve many
-      people: it asks for a second, narrower credential, whose reach is the overlap between its own
-      grants and those of the person whose work it claimed. It then holds two, and picks per
-      operation: its own for the things that are its job, the narrow one for anything touching that
-      person's data. The overlap is computed once, when the credential is minted, and it can only
-      ever be smaller than both sides.
+      A shared worker can mint a delegated run for the author of a claimed record. The delegated
+      run contains the intersection of the worker's grants and the caller's grants and carries no
+      operational powers. The worker uses it for operations performed on the caller's behalf.
     </p>
     <p>
-      Who it is acting for is never something the worker states. It is read from the record it
-      claimed, back through the credential that wrote it, so a chain of workers passing one request
-      along still resolves to the person at the head of it.
+      The runtime resolves the caller through the run that created the claimed record. The worker
+      cannot choose or assert that identity in a request body.
     </p>
   </div>
 </section>
 
 <section id="check">
   <div class="container">
-    <h2>Finding out what an agent can actually do</h2>
+    <h2>Inspect effective permissions</h2>
     <p>
-      Every permission problem in this project so far has been the same shape: what somebody believed
-      they had granted was not what was being enforced. So there is one command that answers the
-      question from the enforcement side, rather than by reading back the grants you wrote.
+      The permissions endpoint computes access through the same projection used for enforcement. It
+      reports active operations and their scopes after revocations and superseding grants.
     </p>
 
     <div class="code-block">
@@ -354,48 +321,36 @@ summary    put                 own records only</code></pre>
     </div>
 
     <p>
-      Agents can ask this about themselves, which is more useful than it sounds. An agent that has
-      just been refused something can find out whether it is waiting on a human to approve a request
-      or whether the approval already happened and it should try again. Asking about anyone else
-      needs the observe power below, or an operator.
+      Principals may inspect their own permissions. Inspecting another principal requires the
+      <code>observe</code> power or operator status.
     </p>
   </div>
 </section>
 
 <section id="powers">
   <div class="container">
-    <h2>Running the space is not one job</h2>
+    <h2>Separate operational powers</h2>
     <p>
-      There is a second plane of verbs for whoever operates the space: read everything, unstick
-      work, run garbage collection, clear a data-handling flag, destroy a payload. For a while,
-      holding any of that meant holding all of it, plus the right to mint identities and write
-      permissions. One credential that a dashboard, an auditor and a break-glass incident all had
-      to share.
+      Operational verbs use separate powers: global observation, remediation, garbage collection,
+      declassification and payload destruction.
     </p>
     <p>
-      These are now separate powers, and a power is granted the way everything else here is
-      granted: as a record, written by an operator, revocable, and visible in the same
-      permissions answer above. <em>observe</em> reads everything and
-      touches nothing. <em>remediate</em> unsticks work. <em>sweep</em> runs garbage collection.
-      <em>declassify</em> clears the labels from the section on following data. <em>purge</em>
-      destroys payloads. Two things are deliberately never powers: writing permissions themselves,
-      and acting on records without a grant. Whoever can hand out authority holds every other
-      power one step later, so that stays with the space's named operators.
+      Operators assign these powers through revocable <code>ops_grant</code> records.
+      <em>observe</em> reads globally, <em>remediate</em> changes stuck envelope state,
+      <em>sweep</em> runs garbage collection, <em>declassify</em> clears labels and <em>purge</em>
+      destroys payloads. Writing authorization records and bypassing record grants remain restricted
+      to named operators.
     </p>
     <p>
-      The model you plug in over MCP holds the observe power by default and nothing else. It can
-      look at anything, change nothing, and the credential behind it can be revoked like any
-      agent's.
+      The provisioned MCP observer receives <code>observe</code> only. Its credential is revocable
+      through the same agent-definition mechanism.
     </p>
   </div>
 </section>
 
 <section id="limits">
   <div class="container">
-    <h2>What this does not do</h2>
-    <p>
-      Being vague here would defeat the purpose, so plainly:
-    </p>
+    <h2>Security boundaries and current limits</h2>
     <ul>
       <li>
         The checks live in the server. If you embed the runtime in your own process and call it
