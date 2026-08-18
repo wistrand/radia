@@ -15,21 +15,28 @@
     .play-head { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; margin: 2px 0 10px; }
     .play-head h1 { margin: 0; font-size: 22px; }
     .play-head .note { flex: 1; min-width: 320px; max-width: none; }
-    .play-top { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 10px 0 14px; }
-    .play-top input { background: #1e1e24; color: inherit; border: 1px solid #2a2a31; border-radius: 6px; padding: 8px 10px; min-width: 220px; }
+    /* Controls only. Status never lives in a control row: a longer message would wrap the row and
+       shift every button under it, which is what made this page jump as it talked. */
+    .play-top { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0 6px; }
+    .play-top input { background: #1e1e24; color: inherit; border: 1px solid #2a2a31; border-radius: 6px; padding: 8px 10px; min-width: 200px; }
     .play-top button, .tabs button { background: #1e1e24; color: inherit; border: 1px solid #3b3b46; border-radius: 6px; padding: 8px 12px; cursor: pointer; }
-    .play-top button:hover, .tabs button:hover { border-color: #818cf8; }
-    #status { color: #9ca3af; font-size: 13px; margin: 8px 0; }
-    #console-frame { width: 100%; height: 78vh; border: 1px solid #2a2a31; border-radius: 8px; background: #0e0e11; }
+    .play-top button:hover:not(:disabled), .tabs button:hover { border-color: #818cf8; }
+    .play-top button:disabled { opacity: .45; cursor: default; }
+    /* Two lines held open whatever the text says, so the layout is the same before and after. */
+    .statusline { color: #9ca3af; font-size: 13px; line-height: 1.35; min-height: 2.7em; margin: 0 0 10px; }
+    #console-frame { width: 100%; height: 72vh; border: 1px solid #2a2a31; border-radius: 8px; background: #0e0e11; }
     .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
     .note { color: #9ca3af; font-size: 14px; max-width: 70ch; }
     .jail { border: 1px solid #2a2a31; border-radius: 8px; padding: 12px; margin: 0 0 14px; }
-    .jail-head { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 8px; }
-    .jail-head .note { flex: 1; min-width: 260px; max-width: none; }
+    .jail-head { display: flex; gap: 12px; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+    #jail-verdict { font-size: 13px; color: #9ca3af; text-align: right; }
     #jail-code { width: 100%; box-sizing: border-box; background: #16161a; color: inherit; border: 1px solid #2a2a31;
       border-radius: 6px; padding: 10px; font: 12px/1.5 ui-monospace, monospace; resize: vertical; }
     .held { color: #4ade80; }
     .broken { color: #f87171; }
+    details.more { margin-top: 14px; border-top: 1px solid #2a2a31; padding-top: 10px; }
+    details.more summary { cursor: pointer; color: #9ca3af; font-size: 14px; }
+    details.more .note { margin: 12px 0; }
   </style>
 </head>
 <body>
@@ -38,49 +45,41 @@
   <div class="play-head">
     <a href="../index.html">&larr; radia</a>
     <h1>A space in this tab</h1>
-    <span class="note">the real runtime on Postgres-in-WASM, persisted in this browser, console
-    included; nothing leaves the tab. Sign in with <strong>"Sign in as local operator"</strong>,
-    post a document, and watch a worker claim it in the Feed.
-    <a href="#about">More below.</a></span>
+    <span class="note">the real runtime on Postgres-in-WASM, persisted in this browser, with the
+    console below. Sign in with <strong>"Sign in as local operator"</strong>.</span>
   </div>
 
   <div class="play-top">
     <input id="doc-name" value="page.png" aria-label="document file name">
     <button id="post">Post a document</button>
     <button id="reset" title="erase this browser's space and start over">Reset the space</button>
-    <span id="status">booting&#8230;</span>
   </div>
+  <div class="statusline" id="status">booting&#8230;</div>
 
-  <div class="jail" id="jail" hidden>
+  <div class="jail" id="jail">
     <div class="jail-head">
       <strong>Run code in a jail</strong>
-      <span class="note">it reads what the workers wrote and derives a report from it, holding no
-      credential of its own. Each claim below was attempted, not assumed.</span>
-      <span class="note" id="jail-verdict">probing&#8230;</span>
+      <span id="jail-verdict">probing the jail&#8230;</span>
     </div>
-    <textarea id="jail-code" spellcheck="false" rows="9">// No network, no storage, no credential in here: `space` PROPOSES and the host performs each
-// call under the agent's identity. So this code can read what the workers produced and derive
-// from it, without ever holding a token.
+    <textarea id="jail-code" spellcheck="false" rows="8">// No network, no storage, no credential in here: `space` PROPOSES and this page performs each
+// call under the agent's identity. So the code reads what the workers wrote and derives from it.
 const summaries = await space.query({ kind: "summary" }, 50);
 const files = summaries.map((s) => s.body.of).filter(Boolean);
-const longest = files.reduce((a, b) => (b.length > a.length ? b : a), "");
 
 await space.put({
   kind: "report",
-  body: { rolledUp: summaries.length, files: files.join(", "), longestName: longest },
-  // The code names the records it READ. The host adds its own forced parent on top, so the
-  // report's lineage is honest whether or not the code cooperated.
-  parentIds: summaries.map((s) => s.id),
+  body: { rolledUp: summaries.length, files: files.join(", ") },
+  parentIds: summaries.map((s) => s.id),   // the host adds its own parent on top
 });
 
 return { kind: "report", body: { text: "rolled up " + summaries.length + " summaries" } };</textarea>
     <div class="play-top">
-      <button id="jail-run">Run in the jail</button>
+      <button id="jail-run" disabled>Run in the jail</button>
       <label style="font-size:13px;color:#9ca3af">
-        <input type="checkbox" id="jail-auto" style="width:auto"> run it whenever a worker writes a summary
+        <input type="checkbox" id="jail-auto" disabled style="width:auto"> re-run it whenever a summary appears
       </label>
-      <span class="note" id="jail-status"></span>
     </div>
+    <div class="statusline" id="jail-status"></div>
   </div>
 
   <div class="tabs" aria-label="console views">
@@ -94,42 +93,37 @@ return { kind: "report", body: { text: "rolled up " + summaries.length + " summa
 
   <iframe id="console-frame" title="the radia console, running against the space in this tab"></iframe>
 
-  <p class="note" id="about">
-    What this is: the same runtime the server binary runs (storage, matching, leases, the full
-    authorization stack, the event chain), booted in this tab with the actual console embedded
-    above. The page seeds one claimable kind, <code>document</code>, and one toy worker that
-    claims scans and answers with a <code>summary</code> record. The console starts at its
-    sign-in screen because it never assumes authority silently: this space runs in open mode, so
-    the operator session is a labeled button rather than a default, in the browser exactly as on
-    a server.
-  </p>
-  <p class="note">
-    The jail above is a Web Worker inside a sandboxed iframe: an opaque origin, so it cannot open
-    this space's database, and a policy of <code>connect-src 'none'</code>, so it has no network.
-    Those two claims are attempted before the button appears, and a browser where either fails is
-    not offered one. The code holds no credential at all; it proposes reads and writes, and this
-    page performs each one under the agent's identity.
-  </p>
-  <p class="note">
-    If you have the browser console open, the probe leaves its evidence there: a
-    <code>Content-Security-Policy</code> message saying a <code>connect-src</code> request to this
-    page's own address was refused. That is the jail's network wall turning away a request the
-    probe made ON PURPOSE, and the reason the verdict above can say <code>network: false</code>
-    rather than assuming it. A run that produced no such message would be the worrying one.
-  </p>
-  <p class="note">
-    Which is why the snippet can still be useful: it queries the summaries the worker produced,
-    rolls them into a <code>report</code>, and names those summaries as its parents. The host adds
-    the record it was run for on top, so the report's lineage is honest whether or not the code
-    cooperated. Open <em>Graph: last record</em> after running it and the fan-in is the picture:
-    documents to summaries to one report.
-  </p>
-  <p class="note">
-    Limits, stated rather than implied: no processes (so no Python and no multi-file workspace
-    trees yet, only JavaScript snippets), memory is the one axis a browser cannot cap, one space
-    per browser profile, and everything here runs as one person, so the console's operator button
-    is the sign-in. Erasing the space is clearing this site's storage.
-  </p>
+  <details class="more">
+    <summary>How this works, and what it will not do</summary>
+    <p class="note">
+      The same runtime the server binary runs (storage, matching, leases, the full authorization
+      stack, the event chain), booted in this tab with the actual console embedded above. The page
+      seeds one claimable kind, <code>document</code>, and one toy worker that claims scans and
+      answers with a <code>summary</code>. The console starts at its sign-in screen because it
+      never assumes authority silently: this space runs in open mode, so the operator session is a
+      labeled button rather than a default, in the browser exactly as on a server.
+    </p>
+    <p class="note">
+      The jail is a Web Worker inside a sandboxed iframe: an opaque origin, so it cannot open this
+      space's database, and <code>connect-src 'none'</code>, so it has no network. Both claims are
+      attempted before the Run button is enabled, and a browser where either fails is not offered
+      one. With the browser console open you can see the evidence: a Content-Security-Policy
+      message refusing the probe's own request. A run that produced no such message would be the
+      worrying one.
+    </p>
+    <p class="note">
+      The snippet queries the summaries the worker produced, rolls them into a
+      <code>report</code>, and names those summaries as its parents. The host adds the record it
+      was run for on top, so the lineage is honest whether or not the code cooperated. Open
+      <em>Graph: last record</em> afterwards and the fan-in is the picture.
+    </p>
+    <p class="note">
+      Limits: no processes (so no Python and no multi-file workspace trees yet, only JavaScript
+      snippets), memory is the one axis a browser cannot cap, one space per browser profile, and
+      everything runs as one person. Erasing the space is <em>Reset the space</em>, or
+      <code>?reset=1</code> if the page will not start.
+    </p>
+  </details>
 </div>
 
 <script type="module">
@@ -288,15 +282,17 @@ return { kind: "report", body: { text: "rolled up " + summaries.length + " summa
   // follows before publishing `run_javascript`.
   (async () => {
     const verdict = document.getElementById("jail-verdict");
-    const panel = document.getElementById("jail");
+
     let jail;
     try {
       jail = await import("./radia-jail.js");
     } catch (e) {
+      // No jail bundle: the panel stays, disabled, saying why. Hiding it would move everything
+      // below and leave the reader wondering what they missed.
+      verdict.textContent = "not built here: run `deno task bundle-browser`";
       console.error(e);
-      return; // no jail bundle: the beat stays hidden rather than offering a button that cannot work
+      return;
     }
-    panel.hidden = false;
 
     // A REACHABLE target, or the network claim proves nothing: this page's own URL is certainly
     // live, and `connect-src 'none'` is what stops the jail reaching it.
@@ -312,11 +308,12 @@ return { kind: "report", body: { text: "rolled up " + summaries.length + " summa
     if (broken.length) {
       // Not advertised, and the reason is shown rather than swallowed: a browser where the jail
       // does not hold is a browser that must not be offered one.
-      document.getElementById("jail-run").disabled = true;
       document.getElementById("jail-status").textContent =
         `not offered here: ${broken.map((r) => `${r.claim} (${r.detail ?? "no detail"})`).join("; ")}`;
-      return;
+      return; // the controls stay disabled: a jail that did not prove itself is not offered
     }
+    document.getElementById("jail-run").disabled = false;
+    document.getElementById("jail-auto").disabled = false;
 
     // Proved, so the sandbox becomes a RECORD: "what can this space execute, and under what
     // guarantees" is then a query rather than a property of this page.
