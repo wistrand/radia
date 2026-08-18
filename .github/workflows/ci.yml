@@ -37,6 +37,10 @@ jobs:
           cache: true
       - run: deno task check
       - run: deno task conformance
+      # The browser playground is a BUILD OUTPUT, never committed (see .gitignore): this proves the
+      # bundle builds and boots on a clean machine, via the smoke inside the script. Deploying the
+      # built playground to Pages is a separate decision this step deliberately does not make.
+      - run: deno task bundle-browser
       # bubblewrap is an OPTIONAL execution backend (a space advertises it only where its probe comes
       # back clean), and the suite skips its cases where the jail cannot run. BEST EFFORT here, never
       # fatal, and MEASURED: a hosted runner turned out not to support it.

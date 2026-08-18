@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Radia playground: a space in this tab</title>
+  <meta name="description" content="A real Radia space running in your browser: Postgres in WASM, the full runtime, and the actual console. Nothing installed, nothing sent anywhere.">
+  <link rel="stylesheet" href="../shared.css">
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+  <script type="importmap">
+    { "imports": { "@electric-sql/pglite": "./vendor/pglite/index.js" } }
+  </script>
+  <style>
+    .play-wrap { max-width: 1200px; margin: 0 auto; padding: 16px; }
+    .play-top { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 10px 0 14px; }
+    .play-top input { background: #1e1e24; color: inherit; border: 1px solid #2a2a31; border-radius: 6px; padding: 8px 10px; min-width: 220px; }
+    .play-top button, .tabs button { background: #1e1e24; color: inherit; border: 1px solid #3b3b46; border-radius: 6px; padding: 8px 12px; cursor: pointer; }
+    .play-top button:hover, .tabs button:hover { border-color: #818cf8; }
+    #status { color: #9ca3af; font-size: 13px; margin: 8px 0; }
+    #console-frame { width: 100%; height: 78vh; border: 1px solid #2a2a31; border-radius: 8px; background: #0e0e11; }
+    .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+    .note { color: #9ca3af; font-size: 14px; max-width: 70ch; }
+  </style>
+</head>
+<body>
+
+<div class="play-wrap">
+  <p><a href="../index.html">&larr; radia</a></p>
+  <h1>A space in this tab</h1>
+  <p class="note">
+    This page boots the same runtime the server binary runs: Postgres compiled to WASM for
+    storage (persisted in this browser via IndexedDB), the full authorization stack, the event
+    chain, and the actual console, embedded below. Nothing is installed and nothing leaves the
+    tab. The page seeds one claimable kind, <code>document</code>, and one toy worker that claims
+    scans and answers with a <code>summary</code> record; post a document and watch the claim,
+    the lease and the result move through the Feed.
+  </p>
+  <p class="note">
+    The console below starts at its sign-in screen: choose <strong>"Sign in as local
+    operator"</strong>. This space runs in open mode, and the console never assumes authority
+    silently, so the operator session is a labeled button rather than a default, in the browser
+    exactly as on a server.
+  </p>
+
+  <div class="play-top">
+    <input id="doc-name" value="page.png" aria-label="document file name">
+    <button id="post">Post a document</button>
+    <span id="status">booting&#8230;</span>
+  </div>
+
+  <div class="tabs" aria-label="console views">
+    <button data-hash="#feed">Feed</button>
+    <button data-hash="#kinds">Kinds</button>
+    <button data-hash="#records">Records</button>
+    <button data-hash="#space">Space</button>
+    <button data-hash="#flows">Flows</button>
+    <button id="graph-last" title="the newest record's lineage">Graph: last record</button>
+  </div>
+
+  <iframe id="console-frame" title="the radia console, running against the space in this tab"></iframe>
+
+  <p class="note">
+    Limits, stated rather than implied: no code execution (nothing in a page may spawn a
+    process), one space per browser profile, and everything here runs as one person, so the
+    console's operator button is the sign-in. Erasing the space is clearing this site's storage.
+  </p>
+</div>
+
+<script type="module">
+  const status = (m) => document.getElementById("status").textContent = m;
+  const VIRT = "http://radia.local";
+
+  let boot;
+  try {
+    boot = await import("./radia-space.js");
+  } catch (e) {
+    status("the playground is not built here: run `deno task bundle-browser`, then serve docs/ statically");
+    console.error(e);
+    throw e;
+  }
+
+  const { handler } = await boot.bootBrowserSpace({ db: "idb://radia-playground" });
+
+  // The wire, one function: requests to the virtual origin go straight to the handler. The
+  // console's iframe shim below calls this; so does everything on this page.
+  const vfetch = (path, init) => handler(new Request(VIRT + path, init));
+  window.__radiaFetch = vfetch;
+
+  const api = async (path, body, headers = {}) => {
+    const res = await vfetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
+    return res.status === 204 ? null : res.json();
+  };
+
+  // Seed through the wire, as any client would (open mode: no header acts as the operator).
+  // Content-keyed the way the SDK's registerKind keys them (`kindDefKey`), so a reload replays
+  // instead of appending a fresh declaration per visit.
+  await api("/v0/records",
+    { kind: "kind_def", body: { kind: "document", indexedPaths: [{ path: "type", type: "keyword" }], claimable: true } },
+    { "Idempotency-Key": "kind_def:document:type:keyword::work" });
+  await api("/v0/records",
+    { kind: "kind_def", body: { kind: "summary", indexedPaths: [], claimable: false } },
+    { "Idempotency-Key": "kind_def:summary:::ref" });
+
+  // The toy worker: claim scans, "work", answer. A poll loop rather than the SDK, to keep this
+  // page dependency-free; the lease and the fenced ack are the real thing.
+  const worker = async () => {
+    try {
+      const claim = await api("/v0/takes", { pattern: { kind: "document", match: { type: "scan" } }, leaseSeconds: 20 });
+      if (claim && claim.record) {
+        status(`worker: claimed ${claim.record.id.slice(-6)}, working`);
+        await new Promise((r) => setTimeout(r, 900));
+        await api("/v0/leases/ack", {
+          lease: claim.lease,
+          result: { kind: "summary", body: { of: claim.record.body.file ?? "", text: "looks like a scan of one page" } },
+        });
+        status(`worker: answered ${claim.record.id.slice(-6)} with a summary`);
+      }
+    } catch (e) {
+      status(`worker: ${e.message ?? e}`);
+    }
+    setTimeout(worker, 700);
+  };
+  worker();
+
+  let lastId = null;
+  document.getElementById("post").onclick = async () => {
+    const file = document.getElementById("doc-name").value || "page.png";
+    const rec = await api("/v0/records", { kind: "document", body: { type: "scan", file } });
+    lastId = rec.id;
+    status(`posted document ${rec.id.slice(-6)}; a worker will claim it`);
+  };
+
+  // The console, embedded whole: fetched as text, given a fetch shim that routes /v0 and /ui to
+  // this page's handler, and loaded via a BLOB url (same origin as this page, so the console's
+  // credential storage works; a srcdoc iframe has an opaque origin where storage throws).
+  const consoleHtml = await (await fetch("./console.html")).text();
+  const blitzoom = new URL("vendor/blitzoom.bundle.js", location.href).href;
+  const shim = `<script>
+    const orig = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const u = typeof input === "string" ? input : input.url;
+      if (u.startsWith("/v0") || u.startsWith("/ui") || u === "/") {
+        return parent.__radiaFetch(u, input instanceof Request ? input : init);
+      }
+      return orig(input, init);
+    };
+  <\/script>`;
+  const patched = consoleHtml
+    .replaceAll("/ui/blitzoom.bundle.js", blitzoom)
+    .replace("<head>", "<head>" + shim);
+  const frame = document.getElementById("console-frame");
+  frame.src = URL.createObjectURL(new Blob([patched], { type: "text/html" }));
+
+  for (const b of document.querySelectorAll(".tabs button[data-hash]")) {
+    b.onclick = () => { frame.contentWindow.location.hash = b.dataset.hash; };
+  }
+  document.getElementById("graph-last").onclick = () => {
+    if (lastId) frame.contentWindow.location.hash = `#graph/${lastId}`;
+    else status("post a document first, then its lineage has something to show");
+  };
+
+  status("space up: PGlite on idb://radia-playground, open mode, worker polling");
+</script>
+</body>
+</html>

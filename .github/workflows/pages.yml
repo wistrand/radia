@@ -1,0 +1,41 @@
+# Publish docs/ to GitHub Pages WITH the playground built (agent_docs/plan-browser-space.md).
+#
+# INERT until the repo's Pages source is switched from "deploy from a branch" to "GitHub Actions"
+# (Settings -> Pages): under branch-deploy this workflow uploads artifacts nobody serves. Once
+# flipped, this is the only publisher, and the playground's gitignored build outputs (the bundle,
+# the staged console, PGlite's dist) exist on the site without ever being committed.
+#
+# The build step is also the gate: `bundle-browser` runs the built-bundle smoke, so a bundle that
+# does not boot fails the deploy instead of shipping a playground that cannot start.
+
+name: pages
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+# One deploy at a time, newest wins: a stack of page deploys serves nobody.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+          cache: true
+      - run: deno task bundle-browser
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - uses: actions/deploy-pages@v4
+        id: deploy

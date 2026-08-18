@@ -7,6 +7,13 @@
 # Release staging from scripts/build-release.sh (binaries + npm/pip shims)
 /dist/
 
+# Browser playground build outputs (scripts/build-browser.sh): the bundle, the copied console,
+# and the PGlite dist staged from deno's npm cache. Built on demand or in CI, never committed;
+# only docs/playground/index.html (the page itself) is source.
+/docs/playground/radia-space.js
+/docs/playground/console.html
+/docs/playground/vendor/
+
 # Everything a local space writes: embedded databases, artifact blobs, and the space KEK.
 # One directory by design (src/paths.ts), so this is the whole runtime footprint and deleting it
 # resets local state. NEVER commit it: the KEK decrypts every blob beside it, and the database

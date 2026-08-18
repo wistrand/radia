@@ -1,7 +1,21 @@
 # Plan: a Radia space that runs in a web page
 
-**Status: PLANNED, nothing built.** Analysis 2026-08-18, feasibility facts verified against
-source the same day. The goal is a "try Radia in this tab" playground: the docs site boots a
+**Status: steps 1, 2, 5 and 6 BUILT 2026-08-18; steps 3 (SharedWorker/SW) and 4 (IndexedDB
+blobs) remain.** Built as an injectable backend rather than a bundler alias (better than
+planned: `setPlatformBackend` in `src/platform.ts`, `browserBackend` in
+`src/platform_browser.ts`, entry `src/browser.ts` with `bootBrowserSpace`). `deno task
+bundle-browser` (`scripts/build-browser.sh`) bundles with `deno bundle --external
+@electric-sql/pglite` (no new build tools), stages the console + PGlite's dist out of deno's npm
+cache, and runs the smoke. NOTHING BUILT IS COMMITTED: `docs/playground/` outputs are gitignored
+(only `index.html` is source), by decision — the build runs on demand or in CI (the embedded job
+runs it as a clean-machine proof). Publishing: `.github/workflows/pages.yml` builds the
+playground and deploys `docs/` via the Pages Actions path; it is INERT until the repo's Pages
+source setting is switched from branch-deploy to "GitHub Actions" (operator action). Under
+branch-deploy the site still publishes and `/playground/` degrades to its
+"not built here" message. The page's exact wire flow
+(keyed kind_def replay on reload, post -> claim -> ack, the empty-take shape) was rehearsed
+against the BUILT bundle under Deno; the in-page half awaits the operator's click-through.
+Analysis 2026-08-18, feasibility facts verified against source the same day. The goal is a "try Radia in this tab" playground: the docs site boots a
 real, persistent space in the browser with zero install. Not a reimplementation: the same
 `src/core` + `src/server` + PGlite adapter, bundled to JS, behind the same frozen wire contract.
 Two standing invariants make this cheap, and this plan is partly their proof: the `platform.ts`
@@ -101,8 +115,16 @@ open mode; the console's labeled operator button is the sign-in.
    docs guard's external-host allowlist is unchanged (the bundle and the vendor asset are
    local); the prose obeys plan-prose-tells.md.
 6. Conformance stance: semantics are already covered by the PGlite adapter suites; the browser
-   delta is the seam and the bundling. Add a bundle smoke that runs `makeHandler` requests
-   through the BUILT bundle under Deno (no browser needed in CI).
+   delta is the seam and the bundling. `conformance/browser-bundle.test.ts` runs `makeHandler`
+   requests through the BUILT bundle under Deno (no browser needed in CI); it SKIPS loudly when
+   the bundle is absent so a clean checkout's `deno task conformance` stays runnable, and the
+   build task is the run that cannot skip (the py-parity stance).
+
+**Running it:** `deno task bundle-browser`, then `deno task serve-docs` (`scripts/serve-docs.ts`,
+dependency-free; it exists because the playground needs `application/wasm` served correctly or
+PGlite's streaming compile is refused) and open `/playground/`. The console starts at its
+sign-in screen and the way in is the labeled "Sign in as local operator" button: the space runs
+in open mode and the console never assumes authority silently, in a tab exactly as on a server.
 
 **Verification constraint:** builds and type-checks are automatable here, but nothing in this
 repo's tooling launches a browser (standing rule). The in-page click-through is the operator's.

@@ -100,18 +100,8 @@
   <div class="panel" style="max-width:640px;margin:40px auto">
     <h2>Sign in</h2>
     <p class="muted">This console does not run without a credential. There is no anonymous mode and no
-    operator default: whatever you paste here decides what the page can see and do, and the space
+    operator default: how you sign in decides what the page can see and do, and the space
     enforces it.</p>
-    <div class="row">
-      <input id="signin-token" placeholder="paste a token: radia login human:you --console prints a sign-in link instead" style="flex:1" autocomplete="off" spellcheck="false"
-        onkeydown="if (event.key === 'Enter') { event.preventDefault(); signIn(); }">
-      <button class="btn" onclick="signIn()">Sign in</button>
-    </div>
-    <label style="display:block;margin-top:8px;font-size:13px;color:var(--muted)">
-      <input type="checkbox" id="signin-remember" checked style="width:auto"> remember on this browser
-      <span class="muted">(definition tokens only: the durable half can only mint, and revoking it is the off switch)</span>
-    </label>
-    <div id="signin-note"></div>
     <div id="signin-oidc" style="display:none;margin-top:10px">
       <button class="btn" onclick="oidcStart()">Sign in with SSO</button>
       <span class="muted" style="font-size:13px">this space trusts an OIDC issuer; the identity
@@ -119,11 +109,22 @@
       paste, and the session ends when the provider stops vouching for you.</span>
     </div>
     <div id="signin-operator" style="display:none;margin-top:10px">
-      <button class="btn ghost" onclick="signInOperator()">Sign in as local operator</button>
+      <button class="btn" onclick="signInOperator()">Sign in as local operator</button>
       <span class="muted" style="font-size:13px">open mode: this browser then sends no credential and the
       space answers as the operator, which any curl here already gets. The button exists so that
       authority is taken visibly, never by default.</span>
     </div>
+    <p class="muted" id="signin-token-lead" style="margin:14px 0 6px">Paste a token:</p>
+    <div class="row">
+      <input id="signin-token" placeholder="radia login human:you --console prints a sign-in link instead" style="flex:1" autocomplete="off" spellcheck="false"
+        onkeydown="if (event.key === 'Enter') { event.preventDefault(); signIn(); }">
+      <button class="btn ghost" onclick="signIn()">Sign in</button>
+    </div>
+    <label style="display:block;margin-top:8px;font-size:13px;color:var(--muted)">
+      <input type="checkbox" id="signin-remember" checked style="width:auto"> remember on this browser
+      <span class="muted">(definition tokens only: the durable half can only mint, and revoking it is the off switch)</span>
+    </label>
+    <div id="signin-note"></div>
     <p class="muted" style="margin-bottom:0">Where to get one: <code>radia login human:you</code> mints a
     person's session and prints both halves (<code>--console</code> prints a link that signs this page in);
     <code>radia dev</code> prints an operator token at startup. A definition token keeps this browser
@@ -2231,11 +2232,16 @@ async function showSignIn(reason) {
   const r = await fetch("/v0/health").catch(() => null);
   const up = !!(r && r.ok);
   const probe = up ? await r.json().catch(() => null) : null;
-  $("signin-operator").style.display = probe && probe.principal === "human:local" ? "" : "none";
+  const openMode = !!(probe && probe.principal === "human:local");
+  $("signin-operator").style.display = openMode ? "" : "none";
   // The same probe advertises SSO: `health.oidc` is present exactly when the space holds OIDC
   // trust anchors, so the button never appears where the endpoint would 403.
   OIDC_INFO = (probe && probe.oidc) || null;
   $("signin-oidc").style.display = OIDC_INFO ? "" : "none";
+  // The buttons lead when any apply; the token box is the fallback path and reads as one. When
+  // neither applies (required auth, no issuer) the token is the ONLY way in and "Or" would
+  // dangle over nothing.
+  $("signin-token-lead").textContent = openMode || OIDC_INFO ? "Or paste a token:" : "Paste a token:";
   $("health").innerHTML = `<span class="pill">${up ? "not signed in" : "offline"}</span>`;
   if (!up) note("signin-note", "err", `no space is answering at ${location.origin}. Start one with \`radia dev\`.`);
   else if (reason) note("signin-note", "info", reason);

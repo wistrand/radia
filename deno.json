@@ -23,6 +23,8 @@
     "chat": "deno run --allow-net --allow-read --allow-write --allow-env --allow-run examples/chat/chat.ts",
     "compile": "deno compile --allow-net --allow-read --allow-write --allow-env --include src/ui/index.html --include src/ui/vendor/blitzoom.bundle.js --output radia src/main.ts",
     "release": "./scripts/build-release.sh",
+    "bundle-browser": "./scripts/build-browser.sh",
+    "serve-docs": "deno run --allow-net=127.0.0.1 --allow-read=docs scripts/serve-docs.ts",
     "mcp": "deno run --allow-net --allow-read --allow-write --allow-env src/main.ts mcp"
   },
   "imports": {
