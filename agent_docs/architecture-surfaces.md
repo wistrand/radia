@@ -49,7 +49,9 @@ Every non-portable host operation lives in one file: process (`args`, `exit`, `e
 files (`readTextFile`, `writeTextFile`, `mkdirp`, `removeFile`, `restrictToOwner`,
 `moduleRelative`), **binary files** for artifact blobs (`writeBinaryFile`, `readBinaryFile`,
 `readBinaryStream`, `fileSize`), standard streams (`stdin`, `writeStdout`, `writeStderr`), signals
-(`onShutdown`), and HTTP (`serve`).
+(`onShutdown`), and HTTP in both directions: `serve` for the socket the space listens on,
+`httpGetJson` for OIDC discovery and JWKS, and `httpRequest` for the S3 blob store, which needs four
+verbs, headers it signs itself and a response body it streams to the caller.
 
 The binary group is the seam's one exception to its own sync rule, documented there: artifact
 payloads are megabyte-scale and read while serving a request, so downloads stream instead of

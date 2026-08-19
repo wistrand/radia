@@ -333,6 +333,12 @@
       Keeping bytes outside record bodies bounds matching and query costs. It also allows the bytes
       to be shredded while the artifact record, digest, lineage and event history remain.
     </p>
+    <p>
+      The blob store is a port with several implementations: in memory, a local directory, or an
+      S3-compatible object store. Runtime instances that share a database also have to share the
+      bytes, so a horizontal deployment uses the object store; a space can move between them by
+      naming both, which sends writes to the first and keeps reads falling through to the second.
+    </p>
     <p class="explanation">
       The digest remains after erasure. This is suitable for high-entropy documents but does not hide
       a short, guessable secret from someone who can test candidate hashes.

@@ -19,7 +19,11 @@ and it joins the conformance suite when `RADIA_PG_URL` is set (`scripts/pg-confo
 runs against a live server in CI (`.github/workflows/ci.yml`, the `postgres` job). Perf: the adapter enables
 `TCP_NODELAY` (deno-postgres omits it, and otherwise every parameterized query eats a ~40ms
 delayed-ACK; see [gotchas.md](gotchas.md)) and the shared body folds the clock read into each
-settle transaction and checks parents in one query. **Not implemented:**
+settle transaction and checks parents in one query. The blob port gained its third implementation
+the same way: `src/storage/s3.ts` speaks SigV4 to any S3-compatible object store, `MigratingBlobStore`
+lets a space move between backends without rewriting records, and both join the conformance matrix
+(the S3 columns gated on `RADIA_S3_URL`). That is what a horizontal deployment needs, since a local
+blob directory is shared with nobody. **Not implemented:**
 `single-node`/`production` deployment modes, the multi-instance cache-coherence work (see
 Scaling), envelope encryption/KMS (M2). `npm`/`pip` binary wrapping is BUILT but unpublished
 (`deno task release`; see [architecture-surfaces.md](architecture-surfaces.md)).

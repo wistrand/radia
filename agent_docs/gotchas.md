@@ -373,6 +373,11 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Leases, claims, events and watches
 
+- **A watcher wakes on the COMMIT, which beats your own `put` returning.** The chat advanced its
+  transcript cursor after the write, so in that round trip the reactor read the client's own message
+  as somebody else's and queued a notice for it, printing your question back after every answer.
+  Claim the slot in the cursor BEFORE the write and give it back only if the write fails for
+  something other than a conflict (`Thread.append`, `examples/chat/client/thread.ts`).
 - **The wakeup burst's reads are COALESCED, and only reads that cannot change in flight may be**
   (`src/core/coalesce.ts`; `Space.getEvents` and the record fetch in `matchesEvent`). One
   `notify()` resumes every parked stream in the same tick, so U streams issued U identical log
@@ -1757,6 +1762,17 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Agent- and model-facing design
 
+- **"The model says it has no tool for that" is a claim to check against the ADVERTISED set.** A
+  session offering 22 tools was missing every file tool, so the model wrote files with a code runner
+  and said it could not produce a link, which was true: `capability` records for three providers
+  were retired and could not revive (see
+  [Registries](#registries-and-reads-that-must-not-truncate)). Read the `llm_call` body's `tools`
+  before rewriting a prompt; `radia query capability` says what is live.
+- **A tool that returns a REFERENCE must name the tool that turns it into a link.** `save_content`
+  cross-referenced `share_artifact` and the code runners did not, so a model holding an artifact id
+  invented `sandbox:/mnt/data/…`, which resolves to nothing. The disposition belongs in the prompt
+  ("a link must come from a tool"), the mechanism in the description of the tool that produced the
+  id (`examples/chat/workers/exec.ts`).
 - **A turn whose TEXT is trivial is not a trivial turn** (`examples/chat/workers/router.ts`). The
   router classifies the newest user message, so "retry deep" was answered `fast` on all four rounds
   of a live turn, and a bare "continue" reads as small talk however hard the work is. Two rules
