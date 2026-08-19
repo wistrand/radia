@@ -1,0 +1,64 @@
+# Publish the binaries `docs/install.sh` downloads.
+#
+# On a `v*` tag: build every target, gzip each one, write SHA256SUMS, and attach the lot to the
+# GitHub release. The installer resolves `releases/latest/download/radia-<target>.gz`, so the asset
+# NAMES here are a contract with that script; `conformance/docs.test.ts` checks the two agree.
+#
+# One job, no matrix: `deno compile --target` cross-compiles, so one runner produces all five.
+#
+# The npm and pip packages `deno task release` also stages are NOT published here. Publishing to a
+# registry needs credentials and an account decision; attaching files to a release needs neither.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+          cache: true
+
+      # A tag that disagrees with the build cannot be corrected after publishing: the artifacts
+      # claim one version while `radia version` reports another, and the installer hands people a
+      # binary that misreports itself. Refuse before building.
+      - name: the tag is the version this build reports
+        run: |
+          declared="$(deno eval 'import { VERSION } from "./src/version.ts"; console.log(VERSION)')"
+          if [ "refs/tags/v$declared" != "$GITHUB_REF" ]; then
+            echo "tag $GITHUB_REF does not match src/version.ts ($declared). Bump deno.json and src/version.ts together." >&2
+            exit 1
+          fi
+
+      - run: deno task release
+
+      - name: gzip the binaries and write the sums
+        run: |
+          mkdir -p dist/assets
+          for dir in dist/bin/*/; do
+            target="$(basename "$dir")"
+            bin="$dir/radia"
+            [ -f "$bin" ] || bin="$dir/radia.exe"
+            # The Windows asset keeps its .exe, so what people download unpacks to a runnable name.
+            case "$target" in
+              *windows*) gzip -9 -c "$bin" > "dist/assets/radia-$target.exe.gz" ;;
+              *) gzip -9 -c "$bin" > "dist/assets/radia-$target.gz" ;;
+            esac
+          done
+          # Bare names, not `./name`: this file is read by `docs/install.sh` and by people.
+          cd dist/assets && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+
+      # The installer reads SHA256SUMS from the release, so it has to be an asset, not a log line.
+      - name: attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF#refs/tags/}" --generate-notes dist/assets/* || gh release upload "${GITHUB_REF#refs/tags/}" dist/assets/* --clobber

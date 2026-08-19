@@ -199,6 +199,29 @@ Deno.test("docs: no banned prose tells (agent_docs/plan-prose-tells.md)", () => 
   assertEquals(bad, [], "drumroll prose or an em dash on the site; see agent_docs/plan-prose-tells.md");
 });
 
+Deno.test("docs: the installer targets are targets the release actually builds", async () => {
+  // `docs/install.sh` is served from the site and downloads assets `.github/workflows/release.yml`
+  // uploads, so the triples and the asset naming are a contract between two files that live in
+  // different directories and are edited for different reasons. Adding a `deno compile` target
+  // without teaching the installer about it produces a release nobody on that platform can install.
+  const script = await Deno.readTextFile(join(docsDir, "install.sh"));
+  const build = await Deno.readTextFile(new URL("../scripts/build-release.sh", import.meta.url));
+  const workflow = await Deno.readTextFile(new URL("../.github/workflows/release.yml", import.meta.url));
+
+  const built = new Set([...build.matchAll(/^\s*"([a-z0-9_]+-[a-z0-9-]+)\s/gm)].map((m) => m[1]));
+  assert(built.size >= 4, `failed to read the release targets, found ${[...built]}`);
+  // The QUOTED value each case arm echoes, not a substring match: `aarch64-apple-darwin-oops`
+  // contains a valid triple and is not one, which is exactly the typo this guard exists to catch.
+  const offered = [...script.matchAll(/\)\s*echo "([a-z0-9_.-]+)" ;;/g)].map((m) => m[1]);
+  assert(offered.length > 0, "install.sh names no targets; the extraction is broken");
+  assertEquals(offered.filter((t) => !built.has(t)), [], "install.sh offers a target the release does not build");
+
+  // The asset name and the sums file: the installer reads what the workflow writes.
+  assert(script.includes("radia-$target.gz"), "install.sh no longer builds the asset name this test knows");
+  assert(workflow.includes('radia-$target.gz"'), "release.yml no longer publishes radia-<target>.gz");
+  for (const f of [script, workflow]) assert(f.includes("SHA256SUMS"), "one side dropped the checksum file");
+});
+
 Deno.test("docs: llms.txt lists every page, and every page is reachable from the nav", async () => {
   const llms = await Deno.readTextFile(join(docsDir, "llms.txt"));
   const index = pages.find((p) => p.name === "index.html")!;
