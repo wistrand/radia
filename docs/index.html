@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Radia - authorized communication across agent trust boundaries</title>
-  <meta name="description" content="A coordination runtime where independently deployed agents exchange work while the runtime enforces which records each may receive and produce. Untrusted code operates without a credential.">
+  <title>Radia - let agents collaborate without trusting each other</title>
+  <meta name="description" content="A coordination runtime that lets independently deployed agents exchange authorized work. Each agent sees only permitted records, and untrusted code receives no credential.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
@@ -13,8 +13,8 @@
 
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://radia.sh/">
-  <meta property="og:title" content="Radia - authorized communication across agent trust boundaries">
-  <meta property="og:description" content="Agents exchange work by content while a shared runtime enforces what each may receive and produce. Untrusted code holds no credential.">
+  <meta property="og:title" content="Radia - let agents collaborate without trusting each other">
+  <meta property="og:description" content="A research agent can use another team's summarizer without exposing confidential documents or giving generated code a credential.">
   <meta property="og:image" content="https://radia.sh/og.png">
   <meta name="twitter:card" content="summary_large_image">
 </head>
@@ -46,18 +46,29 @@
 
 <div class="hero">
   <div class="container">
-    <h1>Authorized communication<br>across agent trust boundaries</h1>
+    <h1>Let agents collaborate<br>without trusting each other</h1>
     <p class="subtitle">
-      <strong>Radia lets independently deployed agents exchange work without trusting one another
-      to enforce the rules.</strong> Agents discover immutable records by content; the shared
-      runtime decides which records each may read, claim and produce. Shared tools act with
-      narrowed delegated authority, and sandboxed code holds no credential at all.
+      Your research agent needs a summarizer maintained by another team. The summarizer may read
+      public filings, but never confidential documents. Its generated code receives no credential.
+      Every request, input and result remains connected in a tamper-evident history.
+    </p>
+
+    <div class="callout">
+      <strong>That is what Radia enforces.</strong> The agents do not need to trust each other's
+      implementation. The shared Radia space and credential-holding hosts remain the trusted
+      boundary.
+    </div>
+
+    <p class="subtitle">
+      Agents exchange immutable records by content. Radia decides which records each may read,
+      claim and produce; shared tools act with narrowed delegated authority; and sandboxed code
+      holds no credential at all.
     </p>
 
     <figure class="diagram-scroll hero-diagram">
       <svg viewBox="0 0 760 350" role="img" aria-labelledby="hero-flow-title hero-flow-desc">
-        <title id="hero-flow-title">Work moves through a shared space as matching records</title>
-        <desc id="hero-flow-desc">An intake process publishes a scanned document without naming a worker. An OCR worker claims it by matching its contents and publishes extracted text back into the space. A summarizer then claims that result and returns a summary record.</desc>
+        <title id="hero-flow-title">A public filing moves through a shared space as matching records</title>
+        <desc id="hero-flow-desc">A research agent publishes a public filing without naming a worker. A text extractor claims it by matching its contents and publishes extracted text back into the space. A summarizer authorized for public material then claims that result and returns a summary record.</desc>
         <defs>
           <marker id="hero-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
@@ -72,23 +83,23 @@
         <text x="540" y="43" text-anchor="end" class="muted">records stay; claims move</text>
 
         <rect x="18" y="64" width="126" height="64" rx="7" class="box"/>
-        <text x="81" y="89" text-anchor="middle" class="label">intake</text>
+        <text x="81" y="89" text-anchor="middle" class="label">research agent</text>
         <text x="81" y="109" text-anchor="middle" class="muted">knows no workers</text>
 
         <rect x="204" y="62" width="330" height="64" rx="7" fill="#1e1e24" stroke="#fbbf24"/>
         <circle cx="225" cy="83" r="10" fill="#fbbf24"/>
         <text x="225" y="87" text-anchor="middle" fill="#0e0e11" font-size="10" font-weight="700">1</text>
-        <text x="246" y="86" class="label">document</text>
-        <text x="246" y="108" class="muted">{ type: "scan", file: "page.png" }</text>
+        <text x="246" y="86" class="label">filing</text>
+        <text x="246" y="108" class="muted">{ class: "public", file: "report.pdf" }</text>
         <text x="516" y="86" text-anchor="end" fill="#fbbf24" font-size="10">leased</text>
 
         <path d="M 150 96 L 198 96" class="flow" marker-end="url(#hero-arrow)"/>
         <text x="174" y="85" text-anchor="middle" class="muted">put</text>
 
         <rect x="604" y="58" width="138" height="76" rx="7" class="box" stroke="#818cf8"/>
-        <text x="673" y="82" text-anchor="middle" class="label">OCR worker</text>
+        <text x="673" y="82" text-anchor="middle" class="label">text extractor</text>
         <rect x="620" y="94" width="106" height="24" rx="12" fill="#1e1e24" stroke="#818cf8"/>
-        <text x="673" y="110" text-anchor="middle" class="muted">type = scan</text>
+        <text x="673" y="110" text-anchor="middle" class="muted">kind = filing</text>
         <path d="M 540 92 L 598 92" class="flow" stroke="#818cf8" marker-end="url(#hero-arrow-accent)"/>
         <text x="569" y="81" text-anchor="middle" class="muted">match + take</text>
 
@@ -96,7 +107,7 @@
         <circle cx="225" cy="177" r="10" fill="#60a5fa"/>
         <text x="225" y="181" text-anchor="middle" fill="#0e0e11" font-size="10" font-weight="700">2</text>
         <text x="246" y="180" class="label">extracted_text</text>
-        <text x="246" y="202" class="muted">{ text: "…", parent: document }</text>
+        <text x="246" y="202" class="muted">{ class: "public", parent: filing }</text>
         <text x="516" y="180" text-anchor="end" fill="#60a5fa" font-size="10">available</text>
         <path d="M 604 122 C 574 130 574 178 540 184" class="flow" stroke="#818cf8" marker-end="url(#hero-arrow-accent)"/>
         <text x="577" y="154" text-anchor="middle" class="muted">ack result</text>
@@ -104,7 +115,7 @@
         <rect x="604" y="174" width="138" height="76" rx="7" class="box" stroke="#818cf8"/>
         <text x="673" y="198" text-anchor="middle" class="label">summarizer</text>
         <rect x="614" y="210" width="118" height="24" rx="12" fill="#1e1e24" stroke="#818cf8"/>
-        <text x="673" y="226" text-anchor="middle" class="muted">kind = extracted_text</text>
+        <text x="673" y="226" text-anchor="middle" class="muted">class = public</text>
         <path d="M 540 190 L 598 205" class="flow" stroke="#818cf8" marker-end="url(#hero-arrow-accent)"/>
         <text x="568" y="215" text-anchor="middle" class="muted">match</text>
 
