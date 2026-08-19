@@ -554,6 +554,31 @@ export async function handleGc(space: Space, req: Request, principal: string, al
   return Response.json(out);
 }
 
+/** Finish a KEK rotation (`Space.rewrapBlobs`): re-seal referenced payloads under the current key.
+ *  Gated like a live gc, because it rewrites stored bytes; `dryRun` reports what a live pass would
+ *  touch. A store with no cipher answers 400 rather than a row of zeroes that would read as done. */
+export async function handleRewrap(space: Space, req: Request, allowLive: boolean): Promise<Response> {
+  let j: Record<string, unknown> = {};
+  try {
+    const text = await req.text();
+    if (text) {
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return problem(400, "invalid_body", "expected a JSON object");
+      }
+      j = parsed as Record<string, unknown>;
+    }
+  } catch {
+    return problem(400, "invalid_body", "expected a JSON object");
+  }
+  if (j.dryRun !== true && !allowLive) {
+    return problem(403, "forbidden", "'sweep' ops power required for a live rewrap; dryRun:true needs only 'observe'");
+  }
+  const out = await space.rewrapBlobs({ dryRun: j.dryRun === true });
+  if (!out) return problem(400, "not_encrypted", "this space's blob store has no key, so there is nothing to re-seal");
+  return Response.json(out);
+}
+
 export async function handleAdmin(space: Space, recordId: string, action: string): Promise<Response> {
   let applied: boolean;
   if (action === "reclaim") applied = await space.reclaim(recordId);

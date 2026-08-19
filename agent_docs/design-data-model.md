@@ -449,6 +449,6 @@ even address its sealed blobs, so reads are `404` while the records remain intac
 record whose writer declared `retention_until` sweeps like any reference record, and a live
 `gc` ends with a blob pass deleting bytes no surviving artifact record references (grace-windowed
 against in-flight puts; `BlobStore.retainOnly`). A record with no retention keeps the old
-posture: permanent, blob and all. **Still not in v1:** KEK rotation (rewrapping every DEK, and
+posture: permanent, blob and all. **Built:** KEK rotation. A `SealedKey` carries `kid`, reads and sweeps span retired keys, an unknown key is reported rather than deleted, and `radia rewrap` re-seals referenced payloads under the current key so the retired one can be destroyed (`already == scanned` with `foreign == 0` is the state in which dropping it is safe). Still open:
 renaming every path, since the name is derived from the key). Recipient-keyed / token-derived
 keys stay out; see [gotchas.md](gotchas.md).

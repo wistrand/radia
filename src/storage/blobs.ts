@@ -52,6 +52,25 @@ export interface BlobGcResult {
   scanned: number;
   deleted: number;
   bytes: number;
+  /** Payloads KEPT because they were sealed under a key this space does not hold. Absent or 0 in
+   *  the ordinary case. A rotation that dropped a retired key shows up here rather than as bytes
+   *  quietly disappearing, which is the one outcome a sweep must never produce silently. */
+  foreign?: number;
+}
+
+/** What one `rewrap` pass did. `already` counts payloads found under the CURRENT key, which is the
+ *  number that must equal `scanned` before a retired key can be destroyed. */
+export interface RewrapResult {
+  scanned: number;
+  rewrapped: number;
+  already: number;
+  /** Sealed under a key this space does not hold, so it could not be opened, let alone re-sealed.
+   *  Non-zero means the rotation is not finishable with the keys currently supplied. */
+  foreign: number;
+  /** Referenced digests with no stored payload at all. Not an error here: erasure and GC both
+   *  produce it, and a rewrap is not the verb that decides what a missing blob means. */
+  missing: number;
+  bytes: number;
 }
 
 export interface BlobStore {
@@ -87,6 +106,31 @@ export interface BlobStore {
    * host-clock (mtimes are host-clock data); `nowMs` exists for tests, never to pass a DB time.
    */
   retainOnly(liveDigests: ReadonlySet<string>, opts: { graceMs: number; dryRun?: boolean; nowMs?: number }): Promise<BlobGcResult>;
+  /**
+   * Re-seal every referenced payload under the CURRENT key, so a retired one can be destroyed.
+   *
+   * OPTIONAL, like the adapter's `prepareKind`: a store with no cipher has nothing to rewrap, and
+   * a caller checks rather than assumes. It takes the live digest set for the same reason
+   * `retainOnly` does, and a sharper one: a sealed payload can only be opened with its plaintext
+   * digest (the AAD), and the store cannot derive that from its own listing by construction. So a
+   * rewrap covers what records still reference; unreferenced bytes are GC's business.
+   *
+   * DIGEST-DRIVEN, therefore BLIND to payloads it cannot name. A blob sealed under a key this
+   * space does not hold sits at HMAC(that key, digest), a name nothing here can compute, so it
+   * counts as `missing` rather than `foreign`. `retainOnly` is the pass that meets those, walking
+   * names rather than digests, and it keeps them. The two halves are what make a rotation
+   * survivable: one moves what it can reach, the other refuses to delete what it cannot.
+   *
+   * ORDER IS WRITE-THEN-DELETE, and an interrupted pass is safe rather than atomic: both copies
+   * exist for a moment, reads prefer the current key's name, and re-running finishes the job.
+   * The reverse order would leave a referenced artifact with no payload.
+   */
+  rewrap?(liveDigests: ReadonlySet<string>, opts?: { dryRun?: boolean }): Promise<RewrapResult>;
+}
+
+/** An empty pass, so every implementation starts from the same shape. */
+export function emptyRewrap(): RewrapResult {
+  return { scanned: 0, rewrapped: 0, already: 0, foreign: 0, missing: 0, bytes: 0 };
 }
 
 /** In-memory blobs: the default for an ephemeral space (`radia dev` with no `--db`), where a
@@ -125,11 +169,44 @@ export class MemoryBlobStore implements BlobStore {
       out.scanned++;
       if (liveDigests.has(digest)) continue;
       if (now - entry.touchedAt < opts.graceMs) continue; // young: a racing put may own it
+      // Sealed under a key we do not hold: keep it and say so. See `BlobGcResult.foreign`.
+      if (entry.key && this.cipher && !this.cipher.knows(entry.key.kid)) {
+        out.foreign = (out.foreign ?? 0) + 1;
+        continue;
+      }
       out.deleted++;
       out.bytes += entry.stored.byteLength;
       if (!opts.dryRun) this.blobs.delete(digest);
     }
     return Promise.resolve(out);
+  }
+
+  async rewrap(liveDigests: ReadonlySet<string>, opts: { dryRun?: boolean } = {}): Promise<RewrapResult> {
+    const out = emptyRewrap();
+    if (!this.cipher) return out;
+    for (const digest of liveDigests) {
+      const entry = this.blobs.get(digest);
+      if (!entry) {
+        out.missing++;
+        continue;
+      }
+      out.scanned++;
+      if (entry.key?.kid === this.cipher.kid) {
+        out.already++;
+        continue;
+      }
+      if (entry.key && !this.cipher.knows(entry.key.kid)) {
+        out.foreign++;
+        continue;
+      }
+      const plaintext = entry.key ? await this.cipher.open(digest, entry.stored, entry.key) : entry.stored;
+      out.rewrapped++;
+      out.bytes += plaintext.byteLength;
+      if (opts.dryRun) continue;
+      const { ciphertext, key } = await this.cipher.seal(digest, plaintext);
+      this.blobs.set(digest, { stored: ciphertext, size: plaintext.byteLength, key, touchedAt: entry.touchedAt });
+    }
+    return out;
   }
 
   async get(digest: string): Promise<ReadableStream<Uint8Array> | null> {
@@ -182,13 +259,17 @@ export class FileBlobStore implements BlobStore {
     return this.path(this.cipher ? await this.cipher.storageName(digest) : digest);
   }
 
-  /** Where an EXISTING blob actually is. Encrypted name first, then the plaintext-digest name.
-   *  Turning encryption on must not orphan blobs written before it, so a store can hold both and
-   *  reads keep working while new writes are sealed. */
+  /** Where an EXISTING blob actually is: every name it could carry, newest key first, then the
+   *  plaintext-digest name. Two regimes have to coexist for reads, and for the same reason both
+   *  times. Turning encryption ON must not orphan blobs written before it, and ROTATING the key
+   *  must not orphan blobs written under the old one, since a name is HMAC(KEK, digest) and a new
+   *  key renames everything. Writes always use the current name, so a re-put migrates a blob. */
   private async findPath(digest: string): Promise<{ path: string; key?: SealedKey; sealed: boolean } | null> {
     if (this.cipher) {
-      const sealedPath = this.path(await this.cipher.storageName(digest));
-      if (fileSize(sealedPath) !== undefined) return { path: sealedPath, key: this.readKey(sealedPath), sealed: true };
+      for (const name of await this.cipher.storageNames(digest)) {
+        const sealedPath = this.path(name);
+        if (fileSize(sealedPath) !== undefined) return { path: sealedPath, key: this.readKey(sealedPath), sealed: true };
+      }
     }
     const plain = this.path(digest);
     return fileSize(plain) === undefined ? null : { path: plain, key: this.readKey(plain), sealed: false };
@@ -293,11 +374,11 @@ export class FileBlobStore implements BlobStore {
 
   async delete(digest: string): Promise<void> {
     if (!isDigest(digest)) return;
-    // Remove both possible homes: "gone" must not depend on which regime wrote it. The key goes
-    // first, because a sealed payload whose DEK is destroyed is already unrecoverable, so an
-    // interrupted delete leaves shredded bytes rather than readable ones.
-    for (const name of [this.cipher ? await this.cipher.storageName(digest) : null, digest]) {
-      if (!name) continue;
+    // Remove EVERY possible home: "gone" must not depend on which regime or which key wrote it, and
+    // an erasure that reached the current name while a retired-key copy survived is not an erasure.
+    // The key goes first, because a sealed payload whose DEK is destroyed is already unrecoverable,
+    // so an interrupted delete leaves shredded bytes rather than readable ones.
+    for (const name of [...(this.cipher ? await this.cipher.storageNames(digest) : []), digest]) {
       const path = this.path(name);
       removeFile(`${path}.key`);
       removeFile(path);
@@ -314,6 +395,65 @@ export class FileBlobStore implements BlobStore {
     }
   }
 
+  /**
+   * Re-seal referenced payloads under the current key. See the port for the contract; what is
+   * specific here is the ORDER: key sidecar, then payload, then the old pair, so no window leaves a
+   * payload whose DEK is missing and none leaves the artifact with nothing to read.
+   */
+  async rewrap(liveDigests: ReadonlySet<string>, opts: { dryRun?: boolean } = {}): Promise<RewrapResult> {
+    const out = emptyRewrap();
+    if (!this.cipher) return out;
+    const currentName = async (d: string) => this.path(await this.cipher!.storageName(d));
+    for (const digest of liveDigests) {
+      const found = await this.findPath(digest);
+      if (!found) {
+        out.missing++;
+        continue;
+      }
+      out.scanned++;
+      const target = await currentName(digest);
+      if (found.path === target && found.key) {
+        out.already++;
+        continue;
+      }
+      // A payload at a sealed name with no readable sidecar is damage `get` already refuses; a
+      // rewrap must not turn that into a re-sealed copy of ciphertext.
+      if (found.sealed && !found.key) {
+        out.foreign++;
+        continue;
+      }
+      if (found.key && !this.cipher.knows(found.key.kid)) {
+        out.foreign++;
+        continue;
+      }
+      const stored = await readBinaryFile(found.path);
+      if (!stored) {
+        out.missing++;
+        continue;
+      }
+      const plaintext = found.key ? await this.cipher.open(digest, stored, found.key) : stored;
+      // The address is what everything else trusts. Re-hashing costs one pass over bytes already
+      // in memory and turns a silently corrupt payload into a reported one instead of a re-sealed
+      // lie at a content address it does not match.
+      if (await sha256Hex(plaintext) !== digest) {
+        out.foreign++; // not ours to fix, and not ours to overwrite
+        continue;
+      }
+      out.rewrapped++;
+      out.bytes += plaintext.byteLength;
+      if (opts.dryRun) continue;
+      const { ciphertext, key } = await this.cipher.seal(digest, plaintext);
+      mkdirp(target.slice(0, target.lastIndexOf("/")));
+      writeTextFile(`${target}.key`, JSON.stringify(key));
+      await this.writeAtomic(target, ciphertext);
+      if (found.path !== target) {
+        removeFile(`${found.path}.key`);
+        removeFile(found.path);
+      }
+    }
+    return out;
+  }
+
   async retainOnly(liveDigests: ReadonlySet<string>, opts: { graceMs: number; dryRun?: boolean; nowMs?: number }): Promise<BlobGcResult> {
     const now = opts.nowMs ?? Date.now();
     // The keep set as STORAGE NAMES. A live digest may occupy either home (the plaintext-digest
@@ -322,7 +462,7 @@ export class FileBlobStore implements BlobStore {
     const keep = new Set<string>();
     for (const d of liveDigests) {
       keep.add(d);
-      if (this.cipher) keep.add(await this.cipher.storageName(d));
+      if (this.cipher) for (const name of await this.cipher.storageNames(d)) keep.add(name);
     }
     const out: BlobGcResult = { scanned: 0, deleted: 0, bytes: 0 };
     for (const shard of listDirNames(this.root)) {
@@ -352,6 +492,14 @@ export class FileBlobStore implements BlobStore {
         if (keep.has(name)) continue;
         const age = now - (fileMtimeMs(path) ?? now);
         if (age < opts.graceMs) continue; // young: a racing put (this process or another) may own it
+        // A payload whose sidecar names a KEK we do not hold is not an orphan: it is a blob from
+        // before a rotation whose retired key was not supplied, or another space's object sharing
+        // this directory. Deleting it is the one irreversible way to be wrong, so keep and report.
+        const sealedBy = this.readKey(path);
+        if (sealedBy && this.cipher && !this.cipher.knows(sealedBy.kid)) {
+          out.foreign = (out.foreign ?? 0) + 1;
+          continue;
+        }
         out.deleted++;
         out.bytes += fileSize(path) ?? 0;
         if (!opts.dryRun) {
@@ -421,6 +569,25 @@ export class MigratingBlobStore implements BlobStore {
     for (const layer of this.layers) await layer.delete(digest);
   }
 
+  /** Every layer rewraps its own copies. A blob living in two layers is re-sealed in both, which is
+   *  what "the retired key can be destroyed" has to mean when more than one store holds bytes. */
+  async rewrap(liveDigests: ReadonlySet<string>, opts: { dryRun?: boolean } = {}): Promise<RewrapResult> {
+    const out = emptyRewrap();
+    for (const layer of this.layers) {
+      if (!layer.rewrap) continue;
+      const r = await layer.rewrap(liveDigests, opts);
+      out.scanned += r.scanned;
+      out.rewrapped += r.rewrapped;
+      out.already += r.already;
+      out.foreign += r.foreign;
+      out.bytes += r.bytes;
+      // `missing` counts a digest no layer holds, so it is the MINIMUM across layers rather than
+      // the sum: absent from one store and present in the next is not missing.
+      out.missing = out.missing === 0 ? r.missing : Math.min(out.missing, r.missing);
+    }
+    return out;
+  }
+
   async retainOnly(liveDigests: ReadonlySet<string>, opts: { graceMs: number; dryRun?: boolean; nowMs?: number }): Promise<BlobGcResult> {
     const out: BlobGcResult = { scanned: 0, deleted: 0, bytes: 0 };
     for (const layer of this.layers) {
@@ -428,6 +595,7 @@ export class MigratingBlobStore implements BlobStore {
       out.scanned += r.scanned;
       out.deleted += r.deleted;
       out.bytes += r.bytes;
+      if (r.foreign) out.foreign = (out.foreign ?? 0) + r.foreign;
     }
     return out;
   }

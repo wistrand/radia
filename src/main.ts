@@ -101,8 +101,11 @@ async function dev(args: string[]): Promise<void> {
   const kekFlag = optionalFlag(args, "--blob-kek");
   const kekPath = kekFlag === "" ? defaultKekPath() : kekFlag;
   if (kekPath) ensureParent(kekPath);
-  const kek = loadKek({ env: env("RADIA_BLOB_KEK"), file: kekPath });
-  const cipher = kek ? await BlobCipher.fromKey(kek.key) : undefined;
+  const kek = loadKek({ env: env("RADIA_BLOB_KEK"), file: kekPath, retiredEnv: env("RADIA_BLOB_KEK_RETIRED") });
+  // Retired keys READ, never write. Rotation is otherwise a migration rather than a config
+  // change: a blob's storage name is HMAC(KEK, digest), so a new key renames every payload and
+  // a sweep that cannot recognise the old names would delete what it cannot see.
+  const cipher = kek ? await BlobCipher.fromKey(kek.key, kek.retired) : undefined;
   const blobs = openBlobs(blobSpec, cipher);
   console.log(`radia dev: blobs=${blobs.name}${blobSpec ? ` (${blobSpec})` : " (in-memory)"}${kek ? ` (encrypted, KEK from ${kek.source})` : ""}`);
   // One line naming the whole on-disk footprint, so "where did this write?" never needs archaeology.
@@ -161,7 +164,7 @@ async function dev(args: string[]): Promise<void> {
   const sealFlag = optionalFlag(args, "--seal-key");
   const sealPath = sealFlag === "" ? defaultSealPath() : (sealFlag ?? (dbPath ? defaultSealPath() : undefined));
   if (sealPath) ensureParent(sealPath);
-  space.sealKey = await loadSealKey({ env: env("RADIA_SEAL_KEY"), file: sealPath });
+  space.sealKey = await loadSealKey({ env: env("RADIA_SEAL_KEY"), file: sealPath, retiredEnv: env("RADIA_SEAL_KEY_RETIRED") });
   if (space.sealKey) console.log(`radia dev: event chain signed (key from ${space.sealKey.source})`);
   await space.loadKinds(); // restore persisted kind declarations
   const operatorToken = await space.mintOperatorToken(); // for the CLI, the MCP adapter and curl

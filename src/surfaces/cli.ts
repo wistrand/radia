@@ -39,6 +39,7 @@ Inspect
   doctor                              diagnostics: dead-letters, stuck leases, stale work,
                                       erasures that no longer hold, sweepable retention backlog
   gc [--run] [--limit <n>]            the retention sweep. Prints what would go; --run deletes it
+  rewrap [--run]                      re-seal artifact bytes under the current blob key, so a retired one can be destroyed
   erasures [--undone]                 every shred, and whether its payload is still gone
   flows [--granularity kind|kind+agent] [--counts bucketed|exact] [--min <n>] [--hub-degree <n>]
                                       recurring shapes of work, mined from lineage
@@ -714,6 +715,29 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         return dry
           ? `${r.eligible}${r.more ? "+" : ""} sweepable: ${fmt(r.byKind)}${compactLine}${idemLine}${evLine}\nradia gc --run to delete them (a live run also sweeps unreferenced blobs)`
           : `swept ${r.swept}${r.more ? " (more remain: run again)" : ""}: ${fmt(r.byKind)}${compactLine}${idemLine}${evLine}${blobLine}`;
+      });
+    }
+
+    // Finishing a KEK rotation. Same shape as `gc` and for the same reason: it rewrites stored
+    // bytes, so the no-argument form reports and `--run` acts.
+    case "rewrap": {
+      const dry = !has(argv, "--run");
+      const r = await client.rewrapBlobs({ dryRun: dry });
+      return out(ctx, r, () => {
+        const done = r.foreign === 0 && r.rewrapped === 0 && r.already === r.scanned;
+        const head = dry
+          ? `${r.rewrapped} of ${r.scanned} referenced payloads need re-sealing (${r.already} already current)`
+          : `re-sealed ${r.rewrapped} of ${r.scanned} referenced payloads (${r.already} were already current)`;
+        // The number that decides whether the old key can go, said plainly in both directions.
+        const verdict = r.foreign > 0
+          ? `\n${r.foreign} could NOT be opened with the keys this space holds: supply the retiring key (RADIA_BLOB_KEK_RETIRED) and run again before destroying it`
+          : done
+          ? `\nevery referenced payload is under the current key: the retired key can be destroyed`
+          : dry
+          ? `\nradia rewrap --run to re-seal them`
+          : `\nrun again if anything was written during the pass; the retired key can go once nothing needs re-sealing`;
+        const missing = r.missing > 0 ? `\n${r.missing} referenced digests have no stored payload (erased, or swept)` : "";
+        return `${head}${missing}${verdict}`;
       });
     }
 

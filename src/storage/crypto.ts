@@ -37,6 +37,23 @@ export interface SealedKey {
   nonce: string; // base64
   /** Plaintext byte length. The ciphertext is 16 bytes longer (the GCM tag). */
   size: number;
+  /**
+   * WHICH KEK wrapped this DEK, derived from the key rather than assigned, so two processes holding
+   * the same key agree without being told (`BlobCipher.kid`).
+   *
+   * Absent on everything written before key ids existed, which `open` reads as "the current key":
+   * that is exactly what it was. It exists so a rotation can say what it is. Without it, a payload
+   * sealed under a retired key is indistinguishable from a corrupt one, and from another space's
+   * object, which is the difference between keeping it and deleting it (see `retainOnly`).
+   */
+  kid?: string;
+}
+
+/** One KEK: what it wraps DEKs with, what it names blobs with, and how it is identified. */
+interface KekEntry {
+  kid: string;
+  kek: CryptoKey; // AES-KW
+  namer: CryptoKey; // HMAC, for storage names
 }
 
 /** Deno's lib types declare `BufferSource` as `ArrayBufferView<ArrayBuffer>`, which a plain
@@ -60,26 +77,44 @@ export const b64 = {
 };
 
 export class BlobCipher {
+  /**
+   * ONE key writes, several may read. Rotation is otherwise not a configuration change but a
+   * migration: storage names are HMAC(KEK, digest), so a new key renames every blob, and a sweep
+   * that cannot recognise the old names deletes the payloads it cannot see.
+   */
   private constructor(
-    private readonly kek: CryptoKey, // AES-KW: wraps and unwraps DEKs, never touches payloads
-    private readonly namer: CryptoKey, // HMAC: turns a plaintext digest into a storage path
+    private readonly current: KekEntry,
+    /** Keys kept for READS only, newest first. Nothing is ever written under one. */
+    private readonly retired: KekEntry[],
   ) {}
 
-  /** Build a cipher from 32 raw key bytes. */
-  static async fromKey(raw: Uint8Array): Promise<BlobCipher> {
-    if (raw.byteLength !== 32) throw new UsageError(`blob KEK must be 32 bytes, got ${raw.byteLength}`);
-    const kek = await crypto.subtle.importKey("raw", buf(raw), "AES-KW", false, ["wrapKey", "unwrapKey"]);
-    // A separate purpose gets a separate key: derive the naming key rather than reusing the KEK
-    // for a second algorithm.
-    const nameBytes = new Uint8Array(await crypto.subtle.digest("SHA-256", buf(concat(raw, new TextEncoder().encode("radia/blob-name")))));
-    const namer = await crypto.subtle.importKey("raw", buf(nameBytes), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-    return new BlobCipher(kek, namer);
+  /** Build a cipher from 32 raw key bytes, plus any retired keys whose blobs must still read. */
+  static async fromKey(raw: Uint8Array, retired: Uint8Array[] = []): Promise<BlobCipher> {
+    return new BlobCipher(await kekEntry(raw), await Promise.all(retired.map(kekEntry)));
+  }
+
+  /** The key new blobs are sealed under. Stamped into every `SealedKey` this cipher writes. */
+  get kid(): string {
+    return this.current.kid;
+  }
+
+  /** Does this space hold the key a `SealedKey` names? `undefined` is the pre-kid regime, which is
+   *  the current key by definition. */
+  knows(kid: string | undefined): boolean {
+    return kid === undefined || kid === this.current.kid || this.retired.some((e) => e.kid === kid);
   }
 
   /** The storage name for a plaintext digest. Reveals nothing about the content it addresses. */
   async storageName(digest: string): Promise<string> {
-    const mac = new Uint8Array(await crypto.subtle.sign("HMAC", this.namer, buf(new TextEncoder().encode(digest))));
-    return [...mac].map((b) => b.toString(16).padStart(2, "0")).join("");
+    return await nameUnder(this.current, digest);
+  }
+
+  /** Every name this digest could be stored under: the current key first, then each retired one.
+   *  Reads walk it in order; a sweep keeps ALL of them, or rotation becomes deletion. */
+  async storageNames(digest: string): Promise<string[]> {
+    const names = [await nameUnder(this.current, digest)];
+    for (const e of this.retired) names.push(await nameUnder(e, digest));
+    return names;
   }
 
   /** Encrypt a payload under a fresh DEK, binding it to its content address. */
@@ -93,20 +128,31 @@ export class BlobCipher {
         buf(plaintext),
       ),
     );
-    const wrapped = new Uint8Array(await crypto.subtle.wrapKey("raw", dek, this.kek, "AES-KW"));
+    const wrapped = new Uint8Array(await crypto.subtle.wrapKey("raw", dek, this.current.kek, "AES-KW"));
     return {
       ciphertext,
-      key: { wrapped: b64.encode(wrapped), nonce: b64.encode(nonce), size: plaintext.byteLength },
+      key: { wrapped: b64.encode(wrapped), nonce: b64.encode(nonce), size: plaintext.byteLength, kid: this.current.kid },
     };
   }
 
   /** Decrypt. Throws if the key is wrong, the ciphertext was tampered with, or it was moved to a
    *  different address (the digest is authenticated as AAD). */
   async open(digest: string, ciphertext: Uint8Array, key: SealedKey): Promise<Uint8Array> {
+    const entry = key.kid === undefined || key.kid === this.current.kid
+      ? this.current
+      : this.retired.find((e) => e.kid === key.kid);
+    // A key this space does not hold is a ROTATION, not damage, and the two want different fixes
+    // while being indistinguishable from a raw decrypt failure. Say which one it is.
+    if (!entry) {
+      throw new UsageError(
+        `this blob was sealed under KEK '${key.kid}', which this space does not hold; ` +
+          `supply it as a retired key (RADIA_BLOB_KEK_RETIRED) to read blobs written before the rotation`,
+      );
+    }
     const dek = await crypto.subtle.unwrapKey(
       "raw",
       buf(b64.decode(key.wrapped)),
-      this.kek,
+      entry.kek,
       "AES-KW",
       { name: "AES-GCM" },
       false,
@@ -122,6 +168,32 @@ export class BlobCipher {
   }
 }
 
+/** Import one KEK: the wrapping key, the naming key, and the id both sides derive rather than agree
+ *  on. Three purposes, three derivations, so no key does double duty. */
+async function kekEntry(raw: Uint8Array): Promise<KekEntry> {
+  if (raw.byteLength !== 32) throw new UsageError(`blob KEK must be 32 bytes, got ${raw.byteLength}`);
+  const kek = await crypto.subtle.importKey("raw", buf(raw), "AES-KW", false, ["wrapKey", "unwrapKey"]);
+  const nameBytes = await derive(raw, "radia/blob-name");
+  const namer = await crypto.subtle.importKey("raw", buf(nameBytes), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  // 8 bytes: an identifier, not a fingerprint anyone should test candidate keys against. It is
+  // derived under its own label so it reveals nothing about the naming key or the KEK itself.
+  const kid = hex((await derive(raw, "radia/blob-kek-id")).slice(0, 8));
+  return { kid, kek, namer };
+}
+
+async function derive(raw: Uint8Array, label: string): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", buf(concat(raw, new TextEncoder().encode(label)))));
+}
+
+async function nameUnder(entry: KekEntry, digest: string): Promise<string> {
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", entry.namer, buf(new TextEncoder().encode(digest))));
+  return hex(mac);
+}
+
+function hex(bytes: Uint8Array): string {
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   const out = new Uint8Array(a.byteLength + b.byteLength);
   out.set(a, 0);
@@ -134,7 +206,18 @@ function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
  * generated on first use. Returns undefined when neither is configured. Blobs then stay
  * plaintext, which is the default and is logged as such rather than being silently assumed.
  */
-export function loadKek(opts: { env?: string; file?: string }): { key: Uint8Array; source: string } | undefined {
+export function loadKek(
+  opts: { env?: string; file?: string; retiredEnv?: string },
+): { key: Uint8Array; retired: Uint8Array[]; source: string } | undefined {
+  // RETIRED keys read from the same places, and are READ-ONLY: nothing is ever sealed under one.
+  // They exist so a rotation is a config change rather than a migration, since a blob's storage
+  // name is derived from the key that sealed it.
+  const retiredFrom = (raw: string | undefined, where: string): Uint8Array[] =>
+    (raw ?? "").split(",").map((t) => t.trim()).filter(Boolean).map((t) => {
+      const key = b64.decode(t);
+      if (key.byteLength !== 32) throw new UsageError(`${where} must be a comma-separated list of 32-byte base64 keys`);
+      return key;
+    });
   if (opts.env) {
     const key = b64.decode(opts.env.trim());
     if (key.byteLength !== 32) {
@@ -143,18 +226,18 @@ export function loadKek(opts: { env?: string; file?: string }): { key: Uint8Arra
           `deno eval 'console.log(btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))))'`,
       );
     }
-    return { key, source: "env" };
+    return { key, retired: retiredFrom(opts.retiredEnv, "RADIA_BLOB_KEK_RETIRED"), source: "env" };
   }
   if (!opts.file) return undefined;
   const existing = readTextFile(opts.file);
   if (existing) {
-    const parsed = JSON.parse(existing) as { kek?: string };
+    const parsed = JSON.parse(existing) as { kek?: string; retired?: string[] };
     const key = b64.decode((parsed.kek ?? "").trim());
     if (key.byteLength !== 32) throw new UsageError(`${opts.file} does not contain a 32-byte "kek"`);
-    return { key, source: opts.file };
+    return { key, retired: retiredFrom((parsed.retired ?? []).join(","), `${opts.file} "retired"`), source: opts.file };
   }
   const key = crypto.getRandomValues(new Uint8Array(32));
   writeTextFile(opts.file, JSON.stringify({ kek: b64.encode(key), createdAt: new Date().toISOString() }, null, 2));
   restrictToOwner(opts.file);
-  return { key, source: `${opts.file} (generated)` };
+  return { key, retired: [], source: `${opts.file} (generated)` };
 }

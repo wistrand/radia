@@ -218,7 +218,7 @@ flowchart TB
    prerequisite, stated as such; not a runtime feature.
 2. **Runtime-managed envelope encryption: required, not optional.** *(M1: built for artifact
    BLOBS in `src/storage/crypto.ts`, per-blob AES-GCM DEK wrapped under a space KEK, opt-in via
-   `RADIA_BLOB_KEK` / `--blob-kek`. Record bodies are still plaintext; KMS wrapping and rotation
+   `RADIA_BLOB_KEK` / `--blob-kek`, with `RADIA_BLOB_KEK_RETIRED` holding keys kept for reads after a rotation. Record bodies are still plaintext; rotation is built (`kid` on every sealed key, retired keys for reads, `radia rewrap` to finish it), and KMS wrapping
    are open.)* The crypto-shredding commitment *is* application-layer encryption:
    deletion-by-key-destruction requires bodies and artifact blobs encrypted under destroyable data
    keys (per kind / tenant / data-subject grouping, KMS-wrapped). This also covers the realistic leak vectors that

@@ -1284,6 +1284,16 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Artifacts, blobs and erasure
 
+- **A blob's storage name is derived from the KEK, so swapping the key renames the estate.** Before
+  key ids that was silent data loss, not just unreadable blobs: the sweep's keep set is computed
+  under the CURRENT key, so every pre-rotation payload was an unreferenced 64-hex name and went past
+  the grace window. Now a `SealedKey` carries `kid`, retired keys are supplied for reads
+  (`RADIA_BLOB_KEK_RETIRED`), and a payload sealed under an unknown key is KEPT and counted
+  (`BlobGcResult.foreign`), and `radia rewrap` re-seals the referenced ones so the retired key can
+  go. The two passes see different things and must: a rewrap is DIGEST-driven, so a payload under an
+  unknown key is unnameable to it and counts as `missing`; the sweep walks names, meets those, and
+  keeps them. Guards: `conformance/suites/blobs.ts`, "a rotated KEK still reads" and "rewrap
+  re-seals under the current key".
 - **Writing a payload and its key is two operations, so order them for the crash.** The encrypted
   blob store wrote ciphertext first and the wrapped DEK second. A crash between them left
   ciphertext with no sidecar, which the reader treated as a *plaintext* blob, so raw ciphertext

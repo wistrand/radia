@@ -26,7 +26,7 @@ import {
   handleStopRun,
 } from "./handlers/agents.ts";
 import { handleGetArtifact, handleMintCapability, handleMintPathCapability, handlePutArtifact, handleShredArtifact } from "./handlers/artifacts.ts";
-import { handleRemediate, handleAdmin, handleGc, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleErasures, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleFlows, handleIntegrity, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
+import { handleRemediate, handleRewrap, handleAdmin, handleGc, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleErasures, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleFlows, handleIntegrity, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem, statusFor } from "./problem.ts";
 import { RadiaError } from "../core/errors.ts";
@@ -378,11 +378,11 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
         if (!opsPowers.has(need)) {
           return problem(403, "forbidden", `'${need}' ops power required for ${url.pathname}; an operator assigns it as an ops_grant record`);
         }
-      } else if (req.method === "POST" && url.pathname === "/v0/ops/gc") {
+      } else if (req.method === "POST" && (url.pathname === "/v0/ops/gc" || url.pathname === "/v0/ops/rewrap")) {
         // Either power reaches the verb; the live/dry split is decided in the handler, where the
         // body is parsed. A sweep-only holder may also dry-run: a preview of its own power.
         if (!opsPowers.has("sweep") && !opsPowers.has("observe")) {
-          return problem(403, "forbidden", "'sweep' (live) or 'observe' (dryRun) ops power required for /v0/ops/gc");
+          return problem(403, "forbidden", `'sweep' (live) or 'observe' (dryRun) ops power required for ${url.pathname}`);
         }
       } else if (!opsPowers.has("observe")) {
         try {
@@ -533,6 +533,9 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
         // The dry/live split is body-dependent, so the gate could not decide it: a dry run is a
         // read (`observe` reached here), a live one needs `sweep`, checked in the handler.
         return await handleGc(space, req, principal, opsPowers?.has("sweep") ?? false);
+      case "POST /v0/ops/rewrap":
+        // Same split as gc, and the same reason: a dry run reports, a live one rewrites bytes.
+        return await handleRewrap(space, req, opsPowers?.has("sweep") ?? false);
       case "GET /v0/ops/records":
         return await handleEnvelopeQuery(space, url, opsScope);
       case "GET /v0/ops/permissions":

@@ -210,6 +210,39 @@ export const integritySuites: Suite[] = [
     },
   },
   {
+    // ROTATION vs FORGERY. Both leave links this space's current key cannot verify, and the two want
+    // opposite responses: one is a key to supply, the other is a chain to distrust. A signature
+    // carries the id of the key that made it so the report can tell them apart.
+    name: "a link signed under a retired key verifies with it, and is un-checkable without it",
+    run: async (adapter) => {
+      const first = new Uint8Array(32).fill(7);
+      const second = new Uint8Array(32).fill(9);
+
+      const space = newSpace(adapter);
+      space.sealKey = await SealKey.fromBytes(first, "test");
+      for (let i = 0; i < 3; i++) await space.put({ kind: "doc", body: { i } });
+      await space.sealEvents();
+      assertEquals((await space.verifyIntegrity()).ok, true);
+
+      // Rotated, old key retained: the chain still verifies end to end.
+      const rotated = newSpace(adapter);
+      rotated.sealKey = await SealKey.fromBytes(second, "test", [first]);
+      assertEquals((await rotated.verifyIntegrity()).ok, true, "a retained key must still verify what it signed");
+
+      // Rotated, old key gone: un-checkable, and it must NOT read as tampering.
+      const blind = newSpace(adapter);
+      blind.sealKey = await SealKey.fromBytes(second, "test");
+      const report = await blind.verifyIntegrity();
+      assertEquals(report.ok, false);
+      assertEquals(report.failure?.reason, "unknown_key", "a rotation was reported as a forgery");
+
+      // And new links sign under the CURRENT key, so a chain can be re-signed forward.
+      await rotated.put({ kind: "doc", body: { after: "rotation" } });
+      await rotated.sealEvents();
+      assertEquals((await rotated.verifyIntegrity()).ok, true);
+    },
+  },
+  {
     name: "a tampered SEAL is caught by the link it no longer matches",
     run: async (adapter) => {
       const space = newSpace(adapter);

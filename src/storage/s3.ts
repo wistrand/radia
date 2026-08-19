@@ -45,8 +45,8 @@
 import { httpRequest } from "../platform.ts";
 import { sha256Hex } from "../core/ids.ts";
 import { b64, type BlobCipher, type SealedKey } from "./crypto.ts";
-import type { BlobGcResult, BlobRef, BlobStore } from "./blobs.ts";
-import { isDigest } from "./blobs.ts";
+import type { BlobGcResult, BlobRef, BlobStore, RewrapResult } from "./blobs.ts";
+import { emptyRewrap, isDigest } from "./blobs.ts";
 
 /** sha256 of the empty payload: the `x-amz-content-sha256` of every request that sends no body. */
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -125,20 +125,24 @@ export class S3BlobStore implements BlobStore {
   async get(digest: string): Promise<ReadableStream<Uint8Array> | null> {
     if (!isDigest(digest)) return null; // never let a caller-supplied name become a key
     if (this.cipher) {
-      const res = await this.send("GET", this.objectUrl(await this.cipher.storageName(digest)), {});
-      if (res.ok) {
-        const key = readKey(res.headers.get(KEY_HEADER));
-        // An object at the sealed name with no key is damage, not legacy: serving it would hand
-        // back raw ciphertext as the payload. The file store refuses a missing sidecar the same way.
-        if (!key) {
-          await drain(res);
-          return null;
+      // Every name, newest key first: a rotation renames objects (the name is HMAC(KEK, digest)),
+      // so a read that only tried the current one would report a blob missing that is right there.
+      for (const name of await this.cipher.storageNames(digest)) {
+        const res = await this.send("GET", this.objectUrl(name), {});
+        if (res.ok) {
+          const key = readKey(res.headers.get(KEY_HEADER));
+          // An object at a sealed name with no key is damage, not legacy: serving it would hand back
+          // raw ciphertext as the payload. The file store refuses a missing sidecar the same way.
+          if (!key) {
+            await drain(res);
+            return null;
+          }
+          const ciphertext = new Uint8Array(await res.arrayBuffer());
+          return oneChunk(await this.cipher.open(digest, ciphertext, key));
         }
-        const ciphertext = new Uint8Array(await res.arrayBuffer());
-        return oneChunk(await this.cipher.open(digest, ciphertext, key));
+        await drain(res);
+        if (res.status !== 404) throw new Error(`s3 get ${digest}: ${res.status} ${res.statusText}`);
       }
-      await drain(res);
-      if (res.status !== 404) throw new Error(`s3 get ${digest}: ${res.status} ${res.statusText}`);
     }
     // The plaintext-digest home: written before encryption was turned on, or by a store with none.
     const res = await this.send("GET", this.objectUrl(digest), {});
@@ -156,9 +160,11 @@ export class S3BlobStore implements BlobStore {
   async stat(digest: string): Promise<BlobRef | null> {
     if (!isDigest(digest)) return null;
     if (this.cipher) {
-      const found = await this.head(await this.cipher.storageName(digest));
-      if (found?.key) return { digest, size: found.plaintextSize };
-      if (found) return null; // sealed name, no key: `get` cannot serve it either
+      for (const name of await this.cipher.storageNames(digest)) {
+        const found = await this.head(name);
+        if (found?.key) return { digest, size: found.plaintextSize };
+        if (found) return null; // sealed name, no key: `get` cannot serve it either
+      }
     }
     const plain = await this.head(digest);
     return plain ? { digest, size: plain.plaintextSize } : null;
@@ -166,12 +172,61 @@ export class S3BlobStore implements BlobStore {
 
   async delete(digest: string): Promise<void> {
     if (!isDigest(digest)) return;
-    // Both homes, so "gone" never depends on which regime wrote it. The key dies with the object,
-    // so unlike the file store there is no ordering to get right.
-    for (const name of [this.cipher ? await this.cipher.storageName(digest) : null, digest]) {
-      if (!name) continue;
+    // EVERY home, so "gone" never depends on which regime or which key wrote it: a copy left at a
+    // retired key's name is a readable payload after an erasure. The key dies with the object, so
+    // unlike the file store there is no ordering to get right.
+    for (const name of [...(this.cipher ? await this.cipher.storageNames(digest) : []), digest]) {
       await this.deleteObject(name);
     }
+  }
+
+  /** Re-seal referenced objects under the current key. One PUT at the new name, then a DELETE of the
+   *  old one; a PUT is atomic here, so the only interrupted state is a duplicate, which the next
+   *  pass finishes. See the port for why the digest set is an argument rather than a listing. */
+  async rewrap(liveDigests: ReadonlySet<string>, opts: { dryRun?: boolean } = {}): Promise<RewrapResult> {
+    const out = emptyRewrap();
+    if (!this.cipher) return out;
+    for (const digest of liveDigests) {
+      const target = await this.cipher.storageName(digest);
+      let done = false;
+      for (const name of await this.cipher.storageNames(digest)) {
+        const head = await this.head(name);
+        if (!head) continue;
+        out.scanned++;
+        if (name === target && head.key) {
+          out.already++;
+          done = true;
+          break;
+        }
+        if (!head.key || !this.cipher.knows(head.key.kid)) {
+          out.foreign++;
+          done = true;
+          break;
+        }
+        const res = await this.send("GET", this.objectUrl(name), {});
+        if (!res.ok) {
+          await drain(res);
+          throw new Error(`s3 rewrap ${name}: ${res.status} ${res.statusText}`);
+        }
+        const plaintext = await this.cipher.open(digest, new Uint8Array(await res.arrayBuffer()), head.key);
+        if (await sha256Hex(plaintext) !== digest) {
+          out.foreign++; // corrupt at its own address: report, never re-seal
+          done = true;
+          break;
+        }
+        out.rewrapped++;
+        out.bytes += plaintext.byteLength;
+        if (!opts.dryRun) {
+          const { ciphertext, key } = await this.cipher.seal(digest, plaintext);
+          await this.putObject(target, ciphertext, { [KEY_HEADER]: b64.encode(new TextEncoder().encode(JSON.stringify(key))) });
+          await this.deleteObject(name);
+        }
+        done = true;
+        break;
+      }
+      if (!done) out.missing++;
+    }
+    return out;
   }
 
   async retainOnly(liveDigests: ReadonlySet<string>, opts: { graceMs: number; dryRun?: boolean; nowMs?: number }): Promise<BlobGcResult> {
@@ -181,7 +236,7 @@ export class S3BlobStore implements BlobStore {
     const keep = new Set<string>();
     for (const d of liveDigests) {
       keep.add(d);
-      if (this.cipher) keep.add(await this.cipher.storageName(d));
+      if (this.cipher) for (const name of await this.cipher.storageNames(d)) keep.add(name);
     }
     const out: BlobGcResult = { scanned: 0, deleted: 0, bytes: 0 };
     for await (const obj of this.list()) {
@@ -190,6 +245,16 @@ export class S3BlobStore implements BlobStore {
       out.scanned++;
       if (keep.has(name)) continue;
       if (now - obj.modifiedMs < opts.graceMs) continue; // young: a racing put may own it
+      // One HEAD before the DELETE, and only for objects already condemned: an object sealed under
+      // a KEK this space does not hold is a pre-rotation blob or another space's, and deleting it
+      // is the one irreversible way to be wrong (`BlobGcResult.foreign`).
+      if (this.cipher) {
+        const sealedBy = await this.head(name);
+        if (sealedBy?.key && !this.cipher.knows(sealedBy.key.kid)) {
+          out.foreign = (out.foreign ?? 0) + 1;
+          continue;
+        }
+      }
       out.deleted++;
       out.bytes += obj.size;
       if (!opts.dryRun) await this.deleteObject(name);

@@ -757,6 +757,24 @@ export class RadiaClient {
     return this.req("POST", "/v0/ops/gc", opts);
   }
 
+  /**
+   * Re-seal referenced artifact payloads under the current blob key, which is what finishes a KEK
+   * rotation: until it runs, reads depend on the retired key and destroying it destroys data.
+   *
+   * `already === scanned` with `foreign === 0` is the state in which the retired key can be
+   * dropped. Anything else means it is still load-bearing.
+   */
+  rewrapBlobs(opts: { dryRun?: boolean } = {}): Promise<{
+    scanned: number;
+    rewrapped: number;
+    already: number;
+    foreign: number;
+    missing: number;
+    bytes: number;
+  }> {
+    return this.req("POST", "/v0/ops/rewrap", opts);
+  }
+
   /** Control-plane remediation: 'reclaim' | 'dead-letter' | 'requeue'. Returns {applied}. */
   async admin(action: "reclaim" | "dead-letter" | "requeue", recordId: string): Promise<{ applied: boolean }> {
     return await this.req("POST", `/v0/ops/records/${encodeURIComponent(recordId)}/${action}`);

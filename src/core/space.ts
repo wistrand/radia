@@ -69,7 +69,7 @@ import {
 } from "./auth.ts";
 import { Coalescer } from "./coalesce.ts";
 import { type CompactionResult, compactRegistries } from "./gc.ts";
-import { type BlobGcResult, type BlobStore, MemoryBlobStore } from "../storage/blobs.ts";
+import { type BlobGcResult, type BlobStore, MemoryBlobStore, type RewrapResult } from "../storage/blobs.ts";
 import { newUlid, sha256Hex } from "./ids.ts";
 import { RadiaError } from "./errors.ts";
 import { activeSet, grantKey, isRetired, oidcIdentityKey, opsGrantKey, readRegistry, type RegistryView } from "./registry.ts";
@@ -3256,18 +3256,7 @@ export class Space {
     // anyway.
     let blobs: BlobGcResult | undefined;
     if (!opts.dryRun) {
-      const live = new Set<string>();
-      let after: string | undefined;
-      for (;;) {
-        const rows = await this.query({ kind: ARTIFACT }, 500, { dir: "desc", after });
-        for (const rec of rows) {
-          const d = (rec.body as { digest?: unknown }).digest;
-          if (typeof d === "string") live.add(d);
-        }
-        if (rows.length < 500) break;
-        after = rows[rows.length - 1].id;
-      }
-      blobs = await this.blobs.retainOnly(live, { graceMs: this.ctx.blobGcGraceSeconds * 1000 });
+      blobs = await this.blobs.retainOnly(await this.referencedDigests(), { graceMs: this.ctx.blobGcGraceSeconds * 1000 });
     }
     return { ...totals, ...(compaction ? { compaction } : {}), ...(events ? { events } : {}), ...(blobs ? { blobs } : {}) };
   }
@@ -3577,7 +3566,19 @@ export class Space {
         }
         if (this.sealKey) {
           if (!seal.sig) return fail(seal.idx, seal.eventId, "bad_signature", "the link carries no signature on a signed chain");
-          if (!await this.sealKey.verify(seal.hash, seal.sig)) {
+          const verdict = await this.sealKey.verify(seal.hash, seal.sig);
+          // A link signed under a RETIRED key that nobody supplied is un-checkable, not forged.
+          // Calling it a bad signature would report a rotation as tampering, which is the one
+          // verdict this report exists to be trusted on.
+          if (verdict === "unknown_key") {
+            return fail(
+              seal.idx,
+              seal.eventId,
+              "unknown_key",
+              "this link was signed under a seal key this space does not hold; supply it (RADIA_SEAL_KEY_RETIRED) to check links from before the rotation",
+            );
+          }
+          if (verdict === "bad") {
             return fail(seal.idx, seal.eventId, "bad_signature", "the signature does not verify; the chain was rebuilt without the key");
           }
         }
@@ -3686,6 +3687,38 @@ export class Space {
       });
     }
     return { erasures: out, checked: view.entries.size, complete: view.complete };
+  }
+
+  /** Every digest a surviving `artifact` record carries, paged to EXHAUSTION: a bounded read would
+   *  present a prefix as the population, and both callers act on this set (one deletes what is
+   *  absent from it, the other re-seals what is in it). */
+  private async referencedDigests(): Promise<Set<string>> {
+    const live = new Set<string>();
+    let after: string | undefined;
+    for (;;) {
+      const rows = await this.query({ kind: ARTIFACT }, 500, { dir: "desc", after });
+      for (const rec of rows) {
+        const d = (rec.body as { digest?: unknown }).digest;
+        if (typeof d === "string") live.add(d);
+      }
+      if (rows.length < 500) break;
+      after = rows[rows.length - 1].id;
+    }
+    return live;
+  }
+
+  /**
+   * Re-seal every referenced payload under the CURRENT blob key, which is what finishes a KEK
+   * rotation: until it runs, reads depend on the retired key and destroying that key destroys data.
+   *
+   * Reports rather than promises. `foreign > 0` means a payload could not be opened with the keys
+   * this space holds, so the retired key is still load-bearing; `already === scanned` with
+   * `foreign === 0` is the state in which dropping it is safe. A store with no cipher answers
+   * `undefined` rather than a row of zeroes that would read as "nothing to do".
+   */
+  async rewrapBlobs(opts: { dryRun?: boolean } = {}): Promise<RewrapResult | undefined> {
+    if (!this.blobs.rewrap) return undefined;
+    return await this.blobs.rewrap(await this.referencedDigests(), { dryRun: opts.dryRun });
   }
 
   /** Un-stick an expired lease: force it back to available (attempt +1). Only if the lease

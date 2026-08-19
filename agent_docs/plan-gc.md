@@ -217,7 +217,7 @@ re-assert an erasure the report says was undone), and a shredded digest simply n
 the store's listing. Guards: `conformance/suites/gc.ts` ("sweeps an expired artifact",
 "never deletes a re-written shredded digest") and `conformance/suites/blobs.ts` (the port
 contract across all four stores, the grace/touch pair on real mtimes), each proven red by a
-plant. Still open, unchanged: KEK rotation.
+plant. KEK rotation no longer collides with the sweep, and the two passes divide the work: a live digest's keep set covers every key's name, a payload sealed under a key this space does not hold is kept and counted (`BlobGcResult.foreign`) rather than deleted, and `Space.rewrapBlobs` re-seals the referenced ones under the current key. The rewrap is DIGEST-driven and therefore blind to what it cannot name, which is exactly what the sweep's keep-and-count half covers.
 
 ## Phase 3: event GC (analyzed and BUILT 2026-08-06)
 

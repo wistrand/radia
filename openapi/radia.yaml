@@ -687,8 +687,56 @@ paths:
                     required: [scanned, deleted, bytes]
                     properties:
                       scanned: { type: integer, description: "Stored payloads examined." }
+                      foreign: { type: integer, description: "Payloads KEPT because they were sealed under a KEK this space does not hold (a rotation whose retired key was not supplied, or another space sharing the store). Never deleted, always counted." }
                       deleted: { type: integer }
                       bytes: { type: integer, description: "Stored bytes reclaimed (ciphertext size on an encrypted store)." }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+  /ops/rewrap:
+    post:
+      operationId: rewrapBlobs
+      summary: Re-seal artifact payloads under the current blob key
+      description: |
+        Finish a KEK rotation. A blob is sealed under a per-blob DEK wrapped by the space KEK, and
+        its storage name is derived from that key, so a rotated space reads old payloads only while
+        the retired key is still supplied (`RADIA_BLOB_KEK_RETIRED`). This re-seals every payload a
+        surviving `artifact` record references under the CURRENT key, after which the retired key
+        can be destroyed.
+
+        It reports rather than promises. `already == scanned` with `foreign == 0` is the state in
+        which dropping the retired key is safe; `foreign > 0` means some payload could not be
+        opened with the keys this space holds, so it is not. Unreferenced bytes are not rewrapped
+        and never were readable to this pass: a sealed payload can only be opened with its plaintext
+        digest, which comes from the records. They are `gc`'s business.
+
+        Order is write-then-delete, so an interrupted pass leaves a duplicate rather than a
+        referenced artifact with no payload, and re-running finishes it. A live run needs the
+        `sweep` ops power; `dryRun` needs only `observe`. 400 if the store has no key.
+      x-stability: experimental
+      x-phase: "M2"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dryRun: { type: boolean, description: "Report what a live pass would re-seal, writing nothing." }
+      responses:
+        "200":
+          description: rewrap result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [scanned, rewrapped, already, foreign, missing, bytes]
+                properties:
+                  scanned: { type: integer, description: "Referenced payloads found in the store." }
+                  rewrapped: { type: integer, description: "Re-sealed under the current key (0 on dryRun means nothing needed it)." }
+                  already: { type: integer, description: "Already under the current key." }
+                  foreign: { type: integer, description: "Could not be opened with the keys this space holds, so the rotation is not finishable as configured." }
+                  missing: { type: integer, description: "Referenced digests with no stored payload (erased, or swept)." }
+                  bytes: { type: integer, description: "Plaintext bytes re-sealed." }
         "400": { $ref: "#/components/responses/Problem" }
         "403": { $ref: "#/components/responses/Problem" }
   /watches:
@@ -1197,7 +1245,7 @@ paths:
                     properties:
                       idx: { type: integer }
                       eventId: { type: string }
-                      reason: { type: string, enum: [hash_mismatch, broken_link, missing_event, bad_signature, gap, unattested_truncation] }
+                      reason: { type: string, enum: [hash_mismatch, broken_link, missing_event, bad_signature, unknown_key, gap, unattested_truncation] }
                       detail: { type: string }
                   note: { type: string, description: "present when the chain is unsigned" }
                   unsealedNote: { type: string }

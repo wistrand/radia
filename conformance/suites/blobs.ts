@@ -309,6 +309,123 @@ export const blobCryptoSuites: BlobCryptoSuite[] = [
     },
   },
   {
+    // ROTATION, which without a key id is indistinguishable from corruption and from another
+    // space's object. A blob's name is HMAC(KEK, digest), so a new key renames every payload: the
+    // old ones have to stay readable, stay swept-around, and be erasable by the same `delete`.
+    name: "a rotated KEK still reads, still sweeps around, and still erases what the old key sealed",
+    run: async ({ cipher, kek, tempDir }) => {
+      const dir = tempDir();
+      const old = new FileBlobStore(dir, cipher); // the pre-rotation store
+      const ref = await old.put(SECRET);
+
+      const next = new Uint8Array(32).fill(42);
+      const rotated = new FileBlobStore(dir, await BlobCipher.fromKey(next, [kek]));
+      assertEquals(await drain(await rotated.get(ref.digest)), SECRET, "a blob sealed under the retired key must still read");
+      assertEquals((await rotated.stat(ref.digest))?.size, SECRET.byteLength);
+
+      // The sweep keeps EVERY key's name for a live digest, or rotation would delete the estate.
+      const kept = await rotated.retainOnly(new Set([ref.digest]), { graceMs: 0 });
+      assertEquals(kept.deleted, 0, "a live digest sealed under a retired key was deleted");
+
+      // A store that does NOT hold the retiring key must not delete what it cannot open, and must
+      // say so rather than skipping in silence.
+      const blind = new FileBlobStore(dir, await BlobCipher.fromKey(next));
+      const swept = await blind.retainOnly(new Set(), { graceMs: 0 });
+      assertEquals(swept.deleted, 0, "a payload sealed under an unknown key was deleted");
+      assertEquals(swept.foreign, 1, "…and the skip was not reported");
+      assertEquals(await drain(await rotated.get(ref.digest)), SECRET, "the bytes survived the blind sweep");
+
+      // Erasure still reaches it: an old-key copy left behind is a readable payload after a shred.
+      await rotated.delete(ref.digest);
+      assertEquals(await rotated.get(ref.digest), null);
+    },
+  },
+  {
+    // The pass that FINISHES a rotation: without it, the retired key is load-bearing forever and
+    // destroying it destroys data, which is the whole reason rotation existed to be wanted.
+    name: "rewrap re-seals under the current key, and then the retired key can be destroyed",
+    run: async ({ cipher, kek, tempDir }) => {
+      const dir = tempDir();
+      const old = new FileBlobStore(dir, cipher);
+      const ref = await old.put(SECRET);
+
+      const next = new Uint8Array(32).fill(77);
+      const rotated = new FileBlobStore(dir, await BlobCipher.fromKey(next, [kek]));
+      const live = new Set([ref.digest]);
+
+      const preview = await rotated.rewrap!(live, { dryRun: true });
+      assertEquals(preview.rewrapped, 1, "a dry run must report the work");
+      assertEquals(preview.already, 0);
+
+      const done = await rotated.rewrap!(live);
+      assertEquals(done.rewrapped, 1);
+      assertEquals(done.foreign, 0);
+      assertEquals(await drain(await rotated.get(ref.digest)), SECRET, "re-sealed bytes must still read");
+
+      // Idempotent: a second pass finds everything current and says so, which is the signal an
+      // operator acts on before dropping the old key.
+      const again = await rotated.rewrap!(live);
+      assertEquals(again.rewrapped, 0);
+      assertEquals(again.already, again.scanned);
+
+      // THE POINT: a store holding only the new key reads it, and the old copy is gone.
+      const alone = new FileBlobStore(dir, await BlobCipher.fromKey(next));
+      assertEquals(await drain(await alone.get(ref.digest)), SECRET, "the retired key is still needed after a rewrap");
+      const swept = await alone.retainOnly(live, { graceMs: 0 });
+      assertEquals(swept.foreign ?? 0, 0, "an old-key copy was left behind");
+    },
+  },
+  {
+    // The two passes see different things, and the split is the point. A rewrap is DIGEST-driven,
+    // so a payload sealed under a key it does not hold is not merely unopenable, it is unnameable:
+    // the name is HMAC(that key, digest). Keeping such bytes is `retainOnly`'s job, which walks
+    // names; the rewrap can only report that the digest has nothing it can reach.
+    name: "rewrap cannot see what it cannot name, and never re-seals what it cannot verify",
+    run: async ({ cipher, tempDir }) => {
+      const dir = tempDir();
+      const stranger = await BlobCipher.fromKey(new Uint8Array(32).fill(13));
+      const ref = await new FileBlobStore(dir, stranger).put(SECRET);
+
+      const store = new FileBlobStore(dir, cipher); // never held the sealing key
+      const r = await store.rewrap!(new Set([ref.digest]));
+      assertEquals(r.scanned, 0, "a payload under an unknown key is invisible to a digest-driven pass");
+      assertEquals(r.missing, 1);
+      assertEquals(r.rewrapped, 0);
+      // And the pass that DOES see it keeps it, which is the half that prevents data loss.
+      const swept = await store.retainOnly(new Set(), { graceMs: 0 });
+      assertEquals(swept.foreign, 1);
+      assertEquals(await drain(await new FileBlobStore(dir, stranger).get(ref.digest)), SECRET, "the payload was destroyed");
+
+      // A digest nothing stored at all is `missing` too: erasure and GC both produce that state,
+      // and a rewrap is not the verb that decides what a missing blob means.
+      const empty = await store.rewrap!(new Set(["0".repeat(64)]));
+      assertEquals(empty.missing, 1);
+      assertEquals(empty.scanned, 0);
+
+      // A payload at a name this store CAN compute, with its sidecar gone, is damage: `get`
+      // refuses it, and a rewrap must not turn it into a re-sealed copy of raw ciphertext.
+      const mine = await store.put(bytes("sealed by this store"));
+      const shard = `${dir}/${(await cipher.storageName(mine.digest)).slice(0, 2)}`;
+      for (const f of Deno.readDirSync(shard)) if (f.name.endsWith(".key")) Deno.removeSync(`${shard}/${f.name}`);
+      const damaged = await store.rewrap!(new Set([mine.digest]));
+      assertEquals(damaged.foreign, 1, "a sealed payload with no readable key was treated as rewrappable");
+      assertEquals(damaged.rewrapped, 0);
+
+      // And the case the address check is for. A PLAINTEXT blob (written before encryption) has no
+      // GCM tag to catch damage, so a corrupted one would otherwise be sealed under the current key
+      // at a content address its bytes do not match: damage promoted to authenticated damage.
+      const legacy = tempDir();
+      const before = new FileBlobStore(legacy); // no cipher
+      const old = await before.put(bytes("written before the KEK arrived"));
+      const dir2 = `${legacy}/${old.digest.slice(0, 2)}`;
+      Deno.writeFileSync(`${dir2}/${old.digest}`, bytes("not what this address says"));
+      const after = new FileBlobStore(legacy, cipher);
+      const corrupt = await after.rewrap!(new Set([old.digest]));
+      assertEquals(corrupt.foreign, 1, "bytes that do not hash to their address were re-sealed");
+      assertEquals(corrupt.rewrapped, 0);
+    },
+  },
+  {
     name: "enabling encryption does not orphan blobs written before it",
     run: async ({ cipher, tempDir }) => {
       const dir = tempDir();

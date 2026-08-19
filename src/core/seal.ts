@@ -44,30 +44,88 @@ export function chainedEvent(index: number, e: SpaceEvent): ChainedEvent {
   };
 }
 
-/** Signs and checks seals under a key the database does not hold. */
+/**
+ * Signs and checks seals under a key the database does not hold.
+ *
+ * ONE key signs, several may verify. A chain outlives any single key, so a signature carries the
+ * ID of the key that made it, `<kid>:<mac>`, and verification picks by that id. Without it,
+ * rotating the seal key makes every earlier link unverifiable and reports it as tampering, which
+ * is the one verdict this file exists to make trustworthy. A signature with no `:` is from before
+ * key ids and is checked against every key held, newest first.
+ */
 export class SealKey {
-  private constructor(private readonly key: CryptoKey, readonly source: string) {}
+  private constructor(
+    private readonly current: { kid: string; key: CryptoKey },
+    private readonly retired: { kid: string; key: CryptoKey }[],
+    readonly source: string,
+  ) {}
 
-  static async fromBytes(raw: Uint8Array, source: string): Promise<SealKey> {
-    const key = await crypto.subtle.importKey("raw", raw as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, [
-      "sign",
-      "verify",
-    ]);
-    return new SealKey(key, source);
+  static async fromBytes(raw: Uint8Array, source: string, retired: Uint8Array[] = []): Promise<SealKey> {
+    return new SealKey(await entry(raw), await Promise.all(retired.map(entry)), source);
+  }
+
+  /** The key new links are signed under. */
+  get kid(): string {
+    return this.current.kid;
   }
 
   async sign(hash: string): Promise<string> {
-    const mac = await crypto.subtle.sign("HMAC", this.key, new TextEncoder().encode(hash));
-    return b64.encode(new Uint8Array(mac));
+    const mac = await crypto.subtle.sign("HMAC", this.current.key, new TextEncoder().encode(hash));
+    return `${this.current.kid}:${b64.encode(new Uint8Array(mac))}`;
   }
 
-  async verify(hash: string, sig: string): Promise<boolean> {
-    try {
-      return await crypto.subtle.verify("HMAC", this.key, b64.decode(sig) as BufferSource, new TextEncoder().encode(hash));
-    } catch {
-      return false; // a malformed signature is a failed one, not an exception
+  /**
+   * Check a link's signature. `unknown_key` is NOT `false`: a link signed by a key this space no
+   * longer holds is un-checkable, and reporting it as a bad signature would accuse an honest chain
+   * of tampering. The caller decides what an un-checkable link means.
+   */
+  async verify(hash: string, sig: string): Promise<"ok" | "bad" | "unknown_key"> {
+    const at = sig.indexOf(":");
+    const kid = at > 0 ? sig.slice(0, at) : undefined;
+    const mac = at > 0 ? sig.slice(at + 1) : sig;
+    const keys = kid === undefined
+      ? [this.current, ...this.retired] // pre-kid: try everything held
+      : [this.current, ...this.retired].filter((e) => e.kid === kid);
+    if (keys.length === 0) return "unknown_key";
+    for (const e of keys) {
+      try {
+        if (await crypto.subtle.verify("HMAC", e.key, b64.decode(mac) as BufferSource, new TextEncoder().encode(hash))) {
+          return "ok";
+        }
+      } catch {
+        return "bad"; // a malformed signature is a failed one, not an exception
+      }
     }
+    return "bad";
   }
+}
+
+/** Keys kept for VERIFYING links signed before a rotation. Never used to sign. */
+function retiredKeys(raw: string | undefined, where: string): Uint8Array[] {
+  return (raw ?? "").split(",").map((t) => t.trim()).filter(Boolean).map((t) => {
+    const key = b64.decode(t);
+    if (key.byteLength !== 32) throw new UsageError(`${where} must be a comma-separated list of 32-byte base64 keys`);
+    return key;
+  });
+}
+
+/** Import one seal key. The id is derived under its own label, so it identifies the key without
+ *  being a fingerprint to test candidate keys against, and two processes holding the same key
+ *  agree on it without being configured. */
+async function entry(raw: Uint8Array): Promise<{ kid: string; key: CryptoKey }> {
+  const key = await crypto.subtle.importKey("raw", raw as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, [
+    "sign",
+    "verify",
+  ]);
+  const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", concat(raw, new TextEncoder().encode("radia/seal-key-id")) as BufferSource));
+  return { kid: [...bytes.slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join(""), key };
+}
+
+function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.byteLength + b.byteLength);
+  out.set(a, 0);
+  out.set(b, a.byteLength);
+  return out;
 }
 
 /**
@@ -77,7 +135,7 @@ export class SealKey {
  * the file is what makes the local default usable without ceremony. The file lives NEXT TO the
  * database rather than in it, which is the whole point; a copied database is not a copied key.
  */
-export async function loadSealKey(opts: { env?: string; file?: string }): Promise<SealKey | undefined> {
+export async function loadSealKey(opts: { env?: string; file?: string; retiredEnv?: string }): Promise<SealKey | undefined> {
   if (opts.env) {
     const raw = b64.decode(opts.env.trim());
     if (raw.byteLength !== 32) {
@@ -86,15 +144,15 @@ export async function loadSealKey(opts: { env?: string; file?: string }): Promis
           `deno eval 'console.log(btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))))'`,
       );
     }
-    return await SealKey.fromBytes(raw, "env");
+    return await SealKey.fromBytes(raw, "env", retiredKeys(opts.retiredEnv, "RADIA_SEAL_KEY_RETIRED"));
   }
   if (!opts.file) return undefined;
   const existing = readTextFile(opts.file);
   if (existing) {
-    const parsed = JSON.parse(existing) as { seal?: string };
+    const parsed = JSON.parse(existing) as { seal?: string; retired?: string[] };
     const raw = b64.decode((parsed.seal ?? "").trim());
     if (raw.byteLength !== 32) throw new UsageError(`${opts.file} does not contain a 32-byte "seal"`);
-    return await SealKey.fromBytes(raw, opts.file);
+    return await SealKey.fromBytes(raw, opts.file, retiredKeys((parsed.retired ?? []).join(","), `${opts.file} "retired"`));
   }
   const raw = crypto.getRandomValues(new Uint8Array(32));
   writeTextFile(opts.file, JSON.stringify({ seal: b64.encode(raw), createdAt: new Date().toISOString() }, null, 2));
@@ -156,7 +214,7 @@ export interface IntegrityReport {
   failure?: {
     idx: number;
     eventId: string;
-    reason: "hash_mismatch" | "broken_link" | "missing_event" | "bad_signature" | "gap" | "unattested_truncation";
+    reason: "hash_mismatch" | "broken_link" | "missing_event" | "bad_signature" | "unknown_key" | "gap" | "unattested_truncation";
     detail: string;
   };
 }
