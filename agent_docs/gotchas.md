@@ -1772,6 +1772,12 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Agent- and model-facing design
 
+- **A word a tool description defines is what that word MEANS to the model.** `save_procedure` says
+  a saved procedure "becomes one of your tools", so "list tools" routed to the saved-code listing,
+  came back empty, and the assistant reported having no tools with 39 in front of it. The
+  descriptions were right; what was missing was the disposition that its own list is the answer
+  (`systemPrompt`, `examples/chat/client/thread.ts`). Check what a noun is bound to before adding a
+  prompt rule about it.
 - **"The model says it has no tool for that" is a claim to check against the ADVERTISED set.** A
   session offering 22 tools was missing every file tool, so the model wrote files with a code runner
   and said it could not produce a link, which was true: `capability` records for three providers

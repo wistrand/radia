@@ -753,6 +753,11 @@ export class RadiaClient {
       attested?: boolean;
       more: boolean;
     };
+    /** Reference-aware blob GC, on LIVE runs only (a dry pass would walk the whole store to predict
+     *  what a live one reports anyway). `foreign` counts payloads KEPT because they were sealed
+     *  under a key this space does not hold, which is a rotation missing its retired key rather
+     *  than bytes to reclaim: see `rewrapBlobs`. */
+    blobs?: { scanned: number; deleted: number; bytes: number; foreign?: number };
   }> {
     return this.req("POST", "/v0/ops/gc", opts);
   }

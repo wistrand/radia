@@ -45,7 +45,7 @@ ephemeral range; an unrelated outbound connection holding it, even in TIME_WAIT,
 fail with a docker "address already in use" that reads like a stale container and is not one).
 
 Each Postgres test runs in its own ephemeral schema, dropped on close, so it is safe to point at a
-database you care about. The live-server run adds its own storage tests to the embedded 554 (counts move as suites
+database you care about. The live-server run adds its own storage tests to the embedded 753 (counts move as suites
 are added; the claim to check is 0 failed), and it is the only run that actually *contends* for claims, which is why a claim-path
 change needs it (see "Writing a suite" below). The two cases in `concurrency.test.ts` are ignored
 entirely without it.
@@ -80,8 +80,8 @@ docs workflow is now the only thing between a docs commit and the live site.
 | `run.test.ts` | entry point: enumerates implementations, registers every suite against each. `RADIA_CONF_ADAPTERS=postgres` (comma list) narrows to the named adapters; CI's pg job uses it so the embedded matrix is not paid for twice |
 | `adapters.ts` | the implementations under test, and how each is isolated per test: SQLite gets a fresh `:memory:` database, PGlite and Postgres get an ephemeral schema on ONE shared server (see below) |
 | `harness.ts`  | the `Suite` / `BlobSuite` / `BlobCryptoSuite` types and setup/teardown |
-| `suites/`     | one file per behavior area (records, matching, **pushdown soundness**, **graph: children + lineage**, leases + claim fairness, idempotency, events, **the integrity chain incl. direct-SQL tamper cases**, **resource limits**, **the orphaned/starving split**, watches, faults, auth, **compartments: a dedicated kind plus pattern-scoped grants, refused on every write path**, taint, admin + selector-driven remediation, blobs + encryption) |
-| `http.test.ts` | the HTTP boundary, driving `makeHandler` directly: authentication and run renewal, the artifact inline/download allowlist and capability URLs, erasure (410 vs 404, shared payloads, forged shred markers), the ops-tier gate matrix (each `ops_grant` power opens exactly its verbs; no identity root or coordination bypass below full), the event-GC 410/clamp boundary, and a table of wrong-typed fields per endpoint |
+| `suites/`     | one file per behavior area (records, matching, **pushdown soundness**, **graph: children + lineage**, leases + claim fairness, idempotency, events, **the integrity chain incl. direct-SQL tamper cases**, **resource limits**, **the orphaned/starving split**, watches, faults, auth, **compartments: a dedicated kind plus pattern-scoped grants, refused on every write path**, taint, admin + selector-driven remediation, blobs + encryption incl. KEK ROTATION: reads and sweeps under retired keys, the sweep keeping what it cannot open, and the rewrap that lets the retired key be destroyed) |
+| `http.test.ts` | the HTTP boundary, driving `makeHandler` directly: authentication and run renewal, the artifact inline/download allowlist and capability URLs, erasure (410 vs 404, shared payloads, forged shred markers), the ops-tier gate matrix (each `ops_grant` power opens exactly its verbs, `gc` and `rewrap` splitting live/dry across `sweep` and `observe`; no identity root or coordination bypass below full), the event-GC 410/clamp boundary, and a table of wrong-typed fields per endpoint |
 | `backfill.test.ts` | the schema's one migration: rebuilding `record_edges` for a database written before that table existed |
 | `blobmigration.test.ts` | what a migration layer adds over the blob port and the shared suite cannot see (it runs `MigratingBlobStore` with an EMPTY origin): a read falling through without copying, `delete` reaching every layer since an erasure that missed a copy is not one, one keep set sweeping all of them, and `sealed` being false unless every layer seals |
 | `planner.test.ts`  | Postgres planner statistics for declared body paths (`prepareKind`) |

@@ -221,7 +221,9 @@
       No. Fields used for matching and grants must remain visible to the runtime. Large artifacts
       can be encrypted at rest, and applications may encrypt body fields that routing does not use.
       The chat example seals conversation prose end to end while leaving only routing metadata
-      visible.
+      visible. The artifact key can be rotated: each sealed payload names the key that wrapped it,
+      retired keys are kept for reading, and a rewrap pass re-seals what records still reference so
+      the retired key can be destroyed.
     </p>
 
     <h3>Is this complete information-flow control?</h3>

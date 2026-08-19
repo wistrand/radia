@@ -1231,6 +1231,15 @@ Deno.test("http: each ops power opens exactly its verbs; none confers the identi
     assertEquals(liveDenied.status, 403);
     assert((await liveDenied.json()).detail.includes("sweep"), "the refusal must name the missing power");
     assertEquals(await status(handler(post("/v0/ops/gc", {}, swp))), 200);
+    // The rewrap rides the same split, and its refusal must name the same power. 400 rather than
+    // 200 from `swp` here because this space has no blob key: the gate passed, the store said there
+    // is nothing sealed to re-seal, and that distinction is the point of checking the status.
+    assertEquals(await status(handler(post("/v0/ops/rewrap", { dryRun: true }, obs))), 400);
+    const rewrapDenied = await handler(post("/v0/ops/rewrap", {}, obs));
+    assertEquals(rewrapDenied.status, 403);
+    assert((await rewrapDenied.json()).detail.includes("sweep"), "the refusal must name the missing power");
+    assertEquals(await status(handler(post("/v0/ops/rewrap", {}, swp))), 400, "the gate opens; the store has no key");
+    assertEquals(await status(handler(post("/v0/ops/rewrap", {}, med))), 403, "a neighbour's power must not open it");
     // A write power opens no reads.
     assertEquals(await status(handler(get("/v0/ops/stats", swp))), 403);
     assertEquals(await status(handler(get("/v0/ops/stats", med))), 403);

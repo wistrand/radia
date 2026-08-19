@@ -109,8 +109,10 @@ export interface BlobStore {
   /**
    * Re-seal every referenced payload under the CURRENT key, so a retired one can be destroyed.
    *
-   * OPTIONAL, like the adapter's `prepareKind`: a store with no cipher has nothing to rewrap, and
-   * a caller checks rather than assumes. It takes the live digest set for the same reason
+   * OPTIONAL, like the adapter's `prepareKind`, and its PRESENCE is the signal: a store with no
+   * cipher does not offer the method at all, rather than answering with a row of zeroes that reads
+   * as "the rotation is finished". Callers check (`Space.rewrapBlobs` returns undefined, and the
+   * ops route answers 400) instead of interpreting an empty result. It takes the live digest set for the same reason
    * `retainOnly` does, and a sharper one: a sealed payload can only be opened with its plaintext
    * digest (the AAD), and the store cannot derive that from its own listing by construction. So a
    * rewrap covers what records still reference; unreferenced bytes are GC's business.
@@ -143,9 +145,14 @@ export class MemoryBlobStore implements BlobStore {
    *  `touchedAt` is the grace-window clock `retainOnly` reads; a deduped put refreshes it. */
   private readonly blobs = new Map<string, { stored: Uint8Array; size: number; key?: SealedKey; touchedAt: number }>();
 
+  /** Present only on an ENCRYPTED store. A plaintext one has nothing to re-seal, and answering with
+   *  a row of zeroes would read as "the rotation is finished" to anyone asking. */
+  readonly rewrap?: (liveDigests: ReadonlySet<string>, opts?: { dryRun?: boolean }) => Promise<RewrapResult>;
+
   constructor(private readonly cipher?: BlobCipher) {
     this.name = cipher ? "memory+aes-gcm" : "memory";
     this.sealed = cipher !== undefined;
+    if (cipher) this.rewrap = (live, opts) => this.#rewrap(live, opts ?? {});
   }
 
   async put(bytes: Uint8Array): Promise<BlobRef> {
@@ -181,7 +188,7 @@ export class MemoryBlobStore implements BlobStore {
     return Promise.resolve(out);
   }
 
-  async rewrap(liveDigests: ReadonlySet<string>, opts: { dryRun?: boolean } = {}): Promise<RewrapResult> {
+  async #rewrap(liveDigests: ReadonlySet<string>, opts: { dryRun?: boolean }): Promise<RewrapResult> {
     const out = emptyRewrap();
     if (!this.cipher) return out;
     for (const digest of liveDigests) {
@@ -242,9 +249,13 @@ export class FileBlobStore implements BlobStore {
   readonly name: string;
   readonly sealed: boolean;
 
+  /** Present only on an ENCRYPTED store; see `MemoryBlobStore.rewrap`. */
+  readonly rewrap?: (liveDigests: ReadonlySet<string>, opts?: { dryRun?: boolean }) => Promise<RewrapResult>;
+
   constructor(private readonly root: string, private readonly cipher?: BlobCipher) {
     this.name = cipher ? "file+aes-gcm" : "file";
     this.sealed = cipher !== undefined;
+    if (cipher) this.rewrap = (live, opts) => this.#rewrap(live, opts ?? {});
     mkdirp(root);
   }
 
@@ -400,7 +411,7 @@ export class FileBlobStore implements BlobStore {
    * specific here is the ORDER: key sidecar, then payload, then the old pair, so no window leaves a
    * payload whose DEK is missing and none leaves the artifact with nothing to read.
    */
-  async rewrap(liveDigests: ReadonlySet<string>, opts: { dryRun?: boolean } = {}): Promise<RewrapResult> {
+  async #rewrap(liveDigests: ReadonlySet<string>, opts: { dryRun?: boolean }): Promise<RewrapResult> {
     const out = emptyRewrap();
     if (!this.cipher) return out;
     const currentName = async (d: string) => this.path(await this.cipher!.storageName(d));
@@ -537,8 +548,13 @@ export class MigratingBlobStore implements BlobStore {
   readonly sealed: boolean;
   private readonly layers: BlobStore[];
 
+  /** Present when ANY layer can rewrap: a stack whose primary seals and whose origin does not still
+   *  has payloads to re-seal, and `sealed` (which is "every layer") would refuse that case. */
+  readonly rewrap?: (liveDigests: ReadonlySet<string>, opts?: { dryRun?: boolean }) => Promise<RewrapResult>;
+
   constructor(primary: BlobStore, ...origins: BlobStore[]) {
     this.layers = [primary, ...origins];
+    if (this.layers.some((l) => l.rewrap)) this.rewrap = (live, opts) => this.#rewrap(live, opts ?? {});
     this.name = `migrating(${this.layers.map((l) => l.name).join(" <- ")})`;
     // EVERY layer, because the answer decides whether a shred is reported as crypto-shred, and a
     // plaintext origin's copy was merely deleted however well the primary seals.
@@ -571,7 +587,7 @@ export class MigratingBlobStore implements BlobStore {
 
   /** Every layer rewraps its own copies. A blob living in two layers is re-sealed in both, which is
    *  what "the retired key can be destroyed" has to mean when more than one store holds bytes. */
-  async rewrap(liveDigests: ReadonlySet<string>, opts: { dryRun?: boolean } = {}): Promise<RewrapResult> {
+  async #rewrap(liveDigests: ReadonlySet<string>, opts: { dryRun?: boolean }): Promise<RewrapResult> {
     const out = emptyRewrap();
     for (const layer of this.layers) {
       if (!layer.rewrap) continue;

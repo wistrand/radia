@@ -61,7 +61,7 @@ The vocabulary, CLOSED, extended only when a real failure names the next entry:
 |--------------|-------------------------------------------------------------------------------------------|
 | `observe`    | every ops READ, unscoped: `READ_ONLY_OPS` plus integrity, erasures, dry-run, thread, anyone's permissions |
 | `remediate`  | `POST /v0/ops/remediate`, the per-record reclaim/dead-letter/requeue transitions            |
-| `sweep`      | live `POST /v0/ops/gc` (records, compaction, event truncation; dry-run is `observe`)        |
+| `sweep`      | live `POST /v0/ops/gc` (records, compaction, event truncation) and live `POST /v0/ops/rewrap` (re-seal artifact bytes under the current blob key); both dry-run under `observe` |
 | `declassify` | `POST /v0/ops/records/{id}/declassify`                                                      |
 | `purge`      | `POST /v0/ops/records/{id}/shred`                                                           |
 

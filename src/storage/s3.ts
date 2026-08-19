@@ -82,9 +82,13 @@ export class S3BlobStore implements BlobStore {
   readonly name: string;
   readonly sealed: boolean;
 
+  /** Present only on an ENCRYPTED store; see `MemoryBlobStore.rewrap`. */
+  readonly rewrap?: (liveDigests: ReadonlySet<string>, opts?: { dryRun?: boolean }) => Promise<RewrapResult>;
+
   constructor(private readonly cfg: S3Config, private readonly cipher?: BlobCipher) {
     this.name = cipher ? "s3+aes-gcm" : "s3";
     this.sealed = cipher !== undefined;
+    if (cipher) this.rewrap = (live, opts) => this.#rewrap(live, opts ?? {});
   }
 
   /** Create the bucket if it does not exist. NOT called by the store: a running space must never
@@ -183,7 +187,7 @@ export class S3BlobStore implements BlobStore {
   /** Re-seal referenced objects under the current key. One PUT at the new name, then a DELETE of the
    *  old one; a PUT is atomic here, so the only interrupted state is a duplicate, which the next
    *  pass finishes. See the port for why the digest set is an argument rather than a listing. */
-  async rewrap(liveDigests: ReadonlySet<string>, opts: { dryRun?: boolean } = {}): Promise<RewrapResult> {
+  async #rewrap(liveDigests: ReadonlySet<string>, opts: { dryRun?: boolean }): Promise<RewrapResult> {
     const out = emptyRewrap();
     if (!this.cipher) return out;
     for (const digest of liveDigests) {

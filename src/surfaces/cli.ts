@@ -708,7 +708,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           : "";
         // Live sweeps only: a dry blob pass would walk every artifact record and the whole blob
         // directory to predict what the live sweep reports anyway (plan-gc.md phase 4).
-        const b = (r as { blobs?: { scanned: number; deleted: number; bytes: number } }).blobs;
+        const b = r.blobs;
         const blobLine = b && b.deleted > 0
           ? `\nblobs: deleted ${b.deleted} unreferenced of ${b.scanned} (${(b.bytes / 1024).toFixed(1)} KiB reclaimed)`
           : "";

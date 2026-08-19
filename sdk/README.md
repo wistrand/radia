@@ -70,7 +70,7 @@ making decisions rather than making requests, it belongs one directory over.
 **Language coverage.** TypeScript exposes the complete current client surface. Python tracks the frozen
 core: coordination verbs, watches, artifacts, remediation, the basic ops reads, and bootstrap.
 Python tracks that set and nothing more. The inspection surface (`digest`, `thread`, `flows`, `gc`,
-`integrity`, `dryRun`, `queryExplained` / `explain`, `publishInterest`, `queryAll`) is TS-only, because the one consumer
+`rewrapBlobs`, `integrity`, `dryRun`, `queryExplained` / `explain`, `publishInterest`, `queryAll`) is TS-only, because the one consumer
 that drives it (the chat example) is TS. **Credential EXCHANGE is TS-only too, and that one is a
 gap rather than a scoping decision**: a Python `agent_loop` still ends at the 12-hour ceiling. It
 wants the same `definition_token` treatment when a Python consumer needs a session that outlives a
