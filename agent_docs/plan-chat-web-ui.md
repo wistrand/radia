@@ -1,79 +1,126 @@
-# Plan: a web UI for the chat, and the port it unlocks
+# Plan: a web UI for the chat
 
-**Status: PLANNED, nothing built.** Analysis 2026-08-18, sizes measured against the source the same
-day. Two stages, and the ORDER is the point: stage 1 gives the chat a browser front end against
-the real fleet, stage 2 moves the fleet into the tab (plan-browser-space.md,
-plan-webworker-sandbox.md). Stage 1 is worth shipping alone, and it is also the cheapest way to
-de-risk stage 2, because its whole deliverable is a seam both stages need.
+**Status: PLANNED, nothing built.** Analysis 2026-08-18; revised 2026-08-19 to drop the browser
+fleet and narrow the goal. Sizes measured against the source.
 
-## The measurement that decides the shape
+**The goal, stated narrowly:** a page that signs in over SSO, JOINS a space somebody else is already
+running, opens a conversation NAMED IN ITS URL, and takes turns in it. The page holds one run token
+and nothing else. Workers, the provider key and the jail stay where they are.
 
-The chat's logic is Deno-free but ANSI-BOUND, and those are different things:
+Nothing about the space, the fleet or the wire contract changes. This is a client.
 
-- Every extension the chat leans on has ZERO `Deno.*`: `inference.ts`, `turn.ts`, `context.ts`,
-  `model.ts`, `tool-worker.ts`, `capability.ts`, `progress.ts`, `encrypted.ts`.
-- So does the client's protocol half. But `client/turn.ts` (766 lines) imports ELEVEN functions
-  straight from `terminal.ts` and calls them at **44 sites** (`write` x10, `dim` x9, `endStatus`
-  x7, `ensureLine` x6, `answerStream` x3, …), and `markdown.ts` renders to ANSI. Three more files
-  import the terminal: `grants.ts` (`columns`, `dim`, `write`), `waiting.ts` (`endStatus`,
-  `showStatus`), `fleet.ts` (`dim`, `notice`).
-- The Deno usage in the WORKERS is almost entirely `Deno.env.get` config plus one `Deno.exit`;
-  `provider/openrouter.ts` is a plain `fetch`, and `extensions/ts/inference.ts` already takes
-  `complete` as an injected port ("the one function that knows an HTTP API").
+## Dropped: the fleet in the tab
 
-So the port is not "make the chat browser-safe" — it mostly is. The port is **getting the
-renderer out of the protocol**, and that is one refactor serving both stages.
+The earlier second stage moved the worker fleet into Web Workers. It is REMOVED, not deferred:
 
-## Stage 1: a `ChatUI` port, and a DOM implementation of it
+- The chat's demonstration value is its security story, and OS-level isolation is most of it. Web
+  Workers keep separate credentials and grants but not separate process permissions, so "the file
+  worker cannot reach the network" stops being true.
+- The provider key would live in the page, protected by the origin and nothing else.
+- A token plus a model plus any loop is unbounded SPEND, with no process to kill.
+- Whether OpenRouter permits browser-origin calls was never verified, and the fallback (a relay)
+  gives the tab-local story away anyway.
 
-**The deliverable is the seam, not the page.** Define one interface covering what the protocol
-half actually asks the terminal for (streaming answer sink, status line on/off, notice, artifact
-display, width, dim/trunc as formatting hints rather than escape codes), then:
+`plan-webworker-sandbox.md` keeps its own reason to exist: code execution inside the browser SPACE
+(`plan-browser-space.md`, the docs playground). It is not a step toward a fleet in a tab.
 
-1. Extract `ChatUI` and thread it through `turn.ts`, `grants.ts` and `waiting.ts` instead of the
-   direct imports. `markdown.ts`'s `AnswerStream` (`push`/`end`, with a `passthrough`
-   implementation "same interface, no decisions") is the shape to generalise: the hardest part of
-   a chat UI is already behind an interface.
-2. `terminal.ts` becomes ONE implementation, unchanged in behaviour. `deno task chat` must look
-   and feel identical afterwards; the existing suites are the check.
-3. A DOM implementation: messages list, streaming answer, tool-call and progress rendering,
-   artifact links. Markdown renders to HTML here rather than ANSI, which means splitting
-   `markdown.ts`'s PARSE from its ANSI emit.
-4. A page that serves it, on the analysis example's pattern: a client that listens, relays `/v0`
-   with the browser's own token, holds no credential of its own. The fleet stays as Deno
-   processes; the space stays a server.
+## Why a browser client can be thin
 
-**Do not port the terminal itself.** `terminal.ts` (639 lines) and `edit.ts` (352) are a line
-editor, clipboard staging and raw-mode handling; a textarea and the DOM give all of it free.
-Reimplement input, port only the renderer.
+Two things are already built, and together they are most of the work:
 
-## Stage 2: the fleet in the tab
+- **Join mode** (`examples/chat/chat.ts`, selected by the ABSENCE of an operator credential). A
+  session starts no workers, bootstraps nothing, and carries only its own login. `--serve` does the
+  privileged half once. The browser is exactly this session with a different renderer.
+- **The turn is records** (`plan-chat-turn.md`). The client seeds one `llm_call` and renders; a turn
+  worker emits each next link. A dead terminal does not kill a turn, so neither does a closed tab, a
+  reload, or a phone locking its screen. Resuming is re-reading the thread.
 
-Now, and only now, change where things run. Each piece is independently testable because the UI
-is already proven against a real fleet:
+Measured against the source: `sdk/ts/` has ZERO `Deno.*`, and so do the chat client's protocol files
+(`turn.ts`, `thread.ts`, `markdown.ts`, `waiting.ts`, `grants.ts`). Only `terminal.ts` (639 lines),
+`edit.ts` (352), `clipboard.ts`, `fleet.ts` and `config.ts` touch Deno. But `turn.ts` (766 lines)
+imports ELEVEN functions from `terminal.ts` and calls them at **44 sites**, and `markdown.ts` emits
+ANSI. So the port is not "make the chat browser-safe": it is **getting the renderer out of the
+protocol**, and that is the only refactor this plan needs.
 
-- Workers become WEB WORKERS, one per fleet member, each holding only its own definition token.
-  That keeps the fleet's credential separation honest and puts the provider key inside the
-  inference worker rather than the page — so "a session holds no provider key" mostly survives.
-- `config.ts` (25 `Deno.env.get`) becomes page config; `Deno.exit` becomes a rejection.
-- `workers/exec.ts` becomes the Web Worker jail (plan-webworker-sandbox.md), which is the one
-  isolation boundary that survives the move, and the one that matters most.
-- `space/keys.ts` (key files at 0600) becomes the browser platform backend's storage.
+## SSO is the only sign-in
 
-**What the browser costs, stated because the chat's demo value is its security story.** OS-level
-isolation goes: the fleet keeps separate credentials and grants, genuinely enforced, but not
-separate process permissions, so "the file worker cannot reach the network" is no longer true. The
-API key is only as safe as the origin. And a visitor's token plus a model plus any loop is an
-unbounded SPEND, so stage 2 needs a hard per-session cap and no auto-run by default.
+No token paste box, no operator button, no definition token in the page.
 
-**The one external unknown**, and it gates stage 2 alone: whether OpenRouter permits
-browser-origin calls (CORS). Stage 1 does not touch it, since inference stays server-side. If it
-refuses, the fallback is a relay, which contradicts "nothing leaves the tab" less than it sounds
-(a model call leaves the tab by definition) but is worth deciding deliberately.
+- A run token is short-lived and holds no minting power, so a stolen one expires. A definition token
+  in browser storage is a durable credential a person then has to carry between machines.
+- There is no durable half to remember, so IdP deprovisioning bites within one run ceiling
+  (`plan-oidc.md`).
+- The implementation exists twice already and is ~60 lines: `examples/analysis/ui.html`
+  (`oidcStart`/`oidcFinish`) and the console's copy in `src/ui/index.html`. Code + PKCE against the
+  issuer `GET /v0/health` advertises, nonce checked page-side, id_token to `POST /v0/sessions/oidc`
+  for an ordinary run.
 
-## Why this order rather than one jump
+Two things that bite and are already documented in `docker/keycloak/README.md`: a new port needs its
+own entry in **Valid Redirect URIs**, and the page's token-endpoint call needs the origin in **Web
+Origins**, which is a different field. `localhost` and `127.0.0.1` are different origins to an IdP.
 
-Stage 1 ships something useful on its own (a web chat against a server space) and validates
-streaming, tool calls, progress, escalation and the encrypted path in a browser BEFORE anything
-moves. A rendering bug and a port bug never get to be the same bug. Stage 2 then has one UI, one
-seam, and four independent swaps.
+**An enrolled identity holds ZERO grants until this app assigns them.** That is the commonest
+join-mode failure and it looks identical to a broken token. The page states it in the wording
+`chat.ts` already uses ("a valid credential but not this app's grants"), and names `--serve` as the
+fix, rather than showing a raw 403.
+
+## The conversation is named, never enumerated
+
+A session deliberately does not hold `conversation: query`: listing every conversation on the space
+is a real widening to save a keystroke (`resolveConversation` in `chat.ts`). So:
+
+- The conversation id lives in the URL fragment, on the console's precedent (`#c/<id>`), which makes
+  a reload, a bookmark and a shared link all the same mechanism.
+- "New conversation" is a `put` the session already holds, and it rewrites the fragment.
+- There is no conversation picker, and `--conversation last` has no browser equivalent. Both need
+  enumeration.
+
+## Phases
+
+Each phase ships alone and has a check.
+
+**Phase 0: the page, the relay, and sign-in.** Copy `examples/analysis/serve.ts` (a client that
+happens to listen: serves one page, relays `/v0/*` with the CALLER's Authorization header, holds no
+credential). SSO gate, identity read back from `GET /v0/ops/permissions` rather than assumed, the
+missing-grants message. No chat yet.
+*Check:* sign in against `docker/keycloak`, see your own principal and grants. Verify SSE is not
+buffered through the relay before Phase 2 depends on it.
+
+**Phase 1: the `ChatUI` port.** One interface covering what the protocol half asks the terminal for:
+streaming answer sink, status on/off, notice, artifact display, width, dim/truncate as formatting
+HINTS rather than escape codes. Thread it through `turn.ts`, `waiting.ts` and `grants.ts` instead of
+the direct imports; `terminal.ts` becomes one implementation. `markdown.ts`'s `AnswerStream`
+(`push`/`end`, with a passthrough implementation) is the shape to generalise. Split `markdown.ts`'s
+PARSE from its ANSI emit.
+*Check:* `deno task chat` looks and behaves identically; the existing suites (`smoke-render.ts`,
+`smoke-markdown.ts`, `smoke-turnlink.ts`) are the guard.
+
+**Phase 2: the DOM implementation.** Message list, streaming answer, tool calls, progress records,
+artifacts as links and inline images, a stop button on the exported `cancelTurn`. Input is a
+textarea: do NOT port `terminal.ts` or `edit.ts`, which are a line editor, raw mode and clipboard
+staging that the DOM gives free.
+*Check:* a page-level smoke in the chat's own harness, no API key, on `conformance/console.test.ts`'s
+structural precedent.
+
+**Phase 3: attachments and vision.** Upload through the relay, whose header allowlist already
+carries `x-radia-meta`, `x-radia-filename` and `x-radia-parent-ids`. A browser file picker and paste
+replace Ctrl-V staging; the retention rule is unchanged, so the page says an attachment is permanent.
+
+**Phase 4: encrypted conversations.** A person's key is a PAIR PER MACHINE, and a browser profile is
+a new machine (`plan-encryption.md`). So the page generates a key pair into IndexedDB, publishes the
+public half as `person_key`, and can read a conversation only once a machine that already reads it
+enrols this one. Until that lands, a page opening an encrypted conversation REFUSES and says why:
+`assertReadable` is fail-closed, and rendering ciphertext to a person is the failure it exists to
+stop.
+
+## Not in scope
+
+- The fleet, `--serve`, and every privileged setup verb. The page cannot do them and must not offer
+  them.
+- Session-served inspection tools (`session-tools.ts`). They cannot be delegated, and the client
+  chooses whether to offer them, so a browser session simply does not: the model then never calls a
+  tool nothing will answer.
+- Conversation listing, procedure authoring in the page, and terminal input editing.
+- CORS. The relay exists only because the space sends no CORS headers
+  (`research-app-lessons.md`). If the runtime ever allows an origin, the relay becomes a static file
+  server and this plan loses a file.
