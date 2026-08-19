@@ -8,9 +8,9 @@ The runtime provides durability, matching, authorization, lineage and artifact s
 calls and application logic remain in external workers. Grants can restrict operations by record
 kind and content, allowing the payload to participate in the authorization decision.
 
-The name honors Radia Perlman, whose Spanning Tree Protocol showed independent nodes
-building a shared structure with no central controller. In the tradition of Linda, it
-is a lineage homage.
+The name is a homage to Radia Perlman's work. Her Spanning Tree Protocol showed independent nodes
+building a shared structure with no central controller. In the tradition of Linda, the name marks
+that conceptual lineage. Radia Perlman is not affiliated with or an endorser of this project.
 
 > **Status:** The coordination kernel, authorization stack, event chain, flow mining, resource
 > limits, three storage adapters, web console, CLI, MCP adapter and TypeScript/Python SDKs are

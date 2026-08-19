@@ -9,4 +9,5 @@ Key ideas:
 - Work is claimed under a fenced, renewable lease with at-least-once execution.
 - Delivery is at-least-once with at most one valid lease at a time.
 
-The name honors Radia Perlman.
+The name is a homage to Radia Perlman's work. Radia Perlman is not affiliated with or an endorser
+of this project.
