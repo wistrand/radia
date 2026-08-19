@@ -29,6 +29,7 @@ import { handleGetArtifact, handleMintCapability, handleMintPathCapability, hand
 import { handleRemediate, handleRewrap, handleAdmin, handleGc, handleChildren, handleDeclassify, handleDiagnostics, handleEnvelope, handleErasures, handleEnvelopeQuery, handleEvents, handleDigest, handleDryRun, handleFlows, handleIntegrity, handleGetRecord, handleGraph, handleLineage, handleThread, handlePermissions, handleStats } from "./handlers/ops.ts";
 import { handleCreateWatch, handleWatchEvents } from "./handlers/watches.ts";
 import { problem, statusFor } from "./problem.ts";
+import { API_VERSION, VERSION } from "../version.ts";
 import { RadiaError } from "../core/errors.ts";
 import type { StatsScope } from "../storage/adapter.ts";
 import { moduleRelative, readTextFile, serve } from "../platform.ts";
@@ -491,8 +492,8 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
       case "GET /v0/health":
         return Response.json({
           status: "ok",
-          version: "0.0.0",
-          api: "v0",
+          version: VERSION,
+          api: API_VERSION,
           storage: space.storageName,
           now: await space.now(),
           principal, // the resolved caller (so the console can show who it's authenticated as)

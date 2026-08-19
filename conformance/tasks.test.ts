@@ -25,6 +25,18 @@ async function filesIn(dir: string, ext: string): Promise<{ name: string; text: 
   return out;
 }
 
+Deno.test("tasks: the version the binary reports is the version deno.json publishes", async () => {
+  // `scripts/build-release.sh` stamps deno.json's version onto every artifact, while the binary
+  // answers `radia version` from a constant it compiled in, because it has no deno.json beside it.
+  // Two homes, so they can drift, and a binary reporting a version its package does not carry is
+  // worse than one reporting nothing.
+  const config = JSON.parse(await Deno.readTextFile(join(root, "deno.json"))) as { version: string };
+  const source = await Deno.readTextFile(join(root, "src/version.ts"));
+  const declared = source.match(/export const VERSION = "([^"]*)"/)?.[1];
+  assert(declared, "src/version.ts no longer declares VERSION the way this guard reads it");
+  assertEquals(declared, config.version, "src/version.ts and deno.json disagree about the version");
+});
+
 Deno.test("tasks: every `deno task` a workflow or script runs is defined in deno.json", async () => {
   const config = JSON.parse(await Deno.readTextFile(join(root, "deno.json"))) as { tasks: Record<string, string> };
   const defined = new Set(Object.keys(config.tasks));

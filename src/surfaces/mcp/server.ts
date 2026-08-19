@@ -29,8 +29,11 @@ import type { Pattern } from "../../core/matching.ts";
 import { TOOLS } from "./tools.ts";
 import { flag } from "../../flags.ts";
 import { stdin, writeStderr, writeStdout } from "../../platform.ts";
+import { VERSION } from "../../version.ts";
 
-const SERVER_INFO = { name: "radia", version: "0.0.0" };
+// The third place this string used to be written by hand. An MCP client shows it in its own
+// server list, so a stale literal here misreports the build to a person reading someone else's UI.
+const SERVER_INFO = { name: "radia", version: VERSION };
 /** Echoed back to the client when it asks for a version we know; otherwise we answer with this. */
 const DEFAULT_PROTOCOL = "2025-06-18";
 const KNOWN_PROTOCOLS = new Set(["2024-11-05", "2025-03-26", DEFAULT_PROTOCOL]);

@@ -24,6 +24,7 @@ import { brokeredInvoker } from "../../extensions/ts/broker.ts";
 import { auditCompartment } from "../../extensions/ts/compartment.ts";
 import { defaultBase, resolveDefinitionToken, resolveToken, saveLogin, storedObserver } from "../credentials.ts";
 import { flag, flags, has, positional } from "../flags.ts";
+import { API_VERSION, VERSION } from "../version.ts";
 import { env, onShutdown, serve, stdin, UsageError } from "../platform.ts";
 import type { Lease } from "../storage/adapter.ts";
 
@@ -32,6 +33,8 @@ const HELP = `radia <command> [options]
 Options common to every command:
   --url <base>       space base URL (default: $RADIA_URL, else http://127.0.0.1:7788)
   --json             raw JSON output (default: a compact human table)
+
+  version            this build and the wire contract it speaks; needs no space and no credential
 
 Inspect
   health                              backend, DB clock, resolved principal
@@ -278,6 +281,13 @@ export async function ssoLogin(
 export async function runCli(cmd: string, argv: string[]): Promise<number> {
   if (cmd === "help") {
     console.log(HELP);
+    return 0;
+  }
+  // Before the client, the token and the base URL, because this has to answer on a machine with no
+  // space running, no credential and no network: an installer verifying what it just put on the
+  // PATH, and a bug report naming a build, are both that machine.
+  if (cmd === "version" || cmd === "--version") {
+    console.log(has(argv, "--json") ? JSON.stringify({ version: VERSION, api: API_VERSION }) : `radia ${VERSION}  api ${API_VERSION}`);
     return 0;
   }
   const base = flag(argv, "--url") ?? defaultBase();

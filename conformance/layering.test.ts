@@ -141,7 +141,10 @@ Deno.test("[layering] a surface is a /v0 client, so it takes no runtime VALUE fr
   // over `/v0` exactly as an external client does, and a shortcut through `Space` would make them
   // privileged in a way no other client can be.
   const root = new URL("surfaces/", SRC);
-  const infrastructure = /(^|\/)(platform|flags|credentials|paths)\.ts$/;
+  // Host infrastructure a surface may take a VALUE from, because none of it is the runtime:
+  // the platform seam, flag parsing, where a credential lives, where files go, and what this
+  // build calls itself. Widening this list is the thing to think twice about.
+  const infrastructure = /(^|\/)(platform|flags|credentials|paths|version)\.ts$/;
   const violations: string[] = [];
   for (const file of await tsFiles(root, "src/surfaces/")) {
     const text = code(await Deno.readTextFile(new URL(file.replace("src/surfaces/", ""), root)));
