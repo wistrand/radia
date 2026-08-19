@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 64" width="200" height="64" role="img" aria-labelledby="title">
+  <title id="title">radia</title>
+  <!-- The horizontal lockup: the favicon's figure plus the wordmark. Same story as favicon.svg and
+       og.svg, drawn once more at this size: four records, three waiting and one claimed, the
+       claimed one double-struck.
+
+       NO BACKGROUND PLATE, unlike the favicon, so it composites onto a page rather than carrying
+       its own dark square. The wordmark follows the reader's theme instead, and the DEFAULT is the
+       dark ink: anything that ignores the media query (a rasterizer, an older consumer) is almost
+       always compositing onto white, and the failure to avoid is a wordmark nobody can see.
+
+       The font is left GENERIC on purpose, exactly as og.svg argues: this file is consumed as an
+       image, so it cannot reach the page's webfont, and naming one that is not installed falls back
+       to something worse than the default. -->
+  <style>
+    .ink { fill: #17171b; }
+    @media (prefers-color-scheme: dark) { .ink { fill: #e8e8ea; } }
+  </style>
+
+  <g fill="none" stroke="#60a5fa" stroke-width="2.5">
+    <rect x="12" y="12" width="17" height="17" rx="5"/>
+    <rect x="35" y="12" width="17" height="17" rx="5"/>
+    <rect x="12" y="35" width="17" height="17" rx="5"/>
+  </g>
+  <g fill="none" stroke="#a5b4fc" stroke-width="2">
+    <rect x="34" y="34" width="19" height="19" rx="5"/>
+    <rect x="38.5" y="38.5" width="10" height="10" rx="2.5"/>
+  </g>
+
+  <text class="ink" x="74" y="44" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="34" font-weight="bold">radia</text>
+</svg>

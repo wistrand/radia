@@ -265,4 +265,4 @@ repository and is not the source of truth for any of it.
 
 ## License
 
-TBD.
+Apache 2.0. See [LICENSE](LICENSE).

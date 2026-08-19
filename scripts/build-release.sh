@@ -61,11 +61,13 @@ for row in "${TARGETS[@]}"; do
   pkg="$OUT/npm/radia-$os-$arch"
   mkdir -p "$pkg/bin"
   [[ -f "$OUT/bin/$target/${bin%.exe}" ]] && cp "$OUT/bin/$target/${bin%.exe}" "$pkg/bin/$bin" || true
+  cp LICENSE "$pkg/LICENSE"
   cat > "$pkg/package.json" <<JSON
 {
   "name": "@radia/radia-$os-$arch",
   "version": "$VERSION",
   "description": "radia binary for $os/$arch",
+  "license": "Apache-2.0",
   "os": ["$os"],
   "cpu": ["$arch"],
   "files": ["bin"]
@@ -87,6 +89,8 @@ done
 # published package while the docs and the SDK README both advertised it. `conformance/docs.test.ts`
 # resolves the site's import lines against this map.
 mkdir -p "$OUT/npm/radia/sdk" "$OUT/npm/radia/extensions"
+# Named in `files` and in `license-files` below, so it has to be here rather than assumed.
+cp LICENSE "$OUT/npm/radia/LICENSE"
 cp sdk/ts/*.ts "$OUT/npm/radia/sdk/"
 cp -r extensions/ts/*.ts "$OUT/npm/radia/extensions/"
 cp extensions/README.md "$OUT/npm/radia/extensions/"
@@ -99,8 +103,9 @@ cat > "$OUT/npm/radia/package.json" <<JSON
   "name": "radia",
   "version": "$VERSION",
   "description": "Content-routed coordination runtime for LLM agents",
+  "license": "Apache-2.0",
   "bin": { "radia": "bin/radia.js" },
-  "files": ["bin", "sdk", "extensions"],
+  "files": ["bin", "sdk", "extensions", "LICENSE"],
   "exports": {
     ".": "./sdk/client.ts",
     "./loop": "./sdk/loop.ts",
@@ -149,6 +154,7 @@ chmod +x "$OUT/npm/radia/bin/radia.js"
 # pip: one wheel-shaped package with the same launcher idea, plus the Python SDK.
 # ---------------------------------------------------------------------------
 mkdir -p "$OUT/pypi/radia/_bin"
+cp LICENSE "$OUT/pypi/LICENSE"
 cp sdk/py/radia.py "$OUT/pypi/radia/client.py"
 
 cat > "$OUT/pypi/pyproject.toml" <<TOML
@@ -160,6 +166,8 @@ build-backend = "setuptools.build_meta"
 name = "radia"
 version = "$VERSION"
 description = "Content-routed coordination runtime for LLM agents"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 dependencies = []
 
