@@ -355,7 +355,10 @@ live at the top of the relevant `agent_docs/` file, not here.
   conformance suite runs against every implementation of every port (storage adapters AND the blob
   store, encrypted or not), embedded AND a live Postgres, in CI (`.github/workflows/ci.yml`). This
   is the only guard against drift, and it is only a guard while it runs: the pg half was manual
-  until 2026-08-04 while this sentence already claimed otherwise. The fault-injection matrix
+  until 2026-08-04 while this sentence already claimed otherwise. `ci.yml` skips PROSE-ONLY commits
+  (`docs/**`, `agent_docs/**`, `**/*.md`; `docs.yml` runs `deno task quick` for the site instead),
+  which never narrows this guard: `paths-ignore` skips a workflow only when EVERY changed file
+  matches, so any change to code runs the whole matrix. The fault-injection matrix
   (plan-validation.md) is still to come.
 - **The wire contract is what's frozen, not the implementation.** OpenAPI-first;
   implementation language and storage backend can change behind the stable protocol, and

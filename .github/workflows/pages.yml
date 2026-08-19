@@ -33,6 +33,10 @@ jobs:
         with:
           deno-version: v2.x
           cache: true
+      # The site's own guard, before it becomes the live site. `ci.yml` now skips prose-only commits
+      # (see its header), so without this a docs push could publish without any check having run.
+      # About a second, against the ~minute this job already spends bundling.
+      - run: deno task quick
       - run: deno task bundle-browser
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -56,6 +56,13 @@ blob columns against the `docker/s3/` endpoint, the same recipe a local space us
 Postgres run was manual, while CLAUDE.md's invariant said the suite runs on every implementation
 "in CI from day one" — an invariant naming a guard that was not running.
 
+A PROSE-ONLY commit runs none of it. `ci.yml` ignores `docs/**`, `agent_docs/**` and `**/*.md`
+(`paths-ignore` skips only when EVERY changed file matches, so prose beside code still runs the
+lot), and `docs.yml` runs `deno task quick` for `docs/**` instead. The filter is one-directional
+on purpose: `docs.test.ts` checks the site against `src/surfaces/cli.ts` and the npm exports map,
+so it keeps running on every code change. `pages.yml` runs `quick` before it publishes, since the
+docs workflow is now the only thing between a docs commit and the live site.
+
 ## Contract requirements
 
 - **Write the suite before or alongside the behavior**, never after. A contract test written
@@ -79,6 +86,7 @@ Postgres run was manual, while CLAUDE.md's invariant said the suite runs on ever
 | `blobmigration.test.ts` | what a migration layer adds over the blob port and the shared suite cannot see (it runs `MigratingBlobStore` with an EMPTY origin): a read falling through without copying, `delete` reaching every layer since an erasure that missed a copy is not one, one keep set sweeping all of them, and `sealed` being false unless every layer seals |
 | `planner.test.ts`  | Postgres planner statistics for declared body paths (`prepareKind`) |
 | `registry.test.ts` | latest-wins projections over hand-made ids and timestamps |
+| `tasks.test.ts`    | every `deno task` a workflow or script invokes exists in `deno.json`. Written after `check` was pasted over by a new task and `embedded` failed at its first step on every run: the task nobody can run is the one nobody sees fail locally |
 | `openapi.test.ts`  | the frozen contract against the router, both directions: every documented operation is routed, and every `/v0` path the router names is documented |
 | `notifier.test.ts` | the watch wakeup state machine: who wakes, when the cross-instance poll runs |
 | `concurrency.test.ts` | the fault matrix's CONTENDED half: the two claim-path races that need real parallel connections, so they skip without `RADIA_PG_URL` |

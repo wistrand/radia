@@ -9,13 +9,30 @@
 # postgres adapter column plus the two pg-only files (RADIA_CONF_ADAPTERS narrows it), because
 # re-running the embedded matrix there doubled the paid minutes for zero coverage. A failure in
 # `postgres` therefore always names the adapter, never "the tests".
+#
+# PROSE-ONLY COMMITS SKIP ALL OF IT (`docs.yml` covers the published site in about a second). Three
+# jobs is a three-minute floor, since each is billed rounded up to the whole minute, and this one
+# also apt-installs bubblewrap and starts three containers. `paths-ignore` skips the workflow only
+# when EVERY changed file matches, so a commit touching prose AND code still runs the lot.
+#
+# What must NOT be moved here: `docs.test.ts` checks the site against `src/surfaces/cli.ts` and the
+# npm exports map, so renaming a CLI verb breaks it. The filter is one-directional on purpose, and
+# the docs test keeps running on every code change.
 
 name: ci
 
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - 'agent_docs/**'
+      - '**/*.md'
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - 'agent_docs/**'
+      - '**/*.md'
 
 # A push stream to main was paying for every superseded commit's full run. Only the newest
 # commit's verdict matters; in-flight runs for the same ref are cancelled by the next push.

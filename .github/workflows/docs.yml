@@ -1,0 +1,35 @@
+# The published site's own guard, for commits that touch nothing else.
+#
+# `ci.yml` ignores `docs/**`, because three jobs, an apt-install and three containers is a poor
+# trade for a typo. What the site actually needs is `conformance/docs.test.ts` (its CLI verbs
+# against `src/surfaces/cli.ts`, its imports against the npm exports map, links, anchors, sidebar
+# labels, external hosts, banned prose) plus `http.test.ts`, which pins the served favicon to
+# `docs/favicon.svg`. Both are in `deno task quick`, which runs in about a second.
+#
+# This is also the only check standing between a docs commit and `pages.yml` publishing it, which
+# is why it exists rather than the filter alone.
+
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths: ['docs/**']
+  pull_request:
+    paths: ['docs/**']
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+          cache: true
+      # The structural guards only: no PGlite boot, no sockets, no timers.
+      - run: deno task quick
