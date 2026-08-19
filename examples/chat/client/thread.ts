@@ -5,11 +5,12 @@
 // history is stored once (linear, not quadratic, with no re-embedding), the whole conversation is
 // reconstructible from the space, and every message is a record you can watch in the Feed.
 //
-// The one piece of client-held state is `nextIndex`, and it is a single-writer assumption: two
-// REPLs on one conversationId would collide on `index`. Making it space-authoritative needs a
-// claim-and-append protocol, which would obscure the thing this example exists to show.
+// The one piece of client-held state is `nextIndex`, and it is no longer a single-writer
+// assumption: `append` CLAIMS its slot with an idempotency key, so a second client (a tab, the
+// terminal) loses the race rather than writing on top of the winner. See `append` for what that
+// fixes and what it does not.
 
-import type { RadiaClient } from "../../../sdk/ts/client.ts";
+import { type RadiaClient, RadiaClientError } from "../../../sdk/ts/client.ts";
 import { type ConversationKey, sealBody } from "../../../extensions/ts/encrypted.ts";
 import { sessionOwner } from "../space/roles.ts";
 
@@ -52,19 +53,17 @@ export class Thread {
   }
 
   /**
-   * Reattach to an existing conversation.
+   * Attach to an existing conversation WITHOUT writing to it.
    *
-   * `nextIndex` is the only state this class holds, so resuming is entirely a matter of recovering
+   * `nextIndex` is the only state this class holds, so attaching is entirely a matter of recovering
    * it. The transcript itself was never in the process. The highest existing index gives it in one
    * query, which is exactly what `index` being a declared SORTABLE path is for.
    *
-   * A fresh system message is appended rather than inheriting the old one. The prompt is a record
-   * written at creation and the inference-worker always sends it, never windowing it out, so a
-   * resumed conversation would otherwise keep running under whatever disposition was current
-   * months ago. Two system messages in the thread is the lesser problem: the model reads the later
-   * one as the standing instructions, and the earlier is honest history.
+   * Writing nothing is the whole difference between joining a thread and taking it over: a viewer
+   * (a second tab, a read-only window) must leave no trace, and appending is a write. `resume` is
+   * this plus that append, so the two cannot drift.
    */
-  static async resume(client: RadiaClient, id: string, who: Identity, key?: ConversationKey): Promise<Thread> {
+  static async attach(client: RadiaClient, id: string, key?: ConversationKey): Promise<Thread> {
     const last = await client.query(
       { kind: "message", match: { conversationId: id }, orderBy: [{ path: "index", dir: "desc" }] },
       1,
@@ -73,6 +72,20 @@ export class Thread {
     const thread = new Thread(client, id, key);
     thread.nextIndex = Number((last[0].body as { index?: number }).index ?? 0) + 1;
     thread.startedAt = thread.nextIndex;
+    return thread;
+  }
+
+  /**
+   * Reattach and take the thread up: `attach`, then a fresh system message.
+   *
+   * The prompt is appended rather than inherited. It is a record written at creation and the
+   * inference-worker always sends it, never windowing it out, so a resumed conversation would
+   * otherwise keep running under whatever disposition was current months ago. Two system messages in
+   * the thread is the lesser problem: the model reads the later one as the standing instructions,
+   * and the earlier is honest history.
+   */
+  static async resume(client: RadiaClient, id: string, who: Identity, key?: ConversationKey): Promise<Thread> {
+    const thread = await Thread.attach(client, id, key);
     await thread.append({
       role: "system",
       content: `${systemPrompt(who)}\nThis conversation's id is ${id}.\n` +
@@ -92,7 +105,9 @@ export class Thread {
     return this.startedAt;
   }
 
-  /** The index the next `llm_call` should read up to. */
+  /** The index the next `llm_call` should read up to, and therefore the turn's own `turnAt`. Unique
+   *  per turn because `append` claims its slot: that is what stops two concurrent turns sharing an
+   *  identity, which is the collision that mattered. */
   get upToIndex(): number {
     return this.nextIndex - 1;
   }
@@ -111,23 +126,73 @@ export class Thread {
   }
   private lastId: string | undefined;
 
+  /**
+   * Append at the next slot, CLAIMING it rather than assuming it.
+   *
+   * `nextIndex` is one client's idea of where the transcript ends, and a second client (a tab, the
+   * terminal, a phone) holds its own. Two of them appending at once used to write two messages at
+   * one index, and the damage was not the display order: `turnAt` is the index the turn started at,
+   * so two turns shared an identity and the workers addressing `{turnAt, round, role}` could answer
+   * with each other's records.
+   *
+   * The claim is the idempotency key. A key reused with a DIFFERENT request is refused
+   * (`idempotency_conflict`), and the runtime makes exactly one writer win even on pooled
+   * connections, so the loser learns the slot is taken, re-reads the end of the transcript, and
+   * takes the next one. That is compare-and-append, out of a primitive that is already there.
+   *
+   * TWO LIMITS, both stated because they bound what this fixes. The key is scoped to the DURABLE
+   * IDENTITY behind the caller (`Space.idem`), so it serializes one person's clients and not two
+   * people's — which is the case that exists, since a conversation's grants scope to its owner. And
+   * an identical message racing for one slot is DEDUPED rather than refused (same key, same
+   * request), so both clients get the one record: sending the same words twice at the same position
+   * yields one message.
+   */
   async append(msg: OutgoingMessage, parentIds: string[] = []): Promise<string> {
-    const body = { conversationId: this.id, owner: sessionOwner(), index: this.nextIndex++, ...msg };
-    const { id } = await this.client.put({
-      kind: "message",
-      // `owner` is the identity binding a grant can scope on, and it is stamped even when the
-      // session is scoped by conversation instead: a record that carries both can be read under
-      // either posture, so switching RADIA_CHAT_SCOPE does not blind a session to its own history.
-      // The runtime enforces it rather than trusting it: under identity scoping the write pattern
-      // is `{owner}`, so a session physically cannot stamp another identity here.
-      //
-      // Sealed HERE rather than by the caller: every message this session writes goes through this
-      // one method, so a new call site cannot forget. Unkeyed, so the nonce is random.
-      body: this.key ? await sealBody(body, "message", this.key) : body,
-      parentIds: [this.id, ...parentIds],
-    });
-    this.lastId = id;
-    return id;
+    // Bounded: each attempt moves one slot forward against a live writer, and a loop that cannot
+    // find a free slot in this many tries is not racing, it is broken.
+    for (let attempt = 0;; attempt++) {
+      const index = this.nextIndex;
+      const key = `msg:${this.id}:${index}`;
+      const body = { conversationId: this.id, owner: sessionOwner(), index, ...msg };
+      try {
+        const { id } = await this.client.put({
+          kind: "message",
+          // `owner` is the identity binding a grant can scope on, and it is stamped even when the
+          // session is scoped by conversation instead: a record that carries both can be read under
+          // either posture, so switching RADIA_CHAT_SCOPE does not blind a session to its own
+          // history. The runtime enforces it rather than trusting it: under identity scoping the
+          // write pattern is `{owner}`, so a session physically cannot stamp another identity here.
+          //
+          // Sealed HERE rather than by the caller: every message this session writes goes through
+          // this one method, so a new call site cannot forget. Keyed by the slot claim, so the
+          // ciphertext of a REPLAYED write is identical and replays instead of reading as a
+          // different request (plan-encryption.md).
+          body: this.key ? await sealBody(body, "message", this.key, key) : body,
+          parentIds: [this.id, ...parentIds],
+        }, key);
+        this.nextIndex = index + 1;
+        this.lastId = id;
+        return id;
+      } catch (e) {
+        const taken = e instanceof RadiaClientError && e.code === "idempotency_conflict";
+        if (!taken || attempt >= 20) throw e;
+        // Somebody else is writing here. Re-read where the transcript actually ends rather than
+        // incrementing blindly: several messages may have landed while this one was being composed.
+        await this.resync();
+        if (this.nextIndex <= index) this.nextIndex = index + 1;
+      }
+    }
+  }
+
+  /** Re-read the end of the transcript. The cursor is the only state this class holds, so this is
+   *  the whole of catching up with what other clients wrote. */
+  private async resync(): Promise<void> {
+    const last = await this.client.query(
+      { kind: "message", match: { conversationId: this.id }, orderBy: [{ path: "index", dir: "desc" }] },
+      1,
+    );
+    const highest = Number((last[0]?.body as { index?: number })?.index ?? -1);
+    this.nextIndex = Math.max(this.nextIndex, highest + 1);
   }
 }
 

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<!--
+  The chat's web UI (agent_docs/plan-chat-web-ui.md). MARKUP ONLY: every decision lives in app.ts,
+  bundled to app.js, so this page runs under `script-src 'self'` with no inline script at all.
+
+    deno task bundle-chat-web     # writes app.js (gitignored)
+
+  The page talks to the space through this app's own relay (same origin), carrying the browser's own
+  run token. The app holds no credential.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The space's own base URL, injected by serve.ts. The page reaches `/v0` through this app's
+     relay and never needs it for that; what it is for is LINKING INTO THE CONSOLE, which the
+     browser may reach by a different name than this process does. A meta tag rather than a
+     variable, because the page carries no inline script. -->
+<meta name="radia-space" content="__SPACE_URL__">
+<title>radia chat</title>
+<style>
+  :root { color-scheme: light dark; --fg: #16181d; --muted: #6b7280; --bg: #fff; --panel: #f6f7f9; --line: #e3e6ea; --err: #b42318; --accent: #2f5bea; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e6e8ec; --muted: #9aa3b2; --bg: #101216; --panel: #171a20; --line: #262b33; --err: #ff9d92; --accent: #8aa6ff; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; display: flex; flex-direction: column; background: var(--bg); color: var(--fg);
+         font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+  header .name { font-weight: 600; }
+  header .spacer { flex: 1; }
+  .pill { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel);
+          border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
+  button { font: inherit; padding: 7px 13px; border-radius: 8px; border: 1px solid var(--line);
+           background: var(--panel); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.link { border: 0; background: none; padding: 0 6px; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; }
+
+  /* the gate */
+  #gate { max-width: 540px; margin: 12vh auto; padding: 0 16px; text-align: center; }
+  #gate p { margin: 14px 0; }
+  #gate-note { color: var(--err); font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+  #boot { color: var(--muted); }
+
+  /* the conversation */
+  #app { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  #transcript { flex: 1; overflow-y: auto; padding: 18px 16px 8px; max-width: 900px; width: 100%; margin: 0 auto; }
+  .user { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+          padding: 8px 12px; margin: 14px 0 4px; white-space: pre-wrap; }
+  /* Somebody else's question in a conversation more than one client is watching. */
+  .user.other { background: none; border-style: dashed; color: var(--muted); }
+  #viewing { max-width: 900px; width: 100%; margin: 0 auto; padding: 6px 16px; color: var(--muted); font-size: 13px; }
+  .log, .answer, .notice, .artifact { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 13.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .answer { margin: 2px 0 6px; }
+  .log { color: var(--muted); }
+  .notice { color: var(--muted); border-left: 2px solid var(--line); padding-left: 8px; margin: 6px 0; }
+  .artifact { margin: 6px 0; }
+  .artifact-line { color: var(--muted); }
+  .media { display: block; max-width: 100%; margin: 6px 0; border: 1px solid var(--line); border-radius: 8px; }
+  .b { font-weight: 600; color: var(--fg); }
+  .i { font-style: italic; }
+  .s { text-decoration: line-through; }
+  .dim { color: var(--muted); }
+  .code { color: var(--accent); }
+
+  /* the composer */
+  #status { padding: 2px 16px 6px; color: var(--muted); font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+            max-width: 900px; width: 100%; margin: 0 auto; }
+  #composer { border-top: 1px solid var(--line); padding: 10px 16px 14px; }
+  #composer .row { display: flex; gap: 8px; align-items: flex-end; max-width: 900px; margin: 0 auto; }
+  #compose { flex: 1; resize: vertical; min-height: 44px; max-height: 40vh; padding: 10px 12px;
+             border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); font: inherit; }
+  #staged { max-width: 900px; margin: 0 auto 6px; color: var(--muted); font-size: 12.5px; }
+  #foot { max-width: 900px; margin: 6px auto 0; color: var(--muted); font-size: 12px; display: flex; gap: 14px; flex-wrap: wrap; }
+  #foot .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+
+<header>
+  <span class="name">radia chat</span>
+  <span class="spacer"></span>
+  <span class="pill" id="who" hidden></span>
+  <button id="signout" hidden>Sign out</button>
+</header>
+
+<div id="gate">
+  <p id="boot" class="muted">Loading. If this stays here, the UI bundle is missing: run <code>deno task bundle-chat-web</code>.</p>
+  <p class="muted">This chat runs on a space somebody else is already serving. Sign in and you join it.</p>
+  <p><button class="primary" id="signin">Sign in with SSO</button></p>
+  <p id="gate-note"></p>
+</div>
+
+<div id="app" hidden>
+  <div id="transcript"></div>
+  <div id="status" hidden></div>
+  <div id="viewing" hidden>
+    Another tab is driving this conversation, so this one is watching.
+    <button class="link" id="takeover">Take over</button>
+  </div>
+  <div id="composer">
+    <div id="staged" hidden></div>
+    <div class="row">
+      <textarea id="compose" placeholder="Ask something. Enter sends, Shift+Enter is a newline. Paste or drop a file to attach it."></textarea>
+      <button id="attach" title="Attach a file">Attach</button>
+      <button class="primary" id="send">Send</button>
+      <button id="stop" hidden>Stop</button>
+    </div>
+    <input type="file" id="file" multiple hidden>
+    <div id="foot">
+      <span>conversation <span class="mono" id="conv"></span></span>
+      <span>in a terminal: <span class="mono" id="resume-cmd"></span></span>
+      <a id="graph" target="radia-console" hidden>the turn as records ↗</a>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/app.js"></script>

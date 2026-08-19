@@ -40,6 +40,8 @@ const SUITES = [
   { name: "render", file: "smoke-render.ts", about: "what the chat draws: a background writer that must not split a streaming answer, a status line that must fit the window, and colour that must not reach a pipe" },
   { name: "markdown", file: "smoke-markdown.ts", about: "rendering the answer while it arrives: the same text must render identically whether it comes whole, a line at a time, or one character at a time" },
   { name: "provider", file: "smoke-provider.ts", about: "what the provider reports while a model is still writing: a tool call's arguments stream too, and the usage the record keeps" },
+  { name: "live", file: "smoke-live.ts", about: "two clients on one conversation: what the other one's messages look like here, what a viewer must not write, and finding a turn already in flight" },
+  { name: "web", file: "smoke-web.ts", about: "the web UI's server half: a relay that holds no credential, artifact headers that survive it, and watches that stream and resume" },
   { name: "docs", file: "smoke-docs.ts", about: "reading a documentation-sized corpus: the large files a search used to skip in silence, and whether a hit inside one can actually be read" },
 ];
 

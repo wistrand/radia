@@ -12,7 +12,10 @@ import { registerChatKinds } from "./space/kinds.ts";
 import { bootstrap, mintSession, setSessionOwner } from "./space/roles.ts";
 import { Thread } from "./client/thread.ts";
 import { runTurn, ToolSet } from "./client/turn.ts";
-import { __captureOutput, __useStatusLine } from "./client/terminal.ts";
+import { __captureOutput, __useStatusLine, terminalUI } from "./client/terminal.ts";
+import { installUI } from "./client/ui.ts";
+
+installUI(terminalUI); // this suite captures what the terminal draws during a real turn
 
 const PORT = 7824;
 const url = `http://127.0.0.1:${PORT}`;

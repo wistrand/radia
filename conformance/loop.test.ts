@@ -617,3 +617,43 @@ Deno.test("reactor: a refused watch is reported ONCE and the tick keeps the reac
     await s.close();
   }
 });
+
+Deno.test("loop: watch:false claims on the tick alone, and opens no stream at all", async () => {
+  // For a host with a CONNECTION BUDGET rather than a preference (agent_docs/plan-chat-web-ui.md):
+  // a browser allows six per origin over HTTP/1.1, shared across tabs, so a page that parks one per
+  // kind spends its allowance on wakeups and queues its own requests behind them. What must hold is
+  // that turning them off costs latency and nothing else: the take-side poll was always the
+  // correctness argument, and this proves the claim still lands without a single watch being made.
+  let watches = 0;
+  const s = await newWorkerSpace((req) => {
+    if (req.method === "POST" && new URL(req.url).pathname === "/v0/watches") watches++;
+    return undefined; // counted, then handled normally
+  });
+  const stop = new AbortController();
+  const handled: string[] = [];
+  try {
+    const loop = agentLoop(s.client, {
+      name: "w",
+      patterns: [{ kind: "task" }],
+      watch: false,
+      pollMs: 200,
+      signal: stop.signal,
+      log: () => {},
+      handle: (rec) => {
+        handled.push(rec.id);
+        return Promise.resolve();
+      },
+    });
+    await s.space.put({ kind: "task", body: { tag: "a" } });
+    await eventually(() => handled.length === 1, "the tick claimed the work with no wakeup");
+    // A second one, because the first could have been the boot pass rather than the tick.
+    await s.space.put({ kind: "task", body: { tag: "b" } });
+    await eventually(() => handled.length === 2, "and keeps claiming");
+    assertEquals(watches, 0, "no watch was ever created");
+    stop.abort();
+    await loop;
+  } finally {
+    stop.abort();
+    await s.close();
+  }
+});

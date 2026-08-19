@@ -20,6 +20,17 @@ export interface LoopOptions {
   patterns: Pattern[];
   leaseSeconds?: number;
   pollMs?: number; // fallback tick when no wakeup arrives
+  /**
+   * Open watch streams at all. Default true; `false` leaves the loop on its tick alone.
+   *
+   * For a host with a CONNECTION BUDGET rather than one with a preference: a browser allows six
+   * per origin over HTTP/1.1, shared across tabs, so a page that parks one per kind spends its
+   * whole allowance on wakeups and then queues its own requests behind them. Costing nothing but
+   * latency is what makes this safe to turn off — the take-side poll is already the correctness
+   * argument here, and a watch is a wakeup hint, exactly as `ReactorOptions.patterns` says of the
+   * fact side. `patterns` still decides what is claimed either way.
+   */
+  watch?: boolean;
   signal?: AbortSignal;
   /**
    * How many claims this worker may hold AT ONCE. Default 1: strictly sequential, the behaviour
@@ -97,7 +108,8 @@ export async function agentLoop(client: RadiaClient, o: LoopOptions): Promise<vo
   // nowhere: this loop swallowed handler exceptions by default, and three separate defects in one
   // afternoon each presented as "the tool call timed out" with an empty log.
   const report = o.log ?? ((msg: string) => console.error(msg));
-  const kinds = [...new Set(o.patterns.map((t) => t.kind))];
+  // One watch per distinct KIND, or none where the host cannot spend a connection on one.
+  const kinds = o.watch === false ? [] : [...new Set(o.patterns.map((t) => t.kind))];
 
   // Keep this run's credential alive for as long as the loop runs. Run tokens are short (15 min) so
   // a leaked one stops working; without renewal every long-running agent simply stopped claiming

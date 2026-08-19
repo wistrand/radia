@@ -37,14 +37,17 @@ export const SESSION_TOOL_NAMES: string[] = SESSION_TOOL_SCHEMAS.map((s) => s.fu
 /**
  * Claim and answer this session's own inspection calls, until `signal` aborts.
  *
- * Runs in the REPL process on the session's credential, so the answer is exactly what the person
- * asking is allowed to see: a scoped session gets 403 on `/ops` here, which is the correct answer
- * and the same one it got when a worker held its token.
+ * Runs in the SESSION's process on the session's credential, so the answer is exactly what the
+ * person asking is allowed to see: a scoped session gets 403 on `/ops` here, which is the correct
+ * answer and the same one it got when a worker held its token. That process is a REPL or a browser
+ * tab; nothing here knows which, which is why the page can serve these at all.
  */
 export function serveSessionTools(
   session: RadiaClient,
   signal: AbortSignal,
   keys?: (conversationId: string, owner?: string) => Promise<ConversationKey | undefined>,
+  /** False serves on the claim loop's tick alone, for a host with a connection budget (a tab). */
+  watch = true,
 ): Promise<string[]> {
   return serveTools(session, {
     provider: "session",
@@ -56,6 +59,7 @@ export function serveSessionTools(
     schemas: [], // served, never advertised: see the header
     // These WAIT (a query, an ops read) rather than work, and a turn can ask for several at once.
     concurrency: 4,
+    ...(watch ? {} : { watch: false }),
     signal,
   });
 }

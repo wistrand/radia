@@ -13,6 +13,10 @@ import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { bootstrap, mintSession } from "./space/roles.ts";
 import { ToolSet } from "./client/turn.ts";
+import { installUI } from "./client/ui.ts";
+import { terminalUI } from "./client/terminal.ts";
+
+installUI(terminalUI); // a suite prints, and the protocol half no longer brings a terminal with it
 import { readWorkspace } from "../../extensions/ts/workspace.ts";
 
 const PORT = 7799;

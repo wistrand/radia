@@ -24,7 +24,8 @@ The imported realm contains:
   console is a public client and sends no secret. `--oidc-audience` is this client id (the
   id_token's `aud`).
 - Redirect URIs and web origins for the console on `127.0.0.1:7788` and `localhost:7788`, the
-  analysis example on `:8081` (both host spellings), plus `http://127.0.0.1:8253/*` for the CLI's
+  analysis example on `:8081` and the chat's web UI on `:8082` (both host spellings), plus
+  `http://127.0.0.1:8253/*` for the CLI's
   loopback sign-in (`radia login --sso`). A different `--port` needs matching entries (admin
   console → Clients → radia-console). NOTE: the import only runs against a fresh database — an
   already-imported realm needs these added in the admin UI, or `docker compose down && up` to

@@ -20,7 +20,7 @@
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import { activeByKey, activeSet, grantKey, RESERVED_KINDS } from "../../../sdk/ts/client.ts";
-import { columns, dim, write } from "./terminal.ts";
+import { columns, dim, write } from "./ui.ts";
 
 interface RequestBody {
   conversationId?: string;

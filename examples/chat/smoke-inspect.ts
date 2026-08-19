@@ -18,6 +18,10 @@ import { registerChatKinds } from "./space/kinds.ts";
 import { CHAT_USER, mintSession } from "./space/roles.ts";
 import { INSPECT_SCHEMAS, makeInspectTools } from "../../extensions/ts/agent-tools.ts";
 import { reviewGrantRequests } from "./client/grants.ts";
+import { installUI } from "./client/ui.ts";
+import { terminalUI } from "./client/terminal.ts";
+
+installUI(terminalUI); // a suite prints, and the protocol half no longer brings a terminal with it
 
 const PORT = 7802;
 const url = `http://127.0.0.1:${PORT}`;

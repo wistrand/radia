@@ -47,6 +47,91 @@ Join mode is selected by the absence of an operator credential. A joined session
 kinds, mint workers, grant itself access, enumerate other users' conversations or reach the
 operations plane.
 
+## Join from a browser
+
+`--web` serves a page beside the fleet, so joining needs no checkout and no Deno:
+
+```bash
+OPENROUTER_API_KEY=sk-or-... deno task chat -- --serve --auto-grant --web   # prints the URL
+deno task bundle-chat-web && deno task chat-web -- --url http://127.0.0.1:7788 --port 8082
+```
+
+The page is markup; its logic is a bundle built from `web/*.ts` (gitignored). `--serve --web` builds
+it for you, so only the standalone command above needs `bundle-chat-web` first.
+
+The page signs in with SSO only and holds one run token: there is no paste box, because a
+definition token in browser storage is a durable credential. The page server holds no credential of
+its own. It serves one file and relays `/v0` with the caller's own Authorization header, which is
+also why it exists at all: the space sends no CORS headers, so a page on another origin cannot call
+`/v0` directly.
+
+The IdP must know the page's origin twice over, in Valid Redirect URIs (`http://127.0.0.1:8082/*`)
+and in Web Origins (`http://127.0.0.1:8082`); `docker/keycloak` already lists both spellings of
+port 8082. See [../../agent_docs/plan-chat-web-ui.md](../../agent_docs/plan-chat-web-ui.md) for what
+the page does next, and for the parts of a browser client that a terminal one never had to answer.
+
+The page runs the same turn logic as the terminal client, through the output port in
+`client/ui.ts`: it signs in, attaches to the conversation named in its URL fragment
+(`#c/<id>`), renders that conversation's history, and takes turns. Artifacts open as links,
+with images, audio and video previewed inline and everything else opened on the isolated
+artifact origin under a capability minted when you click. An encrypted conversation is refused
+rather than shown as ciphertext; open those in the terminal until browser keys exist.
+
+Attach a file with the button, a paste or a drop. Staging works as it does in the terminal: the
+`[attach …]` placeholder in the box is what gets uploaded when you send, so deleting it first means
+the bytes were never stored. Attachments carry no retention and are therefore permanent.
+
+The page serves its own inspection tools, so asking the assistant about the space works there as
+it does in the terminal. They cannot be delegated to a worker: a delegated run carries neither the
+ops plane nor a self-scoped grant, so the session that asks is the one that answers. In a tab that
+claim loop runs on its tick with no watch stream, which is what keeps the page inside a browser's
+six connections per origin.
+
+Every client on a conversation now sees what the others say: the page renders their messages
+inline, the terminal reports them as notices. Reload mid-answer, or open the page on a turn the
+terminal started, and the same turn is picked up rather than lost. The terminal and the page can both type into one
+conversation: an append claims its slot, so two clients take different ones rather than writing over
+each other. Two tabs of one browser still elect a single writer between them, with a Take over
+button on the other, because two boxes on one conversation is confusing rather than unsafe.
+
+## Test with several clients
+
+Four processes, in this order. Only the first two are setup; everything after them is a client.
+
+```bash
+# 1. the IdP, for the page's SSO sign-in (run `docker compose down` first if the realm predates
+#    port 8082). Skip this and the terminal client still works; the page has no way in without it.
+cd docker/keycloak && docker compose up
+
+# 2. the space, trusting it. Writes the operator credential under ./.radia for step 3.
+deno task dev --db --oidc-issuer http://localhost:8080/realms/radia --oidc-audience radia-console
+
+# 3. the fleet and the page, once, by whoever holds that credential
+OPENROUTER_API_KEY=sk-or-... deno task chat -- --serve --auto-grant --web
+
+# 4. a terminal client, signed in as the same person the browser will be
+deno run -A src/main.ts login --sso        # opens a browser tab; log in as demo / radia
+deno task chat
+```
+
+Then open <http://127.0.0.1:8082> and click **Sign in with SSO**. To join a conversation the other
+client already has open, follow the link each one prints: the terminal's banner shows a `web` line
+(`http://127.0.0.1:8082/#c/<id>`) whenever a page answers on that host, and the page's footer shows
+the matching `deno task chat -- --conversation <id>`. Set `RADIA_CHAT_WEB` (or `--web-url`) if the
+page is served somewhere the terminal will not find by probing.
+
+What to try with both open:
+
+- ask a question in one; the other renders the answer as it streams (the page inline, the terminal
+  as notices)
+- reload the page mid-answer: it rejoins the turn already running rather than losing it
+- type in both: appends claim their slot, so neither overwrites the other
+- open a second tab on the same conversation: it attaches read-only, with **Take over** to move the
+  writer between them
+
+Without an `OPENROUTER_API_KEY`, skip step 3 and run `deno task bundle-chat-web && deno task
+chat-web` instead: sign-in, history and the live view all work, but nothing answers a question.
+
 ## Architecture
 
 ```mermaid
@@ -205,10 +290,18 @@ the `smoke-*.ts` suffixes in this directory.
 | `client/fleet.ts` | worker processes and their credentials |
 | `client/thread.ts` | conversation records and system instructions |
 | `client/turn.ts` | seed a turn and render worker output |
+| `client/ui.ts` | the output port the protocol half draws through |
+| `client/live.ts` | what other clients say, on both front ends |
+| `client/attach.ts` | bytes to an artifact, and the marker the assistant reads |
 | `client/waiting.ts` | watches, progress and stall reporting |
 | `client/terminal.ts` | terminal output and stdin ownership |
 | `client/edit.ts` | pure line-editor state machine |
 | `client/attachments.ts` | staged clipboard attachments |
+| `web/serve.ts` | the page server and its `/v0` relay |
+| `web/ui.html` | the page, markup only |
+| `web/app.ts` | the browser client: sign in, attach, take turns |
+| `web/dom-ui.ts` | the output port, rendered into a document |
+| `web/auth.ts` | SSO sign-in and silent renewal |
 | `workers/turn.ts` | durable turn advancement |
 | `workers/router.ts` | untiered-to-tiered model routing |
 | `workers/inference.ts` | provider binding for the inference extension |

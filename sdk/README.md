@@ -98,6 +98,10 @@ Delivery is **at-least-once**. A handler with side effects must be idempotent at
 boundary. A fenced worker keeps running until it observes `lease_lost`, so physical execution can
 overlap.
 
+`watch: false` runs `agentLoop` on its poll alone, for a host with a connection budget rather than a
+preference: a browser allows six per origin over HTTP/1.1, shared across tabs. It costs latency and
+nothing else, because the poll is the correctness argument and a watch is a wakeup hint.
+
 **The handler is told when it stops holding the lease**, which is what makes that last sentence
 actionable: TS gets a third argument, an `AbortSignal`; Python gets a third parameter, a
 `threading.Event` (passed only to a handler that declares it, so two-parameter handlers are

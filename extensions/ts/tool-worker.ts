@@ -119,6 +119,9 @@ export interface ServeOptions {
    * overlapping trades latency for contention. See agent_docs/plan-scaling.md.
    */
   concurrency?: number;
+  /** Passed through to `agentLoop`: false serves on the tick alone, for a host that cannot spend a
+   *  connection per kind on wakeups (a browser tab). */
+  watch?: boolean;
   kinds?: Partial<TurnKinds>;
   signal?: AbortSignal;
   /**
@@ -196,6 +199,7 @@ export async function serveTools(client: RadiaClient, opts: ServeOptions): Promi
     patterns: Object.keys(opts.tools).map((tool) => ({ kind: "tool_call", match: { tool } })),
     ...(opts.leaseSeconds ? { leaseSeconds: opts.leaseSeconds } : {}),
     ...(opts.concurrency ? { concurrency: opts.concurrency } : {}),
+    ...(opts.watch === false ? { watch: false } : {}),
     handle: async (rec: RadiaRecord, c: RadiaClient) => {
       const raw = rec.body as ToolCallBody;
       const callId = rec.id;

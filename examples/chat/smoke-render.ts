@@ -20,8 +20,13 @@
 //   transcript carried `\x1b[2m` around a third of its lines. THIS SUITE runs with stdout piped,
 //   which is exactly the condition the rule is about.
 
-import { __captureOutput, columns, dim, ensureLine, flushNotices, holdLine, notice, statusText, write } from "./client/terminal.ts";
+import { __captureOutput, columns, dim, ensureLine, flushNotices, holdLine, notice, statusText, terminalUI, write } from "./client/terminal.ts";
 import { showArgs, showOutput } from "./client/turn.ts";
+import { installUI } from "./client/ui.ts";
+
+// What this suite asserts on is what the TERMINAL draws, and the protocol half reaches its surface
+// through the port now, so the surface has to be chosen before anything runs.
+installUI(terminalUI);
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {

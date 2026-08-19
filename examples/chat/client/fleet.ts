@@ -249,6 +249,42 @@ export function launchFleet(tokens: Bootstrapped, fleetKey?: FleetKeyPair): Deno
   return procs;
 }
 
+/**
+ * Start the web UI beside the fleet (`--serve --web`, agent_docs/plan-chat-web-ui.md).
+ *
+ * A SEPARATE PROCESS rather than a listener inside this one, and that is the whole reason it lives
+ * here with the other spawns: `--serve` holds the operator credential, and the process bound to a
+ * port should not be the process holding the credential that can do anything on the space.
+ *
+ * Its permissions are the narrowest of anything this launcher starts: reach the network, read one
+ * directory. No `--allow-env`, so it cannot pick up a token from the environment even by accident.
+ */
+export function launchWebUi(webPort: number, host = "127.0.0.1"): Deno.ChildProcess {
+  // The page's script is a BUILD OUTPUT (gitignored), so a fresh checkout has none and the page
+  // would load into a message about a missing bundle. Built here, before the server starts, because
+  // "one URL and one click" cannot have a build step in front of it. 20ms, and it also means
+  // editing the browser client and restarting is the whole edit loop.
+  const built = new Deno.Command("deno", {
+    args: ["bundle", "--minify", "-o", "examples/chat/web/app.js", "examples/chat/web/app.ts"],
+    stdout: "null",
+    stderr: "piped",
+  }).outputSync();
+  if (!built.success) {
+    notice(dim(`[web] the UI bundle failed to build:\n${new TextDecoder().decode(built.stderr).trim()}`));
+  }
+  return spawn("web", [
+    "--allow-net",
+    "--allow-read=examples/chat/web",
+    "examples/chat/web/serve.ts",
+    "--url",
+    url,
+    "--port",
+    String(webPort),
+    "--host",
+    host,
+  ]);
+}
+
 /** Start a space of our own when none is running. */
 export function spawnSpace(): Deno.ChildProcess {
   return new Deno.Command("deno", {

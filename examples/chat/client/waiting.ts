@@ -12,7 +12,7 @@
 //      failure rather than slowness, so the chat names it instead of burning its timeout in silence.
 
 import type { RadiaClient } from "../../../sdk/ts/client.ts";
-import { endStatus, showStatus } from "./terminal.ts";
+import { endStatus, showStatus } from "./ui.ts";
 
 const WAKE_FALLBACK_MS = 250;
 const WAKE_KINDS = ["llm_chunk", "message", "tool_result"];

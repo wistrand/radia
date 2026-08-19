@@ -13,7 +13,7 @@ import type { Thread } from "./thread.ts";
 import { sessionOwner } from "../space/roles.ts";
 import { type CapabilityBody, capabilityKey, collapseByTool } from "../../../extensions/ts/capability.ts";
 import { assertReadable, type ConversationKey, openBody } from "../../../extensions/ts/encrypted.ts";
-import { answerStream, columns, dim, endStatus, ensureLine, holdLine, notice, showArtifact, statusLineOn, trunc, write } from "./terminal.ts";
+import { answerStream, columns, dim, endStatus, ensureLine, holdLine, notice, showArtifact, statusLineOn, trunc, write } from "./ui.ts";
 import { Waiter, waitWake } from "./waiting.ts";
 
 
@@ -97,11 +97,17 @@ export async function runTurn(
   thread: Thread,
   tools: ToolSet,
   onToolWait?: ToolWaitHook,
+  /** Follow a turn ALREADY IN FLIGHT instead of seeding one (`findOpenTurn`). The turn lives in the
+   *  space, so the client that started it is not the client that has to finish watching it: a closed
+   *  tab, a reload or a second window all resume here. Everything after the seed is identical, which
+   *  is why this is a parameter rather than a second loop. */
+  resumeFrom?: OpenTurn,
 ): Promise<void> {
   cancel = new AbortController();
   // OUTSIDE the try, because the catch needs it: by then the cursor has advanced past everything
-  // rendered, and a cancel naming that index would name a turn that never started.
-  const turnAt = thread.upToIndex;
+  // rendered, and a cancel naming that index would name a turn that never started. A resumed turn
+  // takes it from the CALL, so a cancel still names the turn that is actually running.
+  const turnAt = resumeFrom ? resumeFrom.turnAt : thread.upToIndex;
   // Also outside, and for the same reason: `callId` advances a round at a time, but a cancel belongs
   // to the TURN, so it parents to the seed rather than to whichever round was in flight.
   let seedId: string | null = null;
@@ -117,7 +123,7 @@ export async function runTurn(
     // invent it. Everything after this is a worker reacting to a record: the model call, the tool
     // calls, the next round and the terminus all belong to `workers/turn.ts`. What is left here is
     // a RENDER loop, which decides nothing and only waits for records and prints them.
-    let callId: string | null = (await client.put({
+    let callId: string | null = resumeFrom ? resumeFrom.callId : (await client.put({
       kind: "llm_call",
       // `owner` rides along so a worker can copy it onto the result and chunks. That is what lets
       // a grant bind records the SESSION did not write but that were produced for it.
@@ -136,7 +142,7 @@ export async function runTurn(
     })).id;
     seedId = callId;
 
-    for (let round = 0;; round++) {
+    for (let round = resumeFrom ? 1 : 0;; round++) {
       // One blank line to open the TURN, none between its rounds. A tool-heavy turn was spending
       // three blank lines per round on separation nobody needed: each round already begins with its
       // own `assistant>`.
@@ -264,6 +270,47 @@ async function nextCall(client: RadiaClient, conversationId: string, afterId: st
     await waitWake(400);
   }
   throw new Error("timed out waiting for the next round. Is the turn worker running?");
+}
+
+/** A turn already running, for a client that did not start it. */
+export interface OpenTurn {
+  /** The UNTIERED call, which is the one everything is keyed to: the router re-dispatches under a
+   *  new id but the inference worker streams against the original. */
+  callId: string;
+  turnAt: number;
+}
+
+/**
+ * The turn this conversation is in the middle of, if it is in one.
+ *
+ * The turn lives in the space, so the client that asked the question is not the client that has to
+ * be watching when it is answered: a closed tab, a reload, or a second window all pick it up from
+ * here. Four ways a turn is NOT open, and each has to be checked, because following a finished turn
+ * means sitting on `INFERENCE_DEADLINE_MS` of silence and then reporting a timeout that never was:
+ * no call at all, a `turn_complete` (the round cap), a `cancel` (the person stopped it), or an
+ * answer with no tool calls, which is a final answer and the end of the turn.
+ */
+export async function findOpenTurn(client: RadiaClient, conversationId: string): Promise<OpenTurn | null> {
+  const rows = await client.query(
+    { kind: "llm_call", match: { conversationId, tier: { $exists: false } } },
+    1,
+    { dir: "desc" },
+  );
+  const call = rows[0];
+  if (!call) return null;
+  const turnAt = (call.body as { turnAt?: number }).turnAt;
+  if (typeof turnAt !== "number") return null;
+  // Nobody is coming for a turn whose deadline passed: the worker resumes one only while it is in
+  // the future, so this is the same test it applies, against the same field.
+  if (call.deadlineAt && Date.parse(call.deadlineAt) <= Date.now()) return null;
+  if (await client.readOne({ kind: "turn_complete", match: { conversationId, turnAt } })) return null;
+  if (await client.readOne({ kind: "cancel", match: { conversationId, turnAt } })) return null;
+  const answer = await client.readOne({ kind: "message", match: { callId: call.id } });
+  if (!answer) return { callId: call.id, turnAt }; // still generating
+  const calls = (answer.body as { tool_calls?: unknown[] }).tool_calls;
+  // Answered WITH tool calls means the turn is still moving (a tool is running, a round is coming);
+  // answered without means that was the final answer.
+  return Array.isArray(calls) && calls.length > 0 ? { callId: call.id, turnAt } : null;
 }
 
 /**

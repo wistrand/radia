@@ -15,6 +15,10 @@
 /docs/playground/console.html
 /docs/playground/vendor/
 
+# The chat web UI's bundle (deno task bundle-chat-web). Built on demand from
+# examples/chat/web/*.ts, never committed; the page and its sources are what is tracked.
+/examples/chat/web/app.js
+
 # Everything a local space writes: embedded databases, artifact blobs, and the space KEK.
 # One directory by design (src/paths.ts), so this is the whole runtime footprint and deleting it
 # resets local state. NEVER commit it: the KEK decrypts every blob beside it, and the database

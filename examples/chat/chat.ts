@@ -55,7 +55,7 @@ import {
 } from "./space/keys.ts";
 import { type ConversationKey, NoConversationKeyError, sealConversation } from "../../extensions/ts/encrypted.ts";
 import { apiKey, encryptMode, EXEC_TIMEOUT_MS, execRoots, loginDefinitionToken, loginSource, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
-import { FLEET_PROVIDERS, launchFleet, spawnSpace } from "./client/fleet.ts";
+import { FLEET_PROVIDERS, launchFleet, launchWebUi, spawnSpace } from "./client/fleet.ts";
 import { retireProviderCapabilities } from "../../extensions/ts/capability.ts";
 import { denoSandbox } from "../../extensions/ts/sandbox.ts";
 import { declareSandbox } from "../../extensions/ts/sandbox-registry.ts";
@@ -64,12 +64,20 @@ import { SESSION_TOOL_SCHEMAS, serveSessionTools } from "./client/session-tools.
 import { Thread } from "./client/thread.ts";
 import { cancelTurn, runTurn, TurnCancelled } from "./client/turn.ts";
 import { watchWakeups } from "./client/waiting.ts";
-import { dim, endStatus, holdLine, lineReader, notice, releaseTerminal, showStatus, tty, watchCancel, write } from "./client/terminal.ts";
+import { liveView } from "./client/live.ts";
+import { dim, endStatus, holdLine, lineReader, notice, releaseTerminal, showStatus, terminalUI, tty, watchCancel, write } from "./client/terminal.ts";
+import { installUI } from "./client/ui.ts";
 import { reviewGrantRequests } from "./client/grants.ts";
 import { clipboardReader, missingClipboardTool, readClipboard } from "./client/clipboard.ts";
 import { staging } from "./client/attachments.ts";
-import { mediaTypeFor } from "./util.ts";
+import { attachArtifact } from "./client/attach.ts";
+import { arg, mediaTypeFor } from "./util.ts";
 import { sleep } from "./util.ts";
+
+// This process draws on a terminal, so it says so before anything can draw. The protocol half
+// (turn/waiting/grants) reaches its surface through client/ui.ts and no longer knows what a
+// terminal is; installing is the one thing that decides which front end this is.
+installUI(terminalUI);
 
 // The key belongs to whoever LAUNCHES THE FLEET, because the inference and image workers are the
 // only processes that call a provider. A joining session starts no workers, so demanding one of it
@@ -100,6 +108,10 @@ if (!loginToken && !Deno.args.includes("--serve")) {
 
 const procs: Deno.ChildProcess[] = [];
 const shutdown = new AbortController();
+
+/** Where the web UI is served, if it is. One definition for `--serve --web` and for the probe that
+ *  prints the link in an ordinary session. */
+const webPort = Number(arg("--web-port") ?? "8082");
 
 function cleanup() {
   // FIRST, and on every path that reaches here. The prompt owns raw mode for the whole session, so
@@ -219,7 +231,20 @@ if (serveOnly && admin) {
   if (autoGrant) {
     watchAutoGrants(admin, shutdown.signal, (m) => notice(dim(m)));
   }
+  // `--web`: serve the browser UI beside the fleet, so joining costs one URL and one click instead
+  // of a checkout and a Deno (agent_docs/plan-chat-web-ui.md). A separate process, spawned by the
+  // launcher; this one holds the operator credential and must not be the one listening.
+  const web = Deno.args.includes("--web") ? `http://127.0.0.1:${webPort}` : "";
+  if (web) procs.push(launchWebUi(webPort));
+
   write(`\nfleet serving ${url}. Sessions join with:  deno task chat\n`);
+  if (web) {
+    write(`Or in a browser, with nothing installed:  ${web}\n`);
+    write(dim(`  Send people that URL; they sign in with SSO and hold nothing else.\n`));
+    // The IdP has to know this origin by both spellings, and the two fields are separate. Said here
+    // because the failure lands on the person clicking, not on whoever configured the realm.
+    write(dim(`  The IdP needs ${web}/* in Valid Redirect URIs and ${web} in Web Origins.\n`));
+  }
   write(
     autoGrant
       ? `Auto-granting every enrolled identity. To keep somebody out, RETIRE THEIR MAPPING\n` +
@@ -584,8 +609,51 @@ field(
 // when a terminal can still be clicked through, and because nothing else advertises that the space
 // has a console at all.
 field("graph", `${url}/#graph/${thread.id}${dim("  the turn as records, with timings")}`);
+
+/**
+ * The web UI for this space, when somebody is serving one.
+ *
+ * PROBED, not configured and not discovered from a record. A record would mean a new kind and a new
+ * grant, and a grant added later reaches nobody already admitted (extensions/ts/enrolment.ts), which
+ * is a real cost for a convenience link. Config would mean every person setting the thing they came
+ * here to be told. A probe costs one request at boot and is the only one of the three that can say
+ * "there is a page there" rather than "there should be": it prints nothing when nothing answers.
+ * `--web-url` / `RADIA_CHAT_WEB` overrides it for a page on another host or port.
+ */
+async function webUiUrl(): Promise<string | undefined> {
+  const explicit = arg("--web-url") ?? Deno.env.get("RADIA_CHAT_WEB");
+  if (explicit) return explicit.replace(/\/+$/, "");
+  try {
+    const guess = `${new URL(url).protocol}//${new URL(url).hostname}:${webPort}`;
+    const res = await fetch(`${guess}/`, { signal: AbortSignal.timeout(700) });
+    // The page's own marker, so a different service on that port is not mistaken for it.
+    return res.ok && (await res.text()).includes('name="radia-space"') ? guess : undefined;
+  } catch {
+    return undefined; // nothing there, or not reachable from here: say nothing
+  }
+}
+const webUi = await webUiUrl();
+if (webUi) field("web", `${webUi}/#c/${thread.id}${dim("  this conversation in a browser")}`);
 // Procedures belong to a conversation, so the tool set can only be complete once there is one.
 await tools.scopeTo(thread.id);
+
+// True while THIS process is rendering a turn. The live view holds foreign messages until it is
+// false, so nothing lands inside an answer.
+let turnRunning = false;
+
+// What somebody ELSE says in this conversation, from another client (the web UI, a second terminal).
+// As NOTICES, not as a transcript: the prompt owns the cursor here, and `notice` is the queue that
+// exists so out-of-band output never lands inside an answer. A watch as the wakeup hint, because a
+// terminal can afford one; the tick underneath is what makes it correct.
+void liveView({
+  client: session,
+  conversationId: thread.id,
+  accountedFor: () => thread.upToIndex,
+  busy: () => turnRunning,
+  patterns: [{ kind: "message", match: { conversationId: thread.id } }],
+  render: "notice",
+  signal: shutdown.signal,
+}).catch(() => {/* the session is over; nothing left to follow */});
 
 // Wait for the workers to publish their capabilities (the watch fills the set). Up to ten seconds
 // of it, so it PRINTS: silence here reads as a hang.
@@ -615,24 +683,11 @@ field("paste", clipboard ? `${clipboard}  ${dim("Ctrl-V attaches an image, a PDF
 write(dim("\n  Ctrl-D to quit, Escape or Ctrl-C to cancel a turn.\n"));
 holdLine(false); // and whatever the fleet said while the banner was printing lands now, in order
 
-/** Store bytes as an artifact of this conversation and return the marker that goes in the message. */
-async function attach(bytes: Uint8Array, mediaType: string, filename: string): Promise<string> {
-  // No size check here on purpose: the space holds the ceiling (413 artifact_too_large) and the
-  // vision worker holds its own, tighter one. A third number in the client is a third number to
-  // drift, and it would refuse files that are perfectly storable but merely too big to LOOK at.
-  const { id, size } = await session.putArtifact(bytes, {
-    mediaType,
-    filename,
-    // The stamp the GRANT matches on the way in. Without it the write is refused rather than
-    // misfiled, which is the correct order for a scope check.
-    meta: { conversationId: conversation.id, owner },
-    // Bytes off the local filesystem, which is exactly what the label names. The exec worker stamps
-    // the same one for the same reason; nothing bars it today, and the point of a closed label set
-    // is that provenance is stated when it is known rather than invented later.
-    taint: ["file"],
-  });
-  return `[attached ${filename} · ${mediaType} · ${size >= 1024 * 1024 ? `${Math.round(size / 1024 / 1024)} MB` : `${Math.round(size / 1024)} KB`} · artifactId ${id}]`;
-}
+/** Store bytes as an artifact of this conversation and return the marker that goes in the message.
+ *  The marker's shape is shared with the web client (client/attach.ts): it is what the assistant
+ *  reads, so two front ends must not describe one attachment two ways. */
+const attach = (bytes: Uint8Array, mediaType: string, filename: string) =>
+  attachArtifact(session, { bytes, mediaType, filename }, { conversationId: conversation.id, owner });
 
 /**
  * Ctrl-V stages; Enter writes. See `client/attachments.ts` for why: the chat stamps no retention
@@ -721,6 +776,7 @@ while (true) {
     // Escape trips the turn; the watcher is stopped in `finally` so raw mode never outlives it and
     // Ctrl-C keeps working at the prompt.
     stopWatching = watchCancel(cancelTurn);
+    turnRunning = true;
     await runTurn(session, thread, tools, async (tool) => {
       // Only an operator can answer one. In join mode the request is still WRITTEN and still
       // visible; somebody holding the credential approves it from elsewhere.
@@ -749,6 +805,7 @@ while (true) {
       write(`\n[error] ${e}\n`);
     }
   } finally {
+    turnRunning = false;
     stopWatching?.();
     stopWatching = null;
   }

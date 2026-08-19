@@ -22,6 +22,7 @@ import type { RadiaClient } from "../../../sdk/ts/client.ts";
 import { IMAGE_DIR, url } from "./config.ts";
 import { type AnswerStream, MarkdownStream, passthrough } from "./markdown.ts";
 import { decodeKey, History, historyPath, LineBuffer, loadHistory, renderLine, saveHistory } from "./edit.ts";
+import type { ChatUI } from "./ui.ts";
 
 const enc = new TextEncoder();
 export const tty = Deno.stdout.isTerminal();
@@ -637,3 +638,25 @@ export function watchCancel(onCancel: () => void): () => void {
     stopped = true;
   };
 }
+
+// ---- this file as ONE implementation of the output port ----
+//
+// The functions above are the terminal's answers to `ChatUI` (client/ui.ts), and every one of them
+// predates the port: nothing here changed to fit it. Installed EXPLICITLY by whoever owns the
+// process (`chat.ts`, and the suites that assert on what is drawn) rather than on import, so a
+// front end cannot end up with a terminal surface by importing something for an unrelated reason.
+
+export const terminalUI: ChatUI = {
+  write,
+  ensureLine,
+  columns,
+  trunc,
+  dim,
+  notice,
+  holdLine,
+  answerStream,
+  showStatus,
+  endStatus,
+  statusLineOn,
+  showArtifact,
+};

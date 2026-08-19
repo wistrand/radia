@@ -12,8 +12,8 @@
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
-      "redirectUris": ["http://127.0.0.1:7788/", "http://localhost:7788/", "http://127.0.0.1:8253/*", "http://127.0.0.1:8081/*", "http://localhost:8081/*"],
-      "webOrigins": ["http://127.0.0.1:7788", "http://localhost:7788", "http://127.0.0.1:8081", "http://localhost:8081"],
+      "redirectUris": ["http://127.0.0.1:7788/", "http://localhost:7788/", "http://127.0.0.1:8253/*", "http://127.0.0.1:8081/*", "http://localhost:8081/*", "http://127.0.0.1:8082/*", "http://localhost:8082/*"],
+      "webOrigins": ["http://127.0.0.1:7788", "http://localhost:7788", "http://127.0.0.1:8081", "http://localhost:8081", "http://127.0.0.1:8082", "http://localhost:8082"],
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "+"
