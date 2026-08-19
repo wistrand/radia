@@ -1,0 +1,984 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Adopting Radia: move credentials out of callers</title>
+  <meta name="description" content="An adoption guide for moving powerful credentials out of callers and into narrow capability workers, with prerequisites, decision gates and costs stated explicitly.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="shared.css">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://radia.sh/adoption.html">
+  <meta property="og:title" content="Adopting Radia: move credentials out of callers">
+  <meta property="og:description" content="A guide to the architectural transitions: fewer credential holders, scoped request authority and generated code that holds no credential.">
+  <meta property="og:image" content="https://radia.sh/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="brand"><svg viewBox="0 0 64 64" width="20" height="20" aria-hidden="true"><g fill="none" stroke="#60a5fa" stroke-width="5"><rect x="6" y="6" width="20" height="20" rx="6"/><rect x="34" y="6" width="20" height="20" rx="6"/><rect x="6" y="34" width="20" height="20" rx="6"/></g><g fill="none" stroke="#a5b4fc" stroke-width="4.5"><rect x="33" y="33" width="23" height="23" rx="6"/><rect x="38.5" y="38.5" width="12" height="12" rx="3"/></g></svg>radia</a>
+    <div class="links">
+      <a href="how-it-works.html">How it works</a>
+      <a href="authorization.html">Authorization</a>
+      <div class="dropdown">
+        <a class="dropdown-toggle">More &#9662;</a>
+        <div class="dropdown-menu"><div class="dropdown-menu-inner">
+          <a href="playground/">Playground</a>
+          <a href="adoption.html">Adoption guide</a>
+          <a href="workspaces.html">Workspaces</a>
+          <a href="inspection.html">Inspection</a>
+          <a href="why.html">Why not X</a>
+          <a href="faq.html">FAQ</a>
+          <a href="examples.html">Examples</a>
+          <a href="llms.txt">llms.txt</a>
+          <a href="https://github.com/wistrand/radia">GitHub</a>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<aside class="sidebar" id="sidebar">
+  <a href="#shape">Credentials become requests</a>
+  <a href="#before">Before trying this</a>
+  <a href="#start">Start beside the existing path</a>
+  <a href="#request-path">Add a record-based request path</a>
+  <a href="#move">Move the credential to a narrow worker</a>
+  <a href="#grants">Express caller authority as grants</a>
+  <a href="#scope">Enforce tenant scope before execution</a>
+  <a href="#delegate">Bound shared workers by the caller</a>
+  <a href="#sandbox">Keep credentials outside generated code</a>
+  <a href="#identity">Where the bootstrap credential comes from</a>
+  <a href="#effects">Effects that leave the space</a>
+  <a href="#cost">What changes when requests become records</a>
+  <a href="#order">Choose transitions by risk and need</a>
+</aside>
+
+<div class="hero">
+  <div class="container">
+    <h1>Move credentials out of callers</h1>
+    <p class="subtitle">
+      Radia is not a secret store and does not replace one. It changes which processes need a
+      secret at all: callers hold an identity, a few narrow workers hold the dangerous credentials,
+      and authority becomes permission to request an operation rather than possession of a token.
+      This guide shows how to make that change incrementally, and what it costs.
+    </p>
+  </div>
+</div>
+
+<section id="shape">
+  <div class="container">
+    <h2>Credentials become requests</h2>
+    <p>
+      In most deployments a secret manager provisions a downstream credential to every process that
+      needs the system behind it. Each process is then trusted with whatever that credential can do,
+      and compromise of the process is compromise of the credential.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 250" role="img" aria-labelledby="today-title today-desc">
+        <title id="today-title">One secret manager provisioning a downstream credential to every process</title>
+        <desc id="today-desc">A secret manager hands a database credential to two services, a payment key to a third, a source-control token to a fourth and an internal API key to a fifth. Each process holds whatever the credential can do.</desc>
+        <defs>
+          <marker id="today-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <rect x="20" y="18" width="150" height="210" rx="7" class="box" stroke="#fbbf24"/>
+        <text x="95" y="108" text-anchor="middle" class="label">Vault</text>
+        <text x="95" y="132" text-anchor="middle" class="muted">one credential</text>
+        <text x="95" y="150" text-anchor="middle" class="muted">per process</text>
+        <rect x="470" y="18" width="180" height="34" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="560" y="40" text-anchor="middle" class="label">service A</text>
+        <path d="M 176 35 L 464 35" class="flow" marker-end="url(#today-arrow)"/>
+        <text x="320" y="30" text-anchor="middle" class="muted">database credential</text>
+        <rect x="470" y="62" width="180" height="34" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="560" y="84" text-anchor="middle" class="label">service B</text>
+        <path d="M 176 79 L 464 79" class="flow" marker-end="url(#today-arrow)"/>
+        <text x="320" y="74" text-anchor="middle" class="muted">database credential</text>
+        <rect x="470" y="106" width="180" height="34" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="560" y="128" text-anchor="middle" class="label">service C</text>
+        <path d="M 176 123 L 464 123" class="flow" marker-end="url(#today-arrow)"/>
+        <text x="320" y="118" text-anchor="middle" class="muted">payment key</text>
+        <rect x="470" y="150" width="180" height="34" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="560" y="172" text-anchor="middle" class="label">service D</text>
+        <path d="M 176 167 L 464 167" class="flow" marker-end="url(#today-arrow)"/>
+        <text x="320" y="162" text-anchor="middle" class="muted">source-control token</text>
+        <rect x="470" y="194" width="180" height="34" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="560" y="216" text-anchor="middle" class="label">service E</text>
+        <path d="M 176 211 L 464 211" class="flow" marker-end="url(#today-arrow)"/>
+        <text x="320" y="206" text-anchor="middle" class="muted">internal API key</text>
+      </svg>
+      <figcaption>Compromise of any process is compromise of the credential it was deployed with. The blast radius of a process equals the authority of its secret.</figcaption>
+    </figure>
+
+    <p>
+      The target is not fewer secrets. It is fewer holders, and a different way for application code
+      to express authority.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 300" role="img" aria-labelledby="target-title target-desc">
+        <title id="target-title">Callers hold an identity; narrow workers hold the credentials</title>
+        <desc id="target-desc">Applications and agents send records to Radia. Radia authorizes each request against grants and hands the work to a narrow capability worker, which holds the one credential its system needs and reads it from the secret manager.</desc>
+        <defs>
+          <marker id="target-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <rect x="18" y="40" width="150" height="40" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="93" y="65" text-anchor="middle" class="label">application A</text>
+        <path d="M 174 60 L 236 140" class="flow" marker-end="url(#target-arrow)"/>
+        <rect x="18" y="94" width="150" height="40" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="93" y="119" text-anchor="middle" class="label">application B</text>
+        <path d="M 174 114 L 236 140" class="flow" marker-end="url(#target-arrow)"/>
+        <rect x="18" y="148" width="150" height="40" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="93" y="173" text-anchor="middle" class="label">agent C</text>
+        <path d="M 174 168 L 236 140" class="flow" marker-end="url(#target-arrow)"/>
+        <rect x="18" y="202" width="150" height="40" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="93" y="227" text-anchor="middle" class="label">agent D</text>
+        <path d="M 174 222 L 236 140" class="flow" marker-end="url(#target-arrow)"/>
+        <rect x="242" y="54" width="180" height="172" rx="7" class="box" stroke="#818cf8" stroke-dasharray="5 4"/>
+        <text x="332" y="84" text-anchor="middle" class="label" font-weight="600">Radia</text>
+        <text x="332" y="112" text-anchor="middle" class="muted">grants decide</text>
+        <text x="332" y="132" text-anchor="middle" class="muted">who may request</text>
+        <text x="332" y="152" text-anchor="middle" class="muted">what, for which content</text>
+        <text x="332" y="186" text-anchor="middle" class="muted">no downstream</text>
+        <text x="332" y="204" text-anchor="middle" class="muted">credential here</text>
+        <path d="M 428 82 L 464 82" class="flow" marker-end="url(#target-arrow)"/>
+        <rect x="470" y="54" width="170" height="56" rx="7" class="box" stroke="#4ade80"/>
+        <text x="555" y="78" text-anchor="middle" class="label">database worker</text>
+        <text x="555" y="98" text-anchor="middle" class="muted">holds one secret</text>
+        <path d="M 646 82 L 674 82" class="flow" marker-end="url(#target-arrow)"/>
+        <rect x="680" y="63" width="62" height="38" rx="6" class="box"/>
+        <text x="711" y="86" text-anchor="middle" class="muted">database</text>
+        <rect x="533" y="136" width="44" height="24" rx="7" class="box" stroke="#fbbf24"/>
+        <text x="555" y="153" text-anchor="middle" class="muted">Vault</text>
+        <path d="M 555 134 L 555 114" class="flow" marker-end="url(#target-arrow)"/>
+        <path d="M 428 194 L 464 194" class="flow" marker-end="url(#target-arrow)"/>
+        <rect x="470" y="166" width="170" height="56" rx="7" class="box" stroke="#4ade80"/>
+        <text x="555" y="190" text-anchor="middle" class="label">source-control worker</text>
+        <text x="555" y="210" text-anchor="middle" class="muted">holds one secret</text>
+        <path d="M 646 194 L 674 194" class="flow" marker-end="url(#target-arrow)"/>
+        <rect x="680" y="175" width="62" height="38" rx="6" class="box"/>
+        <text x="711" y="198" text-anchor="middle" class="muted">forge</text>
+        <rect x="533" y="248" width="44" height="24" rx="7" class="box" stroke="#fbbf24"/>
+        <text x="555" y="265" text-anchor="middle" class="muted">Vault</text>
+        <path d="M 555 246 L 555 226" class="flow" marker-end="url(#target-arrow)"/>
+      </svg>
+      <figcaption>The number of secrets is unchanged. The number of processes that hold one falls, and the callers express authority as a permitted request rather than as possession.</figcaption>
+    </figure>
+
+    <div class="callout">
+      <strong>Credentials migrate from callers to capability providers.</strong> The caller keeps one
+      identity that authorizes requests. The credential that can act on the external system lives in
+      a worker that does one job.
+    </div>
+
+    <p>
+      Nothing below requires a rewrite. Each transition is independently useful and can leave the
+      previous path working while it is evaluated. This is not a release checklist: stop where the
+      next boundary does not justify its operational or data cost.
+    </p>
+  </div>
+</section>
+
+<section id="before">
+  <div class="container">
+    <h2>Before trying this</h2>
+    <p>
+      Start with one survivable path and one external operation. Do not begin with a production
+      administrative credential merely because it has the largest theoretical payoff.
+    </p>
+    <div class="cards">
+      <div class="card">
+        <h3>Inventory the authority</h3>
+        <p>Name one credential, every process that can retrieve it and the concrete operations each
+        caller actually needs.</p>
+      </div>
+      <div class="card">
+        <h3>Design the records</h3>
+        <p>Define one request kind and one result kind. Declare every field that must participate in
+        routing or authorization as an indexed path.</p>
+      </div>
+      <div class="card">
+        <h3>Price the data boundary</h3>
+        <p>Choose retention before request bodies enter the space. Decide which fields may remain
+        visible to matching, operators and observers.</p>
+      </div>
+      <div class="card">
+        <h3>Bound external effects</h3>
+        <p>Confirm that the downstream operation accepts an idempotency key or has another durable
+        deduplication mechanism.</p>
+      </div>
+    </div>
+    <div class="callout warn">
+      <strong>Use this as a staged pilot, not a production-readiness claim.</strong> Radia is not
+      independently adopted or production-ready. The first path should be real enough to measure
+      and safe enough to survive a runtime, worker or integration failure.
+    </div>
+  </div>
+</section>
+
+<section id="start">
+  <div class="container">
+    <h2>Start beside the existing path</h2>
+    <p>
+      Deploy Radia next to the current architecture and change no existing credential. Selected
+      processes gain a Radia identity as an additional interface.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 190" role="img" aria-labelledby="beside-title beside-desc">
+        <title id="beside-title">Starting beside the existing path adds an identity without removing anything</title>
+        <desc id="beside-desc">The secret manager keeps provisioning the existing database credential to the service and adds a Radia bootstrap credential. The service exchanges the bootstrap credential for a short-lived run token and keeps its old path working.</desc>
+        <defs>
+          <marker id="beside-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <rect x="20" y="64" width="140" height="90" rx="7" class="box" stroke="#fbbf24"/>
+        <text x="90" y="96" text-anchor="middle" class="label">Vault</text>
+        <text x="90" y="118" text-anchor="middle" class="muted">DB credential</text>
+        <text x="90" y="138" text-anchor="middle" class="muted">Radia definition</text>
+        <path d="M 166 88 L 262 88" class="flow" marker-end="url(#beside-arrow)"/>
+        <path d="M 166 130 L 262 130" class="flow" marker-end="url(#beside-arrow)"/>
+        <rect x="268" y="64" width="168" height="90" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="352" y="96" text-anchor="middle" class="label">service A</text>
+        <text x="352" y="120" text-anchor="middle" class="muted">unchanged path</text>
+        <text x="352" y="138" text-anchor="middle" class="muted">plus an identity</text>
+        <path d="M 442 109 L 498 109" class="flow" marker-end="url(#beside-arrow)"/>
+        <text x="470" y="101" text-anchor="middle" class="muted">exchange</text>
+        <rect x="504" y="80" width="236" height="58" rx="7" class="box" stroke="#818cf8"/>
+        <text x="622" y="104" text-anchor="middle" class="label">run token</text>
+        <text x="622" y="124" text-anchor="middle" class="muted">15 minutes, renewable to 12 hours</text>
+      </svg>
+      <figcaption>The bootstrap credential can mint runs and nothing else. A request presenting it is refused with a message saying to mint a run first, so the durable half is never the acting credential.</figcaption>
+    </figure>
+
+    <p>
+      The process exchanges its durable bootstrap credential for a short-lived run token. The
+      durable credential can mint runs but cannot perform ordinary operations, so it is never the
+      acting credential. Read the containment honestly: minting is a single call, so a leaked
+      bootstrap credential is one hop from the agent's full authority. What the split buys is a
+      short-lived acting credential, one minting handle to revoke, and a record of every mint.
+    </p>
+    <p>
+      At this point no downstream credential has been removed, so containment has not improved.
+      What Radia establishes is the foundation later transitions need: principals, record kinds and
+      their indexed paths, grants, and the claim and lease behaviour your workers will rely on.
+      <a href="#identity">Where the bootstrap credential comes from</a> is a decision worth making
+      now rather than later.
+    </p>
+    <div class="callout">
+      <strong>You gain evidence, not containment.</strong> Continue when identities, kinds, grants,
+      lease recovery and the expected request volume have been exercised without changing the
+      existing service path.
+    </div>
+  </div>
+</section>
+
+<section id="request-path">
+  <div class="container">
+    <h2>Add a record-based request path</h2>
+    <p>
+      Take one service that holds a credential and give it a second way to be asked. The existing
+      HTTP path stays exactly as it is.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 215" role="img" aria-labelledby="front-title front-desc">
+        <title id="front-title">The same service, reachable two ways</title>
+        <desc id="front-desc">Before, the invoice agent calls the ERP directly with an ERP token. During evaluation, it retains that token for rollback but uses the record path: Radia checks the grant, and the existing invoice service claims the work and calls the ERP with its token.</desc>
+        <defs>
+          <marker id="front-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <text x="20" y="26" text-anchor="start" class="muted">before</text>
+        <rect x="20" y="38" width="150" height="44" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="95" y="66" text-anchor="middle" class="label">invoice agent</text>
+        <path d="M 176 60 L 560 60" class="flow" marker-end="url(#front-arrow)"/>
+        <text x="368" y="52" text-anchor="middle" class="muted">POST /erp/invoices with ERP_TOKEN</text>
+        <rect x="566" y="38" width="120" height="44" rx="7" class="box" stroke="#fbbf24"/>
+        <text x="626" y="66" text-anchor="middle" class="label">ERP</text>
+        <text x="20" y="120" text-anchor="start" class="muted">after</text>
+        <rect x="20" y="132" width="150" height="60" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="95" y="158" text-anchor="middle" class="label">invoice agent</text>
+        <text x="95" y="174" text-anchor="middle" class="muted">token retained</text>
+        <text x="95" y="188" text-anchor="middle" class="muted">for rollback</text>
+        <path d="M 176 162 L 246 162" class="flow" marker-end="url(#front-arrow)"/>
+        <text x="211" y="154" text-anchor="middle" class="muted">record</text>
+        <rect x="252" y="132" width="150" height="60" rx="7" class="box" stroke="#818cf8"/>
+        <text x="327" y="158" text-anchor="middle" class="label">Radia</text>
+        <text x="327" y="178" text-anchor="middle" class="muted">grant checked</text>
+        <path d="M 408 162 L 478 162" class="flow" marker-end="url(#front-arrow)"/>
+        <text x="443" y="154" text-anchor="middle" class="muted">claim</text>
+        <rect x="484" y="132" width="182" height="60" rx="7" class="box" stroke="#4ade80"/>
+        <text x="575" y="158" text-anchor="middle" class="label">invoice service</text>
+        <text x="575" y="178" text-anchor="middle" class="muted">holds ERP_TOKEN</text>
+        <path d="M 672 162 L 712 162" class="flow" marker-end="url(#front-arrow)"/>
+        <text x="730" y="166" text-anchor="middle" class="muted">ERP</text>
+      </svg>
+      <figcaption>Both paths are live at once: the record path can carry one caller while every other caller keeps using the direct call.</figcaption>
+    </figure>
+
+    <p>
+      The service still reads <code>ERP_TOKEN</code> from Vault. The selected caller uses the record
+      path but retains its token for rollback during evaluation. Removing it is the next transition.
+    </p>
+    <p>
+      A legacy system does not have to learn anything. A bridge worker translates a record into
+      whatever the system already speaks, which is how Radia spreads from the edges inward rather
+      than from a rewrite.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 175" role="img" aria-labelledby="bridge-title bridge-desc">
+        <title id="bridge-title">A bridge worker translates a record into whatever the system already speaks</title>
+        <desc id="bridge-desc">A customer lookup record is claimed by a bridge worker, which holds the legacy API token and issues an ordinary authenticated HTTP request on the caller's behalf.</desc>
+        <defs>
+          <marker id="bridge-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <rect x="20" y="44" width="236" height="96" rx="7" class="box" stroke="#818cf8"/>
+        <text x="138" y="72" text-anchor="middle" class="label">crm.customer.lookup</text>
+        <text x="138" y="96" text-anchor="middle" class="muted">tenant: acme</text>
+        <text x="138" y="116" text-anchor="middle" class="muted">customer_id: 123</text>
+        <path d="M 262 92 L 338 92" class="flow" marker-end="url(#bridge-arrow)"/>
+        <text x="300" y="84" text-anchor="middle" class="muted">claim</text>
+        <rect x="344" y="44" width="150" height="96" rx="7" class="box" stroke="#4ade80"/>
+        <text x="419" y="80" text-anchor="middle" class="label">bridge worker</text>
+        <text x="419" y="104" text-anchor="middle" class="muted">holds the</text>
+        <text x="419" y="122" text-anchor="middle" class="muted">legacy token</text>
+        <path d="M 500 92 L 576 92" class="flow" marker-end="url(#bridge-arrow)"/>
+        <rect x="582" y="44" width="158" height="96" rx="7" class="box" stroke="#fbbf24"/>
+        <text x="661" y="72" text-anchor="middle" class="label">legacy REST API</text>
+        <text x="661" y="96" text-anchor="middle" class="muted">GET /customers/123</text>
+        <text x="661" y="116" text-anchor="middle" class="muted">Bearer token</text>
+      </svg>
+      <figcaption>The legacy system learns nothing about Radia. Later, the implementation behind the record kind can change without touching a caller.</figcaption>
+    </figure>
+
+    <p>
+      A bridge worker claims one operation, calls the existing system and writes a result record. A
+      failed call is an answer, not a refusal to settle: a downstream rejection that nacks the claim
+      is redelivered, while a failure result becomes one durable record that consumers handle with
+      the normal delivery semantics. <a href="examples.html">See the worked examples &rarr;</a>
+    </p>
+    <div class="callout">
+      <strong>You gain an independently routable request path.</strong> Continue when its latency,
+      result shape, retry behavior and duplicate handling have been observed under representative
+      load. The caller still holding its old credential means containment has not improved yet.
+    </div>
+  </div>
+</section>
+
+<section id="move">
+  <div class="container">
+    <h2>Move the credential to a narrow worker</h2>
+    <p>
+      This is the transition where the security position actually changes.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 285" role="img" aria-labelledby="move-title move-desc">
+        <title id="move-title">One caller with three secrets becomes one identity and three narrow workers</title>
+        <desc id="move-desc">The invoice agent stops holding the ERP token, the object-store token and the database password. Each moves into a worker that does one job and holds one credential.</desc>
+        <defs>
+          <marker id="move-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <text x="20" y="26" text-anchor="start" class="muted">before</text>
+        <rect x="20" y="38" width="210" height="116" rx="7" class="box" stroke="#f87171"/>
+        <text x="125" y="66" text-anchor="middle" class="label">invoice agent</text>
+        <text x="125" y="90" text-anchor="middle" class="muted">ERP_TOKEN</text>
+        <text x="125" y="110" text-anchor="middle" class="muted">S3_TOKEN</text>
+        <text x="125" y="130" text-anchor="middle" class="muted">CUSTOMER_DB_PASSWORD</text>
+        <path d="M 240 96 L 300 96" class="flow" marker-end="url(#move-arrow)"/>
+        <text x="390" y="26" text-anchor="start" class="muted">after</text>
+        <rect x="310" y="38" width="180" height="54" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="400" y="62" text-anchor="middle" class="label">invoice agent</text>
+        <text x="400" y="82" text-anchor="middle" class="muted">one identity</text>
+        <rect x="310" y="110" width="430" height="42" rx="7" class="box" stroke="#4ade80"/>
+        <text x="400" y="136" text-anchor="middle" class="label">erp worker</text>
+        <text x="600" y="136" text-anchor="middle" class="muted">ERP_TOKEN</text>
+        <rect x="310" y="160" width="430" height="42" rx="7" class="box" stroke="#4ade80"/>
+        <text x="400" y="186" text-anchor="middle" class="label">document worker</text>
+        <text x="600" y="186" text-anchor="middle" class="muted">S3_TOKEN</text>
+        <rect x="310" y="210" width="430" height="42" rx="7" class="box" stroke="#4ade80"/>
+        <text x="400" y="236" text-anchor="middle" class="label">customer worker</text>
+        <text x="600" y="236" text-anchor="middle" class="muted">CUSTOMER_DB_PASSWORD</text>
+      </svg>
+      <figcaption>Compromise of the caller now yields whatever its grants permit it to write, claim and read, rather than three external systems.</figcaption>
+    </figure>
+
+    <div class="callout warn">
+      <strong>Keep the workers boring.</strong> One worker holding the ERP token, the CRM
+      credential, cloud keys and a database password is a privileged middleware service with extra
+      steps. Prefer narrow workers with narrow secret-manager policies: <code>customer-reader</code>,
+      <code>invoice-writer</code>, <code>deploy-worker</code>. The runtime, its storage and any
+      credential-holding host stay trusted components, so the goal is to reduce their number and
+      authority rather than to assume Radia makes them harmless.
+    </div>
+    <div class="callout">
+      <strong>This is where containment improves.</strong> Continue when every legitimate caller
+      operation is expressible through a concrete request kind and the old credential has actually
+      been removed from the caller's deployment, diagnostics and recovery path.
+    </div>
+  </div>
+</section>
+
+<section id="grants">
+  <div class="container">
+    <h2>Express caller authority as grants</h2>
+    <p>
+      A secret-manager policy answers one question: may this workload retrieve this credential.
+      Retrieval then implies everything that credential can do.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 265" role="img" aria-labelledby="layers-title layers-desc">
+        <title id="layers-title">Possession of a credential becomes permission to request one operation</title>
+        <desc id="layers-desc">The secret manager policy says which worker may read the ERP secret. The Radia grant says which caller may request an invoice creation, and for which tenant. Deletion, export and administrative operations are not granted at all.</desc>
+        <defs>
+          <marker id="layers-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <rect x="20" y="26" width="720" height="54" rx="7" class="box" stroke="#fbbf24"/>
+        <text x="40" y="58" text-anchor="start" class="label">secret manager policy</text>
+        <text x="300" y="58" text-anchor="start" class="muted">the ERP worker may read secret/erp/prod</text>
+        <rect x="20" y="92" width="720" height="72" rx="7" class="box" stroke="#818cf8"/>
+        <text x="40" y="124" text-anchor="start" class="label">Radia grant</text>
+        <text x="300" y="118" text-anchor="start" class="muted">the invoice agent may put erp.invoice.create</text>
+        <text x="300" y="140" text-anchor="start" class="muted">for tenant acme</text>
+        <rect x="20" y="176" width="720" height="74" rx="7" class="box" stroke="#f87171" stroke-dasharray="5 4"/>
+        <text x="40" y="208" text-anchor="start" class="label">not granted</text>
+        <text x="300" y="200" text-anchor="start" class="muted">erp.invoice.delete</text>
+        <text x="300" y="222" text-anchor="start" class="muted">erp.customer.export</text>
+        <text x="520" y="200" text-anchor="start" class="muted">erp.admin.*</text>
+      </svg>
+      <figcaption>Secret-manager policy limits who holds the powerful credential; Radia grants limit what callers may ask that holder to do.</figcaption>
+    </figure>
+
+    <p>
+      A grant names a principal, a concrete kind and the operations allowed on it. Wildcard kinds
+      are refused, so authority is enumerated rather than implied. Grant changes remain visible in
+      the record history.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">the caller's whole authority over the ERP</div>
+      <pre><code>{ <span class="str">"principal"</span>: <span class="str">"agent:invoice-agent"</span>,
+  <span class="str">"kind"</span>: <span class="str">"erp.invoice.create"</span>,
+  <span class="str">"operations"</span>: [<span class="str">"put"</span>] }</code></pre>
+    </div>
+
+    <p>
+      Advertising a capability is not authorization. A worker may publish what it handles, and only
+      an operator or authorized supervisor can write the grant that permits it.
+      <a href="authorization.html#grants">See how grants are enforced &rarr;</a>
+    </p>
+    <div class="callout">
+      <strong>You gain enumerable request authority.</strong> Continue when effective permissions
+      answer who may request each operation without relying on a downstream token shared across
+      callers.
+    </div>
+  </div>
+</section>
+
+<section id="scope">
+  <div class="container">
+    <h2>Enforce tenant scope before execution</h2>
+    <p>
+      The database worker holds one credential that can read every tenant. Without scoping, each
+      caller's code is what keeps tenants apart, which means every caller is part of the security
+      boundary.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">the scope moves out of the caller and into the grant</div>
+      <pre><code>{ <span class="str">"principal"</span>: <span class="str">"agent:acme-assistant"</span>,
+  <span class="str">"kind"</span>: <span class="str">"customer.query"</span>,
+  <span class="str">"operations"</span>: [<span class="str">"put"</span>],
+  <span class="str">"pattern"</span>: { <span class="str">"tenant"</span>: <span class="str">"acme"</span> } }</code></pre>
+    </div>
+
+    <p>
+      A pattern bounds both reads and writes. A broad read is narrowed to permitted content, and a
+      write outside the pattern is refused before a worker receives it.
+    </p>
+
+    <div class="callout warn">
+      <strong>Design scope into the record kind.</strong> A grant can scope only fields declared as
+      indexed paths. If <code>tenant</code> is the isolation boundary, declare it when the kind is
+      created rather than burying it inside an opaque payload.
+    </div>
+
+    <p>
+      What each principal can actually do is a read rather than a belief:
+      <code>radia permissions agent:acme-assistant</code> answers from the same path the enforcement
+      uses. <a href="authorization.html#check">See effective permissions &rarr;</a>
+    </p>
+    <div class="callout">
+      <strong>You gain a boundary the caller cannot omit.</strong> Continue when the indexed fields
+      encode the real isolation decision and tests show that broad reads and writes are narrowed or
+      refused before the worker receives them.
+    </div>
+  </div>
+</section>
+
+<section id="delegate">
+  <div class="container">
+    <h2>Bound shared workers by the caller</h2>
+    <p>
+      A shared worker serving many callers is the point where a broker usually becomes a way to
+      borrow the worker's authority. Radia's answer is a delegated run whose authority is the
+      intersection of the caller's grants and the worker's.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 235" role="img" aria-labelledby="delegate-title delegate-desc">
+        <title id="delegate-title">A delegated run carries the intersection of the caller's grants and the worker's</title>
+        <desc id="delegate-desc">The caller is scoped to one tenant and the shared worker can reach all of them. The delegated run the worker acts under carries only the overlap, so a read on the caller's behalf stays inside the caller's tenant.</desc>
+        <defs>
+          <marker id="delegate-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <rect x="20" y="34" width="220" height="60" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="130" y="60" text-anchor="middle" class="label">caller</text>
+        <text x="130" y="80" text-anchor="middle" class="muted">tenant = acme</text>
+        <rect x="20" y="150" width="220" height="60" rx="7" class="box" stroke="#4ade80"/>
+        <text x="130" y="176" text-anchor="middle" class="label">shared worker</text>
+        <text x="130" y="196" text-anchor="middle" class="muted">all tenants</text>
+        <path d="M 246 64 L 392 110" class="flow" marker-end="url(#delegate-arrow)"/>
+        <path d="M 246 180 L 392 134" class="flow" marker-end="url(#delegate-arrow)"/>
+        <rect x="398" y="92" width="200" height="60" rx="7" class="box" stroke="#818cf8"/>
+        <text x="498" y="118" text-anchor="middle" class="label">delegated run</text>
+        <text x="498" y="138" text-anchor="middle" class="muted">tenant = acme</text>
+        <path d="M 604 122 L 660 122" class="flow" marker-end="url(#delegate-arrow)"/>
+        <text x="700" y="110" text-anchor="middle" class="muted">reads bounded</text>
+        <text x="700" y="130" text-anchor="middle" class="muted">by both</text>
+      </svg>
+      <figcaption>An intersection can only narrow. A capability the caller does not hold cannot be delegated, so the caller needs its own grant on the kind being read.</figcaption>
+    </figure>
+
+    <p>
+      The worker uses its own run for its own work and a delegated run for work performed on a
+      caller's behalf. Radia derives that caller from the authenticated run, not from a claim in the
+      request body.
+    </p>
+
+    <div class="callout warn">
+      <strong>An intersection narrows; it never grants.</strong> A delegated run cannot contain a
+      capability the caller lacks. <a href="authorization.html#delegation">See delegated authority
+      &rarr;</a>
+    </div>
+    <div class="callout">
+      <strong>Use delegation only for genuine on-behalf-of operations.</strong> A worker acting only
+      through its own grants needs no delegated run. Continue when the application has a shared
+      worker whose reads or writes must remain inside each caller's existing authority.
+    </div>
+  </div>
+</section>
+
+<section id="sandbox">
+  <div class="container">
+    <h2>Keep credentials outside generated code</h2>
+    <p>
+      A container that holds cloud keys, a source-control token, a database URL and model-written
+      Python is the combination this transition exists to end.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 200" role="img" aria-labelledby="child-title child-desc">
+        <title id="child-title">Generated code proposes operations and holds no credential</title>
+        <desc id="child-desc">A generated process sends proposals to a trusted host over a private channel. The host holds the run token and supplies the identity, parents, labels and idempotency keys the child must not control, then Radia applies the agent's grants.</desc>
+        <defs>
+          <marker id="child-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <rect x="20" y="50" width="220" height="120" rx="7" class="box" stroke="#f87171"/>
+        <text x="130" y="80" text-anchor="middle" class="label">generated process</text>
+        <text x="130" y="104" text-anchor="middle" class="muted">no secret-manager token</text>
+        <text x="130" y="124" text-anchor="middle" class="muted">no Radia token</text>
+        <text x="130" y="144" text-anchor="middle" class="muted">no database password</text>
+        <text x="130" y="162" text-anchor="middle" class="muted">no cloud credential</text>
+        <path d="M 246 110 L 330 110" class="flow" marker-end="url(#child-arrow)"/>
+        <text x="288" y="102" text-anchor="middle" class="muted">proposal</text>
+        <rect x="336" y="50" width="208" height="120" rx="7" class="box" stroke="#4ade80"/>
+        <text x="440" y="80" text-anchor="middle" class="label">trusted host</text>
+        <text x="440" y="104" text-anchor="middle" class="muted">holds the run token</text>
+        <text x="440" y="124" text-anchor="middle" class="muted">stamps identity, parents</text>
+        <text x="440" y="144" text-anchor="middle" class="muted">labels, idempotency</text>
+        <path d="M 550 110 L 634 110" class="flow" marker-end="url(#child-arrow)"/>
+        <text x="592" y="102" text-anchor="middle" class="muted">authorized</text>
+        <rect x="640" y="50" width="100" height="120" rx="7" class="box" stroke="#818cf8"/>
+        <text x="690" y="96" text-anchor="middle" class="label">Radia</text>
+        <text x="690" y="120" text-anchor="middle" class="muted">applies</text>
+        <text x="690" y="138" text-anchor="middle" class="muted">the agent's</text>
+        <text x="690" y="156" text-anchor="middle" class="muted">grants</text>
+      </svg>
+      <figcaption>There is no credential inside the sandbox to steal, replay or exfiltrate, which is a different property from injecting a short-lived one.</figcaption>
+    </figure>
+
+    <p>
+      Generated code receives a narrow proposal interface rather than a credential. The trusted
+      host supplies identity and provenance, then Radia applies the agent's ordinary grants. This is
+      stronger than injecting a short-lived token because the sandbox has nothing to steal or replay.
+      <a href="authorization.html#code">See credentialless execution &rarr;</a>
+    </p>
+    <div class="callout">
+      <strong>You gain credentialless execution, not a harmless process.</strong> The trusted host,
+      runtime and storage remain inside the security boundary, and the selected sandbox must prove
+      the isolation properties it advertises.
+    </div>
+  </div>
+</section>
+
+<section id="identity">
+  <div class="container">
+    <h2>Where the bootstrap credential comes from</h2>
+    <p>
+      The built bootstrap chain keeps a durable credential in the secret manager and is available on
+      any deployment.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 240" role="img" aria-labelledby="chain-title chain-desc">
+        <title id="chain-title">A durable bootstrap credential, stored like any other secret</title>
+        <desc id="chain-desc">An operator creates the agent definition and assigns grants. The credential is stored in the secret manager, read by the workload using its platform identity, and exchanged by the trusted host for a short-lived run token that performs the ordinary operations.</desc>
+        <defs>
+          <marker id="chain-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <rect x="20" y="40" width="150" height="60" rx="7" class="box" stroke="#818cf8"/>
+        <text x="95" y="66" text-anchor="middle" class="label">operator</text>
+        <text x="95" y="86" text-anchor="middle" class="muted">creates + grants</text>
+        <path d="M 176 70 L 246 70" class="flow" marker-end="url(#chain-arrow)"/>
+        <rect x="252" y="40" width="150" height="60" rx="7" class="box" stroke="#fbbf24"/>
+        <text x="327" y="66" text-anchor="middle" class="label">Vault</text>
+        <text x="327" y="82" text-anchor="middle" class="muted">retrieved through</text>
+        <text x="327" y="96" text-anchor="middle" class="muted">workload identity</text>
+        <path d="M 408 70 L 478 70" class="flow" marker-end="url(#chain-arrow)"/>
+        <rect x="484" y="40" width="256" height="60" rx="7" class="box" stroke="#4ade80"/>
+        <text x="612" y="66" text-anchor="middle" class="label">trusted host</text>
+        <text x="612" y="86" text-anchor="middle" class="muted">reads it, exchanges it</text>
+        <path d="M 612 106 L 612 146" class="flow" marker-end="url(#chain-arrow)"/>
+        <rect x="484" y="152" width="256" height="60" rx="7" class="box" stroke="#818cf8"/>
+        <text x="612" y="178" text-anchor="middle" class="label">run token</text>
+        <text x="612" y="198" text-anchor="middle" class="muted">15 minutes, 12 hours maximum</text>
+        <path d="M 478 182 L 410 182" class="flow" marker-end="url(#chain-arrow)"/>
+        <rect x="190" y="152" width="214" height="60" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="297" y="178" text-anchor="middle" class="label">ordinary operations</text>
+        <text x="297" y="198" text-anchor="middle" class="muted">under the run</text>
+      </svg>
+      <figcaption>The durable credential only bootstraps short-lived runs; application work happens under those runs. A run renews itself while it works and cannot outlive twelve hours from its mint, so a long-running host re-exchanges the durable credential rather than renewing forever.</figcaption>
+    </figure>
+
+    <p>
+      Store the durable definition credential like any other infrastructure secret and expose it
+      only to the trusted host, as a file with restrictive permissions rather than an environment
+      variable, which tends to reach diagnostics, crash dumps and deployment manifests. The host
+      exchanges it for renewable, short-lived runs rather than using it for application work.
+    </p>
+    <p>
+      Radia can also mint a run from a verified OIDC identity, resolving the principal through an
+      explicit mapping. A compatible workload-identity platform can therefore avoid storing a
+      durable Radia credential. The space has to be started with the issuer and the audience it
+      accepts, and that audience is a single value per space, so one space accepts tokens minted for
+      one audience. Ready-made Kubernetes and SPIFFE profiles are not shipped today, so treat this
+      as an integration to validate, not a turnkey deployment path.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 190" role="img" aria-labelledby="federated-title federated-desc">
+        <title id="federated-title">A workload identity token minting a run with no stored secret</title>
+        <desc id="federated-desc">A platform-issued workload identity token is presented to Radia, which verifies it against the issuer and reads the identity mapping record to decide which principal it is. The result is an ordinary short-lived run token.</desc>
+        <defs>
+          <marker id="federated-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <rect x="20" y="54" width="200" height="72" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="120" y="84" text-anchor="middle" class="label">workload identity</text>
+        <text x="120" y="106" text-anchor="middle" class="muted">platform-issued token</text>
+        <path d="M 226 90 L 306 90" class="flow" marker-end="url(#federated-arrow)"/>
+        <text x="266" y="82" text-anchor="middle" class="muted">presented once</text>
+        <rect x="312" y="40" width="222" height="100" rx="7" class="box" stroke="#818cf8"/>
+        <text x="423" y="68" text-anchor="middle" class="label">Radia</text>
+        <text x="423" y="92" text-anchor="middle" class="muted">verifies the signature</text>
+        <text x="423" y="112" text-anchor="middle" class="muted">reads the identity mapping</text>
+        <path d="M 540 90 L 616 90" class="flow" marker-end="url(#federated-arrow)"/>
+        <rect x="622" y="54" width="118" height="72" rx="7" class="box" stroke="#4ade80"/>
+        <text x="681" y="84" text-anchor="middle" class="label">run token</text>
+        <text x="681" y="106" text-anchor="middle" class="muted">agent grants</text>
+        <text x="423" y="168" text-anchor="middle" class="muted">no durable Radia credential is stored</text>
+      </svg>
+      <figcaption>An explicit mapping decides which Radia principal the external identity becomes.</figcaption>
+    </figure>
+
+    <div class="callout warn">
+      <strong>Create the mapping before first use.</strong> An unmapped identity receives no grants;
+      retiring a mapping prevents it from being used again.
+    </div>
+
+    <div class="callout warn">
+      <strong>Revocation and containment are separate.</strong> Revoking a definition prevents new
+      runs and deliberately leaves live ones alone, so a compromised process keeps acting until its
+      run expires. Stopping those runs is a second action (<code>radia runs --for &lt;principal&gt;
+      --stop</code>), and it covers both the principal's own runs and delegated runs held by
+      workers on its behalf. An incident response does both.
+    </div>
+
+    <p>
+      Give each environment its own principal and its own stored credential. Compromise of
+      development should not yield a minting credential for production, and separate spaces are a
+      stronger boundary than separate grants inside one space.
+    </p>
+  </div>
+</section>
+
+<section id="effects">
+  <div class="container">
+    <h2>Effects that leave the space</h2>
+    <p>
+      Delivery is at-least-once. A worker can perform an external effect and fail before its settle
+      lands, after which the work is redelivered. Any bridge worker that charges a card, sends mail
+      or files a document needs deduplication at the external boundary, designed in from the first
+      one rather than added after the first duplicate.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 190" role="img" aria-labelledby="effect-title effect-desc">
+        <title id="effect-title">The record id is the deduplication key at the external boundary</title>
+        <desc id="effect-desc">A payment request record is claimed by a worker that may be redelivered the same record after a failure. The external API call carries the record id as its idempotency key, so a repeat delivery is one charge rather than two.</desc>
+        <defs>
+          <marker id="effect-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <rect x="20" y="44" width="210" height="72" rx="7" class="box" stroke="#818cf8"/>
+        <text x="125" y="74" text-anchor="middle" class="label">payment.request</text>
+        <text x="125" y="96" text-anchor="middle" class="muted">rec_7f912...</text>
+        <path d="M 236 80 L 306 80" class="flow" marker-end="url(#effect-arrow)"/>
+        <text x="271" y="72" text-anchor="middle" class="muted">claim</text>
+        <rect x="312" y="44" width="180" height="72" rx="7" class="box" stroke="#4ade80"/>
+        <text x="402" y="74" text-anchor="middle" class="label">payment worker</text>
+        <text x="402" y="96" text-anchor="middle" class="muted">may be redelivered</text>
+        <path d="M 498 80 L 568 80" class="flow" marker-end="url(#effect-arrow)"/>
+        <rect x="574" y="44" width="166" height="72" rx="7" class="box" stroke="#fbbf24"/>
+        <text x="657" y="74" text-anchor="middle" class="label">payment API</text>
+        <text x="657" y="96" text-anchor="middle" class="muted">Idempotency-Key</text>
+        <path d="M 657 124 L 657 150" class="flow" stroke-dasharray="4 3" marker-end="url(#effect-arrow)"/>
+        <text x="657" y="168" text-anchor="middle" class="muted">rec_7f912...</text>
+        <path d="M 125 124 L 125 150" class="flow" stroke-dasharray="4 3" marker-end="url(#effect-arrow)"/>
+        <text x="125" y="168" text-anchor="middle" class="muted">the record id, not the attempt</text>
+      </svg>
+      <figcaption>A worker that lost its lease may still be running, so the external key has to identify the request rather than the attempt.</figcaption>
+    </figure>
+
+    <p><a href="how-it-works.html#crash">See what happens when a worker dies &rarr;</a></p>
+  </div>
+</section>
+
+<section id="cost">
+  <div class="container">
+    <h2>What changes when requests become records</h2>
+    <p>
+      Moving credentials out of callers also moves request data into a shared store. Price that
+      trade before adding the record path, not after relying on it.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 240" role="img" aria-labelledby="trade-title trade-desc">
+        <title id="trade-title">What the migration improves, and what it costs</title>
+        <desc id="trade-desc">On one side, fewer holders of each credential, authority that can be enumerated and audited, and tenant scoping enforced before a worker runs. On the other, request bodies living in a shared store, records kept unless retention was declared, the space sitting in the synchronous path, and shared storage for several runtime instances.</desc>
+        <defs>
+          <marker id="trade-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <rect x="20" y="26" width="350" height="190" rx="7" class="box" stroke="#4ade80"/>
+        <text x="195" y="54" text-anchor="middle" class="label">what improves</text>
+        <text x="44" y="86" text-anchor="start" class="muted">fewer holders of each powerful credential</text>
+        <text x="44" y="110" text-anchor="start" class="muted">authority is enumerable and auditable</text>
+        <text x="44" y="134" text-anchor="start" class="muted">tenant scoping is enforced before</text>
+        <text x="44" y="158" text-anchor="start" class="muted">the worker runs</text>
+        <text x="44" y="182" text-anchor="start" class="muted">requests and results are one audit trail</text>
+        <rect x="390" y="26" width="350" height="190" rx="7" class="box" stroke="#f87171"/>
+        <text x="565" y="54" text-anchor="middle" class="label">what it costs</text>
+        <text x="414" y="86" text-anchor="start" class="muted">request bodies live in a shared store</text>
+        <text x="414" y="110" text-anchor="start" class="muted">records are kept unless retention</text>
+        <text x="414" y="134" text-anchor="start" class="muted">was declared</text>
+        <text x="414" y="158" text-anchor="start" class="muted">the space is in the synchronous path</text>
+        <text x="414" y="182" text-anchor="start" class="muted">several instances need shared storage</text>
+      </svg>
+      <figcaption>Both columns move together. An evaluation that counts only the left one will be surprised by the right one at the first compliance review.</figcaption>
+    </figure>
+
+    <table>
+      <tr><th>Concern</th><th>Who owns it</th></tr>
+      <tr><td>Grant intersection, lease fencing and write authorization</td><td>Radia enforces</td></tr>
+      <tr><td>Storage and rotation of the downstream credential</td><td>Secret manager and capability-worker host</td></tr>
+      <tr><td>External API deduplication</td><td>Capability worker and downstream system</td></tr>
+      <tr><td>Sandbox isolation</td><td>Selected backend and trusted host</td></tr>
+      <tr><td>Request-body retention and routable plaintext fields</td><td>Application and kind design</td></tr>
+      <tr><td>TLS, request limits, backup and shared deployment storage</td><td>Deployment infrastructure</td></tr>
+    </table>
+
+    <p>
+      Record bodies are stored as plaintext JSON, not only the fields that route: matching needs
+      the routed ones, and the rest sit beside them. Operators and principals with observation
+      authority can read those bodies, so sensitive payloads and retention need deliberate design.
+      Application-level encryption is available for fields that do not participate in routing.
+    </p>
+    <p>
+      Records are immutable and remain unless the writer or kind declares retention. Large or
+      erasable content belongs in artifacts rather than record bodies.
+    </p>
+    <p>
+      Claiming, leasing and settling add more work than a direct HTTP call, and several runtime
+      instances need shared storage. Radia has not yet established production readiness through
+      independent adoption. Pilot it on a real but survivable path rather than replacing a mature
+      authorization boundary at once. <a href="why.html">See what it is not &rarr;</a>
+    </p>
+  </div>
+</section>
+
+<section id="order">
+  <div class="container">
+    <h2>Choose transitions by risk and need</h2>
+    <p>
+      Start with credentials whose risk justifies a new boundary, while keeping the first path
+      survivable. The worst combination is broad authority, many holders, agent-controlled code
+      and a high-value target; the best first pilot is often one step below it.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 290" role="img" aria-labelledby="risk-title risk-desc">
+        <title id="risk-title">Credentials ranked by adoption priority</title>
+        <desc id="risk-desc">Production database administrative credentials reachable by agents and cloud administrative credentials rank very high. Organization-wide source-control tokens and production CRM write credentials rank high. Narrow read-only tokens are medium and internal low-risk service credentials are low.</desc>
+        <defs>
+          <marker id="risk-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <rect x="20" y="20" width="110" height="34" rx="7" class="box" stroke="#f87171"/>
+        <text x="75" y="42" text-anchor="middle" class="muted">very high</text>
+        <rect x="142" y="20" width="598" height="34" rx="7" class="box"/>
+        <text x="160" y="42" text-anchor="start" class="muted">production database admin credential reachable by agents</text>
+        <rect x="20" y="64" width="110" height="34" rx="7" class="box" stroke="#f87171"/>
+        <text x="75" y="86" text-anchor="middle" class="muted">very high</text>
+        <rect x="142" y="64" width="598" height="34" rx="7" class="box"/>
+        <text x="160" y="86" text-anchor="start" class="muted">cloud administrative credential</text>
+        <rect x="20" y="108" width="110" height="34" rx="7" class="box" stroke="#fbbf24"/>
+        <text x="75" y="130" text-anchor="middle" class="muted">high</text>
+        <rect x="142" y="108" width="598" height="34" rx="7" class="box"/>
+        <text x="160" y="130" text-anchor="start" class="muted">organization-wide source-control token</text>
+        <rect x="20" y="152" width="110" height="34" rx="7" class="box" stroke="#fbbf24"/>
+        <text x="75" y="174" text-anchor="middle" class="muted">high</text>
+        <rect x="142" y="152" width="598" height="34" rx="7" class="box"/>
+        <text x="160" y="174" text-anchor="start" class="muted">production CRM write credential</text>
+        <rect x="20" y="196" width="110" height="34" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="75" y="218" text-anchor="middle" class="muted">medium</text>
+        <rect x="142" y="196" width="598" height="34" rx="7" class="box"/>
+        <text x="160" y="218" text-anchor="start" class="muted">narrow read-only API token</text>
+        <rect x="20" y="240" width="110" height="34" rx="7" class="box" stroke="#4ade80"/>
+        <text x="75" y="262" text-anchor="middle" class="muted">low</text>
+        <rect x="142" y="240" width="598" height="34" rx="7" class="box"/>
+        <text x="160" y="262" text-anchor="start" class="muted">internal low-risk service credential</text>
+      </svg>
+      <figcaption>These priorities are illustrative. Rank your own credentials by authority, number of holders, exposure to agent-controlled code and the value of the target.</figcaption>
+    </figure>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 416" role="img" aria-labelledby="ladder-title ladder-desc">
+        <title id="ladder-title">A map of independently useful architecture transitions</title>
+        <desc id="ladder-desc">A reference path from a caller holding its own downstream credential to a retired direct path, passing through an added identity, a request record, a narrow worker holding the credential, grants, pattern scoping, delegation and credentialless generated code.</desc>
+        <rect x="20" y="20" width="44" height="34" rx="7" class="box" stroke="#f87171"/>
+        <text x="42" y="42" text-anchor="middle" class="label">0</text>
+        <rect x="76" y="20" width="664" height="34" rx="7" class="box"/>
+        <text x="94" y="42" text-anchor="start" class="muted">caller holds the downstream credential and calls the system directly</text>
+        <rect x="20" y="64" width="44" height="34" rx="7" class="box" stroke="#f87171"/>
+        <text x="42" y="86" text-anchor="middle" class="label">1</text>
+        <rect x="76" y="64" width="664" height="34" rx="7" class="box"/>
+        <text x="94" y="86" text-anchor="start" class="muted">a Radia identity is added; nothing is taken away</text>
+        <rect x="20" y="108" width="44" height="34" rx="7" class="box" stroke="#fbbf24"/>
+        <text x="42" y="130" text-anchor="middle" class="label">2</text>
+        <rect x="76" y="108" width="664" height="34" rx="7" class="box"/>
+        <text x="94" y="130" text-anchor="start" class="muted">the caller writes a record; the existing service claims it and calls the system</text>
+        <rect x="20" y="152" width="44" height="34" rx="7" class="box" stroke="#fbbf24"/>
+        <text x="42" y="174" text-anchor="middle" class="label">3</text>
+        <rect x="76" y="152" width="664" height="34" rx="7" class="box"/>
+        <text x="94" y="174" text-anchor="start" class="muted">the downstream credential leaves the caller and lives in a narrow worker</text>
+        <rect x="20" y="196" width="44" height="34" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="42" y="218" text-anchor="middle" class="label">4</text>
+        <rect x="76" y="196" width="664" height="34" rx="7" class="box"/>
+        <text x="94" y="218" text-anchor="start" class="muted">the caller's authority becomes a grant on a kind, not a token it holds</text>
+        <rect x="20" y="240" width="44" height="34" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="42" y="262" text-anchor="middle" class="label">5</text>
+        <rect x="76" y="240" width="664" height="34" rx="7" class="box"/>
+        <text x="94" y="262" text-anchor="start" class="muted">the grant carries a pattern, so tenant scoping is enforced before the worker runs</text>
+        <rect x="20" y="284" width="44" height="34" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="42" y="306" text-anchor="middle" class="label">6</text>
+        <rect x="76" y="284" width="664" height="34" rx="7" class="box"/>
+        <text x="94" y="306" text-anchor="start" class="muted">a shared worker acts under caller grants intersected with its own</text>
+        <rect x="20" y="328" width="44" height="34" rx="7" class="box" stroke="#4ade80"/>
+        <text x="42" y="350" text-anchor="middle" class="label">7</text>
+        <rect x="76" y="328" width="664" height="34" rx="7" class="box"/>
+        <text x="94" y="350" text-anchor="start" class="muted">generated code holds nothing and proposes through a trusted host</text>
+        <rect x="20" y="372" width="44" height="34" rx="7" class="box" stroke="#4ade80"/>
+        <text x="42" y="394" text-anchor="middle" class="label">8</text>
+        <rect x="76" y="372" width="664" height="34" rx="7" class="box"/>
+        <text x="94" y="394" text-anchor="start" class="muted">the old direct path is retired</text>
+      </svg>
+      <figcaption>This is a reference path, not a completion checklist. Stop after the transition that establishes the boundary the application needs; removing the caller credential already produces a concrete result.</figcaption>
+    </figure>
+
+    <p>
+      The objective is not zero credentials. It is that very few processes hold a powerful one, and
+      that possession stops being how application code expresses authority. Two numbers say whether
+      that is happening.
+    </p>
+
+    <div class="callout">
+      <strong>How many processes can exfiltrate each powerful credential, and how many principals
+      can read each sensitive body?</strong> The first should fall as credentials move. Track the
+      second from the moment requests become records, and keep it small with narrow kinds and
+      pattern-scoped grants.
+    </div>
+
+    <p>
+      A production database credential reachable by thirty-seven workloads today, and by three
+      capability workers after the first transitions, is a real result even if the secret manager
+      never moves.
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <a href="index.html">Home</a> &middot;
+    <a href="how-it-works.html">How it works</a> &middot;
+    <a href="authorization.html">Authorization</a> &middot;
+    <a href="inspection.html">Inspection</a> &middot;
+    <a href="https://github.com/wistrand/radia">GitHub</a>
+  </div>
+</footer>
+
+<script src="shared.js"></script>
+</body>
+</html>

@@ -8,6 +8,7 @@
 - [Home](index.html)
 - [How it works](how-it-works.html)
 - [Authorization](authorization.html)
+- [Adoption guide](adoption.html) - choosing when and how to move credentials out of callers and into narrow capability workers
 - [Workspaces](workspaces.html)
 - [Inspection](inspection.html)
 - [Why not X](why.html)

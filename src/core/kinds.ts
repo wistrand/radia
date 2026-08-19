@@ -275,10 +275,14 @@ export interface GrantDef {
    *  outside it cannot be claimed. Allowlist rather than blocklist so a label added later is barred
    *  by every existing grant instead of silently permitted. */
   scope?: Record<string, string>;
-  /** Optional pattern-scope: a match object AND-ed into the principal's read/take on this kind
-   *  (the effective query is `grant ∧ request`). Omitted → the whole kind. Applies to
-   *  query/read_one/take; put ignores it. Its paths must be declared indexed paths of the kind
-   *  (validated when a query compiles, not at grant creation, since the kind may not exist yet). */
+  /** Optional pattern-scope: a match object bounding this principal on this kind, on BOTH sides.
+   *  Reads and claims AND it into the request (`grant ∧ request`, via `combineMatch`); writes check
+   *  the body against it (`bodyMatchesGrant`), so the principal can only write records inside the
+   *  pattern — at `put` (`server/handlers/records.ts`) and again on the result a settle emits
+   *  (`Space.settle`), which is what stops an ack from writing what a put could not. Omitted → the
+   *  whole kind. Its paths must be declared indexed paths of the kind (validated when a query
+   *  compiles, not at grant creation, since the kind may not exist yet), so a body field nobody
+   *  declared cannot be scoped on. */
   pattern?: Record<string, unknown>;
 }
 
