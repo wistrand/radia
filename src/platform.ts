@@ -67,6 +67,7 @@ export interface PlatformBackend {
   onShutdown(handler: () => void): () => void;
   serve(opts: ServeOptions, handler: (req: Request) => Response | Promise<Response>): { finished: Promise<void> };
   httpGetJson(url: string): Promise<unknown>;
+  httpRequest(url: string, init: RequestInit): Promise<Response>;
 }
 
 const encoder = new TextEncoder();
@@ -181,6 +182,7 @@ const denoBackend: PlatformBackend = {
       if (res.bodyUsed === false) await res.body?.cancel();
     }
   },
+  httpRequest: (url, init) => fetch(url, init),
 };
 
 let backend: PlatformBackend = denoBackend;
@@ -370,10 +372,17 @@ export function serve(
 // HTTP client
 // ---------------------------------------------------------------------------
 
-/** GET a JSON document. The runtime's ONLY outbound HTTP, added for OIDC's JWKS/discovery
- *  fetches; narrowed to a single verb and a single content shape on purpose. The 10s timeout is
- *  load-bearing: this is called while an unauthenticated request waits, so a hung IdP must fail
- *  the sign-in rather than pin a handler. */
+/** GET a JSON document. Narrowed to a single verb and a single content shape on purpose, for
+ *  OIDC's JWKS/discovery fetches. The 10s timeout is load-bearing: this is called while an
+ *  unauthenticated request waits, so a hung IdP must fail the sign-in rather than pin a handler. */
 export function httpGetJson(url: string): Promise<unknown> {
   return backend.httpGetJson(url);
+}
+
+/** One HTTP request, response returned whole. The general form `httpGetJson` is not, added for
+ *  the S3 blob store (`src/storage/s3.ts`), which needs four verbs, request headers it signs, and
+ *  a response body it streams to the caller. No timeout here: an artifact download is legitimately
+ *  long, and the caller is the only thing that knows what "too long" means. */
+export function httpRequest(url: string, init: RequestInit): Promise<Response> {
+  return backend.httpRequest(url, init);
 }

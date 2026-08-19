@@ -195,6 +195,19 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Registries, and reads that must not truncate
 
+- **A CONSTANT idempotency key latches a registry entry after one transition.** Within the
+  idempotency window a replayed key writes nothing and reports success, so `capability:<p>:<t>:retired`
+  made a second withdrawal a no-op, and the unchanged content key made a re-publish over a tombstone
+  one. A tool retired, revived and retired again therefore stayed on every tool list, and a tool
+  retired while its worker ran could only return when its DESCRIPTION changed. Anchor each successor
+  on the record it supersedes (`:after:<id>`, `extensions/ts/capability.ts`), and note the write is
+  the only half you can see: both failures reported success. Guard:
+  `extensions/conformance/capability.test.ts`, "a withdrawal after a revival is a fresh write".
+- **Reviving a registry entry needs a READ, so the publisher needs `query` on that kind.**
+  `publishCapability` reads to see a tombstone; three chat workers held `capability: ["put"]` only,
+  the read threw, a `catch` swallowed it, and they served tools nothing could discover. A grant list
+  is part of the change when a worker gains a behaviour, and a degraded path that cannot see state
+  must SAY so rather than continue. See [[architecture-workspace-agents]] on grants as records.
 - **A `desc` sort puts records with NO value FIRST** (`compareRecords`, `src/core/matching.ts`).
   `compareValues` sorts a missing path last, then `desc` negates the whole comparison including that
   rule, so "the largest" leads with the records that have none. Ordering by `usage.total_tokens`

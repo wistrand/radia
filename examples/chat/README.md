@@ -166,6 +166,13 @@ The main worker roles are:
 Definitions and grants for these roles live in `space/roles.ts` and process startup lives in
 `client/fleet.ts`.
 
+A tool advertisement is keyed by (provider, tool), so two fleets on one space publish one record
+rather than one each, and withdrawal on exit belongs to the LAST fleet out. Each launcher records
+that it is running (`chat_fleet`, refreshed while it lives) and withdraws the advertisements only
+when no other launcher's record is live; a fleet killed outright stops counting after 15 minutes.
+An exiting fleet used to retire them for everybody, which took every file tool off a running
+session's list until a worker's description happened to change.
+
 ## Conversations and turns
 
 A conversation is an append-only thread of `message` records anchored to a `conversation` record.

@@ -1,0 +1,36 @@
+# An S3 endpoint for a local Radia space: `--blobs s3://radia/blobs?endpoint=http://127.0.0.1:9000`
+# (src/storage/s3.ts). A deployment recipe, not an example; see README.md for the three commands.
+#
+# The directory is named for the ROLE rather than the implementation, because the implementation
+# already changed once: MinIO was the obvious choice until its community edition stopped shipping
+# public images (Oct 2025) and the repository was archived (Apr 2026). Swapping the image here
+# should not rename a path that scripts and CI reference.
+#
+# SeaweedFS is what the store is verified against (README.md lists what was checked and why the
+# self-copy matters). Any S3 implementation that serves the same verbs works; the wire is the
+# contract, exactly as it is for a storage adapter.
+services:
+  s3:
+    image: chrislusf/seaweedfs:4.42
+    # One process: master, volume, filer and the S3 gateway. `-s3.config` is what turns SigV4 on;
+    # without it the gateway serves ANY request, signed or not.
+    command: server -s3 -dir=/data -s3.config=/etc/seaweedfs/s3.json
+    ports:
+      # 9000 outside because that is the port every S3-compatible dev setup uses; 8333 inside is
+      # SeaweedFS's own S3 port.
+      - "9000:8333"
+    volumes:
+      - ./s3-config.json:/etc/seaweedfs/s3.json:ro
+      - s3-data:/data
+    healthcheck:
+      # `/` needs a signature and answers 403, which is a healthy gateway refusing an unsigned
+      # request. `/status` is the one unauthenticated endpoint, so it is the one to poll.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8333/status"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  # Artifacts outlive a restart, because the records that reference them do. `docker compose down
+  # -v` is the reset, and it is the only thing that discards a space's bytes without a shred.
+  s3-data:

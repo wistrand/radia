@@ -109,6 +109,26 @@ Deno.test("[capability] a provider superseding its OWN older definition is an up
   });
 });
 
+Deno.test("[capability] a withdrawal after a revival is a fresh write, not a replay of the first one", async () => {
+  await withSpace(async (c) => {
+    const tool = uniq("calc"), w = uniq("w");
+    // The full cycle a restarted fleet performs. Both halves used a CONSTANT key once, and each
+    // constant swallowed the write that followed it: an unchanged re-publish replayed the original
+    // publish (so a retired tool never came back), and a second withdrawal replayed the first (so a
+    // revived tool could never be withdrawn again). Anchoring each on the record it supersedes is
+    // what makes the cycle close instead of latching after one turn of it.
+    await publishCapability(c, def(tool), w);
+    assertEquals(await retireProviderCapabilities(c, [w]), 1);
+    assert(!(await liveFor(c, tool)).has(`${w}|${tool}`), "withdrawn");
+
+    await publishCapability(c, def(tool), w); // UNCHANGED definition: revival, not an upgrade
+    assert((await liveFor(c, tool)).has(`${w}|${tool}`), "an unchanged definition revives it");
+
+    assertEquals(await retireProviderCapabilities(c, [w]), 1);
+    assert(!(await liveFor(c, tool)).has(`${w}|${tool}`), "and the second withdrawal lands");
+  });
+});
+
 Deno.test("[capability] a launcher withdraws everything its providers advertised", async () => {
   await withSpace(async (c) => {
     const calc = uniq("calc"), time = uniq("time"), read = uniq("read_file");

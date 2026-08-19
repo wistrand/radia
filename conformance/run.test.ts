@@ -27,8 +27,9 @@ import { authSuites } from "./suites/auth.ts";
 import { compartmentSuites } from "./suites/compartment.ts";
 import { taintSuites } from "./suites/taint.ts";
 import { blobCryptoSuites, blobSuites } from "./suites/blobs.ts";
-import { FileBlobStore, MemoryBlobStore } from "../src/storage/blobs.ts";
+import { FileBlobStore, MemoryBlobStore, MigratingBlobStore } from "../src/storage/blobs.ts";
 import { BlobCipher } from "../src/storage/crypto.ts";
+import { parseS3Spec, S3BlobStore } from "../src/storage/s3.ts";
 
 conformance(adapters, [
   ...smokeSuites,
@@ -68,7 +69,38 @@ blobConformance([
   { name: "file", create: () => new FileBlobStore(Deno.makeTempDirSync({ prefix: "radia-blobs-" })) },
   { name: "memory+enc", create: () => new MemoryBlobStore(cipher) },
   { name: "file+enc", create: () => new FileBlobStore(Deno.makeTempDirSync({ prefix: "radia-blobs-enc-" }), cipher) },
+  // A migration layer is an implementation of the port, not a wrapper with its own weaker rules:
+  // it runs the same suite with an EMPTY origin, which is what a fresh migration looks like.
+  // The fall-through and fan-out properties are `blobmigration.test.ts`.
+  {
+    name: "migrating",
+    create: () => new MigratingBlobStore(new MemoryBlobStore(), new FileBlobStore(Deno.makeTempDirSync({ prefix: "radia-blobs-from-" }))),
+  },
 ], blobSuites);
 
 // Properties that only exist once a store encrypts.
 blobCryptoConformance(cipher, kekBytes, blobCryptoSuites);
+
+// The object store joins the same matrix when a bucket is reachable, exactly as the postgres
+// adapter joins on RADIA_PG_URL: a backend nobody runs the suite against is a backend that drifts,
+// and this one cannot be exercised without a server (`scripts/s3-conformance.sh` starts the `docker/s3/` endpoint).
+//
+//   RADIA_S3_URL=s3://radia-conformance?endpoint=http://127.0.0.1:9000
+//   RADIA_S3_ACCESS_KEY_ID=… RADIA_S3_SECRET_ACCESS_KEY=…
+const s3Url = Deno.env.get("RADIA_S3_URL");
+if (s3Url) {
+  // The bucket is created ONCE here rather than by the store: a running space must never invent
+  // the bucket it was pointed at. Each factory then gets its own prefix, so tests cannot see each
+  // other's objects and a `retainOnly` sweep cannot reach another test's blobs.
+  await new S3BlobStore(parseS3Spec(s3Url, (k: string) => Deno.env.get(k))).ensureBucket();
+  let n = 0;
+  const scoped = (c?: BlobCipher) => () => {
+    const url = new URL(s3Url);
+    url.pathname = `${url.pathname.replace(/\/+$/, "")}/t${Date.now().toString(36)}-${n++}`;
+    return new S3BlobStore(parseS3Spec(url.toString(), (k: string) => Deno.env.get(k)), c);
+  };
+  blobConformance([
+    { name: "s3", create: scoped() },
+    { name: "s3+enc", create: scoped(cipher) },
+  ], blobSuites);
+}

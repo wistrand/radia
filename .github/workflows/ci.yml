@@ -106,3 +106,28 @@ jobs:
         env:
           RADIA_PG_URL: postgres://radia:radia@localhost:5432/radia
           RADIA_CONF_ADAPTERS: postgres
+
+  # The blob port's third implementation. Same argument as the postgres job: the S3 store is the
+  # one a horizontal deployment runs on (design-storage.md, "Scaling"), it cannot be exercised
+  # without a server, and a backend nobody runs the suite against drifts. `--filter "[blobs:s3"`
+  # narrows the run to those two columns; everything else was proved by `embedded`.
+  #
+  # The endpoint comes from docker/s3/compose.yaml rather than a `services:` block, so CI, the
+  # script and a local space run the SAME recipe: a service container cannot pass the command and
+  # config file the gateway needs, and a second definition here would drift from the one people use.
+  s3:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+          cache: true
+      # --wait blocks on the compose healthcheck, so the first signed request cannot race a
+      # gateway that is listening but not serving yet.
+      - run: docker compose -f docker/s3/compose.yaml up -d --wait
+      - run: deno task conformance-s3
+        env:
+          RADIA_S3_URL: s3://radia-conformance?endpoint=http://127.0.0.1:9000
+          RADIA_S3_ACCESS_KEY_ID: radialocal
+          RADIA_S3_SECRET_ACCESS_KEY: radialocal

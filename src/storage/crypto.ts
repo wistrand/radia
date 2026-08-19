@@ -43,7 +43,9 @@ export interface SealedKey {
  *  `Uint8Array` does not satisfy. Runtime-identical; the cast keeps every crypto call readable. */
 const buf = (b: Uint8Array): BufferSource => b as unknown as BufferSource;
 
-const b64 = {
+/** Base64 for key material and for anything that has to survive a header or a JSON field.
+ *  Exported so the S3 store can carry a `SealedKey` in object metadata without a second copy. */
+export const b64 = {
   encode(bytes: Uint8Array): string {
     let s = "";
     for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode(...bytes.subarray(i, i + 8192));

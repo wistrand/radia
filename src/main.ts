@@ -7,7 +7,7 @@ import { PgliteAdapter } from "./storage/pglite.ts";
 import { SqliteAdapter } from "./storage/sqlite.ts";
 import { PostgresAdapter } from "./storage/postgres.ts";
 import type { StorageAdapter } from "./storage/adapter.ts";
-import { FileBlobStore, MemoryBlobStore } from "./storage/blobs.ts";
+import { openBlobs } from "./storage/blobspec.ts";
 import { BlobCipher, loadKek } from "./storage/crypto.ts";
 import { loadSealKey } from "./core/seal.ts";
 import { Space } from "./core/space.ts";
@@ -22,7 +22,8 @@ import { args as argv, env, exit, onShutdown, UsageError } from "./platform.ts";
 const USAGE = `radia <command>
 
   dev [--port <n>] [--host <addr>] [--storage pglite|sqlite|postgres] [--db [path|url]]
-      [--blobs <dir>] [--blob-kek [file]] [--seal-key [file]] [--auth required|open]
+      [--blobs <dir|memory|s3://bucket/prefix>[,<read-only origin>…]]
+      [--blob-kek [file]] [--seal-key [file]] [--auth required|open]
       [--artifact-port <n>] [--max-scan-rows <n>] [--event-retention <seconds>]
       [--oidc-issuer <url> --oidc-audience <client-id>]
       Run an embedded space + web console. Everything it writes goes under ./.radia
@@ -84,10 +85,12 @@ async function dev(args: string[]): Promise<void> {
   await storage.init();
   const where = backend === "postgres" ? "shared server" : (dbPath ? `persisted at ${dbPath}` : "in-memory (--db to persist)");
   console.log(`radia dev: storage=${storage.name} (${where})`);
-  // Artifact BYTES live beside the data they belong to: a directory next to --db (or --blobs), and
-  // in memory otherwise, since an ephemeral space must not leave blobs behind on disk. `--blobs` is what
-  // a postgres deployment uses, since its --db is a connection URL with no local home.
-  const blobDir = flag(args, "--blobs") ??
+  // Artifact BYTES live beside the data they belong to: a directory next to --db (or wherever
+  // --blobs says), and in memory otherwise, since an ephemeral space must not leave blobs behind on
+  // disk. `--blobs` is what a postgres deployment uses, since its --db is a connection URL with no
+  // local home, and a horizontal one needs a store every instance shares (`s3://…`; see
+  // storage/blobspec.ts for the spec and design-storage.md for why a local directory is not one).
+  const blobSpec = flag(args, "--blobs") ??
     (backend === "postgres" ? undefined : (dbPath ? defaultBlobDir(dbPath) : undefined));
   // Encryption at rest is OPT-IN and only as strong as where the key lives: `RADIA_BLOB_KEK`
   // (base64, 32 bytes) is the real deployment path; `--blob-kek <file>` generates one on first use
@@ -100,10 +103,10 @@ async function dev(args: string[]): Promise<void> {
   if (kekPath) ensureParent(kekPath);
   const kek = loadKek({ env: env("RADIA_BLOB_KEK"), file: kekPath });
   const cipher = kek ? await BlobCipher.fromKey(kek.key) : undefined;
-  const blobs = blobDir ? new FileBlobStore(blobDir, cipher) : new MemoryBlobStore(cipher);
-  console.log(`radia dev: blobs=${blobs.name}${blobDir ? ` (${blobDir})` : " (in-memory)"}${kek ? ` (encrypted, KEK from ${kek.source})` : ""}`);
+  const blobs = openBlobs(blobSpec, cipher);
+  console.log(`radia dev: blobs=${blobs.name}${blobSpec ? ` (${blobSpec})` : " (in-memory)"}${kek ? ` (encrypted, KEK from ${kek.source})` : ""}`);
   // One line naming the whole on-disk footprint, so "where did this write?" never needs archaeology.
-  if (dbPath || blobDir || kek) console.log(`radia dev: runtime dir=${radiaDir()}`);
+  if (dbPath || blobSpec || kek) console.log(`radia dev: runtime dir=${radiaDir()}`);
   // The one resource limit a deployment genuinely has to tune, and the first `SpaceContext` value
   // this entry point passes at all: it bounds the rows ONE read may push through the oracle when
   // the pre-filter could not decide the pattern (`storage/pushdown.ts`). Measured at 5.5M records,

@@ -154,6 +154,12 @@ export class Thread {
       const index = this.nextIndex;
       const key = `msg:${this.id}:${index}`;
       const body = { conversationId: this.id, owner: sessionOwner(), index, ...msg };
+      // Claim the slot in the CURSOR before the write, never after it. A watcher wakes on the
+      // COMMIT, which routinely beats this call's own response, and `upToIndex` is the whole of
+      // what tells the live view a record here was already rendered (`client/live.ts`). Advancing
+      // afterwards left that round trip as a window in which this client rendered its own message
+      // back as somebody else's, one notice per turn.
+      this.nextIndex = index + 1;
       try {
         const { id } = await this.client.put({
           kind: "message",
@@ -170,12 +176,17 @@ export class Thread {
           body: this.key ? await sealBody(body, "message", this.key, key) : body,
           parentIds: [this.id, ...parentIds],
         }, key);
-        this.nextIndex = index + 1;
         this.lastId = id;
         return id;
       } catch (e) {
         const taken = e instanceof RadiaClientError && e.code === "idempotency_conflict";
-        if (!taken || attempt >= 20) throw e;
+        if (!taken || attempt >= 20) {
+          // Nothing of ours is at this slot, so give it back rather than leaving a hole. If the
+          // write landed and only the answer was lost, the next attempt reuses the key: identical
+          // request, deduped; different one, refused and resynced past.
+          this.nextIndex = index;
+          throw e;
+        }
         // Somebody else is writing here. Re-read where the transcript actually ends rather than
         // incrementing blindly: several messages may have landed while this one was being composed.
         await this.resync();
@@ -221,7 +232,9 @@ function systemPrompt(who: Identity): string {
     "conversation and your own reasoning, so your space_* tools can inspect and even operate on the " +
     "space itself (use space_kinds to see what record kinds exist). Use state-changing tools " +
     "deliberately, and prefer to inspect before acting. When you produce a file for someone, finish " +
-    "the job: give them a link they can open, not an identifier. If you are unsure what happened earlier in " +
+    "the job: give them a link they can open, not an identifier, and let a tool mint it. A link or a " +
+    "path you compose yourself resolves to nothing here, so quoting one is worse than saying you " +
+    "could not produce it. If you are unsure what happened earlier in " +
     "this session, retrieve it rather than recall it: your own history is inspectable, and a checked " +
     "answer is worth a tool call where a remembered one is a guess. Do not spend a call on something " +
     "you can already see. A number, a ranking, or a most/biggest claim must come from a read " +

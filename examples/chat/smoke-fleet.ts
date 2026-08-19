@@ -14,6 +14,8 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { liveModels, publishModel, retireModel } from "../../extensions/ts/model.ts";
+import { publishCapability } from "../../extensions/ts/capability.ts";
+import { announceFleet, retireFleetAdvertisements } from "./client/fleet.ts";
 import { explicitTier, heuristicIndex, isContinuation, previousTurnTier } from "./workers/router.ts";
 
 const PORT = 7801;
@@ -245,6 +247,44 @@ check("the rule holds at three tiers too", ["fast", "balanced", "deep"][heuristi
       missing.length ? `NOT PERMITTED: ${missing.join(", ")} (allowed: ${allowed.join(", ")})` : allowed.join(", "),
     );
   }
+}
+
+// ---- one space, several fleets ----
+//
+// An advertisement is keyed by (provider, tool) and therefore SHARED, so "retire what I published"
+// names nothing: whoever exits first would take the tool list away from a fleet still serving. It
+// cost `share_artifact`, `save_content` and every file tool in a real session, and nothing brought
+// them back, because an unchanged definition re-published over a tombstone replays its own key.
+{
+  const TOOL = { type: "function" as const, function: { name: "smoke_share", description: "d", parameters: {} } };
+  const PROVIDER = "agent:chat-tools";
+  const advertised = async () => {
+    const rows = await client.query({ kind: "capability", match: { tool: "smoke_share", provider: PROVIDER } }, 1, { dir: "desc" });
+    return rows.length > 0 && !(rows[0].body as { retired?: boolean }).retired;
+  };
+  await publishCapability(client, TOOL, PROVIDER);
+  check("a tool is advertised once published", await advertised());
+
+  const a = new AbortController(), b = new AbortController();
+  const fleetA = announceFleet(client, a.signal);
+  const fleetB = announceFleet(client, b.signal);
+  a.abort();
+  await retireFleetAdvertisements(client, fleetA);
+  check("one fleet exiting leaves a serving fleet's advertisements alone", await advertised());
+
+  b.abort();
+  await retireFleetAdvertisements(client, fleetB);
+  check("the LAST fleet out withdraws them", !(await advertised()));
+
+  // The cycle has to close, or a space becomes un-advertisable after one restart: the revival is a
+  // fresh key anchored on the tombstone, and the next withdrawal is anchored on the revival.
+  const c2 = new AbortController();
+  const fleetC = announceFleet(client, c2.signal);
+  await publishCapability(client, TOOL, PROVIDER);
+  check("the next fleet's publish revives it", await advertised());
+  c2.abort();
+  await retireFleetAdvertisements(client, fleetC);
+  check("…and that fleet's exit withdraws it again", !(await advertised()));
 }
 
 space.kill();

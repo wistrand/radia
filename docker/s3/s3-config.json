@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "radia",
+      "credentials": [{ "accessKey": "radialocal", "secretKey": "radialocal" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

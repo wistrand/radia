@@ -56,6 +56,11 @@ export interface BlobGcResult {
 
 export interface BlobStore {
   readonly name: string;
+  /** Whether every copy this store can hold is stored ENCRYPTED. `shredArtifact` reports
+   *  crypto-shred versus delete from this, and the two differ against someone holding a backup,
+   *  so a store that can also serve plaintext (a migration layer that is not sealed) answers
+   *  false. Never inferred from `name`: a bucket called `aes-corp` would answer yes. */
+  readonly sealed: boolean;
   /** Store bytes; returns the content address. Storing the same bytes twice is a no-op for the
    *  CONTENT and must still refresh the blob's clock (see `retainOnly`'s grace window). */
   put(bytes: Uint8Array): Promise<BlobRef>;
@@ -88,6 +93,7 @@ export interface BlobStore {
  *  filesystem home would outlive the data that references it. */
 export class MemoryBlobStore implements BlobStore {
   readonly name: string;
+  readonly sealed: boolean;
   /** Stored form: ciphertext when a cipher is set, plaintext otherwise. `size` is always the
    *  PLAINTEXT length, which is the port's contract and 16 bytes less than sealed bytes.
    *  `touchedAt` is the grace-window clock `retainOnly` reads; a deduped put refreshes it. */
@@ -95,6 +101,7 @@ export class MemoryBlobStore implements BlobStore {
 
   constructor(private readonly cipher?: BlobCipher) {
     this.name = cipher ? "memory+aes-gcm" : "memory";
+    this.sealed = cipher !== undefined;
   }
 
   async put(bytes: Uint8Array): Promise<BlobRef> {
@@ -156,9 +163,11 @@ export class MemoryBlobStore implements BlobStore {
  *  the bytes repair an address (see the header on what is verified and what is merely verifiable). */
 export class FileBlobStore implements BlobStore {
   readonly name: string;
+  readonly sealed: boolean;
 
   constructor(private readonly root: string, private readonly cipher?: BlobCipher) {
     this.name = cipher ? "file+aes-gcm" : "file";
+    this.sealed = cipher !== undefined;
     mkdirp(root);
   }
 
@@ -352,6 +361,73 @@ export class FileBlobStore implements BlobStore {
           removeFile(path);
         }
       }
+    }
+    return out;
+  }
+}
+
+/**
+ * One store to write, several to read: how a space changes blob backend without rewriting a
+ * record.
+ *
+ * A record names bytes by content address, so switching from a local directory to an object store
+ * would otherwise dangle every artifact written before the switch. Reads fall through the layers
+ * in order, writes go to the FIRST, and a cold blob keeps reading from wherever it already is.
+ * `FileBlobStore.findPath` does the same thing for its two naming regimes; this is that move one
+ * level up, over whole stores.
+ *
+ * Two operations fan out to EVERY layer, both for correctness rather than tidiness: `delete`,
+ * since an erasure that reached one copy is not an erasure, and `retainOnly`, whose keep set comes
+ * from the shared record store and is therefore authoritative for all of them.
+ *
+ * A read never copies into the primary. Read-through migration would turn a GET into a write,
+ * resurrect bytes a sweep just reclaimed, and hide how much is left to move. Re-putting the
+ * payloads is the explicit way to finish.
+ */
+export class MigratingBlobStore implements BlobStore {
+  readonly name: string;
+  readonly sealed: boolean;
+  private readonly layers: BlobStore[];
+
+  constructor(primary: BlobStore, ...origins: BlobStore[]) {
+    this.layers = [primary, ...origins];
+    this.name = `migrating(${this.layers.map((l) => l.name).join(" <- ")})`;
+    // EVERY layer, because the answer decides whether a shred is reported as crypto-shred, and a
+    // plaintext origin's copy was merely deleted however well the primary seals.
+    this.sealed = this.layers.every((l) => l.sealed);
+  }
+
+  put(bytes: Uint8Array): Promise<BlobRef> {
+    return this.layers[0].put(bytes);
+  }
+
+  async get(digest: string): Promise<ReadableStream<Uint8Array> | null> {
+    for (const layer of this.layers) {
+      const stream = await layer.get(digest);
+      if (stream) return stream;
+    }
+    return null;
+  }
+
+  async stat(digest: string): Promise<BlobRef | null> {
+    for (const layer of this.layers) {
+      const ref = await layer.stat(digest);
+      if (ref) return ref;
+    }
+    return null;
+  }
+
+  async delete(digest: string): Promise<void> {
+    for (const layer of this.layers) await layer.delete(digest);
+  }
+
+  async retainOnly(liveDigests: ReadonlySet<string>, opts: { graceMs: number; dryRun?: boolean; nowMs?: number }): Promise<BlobGcResult> {
+    const out: BlobGcResult = { scanned: 0, deleted: 0, bytes: 0 };
+    for (const layer of this.layers) {
+      const r = await layer.retainOnly(liveDigests, opts);
+      out.scanned += r.scanned;
+      out.deleted += r.deleted;
+      out.bytes += r.bytes;
     }
     return out;
   }

@@ -18,14 +18,21 @@ flowchart LR
     S2 --> B2[file]
     S2 --> B3["memory+enc"]
     S2 --> B4["file+enc"]
+    S2 --> B5[migrating]
+    S2 --> B6["s3 · s3+enc"]
     S3 --> B4
 ```
+
+`postgres` joins on `RADIA_PG_URL` and the two `s3` columns on `RADIA_S3_URL`; both need a server,
+and a backend nobody runs the suite against drifts.
 
 ```bash
 deno task quick                           # the structural guards only        (~1s)
 deno task conformance                     # sqlite + pglite + the blob port   (~1min)
 scripts/pg-conformance.sh                 # + a live Postgres
 RADIA_PG_URL=postgres://… scripts/pg-conformance.sh   # against your own server
+scripts/s3-conformance.sh                 # + the S3 blob store, on the docker/s3/ endpoint
+RADIA_S3_URL=s3://bucket/prefix scripts/s3-conformance.sh   # against your own bucket
 ```
 
 Use `quick` for documentation, static pages, flags, routes and literal defaults. It includes
@@ -43,8 +50,9 @@ are added; the claim to check is 0 failed), and it is the only run that actually
 change needs it (see "Writing a suite" below). The two cases in `concurrency.test.ts` are ignored
 entirely without it.
 
-**Both run in CI** (`.github/workflows/ci.yml`), in two jobs: `embedded` (check + conformance +
-extensions) and `postgres` (the same suite against a service container). Until 2026-08-04 the
+**All three run in CI** (`.github/workflows/ci.yml`), in three jobs: `embedded` (check +
+conformance + extensions), `postgres` (the same suite against a service container) and `s3` (the
+blob columns against the `docker/s3/` endpoint, the same recipe a local space uses). Until 2026-08-04 the
 Postgres run was manual, while CLAUDE.md's invariant said the suite runs on every implementation
 "in CI from day one" — an invariant naming a guard that was not running.
 
@@ -68,6 +76,7 @@ Postgres run was manual, while CLAUDE.md's invariant said the suite runs on ever
 | `suites/`     | one file per behavior area (records, matching, **pushdown soundness**, **graph: children + lineage**, leases + claim fairness, idempotency, events, **the integrity chain incl. direct-SQL tamper cases**, **resource limits**, **the orphaned/starving split**, watches, faults, auth, **compartments: a dedicated kind plus pattern-scoped grants, refused on every write path**, taint, admin + selector-driven remediation, blobs + encryption) |
 | `http.test.ts` | the HTTP boundary, driving `makeHandler` directly: authentication and run renewal, the artifact inline/download allowlist and capability URLs, erasure (410 vs 404, shared payloads, forged shred markers), the ops-tier gate matrix (each `ops_grant` power opens exactly its verbs; no identity root or coordination bypass below full), the event-GC 410/clamp boundary, and a table of wrong-typed fields per endpoint |
 | `backfill.test.ts` | the schema's one migration: rebuilding `record_edges` for a database written before that table existed |
+| `blobmigration.test.ts` | what a migration layer adds over the blob port and the shared suite cannot see (it runs `MigratingBlobStore` with an EMPTY origin): a read falling through without copying, `delete` reaching every layer since an erasure that missed a copy is not one, one keep set sweeping all of them, and `sealed` being false unless every layer seals |
 | `planner.test.ts`  | Postgres planner statistics for declared body paths (`prepareKind`) |
 | `registry.test.ts` | latest-wins projections over hand-made ids and timestamps |
 | `openapi.test.ts`  | the frozen contract against the router, both directions: every documented operation is routed, and every `/v0` path the router names is documented |

@@ -52,6 +52,17 @@ export async function registerChatKinds(client: RadiaClient): Promise<void> {
     indexedPaths: [{ path: "keyId", type: "keyword" }],
     claimable: false,
   });
+  // A LAUNCHER saying it is still running its workers, so a fleet's shutdown can tell whether it is
+  // the last one out. The advertisements it withdraws are keyed by (provider, tool) and shared by
+  // every fleet on this space, so withdrawing them while another fleet serves takes the tool list
+  // away from everybody (`retireFleetAdvertisements` in client/fleet.ts). Refreshed while it runs,
+  // because a SIGKILLed launcher must stop counting rather than block withdrawal forever.
+  await client.registerKind({
+    kind: "chat_fleet",
+    indexedPaths: [{ path: "fleetId", type: "keyword" }],
+    claimable: false,
+    contentKey: ["fleetId"],
+  });
   await client.registerKind({ kind: "conversation", indexedPaths: [], claimable: false });
   // A person's PUBLIC keys, one per machine they read on. Public by nature, and what makes a
   // conversation readable from more than one place: a session seals to every live key here, so a

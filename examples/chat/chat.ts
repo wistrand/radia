@@ -55,8 +55,7 @@ import {
 } from "./space/keys.ts";
 import { type ConversationKey, NoConversationKeyError, sealConversation } from "../../extensions/ts/encrypted.ts";
 import { apiKey, encryptMode, EXEC_TIMEOUT_MS, execRoots, loginDefinitionToken, loginSource, loginToken, operatorToken, resume, scopeMode, spaceDb, TIERS, toolRoots, url } from "./client/config.ts";
-import { FLEET_PROVIDERS, launchFleet, launchWebUi, spawnSpace } from "./client/fleet.ts";
-import { retireProviderCapabilities } from "../../extensions/ts/capability.ts";
+import { announceFleet, launchFleet, launchWebUi, retireFleetAdvertisements, spawnSpace } from "./client/fleet.ts";
 import { denoSandbox } from "../../extensions/ts/sandbox.ts";
 import { declareSandbox } from "../../extensions/ts/sandbox-registry.ts";
 import { ToolSet } from "./client/turn.ts";
@@ -108,6 +107,9 @@ if (!loginToken && !Deno.args.includes("--serve")) {
 
 const procs: Deno.ChildProcess[] = [];
 const shutdown = new AbortController();
+// Set when THIS process launched the fleet. It is what makes withdrawal on the way out belong to
+// this launcher rather than to every fleet on the space (client/fleet.ts).
+let fleetId: string | undefined;
 
 /** Where the web UI is served, if it is. One definition for `--serve --web` and for the probe that
  *  prints the link in an ordinary session. */
@@ -211,6 +213,9 @@ async function setUpSpace(a: RadiaClient): Promise<void> {
   // No session credential goes to the fleet. The tools worker used to be handed one so its
   // `space_*` verbs ran as a person; those verbs are served in the REPL now, which is what lets
   // these workers serve everybody.
+  // Announced BEFORE the workers start, so a fleet exiting in the gap between the two sees this
+  // one and leaves the shared advertisements alone (client/fleet.ts).
+  fleetId = announceFleet(a, shutdown.signal);
   procs.push(...launchFleet(tokens, fleetKey));
   // The retention sweep, at the one moment this app reliably has an operator credential in hand.
   // Best-effort in the background: a chat that cannot sweep is a chat, not an error.
@@ -258,7 +263,7 @@ if (serveOnly && admin) {
   await new Promise<void>((r) => shutdown.signal.addEventListener("abort", () => r(), { once: true }));
   cleanup();
   try {
-    await retireProviderCapabilities(admin, FLEET_PROVIDERS);
+    if (fleetId) await retireFleetAdvertisements(admin, fleetId);
   } catch { /* the space may already be gone */ }
   await sleep(100);
   Deno.exit(0);
@@ -831,7 +836,7 @@ cleanup();
 // Only the process that STARTED the fleet withdraws it. A joining session that retired these would
 // take the advertisements away from everybody else still talking.
 try {
-  if (admin) await retireProviderCapabilities(admin, FLEET_PROVIDERS);
+  if (admin && fleetId) await retireFleetAdvertisements(admin, fleetId);
 } catch { /* the space may already be gone; shutting down regardless */ }
 await sleep(100);
 Deno.exit(0);

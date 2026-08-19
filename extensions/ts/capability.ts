@@ -83,19 +83,36 @@ export async function publishCapability(client: RadiaClient, def: ToolDef, provi
     } else if (current?.def && await defHash(current.def) === hash) {
       return; // unchanged and live
     }
-  } catch {
-    // No grant to read capabilities, or an older server: fall through and publish.
+  } catch (e) {
+    // No grant to read capabilities, or an older server. The publish still happens, but it can no
+    // longer REVIVE: an unchanged definition re-published after a retirement replays the original
+    // key, the write dedups, and the tombstone stays newest — so the worker serves a tool nothing
+    // can discover and says nothing about it. Silence is what made that cost an afternoon, so the
+    // degraded mode announces itself.
+    console.error(
+      `[capability] ${tool}: cannot read this provider's advertisements (${e instanceof Error ? e.message : e}), ` +
+        `so a retired one cannot be revived. Grant this principal \`capability: query\`.`,
+    );
   }
   const body: CapabilityBody = provider ? { tool, def, provider } : { tool, def };
   await client.put({ kind: CAPABILITY, body }, key);
 }
 
-/** Withdraw one advertisement: a successor carrying `retired: true`, so the projection drops it and
- *  the audit trail survives. */
-export async function retireCapability(client: RadiaClient, tool: string, provider: string): Promise<void> {
+/**
+ * Withdraw one advertisement: a successor carrying `retired: true`, so the projection drops it and
+ * the audit trail survives.
+ *
+ * `supersedes` is the record this retirement replaces, and it is what makes a SECOND withdrawal
+ * land. A constant key replays the first retirement: nothing is written, the call reports success,
+ * and whatever republished in between stays newest — the exact mirror of the revival case above,
+ * and the reason a tool that was retired, revived, and retired again stayed on every tool list.
+ * Callers that already read the record they are retiring pass its id; without one this stays
+ * best-effort on the constant key.
+ */
+export async function retireCapability(client: RadiaClient, tool: string, provider: string, supersedes?: string): Promise<void> {
   await client.put(
     { kind: CAPABILITY, body: { tool, provider, retired: true } },
-    `capability:${provider}:${tool}:retired`,
+    `capability:${provider}:${tool}:retired${supersedes ? `:after:${supersedes}` : ""}`,
   );
 }
 
@@ -120,7 +137,9 @@ export async function retireProviderCapabilities(client: RadiaClient, providers:
         const b = rec.body as CapabilityBody;
         if (!b.provider || !wanted.has(b.provider)) return;
         try {
-          await retireCapability(client, b.tool, b.provider);
+          // Anchored on the record being withdrawn: this projection already read it, so a repeat
+          // withdrawal after a republish is a fresh write rather than a replayed one.
+          await retireCapability(client, b.tool, b.provider, rec.id);
           retired++;
         } catch { /* best effort: shutdown must not fail over a withdrawal */ }
       }),

@@ -177,11 +177,11 @@ export async function shredArtifact(
       // Whether the bytes were destroyed or the KEY was: only the second is unrecoverable against
       // someone holding a copy of the storage, and a caller deciding whether an erasure is
       // sufficient needs to know which one it got.
-      method: h.blobs.name.includes("aes") ? "crypto-shred" : "delete",
+      method: h.blobs.sealed ? "crypto-shred" : "delete",
     },
     parentIds: [recordId],
   }, undefined, { principal: opts.principal });
-  return { digest: def.digest, references, encrypted: h.blobs.name.includes("aes"), alreadyGone };
+  return { digest: def.digest, references, encrypted: h.blobs.sealed, alreadyGone };
 }
 
 /** Was this content erased on purpose? Distinguishes a 410 from a 404, which is the difference

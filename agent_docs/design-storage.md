@@ -64,7 +64,7 @@ Scaling), envelope encryption/KMS (M2). `npm`/`pip` binary wrapping is BUILT but
 | Event log    | append-only `events` table (monotonic seq), same transaction as each mutation                                                                                                     |
 | Kinds        | `kind_def` **records** (no table); the in-memory registry is a cache rebuilt at startup by querying them (`Space.loadKinds`)                                                        |
 | Clock        | DB `now()` for all lease/timing math                                                                                                                                              |
-| Blobs        | the `BlobStore` port (`src/storage/blobs.ts`): content-addressed by sha256, memory + filesystem impls, one conformance suite for both; the "artifact table" is the reserved `artifact` **record** kind; runtime-issued short-lived download capabilities; optional **encryption at rest** (per-blob AES-GCM DEK, AES-KW-wrapped under a space KEK, HMAC-named paths, key in a destroyable sidecar), **built (M1)**                                                         |
+| Blobs        | the `BlobStore` port (`src/storage/blobs.ts`): content-addressed by sha256; memory, filesystem and **S3-compatible** (`src/storage/s3.ts`: SigV4 written here rather than an SDK, the wrapped DEK in object metadata, `retainOnly` as a paged LIST) impls, plus `MigratingBlobStore`, which writes to one store and reads through the rest so a space can CHANGE backend without rewriting records that name bytes by content address. One conformance suite for all of them, the S3 columns gated on `RADIA_S3_URL` (`scripts/s3-conformance.sh`, which starts the `docker/s3/` endpoint). `--blobs` takes the spec (`src/storage/blobspec.ts`); the "artifact table" is the reserved `artifact` **record** kind; runtime-issued short-lived download capabilities; optional **encryption at rest** (per-blob AES-GCM DEK, AES-KW-wrapped under a space KEK, HMAC-named paths, key destroyable beside the payload), **built (M1)**                                                         |
 
 The claim index is what lets a candidate window be an ordered seek rather than a scan of the
 envelope table. A pattern with a pushable predicate does need the join, and there the two backends
@@ -114,7 +114,7 @@ the throwaway server `scripts/pg-conformance.sh` starts for the test suite.
 ## Scaling and multi-instance operation
 
 The `production` row is horizontal: **N runtime instances behind a load balancer over one shared
-(HA) Postgres.** Nothing on the hot path is process-local, so instances never coordinate with
+(HA) Postgres.** Nothing on the coordination hot path is process-local, so instances never coordinate with
 each other, only with the DB, which is the sole arbiter. The coordination guarantees are
 enforced **in the storage transaction**, which is what makes this safe:
 
@@ -133,6 +133,34 @@ enforced **in the storage transaction**, which is what makes this safe:
 So the invariant "the runtime is the sole DB client" means *no non-runtime client speaks SQL*
 (agents speak the protocol), **not** one process. Requests carry a Bearer token and hold no
 server session, so any instance can serve any request.
+
+**Artifact BYTES are the exception, and the requirement lands on the deployment.** The `BlobStore`
+a process was handed is shared with nobody: a local `FileBlobStore` is a SINGLE-INSTANCE
+configuration however many instances share the Postgres, so give every instance one blob location
+(a shared mount, or `--blobs s3://bucket/prefix`). A space that already has artifacts moves with a
+comma list, `--blobs s3://bucket/prefix,/var/lib/radia/blobs`: writes go to the bucket, reads fall
+through to the directory, and both are swept and shredded together (`src/storage/blobspec.ts`).
+A shared store also takes one prefix per space and, with encryption on, one KEK across the
+instances: a sweep deletes what its own keep set does not name, and `--blob-kek <file>` generates a
+key per machine, so a mismatched instance both fails to read its peer's blobs and sweeps them away
+(`RADIA_BLOB_KEK` is the shared-key form). Split across local disks, in severity order:
+
+- **Erasure is per instance.** `Space.shredArtifact` deletes the copy the handling instance holds
+  and writes the `shred` record anyway, so a peer keeps serving those bytes. A documented
+  limitation with the same shape as "the payload was written again" (the erasure invariant in
+  [CLAUDE.md](../CLAUDE.md)); detection covers both.
+- **`erasures` answers locally.** `holds` comes from that instance's `blobs.stat`
+  (`Space.erasures`), so `radia doctor` reports a different state per instance. Queued: a doctor
+  finding for shared storage beside a local blob store.
+- **A read can 404 for bytes that exist**, on any instance but the one that stored them, and the
+  miss is indistinguishable from an unknown id.
+- **Download capabilities are process-local already** (`CapabilityStore`, `src/core/artifacts.ts`:
+  in memory, lost on restart), so `/v0/a/{capability}` needs sticky sessions whatever the blob
+  store does.
+
+**Blob GC is safe here and must not be "fixed".** `retainOnly` takes its keep set from the shared
+database and sweeps only what the instance holds, so a live blob stored on a peer is never scanned
+and never a deletion candidate ([plan-gc.md](plan-gc.md) phase 4).
 
 **Process-local caches that must become cross-instance-aware for correct HA.** Each is a
 cache/projection over records (the durable truth is always the records); a write updates the

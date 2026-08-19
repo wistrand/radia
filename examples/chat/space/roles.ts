@@ -66,7 +66,13 @@ const INFERENCE_GRANTS: Grant[] = [
   { kind: "llm_result", operations: ["put"] },
   { kind: "llm_chunk", operations: ["put"] },
   { kind: "model", operations: ["put", "query"] },
-  { kind: "capability", operations: ["put"] },
+  // `query` as well as `put`, and the read is not a nicety: `publishCapability` reads before
+  // writing because that is the only way it can see a RETIRED advertisement needing revival.
+  // Without the read it falls through to the unchanged content key, the write dedups against
+  // the original publish, and the tombstone stays newest — a worker serving calls nobody can
+  // discover, until its definition happens to change. That is what took `share_artifact` and
+  // `save_content` off every session's tool list after one fleet shut down.
+  { kind: "capability", operations: ["put", "query"] },
   { kind: "message", operations: ["query"] },
   { kind: "progress", operations: ["put"] }, // reports which tier/model is generating
   // A conversation's wrapped DEK: inference is the reader that must decrypt, since it calls the
@@ -106,7 +112,13 @@ const IMAGE_GRANTS: Grant[] = [
   // a capability whose grant was missing twice already (read_workspace, and the exec worker's
   // `workspace: put`), and both times the contract suite stayed green while every real call 403'd.
   { kind: "artifact", operations: ["put", "read_one"] },
-  { kind: "capability", operations: ["put"] },
+  // `query` as well as `put`, and the read is not a nicety: `publishCapability` reads before
+  // writing because that is the only way it can see a RETIRED advertisement needing revival.
+  // Without the read it falls through to the unchanged content key, the write dedups against
+  // the original publish, and the tombstone stays newest — a worker serving calls nobody can
+  // discover, until its definition happens to change. That is what took `share_artifact` and
+  // `save_content` off every session's tool list after one fleet shut down.
+  { kind: "capability", operations: ["put", "query"] },
   { kind: "model", operations: ["put"] }, // advertises itself as modalities:["image"]
   { kind: "progress", operations: ["put"] },
   // A conversation's wrapped DEK: this worker reads the arguments it acts on and seals its answer
@@ -128,7 +140,13 @@ const TOOLS_GRANTS: Grant[] = [
   // answered `forbidden` while the contract suite stayed green. Same shape as the exec worker's
   // missing `workspace: put`. When a worker gains a capability, its grants are part of the change.
   { kind: "artifact", operations: ["put", "read_one"] },
-  { kind: "capability", operations: ["put"] },
+  // `query` as well as `put`, and the read is not a nicety: `publishCapability` reads before
+  // writing because that is the only way it can see a RETIRED advertisement needing revival.
+  // Without the read it falls through to the unchanged content key, the write dedups against
+  // the original publish, and the tombstone stays newest — a worker serving calls nobody can
+  // discover, until its definition happens to change. That is what took `share_artifact` and
+  // `save_content` off every session's tool list after one fleet shut down.
+  { kind: "capability", operations: ["put", "query"] },
   { kind: "progress", operations: ["put"] }, // reports which tool it is running
   { kind: "workspace", operations: ["put", "query"] }, // save_workspace: authors a tree for a session
   // A conversation's wrapped DEK: this worker reads the arguments it acts on and seals its answer

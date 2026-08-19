@@ -136,7 +136,9 @@ function runJavascriptDef(pythonServed: boolean): ToolDef {
       `as literals. Modern JS is available (no ` +
       `imports, no npm). Runs for at most ${Math.round(timeoutMs / 1000)}s, so avoid unbounded ` +
       `loops. Returns {ok, stdout, stderr, exitCode, timedOut, ms} plus {artifactId, mediaType, ` +
-      `size} when something was stored.`,
+      `size} when something was stored. That id is a REFERENCE, not a location: nothing here has a ` +
+      `filesystem path and there is no sandbox:/mnt/... URL, so a link you compose yourself points ` +
+      `at nothing. Pass the id to share_artifact to get one the user can open.`,
     parameters: {
       type: "object",
       properties: {
@@ -409,7 +411,9 @@ const RUN_PYTHON: ToolDef = {
       `from namespaces rather than permission flags, so it has NO network and cannot see your ` +
       `files, but it CAN see the Python installation it needs to exist and it can start processes. ` +
       `run_javascript can do neither. Ask space_query {kind:"sandbox"} for what each one guarantees. ` +
-      `Runs for at most ${Math.round(timeoutMs / 1000)}s.`,
+      `Runs for at most ${Math.round(timeoutMs / 1000)}s. A stored artifact comes back as an id, ` +
+      `which is a REFERENCE and not a location: there is no path and no sandbox:/mnt/... URL to ` +
+      `quote, so pass the id to share_artifact for a link the user can open.`,
     parameters: {
       type: "object",
       properties: {

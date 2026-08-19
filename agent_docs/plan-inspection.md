@@ -86,6 +86,11 @@ DERIVED from present state rather than recorded (a marker plus a present blob), 
 backlog: an inspection item whose absence is only felt during an incident will never surface from
 reasoning about audiences, so incidents deserve a place in how this list is resequenced.
 
+**Queued, same finding one layer out:** `holds` is read from the handling instance's own blob store,
+so with several instances over LOCAL blob directories both the shred and the answer are per instance
+(design-storage.md, "Scaling and multi-instance operation"). The check is a `doctor` finding for
+that configuration, derived the same way: shared record storage beside a non-shared `BlobStore`.
+
 ## Not scheduled, and why
 
 - **Density mode and thread highlight** on the Space view are small and depend on nothing. They are

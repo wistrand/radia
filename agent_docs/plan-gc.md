@@ -204,7 +204,9 @@ what is absent from it and untouched past the grace window. Three decisions carr
   `putArtifact` writes bytes before committing the record, and a DEDUPED put now refreshes the
   blob's clock (mtime / `touchedAt`), so bytes younger than the grace are live whatever the
   record store says — including a put from a second process over the same directory, which no
-  in-process latch could see. Ages are host-clock on purpose: mtimes are host-clock data.
+  in-process latch could see. Ages are host-clock on purpose: mtimes are host-clock data. An
+  object store has no `utimes`, so `S3BlobStore` refreshes `LastModified` with a server-side copy
+  onto itself and its sweep is a paged LIST rather than a directory walk.
 - **Live runs only.** `doctor` runs `gc` dry on every diagnostics, and a dry blob pass would
   walk every artifact record plus the whole blob directory to predict what the live sweep
   reports anyway (`blobs: {scanned, deleted, bytes}`).
