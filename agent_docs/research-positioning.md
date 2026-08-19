@@ -196,6 +196,22 @@ the self-granting shape the operator rule here exists to refuse (grants are assi
 self-declared, and the power-granter is never mintable). No leases, claims or crash recovery;
 "transactional" means validated atomic mutations with logging, not ACID.
 
+**Cordis** ([cordiverse/paper](https://github.com/cordiverse/paper), "A Programming Paradigm for
+Spatiotemporal Composability", preprint 2026-08-13; CHECKED against the PDF 2026-08-19) formalizes
+the same motivating use case, a harness that replaces its own components while it keeps serving
+(its §1.2.2), at a granularity this design does not occupy: one address space, one language,
+components as fibers on a context tree whose every mutation carries an inverse the runtime replays
+on unload. Not a competitor, and three forks say why. Its §1.2.3 files process and container
+boundaries as the "coarse-grained workaround", which is the side this runtime is on by construction
+(an agent is a process; model calls stay outside). Dependencies bind by KEY IDENTITY, so versioning
+and key collision are open problems in its own §6.6, where a pattern matches content and a
+promotion pins a digest. And it has no crash model: the word appears nowhere in 88 pages, because a
+`dispose` that never ran took the runtime with it, where a lease expires without the worker's
+cooperation. Its §6.3 defers sandboxing untrusted components to "an external sandbox" outside the
+language, which is [plan-jail-confinement.md](plan-jail-confinement.md) and the broker, so those
+two halves compose rather than compete. Its §6.1 is borrowed in
+[design-api.md](design-api.md) ("The guarantee").
+
 **The adoption risk this lineage actually names.** Both ancestries were technically sound and both
 lost to orchestration. Spring beat OSGi by offering the registry's benefits with the dynamism
 removed; Declarative Services succeeded by hiding it; Temporal and DBOS thrive today on "write your

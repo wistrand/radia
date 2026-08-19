@@ -47,6 +47,15 @@ can send an email and crash before `ack`. Side-effecting agents require idempote
 the effect boundary, an outbox, or a transactional tool gateway (a candidate second
 product surface; see [gotchas.md](gotchas.md)).
 
+That split has a name worth borrowing, from Cordis §6.1 ("A Programming Paradigm for
+Spatiotemporal Composability", 2026; [research-positioning.md](research-positioning.md)). An
+outward operation has an ACQUISITION, which installs a record inside the system boundary and is
+therefore revertible (the lease, the artifact reference, the descriptor), and an EMISSION, which
+pushes data across it and is not (the mail, the datagram, the charge). An emission admits exactly
+two answers: withhold it until the state that produced it is durable (the output-commit problem),
+or compensate for it afterwards. `ack` is where a worker can withhold. Nothing here compensates,
+so a compensating action is the agent's to write.
+
 "Until it observes `lease_lost`" is a real observation point, not a figure of speech: both SDK
 loops hand the handler a cancellation channel (TS `AbortSignal`, Python `threading.Event`) that
 fires as soon as the renewal heartbeat is answered `lease_lost` — or 401/403, where a stopped or
