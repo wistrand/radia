@@ -33,6 +33,7 @@
           <a href="workspaces.html">Workspaces</a>
           <a href="inspection.html">Inspection</a>
           <a href="why.html">Why not X</a>
+          <a href="faq.html">FAQ</a>
           <a href="examples.html">Examples</a>
           <a href="llms.txt">llms.txt</a>
           <a href="https://github.com/wistrand/radia">GitHub</a>
@@ -55,10 +56,10 @@
   <div class="container">
     <h1>Choosing a coordination system</h1>
     <p class="subtitle">
-      Radia combines content-based work selection with content-scoped authorization. Other systems
-      often provide stronger workflow execution, messaging ecosystems or in-process orchestration.
-      This page describes when those alternatives are a better fit and where Radia can complement
-      them.
+      Radia is built for independently deployed participants that should not have to trust one
+      another. It combines content-based work selection with runtime-enforced input and output
+      policy, narrowed delegation and credentialless execution. Other systems often provide
+      stronger workflow execution, messaging ecosystems or in-process orchestration.
     </p>
   </div>
 </div>
@@ -67,9 +68,11 @@
   <div class="container">
     <h2>Capability summary</h2>
     <p>
-      Radia stores routing interests as queryable records and can authorize operations using the
-      contents of each record. Results return to the same record space and remain available for
-      downstream matching and lineage queries.
+      Radia stores routing interests as queryable records and authorizes operations using the
+      contents of each record. The participant asks for a shape of work; the runtime intersects
+      that request with its grants and applies the same policy when the participant writes a result.
+      Results return to the space for downstream matching, with data and authority provenance kept
+      separate.
     </p>
     <p>
       The table compares native abstractions, not every capability that can be added through custom
@@ -109,6 +112,21 @@
         <td>framework state or messages</td>
       </tr>
     </table>
+
+    <h3>Where the trust decision lives</h3>
+    <table>
+      <tr><th>Property</th><th>Radia's native boundary</th></tr>
+      <tr><td>Input authorization</td><td>Runtime intersects requested content with grants before query, watch or claim</td></tr>
+      <tr><td>Output authorization</td><td>Runtime checks every write, including a result emitted while settling a lease</td></tr>
+      <tr><td>Shared tools</td><td>Delegated run contains only the overlap of caller and worker authority</td></tr>
+      <tr><td>Generated code</td><td>Jailed process holds no credential and proposes through a trusted host</td></tr>
+      <tr><td>Provenance</td><td>Authority follows leases; handling labels follow data parents</td></tr>
+      <tr><td>Code deployment</td><td>Executable binding and claim grant must agree on the workspace digest</td></tr>
+    </table>
+    <p class="explanation">
+      These controls can be assembled around another system. The distinction is that Radia makes
+      them shared enforcement semantics instead of checks every worker must implement correctly.
+    </p>
   </div>
 </section>
 
@@ -179,6 +197,13 @@
       scope access at a stream, topic, queue or subject boundary.
     </p>
     <p>
+      A Radia worker's request cannot widen its grant, and its answer is authorized before commit.
+      Shared tools can use caller-bounded delegated runs, while generated code can operate through
+      a credential-holding host without receiving the credential itself. A broker can participate
+      in such an architecture, but those are normally application and deployment responsibilities
+      rather than properties of message transport.
+    </p>
+    <p>
       Choose a broker when message transport, ecosystem maturity or throughput is the primary need.
       A broker can also feed records into Radia when both abstractions are useful.
     </p>
@@ -220,7 +245,9 @@
     </p>
     <p>
       Radia becomes relevant when participants are deployed independently, owned by different teams
-      or require separate credentials and operating-system boundaries.
+      or require separate credentials and operating-system boundaries. Each agent can retain its
+      own authority; a generic host need not become a mini-operator holding the union of every
+      hosted agent's grants, and code launched by that host receives no credential.
     </p>
     <p>
       Radia's chat example is the demonstration: its command loop contains no tool list, no model

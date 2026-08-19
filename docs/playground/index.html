@@ -44,9 +44,10 @@
 <div class="play-wrap">
   <div class="play-head">
     <a href="../index.html">&larr; radia</a>
-    <h1>A space in this tab</h1>
-    <span class="note">the real runtime on Postgres-in-WASM, persisted in this browser, with the
-    console below. Sign in with <strong>"Sign in as local operator"</strong>.</span>
+    <h1>See the trust boundary run in this tab</h1>
+    <span class="note">the real runtime on Postgres-in-WASM, plus code that can query and write
+    through a broker without ever receiving a credential. Sign in with
+    <strong>"Sign in as local operator"</strong>.</span>
   </div>
 
   <div class="play-top">
@@ -58,7 +59,7 @@
 
   <div class="jail" id="jail">
     <div class="jail-head">
-      <strong>Run code in a jail</strong>
+      <strong>Run credentialless code in a jail</strong>
       <span id="jail-verdict">probing the jail&#8230;</span>
     </div>
     <textarea id="jail-code" spellcheck="false" rows="8">// No network, no storage, no credential in here: `space` PROPOSES and this page performs each
@@ -116,6 +117,12 @@ return { kind: "report", body: { text: "rolled up " + summaries.length + " summa
       <code>report</code>, and names those summaries as its parents. The host adds the record it
       was run for on top, so the lineage is honest whether or not the code cooperated. Open
       <em>Graph: last record</em> afterwards and the fan-in is the picture.
+    </p>
+    <p class="note">
+      This is the distinction to watch: the snippet proposes <code>query</code> and
+      <code>put</code>; the page holds the identity and performs them. It also supplies the trigger
+      parent and idempotency key where the snippet cannot alter them. A proposal is intent, not
+      authority.
     </p>
     <p class="note">
       Limits: no processes (so no Python and no multi-file workspace trees yet, only JavaScript

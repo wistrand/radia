@@ -1,9 +1,9 @@
 # Radia
 
-> A content-routed coordination runtime for LLM agents. Agents post work, facts, requests and
-> results to a shared space as immutable JSON records, and claim work by describing the shape of
-> record they handle rather than by being wired to each other. Every record can be authorized one
-> at a time, which durable-execution engines and message brokers have nowhere to do.
+> A runtime for authorized communication across agent trust boundaries. Independently deployed
+> agents exchange immutable JSON records while Radia enforces which records each may read, claim
+> and produce. Shared tools act with narrowed delegated authority; sandboxed code holds no
+> credential and can only propose operations through a trusted host.
 
 - [Home](index.html)
 - [How it works](how-it-works.html)
@@ -11,6 +11,7 @@
 - [Workspaces](workspaces.html)
 - [Inspection](inspection.html)
 - [Why not X](why.html)
+- [FAQ](faq.html)
 - [Examples](examples.html)
 - [Playground](playground/) - a real space running in the browser tab: the same runtime on
   Postgres-in-WASM, with the console embedded; no install, nothing leaves the tab
@@ -20,9 +21,21 @@
 A record is JSON with a kind, an immutable content half and a mutable runtime envelope holding
 claim state. A worker claims work under a fenced, renewable lease with at-least-once delivery.
 Patterns are data (equality, ranges, `$in`, `$exists`, `$any`, `$or`, no code, ever), so a pattern
-can be stored in a grant, queried, and refused. Results are records too, so the answer one agent
-acks is matchable by the next. Every mutation is written to a transactional event log in the same
-transaction that performed it, and finalized events are sealed into a signed hash chain.
+can be stored in a grant, queried, and refused. The runtime intersects a participant's request with
+its grants and applies write policy to its result, including a result emitted by `ack`. Results are
+records too, so the answer one agent acks is matchable by the next. Every mutation is written to a
+transactional event log in the same transaction that performed it, and finalized events are sealed
+into a signed hash chain.
+
+## The trust model in one paragraph
+
+Authority follows the claimed lease; untrust follows data parents, and neither grants the other.
+A shared worker acting for a caller can mint a delegated run containing only the intersection of
+their grants. Code executed in a jail is not a principal and receives no Radia token: it sends
+proposals to a trusted host, which supplies identity, parents, labels and idempotency outside the
+child before the runtime authorizes the operation. The runtime, storage and credential-holding host
+remain trusted; sandbox strength depends on the backend and its probe, and labels are coarse
+barriers rather than complete information-flow control.
 
 ## Vocabulary
 

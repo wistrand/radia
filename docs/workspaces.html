@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Workspaces: where an agent's work meets the world</title>
-  <meta name="description" content="A multi-file tree an agent can write, run, serve and hand to git, built entirely on records and artifacts. None of it is in the runtime, and that is the point.">
+  <title>Credentialless execution of versioned agent code</title>
+  <meta name="description" content="Run versioned agent workspaces across a credential boundary: trusted hosts hold agent runs, untrusted code proposes operations, and code identity is pinned to claim authority.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
@@ -13,8 +13,8 @@
 
   <meta property="og:type" content="article">
   <meta property="og:url" content="https://radia.sh/workspaces.html">
-  <meta property="og:title" content="Workspaces: where an agent's work meets the world">
-  <meta property="og:description" content="A multi-file tree an agent can write, run, serve and hand to git, built entirely on records and artifacts. None of it is in the runtime.">
+  <meta property="og:title" content="Credentialless execution of versioned agent code">
+  <meta property="og:description" content="Trusted hosts hold agent runs; untrusted workspace code receives no credential, and the code digest must agree with claim authority.">
   <meta property="og:image" content="https://radia.sh/og.png">
   <meta name="twitter:card" content="summary_large_image">
 </head>
@@ -33,6 +33,7 @@
           <a href="workspaces.html">Workspaces</a>
           <a href="inspection.html">Inspection</a>
           <a href="why.html">Why not X</a>
+          <a href="faq.html">FAQ</a>
           <a href="examples.html">Examples</a>
           <a href="llms.txt">llms.txt</a>
           <a href="https://github.com/wistrand/radia">GitHub</a>
@@ -54,11 +55,11 @@
 
 <div class="hero">
   <div class="container">
-    <h1>Versioned workspaces for agent output</h1>
+    <h1>Versioned code across a credential boundary</h1>
     <p class="subtitle">
-      A workspace represents a multi-file tree as records and artifacts. Agents can create new
-      versions, execute a version in a jail, serve it to a browser and export its history as a Git
-      repository. <strong>Workspaces are an extension over Radia's public API.</strong>
+      A workspace is a multi-file tree whose exact digest can be authorized, executed and audited.
+      A trusted host holds the agent's run; jailed code receives no credential and can only propose
+      bounded operations. <strong>Workspaces are an extension over Radia's public API.</strong>
     </p>
   </div>
 </div>
@@ -75,6 +76,60 @@
       Radia stores each tree version durably while using temporary directories only for execution.
       The record model remains the source of identity, provenance and authorization.
     </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 250" role="img" aria-labelledby="workspace-life-title workspace-life-desc">
+        <title id="workspace-life-title">A workspace moves from durable tree to isolated run and back to a new version</title>
+        <desc id="workspace-life-desc">A durable workspace manifest points to content-addressed file artifacts. A host materializes the exact tree digest as a read-only input to jailed code. The code writes to a separate output directory, which the host captures as a new workspace version.</desc>
+        <defs>
+          <marker id="life-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+
+        <rect x="20" y="48" width="180" height="146" rx="8" class="box" stroke="#60a5fa"/>
+        <text x="110" y="72" text-anchor="middle" class="label">workspace v7</text>
+        <text x="110" y="91" text-anchor="middle" class="muted">tree t1:9f2c…</text>
+        <rect x="42" y="107" width="136" height="22" rx="4" class="box"/>
+        <text x="54" y="122" class="muted">index.html</text>
+        <rect x="42" y="136" width="136" height="22" rx="4" class="box"/>
+        <text x="54" y="151" class="muted">style.css</text>
+        <rect x="42" y="165" width="136" height="22" rx="4" class="box"/>
+        <text x="54" y="180" class="muted">cat.png</text>
+
+        <path d="M 206 121 L 278 121" class="flow" marker-end="url(#life-arrow)"/>
+        <text x="242" y="108" text-anchor="middle" class="muted">materialize</text>
+
+        <rect x="284" y="28" width="192" height="186" rx="8" class="box" stroke="#fbbf24" stroke-dasharray="5 4"/>
+        <text x="380" y="53" text-anchor="middle" class="muted">isolated run</text>
+        <rect x="306" y="70" width="148" height="50" rx="6" class="box"/>
+        <text x="380" y="91" text-anchor="middle" class="label">read-only input</text>
+        <text x="380" y="108" text-anchor="middle" class="muted">exact tree t1:9f2c…</text>
+        <path d="M 380 126 L 380 151" class="flow" marker-end="url(#life-arrow)"/>
+        <rect x="306" y="157" width="148" height="38" rx="6" class="box" stroke="#4ade80"/>
+        <text x="380" y="181" text-anchor="middle" class="label">separate output</text>
+
+        <path d="M 482 121 L 554 121" class="flow" marker-end="url(#life-arrow)"/>
+        <text x="518" y="108" text-anchor="middle" class="muted">capture</text>
+
+        <rect x="560" y="48" width="180" height="146" rx="8" class="box" stroke="#4ade80"/>
+        <text x="650" y="72" text-anchor="middle" class="label">workspace v8</text>
+        <text x="650" y="91" text-anchor="middle" class="muted">based on v7</text>
+        <rect x="582" y="107" width="136" height="22" rx="4" class="box"/>
+        <text x="594" y="122" class="muted">index.html</text>
+        <rect x="582" y="136" width="136" height="22" rx="4" class="box" stroke="#4ade80"/>
+        <text x="594" y="151" class="label">style.css · changed</text>
+        <rect x="582" y="165" width="136" height="22" rx="4" class="box"/>
+        <text x="594" y="180" class="muted">cat.png</text>
+
+        <text x="380" y="239" text-anchor="middle" class="muted">the input never changes; every run produces a successor</text>
+      </svg>
+      <figcaption>
+        Durable versions stay immutable. Execution reads one exact tree, writes somewhere else and
+        returns that output as a successor version, so concurrent runs cannot alter one another's
+        code or input.
+      </figcaption>
+    </figure>
   </div>
 </section>
 
@@ -137,6 +192,57 @@
       contains a validated path, mode, content digest and artifact id.
     </p>
 
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 300" role="img" aria-labelledby="manifest-title manifest-desc">
+        <title id="manifest-title">A workspace manifest names paths while artifacts hold file bytes</title>
+        <desc id="manifest-desc">One immutable workspace manifest contains validated paths and content digests. Each entry points to a content-addressed artifact holding the bytes. A successor manifest reuses unchanged artifacts and points only changed files at new artifacts.</desc>
+        <defs>
+          <marker id="manifest-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+
+        <rect x="20" y="32" width="306" height="204" rx="8" class="box" stroke="#60a5fa"/>
+        <text x="42" y="58" class="label">workspace manifest</text>
+        <text x="304" y="58" text-anchor="end" class="muted">immutable record</text>
+        <text x="42" y="84" class="muted">name</text>
+        <text x="136" y="84" class="label">landing-page</text>
+        <text x="42" y="106" class="muted">tree digest</text>
+        <text x="136" y="106" class="label">t1:9f2c…</text>
+
+        <rect x="42" y="126" width="260" height="28" rx="4" class="box"/>
+        <text x="54" y="145" class="label">index.html</text>
+        <text x="286" y="145" text-anchor="end" class="muted">sha256:4b1e…</text>
+        <rect x="42" y="162" width="260" height="28" rx="4" class="box"/>
+        <text x="54" y="181" class="label">style.css</text>
+        <text x="286" y="181" text-anchor="end" class="muted">sha256:c70a…</text>
+        <rect x="42" y="198" width="260" height="28" rx="4" class="box"/>
+        <text x="54" y="217" class="label">cat.png</text>
+        <text x="286" y="217" text-anchor="end" class="muted">sha256:8ee3…</text>
+
+        <path d="M 308 140 L 430 84" class="flow" marker-end="url(#manifest-arrow)"/>
+        <path d="M 308 176 L 430 158" class="flow" marker-end="url(#manifest-arrow)"/>
+        <path d="M 308 212 L 430 232" class="flow" marker-end="url(#manifest-arrow)"/>
+
+        <rect x="436" y="50" width="286" height="66" rx="7" class="box" stroke="#818cf8"/>
+        <text x="456" y="76" class="label">artifact sha256:4b1e…</text>
+        <text x="456" y="98" class="muted">bytes for index.html</text>
+        <rect x="436" y="126" width="286" height="66" rx="7" class="box" stroke="#818cf8"/>
+        <text x="456" y="152" class="label">artifact sha256:c70a…</text>
+        <text x="456" y="174" class="muted">bytes for style.css</text>
+        <rect x="436" y="202" width="286" height="66" rx="7" class="box" stroke="#818cf8"/>
+        <text x="456" y="228" class="label">artifact sha256:8ee3…</text>
+        <text x="456" y="250" class="muted">bytes for cat.png</text>
+
+        <text x="380" y="291" text-anchor="middle" class="muted">paths and hashes stay in the record; file bytes live in erasable artifacts</text>
+      </svg>
+      <figcaption>
+        The manifest gives the tree its identity and history. Artifacts hold the bytes, so unchanged
+        files are shared between versions and a payload can be destroyed without rewriting every
+        descendant record.
+      </figcaption>
+    </figure>
+
     <div class="code-block">
       <div class="code-title">a workspace record</div>
       <pre><code>{ <span class="str">"name"</span>: <span class="str">"landing-page"</span>,
@@ -187,6 +293,13 @@ scraper           9        22  t1:07b3e5c918&#8230;  human:alice</code></pre>
     <p>
       Successful probes determine which execution tools the worker publishes. A host that cannot
       provide the required isolation does not advertise that runner.
+    </p>
+
+    <p>
+      The sandbox and the broker enforce different boundaries. The sandbox restricts ambient host
+      access such as files, processes, storage and network. The broker ensures that code inside the
+      sandbox never possesses a reusable Radia credential and cannot choose the identity,
+      provenance or idempotency of committed operations.
     </p>
 
     <div class="callout warn">
@@ -271,6 +384,47 @@ scraper           9        22  t1:07b3e5c918&#8230;  human:alice</code></pre>
       Promotion rotates grants that are pinned to the workspace digest. The claim permission and
       executable code version are therefore checked together.
     </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 260" role="img" aria-labelledby="two-locks-title two-locks-desc">
+        <title id="two-locks-title">A binding and promotion grant form two locks on execution</title>
+        <desc id="two-locks-desc">The binding says agent scraper should execute workspace digest B. The production grant permits digest A to claim work. When the digests differ the host refuses and releases the claim. After promotion makes both name digest B, the host may execute it under the agent's credential.</desc>
+        <defs>
+          <marker id="locks-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+
+        <text x="20" y="27" class="muted">before promotion: the locks disagree</text>
+        <rect x="20" y="42" width="210" height="56" rx="6" class="box" stroke="#60a5fa"/>
+        <text x="125" y="65" text-anchor="middle" class="label">binding</text>
+        <text x="125" y="84" text-anchor="middle" class="muted">run digest B</text>
+        <rect x="20" y="112" width="210" height="56" rx="6" class="box" stroke="#818cf8"/>
+        <text x="125" y="135" text-anchor="middle" class="label">production grant</text>
+        <text x="125" y="154" text-anchor="middle" class="muted">claim as digest A</text>
+        <path d="M 236 70 L 300 101" class="flow" marker-end="url(#locks-arrow)"/>
+        <path d="M 236 140 L 300 109" class="flow" marker-end="url(#locks-arrow)"/>
+        <rect x="306" y="79" width="134" height="52" rx="7" class="box" stroke="#f87171"/>
+        <text x="373" y="101" text-anchor="middle" class="label">A &#8800; B</text>
+        <text x="373" y="119" text-anchor="middle" class="muted">refuse + release</text>
+
+        <path d="M 446 105 L 510 105" class="flow" marker-end="url(#locks-arrow)"/>
+        <text x="478" y="91" text-anchor="middle" class="muted">promote B</text>
+        <rect x="516" y="42" width="224" height="126" rx="8" class="box" stroke="#4ade80"/>
+        <text x="628" y="68" text-anchor="middle" class="label">both locks name B</text>
+        <text x="628" y="91" text-anchor="middle" class="muted">binding selects B</text>
+        <text x="628" y="112" text-anchor="middle" class="muted">grant permits B</text>
+        <rect x="544" y="128" width="168" height="26" rx="5" class="box"/>
+        <text x="628" y="146" text-anchor="middle" class="label">host may execute</text>
+
+        <text x="380" y="214" text-anchor="middle" class="label">claim authority and executable identity change together</text>
+        <text x="380" y="237" text-anchor="middle" class="muted">rollback is the same operation with an earlier approved digest</text>
+      </svg>
+      <figcaption>
+        A binding alone cannot authorize code, and a grant alone cannot select code. The host runs a
+        workspace only when both independently managed records agree on its digest.
+      </figcaption>
+    </figure>
 
     <div class="code-block">
       <div class="code-title">what is prod running, answered from the enforcement path</div>

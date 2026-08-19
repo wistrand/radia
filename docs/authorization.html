@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Authorization in Radia</title>
-  <meta name="description" content="Keeping a confidential document away from an agent that would send it to an external model, and why that check belongs in the runtime rather than in the agent.">
+  <title>Radia's trust model: authorized agents and credentialless code</title>
+  <meta name="description" content="How Radia enforces communication between mutually untrusted agents, narrows delegated authority, and lets sandboxed code operate without receiving a credential.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
@@ -13,8 +13,8 @@
 
   <meta property="og:type" content="article">
   <meta property="og:url" content="https://radia.sh/authorization.html">
-  <meta property="og:title" content="Authorization in Radia">
-  <meta property="og:description" content="Keeping a confidential document away from an agent that would send it to an external model, and why that check belongs in the runtime rather than in the agent.">
+  <meta property="og:title" content="Radia's trust model: authorized agents and credentialless code">
+  <meta property="og:description" content="Runtime-enforced communication between agents, narrowed delegation, and untrusted code that never receives a credential.">
   <meta property="og:image" content="https://radia.sh/og.png">
   <meta name="twitter:card" content="summary_large_image">
 </head>
@@ -33,6 +33,7 @@
           <a href="workspaces.html">Workspaces</a>
           <a href="inspection.html">Inspection</a>
           <a href="why.html">Why not X</a>
+          <a href="faq.html">FAQ</a>
           <a href="examples.html">Examples</a>
           <a href="llms.txt">llms.txt</a>
           <a href="https://github.com/wistrand/radia">GitHub</a>
@@ -47,6 +48,7 @@
   <a href="#grants">Grants are records</a>
   <a href="#pattern">Restrict grants by record content</a>
   <a href="#identity">Agent definitions and run credentials</a>
+  <a href="#code">Untrusted code is not a principal</a>
   <a href="#taint">Propagate data-handling labels</a>
   <a href="#delegation">Delegate a caller's authority</a>
   <a href="#check">Inspect effective permissions</a>
@@ -56,10 +58,11 @@
 
 <div class="hero">
   <div class="container">
-    <h1>Content-scoped authorization</h1>
+    <h1>Authorized communication between untrusted participants</h1>
     <p class="subtitle">
-      Radia authorizes each operation by principal, record kind and, when configured, record
-      contents. The same model covers workers, people, delegated calls and operational access.
+      Agents do not have to trust one another to apply policy correctly. Radia authorizes each
+      operation by principal, record kind and record contents at the shared runtime boundary.
+      Delegated authority can only narrow, while sandboxed code receives no authority to carry.
     </p>
   </div>
 </div>
@@ -72,12 +75,71 @@
       run after the worker has received the data.
     </p>
     <p>
-      Radia applies authorization before a query, claim or write completes. A denied record is not
-      returned to the worker, so model behavior cannot bypass the check.
+      Radia applies authorization before a query, watch, claim or write completes. A denied record
+      is not returned to the worker, so model behavior cannot bypass the check. Results emitted by
+      <code>ack</code> pass through the same write authorization as an ordinary <code>put</code>;
+      settling a lease is not a back door around output policy.
     </p>
     <p>
       These guarantees apply at the HTTP boundary. Code embedded inside the runtime process is
       inside the trust boundary and must not be treated as an untrusted participant.
+    </p>
+  </div>
+</section>
+
+<section id="code">
+  <div class="container">
+    <h2>Untrusted code is not a principal</h2>
+    <p>
+      A credential belongs to an agent's trusted host, not to code the agent generated or selected
+      at runtime. Jailed code receives a narrow <code>space</code> interface that sends proposals
+      over a private channel. It never receives the agent's run token, a raw SDK client or network
+      access to the space.
+    </p>
+    <p>
+      The host performs each accepted proposal under the agent's run and adds facts the child must
+      not control: the acting identity, the record that triggered execution, declared input
+      parents, handling labels, compartment stamps and idempotency keys. The runtime then applies
+      the agent's ordinary read and write grants. A sandbox therefore limits what the process can
+      reach, while the broker limits what its proposals can become.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 230" role="img" aria-labelledby="code-boundary-title code-boundary-desc">
+        <title id="code-boundary-title">Untrusted code proposes operations without holding a credential</title>
+        <desc id="code-boundary-desc">Untrusted code sends a proposal over a private broker channel. A trusted host adds authoritative metadata and performs it with the agent's run. Radia applies the agent's grants before committing the record.</desc>
+        <defs>
+          <marker id="code-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <rect x="20" y="58" width="180" height="76" rx="7" class="box" stroke="#f87171"/>
+        <text x="110" y="84" text-anchor="middle" class="label">untrusted code</text>
+        <text x="110" y="104" text-anchor="middle" class="muted">no token · no direct API</text>
+        <text x="110" y="122" text-anchor="middle" class="muted">proposes put/query/read</text>
+        <path d="M 206 96 L 280 96" class="flow" marker-end="url(#code-arrow)"/>
+        <text x="243" y="83" text-anchor="middle" class="muted">private channel</text>
+        <rect x="286" y="38" width="202" height="116" rx="7" class="box" stroke="#4ade80"/>
+        <text x="387" y="64" text-anchor="middle" class="label">trusted agent host</text>
+        <text x="387" y="84" text-anchor="middle" class="muted">holds the run credential</text>
+        <text x="387" y="108" text-anchor="middle" class="muted">adds identity + parents</text>
+        <text x="387" y="128" text-anchor="middle" class="muted">labels + idempotency</text>
+        <path d="M 494 96 L 568 96" class="flow" marker-end="url(#code-arrow)"/>
+        <text x="531" y="83" text-anchor="middle" class="muted">authenticated</text>
+        <rect x="574" y="58" width="166" height="76" rx="7" class="box" stroke="#818cf8"/>
+        <text x="657" y="84" text-anchor="middle" class="label">Radia</text>
+        <text x="657" y="104" text-anchor="middle" class="muted">checks agent grants</text>
+        <text x="657" y="122" text-anchor="middle" class="muted">then commits or refuses</text>
+        <text x="380" y="202" text-anchor="middle" class="muted">a proposal carries intent; only the host carries authority</text>
+      </svg>
+      <figcaption>
+        Process isolation and authorization do different jobs. A successful jail probe establishes
+        the advertised host restrictions; credentialless brokering keeps the space credential and
+        authoritative metadata outside the child either way.
+      </figcaption>
+    </figure>
+    <p>
+      <a href="workspaces.html#run">See how promoted workspace code crosses this boundary &rarr;</a>
     </p>
   </div>
 </section>
@@ -302,6 +364,12 @@
       The runtime resolves the caller through the run that created the claimed record. The worker
       cannot choose or assert that identity in a request body.
     </p>
+    <div class="callout">
+      <strong>Authority follows leases; untrust follows data.</strong> Delegation context is derived
+      from the lease and run that authorized work. Handling labels are derived independently from
+      data parents. A parent never grants permission, and a privileged authority chain never
+      launders labelled input.
+    </div>
 
     <figure class="diagram-scroll">
       <svg viewBox="0 0 760 285" role="img" aria-labelledby="delegation-title delegation-desc">
@@ -404,6 +472,18 @@ summary    put                 own records only</code></pre>
         The checks live in the server. If you embed the runtime in your own process and call it
         directly rather than over HTTP, you are inside the boundary and nothing is enforced. Run the
         server.
+      </li>
+      <li>
+        The runtime, its storage and a host that holds agent credentials are trusted components.
+        Jailed code is outside that boundary, but isolation strength depends on the selected
+        sandbox backend and the guarantees its startup probe can establish. A backend that cannot
+        prove its advertised restrictions is not offered.
+      </li>
+      <li>
+        Data-handling labels are coarse claim barriers, not complete information-flow control.
+        Propagation follows declared data parents. The broker supplies authoritative parents for
+        jailed execution; arbitrary external clients remain responsible for naming every input they
+        derived from.
       </li>
       <li>
         Single sign-on covers people, not the root of trust. A space configured with an OIDC

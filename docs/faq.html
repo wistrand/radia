@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Radia FAQ</title>
+  <meta name="description" content="Direct answers about what Radia is, what it enforces between untrusted agents, how credentialless code works, and what remains trusted.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="shared.css">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://radia.sh/faq.html">
+  <meta property="og:title" content="Radia FAQ">
+  <meta property="og:description" content="What Radia enforces between agents, why untrusted code holds no credential, and where the trust boundary ends.">
+  <meta property="og:image" content="https://radia.sh/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="brand"><svg viewBox="0 0 64 64" width="20" height="20" aria-hidden="true"><g fill="none" stroke="#60a5fa" stroke-width="5"><rect x="6" y="6" width="20" height="20" rx="6"/><rect x="34" y="6" width="20" height="20" rx="6"/><rect x="6" y="34" width="20" height="20" rx="6"/></g><g fill="none" stroke="#a5b4fc" stroke-width="4.5"><rect x="33" y="33" width="23" height="23" rx="6"/><rect x="38.5" y="38.5" width="12" height="12" rx="3"/></g></svg>radia</a>
+    <div class="links">
+      <a href="how-it-works.html">How it works</a>
+      <a href="authorization.html">Authorization</a>
+      <div class="dropdown">
+        <a class="dropdown-toggle">More &#9662;</a>
+        <div class="dropdown-menu"><div class="dropdown-menu-inner">
+          <a href="playground/">Playground</a>
+          <a href="workspaces.html">Workspaces</a>
+          <a href="inspection.html">Inspection</a>
+          <a href="why.html">Why not X</a>
+          <a href="faq.html">FAQ</a>
+          <a href="examples.html">Examples</a>
+          <a href="llms.txt">llms.txt</a>
+          <a href="https://github.com/wistrand/radia">GitHub</a>
+        </div></div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<aside class="sidebar" id="sidebar">
+  <a href="#what">What Radia is</a>
+  <a href="#trust">Trust and authorization</a>
+  <a href="#code">Untrusted code and workspaces</a>
+  <a href="#operate">Deployment and current limits</a>
+</aside>
+
+<div class="hero">
+  <div class="container">
+    <h1>Frequently asked questions</h1>
+    <p class="subtitle">
+      Short answers about what Radia is, where authorization is enforced, how agents delegate
+      without sharing authority and why code inside a jail receives no credential.
+    </p>
+  </div>
+</div>
+
+<section id="what">
+  <div class="container">
+    <h2>What Radia is</h2>
+
+    <h3>Is Radia an agent framework, message broker or workflow engine?</h3>
+    <p>
+      It is a content-routed coordination runtime. Agents exchange immutable records through a
+      shared space, claim matching work under fenced leases and return results as new records.
+      Unlike an in-process framework, participants may be deployed separately and hold different
+      credentials. Unlike a broker, the consumer's result, lineage and authorization remain in the
+      same abstraction. Unlike a workflow engine, Radia has no durable call stack or declared graph.
+      <a href="why.html">See the detailed comparisons &rarr;</a>
+    </p>
+
+    <h3>Why not let agents call one another directly?</h3>
+    <p>
+      Direct calls make the caller choose a destination and depend on its interface. In Radia the
+      publisher describes the work, workers describe what they handle and the runtime finds the
+      authorized overlap. Adding a worker can add a capability without changing every possible
+      caller, and work remains available while no eligible worker is running.
+    </p>
+
+    <h3>Is content routing the main point?</h3>
+    <p>
+      It is the mechanism. The larger point is authorized communication between participants that
+      should not trust one another to apply policy correctly. The same record fields used to find a
+      worker can restrict which records that worker may receive and produce.
+    </p>
+
+    <h3>Why are results records too?</h3>
+    <p>
+      A result can be discovered, authorized and claimed by another worker using the same rules as
+      its input. It also remains linked to the input instead of disappearing into application-owned
+      state. Recurring workflows can then be mined from what actually happened rather than declared
+      in advance. <a href="how-it-works.html">Follow a record through the runtime &rarr;</a>
+    </p>
+  </div>
+</section>
+
+<section id="trust">
+  <div class="container">
+    <h2>Trust and authorization</h2>
+
+    <h3>What does “untrusted agent” mean?</h3>
+    <p>
+      It means the runtime does not rely on the agent to enforce its own access policy. The agent
+      may be buggy, compromised or operated by another team. It still authenticates as a principal,
+      and Radia checks every query, watch, claim and write against grants assigned outside that
+      agent. This does not mean the agent's output is true or safe to execute.
+    </p>
+
+    <h3>Can a compromised worker request every record?</h3>
+    <p>
+      It can ask, but the runtime intersects the requested pattern with its grants before returning
+      anything. A grant may be narrowed by record content, for example to public documents for one
+      tenant, so an unrestricted request still produces only the authorized view.
+    </p>
+
+    <h3>Can an agent write outside its authorized scope?</h3>
+    <p>
+      No through the public boundary. Write grants are checked against the proposed record body.
+      Results emitted while acknowledging a lease pass through the same authorization; an
+      <code>ack</code> is not a privileged output channel.
+    </p>
+
+    <h3>How can a shared tool act for a user without becoming that user?</h3>
+    <p>
+      The worker can mint a delegated run containing only the intersection of its grants and the
+      caller's grants. The caller is resolved from the authoritative run behind the claimed record,
+      not from an identity asserted in its body. The worker keeps its own credential for its own
+      capability and uses the narrower run only for operations performed for that caller.
+    </p>
+
+    <h3>What is the difference between parents, delegation context and labels?</h3>
+    <p>
+      Parents say which data influenced a record. Delegation context says which lease and agents
+      authorized its creation. Labels such as <code>file</code>, <code>net</code> and
+      <code>foreign</code> are coarse barriers propagated from data parents. Authority follows
+      leases; untrust follows data. A parent never grants permission, and privileged authorship
+      never clears a label. <a href="authorization.html">Read the complete trust model &rarr;</a>
+    </p>
+
+    <h3>How does Radia reject a stale worker?</h3>
+    <p>
+      A claim carries a renewable lease with a fencing token. Once that lease expires, is released
+      or is invalidated by quarantine, an old acknowledgement cannot commit. This prevents a slow
+      first worker from overwriting the outcome after the record has been assigned again.
+    </p>
+  </div>
+</section>
+
+<section id="code">
+  <div class="container">
+    <h2>Untrusted code and workspaces</h2>
+
+    <h3>Does sandboxed code receive the agent's credential?</h3>
+    <p>
+      No. A trusted host holds the agent's run. Code inside the jail gets a narrow interface that
+      sends proposals over a private channel; the host performs accepted operations under the
+      agent's grants. The child never receives a reusable token or direct client connection.
+    </p>
+
+    <h3>What does the host add that child code cannot choose?</h3>
+    <p>
+      The acting identity, trigger record, declared input parents, handling labels, compartment
+      stamp and idempotency key. This keeps attribution and retry identity outside model-written
+      code. The runtime still makes the final authorization decision when the host performs the
+      proposal.
+    </p>
+
+    <h3>What if sandboxed code escapes?</h3>
+    <p>
+      Sandbox strength depends on the selected backend and the guarantees its startup probe can
+      establish. A backend that cannot prove its advertised restrictions is not offered. Keeping the
+      credential outside the child removes one valuable secret, but it does not make a host escape
+      harmless: the runtime, credential-holding host and storage remain trusted components.
+    </p>
+
+    <h3>How is approved code tied to an agent's authority?</h3>
+    <p>
+      A binding selects the workspace digest to execute, while a promotion grant pins the digest
+      permitted to claim work in a tier. The host runs code only when both records agree. A binding
+      without a grant runs nothing; a grant without a binding selects no code; disagreement is
+      refused rather than silently downgraded.
+    </p>
+
+    <h3>Why use a workspace instead of Git?</h3>
+    <p>
+      A workspace makes every tree version a record the runtime can authorize, bind to an agent,
+      execute and connect to data lineage. Git remains better for merge, blame, editors and its
+      ecosystem. Radia exports workspace history as a read-only Git repository; it does not accept
+      rewritable Git history as workspace identity. <a href="workspaces.html">See workspace storage and execution &rarr;</a>
+    </p>
+  </div>
+</section>
+
+<section id="operate">
+  <div class="container">
+    <h2>Deployment and current limits</h2>
+
+    <h3>Is Radia multi-tenant?</h3>
+    <p>
+      A shared space can isolate principals by kind, record content and author scope, so multiple
+      people or agents can use one space without receiving the same records. Whether that is enough
+      for a particular tenancy boundary depends on its threat model; separate spaces remain the
+      stronger administrative and storage boundary.
+    </p>
+
+    <h3>Can authorization inspect encrypted fields?</h3>
+    <p>
+      No. Fields used for matching and grants must remain visible to the runtime. Large artifacts
+      can be encrypted at rest, and applications may encrypt body fields that routing does not use.
+      The chat example seals conversation prose end to end while leaving only routing metadata
+      visible.
+    </p>
+
+    <h3>Is this complete information-flow control?</h3>
+    <p>
+      No. Labels are a small set of claim barriers, not a general information-flow type system.
+      They propagate through declared data parents. The broker supplies authoritative parents for
+      jailed execution, but arbitrary external clients remain responsible for declaring every input
+      they derived from.
+    </p>
+
+    <h3>What must a deployment trust?</h3>
+    <p>
+      The Radia server, its storage, configured identity roots and any host holding an agent
+      credential. Code called inside the runtime process is also inside the boundary; untrusted
+      participants must use the authenticated HTTP surface. Operators remain the authorization root
+      and can assign grants and operational powers.
+    </p>
+
+    <h3>Is Radia production-ready?</h3>
+    <p>
+      No. The implementation includes the complete M0 runtime and a growing M1 surface, three
+      storage adapters, conformance suites, SDKs and runnable applications. The packages are still
+      unpublished, production-hardening work remains and there is no independent production
+      adoption. Current use starts from a source checkout.
+    </p>
+
+    <h3>Where can I inspect what actually happened?</h3>
+    <p>
+      The console and CLI expose records, lineage, effective permissions, live interests, mined
+      flows, diagnostics and the tamper-evident event chain. These views are derived from the same
+      records and enforcement projections rather than a separate workflow declaration.
+      <a href="inspection.html">See the inspection surfaces &rarr;</a>
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <a href="index.html">Home</a> &middot;
+    <a href="how-it-works.html">How it works</a> &middot;
+    <a href="authorization.html">Authorization</a> &middot;
+    <a href="why.html">Why not X</a> &middot;
+    <a href="https://github.com/wistrand/radia">GitHub</a>
+  </div>
+</footer>
+
+<script src="shared.js"></script>
+</body>
+</html>

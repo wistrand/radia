@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Radia - agents claim work instead of being wired to each other</title>
-  <meta name="description" content="A coordination runtime for LLM agents. Agents post work to a shared space and claim it by describing what they handle, so adding a worker adds a capability with no code change anywhere else.">
+  <title>Radia - authorized communication across agent trust boundaries</title>
+  <meta name="description" content="A coordination runtime where independently deployed agents exchange work while the runtime enforces which records each may receive and produce. Untrusted code operates without a credential.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
@@ -13,8 +13,8 @@
 
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://radia.sh/">
-  <meta property="og:title" content="Radia - agents claim work instead of being wired to each other">
-  <meta property="og:description" content="A coordination runtime for LLM agents. Adding a worker adds a capability, with no code change anywhere else.">
+  <meta property="og:title" content="Radia - authorized communication across agent trust boundaries">
+  <meta property="og:description" content="Agents exchange work by content while a shared runtime enforces what each may receive and produce. Untrusted code holds no credential.">
   <meta property="og:image" content="https://radia.sh/og.png">
   <meta name="twitter:card" content="summary_large_image">
 </head>
@@ -33,6 +33,7 @@
           <a href="workspaces.html">Workspaces</a>
           <a href="inspection.html">Inspection</a>
           <a href="why.html">Why not X</a>
+          <a href="faq.html">FAQ</a>
           <a href="examples.html">Examples</a>
           <a href="llms.txt">llms.txt</a>
           <a href="https://github.com/wistrand/radia">GitHub</a>
@@ -44,12 +45,12 @@
 
 <div class="hero">
   <div class="container">
-    <h1>Content-routed coordination<br>for agent systems</h1>
+    <h1>Authorized communication<br>across agent trust boundaries</h1>
     <p class="subtitle">
-      <strong>Radia coordinates agents through immutable JSON records in a shared space.</strong>
-      Workers declare which records they handle and claim matching work under renewable leases.
-      The runtime provides durable delivery, content-scoped authorization and lineage without
-      hard-coded agent-to-agent routing.
+      <strong>Radia lets independently deployed agents exchange work without trusting one another
+      to enforce the rules.</strong> Agents discover immutable records by content; the shared
+      runtime decides which records each may read, claim and produce. Shared tools act with
+      narrowed delegated authority, and sandboxed code holds no credential at all.
     </p>
 
     <figure class="diagram-scroll hero-diagram">
@@ -132,8 +133,10 @@
 </div>
 
 <aside class="sidebar" id="sidebar">
-  <a href="#problem">Routing without agent-to-agent wiring</a>
+  <a href="#problem">Communication without mutual trust</a>
   <a href="#authorize">Authorization by record content</a>
+  <a href="#boundary">Authority follows leases. Untrust follows data.</a>
+  <a href="#threats">What the boundary prevents</a>
   <a href="#shape">Immutable records, mutable claim state</a>
   <a href="#start">Getting started</a>
   <a href="#status">What is built</a>
@@ -141,7 +144,7 @@
 
 <section id="problem">
   <div class="container">
-    <h2>Routing without agent-to-agent wiring</h2>
+    <h2>Communication without mutual trust</h2>
     <p>
       Direct calls make each participant depend on the identity and interface of the next one.
       Adding a capability can require changes to every caller that might use it. This becomes
@@ -155,6 +158,103 @@
     <p>
       Starting a worker makes its pattern available to the space. If no eligible worker is running,
       matching records remain available until one can claim them.
+    </p>
+    <p>
+      Discovery is only half of the boundary. The publisher does not decide which worker receives
+      the record, and the worker does not decide what it is allowed to see. Radia combines the
+      worker's requested pattern with grants assigned by an operator and applies the same policy to
+      its output. A faulty or compromised participant cannot recover broader access by asking for
+      everything or by skipping an application-level check.
+    </p>
+  </div>
+</section>
+
+<section id="boundary">
+  <div class="container">
+    <h2>Authority follows leases. Untrust follows data.</h2>
+    <p>
+      Radia keeps authority provenance and data provenance independent. A claimed lease identifies
+      the run allowed to act; data-parent links identify the records that influenced a result.
+      Naming a privileged record as a parent grants nothing, and a privileged worker does not erase
+      the handling labels inherited from untrusted input.
+    </p>
+
+    <figure class="diagram-scroll">
+      <svg viewBox="0 0 760 300" role="img" aria-labelledby="boundary-title boundary-desc">
+        <title id="boundary-title">A runtime boundary between agents and credentialless code</title>
+        <desc id="boundary-desc">An agent publishes a record into Radia. The runtime intersects requested work with grants and issues a fenced lease to another agent's trusted host. Untrusted code behind that host has no credential and can only propose operations. The host stamps identity, parents, labels and idempotency before committing an authorized result.</desc>
+        <defs>
+          <marker id="boundary-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+          </marker>
+        </defs>
+        <rect x="18" y="100" width="145" height="68" rx="7" class="box" stroke="#60a5fa"/>
+        <text x="90" y="127" text-anchor="middle" class="label">agent A</text>
+        <text x="90" y="148" text-anchor="middle" class="muted">its own run</text>
+        <path d="M 169 134 L 217 134" class="flow" marker-end="url(#boundary-arrow)"/>
+        <text x="193" y="121" text-anchor="middle" class="muted">record</text>
+
+        <rect x="223" y="32" width="275" height="204" rx="10" class="box" stroke="#818cf8" stroke-dasharray="5 4"/>
+        <text x="243" y="58" class="label" font-weight="600">Radia enforcement boundary</text>
+        <rect x="247" y="78" width="227" height="42" rx="6" class="box"/>
+        <text x="360" y="103" text-anchor="middle" class="label">request pattern &#8745; grant</text>
+        <rect x="247" y="132" width="227" height="42" rx="6" class="box"/>
+        <text x="360" y="157" text-anchor="middle" class="label">fenced lease + run identity</text>
+        <rect x="247" y="186" width="227" height="30" rx="6" class="box"/>
+        <text x="360" y="206" text-anchor="middle" class="muted">write checked before commit</text>
+
+        <path d="M 504 134 L 550 134" class="flow" marker-end="url(#boundary-arrow)"/>
+        <rect x="556" y="74" width="184" height="58" rx="7" class="box" stroke="#4ade80"/>
+        <text x="648" y="98" text-anchor="middle" class="label">agent B host</text>
+        <text x="648" y="117" text-anchor="middle" class="muted">holds B's run</text>
+        <rect x="556" y="174" width="184" height="66" rx="7" class="box" stroke="#f87171"/>
+        <text x="648" y="199" text-anchor="middle" class="label">untrusted code</text>
+        <text x="648" y="219" text-anchor="middle" class="muted">no credential · proposes only</text>
+        <path d="M 648 168 L 648 138" class="flow" marker-end="url(#boundary-arrow)"/>
+        <text x="665" y="157" class="muted">broker</text>
+        <text x="380" y="275" text-anchor="middle" class="muted">the host supplies identity, parents, labels and idempotency where child code cannot alter them</text>
+      </svg>
+      <figcaption>
+        Agents hold separate authority. Executed code is not a principal and receives no reusable
+        credential: it proposes operations to a trusted host, which commits only what the agent's
+        grants allow and supplies the security metadata.
+      </figcaption>
+    </figure>
+
+    <div class="cards">
+      <div class="card">
+        <h3>Authority lineage</h3>
+        <p>Derived from the claimed lease and run. Delegated tools receive only the overlap of the
+        caller's and worker's grants.</p>
+      </div>
+      <div class="card">
+        <h3>Data lineage</h3>
+        <p>Derived from parent records. Barrier labels propagate with data and can be cleared only
+        through an auditable privileged operation.</p>
+      </div>
+    </div>
+    <p><a href="authorization.html">See the complete trust model &rarr;</a></p>
+  </div>
+</section>
+
+<section id="threats">
+  <div class="container">
+    <h2>What the boundary prevents</h2>
+    <table>
+      <tr><th>If a participant tries to...</th><th>The enforcement path...</th></tr>
+      <tr><td>request every tenant's documents</td><td>intersects its request with content-scoped grants before returning a record</td></tr>
+      <tr><td>write a result outside its compartment</td><td>checks the result body against its <code>put</code> grant, including results emitted by <code>ack</code></td></tr>
+      <tr><td>claim that it acts for Alice</td><td>derives Alice from the authoritative run behind the claimed record, never a caller-supplied body field</td></tr>
+      <tr><td>reuse an agent token from generated code</td><td>gives the jailed process no credential; a trusted host performs bounded proposals</td></tr>
+      <tr><td>hide which input produced an output</td><td>lets the host add the trigger, input parents and handling labels outside the child</td></tr>
+      <tr><td>submit after work was reassigned</td><td>rejects the stale acknowledgement with lease fencing</td></tr>
+      <tr><td>run a different code version under an approved identity</td><td>requires the executable binding and promotion grant to name the same workspace digest</td></tr>
+    </table>
+    <p class="explanation">
+      The runtime, storage and any credential-holding host remain trusted components. Sandbox
+      strength depends on the advertised backend and its probe; labels are coarse barriers, not a
+      general information-flow system. Radia makes these boundaries explicit rather than making
+      every worker reimplement them.
     </p>
   </div>
 </section>
