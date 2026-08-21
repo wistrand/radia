@@ -3,7 +3,7 @@
 Ergonomics backlog, measured 2026-08-20 by starting, restarting, killing and inspecting real
 spaces: an isolated lab (`RADIA_DIR`/`RADIA_CREDENTIALS` in a scratchpad, ports 7911-7922) plus
 read-only verbs against a four-day-old live space. Every number below was observed, not inferred.
-Items 1-7 and most of 9 are BUILT (2026-08-21). Item 8 and one entry in 9 are open.
+Items 1-7 and 9 are BUILT (2026-08-21). Item 8 is open.
 
 The target property: a person restarts a space, or looks at one, and is never surprised. The two
 failures that broke it (items 1 and 2) are closed, and the rest is residue nobody reports.
@@ -156,7 +156,7 @@ current, and the authorization surface grows one definition per worker per `--se
 reports it, and `radia permissions <agent>` shows grants rather than how many definitions hold
 them.
 
-## 9. Smaller papercuts, each a contained fix (BUILT, except the committed bundle)
+## 9. Smaller papercuts, each a contained fix (BUILT)
 
 Guards: `test/defaults.test.ts` ("what a table prints can be fed back in", "a version skew … is
 named", "a start hands over a LINK").
@@ -183,8 +183,11 @@ named", "a start hands over a LINK").
 - **Version skew is visible but unflagged.** FIXED: `radia health` names it when the two differ and
   says nothing when they match. Named, never resolved: mixing versions is allowed, and a note on
   every call is a note nobody reads.
-- **`examples/chat/web/app.js` is a committed minified bundle**, so a repo-wide grep dumps 40KB
-  single lines into the terminal. OPEN, and the only entry here that is not a papercut: the browser
-  playground bundle is gitignored as a build output, so consistency says this should be too, but it
-  changes what `chat --serve --web` needs from a clean checkout and wants a build-or-fail path
-  rather than a `.gitignore` line.
+- **`examples/chat/web/app.js` dumps 40KB single lines into a repo-wide grep.** The claim that it
+  was COMMITTED was wrong, and worth recording as a measurement error: `git log` shows zero commits
+  touching it and `.gitignore:20` has ignored it all along. What a plain `grep -r` reads is the
+  WORKING TREE, which knows nothing about `.gitignore` (`git grep` and `rg` skip it). The build path
+  was already right too: `deno task bundle-chat-web` writes it, `--serve --web` builds it before
+  serving (`launchWebUi`), and `serve.ts` names the task at boot when it is absent. The one real gap
+  was CI, which never built it, so a break in bundling would have surfaced the first time somebody
+  ran the web UI; `ci.yml` now builds it beside `bundle-browser`, the other never-committed bundle.
