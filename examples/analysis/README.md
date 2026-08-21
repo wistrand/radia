@@ -154,7 +154,7 @@ between those two behaviours.
 `smoke.ts` drives the pipeline and the relay against a real space and passes with no browser. The
 sign-in dance — PKCE in the page, the token exchange, `POST /v0/sessions/oidc` — is **not**
 exercised: it needs a browser and an issuer. The console's equivalent code is guarded by
-`conformance/console.test.ts`; this page's copy of it is not. Treat it as reviewed, not tested.
+`test/console.test.ts`; this page's copy of it is not. Treat it as reviewed, not tested.
 
 ### "Invalid parameter: redirect_uri"
 

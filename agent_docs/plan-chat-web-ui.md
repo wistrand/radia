@@ -282,7 +282,7 @@ verified itself. A session holds no `oidc_identity` grant, so the enrollment rec
 reads (when it happens to be an operator) is not available to it; the claim is decoration and the
 principal stays visible because that is what every record is stamped with.
 
-*Check:* `smoke-web.ts` (`deno task chat-test web`) covers the server half: the relay refuses an
+*Check:* `smoke-web.ts` (`deno task test:chat web`) covers the server half: the relay refuses an
 unauthenticated call while holding an operator token in its own environment, artifact responses keep
 the `content-security-policy`, `nosniff` and `content-disposition` the space set, and a watch streams
 unbuffered and resumes from `Last-Event-ID`. WRITTEN BUT NOT RUN. The browser half stays manual: sign
@@ -380,7 +380,7 @@ turn rather than a line.
   writes, since refusing to let someone type would be worse than the collision it avoids.
 - **`visibilitychange`** catches up immediately rather than waiting for the next tick.
 
-*Check:* `smoke-live.ts` (`deno task chat-test live`) covers all three properties without a model: a
+*Check:* `smoke-live.ts` (`deno task test:chat live`) covers all three properties without a model: a
 viewer writes nothing while `resume` writes exactly one message, a second client's message is
 rendered and attributed while one arriving mid-turn waits, and `findOpenTurn` answers every way a
 turn can be open or over, including a re-dispatched call resolving to the untiered one. The
@@ -404,7 +404,7 @@ Every tab serves, viewer or not: claims are leased, so two tabs cannot answer on
 redundancy is free — a tab that goes away mid-call leaves it to another rather than to the lease
 clock.
 
-*Check:* `conformance/loop.test.ts` proves the option (an intercepted `POST /v0/watches` is never
+*Check:* `test/loop.test.ts` proves the option (an intercepted `POST /v0/watches` is never
 made, and the work is still claimed twice on the tick), and `smoke-web.ts` proves the shape end to
 end (a `space_stats` call answered by a tick-only session worker).
 

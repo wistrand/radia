@@ -1,6 +1,6 @@
 // The promotion contract (agent_docs/architecture-workspace-agents.md phase 2).
 //
-//   deno task extensions
+//   deno task test:extensions
 //
 // Against a REAL space, because the property under test is enforcement: a pin holds only if the
 // runtime refuses an unpromoted digest on both the write and the claim, and only a running space

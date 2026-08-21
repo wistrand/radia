@@ -109,7 +109,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   and `query` push the limit only when the filter is exact AND there is no `orderBy` (with no
   `orderBy` the oracle's order is its `x.id < y.id` tie-break, which `order by id` reproduces).
   Pinned by "a limit is never pushed under a filter the database cannot decide" in
-  `conformance/suites/pushdown.ts`.
+  `test/conformance/suites/pushdown.ts`.
 - **Postgres orders text by the database's collation; the oracle orders by JS string comparison.**
   They disagree under a linguistic collation, so the pushed limit sorts `id collate "C"` against a
   dedicated `idx_records_id_c`. Keep it, but keep the severity straight: for the ids the runtime
@@ -176,7 +176,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   log. The whole audit trail for a clearance was `parentIds` plus an anonymous put — which outranks
   the hash-chained log: a tamper-evident chain over a record that omits the approver protects the
   wrong fact. It threads the approver now and commits a distinct `declassify` operation carrying
-  `{declassifiedFrom}` (`conformance/suites/taint.ts`). **If an operation exists to be audited, it
+  `{declassifiedFrom}` (`test/conformance/suites/taint.ts`). **If an operation exists to be audited, it
   needs its own verb in the log** — an entry that looks like every other write is not findable.
 - **The taint barrier filters candidates in core, not SQL.** It lives in `rankClaimable` (skips a
   candidate carrying any label outside the allowlist), threaded via `LeaseSpec.allowTaint`, so
@@ -226,7 +226,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   150 nodes with nothing saying so. Use `direction: "down"`, and read `truncated` — a capped graph
   is a bounded read presented as a population, in a picture. It only separates a thread that IS a
   subtree: see [[plan-chat-turn]] on parenting each link to its cause.
-  Guards: `conformance/suites/graph.ts`, `examples/chat/smoke-turnlink.ts`.
+  Guards: `test/conformance/suites/graph.ts`, `examples/chat/smoke-turnlink.ts`.
 - **`new Map(entries)` keeps the LAST value per key, not the first.** Grouping "the first record per
   turn" that way silently selects each turn's final round, and the assertion built on it passed
   against the very shape it was written to reject. Build the map with an explicit
@@ -260,7 +260,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   replaced by successors — a registry, or key material a later write extends — is read with
   `readNewest` (both SDKs), never `readOne`. It is a `query`, so a principal holding only
   `read_one` on the kind is refused: ordering is a query. Guard:
-  `conformance/http.test.ts`, "read-one answers with the OLDEST match". Hit again by conversation
+  `test/http.test.ts`, "read-one answers with the OLDEST match". Hit again by conversation
   keys: enrolling a second machine wrote a successor, the unordered read kept returning the original
   wrap set, and the new machine was told it had no key while the record granting it sat one row
   later. The write reported success, which is what made it hard to see.
@@ -388,7 +388,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   read's duration (the log below the finality watermark is append-only; records are immutable),
   and a shared result must still be AUTHORIZED per caller — the shared record is evaluated against
   each watch's own scope, so sharing changes how often it is read, never who may see it.
-  Guard: `conformance/coalesce.test.ts`.
+  Guard: `test/coalesce.test.ts`.
 - **Coalescing collapses reads that OVERLAP, so its benefit decays as load staggers the wakeups**
   (`bench/suites/chatload.ts`). Measured: 40 sessions / 200 streams on live Postgres cost 344
   queries per turn against 122 at 100 streams, and the whole excess is `getRecord` (24/turn → 242)
@@ -405,7 +405,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   the kind whose watchers newly match (a settle across kinds, the foreign-instance poll) wakes
   everyone too — under-waking stalls a stream until its 15s keepalive, the one failure worse than
   waste. Kind-aware does NOT help watchers that share a kind and differ by predicate (250
-  `message` streams still all wake on a `message` write). Guard: `conformance/notifier.test.ts`.
+  `message` streams still all wake on a `message` write). Guard: `test/notifier.test.ts`.
 - **A chat worker reads FLAGS, not the environment, unless the fleet named the variable**
   (`examples/chat/client/fleet.ts`). Each worker gets the narrowest permissions that let it work, so
   `Deno.env.get` outside its `--allow-env` THROWS rather than returning undefined: a NotCapable
@@ -422,7 +422,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   cause. Every caller saw the same symptom, "the work never completed", which is indistinguishable
   from a worker that was never started. Three separate defects in one afternoon presented that way.
   Failures now reach `console.error` when no `log` was given, in both SDKs, and there is no way to
-  turn them off; routine trace stays opt-in. Guarded by `conformance/loop.test.ts`, including that a
+  turn them off; routine trace stays opt-in. Guarded by `test/loop.test.ts`, including that a
   caller WHO DID pass a log does not also get stderr.
 
 - **A watch is dropped when it is IDLE, never when it disconnects.** The map was never pruned at
@@ -464,7 +464,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   available-or-leased record of the kind `for update … skip locked`, then filtered in the runtime.
   Two bugs in one line. **Starvation:** one claimer's open transaction held row locks on the whole
   queue, so a peer's `skip locked` found nothing and was told EMPTY while work remained (67 wasted
-  takes at 4 claimers, 166 at 16). Invisible to `deno task conformance`, since the embedded adapters
+  takes at 4 claimers, 166 at 16). Invisible to `deno task test:runtime`, since the embedded adapters
   are single-connection. **Cost:** ordering the JOIN materialized every body of the kind before
   `limit`, making a claim O(kind size) in bytes. The fix (`fetchCandidates`/`take`): a bounded
   `CANDIDATE_WINDOW` (64) chosen from the narrow `record_runtime` table, bodies fetched only for
@@ -533,7 +533,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   broken, which is why it survived. Anything that bypasses the client's own request helper has to
   re-add what that helper was doing. Same file, same shape: a watch id is server MEMORY, so a
   restart 404s it permanently and retrying is the one failure that never heals; both SDKs re-create
-  the watch on a 404 (`conformance/loop.test.ts`).
+  the watch on a 404 (`test/loop.test.ts`).
 - **A heartbeat that discards its result is a worker that never learns it was fenced.** `renew`
   reports fencing as a `{status: "lease_lost"}` BODY, so `renew(...).catch(() => {})` ignored exactly
   the case it existed to detect: a reclaimed worker renewed a dead lease for the life of the process
@@ -643,7 +643,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   head at the returned prefix length and continues, so a win past the gap becomes a hole nobody
   revisits. The multi-row insert returns the won idxs, and anything beyond the first conflict is
   DELETED before returning the prefix. SQLite is single-connection and kept its row-at-a-time loop.
-  Guard: `conformance/suites/integrity.ts` "appendSeals lands a contiguous prefix".
+  Guard: `test/conformance/suites/integrity.ts` "appendSeals lands a contiguous prefix".
 - **A sound pre-filter is not a complete one, and the gap is measurable.** What `pushdown.ts`
   cannot express renders as `TRUE`, and the whole kind is then pulled into JS for
   `core/matching.ts` to decide. Measured over HTTP against Postgres (`bench/deployment.ts`): 278ms
@@ -682,7 +682,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   flat. Postgres carries `idx_records_id_c` for a different reason (byte-order ids), which is what
   hid the gap. `explain query plan` is the only way to see it; a benchmark shows it as a shape.
 - **GC's guards each have exactly one row where they bite, and a test that misses it tests
-  nothing.** Found by planting, three times in one sitting (`conformance/suites/gc.ts`). The lease
+  nothing.** Found by planting, three times in one sitting (`test/conformance/suites/gc.ts`). The lease
   floor tests `lease_id`, not `leased_until`: settling clears the id and leaves the timestamp, so
   testing time alone embargoes every freshly-acked record for a lease-length. Its observable case is
   a LEASED REFERENCE record (`claimable` is a hint, so take-by-id works on reference kinds); on work
@@ -698,7 +698,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   the edge is written in the record's OWN transaction; EVERY insert path writes it, ack-with-result
   included (pinned by a conformance case, since a reverse index only `put` maintained looks correct
   in every hand test); and a one-time backfill rebuilds it for databases written by older builds.
-  Covered by `conformance/backfill.test.ts`, which needs a PERSISTENT database: `init()` on
+  Covered by `test/backfill.test.ts`, which needs a PERSISTENT database: `init()` on
   `:memory:` opens a new empty one, so the first draft "survived a restart" by finding nothing.
 - **A graph walk should batch by LEVEL, but the reason it got faster may not be the batching.**
   `getLineage` fetches a depth level per `getRecords` call: 0.224ms vs 0.651ms at depth 64 in a 20k
@@ -805,13 +805,13 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   own token** (`src/main.ts`; `clearCredential(base, onlyIfToken)` in `src/credentials.ts`). A
   second dev losing the port race otherwise overwrites the running space's operator entry at
   startup and deletes it in its `finally`, so every CLI verb against the healthy space gets
-  `auth_required`. Guard: `conformance/defaults.test.ts` "losing a port race".
+  `auth_required`. Guard: `test/defaults.test.ts` "losing a port race".
 - **One credential file, two identities.** `radia dev` provisions an OPERATOR credential per space
   and `radia login` authenticates a PERSON against the same space. Keyed by base URL alone the
   second silently replaces the first, and the CLI's remediation verbs, the chat's bootstrap and the
   MCP adapter all start acting as whoever logged in last. Logins live under their own suffix; the
   operator entry is never touched. Caught one edit before it shipped, and guarded by
-  `conformance/exchange.test.ts`.
+  `test/exchange.test.ts`.
 - **"Public route" means no credential is REQUIRED, not that a bad one is ignored.** `GET /` and
   `GET /v0/health` skip authentication so the console can bootstrap under `--auth required`. The
   skip covered every credential error, so an expired or garbage token got
@@ -860,7 +860,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   legitimately lives in memory: it cannot be revoked because it cannot outlive the process. **Never
   bake it into `index.html`** — `GET /` is public so the console can bootstrap, so an embedded token
   is readable by anyone who can reach the port. The console prompts and keeps it in `sessionStorage`;
-  `conformance/console.test.ts` fails if a credential-shaped literal or a substitution placeholder
+  `test/console.test.ts` fails if a credential-shaped literal or a substitution placeholder
   reappears. The substitution machinery is gone rather than disabled, so there is no option to pass
   that reinstates it.
 - **The operator token resolves as `kind: "operator"`, never `"def"`.** Resolving it to something
@@ -868,7 +868,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   since definition tokens mint runs, so a leaked unrevocable credential would convert into a
   long-lived run token. It authorizes everything and mints nothing: a distinct `ResolvedToken`
   variant (`src/core/auth.ts`), accepted by `resolveAuth` beside `run` and refused by `mintRun`, so
-  the escalation is closed at the source rather than at each caller (`conformance/http.test.ts`).
+  the escalation is closed at the source rather than at each caller (`test/http.test.ts`).
 - **The open-mode no-header shortcut is for `curl`, and nothing radia ships may rely on it.** No
   credential resolves to `human:local`, the operator: the largest authority a space has, acquired by
   nobody having typed anything. The console and the chat both silently ran privileged; both refuse
@@ -984,7 +984,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   the caller deliberately lacks intersects to nothing: exec's `check: put` and `workspace: put`
   stay on its own token because the session holds neither, and moving them to `delegable:` broke
   `save_procedure` outright. Split a worker's grants by READ versus WRITE, not by "session data".
-  Guard: conformance/delegation.test.ts "a SUBSET on every axis".
+  Guard: test/delegation.test.ts "a SUBSET on every axis".
 - **Anything that mints an `agent_run` per call grows a table GC never sweeps**
   (`Space.mintDelegatedRun`). Reserved kinds are exempt from the retention sweep and compaction
   only keeps newest-per-`run`, so each distinct run is a permanent row — and `runPrincipalsOf`
@@ -992,7 +992,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   Derive the token from the caller's credential plus what makes the run distinct (the OIDC mint's
   move), so an unchanged one is found by its `tokenHash` and writes nothing. Put anything that can
   CHANGE into the derivation, or reuse would mutate a run whose authority is memoized as immutable.
-  Guard: conformance/delegation.test.ts "REUSES its run".
+  Guard: test/delegation.test.ts "REUSES its run".
 - **A per-caller credential cache keyed only by the CALLER belongs to one worker, not the module**
   (`delegatedClients`, extensions/ts/tool-worker.ts). A module-level map shared by two `serveTools`
   calls in one process hands worker A the delegated client worker B minted — a different worker's
@@ -1018,7 +1018,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   the reader that hits this cannot run — it is a model holding tools, not a shell — and which is
   `src/core` naming a surface's verb. "Query `kind_def`" is true through every surface. The
   tradeoff taken: kind names become enumerable by probing, which is fine because they are SCHEMA.
-  Guard: conformance/delegation.test.ts "a refusal SAYS when the kind does not exist", proved red
+  Guard: test/delegation.test.ts "a refusal SAYS when the kind does not exist", proved red
   both ways (clause missing, and clause on every kind).
 - **A worker must never read a record named by a BODY FIELD using its own authority**
   (`contextFor`, extensions/ts/inference.ts; package V in plan-audit-remediation.md). A body is a
@@ -1036,7 +1036,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   test, not by reading. And `revoke` closes neither: it stops a definition MINTING (deliberately,
   so a rotation does not kill every worker mid-call) and is a no-op for an SSO identity, which by
   design holds no definition. Offboarding is stop-both-classes, then remove what re-mints.
-  Guard: conformance/delegation.test.ts "offboarding needs BOTH run classes".
+  Guard: test/delegation.test.ts "offboarding needs BOTH run classes".
 - **A one-off manual grant to a long-lived principal hides gaps in the standard set**
   (`userGrants`, examples/chat/space/roles.ts). `kind_def:query` was hand-granted to one person
   in August and never added to the set, so `space_kinds` worked for them and 403'd for every
@@ -1057,7 +1057,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   unclaimable and `rankClaimable` skips them indistinguishably from an empty queue. It pages to
   exhaustion via `readRegistry` and throws `registry_incomplete` rather than narrowing. Five client
   reads had the same shape and now route through `RadiaClient.queryAll` / `query_all`, which pages
-  newest-first and THROWS instead of returning a prefix. Guarded in `conformance/suites/auth.ts`
+  newest-first and THROWS instead of returning a prefix. Guarded in `test/conformance/suites/auth.ts`
   (1201 runs for one agent; its oldest must stay in scope). Where a bound is right, bound by
   RELEVANCE, not page size, and say so at the call site.
 - **Every grant read is a bounded page over records that ACCUMULATE, and truncation misauthorizes
@@ -1100,7 +1100,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   identity can be retired more than once. Anchor revival on the newest RETIREMENT, never on "is the
   newest record retired": that was tried, and after one revival it falls back to a key the original
   record already consumed, so the next repeat replays the RETIRED record. Both SDK `grant()` helpers
-  anchor the same way. Guards: `conformance/suites/retire.ts`, `examples/chat/smoke-selfgrant.ts`.
+  anchor the same way. Guards: `test/conformance/suites/retire.ts`, `examples/chat/smoke-selfgrant.ts`.
 - **A withheld count with no reason sends every agent hunting for a grant that cannot exist.**
   `/v0/ops/events` filters by which principal PERFORMED the operation, so no record-kind grant
   widens it, but the response said only `withheld: 65923`, which reads as "you are missing a grant".
@@ -1169,7 +1169,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   check; a `Watch` carries its owner and scope, because watch ids are enumerable ULIDs and were
   never secret; and `effectivePermissions` computes reachability per GRANT, the rule `opsScope`
   enforces, because a believed view that drifts from enforcement is worse than no view. Guard: a
-  table in `conformance/http.test.ts`, one row per read verb. **A read verb with no row is a verb
+  table in `test/http.test.ts`, one row per read verb. **A read verb with no row is a verb
   nobody checked** — add a row when you add a verb. It is a convention, not a type: a new handler
   can still call `authorize` alone.
 - **The ops aggregate is self-scoped even where READS are not, so it must say which kinds it
@@ -1299,7 +1299,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   (`BlobGcResult.foreign`), and `radia rewrap` re-seals the referenced ones so the retired key can
   go. The two passes see different things and must: a rewrap is DIGEST-driven, so a payload under an
   unknown key is unnameable to it and counts as `missing`; the sweep walks names, meets those, and
-  keeps them. Guards: `conformance/suites/blobs.ts`, "a rotated KEK still reads" and "rewrap
+  keeps them. Guards: `test/conformance/suites/blobs.ts`, "a rotated KEK still reads" and "rewrap
   re-seals under the current key".
 - **Writing a payload and its key is two operations, so order them for the crash.** The encrypted
   blob store wrote ciphertext first and the wrapped DEK second. A crash between them left
@@ -1651,6 +1651,13 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   durable half and a `#enckey:` content key are never pruned at all: the key is the only copy of
   what opens that person's conversations. A new entry kind must be added to `credentialKind`, or it
   defaults to "operator" and becomes prunable.
+- **A test goes in `test/conformance/` only if it runs against several implementations.** That
+  directory is the port contract (one suite set x every storage adapter and blob store) and is what
+  the "embedded is never a weaker cousin of Postgres" invariant rests on; anything with ONE
+  implementation, or that knows a dialect, is a standalone `test/*.test.ts`. Extension contracts are
+  neither: they live in `extensions/conformance/` because nothing there may import `src/`. Task
+  names follow the same split: `test:conformance` is the matrix, `test:runtime` is all of `test/`,
+  `test` is the aggregate.
 - **`radia query` reads NEWEST first and its `--json` is an OBJECT.** The natural order is
   ascending id, so the old default answered "the records" with the oldest ones and capped at 500 in
   silence (`Math.min(j.limit, 500)`, `server/handlers/records.ts`). The verb now sends `dir: "desc"`,
@@ -1736,7 +1743,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   cast straight into the compiler, and `Object.keys(3)` is empty, so `match: 3` compiled to NO
   PREDICATE and returned every record of the kind: a malformed filter that WIDENS. Validated in
   `compilePattern`, not in the handlers, because SDK/MCP/in-process callers never pass through one.
-  Found by writing `conformance/http.test.ts`, which is a table now: add a row per field.
+  Found by writing `test/http.test.ts`, which is a table now: add a row per field.
 - **A wrong-typed field that changes WHICH records are involved is a 400; one that only sizes the
   answer falls back to its default.** `limit: "ten"`, `leaseSeconds: "60"`, `backoffSeconds: []` fall
   back; `match`, `pattern`, `orderBy`, `after`, `dir` are rejected. A bad bound cannot answer a
@@ -1757,7 +1764,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   `"`, so every pattern-scoped grant broke out of the attribute and a crafted pattern could inject
   an event handler into a page carrying an operator token. What generalizes is the follow-up: `esc`
   being correct was never the problem, ONE call site interpolating raw was.
-  `conformance/console.test.ts` checks the property structurally — every `${…}` inside an attribute
+  `test/console.test.ts` checks the property structurally — every `${…}` inside an attribute
   must route through `esc` or be a ternary of literals — and immediately found two more. It lifts
   `esc` out of the page source by brace balance and fails loudly if the function is renamed, which
   is what keeps it from quietly testing nothing.
@@ -1784,7 +1791,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   "--json" and printed a well-formed answer about nobody. Three verbs had it (`login`, `shred`,
   `permissions`), all added recently, all reading `argv[0]` while the other ten used the scanner.
   A new valueless switch must also join `VALUELESS` in `src/flags.ts`, or the scanner eats the token
-  after it. Guarded structurally in `conformance/defaults.test.ts`, which strips comments first,
+  after it. Guarded structurally in `test/defaults.test.ts`, which strips comments first,
   because the rule is explained in a comment that names the thing it forbids.
 - **A layering rule and a broken shipping artifact were the same defect, seen from two sides.**
   `sdk/ts/client.ts` imported the wire types AND runtime values from `../../src/`, with its own
@@ -1985,7 +1992,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   three adapters, over the timestamps ordering, retention, leases and the event chain all rest on.
 
 - **A test for a race proves nothing until the pre-fix code fails it, and the first draft usually
-  does not.** Both guards in `conformance/concurrency.test.ts` passed against the exact defect they
+  does not.** Both guards in `test/concurrency.test.ts` passed against the exact defect they
   were written for. The paging one had TWO independent reasons: a pushable pattern is filtered in
   SQL, so a selective take sees a window of pure matches and never pages (the boundary the test was
   aiming at was never reached), and matches parked at the tail of a queue shift *toward* a paging
@@ -2072,7 +2079,7 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   single-connection, so the claim-fairness bug that motivated the invariant was invisible to them —
   a green embedded run is not evidence about the adapter people deploy. `.github/workflows/ci.yml`
   runs both. Same shape as the frozen wire contract, which nothing checked until
-  `conformance/openapi.test.ts`: it found two live endpoints (`POST /v0/capabilities`,
+  `test/openapi.test.ts`: it found two live endpoints (`POST /v0/capabilities`,
   `GET /v0/w/{capability}/{path}`) that the spec did not mention. **Before trusting a claim about a
   guard, check the guard runs.**
 - **A structural test nobody has seen FAIL is a structural test nobody has tested.** The layering
@@ -2168,7 +2175,7 @@ rejected for stated reasons.
   deletes the revive anchor: a new run's key is new. The ceiling check reads author-scoped
   (`checkInterestBudget`: `created_by` is a storage column), not the whole-registry liveness walk
   that cost ~1.6s per publish × 31 patterns — a worker deaf for 49s before its first claim.
-  Guard: `conformance/exchange.test.ts`, "a restarted worker's interest survives".
+  Guard: `test/exchange.test.ts`, "a restarted worker's interest survives".
 
 - **The matching construct is a `pattern`, and never a `selector`.** It was `template` until the
   whole surface was renamed (wire contract, code, both SDKs, CLI, MCP, docs; the inner field stayed

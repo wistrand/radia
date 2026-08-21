@@ -43,7 +43,7 @@ function enableTcpNoDelay(): void {
 export interface PostgresOptions {
   /** Confine all tables to this schema (set as `search_path` on every connection). */
   schema?: string;
-  /** Create the schema on init and DROP ... CASCADE on close (conformance/ephemeral use). */
+  /** Create the schema on init and DROP ... CASCADE on close (test/ephemeral use). */
   ephemeral?: boolean;
   /** Pool size (concurrent connections). Default 8. */
   poolSize?: number;

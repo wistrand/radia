@@ -5,7 +5,7 @@ loops, artifact transfer and shared wire types without importing runtime interna
 
 `ts/wire.ts` defines the frozen wire vocabulary and pure functions that clients and the server must
 compute identically. The runtime imports these definitions; the SDK imports nothing from `src/`.
-`conformance/layering.test.ts` enforces that direction for value and type imports.
+`test/layering.test.ts` enforces that direction for value and type imports.
 
 | | TypeScript | Python |
 |-|------------|--------|
@@ -29,7 +29,7 @@ compute identically. The runtime imports these definitions; the SDK imports noth
 **Credential lifecycle.** `keepAlive` renews an active run before expiry. TypeScript clients may
 also hold a mint-only `definitionToken` and exchange it for a new run after expiry or the absolute
 run ceiling. Concurrent calls share one exchange, and forbidden operations are not retried. Python
-currently supports renewal but not definition-token exchange. `conformance/exchange.test.ts`
+currently supports renewal but not definition-token exchange. `test/exchange.test.ts`
 covers the TypeScript behavior.
 
 **Read ordering.** `readOne` returns the oldest matching record. Use `readNewest` for registries,
@@ -50,7 +50,7 @@ does (`1.0` → `1`, `1e-5` → `0.00001`, exponent form only outside `[1e-6, 1e
 zero-padded), sorts object keys in UTF-16 code-unit order, leaves non-ASCII unescaped, and refuses
 what no shared key can exist for: NaN/Infinity, integers beyond 2**53 (JavaScript would silently
 round them), and values that are not JSON. The agreement is a guard, not a discipline:
-`conformance/py-parity.test.ts` runs one corpus of raw JSON texts through both implementations
+`test/py-parity.test.ts` runs one corpus of raw JSON texts through both implementations
 wherever `python3` is present, including CI. The small-float divergence it exists to catch
 (`1e-05` vs `0.00001`) shipped and survived precisely because nothing checked.
 

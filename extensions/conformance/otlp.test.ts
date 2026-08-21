@@ -1,6 +1,6 @@
 // The OTLP projection's contract.
 //
-//   deno task extensions
+//   deno task test:extensions
 //
 // Pure functions only, no running space: what is pinned here is the MAPPING — deterministic ids
 // (re-export dedupes in the collector instead of double-counting), the tree-with-links rule

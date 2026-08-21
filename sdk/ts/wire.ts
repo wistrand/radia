@@ -19,7 +19,7 @@
 // WHAT BELONGS HERE. A shape that appears on the wire, or a function whose result both sides must
 // agree on byte for byte (`kindDefKey`, the registry projection). NOT storage ports, NOT anything
 // with a dependency, NOT server policy. If it needs an import from `src/`, it is not wire vocabulary.
-// `conformance/layering.test.ts` enforces the direction.
+// `test/layering.test.ts` enforces the direction.
 
 // ---------------------------------------------------------------------------
 // Identifiers and records

@@ -11,7 +11,7 @@
 //   6. an attachment keeps the label and the conversation stamp its headers carried
 //
 // Phases 0-5 of agent_docs/plan-chat-web-ui.md. The sign-in dance itself is browser-side and is
-// covered against a real issuer by conformance/oidc.test.ts.
+// covered against a real issuer by test/oidc.test.ts.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";

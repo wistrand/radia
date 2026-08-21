@@ -1,7 +1,7 @@
 # Plan: the drumroll class of AI-isms in user-facing prose
 
 **Status: DONE 2026-08-18** (rule in CLAUDE.md style, fixes applied across the site and the chat
-README, guard live in `conformance/docs.test.ts` and proven RED against the unfixed site first).
+README, guard live in `test/docs.test.ts` and proven RED against the unfixed site first).
 Analysis 2026-08-18, from one flagged sentence:
 
 > This is where the shared space earns its keep, and where most systems have nothing to offer.
@@ -66,7 +66,7 @@ as a verbal habit at four.
 2. Sweep the same classes through the remaining user-facing prose in one pass: the other
    READMEs, `docs/llms.txt`, MCP tool descriptions (`src/surfaces/mcp/tools.ts`), console
    strings. agent_docs/ is internal and lower priority; apply the rule opportunistically there.
-3. **The guard**: a style case in `conformance/docs.test.ts`, site-only (pages + llms.txt, with
+3. **The guard**: a style case in `test/docs.test.ts`, site-only (pages + llms.txt, with
    `<pre>` and `<svg>` stripped), over a CURATED always-wrong phrase list plus the em dash.
    BUILT, and proven RED against the unfixed site first (it caught all eight phrase hits and the
    three dashes), per the layering-test discipline. It carves out the file's own "structural

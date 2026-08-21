@@ -1,6 +1,6 @@
 // The tool-worker harness (`extensions/ts/tool-worker.ts`).
 //
-//   deno task extensions
+//   deno task test:extensions
 //
 // The cases are about the ENVELOPE, because that is what this exists to stop being copied: a reply
 // missing `callId` leaves the caller waiting out its deadline for an answer that already exists, and

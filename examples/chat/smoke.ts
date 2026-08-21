@@ -1,7 +1,7 @@
 // The chat example's test suite. No API key, no model:
 //
-//   deno task chat-test              # everything
-//   deno task chat-test context      # one suite, by name
+//   deno task test:chat              # everything
+//   deno task test:chat context      # one suite, by name
 //
 // Why this exists. The chat app is the end-to-end exercise of the runtime, and in practice it is
 // where bugs surface first. Most of them are not in the runtime but in this app's own handling of

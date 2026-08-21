@@ -204,7 +204,7 @@ implementation had settled on `turnAt`, which is the drift any doc restating an 
 
 - DEPENDED ON PACKAGE U, now closed: keys are agent-scoped, so a turn-worker restart inside a
   turn replays its emission instead of double-paying a model call. The contract case is in
-  `conformance/exchange.test.ts` ("survives a re-mint").
+  `test/exchange.test.ts` ("survives a re-mint").
 - The turn's shape is no longer readable in one file. The honest replacement is the MINED one
   (`radia flows`, or the Graph tab on a conversation), not a state table copied into a README:
   a table is a second source of truth that nothing checks, and this plan's own went stale within a

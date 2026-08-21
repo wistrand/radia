@@ -7,7 +7,7 @@ server-computed") and [design-data-model.md](design-data-model.md).
 > **Status: BUILT.** `TAINT_LABELS` in `src/core/kinds.ts`, union propagation in
 > `Space.computeTaint`, the allowlist barrier in `src/core/take.ts` and `Space.taintBarrier`,
 > per-label `Space.declassify`, a nullable `taint_labels` column in both adapters with a guarded
-> migration. Conformance in `conformance/suites/taint.ts`; the chat's sites are relabelled.
+> migration. Conformance in `test/conformance/suites/taint.ts`; the chat's sites are relabelled.
 >
 > After: the same conversation that used to be tainted end to end from one tool call now
 > discriminates, and a `calc` that touched nothing carries nothing:

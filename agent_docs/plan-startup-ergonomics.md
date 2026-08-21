@@ -37,7 +37,7 @@ when the holder dies: a SIGKILLed space leaves nothing stale, and no liveness ch
 has none that does not cost `--allow-run`). Deno's `lock()` waits rather than failing, so a 400ms
 timer is the try-lock; the loser reads the holder's own line (pid, base URL, start time) out of the
 file and exits 1. Both local backends lock, postgres and in-memory do not. Verified live for
-pglite and sqlite, across a clean restart and a SIGKILL. Guard: `conformance/defaults.test.ts`,
+pglite and sqlite, across a clean restart and a SIGKILL. Guard: `test/defaults.test.ts`,
 "one writer per database".
 
 ## 2. A port conflict prints a raw Deno stack trace (BUILT)
@@ -51,7 +51,7 @@ BUILT: the bind throws AddrInUse SYNCHRONOUSLY (the trace only looked asynchrono
 propagated out of an async `main`), so `bind()` in `server/http.ts` catches it and names the port
 and the listener, and `dev()` adds the cause and both overrides, exit 1. The artifact origin is
 covered too: its `serve` result was discarded, so that bind failure had no observer at all. Guard:
-`conformance/defaults.test.ts`, "a taken port is a message, not a stack trace".
+`test/defaults.test.ts`, "a taken port is a message, not a stack trace".
 
 ## 3. `radia query` reads oldest-first and truncates at 500 in silence (BUILT)
 
@@ -69,7 +69,7 @@ scope}`) instead of the bare array, which is the caller-visible break to know ab
 stands: it is the server's, and a page that says it is a page is the fix. One explain note was
 wrong and now visible in the CLI, so it went with it: an undeclared kind CAN return records (an
 undeclared put is allowed), and the note said "can only ever return nothing" above rows a reader
-could see. Guard: `conformance/defaults.test.ts`, "query reads NEWEST first".
+could see. Guard: `test/defaults.test.ts`, "query reads NEWEST first".
 
 ## 4. Inspecting a space grows the space (BUILT)
 
@@ -90,7 +90,7 @@ which is right for a person's CLI and wrong for a fleet. The CLI and the MCP ada
 (`ClientAuth.reuseRun`); nothing else changes. Measured after: six observer verbs, one `agent_run`,
 where six was the count before. The cost to know about: a stopped reused run stays stopped until the
 bucket rolls, so `runs --stop` on the observer blocks read-only verbs for up to 12h. Guard:
-`conformance/exchange.test.ts`, "a credential exchanged per process gets its run back".
+`test/exchange.test.ts`, "a credential exchanged per process gets its run back".
 
 ## 5. The credential file accumulates and nothing prunes it (BUILT)
 
@@ -113,7 +113,7 @@ this first landed and what the suite caught: an unrelated `radia login` deleted 
 operator entry, the port-race bug wearing a clock. `radia dev` reports the dormant count and deletes
 nothing. Clean shutdown does drop the `#observer` entry for an IN-MEMORY space, whose base URL will
 never answer again; a persisted one keeps it, because the identity is still in its database. Guard:
-`conformance/exchange.test.ts`, "prunes what a restart can rebuild, and nothing else".
+`test/exchange.test.ts`, "prunes what a restart can rebuild, and nothing else".
 
 ## 6. `health` identifies neither the instance nor whether it persists (BUILT)
 
@@ -121,7 +121,7 @@ The payload is status/version/api/storage/now/principal/oidc. No start time, no 
 persistence flag, so "where did my records go" is answerable from the startup log and nowhere else,
 and a reconnecting client cannot tell "same space, memory intact" from "same port, fresh empty
 space". `startedAt` plus `persistent: true|false` is ADDITIVE to the frozen contract (spec and
-router are checked in both directions by `conformance/openapi.test.ts`) and turns the most
+router are checked in both directions by `test/openapi.test.ts`) and turns the most
 confusing restart symptom into one line of `radia health`.
 
 BUILT, three fields: `instance` (a ULID per `Space`, so a restart is visible as a different space
@@ -131,7 +131,7 @@ them, since a `Space` is handed an adapter and cannot see where it writes, and `
 `pglite` either way. Still PUBLIC, like `principal` and `storage` before them: the reconnecting
 client is the one that needs the answer and it has not signed in yet. `radia health` prints
 `persisted`/`in-memory` on its first line and `instance=… started=…` on a second. Guard:
-`conformance/http.test.ts`, "health says WHICH space this is".
+`test/http.test.ts`, "health says WHICH space this is".
 
 ## 7. `doctor` undercounts what `gc` would reclaim
 

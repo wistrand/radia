@@ -3,7 +3,7 @@
 //   deno run -A examples/chat/smoke-input.ts
 //
 // No space, no model: this is the REPL's stdin plumbing on its own. It is here rather than in
-// `conformance/` because it is an example's client code, and it is a suite rather than a review note
+// `test/` because it is an example's client code, and it is a suite rather than a review note
 // because the bug was REPORTED by someone using the chat, not found by reading:
 //
 //   "the chat input sometimes misses an enter and needs an extra enter to run command"

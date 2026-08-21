@@ -1,6 +1,6 @@
 // The workspace convention's contract: what any implementation must satisfy.
 //
-//   deno task extensions
+//   deno task test:extensions
 //
 // Two of these are NORMATIVE rather than convenient (see ../README.md). `treeDigestOf` is what a
 // `check` attests to, so a verdict computed by another language binding is comparable only if the

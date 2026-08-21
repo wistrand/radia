@@ -16,7 +16,7 @@ import type { RawRow } from "./row.ts";
 export interface PgliteOptions {
   /** Confine all tables to this schema (set as `search_path` on the connection). */
   schema?: string;
-  /** Create the schema on init and DROP ... CASCADE on close (conformance/ephemeral use). */
+  /** Create the schema on init and DROP ... CASCADE on close (test/ephemeral use). */
   ephemeral?: boolean;
   /**
    * Run on an EXISTING PGlite rather than booting one. The caller owns it: `close()` drops this

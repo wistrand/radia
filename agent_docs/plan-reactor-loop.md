@@ -1,7 +1,7 @@
 # Plan: reactorLoop, the fact-side twin of agentLoop
 
 **Status: BUILT 2026-08-18** (`reactorLoop` in `sdk/ts/loop.ts`; the three conversions; the three
-contract tests in `conformance/loop.test.ts`, each proven able to fail by planting — the gap test
+contract tests in `test/loop.test.ts`, each proven able to fail by planting — the gap test
 was green under a disabled tick until it sequenced the write strictly after the boot pass, which
 is now a comment in the test). TS only; Python parity deferred and noted in `sdk/README.md`.
 Analysis 2026-08-18, claims verified against source the same day. Radia has two link shapes and only the fenced one has a harness: `agentLoop` supervises the
@@ -103,7 +103,7 @@ documented shapes; the CLI verb stays.
 
 ## The contract test
 
-`conformance/loop.test.ts` (it may import `src/`), planting BOTH failure classes, because a
+`test/loop.test.ts` (it may import `src/`), planting BOTH failure classes, because a
 supervision guard nobody has seen fail is one nobody has tested:
 
 - a `credential_invalid` revocation mid-stream: assert the loop re-watches under a fresh run and

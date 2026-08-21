@@ -1,6 +1,6 @@
 // The git projection's contract.
 //
-//   deno task extensions
+//   deno task test:extensions
 //
 // Two halves, and the split is the point.
 //

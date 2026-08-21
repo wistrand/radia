@@ -372,7 +372,7 @@ get rediscovered as new.
 |----------------------------------------------------------------------------------|-------------------------------------------------|
 | Taint propagates along `parent_ids` at put and ack                                | `computeTaint`, `src/core/space.ts`             |
 | `ack` force-prepends the leased record to `parentIds`                             | settle path, `src/core/space.ts`                |
-| Clients may raise taint, never lower it                                           | `pickPut`, `handlers/records.ts`; `conformance/suites/taint.ts` |
+| Clients may raise taint, never lower it                                           | `pickPut`, `handlers/records.ts`; `test/conformance/suites/taint.ts` |
 | `declassify` is the only path clearing taint, and is ops-plane privileged          | `opts.taint` sole override; `READ_ONLY_OPS` excludes it |
 | The taint barrier is enforced inside the claim transaction                        | `rankClaimable`, `src/core/take.ts`             |
 | **Taint is a closed set of BARRIER labels, not one bit**: `file`/`net`/`foreign`, unioned along data parents | `TAINT_LABELS` + `normalizeTaint`, `src/core/kinds.ts`; `Space.computeTaint` |
@@ -384,7 +384,7 @@ get rediscovered as new.
 | `$regex`/`$where`/`$expr` forbidden at compile                                     | `FORBIDDEN`, `src/core/matching.ts`             |
 | Taint is outside the body, therefore not pattern-matchable                        | `RuntimeMeta`, both adapter schemas, `matchesRecord` |
 | `pattern` is wire-visible on the take selector and in grant bodies                | `openapi/radia.yaml`: the `TakeRequest` selector and the `GrantDef` schema |
-| **`record_edges` reverse index exists**: indexed, keyset-paged, same-transaction, backfilled | both adapters; `conformance/backfill.test.ts` |
+| **`record_edges` reverse index exists**: indexed, keyset-paged, same-transaction, backfilled | both adapters; `test/backfill.test.ts` |
 | Graph BFS calls `childrenOf` per node under a `GRAPH_FANOUT = 200` budget           | `GRAPH_FANOUT` + `getGraph`, `src/core/space.ts` |
 | `matchesEvent` fires only on `state === "available"` and is watch-specific          | `matchesEvent`, `src/core/space.ts`             |
 | Event log carries no bodies (`seq, cursor, id, ts` + operation/record/kind/state)   | `SpaceEvent`, `src/storage/adapter.ts`          |

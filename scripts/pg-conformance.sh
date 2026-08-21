@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 
 if [[ -n "${RADIA_PG_URL:-}" ]]; then
   echo "Using RADIA_PG_URL=$RADIA_PG_URL"
-  exec deno task conformance
+  exec deno task test:runtime
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -48,4 +48,4 @@ done
 
 export RADIA_PG_URL="postgres://postgres:radia@localhost:$PORT/radia"
 echo "Running conformance against $RADIA_PG_URL"
-deno task conformance
+deno task test:runtime

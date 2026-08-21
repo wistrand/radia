@@ -10,7 +10,7 @@
 import type { Bench, Measurement } from "../harness.ts";
 import { measure } from "../harness.ts";
 import { Space } from "../../src/core/space.ts";
-import { makeTestKeys } from "../../conformance/oidc-issuer.ts";
+import { makeTestKeys } from "../../test/oidc-issuer.ts";
 
 const ISS = "https://bench.idp";
 const AUD = "bench";

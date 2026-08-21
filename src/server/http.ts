@@ -278,7 +278,7 @@ const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"
  * Exported because it is the testable seam: the boundary rules that live here (a bad bearer is a
  * 401 and never a fall-through to the operator, a wrong-typed field is a 400 and never a 500, an
  * artifact's disposition) are exactly the ones a Space-level test cannot reach, and binding a real
- * port to check them buys nothing but flakes. See `conformance/http.test.ts`.
+ * port to check them buys nothing but flakes. See `test/http.test.ts`.
  */
 export function makeHandler(space: Space, ui: string, authRequired: boolean) {
   return async function handler(req: Request): Promise<Response> {

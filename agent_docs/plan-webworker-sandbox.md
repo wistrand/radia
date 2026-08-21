@@ -143,7 +143,7 @@ materialising the tree, so a refusable pairing costs one registry read rather th
 plus an artifact fetch per file. And the refusal itself is one guard (`assertHostCanRun`) called
 from both the invoker and `runBrokered`, because the dry run reaches only the second.
 
-`deno task extensions` gained `--unstable-worker-options`: a worker with `permissions: "none"` is
+`deno task test:extensions` gained `--unstable-worker-options`: a worker with `permissions: "none"` is
 what makes the headless probe deterministic and offline-safe (the network claim is refused by the
 permission system rather than by DNS).
 

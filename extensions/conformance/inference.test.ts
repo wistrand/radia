@@ -1,6 +1,6 @@
 // Whose conversation an `llm_call` may load (`extensions/ts/inference.ts`, `contextFor`).
 //
-//   deno task extensions
+//   deno task test:extensions
 //
 // One property, and it is the whole file: a call names its conversation in the BODY, and a body is
 // a CLAIM. `bodyMatchesGrant` bounds what a caller may WRITE and says nothing about what this

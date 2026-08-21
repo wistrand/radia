@@ -1,6 +1,6 @@
 // Benchmark harness: timing, percentiles, and a readable table.
 //
-// Separate from `conformance/` on purpose. Conformance answers "is this correct on every
+// Separate from `test/` on purpose. The tests answer "is this correct on every
 // adapter"; this answers "how fast, and where does it stop scaling". A benchmark that fails is
 // not a broken build. It is a number that moved, which is why nothing here asserts.
 //

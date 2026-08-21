@@ -18,7 +18,7 @@ cd "$(dirname "$0")/.."
 
 if [[ -n "${RADIA_S3_URL:-}" ]]; then
   echo "Using RADIA_S3_URL=$RADIA_S3_URL"
-  exec deno task conformance-s3
+  exec deno task test:conformance:s3
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -41,4 +41,4 @@ export RADIA_S3_URL="s3://radia-conformance?endpoint=http://127.0.0.1:9000"
 export RADIA_S3_ACCESS_KEY_ID=radialocal
 export RADIA_S3_SECRET_ACCESS_KEY=radialocal
 echo "Running blob conformance against $RADIA_S3_URL"
-deno task conformance-s3
+deno task test:conformance:s3

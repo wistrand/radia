@@ -53,7 +53,7 @@ jobs:
           deno-version: v2.x
           cache: true
       - run: deno task check
-      - run: deno task conformance
+      - run: deno task test:runtime
       # The browser playground is a BUILD OUTPUT, never committed (see .gitignore): this proves the
       # bundle builds and boots on a clean machine, via the smoke inside the script. Deploying the
       # built playground to Pages is a separate decision this step deliberately does not make.
@@ -84,7 +84,7 @@ jobs:
             echo "bubblewrap: OFF — the sandbox cases will SKIP. Reason:"
             cat /tmp/bwrap.err
           fi
-      - run: deno task extensions
+      - run: deno task test:extensions
       # The SDK parity containers (docker/py-parity/): python 3.9 and 3.13 pinned beside a pinned
       # deno, no way to skip. A step here rather than its own job, because GitHub bills each job
       # rounded UP to a whole minute and this takes ~20 seconds.
@@ -114,12 +114,12 @@ jobs:
           deno-version: v2.x
           cache: true
       # Only what this job uniquely covers: the postgres adapter column (RADIA_CONF_ADAPTERS
-      # narrows conformance/adapters.ts to it) plus the two pg-only files. This is the ONLY cover
+      # narrows test/conformance/adapters.ts to it) plus the two pg-only files. This is the ONLY cover
       # for the pool-only paths: `SKIP LOCKED` claims racing across connections, and the `xid8`
       # watermark that keeps watch cursors gap-free when transactions commit out of seq order.
       # Everything embedded was already proved by the `embedded` job; re-proving it here cost a
       # paid minute per push.
-      - run: deno task conformance-pg
+      - run: deno task test:conformance:pg
         env:
           RADIA_PG_URL: postgres://radia:radia@localhost:5432/radia
           RADIA_CONF_ADAPTERS: postgres
@@ -143,7 +143,7 @@ jobs:
       # --wait blocks on the compose healthcheck, so the first signed request cannot race a
       # gateway that is listening but not serving yet.
       - run: docker compose -f docker/s3/compose.yaml up -d --wait
-      - run: deno task conformance-s3
+      - run: deno task test:conformance:s3
         env:
           RADIA_S3_URL: s3://radia-conformance?endpoint=http://127.0.0.1:9000
           RADIA_S3_ACCESS_KEY_ID: radialocal

@@ -437,7 +437,7 @@ async function mint(
  * Seen exactly that way when a dev space restarted under a running fleet. A definition token has no
  * expiry and is MINT-ONLY (it cannot read, write or claim), which is what makes it safe to hand
  * over, and `RadiaClient({definitionToken})` exchanges it for a fresh run whenever the short half
- * stops working (conformance/exchange.test.ts). The mechanism was built and the fleet did not use it.
+ * stops working (test/exchange.test.ts). The mechanism was built and the fleet did not use it.
  */
 export interface Bootstrapped {
   inferenceToken: string;

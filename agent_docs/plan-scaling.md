@@ -86,7 +86,7 @@ already declares 24h retention (`progress` 1h), swept amortized on the write pat
    something outside the harness judges the work (a vendor's rate limit, a deadline), overshoot
    becomes a visible failure rather than backpressure, so the bound belongs at that resource;
    where only we pay, queueing is the only cost and the number should be generous.**
-   Guards: `conformance/loop.test.ts` (K slots fill from one burst; the default still serializes;
+   Guards: `test/loop.test.ts` (K slots fill from one burst; the default still serializes;
    shutdown drains in-flight claims before retiring interests), each proven red.
 2. **K replicas per tier worker.** Now largely redundant for WAITING workers, which (1) covers in
    one process: replicas buy true parallelism, which matters for CPU-bound work (exec), not for a

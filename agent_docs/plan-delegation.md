@@ -6,7 +6,7 @@ rejected alternatives. Read that first; this file is the sequence, the seams and
 **Status: BUILT (2026-08-12), all phases.** `Space.mintDelegatedRun` +
 `POST /v0/agent-runs/delegated` (`src/core/space.ts`, `src/server/handlers/agents.ts`), the
 `access` seam every authorization read goes through, `delegable:<agent>` grants, `radia runs
---acting-for`, and the chat cutover. Guards: `conformance/delegation.test.ts`, each proved red by
+--acting-for`, and the chat cutover. Guards: `test/delegation.test.ts`, each proved red by
 a plant. What each phase decided is kept below; where the build changed the plan, the entry says
 so.
 
@@ -145,7 +145,7 @@ folds. The first version of that test did exactly that and stayed green against 
 
 ### Verify
 
-`deno task quick` (openapi round-trip), then a new `conformance/delegation.test.ts`:
+`deno task test:quick` (openapi round-trip), then a new `test/delegation.test.ts`:
 the two phase-0 plants; the intersection is a strict subset of the worker's authority on every
 kind; a caller's pattern actually binds the delegated run's reads; a kind the caller lacks is
 refused; a kind the WORKER lacks is refused; the ops plane is refused; `effectivePermissions` of
@@ -274,7 +274,7 @@ own token does not hold the delegable grants, so it still reaches no other sessi
 downstream failure is a legible `forbidden` rather than a stall. Both log a line naming the caller:
 a silent fallback makes a delegation that did not happen look like a grant bug.
 
-Verify (`deno task chat-test`, which needs no API key): a tool call for conversation A cannot read
+Verify (`deno task test:chat`, which needs no API key): a tool call for conversation A cannot read
 conversation B's artifact, asserted through the real fleet; `save_procedure` still works; `check`
 is still written by exec as itself; a session whose grants were revoked mid-turn loses the
 delegated run's reach on the next mint.
@@ -285,7 +285,7 @@ delegated run's reach on the next mint.
 `architecture-ops-tiers.md` (a delegated run holds NO ops powers, and why that refusal has to come
 first), `plan-milestones.md` (M1), `gotchas.md` (four entries: the subset property, read-then-write
 helpers needing two credentials, `agent_run` growth, and a harness acting as the operator),
-`conformance/README.md`, `extensions/README.md` (the `reader` split), `sdk/README.md` (the parity
+`test/README.md`, `extensions/README.md` (the `reader` split), `sdk/README.md` (the parity
 row), the chat's README and CLAUDE.md, plus `docs/authorization.html` for the reader-facing summary.
 
 ## The token is DERIVED, because a mint per call is permanent growth

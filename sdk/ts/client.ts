@@ -6,7 +6,7 @@
 // and the consequence was not stylistic: `scripts/build-release.sh` stages `sdk/` and `extensions/`
 // into the npm package and no `src/`, so the package's own entry point imported paths that are not
 // in it. `sdk/ts/wire.ts` now owns the contract vocabulary and `src/` re-exports from it, so the
-// dependency runs one way and the staged package resolves. `conformance/layering.test.ts` keeps it
+// dependency runs one way and the staged package resolves. `test/layering.test.ts` keeps it
 // that way.
 
 import type {

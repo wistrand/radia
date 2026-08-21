@@ -43,7 +43,7 @@ matches on paths the kind promised, which is what keeps a query analyzable.
 **The keyset query is built** (`after`/`dir` on `query`): a cursor over record id rather than an
 offset, so a page stays correct while the space is written to, and `dir: "desc"` makes "the newest
 N" expressible (see Pattern properties below for why a plain limit cannot). Indexed SQL must
-agree with the oracle; `conformance/suites/pushdown.ts` and `conformance/suites/keyset.ts` are
+agree with the oracle; `test/conformance/suites/pushdown.ts` and `test/conformance/suites/keyset.ts` are
 where that is enforced.
 
 ## Contents

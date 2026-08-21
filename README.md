@@ -63,14 +63,16 @@ are workload-specific and do not establish general superiority. See
 Requires [Deno](https://deno.com). No build step.
 
 ```bash
-deno task dev          # embedded space + web console at http://127.0.0.1:7788
-deno task demo         # a coordination demo (planner + workers + aggregator) against it
-deno task chat         # a CLI LLM chatbot (needs OPENROUTER_API_KEY): thinking, tools, images
-                       # and sandboxed code execution are all records; watch the Feed tab
-deno task stress       # fill a space with waves of activity to watch in the Space tab
-deno task conformance  # the port contract suites (storage adapters + the blob store)
-deno task extensions   # the extension contract (workspace manifests, tree digests, path safety)
-deno task bench        # throughput, latency percentiles, scaling curves; see bench/README.md
+deno task dev               # embedded space + web console at http://127.0.0.1:7788
+deno task demo              # a coordination demo (planner + workers + aggregator) against it
+deno task chat              # a CLI LLM chatbot (needs OPENROUTER_API_KEY): thinking, tools, images
+                            # and sandboxed code execution are all records; watch the Feed tab
+deno task stress            # fill a space with waves of activity to watch in the Space tab
+deno task test              # check + every test below
+deno task test:runtime      # everything under test/, incl. the port contract suites
+deno task test:conformance  # the port contract alone (storage adapters + the blob store)
+deno task test:extensions   # the extension contract (workspace manifests, tree digests, path safety)
+deno task bench             # throughput, latency percentiles, scaling curves; see bench/README.md
 ```
 
 **The `radia` command.** Examples below use `radia <verb>` for the CLI. Nothing installs it for you,

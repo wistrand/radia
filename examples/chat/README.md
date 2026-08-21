@@ -278,9 +278,9 @@ Non-TTY input bypasses the editor and reads one line at a time.
 ## Test without a model
 
 ```bash
-deno task chat-test
-deno task chat-test context
-deno task chat-test encrypt
+deno task test:chat
+deno task test:chat context
+deno task test:chat encrypt
 ```
 
 The suite covers context assembly, long threads, resume, capabilities, tool workers, session

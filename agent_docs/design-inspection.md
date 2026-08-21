@@ -197,7 +197,7 @@ beside complete ones.
 
 This is the emergent process documentation people keep asking for: the workflow diagram nobody wrote.
 Its acceptance test is specified in that doc, which is that it recovers the pipeline example's shape
-unprompted; `conformance/flows.test.ts` is that test, and it passes.
+unprompted; `test/flows.test.ts` is that test, and it passes.
 
 **A HUB RECORD defeats the flow unit, and the cut has to be structural.** First run against a real
 corpus (3905 records of accumulated chat history on Postgres) mined eleven conversation-rooted
@@ -307,7 +307,7 @@ These hold regardless of which features get built, and violating one is how an i
 becomes a defect.
 
 - **Every view is a read amplifier.** Route every new read through `Space.readAccess` and add a row
-  to the table-driven guard in `conformance/http.test.ts`. A verb with no row is a verb nobody
+  to the table-driven guard in `test/http.test.ts`. A verb with no row is a verb nobody
   checked. Per-handler scoping leaked through lineage, graph, `take` and the artifact reads before
   anyone noticed.
 - **A registry write must be able to revive.** Content-keyed writes need the `:after:<recordId>`

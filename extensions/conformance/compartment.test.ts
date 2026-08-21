@@ -1,6 +1,6 @@
 // The compartment AUDIT contract (agent_docs/architecture-workspace-agents.md phase 3).
 //
-//   deno task extensions
+//   deno task test:extensions
 //
 // Phase 1 proved the runtime enforces the boundary: a member cannot write outside, a principal
 // granted both sides can. This suite is the other half, and the half a rule needs to survive

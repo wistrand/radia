@@ -18,7 +18,7 @@ import { RadiaClient } from "../../sdk/ts/client.ts";
 import { exportWorkspaceGit } from "./git.ts";
 
 // A local flag reader, which `src/flags.ts` otherwise forbids. The exception is structural, not
-// laziness: an extension may not import `src/` (conformance/layering.test.ts enforces it), so the
+// laziness: an extension may not import `src/` (test/layering.test.ts enforces it), so the
 // shared parser is out of reach here. This file exists for the npm-package consumer who has the SDK
 // and the extensions but no `radia` binary; with the binary, `radia workspace-git` is the same
 // export through the shared parser.

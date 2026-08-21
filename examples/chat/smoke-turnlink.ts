@@ -155,7 +155,7 @@ try {
   // Seen for real: a dev space restarted under a running fleet and every worker looped on
   // `token_expired` forever, because `bootstrap` handed out run tokens and threw the durable half
   // away. A definition token has no expiry and can only mint, so the SDK exchanges it (see
-  // conformance/exchange.test.ts) and the worker survives its own credential dying.
+  // test/exchange.test.ts) and the worker survives its own credential dying.
   const runs = await admin.query({ kind: "agent_run", match: { agent: "agent:chat-inference" } }, 10, { dir: "desc" });
   const live = (runs[0]?.body as { run?: string } | undefined)?.run;
   check("the inference worker minted its own run from the durable half", !!live, String(live));

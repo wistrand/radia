@@ -332,7 +332,7 @@ economics until something removes the incentive.
 ## Serving a tree
 
 **BUILT** ([plan-workspaces.md](plan-workspaces.md) §11, verified 2026-08-04 by
-`conformance/tree.test.ts`). A multi-file website is the first case where the tree has to leave the
+`test/tree.test.ts`). A multi-file website is the first case where the tree has to leave the
 space as a set rather than a file at a time.
 
 The runtime does NOT learn what a workspace is: a download capability is

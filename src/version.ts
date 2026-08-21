@@ -3,7 +3,7 @@
 // ONE source of truth for a string that already had two homes: `deno.json`, which
 // `scripts/build-release.sh` stamps onto every published artifact, and a literal in the health
 // response. A binary that reports a different version from the package it shipped in is worse than
-// one that reports nothing, so `conformance/tasks.test.ts` asserts the two agree.
+// one that reports nothing, so `test/tasks.test.ts` asserts the two agree.
 //
 // A constant rather than a read of `deno.json`, because the compiled binary has no `deno.json`
 // beside it: `deno compile` embeds only what `--include` names, and a version that resolves at

@@ -3,7 +3,7 @@
 Status: ALL FOUR PHASES BUILT 2026-08-11, same day as written. The console now holds a credential
 the way every other client does. Sources: the auth block in `src/ui/index.html` (`adopt`,
 `exchangeDefinition`, `api`'s retry-once, `maybeRenew`, `signInOperator`), `radia login --console`
-in `src/surfaces/cli.ts`. Guards: `conformance/console.test.ts` (the durable half only ever
+in `src/surfaces/cli.ts`. Guards: `test/console.test.ts` (the durable half only ever
 reaches the mint endpoint, one exchange under concurrent 401s, the revoked-definition path,
 adopt's identify-then-verify ordering) plus the widened sign-in gate assertion. The exchange and
 renew endpoints needed NO server change, which was the argument all along.
@@ -49,7 +49,7 @@ Security accounting, stated because it is the objection everyone will raise:
 - Today's model transports the OPERATOR token by clipboard many times a day. Frequent manual
   handling of the worst credential is itself the exposure this fixes.
 - `localStorage` XSS exposure is real. The console already treats escaping as a tested invariant
-  (`conformance/console.test.ts`, the `esc` suite), and what XSS would steal is the mint-only half.
+  (`test/console.test.ts`, the `esc` suite), and what XSS would steal is the mint-only half.
 
 Guards: exchange-once under concurrent 401s (the SDK's rule), the revoked-definition path, and a
 test that the stored half never appears in a request except `POST /v0/agent-runs`.

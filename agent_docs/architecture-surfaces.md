@@ -65,7 +65,7 @@ Two deliberate exceptions, both documented at their call sites:
 
 | Exception | File | Why it stays |
 |-----------|------|--------------|
-| `Deno.test` | `conformance/harness.ts` | A test-runner binding, not a runtime operation. A port swaps the harness, not the suites. |
+| `Deno.test` | `test/conformance/harness.ts` | A test-runner binding, not a runtime operation. A port swaps the harness, not the suites. |
 | `Deno.connect` patch | `src/storage/postgres.ts` | Patches the *driver's* socket layer for `TCP_NODELAY`; only meaningful against deno-postgres, so it is adapter-local by nature. |
 
 `examples/` is a third case, and not an exception so much as a different contract: examples
@@ -136,7 +136,7 @@ coordination; mint a run first"), so it is safe on disk, and it mints a run when
 lapses. Without it a session lasted 15 minutes, stretched to 12 hours by renewing, and then the only
 remedy was to run the command again, which nothing but a person at a keyboard can do.
 `radia revoke <principal>` is the off switch, and the only one. See the exchange in
-`sdk/ts/client.ts` and `conformance/exchange.test.ts`.
+`sdk/ts/client.ts` and `test/exchange.test.ts`.
 
 It exists because identity scope is worthless without distinct identities. An app that pins a
 session's grants to `{owner: <principal>}` separates two people only if they ARE two principals;
@@ -169,7 +169,7 @@ assuming:
   a blanked stats panel is indistinguishable from a healthy idle space.
 
 The minted token lives in a variable, not in an `onclick` attribute, so no credential is written
-into the DOM as executable markup (`conformance/console.test.ts`).
+into the DOM as executable markup (`test/console.test.ts`).
 
 ## Where a surface lives, and why it is a directory
 
@@ -185,7 +185,7 @@ runtime must not know about it, and a client may compose it freely. Stating the 
 makes the verb obviously fine where the same code in `src/cli.ts` would have looked like a tier
 inversion.
 
-`conformance/layering.test.ts` enforces all of it: the runtime imports neither a surface nor an
+`test/layering.test.ts` enforces all of it: the runtime imports neither a surface nor an
 extension, a surface takes no runtime value, an extension never imports `src/`, and nothing outside
 `src/platform.ts` reaches for `Deno.*` (one documented exception, the Postgres socket patch).
 

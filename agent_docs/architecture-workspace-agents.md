@@ -3,7 +3,7 @@
 > Status: BUILT (2026-08-06), all six phases. Every line of it is `extensions/` tier and a CLIENT:
 > containment needed no runtime change. Source: `extensions/ts/promotion.ts`, `host.ts`,
 > `broker.ts`, `compartment.ts`; contracts in `extensions/conformance/` plus
-> `conformance/suites/compartment.ts`. Read [design-auth.md](design-auth.md) (grants, pattern
+> `test/conformance/suites/compartment.ts`. Read [design-auth.md](design-auth.md) (grants, pattern
 > scoping in both directions), [design-execution.md](design-execution.md),
 > [design-workspaces.md](design-workspaces.md) and [plan-workspaces.md](plan-workspaces.md)
 > first: this composes them and adds almost nothing.
@@ -275,8 +275,8 @@ could reach none of it.
 
 Verified end to end against a live space (18 checks: rotation, both locks agreeing and
 disagreeing, the brokered write attributed to the agent, retire, stdin tokens, malformed pins).
-NOT covered by an automated test, in common with every other CLI verb: nothing under
-`conformance/` drives `runCli`.
+NOT covered by an automated test, in common with almost every other CLI verb: the only test that
+drives `runCli` is the `query` output guard in `test/defaults.test.ts`.
 
 ## How it was built, phase by phase
 
@@ -286,7 +286,7 @@ kind (conventions, and the tests that prove them); 4 to 6 are the build. The num
 because eight source files cite it, and because the plants are the part worth re-reading.
 
 **1. Does the compartment hold, with nothing new? It does.**
-Shipped: `conformance/suites/compartment.ts`, five cases on both adapters, driving the HANDLERS
+Shipped: `test/conformance/suites/compartment.ts`, five cases on both adapters, driving the HANDLERS
 because enforcement is at the HTTP boundary and only there (a test calling `space.put` would pass
 while the boundary leaked). Answered: a kind nobody was granted is closed for query, take and put
 while the grants that principal DOES hold keep working; a member reads, claims and chains an

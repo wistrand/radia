@@ -13,7 +13,7 @@
 // Deno is safe until an un-replaced operation is actually called.
 //
 // What is deliberately NOT here, and why:
-//   - `Deno.test` in `conformance/harness.ts`: a test-runner binding, not a runtime operation.
+//   - `Deno.test` in `test/conformance/harness.ts`: a test-runner binding, not a runtime operation.
 //     A port swaps the harness, not the suites.
 //   - `Deno.connect` in `src/storage/postgres.ts`: it patches the *driver's* socket layer to
 //     set TCP_NODELAY, which only makes sense against deno-postgres. It is adapter-local by

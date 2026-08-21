@@ -243,7 +243,7 @@ with `idx_events_xid_seq` (`src/storage/pgbase.ts`, a `create index if not exist
 the migration): the window query **2005ms → 0.19ms**, `radia integrity` **14.4s → 0.32s (45×)**,
 and diagnostics 13.6s → 4.3s (its remainder is `stats` + the stale-envelope scan, both bounded and
 smaller). SQLite orders the same walk by its `seq` PK already, so this is the Postgres half only.
-Guard: the seal suites in `conformance/suites/integrity.ts` run on every adapter; the index is
+Guard: the seal suites in `test/conformance/suites/integrity.ts` run on every adapter; the index is
 exercised by the pg conformance run.
 
 **Two things still genuinely grow with size, both operator-facing, neither on the coordination
@@ -329,9 +329,9 @@ Two notes on what did NOT turn out to matter:
   and cursors are opaque and unordered by design; coalescing gets the same O(1) because one
   `notify()` resumes every stream in the same tick, so their reads overlap by construction.
 
-Guards: `conformance/notifier.test.ts` (notify(kind) wakes the kind + any-set, not foreign kinds;
+Guards: `test/notifier.test.ts` (notify(kind) wakes the kind + any-set, not foreign kinds;
 a re-registered same-kind waiter wakes again), both proven red against a kind-blind `notify`; the
-whole turn still delivers over watches (`deno task chat-test`).
+whole turn still delivers over watches (`deno task test:chat`).
 
 **Two things this run changed about the bench itself**, both discovered by wanting them mid-run.
 It prints each checkpoint's table AS IT COMPLETES, because a version that renders once at the end
@@ -385,7 +385,7 @@ PER LINK — so a doctor poll on a space with a seal backlog paid ~650ms of inse
 regardless of the integrity tail size (the tell: 614ms at tail 50, 698ms at tail 500). Batched
 into one multi-row INSERT ... RETURNING (`src/storage/pgbase.ts`), preserving the
 contiguous-prefix contract that concurrent sealers depend on (a win past a rival's position is
-discarded, not left as a hole — pinned by `conformance/suites/integrity.ts` "appendSeals lands
+discarded, not left as a hole — pinned by `test/conformance/suites/integrity.ts` "appendSeals lands
 a contiguous prefix"). **diagnostics on a 10k Postgres space: ~650ms → ~80ms, 8×.** SQLite is
 single-connection and its loop was already fast, so it kept it.
 

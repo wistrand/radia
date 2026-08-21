@@ -72,7 +72,7 @@ login` stores the durable half beside the run token, under its own key so it can
 operator credential `radia dev` provisioned. Revocation is unaffected and still immediate, because
 resolution is per request from records: what a revoke cannot reach is a run already minted, which is
 the 15-minute blast radius the short token was always buying. Pinned by
-`conformance/exchange.test.ts`.
+`test/exchange.test.ts`.
 
 **`POST /v0/agent-runs {reuse: true}` returns the run this credential already holds.** A run is a
 permanent record, so a credential exchanged by SHORT-LIVED processes appends one per invocation:
@@ -127,7 +127,7 @@ Never resolve the operator token
 as a definition token: that would let a leaked operator credential mint a run and become durable.
 `GET /v0/health` echoes the resolved `principal`. SDK: `new RadiaClient(url, {token})` /
 `.withToken()`, `client.createAgentDefinition/createRun/stopRun/grant`. Conformance:
-`conformance/suites/auth.ts`.
+`test/conformance/suites/auth.ts`.
 
 **Bind + auth hardening (`radia dev`):** the server binds **loopback (`127.0.0.1`) by default**, and
 `--host 0.0.0.0` deliberately exposes it. `--auth` defaults to **required** (`src/main.ts` →
@@ -556,7 +556,7 @@ stateDiagram-v2
 ## Self-scoped ops grants (built, except `leaseOwner`)
 
 > Status: BUILT (`Space.opsScope`/`authorScope`, `READ_ONLY_OPS` in `src/server/http.ts`,
-> `conformance/suites/selfscope.ts`), except `leaseOwner`, which stays refused at grant-write time
+> `test/conformance/suites/selfscope.ts`), except `leaseOwner`, which stays refused at grant-write time
 > exactly as specified below. The section predates the build and remains the rationale.
 
 The asymmetry this closes: **every reflexive capability is currently reserved to the outside.**

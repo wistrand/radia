@@ -13,7 +13,7 @@ import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
 // two drift, and the drift compiled: `doctor` grew a `spotCheckedFrom` the CLI's private copy did
 // not have, and only `deno task compile` noticed.
 import type { Diagnostics } from "../core/inspection.ts";
-// A SURFACE may import a convention; the runtime may not. See conformance/layering.test.ts.
+// A SURFACE may import a convention; the runtime may not. See test/layering.test.ts.
 import { exportWorkspaceGit } from "../../extensions/ts/git.ts";
 import { buildThreadSpans, postTraces, recordSpans, toResourceSpans, traceIdOf } from "../../extensions/ts/otlp.ts";
 import { basicPassword, gitHandler } from "../../extensions/ts/git-http.ts";
@@ -1344,7 +1344,7 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
     // The ONE verb that reaches outside the runtime, and the reason the surfaces layer exists as a
     // directory rather than an argument. A workspace is a CONVENTION (`extensions/`), not something
     // the runtime knows about, so it must not import it; the CLI is a `/v0` client and
-    // may. `conformance/layering.test.ts` holds that line in both directions.
+    // may. `test/layering.test.ts` holds that line in both directions.
     // `query workspace` cannot answer this: every VERSION is a record, so three rows for one tree
     // read as three trees. The projection is latest-wins-minus-retired, the same rule every registry
     // here uses, and it is shared with the chat's tool so the two never disagree.

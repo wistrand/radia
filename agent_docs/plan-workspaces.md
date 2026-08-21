@@ -14,7 +14,7 @@ token. Designed, nothing built, and it opens with the three enforcement gaps its
 > 2026-08-04: 11.0 decided (single-process capabilities), 11.1 and 11.2 shipped
 > (`Space.mintPathCapability`, `POST /v0/capabilities`, `GET /v0/w/<cap>/<path>` on the isolated
 > origin, media types), 11.3 is deliberately SNAPSHOT-only (the name-following half is the one that
-> could serve content authorized later), and 11.4's list is now `conformance/tree.test.ts`, whose
+> could serve content authorized later), and 11.4's list is now `test/tree.test.ts`, whose
 > three security cases were each validated against a planted regression. Workspaces, write-back, `check`, fork detection, `sandbox` records,
 > a second backend (bubblewrap), and selection by capability name (`run_javascript`, `run_python`).
 > Phase 7 answered the selection question with neither of the two options it was written to choose
@@ -959,7 +959,7 @@ capability can serve content authorized LATER**, possibly written by someone els
 authorization was decided at mint. That is the one way this feature could hand out something nobody
 approved.
 
-#### 11.4 Verification — **DONE** (`conformance/tree.test.ts`)
+#### 11.4 Verification — **DONE** (`test/tree.test.ts`)
 
 Seven cases, one per line below, and the three security properties (traversal, the mint-time read
 check, the isolated origin) were each validated by planting the regression they exist to catch: a
@@ -1005,7 +1005,7 @@ been paid and the other is smaller than it looked.
 **The credential cost is gone.** Git persists a static secret and cannot renew, while every
 credential here died in 15 minutes; a clone whose `git pull` broke before lunch was worse than no
 server. A definition token is durable, mint-only and revocable, `radia login` stores one, and the
-SDK exchanges it (`conformance/exchange.test.ts`). What was the blocking phase is now a constructor
+SDK exchanges it (`test/exchange.test.ts`). What was the blocking phase is now a constructor
 argument.
 
 **The protocol cost was measured, not estimated.** `writeBareRepo` already emits `HEAD`,

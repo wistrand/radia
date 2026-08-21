@@ -116,7 +116,7 @@ The tree is in [CLAUDE.md](../CLAUDE.md).
 
 The standing rules (the conformance suite is the port contract, it runs against every
 implementation, and a behavior is not done until it is green on all of them) belong to
-[conformance/README.md](../conformance/README.md) and are stated there.
+[test/README.md](../test/README.md) and are stated there.
 
 What was M0-specific:
 
@@ -186,10 +186,10 @@ They are a history, not a current count. Only the two Status lines above track t
 - [x] `deno.json` with tasks: `dev`, `check`, `conformance`, `compile`. No build step for `dev`. Import map for std/ulid, std/assert, @db/sqlite, pglite.
 - [x] `StorageAdapter` interface in `src/storage/adapter.ts` (the port every backend implements): domain types, `CompiledMatch` neutral form, `now()`/`put`/`readOne` signatures, `notImplemented` marker for later-phase methods.
 - [x] OpenAPI skeleton `openapi/radia.yaml` covering the operations' shapes, with per-element `x-stability`, reserved operators, `/v0` server prefix (see freeze policy above).
-- [x] Conformance harness (`conformance/harness.ts`) runs each suite against a list of adapters; **both PGlite and SQLite wired in** (`conformance/adapters.ts`); Phase 0 smoke suite exercises `now()`.
+- [x] Conformance harness (`test/conformance/harness.ts`) runs each suite against a list of adapters; **both PGlite and SQLite wired in** (`test/conformance/adapters.ts`); Phase 0 smoke suite exercises `now()`.
 - [x] `radia dev` (`src/main.ts` + `src/server/http.ts`) boots `Deno.serve` and answers `GET /v0/health`; `--storage pglite|sqlite` selects the backend.
 
-**Verify:** PASSED. `deno task check` clean; `deno task conformance` green on both
+**Verify:** PASSED. `deno task check` clean; `deno task test:runtime` green on both
 adapters (`[pglite]` and `[sqlite]` smoke tests pass); `deno task dev --storage
 pglite|sqlite` serves `/v0/health` with the DB clock, and unknown routes return an RFC
 9457 404.
@@ -202,7 +202,7 @@ pglite|sqlite` serves `/v0/health` with the DB clock, and unknown routes return 
 - [x] Server-assigned `runtime_meta` in `src/core/record.ts` `buildRecord`; `PutRequest` carries only client-submittable fields and the put handler picks only those, so authoritative fields can never come from the client.
 - [x] Parent-must-exist checked in each adapter's put transaction; self-parenting rejected.
 
-**Verify:** PASSED. `deno task conformance` green on both adapters at 16 tests: put→id,
+**Verify:** PASSED. `deno task test:runtime` green on both adapters at 16 tests: put→id,
 read_one round-trip, `body_sha256` correct, immutability (distinct ids, first untouched),
 metadata split (server `createdBy`/`schemaVersion`, client claims preserved but not
 promoted), boundary enforcement (injected `createdBy:"attacker"` ignored),
@@ -216,9 +216,9 @@ read-one match/miss(null), 400 `problem+json` on bad body. See
 - [x] Full operator set in the oracle (`src/core/matching.ts`): `$eq` (implicit), `$gt/$gte/$lt/$lte`, `$in`, `$exists`, `$any/$each`, `$and/$or` (depth ≤ 3). Forbidden (`$regex/$where/$expr`) and deferred (`$ne/$nin/$not/$prefix`) operators rejected at compile.
 - [x] Divergence semantics: missing ≠ null, no type coercion (cross-type = false), explicit array quantifiers (scalar predicates never distribute).
 - [x] Pattern validation against the kind: predicate paths ⊆ indexed paths, `order_by` ⊆ sortable paths; `unknown_kind`/`undeclared_path`/`unsortable_path`. `order_by` + deterministic record-id tie-break.
-- [x] **Predicate pushdown BUILT** (`src/storage/pushdown.ts`), after `deno task bench` turned the deferred cost into a number. The oracle still *defines* correctness: SQL is a sound pre-filter, `matchesRecord`/`firstByOrder` decide, and an inexpressible node falls through rather than guessing. A filter that is *exact* also carries the caller's `LIMIT` into SQL. That is the change that made `read_one` flat (102ms → 29µs at 40k on sqlite, 513ms → 732µs on Postgres) rather than merely faster. Physical per-kind expression indexes are unnecessary: one GIN index over a generated `body_jsonb` column serves every path, so a new `indexedPath` needs no DDL. Soundness is pinned by `conformance/suites/pushdown.ts`.
+- [x] **Predicate pushdown BUILT** (`src/storage/pushdown.ts`), after `deno task bench` turned the deferred cost into a number. The oracle still *defines* correctness: SQL is a sound pre-filter, `matchesRecord`/`firstByOrder` decide, and an inexpressible node falls through rather than guessing. A filter that is *exact* also carries the caller's `LIMIT` into SQL. That is the change that made `read_one` flat (102ms → 29µs at 40k on sqlite, 513ms → 732µs on Postgres) rather than merely faster. Physical per-kind expression indexes are unnecessary: one GIN index over a generated `body_jsonb` column serves every path, so a new `indexedPath` needs no DDL. Soundness is pinned by `test/conformance/suites/pushdown.ts`.
 
-**Verify:** PASSED. `deno task conformance` green on both adapters at 36 tests: registration
+**Verify:** PASSED. `deno task test:runtime` green on both adapters at 36 tests: registration
 validation, undeclared-path/unknown-kind/unsortable-path rejection, forbidden/deferred
 operator rejection, ranges + `$in`, missing ≠ null via `$exists`, no coercion, `$any/$each`
 non-distribution, `$or/$and`, and `order_by` with id tie-break. See
@@ -234,7 +234,7 @@ non-distribution, `$or/$and`, and `order_by` with id tie-break. See
 - [ ] Long-poll blocking (`block`/`timeout`) deferred to M1; M0 `take` returns immediately (null when nothing claimable).
 - [x] At-least-once + overlap-after-expiry documented in `src/storage/adapter.ts` and the design docs.
 
-**Verify:** PASSED. `deno task conformance` green on both adapters at 52 tests: one valid
+**Verify:** PASSED. `deno task test:runtime` green on both adapters at 52 tests: one valid
 lease at a time, fenced `renew`/`ack` → `lease_lost` (emitting nothing), `nack` +1 /
 `release` +0, lazy expiry +1, `dead_letter` after `max_attempts`, renew hard-cap fencing,
 `take(record_id)` selector. Live `radia dev` confirmed via curl: take → lease, second
@@ -251,7 +251,7 @@ record carries `parentIds:[task]`. See [design-api.md](design-api.md).
 - [x] `withIdem` wrapper runs **inside** each op's transaction and checks the stored response **before** the effect (which includes lease validation); the response is written in the same transaction as the effect. Single-connection embedded serializes same-key requests.
 - [x] Same hash → replay stored response; different hash → `idempotency_conflict` (409 at the wire). Applied to `put`, `ack`, `nack`, `release`, `renew` (`take` is exempt, being a claim). Wire: `Idempotency-Key` header; request hash computed server-side in `src/core/space.ts` (`idem()`).
 
-**Verify:** PASSED. `deno task conformance` green on both adapters at 60 tests: put replay →
+**Verify:** PASSED. `deno task test:runtime` green on both adapters at 60 tests: put replay →
 same id + inserted once, put conflict → `idempotency_conflict`, **ack replay after a lost
 response → stored `ok` + same `resultId`, not `lease_lost`** (with a keyless retry fenced),
 ack conflict → `idempotency_conflict`. Live `radia dev` confirmed via curl (header replay,
@@ -260,11 +260,11 @@ ack conflict → `idempotency_conflict`. Live `radia dev` confirmed via curl (he
 ### Phase 5: event log and dead-letter (DONE)
 
 - [x] Append-only `events` table (monotonic `seq`, id, ts, run_id, operation, record_id, kind, state, detail) written in the **same transaction** as each mutation via `appendEvent`, inside each op's tx. Run identity on every event (creator principal for `put`, lease owner for settlements; real run tokens now built, M1).
-- [x] One event per **mutation**: `put`, `take`, `ack` (with `resultId` in detail), `nack`, `release`, and `expire`→`dead_letter`. No-op outcomes (`lease_lost`, idempotency replay) append nothing. `renew` is intentionally not evented (heartbeat noise; it changes no lifecycle state). Usually one op is one mutation; `ack` **with a result** is the exception. It consumes the parent *and* inserts a record, so it appends two: the result's own `put` (its own kind, `state: available`, `detail.ackOf` = parent) then the parent's `ack`. Without that `put` the successor would be unwatchable: `matchesEvent` needs an `available` event carrying the record's own kind, and the `ack` event is `consumed` and carries the parent's. Regression cases in `conformance/suites/{events,watches}.ts`.
+- [x] One event per **mutation**: `put`, `take`, `ack` (with `resultId` in detail), `nack`, `release`, and `expire`→`dead_letter`. No-op outcomes (`lease_lost`, idempotency replay) append nothing. `renew` is intentionally not evented (heartbeat noise; it changes no lifecycle state). Usually one op is one mutation; `ack` **with a result** is the exception. It consumes the parent *and* inserts a record, so it appends two: the result's own `put` (its own kind, `state: available`, `detail.ackOf` = parent) then the parent's `ack`. Without that `put` the successor would be unwatchable: `matchesEvent` needs an `available` event carrying the record's own kind, and the `ack` event is `consumed` and carries the parent's. Regression cases in `test/conformance/suites/{events,watches}.ts`.
 - [x] Dead-letter transition preserves `kind` (Phase 3); event records resulting state.
 - [x] Lineage BFS over `parent_ids` (`src/core/space.ts` `getLineage`, cycle-guarded, node-capped). Endpoints: `GET /v0/ops/events?after=&limit=`, `GET /v0/ops/records/{id}/lineage`.
 
-**Verify:** PASSED. `deno task conformance` green on both adapters at 68 tests: successful
+**Verify:** PASSED. `deno task test:runtime` green on both adapters at 68 tests: successful
 ops append one event each in seq order with run identity; `lease_lost` and idempotency
 replay append nothing; nack backoff vs. dead-letter evented with resulting state; lineage
 returns ancestry with correct depths. Live `radia dev` confirmed via curl (event stream
@@ -272,10 +272,10 @@ put/take/ack, lineage child→parent). See [design-observability.md](design-obse
 
 ### Phase 6: basic fault suite (DONE)
 
-- [x] Crashes simulated by **composition**, not test hooks in production code: a crashed worker is one that took a lease and never acked, with its lease forced expired via a negative `leaseSeconds` (deterministic, no sleeps); a lost response is a discarded-and-retried ack. `conformance/suites/faults.ts`.
+- [x] Crashes simulated by **composition**, not test hooks in production code: a crashed worker is one that took a lease and never acked, with its lease forced expired via a negative `leaseSeconds` (deterministic, no sleeps); a lost response is a discarded-and-retried ack. `test/conformance/suites/faults.ts`.
 - [x] Cases (all on both adapters): crash before effect (reclaimed, runs once, no loss), crash after effect before ack (at-least-once: effect repeats, space stays consistent), crash after commit before response (idempotent ack replay, one result), duplicate ack (keyed replay safe, bare duplicate fenced), stale ack after reassignment (old lease fenced, new one settles).
 
-**Verify:** PASSED. `deno task conformance` green on both adapters at 78 tests. Duplicate and
+**Verify:** PASSED. `deno task test:runtime` green on both adapters at 78 tests. Duplicate and
 stale acks resolve via idempotency/fencing, not corruption; the at-least-once cost is made
 explicit rather than hidden. Fuller matrix (partition, DB failover, cursor storm) needs
 real infra and is deferred past M0; see [plan-validation.md](plan-validation.md).

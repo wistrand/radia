@@ -171,7 +171,7 @@ DESIGN-FIRST means the open question below has to be answered before code.
 | 6 | A scoped ops READ tier | **ANALYSED 2026-08-16, recommendation: do not build.** Both apps already inspect their own work through the coordination plane; what they cannot reuse is the console. See below | — | a console that degrades for a scoped principal, if anything |
 
 **Actions 1 and 2 are built** (`sdk/ts/client.ts`, `sdk/ts/registry.ts`, `sdk/py/radia.py`;
-guards in `conformance/registry.test.ts` and `conformance/http.test.ts`, both proved red). Two
+guards in `test/registry.test.ts` and `test/http.test.ts`, both proved red). Two
 things the build settled that the proposal had not:
 
 - `contentKey` HASHES rather than returning a canonical string, because `idem_key` is part of a
@@ -185,7 +185,7 @@ things the build settled that the proposal had not:
   `0.00001`, so any body carrying a small float keyed differently. Fixed 2026-08-16: `_js_number`
   in `sdk/py/radia.py` renders per ECMA-262 (verified against `JSON.stringify` over 30k doubles),
   ints beyond 2**53 are refused since JavaScript rounds them, and the discipline is now a guard:
-  `conformance/py-parity.test.ts` feeds one corpus of raw JSON texts through both implementations
+  `test/py-parity.test.ts` feeds one corpus of raw JSON texts through both implementations
   wherever python3 exists, including CI.
 
 ### Action 6, analysed: the open question already has an answer, and it is sharper than the question

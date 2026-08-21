@@ -2,8 +2,8 @@
 
 > Status: **every package is closed** — A–G and J–O by 2026-08-03, **H, I, N, P, Q, R and S** on
 > 2026-08-04. What remains is the deferred low-severity batch below. The two pooled-Postgres races
-> package S fixed without a failing test now have one each (`conformance/concurrency.test.ts`, both
-> validated against the pre-fix adapter planted back in). The guards pass: `deno task conformance`
+> package S fixed without a failing test now have one each (`test/concurrency.test.ts`, both
+> validated against the pre-fix adapter planted back in). The guards pass: `deno task test:runtime`
 > is 518 passed, 0 failed, and 734 with a live Postgres (counts move as suites are added; the
 > claim to check is 0 failed). Each done package is a status line here; its
 > durable lesson (the bug class, why it happened, the rule that prevents it) moved to
@@ -61,7 +61,7 @@ The fix is one seam: `Space.idem` (`src/core/space.ts`) scopes `IdempotencyKey.p
 agent behind a `run:*` caller, via the same `agentForRun` resolution `created_by` and flow mining
 already rely on. The agent behind a run is immutable, and the resolver falls back to reading the
 space, so the scope survives a runtime restart; an unresolvable run scopes to itself (no dedupe,
-never a shared scope). Contract case: `conformance/exchange.test.ts` "an idempotency key survives a
+never a shared scope). Contract case: `test/exchange.test.ts` "an idempotency key survives a
 re-mint", covering both directions (a second run of the same agent replays; a different agent with
 the identical key writes its own record), proved to FAIL against the planted old behavior. This
 also makes CLAUDE.md's registry claim ("restarting a fleet does not append a duplicate per entry")
@@ -220,7 +220,7 @@ longer pushed at all. `PgSqlAdapter.prepareKind` now calls `pushablePath` instea
 copy of the alphabet rule, which is what let the statistics expression and the pushed predicate
 drift apart in the first place.
 
-Guard in `conformance/suites/pushdown.ts`: a differential case running each pattern through the
+Guard in `test/conformance/suites/pushdown.ts`: a differential case running each pattern through the
 adapter AND through the bare oracle over one fixture corpus (array indexes, digit keys, leading
 zeros, prototype-shaped names, and real keys that happen to use those names), asserting identical
 result sets plus an explicit expected set so both halves cannot break together; and a second case
@@ -254,7 +254,7 @@ and force the object into memory, which is what streaming exists to avoid, and i
 against same-length corruption that no longer has a path in from a crash. The overstated
 "self-verifying" claim in the module header is corrected rather than implemented.
 
-Guard: `conformance/suites/blobs.ts`, "a truncated payload heals on re-put", over both the sealed
+Guard: `test/conformance/suites/blobs.ts`, "a truncated payload heals on re-put", over both the sealed
 and plaintext regimes. Verified to fail against the old existence-only dedup.
 
 ## Package H: `lease_lost` is unobservable in clients (P2) — CLOSED 2026-08-04
@@ -286,11 +286,11 @@ second forever (only 403 was treated as permanent), and `agentLoop` awaits its w
 out, so the loop could never finish. They now run on the credential's signal rather than the
 caller's.
 
-Guard: `conformance/loop.test.ts`, two cases (a reclaimed lease, and a quarantined run) asserting
+Guard: `test/loop.test.ts`, two cases (a reclaimed lease, and a quarantined run) asserting
 the handler observes cancellation rather than waiting out a 20s failsafe, that nothing is settled
 on a lease that was lost, and that the loop stops claiming once its credential is dead. Verified to
 fail against the old discard-the-result heartbeat: both cases sat on the failsafe. This is the one
-test in `conformance/` that binds a real port, because the SDK client and its SSE watchers are what
+test in `test/` that binds a real port, because the SDK client and its SSE watchers are what
 is under test, and a stubbed `fetch` would only test a mock's idea of streaming and cancellation.
 
 ## Package I: SDK drift and the chat example (P2) — CLOSED 2026-08-04
@@ -320,7 +320,7 @@ gaps, and all five are closed:
   smoke all call — three copies of it existed, and the smoke's own copy meant that suite could only
   ever prove its own loop right.
 
-Guards: two cases in `conformance/loop.test.ts` (a watch under `--auth required` delivers a wakeup;
+Guards: two cases in `test/loop.test.ts` (a watch under `--auth required` delivers a wakeup;
 a 404'd watch is re-created under a NEW id rather than retried), both verified to fail against the
 old client — the first with the 401 problem document in the assertion message. Three cases in
 `examples/chat/smoke-fleet.ts` pin the ladder against a retired tier, and that file now drives the
@@ -442,7 +442,7 @@ Fixed:
   401/403 on reconnect both raise. Previously the TS client's reconnect loop turned a revocation
   into a silent 3/s spin, which reads exactly like an idle space.
 
-Guards: `conformance/suites/watches.ts` (revoked grant ends a live watch; a narrowed grant narrows
+Guards: `test/conformance/suites/watches.ts` (revoked grant ends a live watch; a narrowed grant narrows
 it and does not ratchet).
 
 Left open deliberately: a watch lives in a per-process `Map`, so multi-instance revocation latency
@@ -473,7 +473,7 @@ never adopted into the writing process's registry). `loadKinds` validates instea
 declaration written before this rule cannot reinstate itself at startup. The write-path check alone
 would have left the damage in place across every reboot.
 
-Guards in `conformance/suites/kinds.ts`: a `put: kind_def` grant that authorizes but cannot shrink
+Guards in `test/conformance/suites/kinds.ts`: a `put: kind_def` grant that authorizes but cannot shrink
 `grant`; the same body refused through `ack`, with a valid one adopted and surviving a restart; and
 a shrunken declaration planted directly through the adapter that startup declines to adopt.
 
@@ -498,7 +498,7 @@ lands in the same documents every reader parses, and the day `client_meta` becom
 would already hold data the column cannot take. The comment says so rather than implying a storage
 failure that does not exist today.
 
-Guard: `conformance/suites/records.ts`, "clientMeta is guarded exactly like a body, and counts
+Guard: `test/conformance/suites/records.ts`, "clientMeta is guarded exactly like a body, and counts
 against the same budget" — an oversized `clientMeta`, a body and a `clientMeta` that each fit but
 together do not, a NUL in either, and the literal six-character text that SPELLS the escape still
 storable. Verified to fail against the body-only checks.
@@ -541,7 +541,7 @@ not done, and the residual race is one millisecond wide instead of one clock-ske
 
 Guards: `suites/watches.ts` runs two Space objects over one database and asserts the watch wakes
 from the other's write rather than its keepalive (verified to fail at 19.2s with the poll removed);
-`conformance/notifier.test.ts` pins the waiter/poll state machine (no polling while idle, no
+`test/notifier.test.ts` pins the waiter/poll state machine (no polling while idle, no
 wakeup without a change, a failing poll never reaching the stream, waiters not accumulating); and
 `registry.test.ts` pins the skewed-clock revocation, in both arrival orders and in the revive
 direction, plus the same-millisecond tie still following the ids.
@@ -550,7 +550,7 @@ direction, plus the same-millisecond tie still following the ids.
 
 Both halves closed, and the first one immediately earned its place.
 
-**`openapi/radia.yaml` is verified against the implementation** by `conformance/openapi.test.ts`,
+**`openapi/radia.yaml` is verified against the implementation** by `test/openapi.test.ts`,
 in both directions, because they fail differently: a documented path that is not routed is a
 promise to a client that 404s, and a routed path that is not documented is surface nobody agreed to
 freeze. The estimate in this entry ("a route-table-vs-spec-paths test is roughly thirty lines") was
@@ -598,7 +598,7 @@ command the job runs: **634 passed, 0 failed** (458 embedded + 176 postgres).
 
 Each of these was BUILT and could not be invoked, which is a distinct failure from a bug: the code
 is correct and the path to it is missing, so tests of the unit pass while nothing exercises the
-design. Every guard drives the OUTERMOST surface for that reason (`conformance/http.test.ts`), and
+design. Every guard drives the OUTERMOST surface for that reason (`test/http.test.ts`), and
 all three were verified to fail against the old behaviour.
 
 - **Per-label declassify, reachable.** `Space.declassify` has always taken `{labels}` and the SPEC
@@ -677,7 +677,7 @@ adapters still agree: the full suite is green embedded and against a live Postgr
   backoff AND writes a stale epoch over a live fence. **The guard now names everything the read
   relied on**: state, `available_at <= now`, and the epoch the candidate was read at (null-safe, for
   a record never leased). Both adapters, because a claim rule they disagree about is one the
-  conformance suite cannot test. Guard: `conformance/concurrency.test.ts`, "a claim never lands
+  conformance suite cannot test. Guard: `test/concurrency.test.ts`, "a claim never lands
   inside another worker's nack backoff" (Postgres only; failed on every planted pre-fix run).
 - **Offset-based candidate paging could report a spurious empty.** An offset assumes the rows before
   the cursor stay put, and in a queue those are exactly the rows other claimers are removing: each
@@ -686,7 +686,7 @@ adapters still agree: the full suite is green embedded and against a live Postgr
   own key (`ClaimCursor` in `src/core/take.ts`, shared so the two cannot drift). The cursor is
   mixed-direction — priority descends, the other two ascend — so it is spelled out rather than
   written as a row comparison, and it must stay identical to `CLAIM_ORDER`. This also closes the
-  deferred-list entry that recorded the same defect. Guard: `conformance/concurrency.test.ts`, "a
+  deferred-list entry that recorded the same defect. Guard: `test/concurrency.test.ts`, "a
   claim never steps over a record in a shifting candidate window" (Postgres only; failed on six of
   seven planted pre-fix runs). The detector is ORDER, not an empty answer: a single claimer must be
   served matches in claim order, so a later one arriving first proves the scan skipped one, and that
@@ -787,7 +787,7 @@ indexedPaths and claimable), and `gc.ts` compaction honours it for any reserved 
 under a hostile key; `interest` is liveness-scoped so the harm is smaller. `oidc_identity`
 answered it the third way: a RUNTIME key (`RUNTIME_KEYS` in core/gc.ts) takes precedence over
 any declared contentKey, so the registry compacts safely AND the redeclaration is inert (guard:
-`conformance/oidc.test.ts` "compacts under the RUNTIME's key"). Decide whether `shred` gets the
+`test/oidc.test.ts` "compacts under the RUNTIME's key"). Decide whether `shred` gets the
 same treatment (it has no natural succession key, so NEVER_COMPACT membership may be right) or
 compaction stops honouring app-declared keys on reserved kinds altogether.
 

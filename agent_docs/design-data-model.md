@@ -251,7 +251,7 @@ and the erasable material is out of line exactly as the invariant requires. Buil
 
 **M1 status: built.** `src/storage/blobs.ts` (the `BlobStore` port + memory/filesystem impls),
 `src/core/kinds.ts` (`ARTIFACT`, `validateArtifactDef`), `Space.putArtifact`/`readArtifact`/
-`mintDownloadCapability`, `src/server/handlers/artifacts.ts`, `conformance/suites/blobs.ts`.
+`mintDownloadCapability`, `src/server/handlers/artifacts.ts`, `test/conformance/suites/blobs.ts`.
 
 Large payloads live in blob storage. Records carry **stable internal artifact IDs**,
 never temporary signed URLs (they would expire inside immutable records). Retrieval is

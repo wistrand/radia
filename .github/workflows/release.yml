@@ -2,7 +2,7 @@
 #
 # On a `v*` tag: build every target, gzip each one, write SHA256SUMS, and attach the lot to the
 # GitHub release. The installer resolves `releases/latest/download/radia-<target>.gz`, so the asset
-# NAMES here are a contract with that script; `conformance/docs.test.ts` checks the two agree.
+# NAMES here are a contract with that script; `test/docs.test.ts` checks the two agree.
 #
 # One job, no matrix: `deno compile --target` cross-compiles, so one runner produces all five.
 #

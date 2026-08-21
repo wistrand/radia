@@ -50,6 +50,6 @@ for f in "$PG_DIR"dist/fs/*.js; do cp "$f" "$OUT/vendor/pglite/fs/"; done
 echo "build-browser: staged pglite $(basename "$PG_DIR") ($(du -sh "$OUT/vendor/pglite" | cut -f1))"
 
 # 4. The smoke: boot the BUILT bundle under Deno (no browser) and run one wire round trip.
-deno test --allow-read --allow-write --allow-env --allow-net conformance/browser-bundle.test.ts
+deno test --allow-read --allow-write --allow-env --allow-net test/browser-bundle.test.ts
 
 echo "build-browser: done -> $OUT (open $OUT/index.html via any static server)"

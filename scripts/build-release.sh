@@ -86,7 +86,7 @@ done
 #
 # The exports map names EVERY module a consumer needs, not only the client. It listed `.` alone, so
 # `agentLoop` (the worker loop, the thing every example is built on) was unreachable from the
-# published package while the docs and the SDK README both advertised it. `conformance/docs.test.ts`
+# published package while the docs and the SDK README both advertised it. `test/docs.test.ts`
 # resolves the site's import lines against this map.
 mkdir -p "$OUT/npm/radia/sdk" "$OUT/npm/radia/extensions"
 # Named in `files` and in `license-files` below, so it has to be here rather than assumed.

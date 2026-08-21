@@ -1,6 +1,6 @@
 // The capability registry: tools advertised as records (`extensions/ts/capability.ts`).
 //
-//   deno task extensions
+//   deno task test:extensions
 //
 // A registry projection, which is why it gets a contract of its own: a bounded read mistaken for a
 // population is the most repeated bug in this codebase, and this one decides what tools a model is

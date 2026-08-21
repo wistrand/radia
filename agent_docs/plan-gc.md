@@ -214,8 +214,8 @@ what is absent from it and untouched past the grace window. Three decisions carr
 Erasure stays the only DELIBERATE destruction and neither mechanism masks the other: a
 re-written shredded digest with a surviving record is KEPT (deleting it would silently
 re-assert an erasure the report says was undone), and a shredded digest simply never appears in
-the store's listing. Guards: `conformance/suites/gc.ts` ("sweeps an expired artifact",
-"never deletes a re-written shredded digest") and `conformance/suites/blobs.ts` (the port
+the store's listing. Guards: `test/conformance/suites/gc.ts` ("sweeps an expired artifact",
+"never deletes a re-written shredded digest") and `test/conformance/suites/blobs.ts` (the port
 contract across all four stores, the grace/touch pair on real mtimes), each proven red by a
 plant. KEK rotation no longer collides with the sweep, and the two passes divide the work: a live digest's keep set covers every key's name, a payload sealed under a key this space does not hold is kept and counted (`BlobGcResult.foreign`) rather than deleted, and `Space.rewrapBlobs` re-seals the referenced ones under the current key. The rewrap is DIGEST-driven and therefore blind to what it cannot name, which is exactly what the sweep's keep-and-count half covers.
 
@@ -304,13 +304,13 @@ Unaffected, verified: erasure detection reads `shred` RECORDS plus blob stat, ne
 the oldest seal + whether its event survives, covering the anchor state AND a sweep in flight),
 implemented in `sqlite.ts`/`pgbase.ts`, the sentinel-exempt 410 in `watches.ts`, the
 `logBeginsAfter`/`sweptBefore` annotation in `ops.ts`; planted truncations pinned in
-`conformance/suites/gc.ts` and the boundary in `http.test.ts`. (2) Anchored verify + the
+`test/conformance/suites/gc.ts` and the boundary in `http.test.ts`. (2) Anchored verify + the
 sealed horizon statement — BUILT (2026-08-06): `IntegrityReport.truncated` + the
 `unattested_truncation` verdict (`space.ts verifyIntegrity`, judged AFTER the walk because the
 statement sits above the anchor), the statement format as one writer/reader pair in `seal.ts`
 (`horizonStatement`/`attestedAnchorIdx`), and `Space.attestEventTruncation` (append via the
 port's `appendGcEvent`, seal, confirm coverage) which the sweep MUST call and see `attested:
-true` before deleting. Plants in `conformance/suites/integrity.ts`: mid-chain gap past an anchor
+true` before deleting. Plants in `test/conformance/suites/integrity.ts`: mid-chain gap past an anchor
 still fails, a deleted statement un-attests, deeper-than-attested fails, a forged anchor
 signature fails, unsigned passes attested with its standing caveat. (3) The sweep itself — BUILT
 (2026-08-06): `Space.gcEvents` (rides the `gc` verb when `eventRetentionSeconds` is set; never
@@ -321,10 +321,10 @@ seal within a budget, pick the anchor without splitting a cursor group (an xid g
 the guard steps DOWN and sweeps less), attest and require `attested: true`, then delete; a
 statement that cannot seal aborts the sweep with `more: true` and deletes nothing. Dry runs
 report the seal-first debt instead of paying it, which is doctor's "must seal first" row
-(`eventsSweepable`). Plants in `conformance/suites/gc.ts`: off-by-default, seal-first, the
+(`eventsSweepable`). Plants in `test/conformance/suites/gc.ts`: off-by-default, seal-first, the
 unsealed-statement refusal (501 events against `SEAL_BATCH`), bounded batches with every
 intermediate state verifying, and the cursor-group guard (a tampered-ts ack pair; the pg
-dialects step down, sqlite need not). The end-to-end check is `conformance/resume.test.ts`: a
+dialects step down, sqlite need not). The end-to-end check is `test/resume.test.ts`: a
 real `client.watch()` over a socket survives a sweep under its held cursor — one 410, sentinel
 recovery, wakeups resume; a server that 410'd the sentinel would hang the test rather than fail
 it.

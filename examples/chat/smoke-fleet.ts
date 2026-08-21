@@ -8,7 +8,7 @@
 // reaching the newest entry, and a worker that goes away must leave rotation or the router
 // dispatches into silence.
 //
-// This is a script, not a `*.test.ts`: `deno task conformance` is for PORT contracts, not examples.
+// This is a script, not a `*.test.ts`: `deno task test:runtime` is for PORT contracts, not examples.
 
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";

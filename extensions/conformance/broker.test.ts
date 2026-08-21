@@ -1,6 +1,6 @@
 // The broker's contract (agent_docs/architecture-workspace-agents.md phase 5).
 //
-//   deno task extensions
+//   deno task test:extensions
 //
 // NORMATIVE, like `treeDigestOf` and the git object encoding, and for the same reason: this is
 // the boundary between model-written code and an agent's authority, so another implementation

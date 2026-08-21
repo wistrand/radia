@@ -1,10 +1,10 @@
 # The published site's own guard, for commits that touch nothing else.
 #
 # `ci.yml` ignores `docs/**`, because three jobs, an apt-install and three containers is a poor
-# trade for a typo. What the site actually needs is `conformance/docs.test.ts` (its CLI verbs
+# trade for a typo. What the site actually needs is `test/docs.test.ts` (its CLI verbs
 # against `src/surfaces/cli.ts`, its imports against the npm exports map, links, anchors, sidebar
 # labels, external hosts, banned prose) plus `http.test.ts`, which pins the served favicon to
-# `docs/favicon.svg`. Both are in `deno task quick`, which runs in about a second.
+# `docs/favicon.svg`. Both are in `deno task test:quick`, which runs in about a second.
 #
 # This is also the only check standing between a docs commit and `pages.yml` publishing it, which
 # is why it exists rather than the filter alone.
@@ -32,4 +32,4 @@ jobs:
           deno-version: v2.x
           cache: true
       # The structural guards only: no PGlite boot, no sockets, no timers.
-      - run: deno task quick
+      - run: deno task test:quick

@@ -1,6 +1,6 @@
 // The Web Worker sandbox backend (agent_docs/plan-webworker-sandbox.md).
 //
-//   deno task extensions
+//   deno task test:extensions
 //
 // SPLIT THE BUBBLEWRAP WAY, and the split is the point. What is testable here is the LOGIC: the
 // frame protocol, the shim, the failure paths and the probe's verdicts, all against a real Deno

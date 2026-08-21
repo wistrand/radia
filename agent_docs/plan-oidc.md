@@ -4,9 +4,9 @@ Status: BUILT 2026-08-11 (server + console + CLI). Sources:
 `src/core/oidc.ts` (the verifier), `Space.mintOidcRun` in `src/core/space.ts`,
 `handleOidcSession` in `src/server/handlers/agents.ts`, the sign-in flow in `src/ui/index.html`
 (`oidcStart`/`oidcFinish` and the return leg in `start()`), `httpGetJson` in `src/platform.ts`
-(the runtime's one outbound-HTTP function). Guards: `conformance/oidc.test.ts` (10 suites, the
-in-repo issuer in `conformance/oidc-issuer.ts`), the OIDC harness tests in
-`conformance/console.test.ts`, the `oidc: null` posture pin in `conformance/defaults.test.ts`.
+(the runtime's one outbound-HTTP function). Guards: `test/oidc.test.ts` (10 suites, the
+in-repo issuer in `test/oidc-issuer.ts`), the OIDC harness tests in
+`test/console.test.ts`, the `oidc: null` posture pin in `test/defaults.test.ts`.
 
 The three decisions this implements are recorded in [design-auth.md](design-auth.md)
 ("OIDC: deferred, with the shape decided", now built): OIDC is a new way to MINT into the

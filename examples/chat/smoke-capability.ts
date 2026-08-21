@@ -12,7 +12,7 @@
 // liveness, so a clean shutdown retires and a crash cannot. That is the whole reason the chat's tool
 // timeout still names two possibilities instead of blaming the worker.
 //
-// This is a script, not a `*.test.ts`: `deno task conformance` is for PORT contracts, not examples.
+// This is a script, not a `*.test.ts`: `deno task test:runtime` is for PORT contracts, not examples.
 
 import { RadiaClient, readRegistry } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";

@@ -24,7 +24,7 @@ seam and web-standard types at the HTTP boundary.
 ## Verified feasibility
 
 - **The host surface is one file.** `src/platform.ts` (~25 small functions: files, env, serve,
-  signals, stdio) is the only place `src/` touches `Deno.*`; `conformance/layering.test.ts` has
+  signals, stdio) is the only place `src/` touches `Deno.*`; `test/layering.test.ts` has
   enforced it for months. The one grep hit elsewhere in the browser-relevant set is a comment.
 - **PGlite is browser-native.** `src/storage/pglite.ts` imports `@electric-sql/pglite` and
   `pgbase` only, no host APIs. PGlite ships an IndexedDB filesystem (`idb://`), so the space
@@ -32,7 +32,7 @@ seam and web-standard types at the HTTP boundary.
   browser semantics are the tested embedded mode, not a hope.
 - **The wire needs no socket.** `makeHandler(space, ui, authRequired)` is
   `(Request) => Promise<Response>`, pure web-standard, already driven socketless by
-  `conformance/http.test.ts`. A Service Worker intercepting `fetch` to a virtual origin serves
+  `test/http.test.ts`. A Service Worker intercepting `fetch` to a virtual origin serves
   the UNMODIFIED TS SDK and the UNMODIFIED console, SSE watches included (a SW can return a
   streaming Response; the SDK's poll fallback covers SW lifecycle quirks).
 - **All crypto is WebCrypto.** Chain sealing is HMAC-SHA256 via `crypto.subtle` (`seal.ts:52`),
@@ -120,16 +120,16 @@ open mode; the console's labeled operator button is the sign-in.
    docs guard's external-host allowlist is unchanged (the bundle and the vendor asset are
    local); the prose obeys plan-prose-tells.md.
 6. Conformance stance: semantics are already covered by the PGlite adapter suites; the browser
-   delta is the seam and the bundling. `conformance/browser-bundle.test.ts` runs `makeHandler`
+   delta is the seam and the bundling. `test/browser-bundle.test.ts` runs `makeHandler`
    requests through the BUILT bundle under Deno (no browser needed in CI); it SKIPS loudly when
-   the bundle is absent so a clean checkout's `deno task conformance` stays runnable, and the
+   the bundle is absent so a clean checkout's `deno task test:runtime` stays runnable, and the
    build task is the run that cannot skip (the py-parity stance).
 
 **One SDK fix the browser transport forced** (2026-08-18): `client.watch` ended its stream only
 when the read errored, which a socket does on abort and a DIRECT handler call cannot — the server
 ends an SSE stream from the reader's `cancel()` and nothing else. So an aborted watch parked
 forever, its stream stayed open, and `reactorLoop`'s shutdown never returned. It now cancels the
-reader on abort. Guard: `conformance/loop.test.ts`, "an abort ends the stream even when no socket
+reader on abort. Guard: `test/loop.test.ts`, "an abort ends the stream even when no socket
 can break it", which patches `fetch` at the handler and was proven to hang without the fix. Every
 socket-backed case in that file passes either way, which is why the browser transport is where it
 had to be caught.

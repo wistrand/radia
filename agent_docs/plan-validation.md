@@ -1,7 +1,7 @@
 # Plan: validation
 
 > Status: the M0 fault subset is implemented (see [plan-m0-implementation.md](plan-m0-implementation.md)
-> Phase 6) and the two CONTENDED cases were added 2026-08-04 (`conformance/concurrency.test.ts`,
+> Phase 6) and the two CONTENDED cases were added 2026-08-04 (`test/concurrency.test.ts`,
 > Postgres only); the baselines/metrics and the rest of the matrix (partition, failover, cursor
 > storm) are not yet run. Origin: outline §12. The measurement plan that proves the design's
 > claims and the fault matrix each milestone must survive.
@@ -38,16 +38,16 @@ exercise the guarantees in [design-api.md](design-api.md) (idempotency ordering,
 
 | Case                                    | Where                                       |
 |-----------------------------------------|---------------------------------------------|
-| crash before external effect            | `conformance/suites/faults.ts`              |
-| crash after effect, before ack          | `conformance/suites/faults.ts`              |
-| crash after commit, before response     | `conformance/suites/faults.ts`              |
-| duplicate ack                           | `conformance/suites/faults.ts`              |
-| stale ack after reassignment            | `conformance/suites/faults.ts`              |
-| conflicting idempotency payloads        | `conformance/suites/idempotency.ts`         |
-| revocation mid-lease                    | `conformance/suites/auth.ts`                |
-| schema migration with live patterns     | `conformance/backfill.test.ts` (schema only) |
-| claim inside another worker's backoff   | `conformance/concurrency.test.ts` (Postgres) |
-| claim over a shifting candidate window  | `conformance/concurrency.test.ts` (Postgres) |
+| crash before external effect            | `test/conformance/suites/faults.ts`              |
+| crash after effect, before ack          | `test/conformance/suites/faults.ts`              |
+| crash after commit, before response     | `test/conformance/suites/faults.ts`              |
+| duplicate ack                           | `test/conformance/suites/faults.ts`              |
+| stale ack after reassignment            | `test/conformance/suites/faults.ts`              |
+| conflicting idempotency payloads        | `test/conformance/suites/idempotency.ts`         |
+| revocation mid-lease                    | `test/conformance/suites/auth.ts`                |
+| schema migration with live patterns     | `test/backfill.test.ts` (schema only) |
+| claim inside another worker's backoff   | `test/concurrency.test.ts` (Postgres) |
+| claim over a shifting candidate window  | `test/concurrency.test.ts` (Postgres) |
 | partition during renewal                | not written                                 |
 | DB failover                             | not written                                 |
 | cursor expiry under reconnect storm     | not written                                 |

@@ -2,7 +2,7 @@
 
 > Status: phases 1, 3 and 4 BUILT (2026-08-06); 2 REJECTED; 5 is a posture. Phase 4's macOS run
 > EXECUTED later the same day on a real Mac (macOS 26.4.1, Deno 2.9.5, arm64): the full
-> `deno task extensions` suite passed, darwin-gated case included, with the machine's own Deno
+> `deno task test:extensions` suite passed, darwin-gated case included, with the machine's own Deno
 > cache verified untouched afterwards. Still never run in this repo's CI. The defect is package
 > T in [plan-audit-remediation.md](plan-audit-remediation.md); this is the plan to close it.
 > Everything below marked "measured" was run against the real jail on Linux, except phase 4:
@@ -171,7 +171,7 @@ and skips elsewhere. The builder is where a regression would land; the run is wh
 is, and only a Mac can report it. Three plants proved the pure cases (drop the dyld import, drop the
 realpath, accept an injecting path).
 
-**A Mac has now reported it (2026-08-06, same day).** `deno task extensions` on macOS 26.4.1: 109
+**A Mac has now reported it (2026-08-06, same day).** `deno task test:extensions` on macOS 26.4.1: 109
 passed, 0 failed, the darwin-gated case included ("the Seatbelt profile actually closes the import
 hole", 28ms). The `HOME: "/tmp"` in `spawnDeno` also held up: jailed runs put Deno's own cache
 churn under `/tmp/Library/Caches/deno` and the machine's real `~/Library/Caches/deno` was verified
@@ -310,7 +310,7 @@ prefer it over a Windows-native confiner: AppContainer or a restricted token wou
 binary, and that is a dependency this project would rather not carry for one platform.
 
 NOT VERIFIED. Nobody has run it, which is exactly where macOS stood before someone did, and that
-run turned up two bugs that "should work" had not predicted. One `deno task extensions` under WSL2
+run turned up two bugs that "should work" had not predicted. One `deno task test:extensions` under WSL2
 settles it. The failure mode is safe either way: the confined cases skip, the worker prints
 UNCONFINED at boot, and the record says `importsConfined: false`, so a WSL2 that cannot run
 bubblewrap is reported rather than assumed. WSL**1** has no real kernel and degrades down the same

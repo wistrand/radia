@@ -24,7 +24,7 @@ it, the console has a Space tab, the tuple-space heritage names it).
 
 "The runtime" already has three established senses, one of them enforced: the TIER (`src/core` +
 `src/server` + `src/storage`, the word the layering rules depend on: "the runtime imports
-neither a surface nor an extension", `conformance/layering.test.ts`), the ENVELOPE
+neither a surface nor an extension", `test/layering.test.ts`), the ENVELOPE
 (`RuntimeMeta`, "runtime-authoritative metadata", frozen wire vocabulary), and the ambient one
 (Deno is "a runtime"). A blind substrate->runtime rename makes "conventions built on the runtime
 must never import the runtime" self-contradicting prose (`layering.test.ts:37-41` holds both
@@ -80,5 +80,5 @@ workspace-like feature has lost that anchor.
 5. Rename `research-substrate-lessons.md` to `research-app-lessons.md` (the title is "what two
    applications taught" the project, so the file is named by its subject), update the ~6 inbound
    links, retitle in the same move.
-6. `deno task quick` (docs links, site claims); grep for the word to confirm only `notes/` and
+6. `deno task test:quick` (docs links, site claims); grep for the word to confirm only `notes/` and
    deliberate quotations remain.

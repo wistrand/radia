@@ -186,4 +186,4 @@ procedure and a binding target has two names for one thing.
   `log` defaulted to a no-op and the nack path used it, so a throwing handler retried invisibly and
   the caller saw only a tool-call timeout. Every one of the bugs above presented identically until
   the log was turned on by hand. Failures now reach stderr when no `log` was given, in both SDKs;
-  routine trace stays opt-in. `conformance/loop.test.ts`, and gotchas.md under leases.
+  routine trace stays opt-in. `test/loop.test.ts`, and gotchas.md under leases.

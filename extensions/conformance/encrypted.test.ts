@@ -1,6 +1,6 @@
 // The fail-closed contract for encrypted bodies (`extensions/ts/encrypted.ts`).
 //
-//   deno task extensions
+//   deno task test:extensions
 //
 // One property: a reader that meets a marker it cannot handle RAISES, and nothing downstream ever
 // sees the field. Nothing encrypts yet (plan-encryption.md phase 1 ships the refusal BEFORE the

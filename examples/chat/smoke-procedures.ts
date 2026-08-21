@@ -6,7 +6,7 @@
 // That makes the whole save/run/read path testable without an OPENROUTER_API_KEY. It spawns its
 // own space and exec-worker on port 7799 and cleans them up.
 //
-// This is a script, not a `*.test.ts`: it is not part of `deno task conformance` (that suite is for
+// This is a script, not a `*.test.ts`: it is not part of `deno task test:runtime` (that suite is for
 // PORT contracts, not for an example). Run it after changing the exec worker.
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";

@@ -1,6 +1,6 @@
 // The workspace-agent host contract (agent_docs/architecture-workspace-agents.md phase 4).
 //
-//   deno task extensions
+//   deno task test:extensions
 //
 // The question this phase exists to answer is whether a GENERIC host can run someone else's code
 // as that someone, so the cases are about IDENTITY and about the two locks, not about execution:
