@@ -201,7 +201,8 @@ limits are not optional, and they belong at commit/registration. Three are enfor
   `too_deep` at compile.
 - **artifact bytes**, default 32 MiB: `SpaceContext.maxArtifactBytes` (`src/core/space.ts`),
   returned as `413 artifact_too_large` by `src/server/handlers/artifacts.ts`.
-- **record bytes**, default 1 MiB: `SpaceContext.maxRecordBytes`, checked in `buildRecord` where the
+- **record bytes**, default 1 MiB, tunable per space (`radia dev --max-record-bytes <n>`, minimum
+  1024): `SpaceContext.maxRecordBytes`, checked in `buildRecord` where the
   serialized form first exists (so every write path passes through it, not just the client one),
   returned as `413 record_too_large`. Measured on the SERIALIZED bytes, not on character count, or a
   body of astral-plane characters would pass at twice its encoded size. The budget covers the body

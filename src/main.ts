@@ -35,7 +35,7 @@ const USAGE = `radia <command>
       [--blobs <dir|memory|s3://bucket/prefix>[,<read-only origin>…]]
       [--blob-kek [file]] [--seal-key [file]] [--auth required|open]
       [--artifact-port <n>] [--max-scan-rows <n>] [--event-retention <seconds>]
-      [--max-put-delay <seconds>]
+      [--max-put-delay <seconds>] [--max-record-bytes <n>]
       [--oidc-issuer <url> --oidc-audience <client-id>]
       Run an embedded space + web console. Everything it writes goes under ./.radia
       (RADIA_DIR moves it); bare --db and --blob-kek take their defaults from there.
@@ -159,6 +159,14 @@ async function dev(args: string[]): Promise<number> {
   if (eventRetentionSeconds !== undefined && (!Number.isInteger(eventRetentionSeconds) || eventRetentionSeconds < 0)) {
     throw new UsageError(`--event-retention must be a non-negative whole number of seconds, got '${evFlag}'`);
   }
+  // The body ceiling. 1 MiB by default, and the GAP between it and the artifact cap is the signal
+  // that a payload belongs out of line: a body must stay plaintext JSON for matching, so it has no
+  // erasure path, while artifact bytes do. Lower it on a space that wants that pressure earlier.
+  const bodyFlag = flag(args, "--max-record-bytes");
+  const maxRecordBytes = bodyFlag === undefined ? undefined : Number(bodyFlag);
+  if (maxRecordBytes !== undefined && (!Number.isInteger(maxRecordBytes) || maxRecordBytes < 1024)) {
+    throw new UsageError(`--max-record-bytes must be a whole number of bytes, at least 1024, got '${bodyFlag}'`);
+  }
   // How far ahead a writer may defer a record's claimability (`PutRequest.availableAt`). A ceiling
   // because retention GC never sweeps unclaimed CLAIMABLE work, so a record deferred past any
   // horizon is litter no sweep can reach; `0` refuses deferral entirely.
@@ -179,6 +187,7 @@ async function dev(args: string[]): Promise<number> {
     ...(maxScanRows === undefined ? {} : { maxScanRows }),
     ...(eventRetentionSeconds === undefined ? {} : { eventRetentionSeconds }),
     ...(maxPutDelaySeconds === undefined ? {} : { maxPutDelaySeconds }),
+    ...(maxRecordBytes === undefined ? {} : { maxRecordBytes }),
     ...(oidcIssuer && oidcAudience ? { oidc: { issuer: oidcIssuer, audience: oidcAudience } } : {}),
   }, blobs);
   if (oidcIssuer && oidcAudience) {
@@ -186,6 +195,9 @@ async function dev(args: string[]): Promise<number> {
   }
   if (eventRetentionSeconds !== undefined) {
     console.log(`radia dev: event-log retention ${eventRetentionSeconds}s (gc truncates the sealed log to this window)`);
+  }
+  if (maxRecordBytes !== undefined) {
+    console.log(`radia dev: record bodies capped at ${maxRecordBytes} bytes (artifacts unaffected)`);
   }
   if (maxPutDelaySeconds !== undefined) {
     console.log(

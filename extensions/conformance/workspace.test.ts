@@ -418,14 +418,36 @@ Deno.test("workspace: edit reaches the same trees read does, and versions them w
 });
 
 Deno.test("workspace: the record body limit caps a manifest, which forces dependencies out of line", async () => {
-  // A PRIVATE space, the one exception to the shared boot: this test writes ~13k artifacts, and
-  // on a shared space those weigh on every later test AND on this one (measured: 21s fresh vs
-  // 42s shared on CI, where the history penalty doubles; the artifacts it strands would sit in
-  // the artifact kind for the rest of the file). Booted and killed inline, the pre-refactor shape.
+  // A PRIVATE space, and the limit is CONFIGURED SMALL, which is what keeps this cheap. The
+  // property is that a manifest is bounded by the record limit and a big enough tree hits the wall,
+  // and neither half depends on the limit being 1 MiB. Proving it at the default meant writing
+  // ~13k artifacts (one HTTP round trip per file: `writeWorkspace` measures ~1.8ms each), which was
+  // 18 seconds, a third of this whole suite. At 64 KiB the same bracket is a few hundred files.
+  //
+  // What the volume used to stand in for is asserted directly instead: the manifest's bytes PER
+  // ENTRY are measured here and extrapolated to the default, so the claim "a dependency tree does
+  // not fit in a body" is arithmetic rather than something we paid eighteen seconds to watch.
+  //
+  // Still its own space rather than the shared one: it needs a different `maxRecordBytes` than
+  // every other test in this file, and the artifacts it strands would sit in the artifact kind for
+  // the rest of the run.
+  const LIMIT = 64 * 1024;
+  const DEFAULT_LIMIT = 1024 * 1024; // `SpaceContext.maxRecordBytes`, what a real space runs
   const heavyPort = 7818;
   const heavyUrl = `http://127.0.0.1:${heavyPort}`;
   const space = new Deno.Command(Deno.execPath(), {
-    args: ["run", "-A", "src/main.ts", "dev", "--port", String(heavyPort), "--artifact-port", "0"],
+    args: [
+      "run",
+      "-A",
+      "src/main.ts",
+      "dev",
+      "--port",
+      String(heavyPort),
+      "--artifact-port",
+      "0",
+      "--max-record-bytes",
+      String(LIMIT),
+    ],
     stdout: "null",
     stderr: "inherit",
   }).spawn();
@@ -456,27 +478,46 @@ Deno.test("workspace: the record body limit caps a manifest, which forces depend
       claimable: false,
     });
 
-    // The number this phase owed. A manifest is a record body, and a body cannot be erased, so the
-    // limit is what turns "put the dependency tree beside the manifest" from a preference into a
-    // wall. Two points bracket it rather than a full ladder: the contract is that a limit EXISTS
-    // and bites in this range, not the exact file count.
+    // A manifest is a record body, and a body cannot be erased, so the limit is what turns "put the
+    // dependency tree beside the manifest" from a preference into a wall. Two points bracket it
+    // rather than a full ladder: the contract is that a limit EXISTS and bites, not an exact file
+    // count.
     const tree = (n: number) => {
       const files: Record<string, string> = {};
       for (let i = 0; i < n; i++) files[`src/mod${Math.floor(i / 100)}/f${i}.ts`] = `export const x = ${i}\n`;
       return files;
     };
-    const ok = await writeWorkspace(c, { name: "under", owner: OWNER, files: tree(3000) });
+
+    // UNDER, and the calibration: an entry is a path, a mode, a digest and an artifact id, so the
+    // body grows linearly in the file count and this one write measures the slope.
+    const UNDER = 200;
+    const ok = await writeWorkspace(c, { name: "under", owner: OWNER, files: tree(UNDER) });
     const rec = await c.getRecord(ok.id);
     const bytes = new TextEncoder().encode(JSON.stringify(rec!.body)).length;
-    assert(bytes < 1024 * 1024, `3000 files is ${Math.round(bytes / 1024)} KiB, under the limit`);
+    assert(bytes < LIMIT, `${UNDER} files is ${Math.round(bytes / 1024)} KiB, under the ${LIMIT / 1024} KiB limit`);
 
+    // OVER, derived from the measured slope rather than guessed, so this cannot quietly stop
+    // straddling the wall if a manifest entry gains a field.
+    const perEntry = bytes / UNDER;
+    const over = Math.ceil((LIMIT / perEntry) * 1.5);
     let refused = "";
     try {
-      await writeWorkspace(c, { name: "over", owner: OWNER, files: tree(10000) });
+      await writeWorkspace(c, { name: "over", owner: OWNER, files: tree(over) });
     } catch (e) {
       refused = (e as Error).message;
     }
-    assert(/record_too_large/.test(refused), `10000 files must be refused, got: ${refused || "accepted"}`);
+    assert(/record_too_large/.test(refused), `${over} files must be refused, got: ${refused || "accepted"}`);
+
+    // And what the volume used to demonstrate: at the limit a real space runs, the wall lands in
+    // the THOUSANDS of files. That is the sentence this test exists to support, and it is a
+    // division rather than a wait. Bounded on both sides: a manifest that suddenly fit a million
+    // files would mean entries had stopped carrying their digests.
+    const atDefault = DEFAULT_LIMIT / perEntry;
+    assert(
+      atDefault > 1_000 && atDefault < 100_000,
+      `at the ${DEFAULT_LIMIT / 1024} KiB default a manifest holds ~${Math.round(atDefault)} files ` +
+        `(${Math.round(perEntry)} bytes/entry), which should be thousands`,
+    );
   } finally {
     space.kill();
     await space.status;
