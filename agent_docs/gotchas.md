@@ -619,6 +619,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Storage, SQL and the planner
 
+**`envelopesInState` applies every predicate BEFORE the cap, and nothing may filter after it.**
+`Space.queryEnvelopes` used to evaluate `expired` and `staleSeconds` in memory, after the adapter's
+`LIMIT`, while the rows are ordered by `available_at`, which has no relationship to `leased_until`.
+A page filled with LIVE leases hid every lapsed one behind it: `radia reclaim --all` reported
+nothing to do, `more` was false so `--drain` stopped, and `radia doctor` reported zero stuck leases
+on a space with 500 live ones and a stuck one. Fixed 2026-08-21 by pushing both into SQL beside
+`excludeKinds` and `scope`; planted in `test/conformance/suites/admin.ts`.
+
 - **Two processes on one local database are refused by `src/lock.ts`, not by the adapter.** PGlite
   is a single-writer WASM Postgres with no locking of its own: a second `radia dev --db <same dir>`
   used to serve a private copy, both answering `health` 200 and `integrity` "chain OK" at different

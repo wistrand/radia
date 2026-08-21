@@ -713,13 +713,17 @@ export class RadiaClient {
 
   /** Ops-plane envelope query: records filtered by runtime state (leased/available/…), optional
    *  `expired` (lapsed lease) / `stale` (seconds sat available). Returns records with envelopes. */
+  /** Envelopes in a state, narrowed. `kind` restricts the ANSWER, not merely the page: every
+   *  predicate is applied before the cap, so `limit` bounds rows MATCHED. It is ANDed with whatever
+   *  the caller's grants already scope this read to, so it can only narrow. */
   async queryEnvelopes(
-    q: { state: string; expired?: boolean; stale?: number; limit?: number },
+    q: { state: string; expired?: boolean; stale?: number; limit?: number; kind?: string | string[] },
   ): Promise<{ record: RadiaRecord | null; envelope: unknown }[]> {
     const p = new URLSearchParams({ state: q.state });
     if (q.expired) p.set("expired", "1");
     if (q.stale !== undefined) p.set("stale", String(q.stale));
     if (q.limit !== undefined) p.set("limit", String(q.limit));
+    for (const k of q.kind === undefined ? [] : Array.isArray(q.kind) ? q.kind : [q.kind]) p.append("kind", k);
     const r = await this.req("GET", `/v0/ops/records?${p}`);
     return r.records;
   }
@@ -810,7 +814,7 @@ export class RadiaClient {
    *  drain a backlog). */
   remediate(
     action: "reclaim" | "dead-letter" | "requeue",
-    selector: { state: string; expired?: boolean; stale?: number; limit?: number },
+    selector: { state: string; expired?: boolean; stale?: number; limit?: number; kind?: string | string[] },
   ): Promise<{ action: string; matched: number; applied: number; more: boolean; sample: string[] }> {
     return this.req("POST", "/v0/ops/remediate", { action, ...selector });
   }

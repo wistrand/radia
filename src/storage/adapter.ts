@@ -184,6 +184,26 @@ export interface StatsScope {
   alsoReadable?: string[];
 }
 
+/** Selector for `envelopesInState`. An options object rather than positional parameters because
+ *  every field here has to be applied in SQL, before the cap, and the list grows. */
+export interface EnvelopeQuery {
+  state: RecordState;
+  limit: number;
+  /** Kinds to leave out. Used to keep reference kinds (`claimable:false`) out of the starvation
+   *  check and out of a broad remediation selector. */
+  excludeKinds?: string[];
+  /** Kinds to keep. INTERSECTED with `scope.kinds`, never a replacement for it: `scope` is derived
+   *  from the caller's grants, so a caller-named kind that widened it would be the ops plane
+   *  handing out reads nobody granted. */
+  kinds?: string[];
+  /** Keep only rows whose lease has LAPSED. Meaningful with `state: "leased"`, which is where a
+   *  lapsed lease sits: nothing ever writes an `expired` state. */
+  expired?: boolean;
+  /** Keep only first-attempt rows that have sat available at least this long. */
+  staleSeconds?: number;
+  scope?: StatsScope;
+}
+
 export interface KindStateCount {
   kind: string;
   state: RecordState;
@@ -593,14 +613,19 @@ export interface StorageAdapter {
    */
   sweepIds(ids: Ulid[], runId: string): Promise<{ swept: number; byKind: Record<string, number> }>;
 
-  /** Envelopes currently in a given state, capped (diagnostics). `excludeKinds` filters them out
-   *  at the query level (before the cap), used to skip reference kinds in the starvation check. */
-  envelopesInState(
-    state: RecordState,
-    limit: number,
-    excludeKinds?: string[],
-    scope?: StatsScope,
-  ): Promise<Envelope[]>;
+  /**
+   * Envelopes currently in a given state, capped (diagnostics, remediation).
+   *
+   * EVERY PREDICATE HERE IS APPLIED BEFORE THE CAP, and that is the contract rather than an
+   * implementation note. A limit taken first and filtered afterwards returns a short page that
+   * reads as "that is all of them": `expired` and `staleSeconds` used to be evaluated one layer up,
+   * in `Space.queryEnvelopes`, and the rows are ordered by `available_at`, which has no
+   * relationship to `leased_until`. So a page filled with LIVE leases hid every lapsed one behind
+   * it, `radia reclaim --all` reported nothing to do, and `radia doctor` reported zero stuck leases
+   * on a space with 500 live ones and a stuck one. Planted in
+   * `test/conformance/suites/admin.ts`.
+   */
+  envelopesInState(q: EnvelopeQuery): Promise<Envelope[]>;
 
   /**
    * Emergency quarantine: force every `leased` record owned by `ownerRun` back to `available`,

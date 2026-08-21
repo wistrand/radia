@@ -90,10 +90,15 @@ export async function handleEnvelopeQuery(space: Space, url: URL, scope?: StatsS
       return problem(400, "invalid_stale", `stale must be a non-negative number of seconds, got '${staleParam}'`);
     }
   }
+  // `kind` is REPEATABLE (`?kind=a&kind=b`) and also accepts one comma-separated value, because
+  // both spellings are what people try. Absent means every kind, which is what this endpoint
+  // always answered.
+  const kindParams = url.searchParams.getAll("kind").flatMap((v) => v.split(",")).map((s) => s.trim()).filter(Boolean);
+  const kinds = kindParams.length > 0 ? kindParams : undefined;
   const limitParam = Number(url.searchParams.get("limit") ?? "100");
   const limit = Math.min(Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 100, 500);
   // deno-lint-ignore no-explicit-any
-  const rows = await space.queryEnvelopes({ state: state as any, expired, staleSeconds, limit, scope: scope ?? undefined });
+  const rows = await space.queryEnvelopes({ state: state as any, expired, staleSeconds, limit, kinds, scope: scope ?? undefined });
   return Response.json({ records: rows, scope: describeScope(scope) });
 }
 
@@ -515,11 +520,24 @@ export async function handleRemediate(space: Space, req: Request): Promise<Respo
   if (!["available", "leased", "consumed", "dead_letter"].includes(state)) {
     return problem(400, "invalid_state", `state must be available | leased | consumed | dead_letter, got '${state}'`);
   }
+  // The SAME selector the envelope query takes, which is the whole point of this endpoint: `kind`
+  // here means what it means there. A string is accepted beside an array because a caller
+  // remediating one kind writes the string.
+  const kindField = j.kind ?? j.kinds;
+  let kinds: string[] | undefined;
+  if (typeof kindField === "string") kinds = [kindField];
+  else if (Array.isArray(kindField)) {
+    if (kindField.some((k) => typeof k !== "string")) return problem(400, "invalid_body", "kind must be a string or an array of strings");
+    kinds = kindField as string[];
+  } else if (kindField !== undefined) {
+    return problem(400, "invalid_body", "kind must be a string or an array of strings");
+  }
   const out = await space.remediate(action, {
     state: state as RecordState,
     expired: j.expired === true,
     staleSeconds: typeof j.stale === "number" && Number.isFinite(j.stale) && j.stale >= 0 ? j.stale : undefined,
     limit: typeof j.limit === "number" ? j.limit : undefined,
+    ...(kinds && kinds.length > 0 ? { kinds } : {}),
   });
   return Response.json(out);
 }

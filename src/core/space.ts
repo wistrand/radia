@@ -2602,7 +2602,7 @@ export class Space {
       listKinds: () => this.kinds.list(),
       compile: (kind) => this.compileFresh({ kind }),
       query: (match, limit, page, scope) => this.storage.query(match, limit, page, scope),
-      envelopesInState: (state, limit, exclude, scope) => this.storage.envelopesInState(state, limit, exclude, scope),
+      envelopesInState: (q) => this.storage.envelopesInState(q),
       agentForRun: (run) => this.agentForRun(run),
     }, opts);
   }
@@ -3269,18 +3269,29 @@ export class Space {
       staleSeconds?: number;
       limit?: number;
       excludeKinds?: string[];
+      /** Kinds to keep. ANDed with the grant-derived `scope.kinds` in SQL, so it can only ever
+       *  narrow: a caller naming a kind outside its scope gets nothing, not a widened read. */
+      kinds?: string[];
       scope?: StatsScope;
     },
   ): Promise<{ record: RadiaRecord | null; envelope: Envelope }[]> {
-    const now = await this.storage.now();
-    let envs = await this.storage.envelopesInState(q.state, q.limit ?? 100, q.excludeKinds, q.scope);
-    if (q.expired) envs = envs.filter((e) => e.leasedUntil !== undefined && e.leasedUntil < now);
-    // Ignore a non-finite window rather than computing an Invalid Date from it: in-process callers
-    // bypass the HTTP validation, and `addSeconds(now, -NaN)` throws deep in date formatting.
-    if (q.staleSeconds !== undefined && Number.isFinite(q.staleSeconds)) {
-      const before = addSeconds(now, -q.staleSeconds);
-      envs = envs.filter((e) => e.attempt === 0 && e.availableAt < before);
-    }
+    // EVERY predicate goes to the adapter, so all of them are applied before the cap. They used to
+    // be filtered here, after it, which made `limit` mean "rows examined" instead of "rows
+    // matched": `radia reclaim --all` reported nothing to do with stuck leases behind a page of
+    // live ones, and `radia doctor` reported zero on a space with 500 live leases and a lapsed one.
+    // Nothing may be filtered below this line (`test/conformance/suites/admin.ts` plants it).
+    //
+    // A non-finite window is DROPPED rather than passed down: in-process callers bypass the HTTP
+    // validation, and `addSeconds(now, -NaN)` throws deep in date formatting.
+    const envs = await this.storage.envelopesInState({
+      state: q.state,
+      limit: q.limit ?? 100,
+      excludeKinds: q.excludeKinds,
+      kinds: q.kinds,
+      expired: q.expired,
+      staleSeconds: q.staleSeconds !== undefined && Number.isFinite(q.staleSeconds) ? q.staleSeconds : undefined,
+      scope: q.scope,
+    });
     // One batch, not a round trip per envelope: the default page is 100, and diagnostics composes
     // several of these per call, so the loop this replaces was the ops plane's own N+1.
     const found = new Map((await this.storage.getRecords(envs.map((e) => e.recordId))).map((r) => [r.id, r]));
@@ -3509,7 +3520,7 @@ export class Space {
    */
   async remediate(
     action: "reclaim" | "dead-letter" | "requeue",
-    selector: { state: RecordState; expired?: boolean; staleSeconds?: number; limit?: number },
+    selector: { state: RecordState; expired?: boolean; staleSeconds?: number; limit?: number; kinds?: string[] },
   ): Promise<{ action: string; matched: number; applied: number; more: boolean; sample: string[] }> {
     const limit = Math.min(Math.max(selector.limit ?? 200, 1), 2000);
     // Remediation acts on WORK. A `claimable:false` kind (kind_def, grant, agent_run, facts,
@@ -3521,6 +3532,18 @@ export class Space {
     const excludeKinds = selector.state === "available"
       ? this.kinds.list().filter((d) => !isClaimable(d)).map((d) => d.kind)
       : undefined;
+    // NAMING a reference kind is REFUSED rather than silently emptied. The guard above would
+    // subtract it and answer `matched: 0`, which reads as "nothing to fix" when the truth is "that
+    // is not a thing this verb may touch". A zero that means refused is the worse of the two.
+    const barred = (selector.kinds ?? []).filter((k) => excludeKinds?.includes(k));
+    if (barred.length > 0) {
+      throw new RadiaError(
+        "kind_not_remediable",
+        `${barred.join(", ")} ${barred.length === 1 ? "is" : "are"} reference data (claimable:false), which ` +
+          `sits 'available' by design and is never stuck work. Remediating it would dead-letter the ` +
+          `registry it belongs to.`,
+      );
+    }
     const rows = await this.queryEnvelopes({ ...selector, limit, excludeKinds });
     let applied = 0;
     for (const row of rows) {

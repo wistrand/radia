@@ -1,8 +1,8 @@
 # Plan: a MUD-like graphical adventure as an example
 
 **Status: PHASE 1 BUILT 2026-08-21** (`examples/mud/`, `deno task mud`, `deno task test:mud`): the
-kinds, a four-room scripted world, the narrator, two NPC workers, a terminal client, and a smoke
-test that runs with no API key. Building it corrected three things in the design below, each marked
+kinds, a four-room scripted world, the narrator, two NPC workers that act on a player's words AND on
+their own deferred clock, a terminal client, and a smoke test that runs with no API key. Building it corrected three things in the design below, each marked
 BUILT-CORRECTION where it appears. Phases 2 to 6 remain planned; analysis 2026-08-21, claims
 verified against source the same day.
 
@@ -46,7 +46,7 @@ The design is entirely in what is declared. Prose stays unindexed, which is also
 | `command`     | yes       | `worldId`, `actor`                  |                       | a player's freeform input                 |
 | `event`       | no        | `worldId`, `roomId`, `actor`, `verb`, `audience`, `causedBy` | | what happened; the room's feed |
 | `npc`         | no        | `worldId`, `npc`, `roomId`          | `[worldId, npc]`      | an NPC's definition and disposition       |
-| `npc_turn`    | yes       | `worldId`, `npc`, `roomId`          |                       | an NPC's cue to act                       |
+| `npc_turn`    | yes       | `worldId`, `npc`, `roomId`, `trigger`, `tick` |             | an NPC's cue to act, from a player or its own clock |
 | `contest`     | yes       | `worldId`, `roomId`, `target`       |                       | a scarce thing; `take` decides who gets it |
 | `scene_image` | no        | `worldId`, `roomId`, `promptDigest` |                       | the memo that stops regenerating a picture |
 
@@ -104,11 +104,19 @@ The grant story is the demo. An NPC scoped
 `bodyMatchesGrant` at the write when it tries to speak in another room. That is enforcement, not a
 check the game performs.
 
-**Ambient NPC behaviour got runtime support on 2026-08-21, and this plan is why it was looked at.**
-A cue written with `PutRequest.availableAt` becomes claimable later, so a wandering guard is an
-NPC acking its own next cue with a delay, and a respawn is one deferred record. No process has to
-stay alive holding an interval, which is what makes it work for a phase-6 workspace NPC: that agent
-is a pure function of the record it claimed and exits, so an interval was never available to it.
+**Ambient NPC behaviour got runtime support on 2026-08-21, and this plan is why it was looked at.
+BUILT in phase 1** (`AMBIENT` in `examples/mud/npc.ts`, `seedAmbient` in `world.ts`): an NPC acks
+each ambient cue with the next one, deferred by `PutRequest.availableAt`, so a wandering guard is a
+chain of records and no process holds an interval. That is what makes it reach a phase-6 workspace
+NPC, which is a pure function of the record it claimed and then exits.
+
+Three things the build settled. The hop is safe because `ack` is consume-and-emit ATOMICALLY, so
+the chain cannot end up with a cue consumed and no successor. The chain still dies if a cue
+DEAD-LETTERS, and the repair is `radia remediate requeue` rather than restarting anything, because
+a launcher that re-seeded would leave one NPC with two self-perpetuating clocks. And seeding asks
+whether a cue EXISTS rather than relying on a content key, since idempotency expires at 7 days and
+a re-run past that would start the second clock by itself.
+
 Still true: nothing FIRES at the instant, so somebody must be polling that kind, which every
 `agentLoop` already is. Never invent a timer kind for it.
 
@@ -192,7 +200,8 @@ registries to newest-per-key, and offboarding a player or an NPC as `radia runs 
 
 1. **Kinds and a scripted world, no model.** Narrator worker claims `command`, writes `event`,
    updates `presence`. Two scripted NPCs. Smoke test with no API key. BUILT: `examples/mud/`, plus
-   a terminal client (`play.ts`) so the world can be walked by hand before the page exists.
+   a terminal client (`play.ts`) so the world can be walked by hand before the page exists, and
+   AMBIENT NPCs on a chain of deferred cues once `availableAt` landed.
 2. **The page.** Relay, `ui.html` + `app.js`, SSO gate, the `after`-cursor tick. Two tabs in one
    room seeing each other is the point at which the example justifies itself.
 3. **Contention.** `contest` records, `take` under a lease, two players racing for one item.

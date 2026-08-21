@@ -578,6 +578,15 @@ paths:
                 state: { type: string, enum: [available, leased, consumed, dead_letter] }
                 expired: { type: boolean, description: "With state=leased: only leases that have lapsed." }
                 stale: { type: integer, description: "With state=available: only first-attempt records unclaimed for this many seconds." }
+                kind:
+                  description: >
+                    Narrow to these kinds, so one app's backlog can be drained without touching
+                    another's. A string or an array. Naming a `claimable: false` kind is REFUSED
+                    with `kind_not_remediable` rather than silently matching nothing: reference data
+                    sits available by design and is never stuck work.
+                  oneOf:
+                    - { type: string }
+                    - { type: array, items: { type: string } }
                 limit: { type: integer, default: 200, description: "Max records to act on (max 2000)." }
       responses:
         "200":
@@ -1102,7 +1111,8 @@ paths:
         - { name: state, in: query, required: true, schema: { type: string, enum: [available, leased, consumed, dead_letter] }, description: "NOT `expired`: a lapsed lease stays `leased`. Ask for expiry with state=leased&expired=1." }
         - { name: expired, in: query, required: false, schema: { type: string, enum: ["1", "true"] } }
         - { name: stale, in: query, required: false, schema: { type: integer }, description: "keep first-attempt available rows older than this many seconds" }
-        - { name: limit, in: query, required: false, schema: { type: integer, default: 100, maximum: 500 } }
+        - { name: kind, in: query, required: false, schema: { type: array, items: { type: string } }, style: form, explode: true, description: "keep only these kinds; repeatable (?kind=a&kind=b) or comma-separated. ANDed with whatever the caller's grants already scope this read to, so it can only narrow." }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 100, maximum: 500 }, description: "bounds rows MATCHED, not rows examined: every predicate above is applied before the cap." }
       responses:
         "200":
           description: records with envelopes

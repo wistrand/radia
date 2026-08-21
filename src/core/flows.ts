@@ -9,7 +9,7 @@
 // below rather than through `Space` itself, which is what keeps the dependency one-way: mining is a
 // READER, and a reader that can reach the whole service will eventually write through it.
 
-import type { CompiledMatch, Envelope, Page, RadiaRecord, RecordState, StatsScope } from "../storage/adapter.ts";
+import type { CompiledMatch, Envelope, EnvelopeQuery, Page, RadiaRecord, RecordState, StatsScope } from "../storage/adapter.ts";
 import { isClaimable, type KindDef, RESERVED_KINDS } from "./kinds.ts";
 import { getPath } from "./matching.ts";
 
@@ -19,7 +19,7 @@ export interface FlowSource {
   /** Compile a bare kind pattern, refreshing a stale kind registry the way any read does. */
   compile(kind: string): Promise<CompiledMatch>;
   query(match: CompiledMatch, limit: number, page?: Page, scope?: StatsScope): Promise<RadiaRecord[]>;
-  envelopesInState(state: RecordState, limit: number, excludeKinds?: string[], scope?: StatsScope): Promise<Envelope[]>;
+  envelopesInState(q: EnvelopeQuery): Promise<Envelope[]>;
   /** Resolves a `run:` principal to the agent behind it, so a shape is per AGENT and not per run. */
   agentForRun(run: string): Promise<string | undefined>;
 }
@@ -199,7 +199,7 @@ opts: {
   const notMined = src.listKinds().map((d) => d.kind).filter((k) => !mined.has(k));
   const stateOf = new Map<string, RecordState>();
   for (const state of ["available", "leased", "consumed", "dead_letter"] as RecordState[]) {
-    const envs = await src.envelopesInState(state, cap, notMined, opts.scope);
+    const envs = await src.envelopesInState({ state, limit: cap, excludeKinds: notMined, scope: opts.scope });
     if (envs.length >= cap) complete = false;
     for (const e of envs) stateOf.set(e.recordId, state);
   }

@@ -59,13 +59,18 @@ const NARRATOR_GRANTS: Grant[] = [
  * not standing; the actor is what stops it writing a line attributed to a player. Both are refused
  * by `bodyMatchesGrant` at the write, and no code in this example checks for either.
  *
+ * `npc_turn: put` is the AMBIENT CLOCK, and it is pinned to this NPC's own name for the same
+ * reason: an NPC schedules ITSELF and can put no words in another NPC's mouth. That write happens
+ * through `ack`, which is authorized as an ordinary put for the acting agent, so the pin holds on
+ * that path too.
+ *
  * The room pin is a DEPLOYMENT fact, so an NPC that moves needs its definition re-minted. Phase 1
  * has none that move. When one does, the pin becomes a promotion-style rotation rather than a
  * wider grant, for the reason architecture-workspace-agents.md gives.
  */
 const npcGrants = (npc: string, roomId: string): Grant[] => [
   { kind: "interest", operations: ["put", "query"] },
-  { kind: "npc_turn", operations: ["take"], pattern: { worldId: WORLD_ID, npc } },
+  { kind: "npc_turn", operations: ["take", "put"], pattern: { worldId: WORLD_ID, npc } },
   { kind: "event", operations: ["put"], pattern: { worldId: WORLD_ID, roomId, actor: npcAgent(npc) } },
 ];
 

@@ -31,7 +31,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 __all__ = [
     "RadiaClient",
@@ -738,22 +738,30 @@ class RadiaClient:
         expired: bool = False,
         stale: Optional[int] = None,
         limit: Optional[int] = None,
+        kind: Optional[Union[str, Sequence[str]]] = None,
     ) -> List[Dict[str, Any]]:
         """Records filtered by runtime ENVELOPE state, the dimension the content-routing query
         language deliberately omits, since that one matches record bodies for routing.
 
         ``expired`` keeps only leased rows whose lease has lapsed; ``stale`` keeps only
-        first-attempt rows that have sat available that many seconds.
+        first-attempt rows that have sat available that many seconds. ``kind`` keeps only those
+        kinds, and is ANDed with whatever the caller's grants already scope this read to, so it can
+        only narrow.
+
+        Every predicate is applied before the cap, so ``limit`` bounds rows MATCHED rather than
+        rows examined.
         """
         from urllib.parse import urlencode
 
-        q: Dict[str, Any] = {"state": state}
+        q: List[tuple] = [("state", state)]
         if expired:
-            q["expired"] = "1"
+            q.append(("expired", "1"))
         if stale is not None:
-            q["stale"] = stale
+            q.append(("stale", stale))
         if limit is not None:
-            q["limit"] = limit
+            q.append(("limit", limit))
+        for k in ([kind] if isinstance(kind, str) else list(kind or [])):
+            q.append(("kind", k))
         return self._req("GET", "/v0/ops/records?" + urlencode(q))["records"]
 
     # -- remediation (operator) --
@@ -771,6 +779,7 @@ class RadiaClient:
         expired: bool = False,
         stale: Optional[int] = None,
         limit: Optional[int] = None,
+        kind: Optional[Union[str, Sequence[str]]] = None,
     ) -> Dict[str, Any]:
         """Remediate EVERY record matching an envelope selector. It takes the same selector
         :meth:`query_envelopes` does, so diagnosing and fixing use one vocabulary.
@@ -784,6 +793,10 @@ class RadiaClient:
                 if not r["more"]:
                     break
 
+        ``kind`` narrows it to one app's backlog. Naming a ``claimable: false`` kind is REFUSED
+        (``kind_not_remediable``) rather than silently matching nothing: reference data sits
+        available by design and is never stuck work.
+
         Every transition is state-guarded per record, so this is safe to re-run and safe to race a
         worker that comes back: a record that moved on is simply not applied.
         """
@@ -794,6 +807,8 @@ class RadiaClient:
             body["stale"] = stale
         if limit is not None:
             body["limit"] = limit
+        if kind is not None:
+            body["kind"] = [kind] if isinstance(kind, str) else list(kind)
         return self._req("POST", "/v0/ops/remediate", body)
 
     def declassify(self, record_id: str, labels: Optional[Sequence[str]] = None) -> Dict[str, Any]:

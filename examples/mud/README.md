@@ -38,6 +38,28 @@ at the write by `bodyMatchesGrant`. No code in this example checks for either. S
 | `run.ts`     | brings it all up                                                     |
 | `smoke.ts`   | the proof: `deno task test:mud`                                      |
 
+## An NPC has its own clock
+
+Ambient behaviour is a chain of deferred cues, and it is what `PutRequest.availableAt` was added
+for (agent_docs/plan-milestones.md, "delayed visibility"):
+
+```
+npc_turn{trigger: ambient, tick: N}   claimed when its availableAt passes
+  -> event                            the beat, if this one is visible
+  -> ack: npc_turn{tick: N+1}         availableAt = now + 30s
+```
+
+No process holds an interval. That is not tidiness: a phase-6 workspace NPC is a pure function of
+the record it claimed and then exits, so an interval was never available to it, and this is.
+
+The chain cannot break at the hop, because `ack` is consume-and-emit atomically: either the cue is
+still claimable and gets redelivered, or it is consumed and its successor exists. It CAN die if a
+cue dead-letters after its attempts, and the repair is `radia remediate requeue`, never restarting
+the launcher. `seedAmbient` starts a chain only when the NPC has none, because two self-perpetuating
+chains for one NPC is two clocks with nothing to notice or stop them.
+
+`deno task mud -- --ambient-seconds 3` makes it visible while you watch.
+
 ## How a turn works
 
 ```
@@ -77,7 +99,8 @@ different branch and collides with the first under the same keys. The `causedBy`
 The NPC needs no guard, because its handler is a pure function of the cue it claimed.
 
 **Only a player-caused event cues an NPC.** An NPC's line is an event in the same room, so cueing on
-any event at all would make two NPCs sharing a room answer each other forever.
+any event at all would make two NPCs sharing a room answer each other forever. An ambient beat is
+not a cue either, for the same reason: it comes from the NPC's own chain and provokes nobody.
 
 ## What is deliberately not enforced
 

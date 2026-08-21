@@ -93,11 +93,11 @@ Coordinate
 
 Remediate (operator)
   reclaim <record-id>                 un-stick ONE expired lease
-  reclaim --all [--limit <n>] [--drain]      every expired lease
+  reclaim --all [--kind <k>] [--limit <n>] [--drain]   every expired lease
   dead-letter <record-id>             give up on ONE record
-  dead-letter --all [--stale <secs>] [--limit <n>] [--drain]
+  dead-letter --all [--stale <secs>] [--kind <k>] [--limit <n>] [--drain]
   requeue <record-id>                 return ONE dead-lettered record to available
-  requeue --all [--limit <n>] [--drain]
+  requeue --all [--kind <k>] [--limit <n>] [--drain]
 
 Workspaces (a convention, not a runtime concept: see extensions/)
   workspaces [--conversation <id>]    what trees exist, newest version of each
@@ -819,10 +819,15 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
       // Defaults chosen so the common intent is the short command: reclaiming and dead-lettering
       // target lapsed leases, requeue targets the dead-letter queue.
       const stale = flag(argv, "--stale");
+      // `--kind` narrows the selector to one app's backlog, repeatable. Without it `requeue --all`
+      // revives every dead-lettered record in the space, including another app's, which is the
+      // shape that made this flag necessary rather than convenient.
+      const kinds = flags(argv, "--kind");
       const selector = {
         state: action === "requeue" ? "dead_letter" : stale !== undefined ? "available" : "leased",
         expired: action !== "requeue" && stale === undefined,
         ...(stale !== undefined ? { stale: Number(stale) } : {}),
+        ...(kinds.length ? { kind: kinds } : {}),
         ...(flag(argv, "--limit") ? { limit: Number(flag(argv, "--limit")) } : {}),
       };
       const pages: { matched: number; applied: number; more: boolean }[] = [];

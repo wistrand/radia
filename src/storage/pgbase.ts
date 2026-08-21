@@ -32,6 +32,7 @@ import {
   type SweepResult,
   type SweepSelector,
   type EventHorizonCheck,
+  type EnvelopeQuery,
   resolveEventHorizon,
   scanChunkSize,
   yieldToEventLoop,
@@ -928,31 +929,44 @@ export class PgSqlAdapter implements StorageAdapter {
     return res.rows.map(rowToEvent);
   }
 
-  async envelopesInState(
-    state: string,
-    limit: number,
-    excludeKinds?: string[],
-    scope?: StatsScope,
-  ): Promise<Envelope[]> {
-    const params: unknown[] = [state];
+  async envelopesInState(q: EnvelopeQuery): Promise<Envelope[]> {
+    const params: unknown[] = [q.state];
     let where = "rt.state = $1";
-    if (excludeKinds && excludeKinds.length > 0) {
-      const ph = excludeKinds.map((_, i) => `$${params.length + i + 1}`).join(", ");
+    if (q.excludeKinds && q.excludeKinds.length > 0) {
+      const ph = q.excludeKinds.map((_, i) => `$${params.length + i + 1}`).join(", ");
       where += ` and rt.kind not in (${ph})`;
-      params.push(...excludeKinds);
+      params.push(...q.excludeKinds);
     }
-    if (scope?.kinds) {
-      params.push(scope.kinds);
+    // The caller's kinds and the SCOPE's kinds are separate clauses, ANDed. Intersecting them here
+    // in JS would be the same answer with one extra way to get it wrong; two clauses cannot widen.
+    if (q.kinds) {
+      params.push(q.kinds);
       where += ` and rt.kind = any($${params.length}::text[])`;
     }
-    // The scope is applied BEFORE the cap, like `excludeKinds`. A limit taken first and filtered
-    // after would return a short page and read as "that is all of them".
-    const join = scope?.createdBy ? " join records r on r.id = rt.record_id" : "";
-    if (scope?.createdBy) {
-      params.push(scope.createdBy);
+    if (q.scope?.kinds) {
+      params.push(q.scope.kinds);
+      where += ` and rt.kind = any($${params.length}::text[])`;
+    }
+    // Every predicate is applied BEFORE the cap. A limit taken first and filtered after would
+    // return a short page and read as "that is all of them"; see the port's comment for the two
+    // verbs that lied when `expired` and `staleSeconds` were evaluated one layer up.
+    if (q.expired || q.staleSeconds !== undefined) {
+      const now = await this.now(); // the DATABASE clock, never the caller's
+      if (q.expired) {
+        params.push(now);
+        where += ` and rt.leased_until < $${params.length}`;
+      }
+      if (q.staleSeconds !== undefined) {
+        params.push(addSeconds(now, -q.staleSeconds));
+        where += ` and rt.attempt = 0 and rt.available_at < $${params.length}`;
+      }
+    }
+    const join = q.scope?.createdBy ? " join records r on r.id = rt.record_id" : "";
+    if (q.scope?.createdBy) {
+      params.push(q.scope.createdBy);
       where += ` and r.created_by = any($${params.length}::text[])`;
     }
-    params.push(limit);
+    params.push(q.limit);
     const res = await this.sql.query<RawRow>(
       `select rt.* from record_runtime rt${join} where ${where} order by rt.available_at limit $${params.length}`,
       params,

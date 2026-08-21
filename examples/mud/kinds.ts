@@ -128,6 +128,14 @@ export async function registerMudKinds(client: RadiaClient): Promise<void> {
       { path: "worldId", type: "keyword" },
       { path: "npc", type: "keyword" },
       { path: "roomId", type: "keyword" },
+      // What woke this NPC. `player` is the narrator cueing a reaction; `ambient` is the NPC's own
+      // clock, a cue it wrote for itself with a future `availableAt` (see npc.ts). Indexed because
+      // starting the ambient chain has to ask whether one already exists, and asking is the only
+      // thing that stops a restart from running two clocks for one NPC.
+      { path: "trigger", type: "keyword" },
+      // Which beat of the ambient chain this is. Carried so a scripted NPC can vary what it does
+      // without holding state, and so the chain is legible in the Feed.
+      { path: "tick", type: "integer" },
     ],
     claimable: true,
     defaultRetentionSeconds: TRANSCRIPT_RETENTION_SECONDS,

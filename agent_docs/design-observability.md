@@ -94,7 +94,13 @@ Orphan records · starving patterns · wakeup amplification · duplicate-executi
 
 Diagnostics are **compositions of ordinary space queries, not hand-rolled reports.** The building
 block is the envelope query (`Space.queryEnvelopes` / `GET /v0/ops/records?state=…`): filter
-records by runtime state, plus `expired` (lapsed lease) and `stale` (seconds sat available).
+records by runtime state, plus `expired` (lapsed lease), `stale` (seconds sat available) and
+`kind`. EVERY ONE OF THOSE IS APPLIED IN SQL, BEFORE THE CAP, so `limit` bounds rows MATCHED and
+not rows examined. `expired` and `stale` were once evaluated one layer up, after the `LIMIT`, and
+the rows are ordered by `available_at`, which has nothing to do with `leased_until`: a page filled
+with live leases hid every lapsed one, so `reclaim --all` reported nothing to do and `doctor`
+reported zero stuck leases on a space that had them (fixed 2026-08-21, planted in
+`test/conformance/suites/admin.ts`).
 Query-where-possible has a real boundary here: the content-routing pattern language matches
 record *bodies* (for routing) and deliberately can't see the envelope, so envelope filtering,
 aggregation (stats), and DAG-traversal (lineage/graph) are first-class ops capabilities rather
@@ -102,14 +108,20 @@ than pattern queries. Pushing them into the body-match DSL would corrupt it. Wha
 query is one (the envelope filter); what genuinely can't stays a derived capability.
 
 **Remediation shares the diagnostic's selector.** `POST /v0/ops/remediate` takes the same envelope
-selector as `GET /v0/ops/records` (`{state, expired, stale, limit}`), so "what is wrong" and "fix
-it" are one query language. `radia reclaim --all --drain` is the CLI spelling. Per-id remediation
-remains for surgical cases; a backlog is one call per page, not one call per record.
+selector as `GET /v0/ops/records` (`{state, expired, stale, kind, limit}`), so "what is wrong" and
+"fix it" are one query language. `radia reclaim --all --drain` is the CLI spelling. Per-id
+remediation remains for surgical cases; a backlog is one call per page, not one call per record.
+
+`kind` is what makes a SHARED space's backlog drainable. Without it, `requeue --all` revives every
+dead-lettered record there is, including another app's: `dead_letter` is deliberately not filtered
+by the guard below, since that is the recovery path.
 
 One guard is not optional: a selector on `state: available` **excludes `claimable:false` kinds**.
 Reference records (the kind registry itself, grants, agent runs, facts) sit available forever by
 design, so the broadest selector would otherwise sweep them into `dead_letter` and break the space.
-`dead_letter` is deliberately not filtered, since that is the recovery path.
+NAMING one explicitly is REFUSED (`kind_not_remediable`, 422) rather than quietly subtracted: the
+guard would answer `matched: 0`, and a zero that means "not a thing to fix" reads as "nothing to
+fix".
 
 **There is no `expired` record state.** A lapsed lease leaves the record `leased` (a later take
 reclaims it, bumping the attempt), so nothing ever writes `expired`, and diagnostics deliberately

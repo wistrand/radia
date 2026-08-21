@@ -100,6 +100,39 @@ export async function seedWorld(admin: RadiaClient): Promise<void> {
   }
 }
 
+/**
+ * Start each NPC's ambient clock, if it is not already running.
+ *
+ * One deferred `npc_turn` per NPC. From there the NPC keeps its own chain going by acking each beat
+ * with the next one (`npc.ts`), so this runs once in the life of a world and nothing holds an
+ * interval anywhere.
+ *
+ * THE EXISTENCE CHECK IS THE WHOLE OF IT, and it is not an optimisation: seeding a second cue would
+ * give one NPC two clocks, both self-perpetuating, with nothing to notice or stop them. A content
+ * key would not do the job on its own, because idempotency expires (7 days) and a launcher re-run
+ * after that writes a fresh record. So the question asked is "does a cue exist at all", on the
+ * coordination plane, with `trigger` indexed for it.
+ *
+ * What this deliberately does NOT do is revive a chain that DIED (a cue dead-lettered after its
+ * attempts). That needs `radia remediate requeue`, because "no cue is pending" and "a cue is
+ * pending and overdue" are the same answer to a content-plane query, and guessing between them is
+ * how the double-clock gets in.
+ */
+export async function seedAmbient(admin: RadiaClient, delaySeconds = 5): Promise<string[]> {
+  const started: string[] = [];
+  for (const npc of NPCS) {
+    const existing = await admin.query({ kind: "npc_turn", match: { worldId: WORLD_ID, npc: npc.npc, trigger: "ambient" } }, 1);
+    if (existing.length > 0) continue;
+    await admin.put({
+      kind: "npc_turn",
+      body: { worldId: WORLD_ID, npc: npc.npc, roomId: npc.roomId, trigger: "ambient", tick: 0 },
+      availableAt: new Date(Date.now() + delaySeconds * 1000).toISOString(),
+    }, `ambient:${WORLD_ID}:${npc.npc}:0`);
+    started.push(npc.npc);
+  }
+  return started;
+}
+
 async function write(admin: RadiaClient, kind: string, keyPrefix: string, body: Record<string, unknown>): Promise<void> {
   await admin.put({ kind, body }, `${keyPrefix}:${await digest(body)}`);
 }

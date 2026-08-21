@@ -16,7 +16,7 @@
 import { RadiaClient } from "../../sdk/ts/client.ts";
 import { operatorToken } from "../operator.ts";
 import { registerMudKinds, WORLD_ID } from "./kinds.ts";
-import { NPCS, seedWorld } from "./world.ts";
+import { NPCS, seedAmbient, seedWorld } from "./world.ts";
 import { bootstrap, playerGrants } from "./roles.ts";
 
 const arg = (n: string) => {
@@ -61,6 +61,11 @@ const admin = new RadiaClient(url, { token: operatorToken(url) });
 await registerMudKinds(admin);
 await seedWorld(admin);
 const { narratorToken, npcTokens } = await bootstrap(admin);
+// Start each NPC's own clock, once in the life of a world. From here the NPCs keep their chains
+// going by acking each beat with the next, deferred: nothing in this process holds an interval,
+// and stopping the fleet pauses the world rather than losing it.
+const started = await seedAmbient(admin);
+if (started.length) console.error(`[setup] ambient clock started for ${started.join(", ")}`);
 
 // A player, as a minted principal. `--player alice` is repeatable; the definition token it prints
 // is durable, so it is the thing to keep out of a shell history in anything that is not a demo.
@@ -79,7 +84,18 @@ for (const name of args("--player")) {
 
 spawn(["examples/mud/narrator.ts", "--url", url, "--token", narratorToken]);
 for (const npc of NPCS) {
-  spawn(["examples/mud/npc.ts", "--url", url, "--npc", npc.npc, "--name", npc.name, "--token", npcTokens[npc.npc]]);
+  spawn([
+    "examples/mud/npc.ts",
+    "--url",
+    url,
+    "--npc",
+    npc.npc,
+    "--name",
+    npc.name,
+    "--token",
+    npcTokens[npc.npc],
+    ...(arg("--ambient-seconds") ? ["--ambient-seconds", arg("--ambient-seconds")!] : []),
+  ]);
 }
 
 const stop = () => {

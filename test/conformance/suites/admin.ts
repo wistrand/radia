@@ -2,10 +2,11 @@
 // bypasses lease fencing (fixing another worker's stuck record), so it is not a lease
 // settlement: reclaim only touches an EXPIRED lease, never a valid one. Runs on every adapter.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import type { Suite } from "../harness.ts";
 import type { StorageAdapter } from "../../../src/storage/adapter.ts";
 import { Space } from "../../../src/core/space.ts";
+import { RadiaError } from "../../../src/core/errors.ts";
 
 function newSpace(adapter: StorageAdapter): Space {
   const space = new Space(adapter);
@@ -126,6 +127,77 @@ export const remediateSuites: Suite[] = [
     },
   },
   {
+    // PLANTED REGRESSION. `expired` is evaluated in `Space.queryEnvelopes` AFTER the adapter's
+    // `LIMIT`, and the adapter orders by `available_at` (both dialects). So a page can be filled
+    // entirely by LIVE leases whose records are older, and the expired ones behind them are never
+    // examined: the verb reports nothing to do, and `more: false` stops `--drain`.
+    //
+    // The existing "bounded by limit with `more`" case above cannot see this, because every lease
+    // in it is expired: a homogeneous population never exercises the pre-filter cap.
+    name: "remediate: expired leases hidden behind a page of LIVE ones are still found",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      // Ten live leases FIRST, so their `available_at` is the oldest and they lead the page.
+      for (let i = 0; i < 10; i++) {
+        const { id } = await space.put({ kind: "task", body: { tag: "live" } });
+        await space.take({ recordId: id }, { leaseSeconds: 300 });
+      }
+      // Three stuck ones behind them. Claimed BY ID so a pattern take cannot re-rank them.
+      const stuck: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        const { id } = await space.put({ kind: "task", body: { tag: "stuck" } });
+        await space.take({ recordId: id }, { leaseSeconds: -1 });
+        stuck.push(id);
+      }
+
+      const out = await space.remediate("reclaim", { state: "leased", expired: true, limit: 5 });
+      assertEquals(out.applied, 3, "every expired lease must be reclaimed, whatever sits in front of it");
+      for (const id of stuck) {
+        assertEquals((await space.getEnvelope(id))?.state, "available", "a stuck record must come back");
+      }
+    },
+  },
+  {
+    // The other half, and the one that makes it silent: a page emptied by the post-filter reports
+    // `more: false`, so `radia reclaim --all --drain` stops on the first page and says it is done.
+    name: "remediate: a page emptied by the expired filter does not claim to be the end",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      for (let i = 0; i < 10; i++) {
+        const { id } = await space.put({ kind: "task", body: { tag: "live" } });
+        await space.take({ recordId: id }, { leaseSeconds: 300 });
+      }
+      const { id: stuck } = await space.put({ kind: "task", body: { tag: "stuck" } });
+      await space.take({ recordId: stuck }, { leaseSeconds: -1 });
+
+      const page = await space.remediate("reclaim", { state: "leased", expired: true, limit: 5 });
+      assert(
+        page.applied > 0 || page.more,
+        `a caller that drains until 'more' is false must not be told the work is done: ` +
+          `applied=${page.applied} more=${page.more}`,
+      );
+    },
+  },
+  {
+    // Diagnostics reads the same way (`inspection.ts`: state=leased, expired, limit SAMPLE=500), so
+    // `radia doctor` under-reports on the same shape once a space holds more than 500 live leases.
+    // Sized to the constant on purpose: a smaller population passes for the wrong reason, and a
+    // test that cannot fail is one nobody has tested.
+    name: "diagnostics: stuck leases are counted behind a full page of live ones",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      for (let i = 0; i < 501; i++) {
+        const { id } = await space.put({ kind: "task", body: { tag: "live" } });
+        await space.take({ recordId: id }, { leaseSeconds: 300 });
+      }
+      const { id: stuck } = await space.put({ kind: "task", body: { tag: "stuck" } });
+      await space.take({ recordId: stuck }, { leaseSeconds: -1 });
+
+      const d = await space.diagnostics();
+      assertEquals(d.stuckLeases.count, 1, "one lapsed lease, whatever else is leased");
+    },
+  },
+  {
     name: "remediate: a VALID lease is never reclaimed by the expired selector",
     run: async (adapter) => {
       const space = newSpace(adapter);
@@ -152,6 +224,67 @@ export const remediateSuites: Suite[] = [
       const d = await space.diagnostics();
       assertEquals(d.counts.dead_letter, 0);
       assert(d.counts.available >= 4);
+    },
+  },
+  {
+    // The selector's kind filter, which is what makes a shared space's backlog drainable: an
+    // operator fixing one app must not revive another app's dead-lettered work.
+    name: "remediate: a kind selector drains one app's backlog and leaves the other's alone",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      space.registerKind({ kind: "chore", indexedPaths: [] });
+      const mine: string[] = [];
+      const theirs: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        const a = await space.put({ kind: "task", body: { tag: "x" } });
+        const b = await space.put({ kind: "chore", body: { tag: "x" } });
+        mine.push(a.id);
+        theirs.push(b.id);
+        await space.forceDeadLetter(a.id);
+        await space.forceDeadLetter(b.id);
+      }
+
+      const out = await space.remediate("requeue", { state: "dead_letter", kinds: ["task"] });
+      assertEquals(out.applied, 3, "every dead-lettered task, and only those");
+      for (const id of mine) assertEquals((await space.getEnvelope(id))?.state, "available");
+      for (const id of theirs) {
+        assertEquals((await space.getEnvelope(id))?.state, "dead_letter", "another kind must be untouched");
+      }
+    },
+  },
+  {
+    // A kind filter must NARROW a scoped caller's read, never widen it. The grant scope and the
+    // caller's kinds are separate SQL clauses, ANDed, so naming a kind outside the scope answers
+    // nothing rather than reaching it.
+    name: "envelope query: a kind outside the caller's scope answers nothing, not the kind",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      space.registerKind({ kind: "chore", indexedPaths: [] });
+      await space.put({ kind: "task", body: { tag: "x" } });
+      await space.put({ kind: "chore", body: { tag: "x" } });
+
+      const scoped = { kinds: ["task"] };
+      const inScope = await space.queryEnvelopes({ state: "available", kinds: ["task"], scope: scoped });
+      assertEquals(inScope.length, 1, "a kind inside the scope is answered");
+      const outOfScope = await space.queryEnvelopes({ state: "available", kinds: ["chore"], scope: scoped });
+      assertEquals(outOfScope.length, 0, "a kind outside the scope must not be reachable by naming it");
+    },
+  },
+  {
+    // Refused, not silently empty. The reference-kind guard would subtract the named kind and
+    // answer `matched: 0`, which reads as "nothing to fix" rather than "not a thing to fix".
+    name: "remediate: naming a reference kind is refused rather than answered with zero",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      space.registerKind({ kind: "note", indexedPaths: [], claimable: false });
+      await space.put({ kind: "note", body: { tag: "x" } });
+
+      const e = await assertRejects(
+        () => space.remediate("dead-letter", { state: "available", kinds: ["note"] }),
+        RadiaError,
+      );
+      assertEquals((e as RadiaError).code, "kind_not_remediable");
+      assertEquals((await space.query({ kind: "note" }, 10)).length, 1, "and it is still there");
     },
   },
   {

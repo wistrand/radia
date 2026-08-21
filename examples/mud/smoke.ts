@@ -13,12 +13,13 @@
 //   4. a room's occupant list is a PROJECTION: somebody who left is not still standing there
 //   5. a player cannot type as somebody else       (the runtime refuses the write)
 //   6. an NPC cannot speak in a room it is not in  (the runtime refuses the write)
+//   7. an NPC acts on its OWN clock, by acking each beat with the next one deferred
 
 import { RadiaClient, RadiaClientError, type RadiaRecord } from "../../sdk/ts/client.ts";
 import { readRegistry } from "../../sdk/ts/registry.ts";
 import { operatorToken } from "../operator.ts";
 import { registerMudKinds, WORLD_ID } from "./kinds.ts";
-import { seedWorld } from "./world.ts";
+import { seedAmbient, seedWorld } from "./world.ts";
 import { bootstrap, npcAgent, playerGrants } from "./roles.ts";
 import { narratorLoop } from "./narrator.ts";
 import { npcLoop } from "./npc.ts";
@@ -57,8 +58,17 @@ const { narratorToken, npcTokens } = await bootstrap(admin);
 
 const stop = new AbortController();
 narratorLoop(new RadiaClient(url, { definitionToken: narratorToken }), { signal: stop.signal });
-npcLoop(new RadiaClient(url, { definitionToken: npcTokens.gatekeeper }), "gatekeeper", "the gatekeeper", { signal: stop.signal });
-npcLoop(new RadiaClient(url, { definitionToken: npcTokens.barkeep }), "barkeep", "the barkeep", { signal: stop.signal });
+// One second between ambient beats, against thirty in a real world: the chain has to be observable
+// inside a test, and the interval is a parameter for exactly that reason.
+const AMBIENT = 1;
+npcLoop(new RadiaClient(url, { definitionToken: npcTokens.gatekeeper }), "gatekeeper", "the gatekeeper", {
+  signal: stop.signal,
+  ambientSeconds: AMBIENT,
+});
+npcLoop(new RadiaClient(url, { definitionToken: npcTokens.barkeep }), "barkeep", "the barkeep", {
+  signal: stop.signal,
+  ambientSeconds: AMBIENT,
+});
 
 /** A player, exactly as `run.ts` mints one. */
 async function mintPlayer(name: string): Promise<{ principal: string; client: RadiaClient }> {
@@ -204,7 +214,62 @@ check("…and the arrival in the room entered",
     asAlice instanceof RadiaClientError ? asAlice.code : "the write succeeded");
 }
 
-// ---- 7. two NPCs in two rooms do not answer each other ----
+// ---- 7. an NPC acts on its own clock ----
+//
+// The whole point of `PutRequest.availableAt` (agent_docs/plan-milestones.md, "delayed
+// visibility"): no process holds an interval, and a phase-6 workspace NPC could not hold one.
+{
+  const started = await seedAmbient(admin, 0);
+  check("seeding starts one ambient chain per NPC", started.length === 2, started.join(" "));
+  check("…and seeding again starts none, so a restart cannot leave an NPC with two clocks",
+    (await seedAmbient(admin, 0)).length === 0);
+
+  // A beat the world can see. Which tick that lands on is the chain's business, so this waits for
+  // ANY ambient line rather than asserting on a particular one.
+  const ambientLine = await until(async () =>
+    (await feed("gate")).some((l) => l.actor === npcAgent("gatekeeper") && l.verb === "emote"), 15_000);
+  check("the gatekeeper acts with nobody in the room", ambientLine);
+
+  // The chain, read back: the cue that produced that line was consumed and its successor exists,
+  // deferred. Atomic consume-and-emit is why there can never be one without the other.
+  const cues = (await admin.query({ kind: "npc_turn", match: { worldId: WORLD_ID, npc: "gatekeeper", trigger: "ambient" } }, 50))
+    .map((r) => r.body as { tick: number });
+  const ticks = cues.map((c) => c.tick).sort((a, b) => a - b);
+  check("…and each beat acked the next one, so the chain carries itself", ticks.length >= 2, `ticks ${ticks.join(",")}`);
+  check("…with no beat repeated, so one NPC ran one clock", new Set(ticks).size === ticks.length, `ticks ${ticks.join(",")}`);
+
+  // FILTERED CLIENT-SIDE ON PURPOSE, and not for want of trying: `GET /v0/ops/records` takes
+  // `state`, `expired`, `stale` and `limit`, and no kind (`handleEnvelopeQuery`). Passing `kind`
+  // there is silently ignored, which is worse than being refused: the answer looks filtered.
+  // Filtering on `record.kind` here is also why the `npc` DEFINITION records do not land in this
+  // count, since those sit `available` forever and carry an `npc` field of their own.
+  //
+  // The 200 is a bounded read used as a population, which is normally the trap. It is safe here in
+  // one direction only: a beat that fell off the page makes this FAIL, never pass.
+  const pending = await admin.queryEnvelopes({ state: "available", limit: 200 });
+  const waiting = pending.filter((p) =>
+    p.record?.kind === "npc_turn" && (p.record.body as { npc?: string }).npc === "gatekeeper"
+  );
+  check("…and exactly one beat is waiting its turn", waiting.length === 1, `${waiting.length} pending`);
+}
+
+// ---- 8. an NPC cannot wind another NPC's clock ----
+{
+  const gatekeeper = new RadiaClient(url, { definitionToken: npcTokens.gatekeeper });
+  const beat = (npc: string) => ({
+    kind: "npc_turn",
+    body: { worldId: WORLD_ID, npc, roomId: "gate", trigger: "ambient", tick: 99 },
+    availableAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const own = await gatekeeper.put(beat("gatekeeper")).then(() => "written").catch((e) => e);
+  check("an NPC may schedule itself", own === "written", own instanceof RadiaClientError ? own.code : "");
+  const other = await gatekeeper.put(beat("barkeep")).then(() => null).catch((e) => e);
+  check("an NPC cannot schedule another NPC",
+    other instanceof RadiaClientError && other.status === 403,
+    other instanceof RadiaClientError ? other.code : "the write succeeded");
+}
+
+// ---- 9. two NPCs in two rooms do not answer each other ----
 //
 // The cue rule: only a PLAYER-caused event produces an `npc_turn`. Without it two NPCs sharing a
 // room would trade lines until somebody stopped one of them, so the guard is checked here rather

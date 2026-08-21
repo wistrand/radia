@@ -46,5 +46,9 @@ export function statusFor(code: string, fallback: number): number {
   // the WORK it would cause. The same pattern succeeds against a smaller kind, and narrowing it or
   // paging with `after` is a retry the caller can actually make.
   if (code === "scan_budget_exceeded") return 429;
+  // 422 rather than 400: the request is well formed and the kind exists. What it asks for is a
+  // remediation this verb refuses to perform on reference data, and saying so is the point (an
+  // empty 200 would read as "nothing to fix").
+  if (code === "kind_not_remediable") return 422;
   return fallback;
 }
