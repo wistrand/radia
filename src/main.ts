@@ -202,6 +202,7 @@ async function dev(args: string[]): Promise<number> {
   // no explanation.
   const stopping = new AbortController();
   const unlisten = onShutdown(() => stopping.abort());
+  let served = false;
 
   try {
     let finished: Promise<void>;
@@ -219,6 +220,7 @@ async function dev(args: string[]): Promise<number> {
       }
       throw e;
     }
+    served = true;
     // Bind succeeded (`serve` throws synchronously on a taken port), so only NOW touch the
     // shared credential file: a second dev aimed at an occupied base used to overwrite the running
     // space's operator entry before losing the port race, then delete it in the finally below.
@@ -250,7 +252,8 @@ async function dev(args: string[]): Promise<number> {
     if (dormant > 0) {
       console.log(`radia dev: ${dormant} credential ${dormant === 1 ? "entry has" : "entries have"} not been rewritten in ${CREDENTIAL_STALE_DAYS} days (radia credentials --prune)`);
     }
-    console.log(`radia dev: operator token (console sign-in, curl): ${operatorToken}`);
+    console.log(`radia dev: console sign-in ${base}/#token=${encodeURIComponent(operatorToken)}`);
+    console.log(`radia dev: operator token (curl, RADIA_TOKEN): ${operatorToken}`);
     if (!authRequired) {
       console.log(`radia dev: --auth open. A request with no Authorization header is the OPERATOR.`);
     }
@@ -268,6 +271,10 @@ async function dev(args: string[]): Promise<number> {
     if (!dbPath) clearObserver(base);
     await storage.close();
     unlock?.(); // after the adapter closed, so nothing else can open these files first
+    // Ctrl-C printed nothing, so the one step that decides whether the next CLI call 401s was
+    // invisible. Only for a start that served: the port-in-use path reaches here having written
+    // nothing to clean up.
+    if (served) console.log(`radia dev: stopped (operator credential cleared${dbPath ? `, data kept at ${dbPath}` : ", in-memory data gone"})`);
   }
 }
 

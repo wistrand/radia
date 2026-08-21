@@ -2513,7 +2513,11 @@ export class Space {
       erasures: (opts) => this.erasures(opts),
       // Retention only: the doctor's backlog number should not pay for a registry walk on every
       // diagnostics call, and a superseded successor is bookkeeping, not a finding.
-      gcBacklog: () => this.gc({ dryRun: true, compact: false }),
+      // `compact: true` so the report is not the small number: `doctor` counted only records past
+      // retention while `gc` also reported 181 superseded registry entries on the same space. The
+      // dry compaction walk is bounded per kind (`MAX_WALK`, gc.ts) and diagnostics is on demand in
+      // both surfaces, never polled.
+      gcBacklog: () => this.gc({ dryRun: true, compact: true }),
       verifyIntegrity: (tail?: number) => this.verifyIntegrity(tail === undefined ? {} : { tail }),
       getLineage: (id, max, createdBy) => this.getLineage(id, max, createdBy),
       getChildren: (id, limit) => this.getChildren(id, limit),

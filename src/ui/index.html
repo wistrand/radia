@@ -846,6 +846,14 @@ async function loadDoctor() {
     const kinds = Object.entries(sw.byKind || {}).map(([k, n]) => `${esc(k)}=${n}`).join("  ");
     out.push(`<div class="note info"><b>sweepable:</b> ${sw.eligible}${sw.atLeast ? "+" : ""} records past retention (${kinds}) — <code>radia gc --run</code> reclaims</div>`);
   }
+  // Its own row rather than added to the one above: a retention sweep and a registry keeping its
+  // newest entry per key are different things, and reporting only the first made the console and
+  // `radia gc` disagree about how much a sweep would reclaim.
+  const cp = d.compactable;
+  if (cp && cp.superseded > 0) {
+    const ck = Object.entries(cp.byKind || {}).map(([k, n]) => `${esc(k)}=${n}`).join("  ");
+    out.push(`<div class="note info"><b>compactable:</b> ${cp.superseded}${cp.atLeast ? "+" : ""} superseded registry entries (${ck}) — <code>radia gc --run</code> reclaims</div>`);
+  }
   const ev = d.eventsSweepable;
   if (ev && (ev.eligible > 0 || ev.unsealed > 0)) {
     out.push(`<div class="note info"><b>event log:</b> `

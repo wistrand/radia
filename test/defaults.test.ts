@@ -388,3 +388,112 @@ Deno.test("cli: query reads NEWEST first, and a full page says so and hands over
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("cli: what a table prints can be fed back in, and the two kind verbs say which is which", async () => {
+  // Three papercuts with one thing in common: the output was true and unusable
+  // (plan-startup-ergonomics.md item 9). The table printed `id.slice(-8)`, so the obvious next
+  // command answered "no record"; `kinds` and `stats` disagreed about what exists, both correct,
+  // neither saying that one means DECLARED and the other PRESENT.
+  const { startServer } = await import("../src/server/http.ts");
+  const { Space } = await import("../src/core/space.ts");
+  const { SqliteAdapter } = await import("../src/storage/sqlite.ts");
+  const { runCli } = await import("../src/surfaces/cli.ts");
+  const adapter = new SqliteAdapter(":memory:");
+  await adapter.init();
+  const stopping = new AbortController();
+  const dir = await Deno.makeTempDir({ prefix: "radia-cliprint-" });
+  Deno.env.set("RADIA_CREDENTIALS", `${dir}/credentials.json`);
+  const log = console.log;
+  const lines: string[] = [];
+  console.log = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
+  try {
+    const space = new Space(adapter);
+    // Declared the way every client declares: a `kind_def` RECORD, which is what a remote reader
+    // can see. (`registerKind` is in-process and writes nothing.)
+    await space.put({ kind: "kind_def", body: { kind: "note", indexedPaths: [{ path: "i", type: "number" }], claimable: false } });
+    await space.put({ kind: "note", body: { i: 1 } });
+    await space.put({ kind: "undeclared_kind", body: { i: 2 } }); // allowed: a put must not race a declaration
+    const port = 7896;
+    const url = `http://127.0.0.1:${port}`;
+    startServer({ port, space, artifactPort: undefined, signal: stopping.signal });
+
+    // The id in the table is the id `get` takes. This is the round trip, not a format assertion.
+    assertEquals(await runCli("query", ["note", "--url", url]), 0);
+    const id = lines.join("\n").match(/\b(01[0-9A-HJKMNP-TV-Z]{24})\b/)?.[1];
+    assert(id, `no whole record id in the table: ${lines.join("\n")}`);
+    lines.length = 0;
+    assertEquals(await runCli("get", [id!, "--url", url]), 0, "the id the table printed was refused by get");
+    assert(lines.join("").includes('"kind": "note"'), `get returned something else: ${lines.join("")}`);
+    lines.length = 0;
+
+    // DECLARED vs PRESENT, said by whichever verb the reader is holding.
+    assertEquals(await runCli("kinds", ["--url", url]), 0);
+    assert(/DECLARED/.test(lines.join("\n")), `kinds must say which question it answers: ${lines.join("\n")}`);
+    lines.length = 0;
+
+    assertEquals(await runCli("stats", ["--url", url]), 0);
+    const stats = lines.join("\n");
+    assert(stats.includes("undeclared_kind is not declared"), `stats must name the undeclared kind: ${stats}`);
+    const named = stats.split("PRESENT kinds")[1] ?? "";
+    assert(!named.includes("note,") && !named.includes(" note "), `a DECLARED kind was called undeclared: ${stats}`);
+    assert(!named.includes("kind_def"), `a RESERVED kind was called undeclared: ${stats}`);
+  } finally {
+    console.log = log;
+    stopping.abort();
+    await adapter.close();
+    Deno.env.delete("RADIA_CREDENTIALS");
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("cli: a version skew between this build and the space is named, not resolved", async () => {
+  // `radia version` reports the CLI build and `health` the space's, and they differed (0.0.1
+  // against 0.0.0) with nothing saying so, which turns every later surprise into a hunt. A stub
+  // space, because the real one always answers with this build's own version.
+  const { runCli } = await import("../src/surfaces/cli.ts");
+  const { VERSION } = await import("../src/version.ts");
+  const dir = await Deno.makeTempDir({ prefix: "radia-skew-" });
+  Deno.env.set("RADIA_CREDENTIALS", `${dir}/credentials.json`);
+  const log = console.log;
+  const lines: string[] = [];
+  console.log = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
+  let served = "9.9.9"; // what the stub space claims to be
+  const server = Deno.serve({ port: 0, hostname: "127.0.0.1", onListen: () => {} }, () =>
+    Response.json({ status: "ok", version: served, api: "v0", storage: "stub", now: new Date().toISOString(), principal: "human:local" }));
+  const base = `http://127.0.0.1:${(server.addr as Deno.NetAddr).port}`;
+  try {
+    assertEquals(await runCli("health", ["--url", base]), 0);
+    assert(
+      lines.join("\n").includes(`this CLI is ${VERSION} and the space is 9.9.9`),
+      `a version skew must be named: ${lines.join("\n")}`,
+    );
+    lines.length = 0;
+
+    // And silent when they match: a note on every call is a note nobody reads.
+    served = VERSION;
+    assertEquals(await runCli("health", ["--url", base]), 0);
+    assert(!lines.join("\n").includes("this CLI is"), `matching versions must say nothing: ${lines.join("\n")}`);
+  } finally {
+    console.log = log;
+    await server.shutdown();
+    Deno.env.delete("RADIA_CREDENTIALS");
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("dev: a start hands over a LINK, and a stop says the credential is gone", async () => {
+  // What a person meets at both ends of a space's life (plan-startup-ergonomics.md item 9). The
+  // start printed a 48-character token to paste by hand, while `login --console` already built the
+  // fragment link the page understands; the stop printed nothing at all, hiding the one step that
+  // decides whether the next CLI call 401s. Source-read like the `--auth` default above, since
+  // `main.ts` runs on import and cannot be driven in-process.
+  const main = await Deno.readTextFile(new URL("../src/main.ts", import.meta.url));
+  assert(/console sign-in \$\{base\}\/#token=\$\{encodeURIComponent\(operatorToken\)\}/.test(main), "dev no longer prints a console sign-in link");
+  assert(/operator token \(curl/.test(main), "…or no longer prints the raw token curl needs");
+  assert(/if \(served\) console\.log\(`radia dev: stopped/.test(main), "dev's shutdown is silent again");
+  // Conditional on having served: the port-in-use path reaches the same `finally` having written
+  // nothing, and must not claim it cleaned a credential up.
+  const stop = main.indexOf("radia dev: stopped");
+  const clear = main.indexOf("clearCredential(base, operatorToken)");
+  assert(clear >= 0 && clear < stop, "the stop line is printed before the cleanup it reports");
+});

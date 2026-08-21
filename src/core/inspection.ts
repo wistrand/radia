@@ -75,6 +75,11 @@ export interface Diagnostics {
    *  on demand, so without this row nobody learns there is anything to run. `atLeast` marks a
    *  capped count; ABSENT for a scoped caller, like the rows above. */
   sweepable?: { eligible: number; byKind: Record<string, number>; atLeast: boolean };
+  /** Superseded registry entries a compaction pass would delete (`radia gc`). Its own row, never
+   *  folded into `sweepable`: this is bookkeeping rather than a finding, and summing the two would
+   *  hide which number a retention policy actually governs. Reported because `doctor` said "19
+   *  sweepable" where `gc` said 19 plus 181, so the number a person acted on was the small one. */
+  compactable?: { superseded: number; byKind: Record<string, number>; atLeast: boolean };
   /** Event-log retention backlog, present when `eventRetentionSeconds` is configured. `unsealed`
    *  is the seal-first debt: those events cannot sweep (or be truncation candidates) until a gc
    *  seals them, and on a never-doctored space it is the whole log, so without this row the first
@@ -141,6 +146,7 @@ export interface InspectionHost {
     byKind: Record<string, number>;
     more: boolean;
     events?: { enabled: boolean; eligible: number; unsealed: number };
+    compaction?: { superseded: number; byKind: Record<string, number>; more: boolean };
   }>;
   /** `tail` walks only the newest N links; a health report has no business re-verifying the
    *  whole history on every run. */
@@ -412,6 +418,15 @@ export async function diagnostics(h: InspectionHost, scope?: StatsScope): Promis
     // Reported even at zero (an operator asking "is there anything to sweep" deserves the number),
     // but only when it IS zero-or-more of something the caller may see.
     ...(backlog ? { sweepable: { eligible: backlog.eligible, byKind: backlog.byKind, atLeast: backlog.more } } : {}),
+    ...(backlog?.compaction && backlog.compaction.superseded > 0
+      ? {
+        compactable: {
+          superseded: backlog.compaction.superseded,
+          byKind: backlog.compaction.byKind,
+          atLeast: backlog.compaction.more,
+        },
+      }
+      : {}),
     ...(backlog?.events?.enabled
       ? { eventsSweepable: { eligible: backlog.events.eligible, unsealed: backlog.events.unsealed } }
       : {}),

@@ -68,6 +68,7 @@ deno task demo              # a coordination demo (planner + workers + aggregato
 deno task chat              # a CLI LLM chatbot (needs OPENROUTER_API_KEY): thinking, tools, images
                             # and sandboxed code execution are all records; watch the Feed tab
 deno task stress            # fill a space with waves of activity to watch in the Space tab
+deno task cli <verb>        # the CLI from a checkout: `deno task cli health`, `deno task cli doctor`
 deno task test              # check + every test below
 deno task test:runtime      # everything under test/, incl. the port contract suites
 deno task test:conformance  # the port contract alone (storage adapters + the blob store)

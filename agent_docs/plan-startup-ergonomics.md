@@ -3,7 +3,7 @@
 Ergonomics backlog, measured 2026-08-20 by starting, restarting, killing and inspecting real
 spaces: an isolated lab (`RADIA_DIR`/`RADIA_CREDENTIALS` in a scratchpad, ports 7911-7922) plus
 read-only verbs against a four-day-old live space. Every number below was observed, not inferred.
-Items 1-6 are BUILT (2026-08-21); 7-9 are open, in the order to spend effort in.
+Items 1-7 and most of 9 are BUILT (2026-08-21). Item 8 and one entry in 9 are open.
 
 The target property: a person restarts a space, or looks at one, and is never surprised. The two
 failures that broke it (items 1 and 2) are closed, and the rest is residue nobody reports.
@@ -133,13 +133,19 @@ client is the one that needs the answer and it has not signed in yet. `radia hea
 `persisted`/`in-memory` on its first line and `instance=… started=…` on a second. Guard:
 `test/http.test.ts`, "health says WHICH space this is".
 
-## 7. `doctor` undercounts what `gc` would reclaim
+## 7. `doctor` undercounts what `gc` would reclaim (BUILT)
 
 `doctor` reported "19 sweepable" where `radia gc` dry-run reported 19 sweepable plus "181
 superseded registry entries: agent_run=153 chat_fleet=28" on the same space. Deliberate
 (`gcBacklog: () => this.gc({ dryRun: true, compact: false })`, commented "a superseded successor is
 bookkeeping, not a finding"), but the effect is that the number a person acts on is the small one.
-One extra line in the report closes it.
+BUILT: `gcBacklog` asks for `compact: true`, and the compaction backlog is reported as its own
+`compactable` row rather than added to `sweepable`, since a retention policy expiring records and a
+registry keeping its newest entry per key are different things. Both surfaces print it (`radia
+doctor`, the console's Overview), and the guard asserts `doctor` and `gc` report the SAME number,
+which is the disagreement that started this. The dry compaction walk is bounded per kind
+(`MAX_WALK`, `src/core/gc.ts`) and diagnostics is on demand in both surfaces, never polled. Guard:
+`test/http.test.ts`, "diagnostics reports the compaction backlog".
 
 ## 8. Every fleet restart mints six permanent credentials
 
@@ -150,22 +156,35 @@ current, and the authorization surface grows one definition per worker per `--se
 reports it, and `radia permissions <agent>` shows grants rather than how many definitions hold
 them.
 
-## 9. Smaller papercuts, each a contained fix
+## 9. Smaller papercuts, each a contained fix (BUILT, except the committed bundle)
 
-- **The human table's id cannot be fed to `get`.** `recordTable` prints `r.id.slice(-8)` and
-  `radia get TDK8RZPW` answers "no record"; the drill-down needs a `--json` re-run first.
+Guards: `test/defaults.test.ts` ("what a table prints can be fed back in", "a version skew … is
+named", "a start hands over a LINK").
+
+- **The human table's id cannot be fed to `get`.** FIXED by printing the id WHOLE and shortening
+  the body preview instead: the body is a preview either way and `--json` carries all of it, while
+  an id that cannot be used is noise. The guard is the round trip (table -> `get`), not a format.
 - **`kinds` and `stats` disagree about what exists.** A `put` of an undeclared kind succeeds by
   design (`space.ts`: an unknown kind is not an error, since a put must not race a fleet's
   declaration), so `stats` lists `task` while `kinds` says "(no kinds declared)". Both are right;
-  neither says that one means DECLARED and the other PRESENT.
-- **Starting a space prints a 48-character token, not a link**, though `login --console` already
-  builds `${base}/#token=…` and `dev()` holds both halves. The line a reader wants (`listening on
-  …`) is fifth of nine and the token is last.
-- **No `deno task` for the CLI**, so every inspect command is `deno run -A src/main.ts <verb>`
-  while all documentation reads `radia <verb>`. A `"cli": "deno run -A src/main.ts"` task closes it.
-- **Clean shutdown prints nothing**, so Ctrl-C gives no confirmation that the credential cleanup
-  ran, which is the step that decides whether the next CLI call 401s.
-- **Version skew is visible but unflagged**: `radia version` reports the CLI build, `health` the
-  space's, and they differed (0.0.1 against 0.0.0) with nothing saying so.
+  neither said that one means DECLARED and the other PRESENT. FIXED: each verb now says which
+  question it answers, and `stats` names the undeclared kinds it is holding. RESERVED kinds are
+  excluded from that list, since they are declared IN CODE and have no `kind_def` record, so calling
+  them undeclared would be a new wrong answer for an old one.
+- **Starting a space prints a 48-character token, not a link.** FIXED: `dev` prints the same
+  fragment sign-in link `login --console` builds, and keeps the raw token on its own line for `curl`
+  and `RADIA_TOKEN`. The line ORDER is unchanged and still worth revisiting: `listening on …` is
+  fifth of ten.
+- **No `deno task` for the CLI.** FIXED: `deno task cli <verb>`, beside `dev` and `mcp` in the task
+  table, so a checkout can run what the docs write as `radia <verb>`.
+- **Clean shutdown prints nothing.** FIXED: a stop line naming what happened to the credential and
+  to the data. Conditional on having SERVED, since the port-in-use path reaches the same `finally`
+  having written nothing and must not claim it cleaned anything up.
+- **Version skew is visible but unflagged.** FIXED: `radia health` names it when the two differ and
+  says nothing when they match. Named, never resolved: mixing versions is allowed, and a note on
+  every call is a note nobody reads.
 - **`examples/chat/web/app.js` is a committed minified bundle**, so a repo-wide grep dumps 40KB
-  single lines into the terminal.
+  single lines into the terminal. OPEN, and the only entry here that is not a papercut: the browser
+  playground bundle is gitignored as a build output, so consistency says this should be too, but it
+  changes what `chat --serve --web` needs from a clean checkout and wants a build-or-fail path
+  rather than a `.gitignore` line.

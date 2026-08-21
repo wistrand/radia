@@ -8,6 +8,7 @@
 // known kinds.
 
 import { RadiaClient, RadiaClientError } from "../../sdk/ts/client.ts";
+import { RESERVED_KINDS } from "../../sdk/ts/wire.ts";
 // TYPE ONLY, which the layering guard exempts because it is erased: a surface may not hold a
 // runtime VALUE from `src/core`, and a shape is not one. Restating it here instead is what let the
 // two drift, and the drift compiled: `doctor` grew a `spotCheckedFrom` the CLI's private copy did
@@ -50,7 +51,7 @@ Inspect
   health                              backend, DB clock, resolved principal
   stats                               record counts by kind and state
   doctor                              diagnostics: dead-letters, stuck leases, stale work,
-                                      erasures that no longer hold, sweepable retention backlog
+                                      erasures that no longer hold, sweepable + compactable backlog
   gc [--run] [--limit <n>]            the retention sweep. Prints what would go; --run deletes it
   rewrap [--run]                      re-seal artifact bytes under the current blob key, so a retired one can be destroyed
   erasures [--undone]                 every shred, and whether its payload is still gone
@@ -352,6 +353,12 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
         const where = h.persistent === undefined ? "" : `  ${h.persistent ? "persisted" : "in-memory"}`;
         let line = `${h.storage}${where}  principal=${h.principal}  now=${h.now}  v${h.version}`;
         if (h.instance) line += `\ninstance=${h.instance}${h.startedAt ? `  started=${h.startedAt}` : ""}`;
+        // Two builds, two homes: this binary reports the version it compiled in, the space reports
+        // its own. They differed (0.0.1 against 0.0.0) with nothing saying so, which turns every
+        // later surprise into a hunt. Named, not resolved: mixing versions is allowed.
+        if (h.version && h.version !== VERSION) {
+          line += `\nnote: this CLI is ${VERSION} and the space is ${h.version}. A verb this build knows may not exist there`;
+        }
         // `GET /v0/health` is public, so a REJECTED token still returns 200, as `anonymous`.
         // Without this note that reads as "no credential" rather than "bad credential".
         if (ctx.token && h.principal === "anonymous") {
@@ -365,10 +372,19 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
 
     case "stats": {
       const rows = await client.getStats();
+      // PRESENT, not declared: an undeclared kind can hold records (see `kinds`), and marking them
+      // here is what stops the two verbs from looking like they disagree.
+      // RESERVED kinds are declared IN CODE and have no `kind_def` record, so they are absent from
+      // `listKinds` and naming them here as undeclared would be a new wrong answer for an old one.
+      const declared = new Set([...RESERVED_KINDS, ...(await client.listKinds().catch(() => [])).map((d) => d.kind)]);
+      const undeclared = rows.filter((r) => !declared.has(r.kind)).map((r) => r.kind);
       return out(ctx, rows, () =>
-        rows.length
+        (rows.length
           ? table(["KIND", "STATE", "COUNT"], rows.map((r) => [r.kind, r.state, String(r.count)]))
-          : "(empty space)"
+          : "(empty space)") +
+        (undeclared.length
+          ? `\nPRESENT kinds. ${[...new Set(undeclared)].join(", ")} ${undeclared.length === 1 ? "is" : "are"} not declared, so nothing indexes ${undeclared.length === 1 ? "it" : "them"} (radia kinds)`
+          : "")
       );
     }
 
@@ -710,6 +726,14 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           const kinds = Object.entries(sw.byKind).map(([k, n]) => `${k}=${n}`).join("  ");
           lines.push(`sweepable: ${sw.eligible}${sw.atLeast ? "+" : ""} records past retention (${kinds}) — radia gc to reclaim`);
         }
+        // The other half of the same backlog. Separate line because the two are different things:
+        // one is a retention policy expiring records, the other is a registry keeping only its
+        // newest entry per key. Reporting only the first made `doctor` disagree with `gc`.
+        const cp = d.compactable;
+        if (cp) {
+          const ckinds = Object.entries(cp.byKind).map(([k, n]) => `${k}=${n}`).join(" ");
+          lines.push(`compactable: ${cp.superseded}${cp.atLeast ? "+" : ""} superseded registry entries (${ckinds}) — radia gc to reclaim`);
+        }
         // Two separate lines on purpose: the seal-first debt is why an event backlog can read as
         // zero, and on a never-doctored space it is the whole log, so the first gc looks hung
         // without this.
@@ -818,15 +842,18 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
 
     case "kinds": {
       const defs = await client.listKinds();
+      // DECLARED, which is not the same set as PRESENT: a put of an undeclared kind succeeds by
+      // design (it must not race a fleet's declaration), so `stats` can list a kind this does not.
+      // Both were right and neither said which question it answered.
       return out(ctx, defs, () =>
-        defs.length
+        (defs.length
           ? table(["KIND", "INDEXED", "SORTABLE", "CLAIMABLE"], defs.map((d) => [
             d.kind,
             (d.indexedPaths ?? []).map((p) => p.path).join(",") || "-",
             (d.sortablePaths ?? []).join(",") || "-",
             String(d.claimable ?? true),
           ]))
-          : "(no kinds declared)"
+          : "(no kinds declared)") + "\nDECLARED kinds. `radia stats` lists what is PRESENT; a record of an undeclared kind is allowed and indexes nothing"
       );
     }
 
@@ -1801,9 +1828,12 @@ function usage(line: string): number {
   return 2;
 }
 
+/** The id is printed WHOLE, because the next thing anyone does with a row is `radia get <id>` and
+ *  a truncated ULID answers "no record". The body is what gives way instead: it is a preview here,
+ *  and `--json` carries all of it. */
 function recordTable(recs: { id: string; kind: string; body: unknown }[]): string {
   if (!recs.length) return "(no records)";
-  return table(["ID", "KIND", "BODY"], recs.map((r) => [r.id.slice(-8), r.kind, truncate(JSON.stringify(r.body), 60)]));
+  return table(["ID", "KIND", "BODY"], recs.map((r) => [r.id, r.kind, truncate(JSON.stringify(r.body), 48)]));
 }
 
 function truncate(s: string, n: number): string {

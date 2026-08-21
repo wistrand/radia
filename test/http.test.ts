@@ -1344,3 +1344,28 @@ Deno.test("http: health says WHICH space this is, and whether it survives a rest
     await b.close();
   }
 });
+
+Deno.test("http: diagnostics reports the compaction backlog, not only the retention one", async () => {
+  // `radia doctor` said "19 sweepable" where `radia gc` said 19 sweepable PLUS 181 superseded
+  // registry entries on the same space (plan-startup-ergonomics.md item 7). Both numbers are real
+  // and they mean different things, so the report carried the small one and a person acted on it.
+  const { space, handler, close } = await newHandler();
+  try {
+    space.registerKind({ kind: "cap", indexedPaths: [{ path: "tool", type: "keyword" }], claimable: false, contentKey: ["tool"] });
+    await space.put({ kind: "cap", body: { tool: "search", v: 1 } });
+    await space.put({ kind: "cap", body: { tool: "search", v: 2 } });
+    await space.put({ kind: "cap", body: { tool: "search", v: 3 } }); // two superseded
+
+    const d = await (await handler(get("/v0/ops/diagnostics"))).json();
+    assertEquals(d.compactable?.superseded, 2, "the superseded registry entries are missing from the report");
+    assertEquals(d.compactable?.byKind?.cap, 2, "…or no longer say which registry they are in");
+    // The gc verb is the number this must agree with: the report exists to stop them diverging.
+    const gc = await (await handler(post("/v0/ops/gc", { dryRun: true }))).json();
+    assertEquals(d.compactable.superseded, gc.compaction?.superseded, "doctor and gc disagree about the backlog");
+    // Never folded into `sweepable`: a retention policy and a registry keeping its newest entry are
+    // different things, and summing them hides which one a retention setting governs.
+    assertEquals(d.sweepable?.eligible, 0, "compaction leaked into the retention count");
+  } finally {
+    await close();
+  }
+});
