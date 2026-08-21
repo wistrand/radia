@@ -35,6 +35,18 @@ const BINARY_TYPES = [
  * seconds is far above a real read and far below a person's patience. */
 const TIMEOUT_MS = 2000;
 
+/** How long the PROBE may take, which is a different question from a read.
+ *
+ * A read may legitimately be large; asking which types are on the clipboard is one IPC round trip
+ * and takes single-digit milliseconds when the clipboard answers at all. So the probe does not need
+ * a person's patience, it needs a spawn's: half a second is generous for a cold binary and is the
+ * whole cost when nothing answers.
+ *
+ * Measured: `wl-paste --list-types` NEVER RETURNS on a Wayland session where nothing owns the
+ * clipboard, which is the state of a fresh login. At the read timeout that was two seconds on every
+ * `deno task chat`, and it was two thirds of the startup. */
+const PROBE_TIMEOUT_MS = 500;
+
 /** Read an environment variable without requiring `--allow-env` to have been granted. */
 function env(name: string): string | undefined {
   try {
@@ -96,28 +108,55 @@ const READERS: Reader[] = [
 /**
  * Run a command, with a hard deadline.
  *
- * `null` means the tool is NOT THERE (could not spawn); a result with `ok: false` means it ran and
- * declined. Keeping those apart is not pedantry: `wl-paste --list-types` exits 1 on an EMPTY
- * clipboard, so conflating them made an idle clipboard look like a machine with no clipboard tool,
- * and the banner then told the truth's opposite ("no reader") to someone who had one installed.
+ * THREE outcomes, and every one of them is a different fact about the host:
+ *
+ *   null                    the tool is NOT THERE (could not spawn)
+ *   {ok: false}             it ran and DECLINED. `wl-paste --list-types` exits 1 on an EMPTY
+ *                           clipboard, so conflating this with the line above made an idle
+ *                           clipboard look like a machine with no clipboard tool, and the banner
+ *                           told the opposite of the truth to someone who had one installed.
+ *   {timedOut: true}        it never answered, and was killed.
+ *
+ * The third used to be folded into the second, which is how a tool that hung got REPORTED AS
+ * WORKING: `reader()` accepts anything non-null, a killed child resolves with `success: false`, and
+ * the banner then advertised a reader that could only ever hang again on Ctrl-V.
  */
-async function run(cmd: string[]): Promise<{ ok: boolean; out: Uint8Array } | null> {
+async function run(cmd: string[], timeoutMs = TIMEOUT_MS): Promise<{ ok: boolean; out: Uint8Array; timedOut: boolean } | null> {
   let child: Deno.ChildProcess;
   try {
     child = new Deno.Command(cmd[0], { args: cmd.slice(1), stdout: "piped", stderr: "null" }).spawn();
   } catch {
     return null; // not on PATH, or --allow-run does not cover it
   }
-  const timer = setTimeout(() => {
-    try {
-      child.kill("SIGKILL");
-    } catch { /* already gone */ }
-  }, TIMEOUT_MS);
+  // The deadline RETURNS, rather than trusting the kill to end the wait. `child.output()` resolves
+  // when stdout CLOSES, not when the child dies, so killing it is not enough whenever something
+  // else holds the write end: a `wl-paste` shipped as a shell wrapper leaves its real process
+  // holding the pipe, SIGKILL reaps the wrapper, and the read blocks forever. Measured at 60s
+  // against a wrapper that sleeps, which is the REPL-with-no-way-out this timeout exists to
+  // prevent. Racing the deadline makes the bound hold whatever is on the other end.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+        // UNREF too, and not as belt-and-braces: killing the child does not close a pipe a
+        // GRANDCHILD holds, so the pending read would keep the whole process alive after this
+        // function has already answered. Measured: the probe returned in 512ms and Deno then sat
+        // for 30s on a wrapper that had exec'd nothing.
+        child.unref();
+      } catch { /* already gone */ }
+      resolve("timeout");
+    }, timeoutMs);
+  });
+  // `.then(ok, err)` rather than a bare await: on the timeout branch this promise is raced away and
+  // may never settle, and an unhandled rejection from a process nobody is waiting for any more is
+  // noise in somebody's terminal.
+  const finished = child.output().then((o) => o, () => "error" as const);
   try {
-    const { success, stdout } = await child.output();
-    return { ok: success, out: stdout };
-  } catch {
-    return null;
+    const res = await Promise.race([finished, deadline]);
+    if (res === "timeout") return { ok: false, out: new Uint8Array(), timedOut: true };
+    if (res === "error") return null;
+    return { ok: res.success, out: res.stdout, timedOut: false };
   } finally {
     clearTimeout(timer);
   }
@@ -140,7 +179,11 @@ async function reader(): Promise<Reader | null> {
   for (const r of READERS) {
     if (!r.available()) continue; // wrong display server: installed, and useless here
     // A reader with no listing (pbpaste) is confirmed the same way: by whether it spawns.
-    if (await run(r.list.length > 0 ? r.list : r.read("public.utf8-plain-text")) !== null) return (probed = r);
+    const res = await run(r.list.length > 0 ? r.list : r.read("public.utf8-plain-text"), PROBE_TIMEOUT_MS);
+    // Ran and declined still counts (an empty clipboard exits 1). Never ANSWERED does not: a tool
+    // that had to be killed will be killed again on Ctrl-V, and advertising it in the banner is the
+    // "a key that silently does nothing" failure this module exists to remove, printed as a promise.
+    if (res !== null && !res.timedOut) return (probed = r);
   }
   return (probed = null);
 }

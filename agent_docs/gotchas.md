@@ -1418,6 +1418,21 @@ on a space with 500 live ones and a stuck one. Fixed 2026-08-21 by pushing both 
 
 ### Executing model-written code
 
+**Killing a child does not end `child.output()`; a GRANDCHILD holding the pipe does that.**
+`output()` resolves when stdout CLOSES, not when the process dies, so a SIGKILL on a wrapper script
+reaps the wrapper and leaves the read blocked on whatever it spawned. Measured at 60s against a
+2s timeout. A deadline must RACE the read and return, and it must `unref()` the child, or the
+process stays alive after the caller has its answer. `examples/chat/client/clipboard.ts` carries
+the worked version; anything here that spawns with a timeout wants the same shape.
+
+**A probe on the critical path costs its own timeout, every time it fails.** The chat's clipboard
+probe ran `wl-paste --list-types` before printing the prompt, and that command NEVER RETURNS on a
+Wayland session where nothing owns the clipboard, which is the state of a fresh login. It was 2.0s
+of a 3.2s startup. Probes belong beside the work they overlap, or behind first use; and a probe
+that had to be KILLED must report absent, not present, or the banner advertises a tool that can
+only hang again.
+
+
 - **A process that executes model-written code must hold nothing; the process that holds a token
   must not execute.** Executing inside a worker with a run token hands hostile code the space itself
   (`put`/`take` as that agent), a better target than the internet. Hence three processes in the chat

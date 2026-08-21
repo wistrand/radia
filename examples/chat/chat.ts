@@ -268,6 +268,23 @@ if (serveOnly && admin) {
   await sleep(100);
   Deno.exit(0);
 }
+
+/**
+ * Which clipboard reader this host has, started NOW and awaited at the banner.
+ *
+ * It spawns a subprocess and asks the desktop, which is the one piece of startup that depends on
+ * nothing in this program and that nothing before the first Ctrl-V depends on. Awaited where it was
+ * started, it was 2.0s of a 3.2s startup on a Wayland session where `wl-paste --list-types` never
+ * returns (which is the state of a fresh login, with nothing yet copied): the probe's own timeout,
+ * paid in full, on the critical path to the prompt.
+ *
+ * Started here rather than earlier because `--serve` returns above: a fleet has no prompt and no
+ * Ctrl-V, and should spawn nothing to find that out. Overlapped with the ~900ms of space setup
+ * below, its half-second ceiling is invisible; the memo inside `clipboardReader` means the Ctrl-V
+ * handler reuses this answer rather than asking again.
+ */
+const clipboardProbe = clipboardReader();
+
 // Which conversation this session is for. Resolved AFTER the session's credential exists, because
 /**
  * Give a new conversation its key material: one DEK, wrapped to the fleet's published public key
@@ -683,7 +700,7 @@ field("tools", tools.all().length > 0 ? `${tools.all().length} discovered` : dim
  * arbitrary paths to save a hop would trade the property that the file-reading process cannot reach
  * the network.
  */
-const clipboard = await clipboardReader();
+const clipboard = await clipboardProbe; // started before the space setup; see its declaration
 field("paste", clipboard ? `${clipboard}  ${dim("Ctrl-V attaches an image, a PDF or a copied file")}` : dim("no reader (wl-paste / xclip / pngpaste); Ctrl-V does nothing"));
 write(dim("\n  Ctrl-D to quit, Escape or Ctrl-C to cancel a turn.\n"));
 holdLine(false); // and whatever the fleet said while the banner was printing lands now, in order
