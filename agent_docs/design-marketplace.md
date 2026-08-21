@@ -1,13 +1,15 @@
 # Capability marketplace (design)
 
-Spec and rationale for request/bid/award coordination and durable timers. Origin:
-outline §7. Not yet implemented (M2; see [plan-milestones.md](plan-milestones.md)).
+Spec and rationale for request/bid/award coordination and the timing it needs. Origin:
+outline §7. The marketplace is not implemented (M2; see
+[plan-milestones.md](plan-milestones.md)); the timing half is, under a different name and a
+different mechanism (see "Delayed visibility" below).
 
 ## Contents
 - Invariants
 - What it is (honest framing)
 - Protocol
-- Durable timers
+- Delayed visibility (what "durable timers" became)
 
 ## Invariants
 
@@ -59,8 +61,23 @@ sequenceDiagram
 See [design-data-model.md](design-data-model.md) for the `request` / `bid` / `award`
 kinds and the parent-lineage rules.
 
-## Durable timers
+## Delayed visibility (what "durable timers" became)
 
-Windows and deadlines are `available_at` / `deadline_at`-indexed rows driven by a
-sweeper. This is the same timer machinery as lease backoff, resurrection, and priority
-aging (see [design-storage.md](design-storage.md)).
+**BUILT 2026-08-21, and NOT as a sweeper.** The name was the problem: "durable timers" makes
+people expect a scheduler, and what a bid window actually needs is for a record to become
+claimable later.
+
+`PutRequest.availableAt` seeds the envelope column retry backoff already drove. Nothing fires at
+that instant: the record is simply not a take candidate until the database clock passes it
+(`rankClaimable`, plus the compare-and-set in each dialect), so a worker sees it on its next poll
+and an idle space runs nothing. Bounded by `SpaceContext.maxPutDelaySeconds`, because retention GC
+never sweeps unclaimed claimable work.
+
+The sweeper this section used to describe should not be built. The claim path went lazy, so
+nothing needs sweeping; and the only idle-safe way to schedule background work here is to ride a
+write counter (the amortized GC batch), which an idle space does not turn, and an idle space is
+exactly when a timer would matter.
+
+What this does NOT give a marketplace: firing at a deadline with nobody listening. Zero bids at a
+deadline still needs somebody to look. `deadline_at` remains stored, indexed on the envelope, and
+read by nothing.

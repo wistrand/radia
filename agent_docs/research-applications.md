@@ -267,7 +267,8 @@ Note that the first item outranks the tamper-evident log, which is the intuitive
    query needs an operator, a `tool_call` grant, or (since ops tiers, 2026-08-06) the `observe`
    ops power through the ops plane.
 4. **Clearance cannot lapse.** `GrantDef` has no TTL field and there is no sweeper; expiry is
-   evaluated lazily at claim/resolve time. Time-based lapse waits on durable timers (M2). The
+   evaluated lazily at claim/resolve time. Time-based lapse is still unbuilt: delayed visibility
+   (2026-08-21) defers when a RECORD becomes claimable and does nothing to a grant. The
    workaround that works today is a `retired: true` successor.
 5. **Tamper-EVIDENT against database access, not against the host.** The hash chain is BUILT
    (`src/core/seal.ts`, `GET /v0/ops/integrity`): each event is sealed once the log's finality

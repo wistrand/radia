@@ -243,7 +243,8 @@ record carries `parentIds:[task]`. See [design-api.md](design-api.md).
 
 > Expiry is exercised deterministically in tests with a negative `leaseSeconds` (puts
 > `leased_until` in the past), avoiding sleeps. Lazy reclaim-at-take stands in for the
-> background sweeper, which lands with durable timers in M2.
+> background sweeper, which is now the permanent answer rather than a stand-in: delayed
+> visibility shipped without a sweeper for exactly this reason (plan-milestones.md, 2026-08-21).
 
 ### Phase 4: idempotency (DONE)
 

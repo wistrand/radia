@@ -1824,6 +1824,7 @@ components:
         body: {}
         clientMeta: { type: object, additionalProperties: true, description: "claims (confidence, requested_priority); never trusted" }
         parentIds: { type: array, items: { type: string }, description: "data lineage; all must exist at commit" }
+        availableAt: { type: string, description: "when this record becomes CLAIMABLE; absent means immediately. Delayed visibility, not a timer: nothing fires at this instant, the record simply stops being a take candidate until the database clock passes it, so a worker sees it on its next poll and an idle space runs nothing. A value already past is clamped forward to now (the caller's clock is not the space's); a delay beyond the space's ceiling is refused with invalid_available_at, because an unclaimed claimable record is never swept." }
         deadlineAt: { type: string }
         retentionUntil: { type: string }
         taint: { type: array, items: { type: string }, description: "source attestation: classification labels the client RAISES on its own output (file, net, foreign). Monotone, so it needs no trust; an unrecognized label or a non-array is refused rather than ignored, because silently dropping one leaves a caller believing it restricted a record that is in fact unrestricted. Never subtracts: labels inherited from data parents survive an empty raise." }

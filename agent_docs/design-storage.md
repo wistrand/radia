@@ -228,7 +228,7 @@ conformance run in CI. The embedded adapters (SQLite/PGlite) remain one-process 
 Because the runtime is the sole DB client, all concurrency guarantees (atomic take,
 fencing, idempotency serialization) live in the runtime process. An embedded mode backs
 the same semantics with SQLite (WAL) or PGlite, serializing takes in-process. Leases,
-fencing, the event log, durable timers, and dead-lettering all remain meaningful locally:
+fencing, the event log, delayed visibility, and dead-lettering all remain meaningful locally:
 local agent processes still crash.
 
 ## Distribution

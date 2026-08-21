@@ -104,7 +104,7 @@ staleness), [examples/chat/](examples/chat/)
 - [agent_docs/design-matching.md](agent_docs/design-matching.md): the pattern query language, its divergences from Mongo, per-kind indexing contract, semantic matching (§3).
 - [agent_docs/design-api.md](agent_docs/design-api.md): delivery guarantee, leases + fencing, idempotency ordering, the ten operations, wire protocol, agent loop (§4–5).
 - [agent_docs/design-scheduler.md](agent_docs/design-scheduler.md): optional cost-aware admission control, atomic admission-to-claim, server-computed priority (§6).
-- [agent_docs/design-marketplace.md](agent_docs/design-marketplace.md): request/bid/award capability marketplace and durable timers (§7).
+- [agent_docs/design-marketplace.md](agent_docs/design-marketplace.md): request/bid/award capability marketplace (§7), unbuilt. Its timing half IS built and under a different name: "durable timers" became DELAYED VISIBILITY (`PutRequest.availableAt`), and the sweeper that section described was deliberately not built. Read before proposing a timer, a sweeper, or anything that fires at a deadline.
 - [agent_docs/design-taint.md](agent_docs/design-taint.md): why the taint BOOLEAN saturates (measured: after one tool call every record in a conversation carries it, and nothing in the chat uses the barrier), and the small closed label set that replaced it (three labels, all barriers: a label exists only where a lineage walk is too slow, since provenance is already in the log). Read before adding a label or relying on `scope: {taint: …}`.
 - [agent_docs/design-auth.md](agent_docs/design-auth.md): principals, grants, delegation, taint, revocation, budgets (§8).
 - [agent_docs/design-observability.md](agent_docs/design-observability.md): event log, audit, re-execution, livelock detection, integrity and confidentiality architecture (§9).
@@ -294,6 +294,15 @@ live at the top of the relevant `agent_docs/` file, not here.
 - **Patterns are data, not code.** No `$regex`, `$where`, `$expr`, ever. The query
   language is analyzable and storable.
 - **All time comparisons use the database clock.** Never a client or app-server clock.
+- **`available_at` is the one envelope column a writer may seed.** `PutRequest.availableAt`
+  (and the same field on an `ack` result) defers when a record becomes CLAIMABLE. Nothing fires at
+  that instant: it stops being a take candidate until the DB clock passes it, which is the
+  machinery `nack({backoffSeconds})` always used, so a worker sees it on its next poll and an idle
+  space still runs nothing. A past value is CLAMPED forward (the caller's clock is not the space's);
+  one past `maxPutDelaySeconds` is REFUSED, because retention GC never sweeps unclaimed claimable
+  work and a far-future record is litter no sweep can reach. This is the whole of what "durable
+  timers" meant here; the sweeper plan-milestones.md imagined was not built and should not be, since
+  an amortized sweeper rides a write counter and an idle space does not turn one.
 - **Timing fields are never overloaded.** `available_at`, `claim_until`, `deadline_at`,
   `retention_until`, and `leased_until` are distinct concepts. Retention GC never
   discards a valid in-flight lease's completed work.

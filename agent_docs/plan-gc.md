@@ -82,7 +82,9 @@ The one place the trade is stated whole; the sections below carry the mechanics.
   Nothing enforces `deadline_at` (it appears nowhere in the claim path), so an unclaimed job sits
   `available` forever; `remediate --stale` can dead-letter it, but a dead-lettered record without
   a `retention_until` still never sweeps. That chain is deliberate — each link is the safe choice —
-  and its end state is immortal abandoned work until durable timers (M2) give `deadline_at` teeth.
+  and its end state is immortal abandoned work until something gives `deadline_at` teeth. Delayed
+  visibility (2026-08-21) did NOT: `availableAt` defers when work STARTS being claimable, and
+  `deadline_at` is still stored, indexed on the envelope, and read by nothing.
   An operator who wants such work gone today must requeue-or-dead-letter it AND stamp retention on
   what replaces it, or declare a `defaultRetentionSeconds` on the kind going forward.
 - `claimable: false` kinds sweep from any state: reference data sits `available` forever by design.

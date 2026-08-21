@@ -104,10 +104,13 @@ The grant story is the demo. An NPC scoped
 `bodyMatchesGrant` at the write when it tries to speak in another room. That is enforcement, not a
 check the game performs.
 
-**Ambient NPC behaviour has no runtime support.** Durable timers are
-[design-marketplace.md](design-marketplace.md) §7 and deferred. A wandering guard or a respawn is
-an in-process tick (`reactorLoop`'s `pollMs`, the correctness spine anyway) or
-`nack(lease, {backoffSeconds})` on a claimable heartbeat record. Never invent a timer kind for it.
+**Ambient NPC behaviour got runtime support on 2026-08-21, and this plan is why it was looked at.**
+A cue written with `PutRequest.availableAt` becomes claimable later, so a wandering guard is an
+NPC acking its own next cue with a delay, and a respawn is one deferred record. No process has to
+stay alive holding an interval, which is what makes it work for a phase-6 workspace NPC: that agent
+is a pure function of the record it claimed and exits, so an interval was never available to it.
+Still true: nothing FIRES at the instant, so somebody must be polling that kind, which every
+`agentLoop` already is. Never invent a timer kind for it.
 
 ## The browser client
 
@@ -177,7 +180,7 @@ registries to newest-per-key, and offboarding a player or an NPC as `radia runs 
 
 | Item                                              | Status                                                                 |
 |---------------------------------------------------|------------------------------------------------------------------------|
-| No durable timers                                 | Deferred to M2. In-process tick or `nack` backoff.                     |
+| Nothing FIRES at a time                           | `availableAt` defers claimability (2026-08-21); a poller must still exist. No sweeper, by decision. |
 | No `$ne`, `$nin`, `$not`, `$prefix`, `$regex`     | `src/core/matching.ts`. "Everyone in the room except me" is not expressible; filter client-side or model positively. |
 | `readOne(pattern)` matches BODIES, not ids        | `sdk/ts/client.ts`. Every entity carries its identity in its own body. |
 | Record bodies have no erasure path                | Player prose is user content. Declare `defaultRetentionSeconds` on `command`/`event` or the world is permanent. |

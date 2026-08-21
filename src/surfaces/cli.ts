@@ -859,9 +859,26 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
 
     case "put": {
       const [kind, bodyArg] = positional(argv, 2);
-      if (!kind || bodyArg === undefined) return usage("put <kind> <json-body>");
+      if (!kind || bodyArg === undefined) return usage("put <kind> <json-body> [--parent <id>] [--available-in <seconds>]");
       const parents = flags(argv, "--parent");
-      const req = { kind, body: json(bodyArg, "body"), ...(parents.length ? { parentIds: parents } : {}) };
+      // `--available-in <seconds>`: defer when the record becomes claimable. Computed from THIS
+      // machine's clock into the absolute `availableAt` the wire takes, so it is approximate
+      // against the space's own clock; the space clamps a value already past and refuses one past
+      // its ceiling. Relative here because a person deferring work thinks in "in ten minutes",
+      // never in an ISO timestamp.
+      const delay = flag(argv, "--available-in");
+      if (delay !== undefined && !Number.isFinite(Number(delay))) {
+        // Checked BEFORE the arithmetic: `new Date(NaN).toISOString()` throws a RangeError from
+        // inside date formatting, which says nothing about the flag that caused it.
+        return usage("put <kind> <json-body> [--parent <id>] [--available-in <seconds>]");
+      }
+      const availableAt = delay === undefined ? undefined : new Date(Date.now() + Number(delay) * 1000).toISOString();
+      const req = {
+        kind,
+        body: json(bodyArg, "body"),
+        ...(parents.length ? { parentIds: parents } : {}),
+        ...(availableAt ? { availableAt } : {}),
+      };
       const r = await client.put(req, flag(argv, "--idempotency-key"));
       return out(ctx, r, () => r.id);
     }

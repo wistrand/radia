@@ -549,6 +549,15 @@ class RadiaClient:
     # -- records --
 
     def put(self, request: Dict[str, Any], idempotency_key: Optional[str] = None) -> Dict[str, str]:
+        """Write a record. ``request`` is the wire shape: ``kind``, ``body``, and the optional
+        client-submitted fields ``clientMeta``, ``parentIds``, ``taint``, ``deadlineAt``,
+        ``retentionUntil`` and ``availableAt``.
+
+        ``availableAt`` (ISO-8601) defers when the record becomes CLAIMABLE, and nothing fires at
+        that instant: the record simply is not a take candidate until the database clock passes it,
+        so a worker picks it up on its next poll. A value already past is clamped forward to now;
+        one beyond the space's ceiling is refused with ``invalid_available_at``.
+        """
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
         return self._req("POST", "/v0/records", request, headers)
 

@@ -92,6 +92,22 @@ Five distinct concepts, never overloaded onto one field:
 | `retention_until` | content GC eligibility                     |
 | `leased_until`    | current lease expiry                       |
 
+`available_at` is the one envelope column a client may seed. **BUILT 2026-08-21:**
+`PutRequest.availableAt` (and the same field on an `ack` result) defers when a record becomes
+CLAIMABLE. Nothing fires at that instant: the record is simply not a take candidate until the
+database clock passes it (`rankClaimable`, plus the CAS in each dialect), which is the machinery
+retry backoff has always used, so a worker sees it on its next poll and an idle space still runs
+nothing. That is deliberately NOT the sweeper [plan-milestones.md](plan-milestones.md) imagines
+under "durable timers": the lazy claim path made one unnecessary, and an amortized sweeper could
+not fire in an idle space anyway, which is exactly when a timer would matter.
+
+Two bounds, each covering what the other does not. A value already PAST is clamped forward to now
+rather than refused, because the caller computes it from its own clock and every comparison here is
+against the database's. A value beyond `SpaceContext.maxPutDelaySeconds` (7 days;
+`radia dev --max-put-delay`) is REFUSED with `invalid_available_at`, because retention GC never
+sweeps unclaimed claimable work, so a record deferred past any horizon is litter no sweep can
+reach.
+
 Retention expiry does **not** invalidate an in-flight valid lease. Administrative GC
 never discards valid completed work. What sweeping past `retention_until` deletes and what it
 keeps (the event residue, and that residue's own opt-in horizon) is [plan-gc.md](plan-gc.md),
@@ -101,7 +117,10 @@ keeps (the event residue, and that residue's own opt-in horizon) is [plan-gc.md]
 
 A hard API split. Server-controlled always: `created_by`, `delegation_context`,
 `created_at`, `schema_version`, `taint`, `effective_priority`, all
-lease fields. (`schema_version` is server-assigned and currently a CONSTANT, `SpaceContext.schemaVersion`
+lease fields. `available_at` is the exception that proves the shape rather than a hole in it: a
+writer may SEED it (`PutRequest.availableAt`, above) the way it seeds `deadline_at` and
+`retention_until`, and the runtime owns it from that point on, clamping it, bounding it, and
+rewriting it on every nack and admin transition. (`schema_version` is server-assigned and currently a CONSTANT, `SpaceContext.schemaVersion`
 = 1: the split it belongs to is real, the versioning it implies is not, and kind schema versioning
 remains unbuilt in [plan-milestones.md](plan-milestones.md).) Clients submit only *claims* (`confidence`, `requested_priority`); the
 runtime decides what they are worth. This is what stops an agent from, e.g., declaring

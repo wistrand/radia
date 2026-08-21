@@ -189,6 +189,10 @@ export interface SpaceContext {
    *  a SECOND process over the same blob directory. Minutes, not seconds: it has to dwarf any
    *  bytes-to-commit gap, and blobs eligible today are eligible on the next sweep too. */
   blobGcGraceSeconds: number;
+  /** How far ahead a writer may push `availableAt` (`PutRequest.availableAt`). A ceiling rather
+   *  than a preference: retention GC never sweeps unclaimed CLAIMABLE work, so a record made
+   *  available in the year 2400 is litter no sweep can reach. `0` refuses any delay. */
+  maxPutDelaySeconds: number;
 }
 
 /** Rows one amortized sweep pass may delete: small enough that the write paying for it feels a few
@@ -236,6 +240,10 @@ const DEFAULT_CONTEXT: SpaceContext = {
   oidc: null, // opt-in: an unconfigured space refuses /v0/sessions/oidc
   maxOidcRunsPerSubject: 8,
   blobGcGraceSeconds: 900, // 15 min; see the field's comment for why this is the race bound
+  // 7 days, the idempotency window's horizon, and picked for the same reason: past it the caller
+  // is describing a schedule rather than deferring a piece of work, and Radia does not hold one
+  // (plan-milestones.md, "durable timers", out of scope).
+  maxPutDelaySeconds: 7 * 24 * 3600,
 };
 
 /** What one event-log retention pass did (`Space.gcEvents`; rides the `gc` verb). */
@@ -2246,6 +2254,39 @@ export class Space {
     await this.prepareStorageFor(def);
   }
 
+  /**
+   * When a written record becomes claimable: the writer's `availableAt`, bounded.
+   *
+   * Two rules, and each has a failure behind it that the other does not cover.
+   *
+   * A value ALREADY PAST is clamped forward to `now`, never refused. The caller computed it from
+   * its own clock and every comparison here is against the database's, so a client seconds behind
+   * would have "defer by one second" refused as a request from the past. Clamping makes that case
+   * behave exactly as it did before this field existed.
+   *
+   * A value beyond `maxPutDelaySeconds` IS refused. Retention GC never sweeps unclaimed claimable
+   * work (`sweepSelector`: only non-claimable kinds sweep from any state), so a record deferred
+   * past any horizon is litter nothing can reach, and the write is the only place to stop it.
+   */
+  private resolveAvailableAt(requested: string | undefined, now: string): string {
+    if (requested === undefined) return now;
+    const at = Date.parse(requested);
+    if (Number.isNaN(at)) {
+      throw new RadiaError("invalid_available_at", `availableAt '${requested}' is not an ISO-8601 timestamp`);
+    }
+    const delay = (at - Date.parse(now)) / 1000;
+    if (delay <= 0) return now; // the caller's clock, not ours; see above
+    if (delay > this.ctx.maxPutDelaySeconds) {
+      throw new RadiaError(
+        "invalid_available_at",
+        `availableAt is ${Math.round(delay)}s ahead, over this space's ${this.ctx.maxPutDelaySeconds}s ceiling. ` +
+          `An unclaimed claimable record is never swept, so a longer deferral is permanent litter; ` +
+          `write it when it is due, or hold the schedule outside the space.`,
+      );
+    }
+    return new Date(at).toISOString();
+  }
+
   private async putRaw(
     req: PutRequest,
     idempotencyKey?: string,
@@ -2286,7 +2327,7 @@ export class Space {
       ...(opts.event ? { event: opts.event } : {}),
       envelope: {
         kind: record.kind,
-        availableAt: now,
+        availableAt: this.resolveAvailableAt(req.availableAt, now),
         claimUntil: undefined,
         deadlineAt: record.deadlineAt,
         effectivePriority: 0, // server-computed; scheduler sets this for real in M3
@@ -2704,7 +2745,9 @@ export class Space {
         bodyJson,
         envelope: {
           kind: record.kind,
-          availableAt: now,
+          // An ack result is a put with a lease attached, so it may be deferred too: that is how a
+          // worker says "look at this again in a minute" without holding a process open to do it.
+          availableAt: this.resolveAvailableAt(result.availableAt, now),
           claimUntil: undefined,
           deadlineAt: record.deadlineAt,
           effectivePriority: 0,

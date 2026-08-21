@@ -95,6 +95,26 @@ export interface PutRequest {
   clientMeta?: Record<string, unknown>;
   /** Data/causality lineage the client asserts. All must exist at commit (checked in put). */
   parentIds?: string[];
+  /**
+   * When this record becomes CLAIMABLE. Absent means immediately, which is what every record was
+   * before this field existed.
+   *
+   * Delayed visibility, not a timer: nothing fires at this instant. The record simply stops being a
+   * take candidate until the DB clock passes it (`rankClaimable`), which is the machinery retry
+   * backoff has always used (`nack({backoffSeconds})`). A worker notices on its next poll, so the
+   * lag is its `pollMs` floor (1s for `agentLoop`), and an idle space still runs nothing. See
+   * agent_docs/plan-milestones.md, "durable timers": the sweeper that entry imagines is not needed
+   * and is deliberately not built.
+   *
+   * A CLAIM, like `deadlineAt` and `retentionUntil`: the caller computes it from ITS clock and the
+   * space compares against ITS own, so a value already past is clamped forward to now rather than
+   * refused. A delay beyond the space's ceiling IS refused (`invalid_available_at`), because an
+   * unclaimed claimable record is never swept and a far-future one is permanent litter.
+   *
+   * Meaningless on a non-claimable kind, where nothing takes: harmless, and not refused, since a
+   * kind can be redeclared claimable later.
+   */
+  availableAt?: string;
   deadlineAt?: string;
   retentionUntil?: string;
   /** Source attestation: classification labels the client RAISES on its own output, from the closed

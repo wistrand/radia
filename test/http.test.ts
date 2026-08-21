@@ -636,6 +636,7 @@ Deno.test("http: a wrong-typed field is a 400 at the boundary, never a 500 from 
       { path: "/v0/records", body: { kind: "task", body: { tag: "a" }, parentIds: [7] }, about: "parent id not a string" },
       { path: "/v0/records", body: { kind: "task", body: { tag: "a" }, deadlineAt: {} }, about: "deadlineAt not a string" },
       { path: "/v0/records", body: { kind: "task", body: { tag: "a" }, retentionUntil: "soon" }, about: "retentionUntil not a date" },
+      { path: "/v0/records", body: { kind: "task", body: { tag: "a" }, availableAt: "whenever" }, about: "availableAt not a date" },
       { path: "/v0/records", body: { kind: "task", body: { tag: "a" }, clientMeta: [] }, about: "clientMeta an array" },
       { path: "/v0/records", body: { kind: 5, body: {} }, about: "kind not a string" },
       { path: "/v0/records", body: { body: { tag: "a" } }, about: "kind missing" },

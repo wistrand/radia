@@ -35,6 +35,7 @@ const USAGE = `radia <command>
       [--blobs <dir|memory|s3://bucket/prefix>[,<read-only origin>…]]
       [--blob-kek [file]] [--seal-key [file]] [--auth required|open]
       [--artifact-port <n>] [--max-scan-rows <n>] [--event-retention <seconds>]
+      [--max-put-delay <seconds>]
       [--oidc-issuer <url> --oidc-audience <client-id>]
       Run an embedded space + web console. Everything it writes goes under ./.radia
       (RADIA_DIR moves it); bare --db and --blob-kek take their defaults from there.
@@ -158,6 +159,14 @@ async function dev(args: string[]): Promise<number> {
   if (eventRetentionSeconds !== undefined && (!Number.isInteger(eventRetentionSeconds) || eventRetentionSeconds < 0)) {
     throw new UsageError(`--event-retention must be a non-negative whole number of seconds, got '${evFlag}'`);
   }
+  // How far ahead a writer may defer a record's claimability (`PutRequest.availableAt`). A ceiling
+  // because retention GC never sweeps unclaimed CLAIMABLE work, so a record deferred past any
+  // horizon is litter no sweep can reach; `0` refuses deferral entirely.
+  const delayFlag = flag(args, "--max-put-delay");
+  const maxPutDelaySeconds = delayFlag === undefined ? undefined : Number(delayFlag);
+  if (maxPutDelaySeconds !== undefined && (!Number.isInteger(maxPutDelaySeconds) || maxPutDelaySeconds < 0)) {
+    throw new UsageError(`--max-put-delay must be a non-negative whole number of seconds (0 = no deferral), got '${delayFlag}'`);
+  }
   // OIDC is OPT-IN and takes both halves: the issuer says who signs, the audience says which
   // client the token was minted for (`aud` — the client id for plain OIDC, an API identifier on
   // Auth0-style setups). One without the other verifies nothing, so it is a usage error.
@@ -169,6 +178,7 @@ async function dev(args: string[]): Promise<number> {
   const space = new Space(storage, {
     ...(maxScanRows === undefined ? {} : { maxScanRows }),
     ...(eventRetentionSeconds === undefined ? {} : { eventRetentionSeconds }),
+    ...(maxPutDelaySeconds === undefined ? {} : { maxPutDelaySeconds }),
     ...(oidcIssuer && oidcAudience ? { oidc: { issuer: oidcIssuer, audience: oidcAudience } } : {}),
   }, blobs);
   if (oidcIssuer && oidcAudience) {
@@ -176,6 +186,11 @@ async function dev(args: string[]): Promise<number> {
   }
   if (eventRetentionSeconds !== undefined) {
     console.log(`radia dev: event-log retention ${eventRetentionSeconds}s (gc truncates the sealed log to this window)`);
+  }
+  if (maxPutDelaySeconds !== undefined) {
+    console.log(
+      `radia dev: ${maxPutDelaySeconds === 0 ? "deferred puts REFUSED" : `deferred puts up to ${maxPutDelaySeconds}s ahead`}`,
+    );
   }
   if (maxScanRows !== undefined) {
     console.log(

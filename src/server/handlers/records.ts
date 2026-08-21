@@ -47,7 +47,7 @@ function pickPut(j: Record<string, unknown>): PutRequest | string {
       return "parentIds must be an array of record ids";
     }
   }
-  for (const field of ["deadlineAt", "retentionUntil"] as const) {
+  for (const field of ["availableAt", "deadlineAt", "retentionUntil"] as const) {
     const v = j[field];
     if (v === undefined) continue;
     if (typeof v !== "string" || Number.isNaN(Date.parse(v))) return `${field} must be an ISO-8601 timestamp`;
@@ -60,6 +60,9 @@ function pickPut(j: Record<string, unknown>): PutRequest | string {
     body: j.body,
     clientMeta: j.clientMeta as Record<string, unknown> | undefined,
     parentIds: j.parentIds as string[] | undefined,
+    // Delayed visibility. Bounded and clamped in `Space.resolveAvailableAt`, not here: the ceiling
+    // is space configuration and "already past" needs the DATABASE clock to decide.
+    availableAt: j.availableAt as string | undefined,
     deadlineAt: j.deadlineAt as string | undefined,
     retentionUntil: j.retentionUntil as string | undefined,
     // A client may RAISE labels on its own output and never clear one: raising is monotone, so it

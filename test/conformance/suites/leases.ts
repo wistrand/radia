@@ -4,10 +4,11 @@
 // Expiry is exercised deterministically with a negative lease (leased_until in the past),
 // avoiding sleeps. Reassignment for fencing is created with nack/release, no waiting.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import type { Suite } from "../harness.ts";
 import type { StorageAdapter } from "../../../src/storage/adapter.ts";
 import { type SpaceContext, Space } from "../../../src/core/space.ts";
+import { RadiaError } from "../../../src/core/errors.ts";
 
 function newSpace(adapter: StorageAdapter, ctx: Partial<SpaceContext> = {}): Space {
   const space = new Space(adapter, ctx);
@@ -187,6 +188,108 @@ export const claimFairnessSuites: Suite[] = [
       const claimed = await space.take({ pattern: { kind: "task", match: { tag: "rare" } } }, { leaseSeconds: 60 });
       assert(claimed, "the only matching record must be found however deep it sits");
       assertEquals(claimed!.record.id, needle);
+    },
+  },
+];
+
+/**
+ * Delayed visibility: `PutRequest.availableAt` (agent_docs/plan-milestones.md, "durable timers").
+ *
+ * Port behaviour, so it runs on every adapter: the claim path filters on `available_at <= now` in
+ * two places (the candidate rank in `core/take.ts` and the CAS in each dialect), and an adapter
+ * that honoured one and not the other would hand out a lease on work nobody may run yet.
+ *
+ * One sleep, in one case, because "it becomes claimable" is the whole claim and cannot be asserted
+ * from state alone. Everything else here is deterministic.
+ */
+export const deferredSuites: Suite[] = [
+  {
+    name: "a deferred record is not claimable, while an ordinary one beside it is",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const now = await adapter.now();
+      const { id: later } = await space.put({
+        kind: "task",
+        body: { tag: "later" },
+        availableAt: new Date(Date.parse(now) + 60_000).toISOString(),
+      });
+
+      // The control matters: `null` from an empty kind would prove nothing.
+      assertEquals(await space.take({ pattern: { kind: "task", match: { tag: "later" } } }), null);
+      await space.put({ kind: "task", body: { tag: "now" } });
+      const claimed = await nonNull(space.take({ pattern: { kind: "task", match: { tag: "now" } } }));
+      assertEquals((claimed.record.body as { tag: string }).tag, "now");
+
+      const env = await space.getEnvelope(later);
+      assertEquals(env?.state, "available"); // available, and not yet claimable: not the same thing
+      assert(env!.availableAt > now, `expected a future availableAt, got ${env?.availableAt}`);
+    },
+  },
+  {
+    name: "a deferred record becomes claimable once its instant passes",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const now = await adapter.now();
+      await space.put({
+        kind: "task",
+        body: { tag: "soon" },
+        availableAt: new Date(Date.parse(now) + 250).toISOString(),
+      });
+      assertEquals(await space.take({ pattern: { kind: "task" } }), null);
+      await new Promise((r) => setTimeout(r, 400));
+      const claimed = await nonNull(space.take({ pattern: { kind: "task" } }));
+      assertEquals((claimed.record.body as { tag: string }).tag, "soon");
+    },
+  },
+  {
+    name: "an availableAt already past is clamped to now, never refused",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const now = await adapter.now();
+      // The caller's clock is not the space's, so "defer by one second" from a client running a
+      // few seconds behind arrives in the past. Refusing that would break the ordinary case.
+      const { id } = await space.put({
+        kind: "task",
+        body: { tag: "past" },
+        availableAt: new Date(Date.parse(now) - 60_000).toISOString(),
+      });
+      assert(await space.take({ pattern: { kind: "task" } }), "a past availableAt must claim like any record");
+      const env = await space.getEnvelope(id);
+      assert(env!.availableAt >= now, "the envelope must carry now, not the caller's past instant");
+    },
+  },
+  {
+    name: "a deferral past the ceiling is refused at the write",
+    run: async (adapter) => {
+      const space = newSpace(adapter, { maxPutDelaySeconds: 60 });
+      const now = await adapter.now();
+      // Asserted on the CODE, never the message: the code is the contract a client branches on.
+      const e = await assertRejects(() =>
+        space.put({
+          kind: "task",
+          body: { tag: "far" },
+          availableAt: new Date(Date.parse(now) + 3_600_000).toISOString(),
+        }), RadiaError);
+      assertEquals((e as RadiaError).code, "invalid_available_at");
+      // Refused means NOT WRITTEN: retention GC never sweeps unclaimed claimable work, so a record
+      // that slipped past the ceiling would be litter nothing could reach.
+      assertEquals((await space.query({ kind: "task" }, 10)).length, 0);
+    },
+  },
+  {
+    name: "an ack result may be deferred too",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      await space.put({ kind: "task", body: { tag: "first" } });
+      const claimed = await nonNull(space.take({ pattern: { kind: "task", match: { tag: "first" } } }));
+      const now = await adapter.now();
+      await space.ack(claimed.lease, {
+        kind: "task",
+        body: { tag: "followup" },
+        availableAt: new Date(Date.parse(now) + 60_000).toISOString(),
+      });
+      // A worker saying "look at this again in a minute" without holding a process open to do it.
+      assertEquals(await space.take({ pattern: { kind: "task", match: { tag: "followup" } } }), null);
     },
   },
 ];
