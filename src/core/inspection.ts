@@ -172,9 +172,15 @@ export function explainQuery(
   const notes: string[] = [];
   const def = h.kindDef(pattern.kind);
   if (!def) {
+    const declared = `Declared: ${h.listKinds().map((k) => k.kind).sort().join(", ") || "(none)"}.`;
+    // Records under an undeclared kind are not a contradiction: a put of an unknown kind succeeds,
+    // so it cannot race a fleet's declaration. Saying "can only ever return nothing" above rows the
+    // reader can see is what makes a true note look like a broken one.
     notes.push(
-      `no kind '${pattern.kind}' is declared, so this can only ever return nothing. Declared: ` +
-        `${h.listKinds().map((k) => k.kind).sort().join(", ") || "(none)"}.`,
+      returned === 0
+        ? `no kind '${pattern.kind}' is declared, so this can only ever return nothing. ${declared}`
+        : `kind '${pattern.kind}' is not declared, yet these records exist under it: an undeclared ` +
+          `put is allowed, so none of them are indexed and any match here scans. ${declared}`,
     );
   }
   if (returned >= limit) {

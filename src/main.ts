@@ -17,7 +17,9 @@ import { runCli } from "./surfaces/cli.ts";
 import { runMcp } from "./surfaces/mcp/server.ts";
 import { flag, optionalFlag } from "./flags.ts";
 import { defaultBlobDir, defaultDbPath, defaultKekPath, defaultSealPath, ensureParent, radiaDir } from "./paths.ts";
+import { acquireDbLock, lockRefusal } from "./lock.ts";
 import { args as argv, env, exit, onShutdown, UsageError } from "./platform.ts";
+import { RadiaError } from "./core/errors.ts";
 
 const USAGE = `radia <command>
 
@@ -33,7 +35,9 @@ const USAGE = `radia <command>
   <cli command>
       Everything else is a verb over the public /v0 API. Those verbs are listed below.`;
 
-async function dev(args: string[]): Promise<void> {
+/** Run the embedded space until it is stopped. Returns the process exit code: a refusal to
+ *  start (a database already open, a port already bound) is reported and returns 1. */
+async function dev(args: string[]): Promise<number> {
   const port = Number(flag(args, "--port") ?? "7788");
   // Loopback by default: the no-header operator default is only safe locally. --host 0.0.0.0 exposes.
   const host = flag(args, "--host") ?? "127.0.0.1";
@@ -80,6 +84,19 @@ async function dev(args: string[]): Promise<void> {
     storage = new PostgresAdapter(url);
   } else {
     throw new UsageError(`unknown --storage: ${backend} (expected pglite|sqlite|postgres)`);
+  }
+
+  const base = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
+  // ONE writer per local database, taken before the adapter opens it (src/lock.ts). Postgres is
+  // excluded because a server is what it is for, and an in-memory space shares nothing.
+  let unlock: (() => void) | undefined;
+  if (backend !== "postgres" && dbPath) {
+    const lock = await acquireDbLock(dbPath, base);
+    if (!lock.ok) {
+      console.error(`error: ${lockRefusal(dbPath, lock.heldBy)}`);
+      return 1; // and the process must END here: the abandoned lock wait keeps the runtime alive.
+    }
+    unlock = lock.release;
   }
 
   await storage.init();
@@ -168,7 +185,6 @@ async function dev(args: string[]): Promise<void> {
   if (space.sealKey) console.log(`radia dev: event chain signed (key from ${space.sealKey.source})`);
   await space.loadKinds(); // restore persisted kind declarations
   const operatorToken = await space.mintOperatorToken(); // for the CLI, the MCP adapter and curl
-  const base = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
   // Shut down on a signal instead of being killed mid-flight, so the cleanup below actually runs.
   // Without this, Ctrl-C or SIGTERM leaves a dead token on disk and the next CLI call 401s with
   // no explanation.
@@ -176,8 +192,22 @@ async function dev(args: string[]): Promise<void> {
   const unlisten = onShutdown(() => stopping.abort());
 
   try {
-    const { finished } = startServer({ port, space, host, authRequired, artifactPort, signal: stopping.signal });
-    // Bind succeeded (`Deno.serve` throws synchronously on a taken port), so only NOW touch the
+    let finished: Promise<void>;
+    try {
+      ({ finished } = startServer({ port, space, host, authRequired, artifactPort, signal: stopping.signal }));
+    } catch (e) {
+      // A taken port is the most likely restart failure, so it gets the unreachable-space
+      // message's shape: what happened, the likely cause, both ways out, exit 1.
+      if (e instanceof RadiaError && e.code === "port_in_use") {
+        console.error(
+          `error: ${e.message} Another \`radia dev\` is probably already serving it: stop that one, ` +
+            `or move this one with --port <n> (the artifact origin follows at --artifact-port <n>, or 0 to disable it).`,
+        );
+        return 1;
+      }
+      throw e;
+    }
+    // Bind succeeded (`serve` throws synchronously on a taken port), so only NOW touch the
     // shared credential file: a second dev aimed at an occupied base used to overwrite the running
     // space's operator entry before losing the port race, then delete it in the finally below.
     // Auto-provision: write the token where the CLI and MCP adapter look, so local tools present a
@@ -206,6 +236,7 @@ async function dev(args: string[]): Promise<void> {
       console.log(`radia dev: --auth open. A request with no Authorization header is the OPERATOR.`);
     }
     await finished;
+    return 0;
   } finally {
     unlisten();
     // The token dies with the process (operator tokens are never persisted as records), so leaving
@@ -213,6 +244,7 @@ async function dev(args: string[]): Promise<void> {
     // still being OURS: another dev on this base may have replaced it since.
     clearCredential(base, operatorToken);
     await storage.close();
+    unlock?.(); // after the adapter closed, so nothing else can open these files first
   }
 }
 
@@ -223,8 +255,7 @@ async function main(argsIn: string[]): Promise<number> {
   try {
     switch (cmd) {
       case "dev":
-        await dev(rest);
-        return 0;
+        return await dev(rest);
       case "mcp":
         await runMcp(rest);
         return 0;

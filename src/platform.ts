@@ -46,6 +46,7 @@ export interface ServeOptions {
 export interface PlatformBackend {
   args(): string[];
   exit(code: number): never;
+  pid(): number;
   env(name: string): string | undefined;
   osName(): string;
   readTextFile(path: string | URL): string | undefined;
@@ -53,6 +54,7 @@ export interface PlatformBackend {
   mkdirp(path: string): void;
   removeFile(path: string): void;
   restrictToOwner(path: string): void;
+  lockFile(path: string, waitMs: number): Promise<{ release(): void } | undefined>;
   writeBinaryFile(path: string, bytes: Uint8Array): Promise<void>;
   renameFile(from: string, to: string): void;
   fileSize(path: string): number | undefined;
@@ -76,6 +78,7 @@ const encoder = new TextEncoder();
 const denoBackend: PlatformBackend = {
   args: () => Deno.args,
   exit: (code) => Deno.exit(code),
+  pid: () => Deno.pid,
   env: (name) => {
     try {
       return Deno.env.get(name);
@@ -103,6 +106,34 @@ const denoBackend: PlatformBackend = {
     try {
       Deno.chmodSync(path, 0o600);
     } catch { /* best-effort hardening; the caller already handled the write */ }
+  },
+  lockFile: async (path, waitMs) => {
+    const file = Deno.openSync(path, { create: true, read: true, write: true });
+    // `lock()` waits rather than failing, and there is no try-lock in Deno, so the timer IS the
+    // try: whoever loses gives up after `waitMs` instead of hanging on a live holder forever.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const held = await Promise.race([
+      file.lock(true).then(() => true).catch(() => false),
+      new Promise<boolean>((r) => {
+        timer = setTimeout(() => r(false), waitMs);
+      }),
+    ]);
+    if (timer !== undefined) clearTimeout(timer);
+    if (!held) {
+      // The losing lock op stays pending on the blocking thread pool and keeps the event loop
+      // alive, so a caller that refuses must terminate rather than fall off the end of main.
+      try {
+        file.close();
+      } catch { /* the pending op owns it now */ }
+      return undefined;
+    }
+    return {
+      release: () => {
+        try {
+          file.close(); // closing the descriptor releases the flock
+        } catch { /* already gone */ }
+      },
+    };
   },
   writeBinaryFile: async (path, bytes) => {
     await Deno.writeFile(path, bytes);
@@ -212,6 +243,12 @@ export function exit(code: number): never {
   return backend.exit(code);
 }
 
+/** This process's id. Only ever shown to a person ("stop the process holding this"), never used
+ *  to address one: nothing in `src/` signals another process. */
+export function pid(): number {
+  return backend.pid();
+}
+
 /** An environment variable, or undefined (including when the permission is not granted), so a
  *  worker running without `--allow-env` degrades to defaults instead of crashing. */
 export function env(name: string): string | undefined {
@@ -256,6 +293,17 @@ export function removeFile(path: string): void {
  *  per-user directory ACLs are the protection instead. */
 export function restrictToOwner(path: string): void {
   backend.restrictToOwner(path);
+}
+
+/**
+ * Take an exclusive advisory lock on `path`, held until `release()` (and by the OS until the
+ * process dies, so a killed holder leaves nothing stale behind). Resolves undefined when another
+ * process still holds it after `waitMs`.
+ *
+ * A refusing caller must terminate the process: the abandoned wait keeps the runtime alive.
+ */
+export function lockFile(path: string, waitMs: number): Promise<{ release(): void } | undefined> {
+  return backend.lockFile(path, waitMs);
 }
 
 /** Resolve a path relative to a module URL. This is how bundled assets are located both from

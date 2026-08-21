@@ -88,10 +88,32 @@ function requiredOpsPower(method: string, path: string): OpsPower | null {
   return "remediate";
 }
 
+/**
+ * Bind a port, or name the one that was taken.
+ *
+ * `serve` throws `AddrInUse` synchronously and nothing shaped it, so the most likely restart
+ * failure printed eight frames of `ext:deno_net` after two successful-looking startup lines. The
+ * caller owns the advice; this owns the fact of which port and which listener.
+ */
+function bind(
+  opts: { port: number; hostname: string; signal?: AbortSignal },
+  handler: (req: Request) => Response | Promise<Response>,
+  role: string,
+): { finished: Promise<void> } {
+  try {
+    return serve(opts, handler);
+  } catch (e) {
+    if ((e as Error)?.name === "AddrInUse") {
+      throw new RadiaError("port_in_use", `port ${opts.port} is already in use, so ${role} could not start.`);
+    }
+    throw e;
+  }
+}
+
 export function startServer(opts: ServerOptions): { finished: Promise<void> } {
   const hostname = opts.host ?? "127.0.0.1"; // loopback by default; --host 0.0.0.0 to expose
   const handler = makeHandler(opts.space, loadUi(), opts.authRequired ?? false);
-  const { finished } = serve({ port: opts.port, hostname, signal: opts.signal }, handler);
+  const { finished } = bind({ port: opts.port, hostname, signal: opts.signal }, handler, "the space");
   console.log(`radia dev listening on http://${hostname}:${opts.port} (web console at /). Auth ${opts.authRequired ? "required" : "open (no-header → operator)"}`);
 
   // Artifact BYTES get their own origin. An origin is scheme + host + PORT, so a second port is a
@@ -107,7 +129,7 @@ export function startServer(opts: ServerOptions): { finished: Promise<void> } {
     const advertised = hostname === "0.0.0.0" ? "127.0.0.1" : hostname;
     opts.space.artifactOrigin = `http://${advertised}:${opts.artifactPort}`;
     const bytes = makeArtifactHandler(opts.space);
-    serve({ port: opts.artifactPort, hostname, signal: opts.signal }, bytes);
+    bind({ port: opts.artifactPort, hostname, signal: opts.signal }, bytes, "the artifact origin");
     console.log(`radia dev: artifact origin http://${hostname}:${opts.artifactPort} (capability URLs only, isolated from the console)`);
   }
   return { finished };

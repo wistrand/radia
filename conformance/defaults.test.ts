@@ -259,3 +259,132 @@ Deno.test("dev: --max-scan-rows tunes the budget, and 0 means unbounded rather t
   assert(/\.\.\.\(maxScanRows === undefined \? \{\} : \{ maxScanRows \}\)/.test(main), "…or no longer reaches the Space");
   assert(/\[--max-scan-rows <n>\]/.test(main), "…or is missing from the usage text");
 });
+
+Deno.test("dev: one writer per database, and the loser is told who holds it", async () => {
+  // PGlite is a single-writer WASM Postgres with no locking of its own, so two `radia dev` on one
+  // data directory both started, served private copies, both reported "chain OK" at different
+  // heads, and the last to exit won the files (plan-startup-ergonomics.md item 1). Nothing could
+  // detect it after the fact: each process's own chain is internally consistent.
+  const { acquireDbLock, lockRefusal } = await import("../src/lock.ts");
+  const dir = await Deno.makeTempDir({ prefix: "radia-dblock-" });
+  const db = `${dir}/space-pg`;
+  try {
+    const first = await acquireDbLock(db, "http://127.0.0.1:7911", 50);
+    assert(first.ok, "the first space could not take the lock");
+
+    const second = await acquireDbLock(db, "http://127.0.0.1:7913", 50);
+    assert(!second.ok, "a second space took a lock the first one holds");
+    assertEquals(second.heldBy?.base, "http://127.0.0.1:7911", "the loser cannot name the holder");
+    const refusal = lockRefusal(db, second.heldBy);
+    assert(refusal.includes(db) && refusal.includes("--db"), `the refusal must name the database and the way out: ${refusal}`);
+
+    // Releasing hands it over: a restart on the same directory must not need a cleanup step.
+    if (first.ok) first.release();
+    const third = await acquireDbLock(db, "http://127.0.0.1:7911", 50);
+    assert(third.ok, "the lock outlived its holder; a restart would be refused forever");
+    if (third.ok) third.release();
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+
+  // And dev takes it, for local backends only: postgres is a server (concurrency is what it is
+  // for) and an in-memory space shares nothing. Source-read like the --auth default above.
+  const main = await Deno.readTextFile(new URL("../src/main.ts", import.meta.url));
+  const lock = main.indexOf("acquireDbLock(dbPath");
+  assert(lock >= 0, "dev no longer takes the database lock");
+  assert(lock < main.indexOf("await storage.init()"), "the lock is taken after the adapter opens the files it protects");
+  assert(/backend !== "postgres" && dbPath/.test(main.slice(lock - 200, lock)), "…or is no longer skipped for postgres and in-memory");
+});
+
+Deno.test("dev: a taken port is a message, not a stack trace", async () => {
+  // The most likely restart failure printed `AddrInUse` plus eight frames of `ext:deno_net` after
+  // two successful-looking startup lines (plan-startup-ergonomics.md item 2). The bind throws
+  // synchronously, so shaping it is a catch; the exit code and the untouched credential file were
+  // already right.
+  const { startServer } = await import("../src/server/http.ts");
+  const { Space } = await import("../src/core/space.ts");
+  const { SqliteAdapter } = await import("../src/storage/sqlite.ts");
+  const { RadiaError } = await import("../src/core/errors.ts");
+  const adapter = new SqliteAdapter(":memory:");
+  await adapter.init();
+  const stopping = new AbortController();
+  try {
+    const space = new Space(adapter);
+    const port = 7897;
+    startServer({ port, space, artifactPort: undefined, signal: stopping.signal });
+    let caught: unknown;
+    try {
+      startServer({ port, space, artifactPort: undefined, signal: stopping.signal });
+    } catch (e) {
+      caught = e;
+    }
+    assert(caught instanceof RadiaError, `a taken port must be a typed refusal, got: ${caught}`);
+    assertEquals((caught as InstanceType<typeof RadiaError>).code, "port_in_use");
+    assert((caught as Error).message.includes(String(port)), "the message must name the port");
+  } finally {
+    stopping.abort();
+    await adapter.close();
+  }
+
+  // dev turns it into advice and exit 1, the shape the unreachable-space message set.
+  const main = await Deno.readTextFile(new URL("../src/main.ts", import.meta.url));
+  assert(/e\.code === "port_in_use"/.test(main), "dev no longer shapes a taken port");
+  assert(/--artifact-port/.test(main.slice(main.indexOf('e.code === "port_in_use"'))), "…or no longer names both ports");
+});
+
+Deno.test("cli: query reads NEWEST first, and a full page says so and hands over the cursor", async () => {
+  // The default read. It returned the OLDEST rows and capped at 500 in silence, so on a space with
+  // 818 records `radia query interest --limit 1000` answered with 500 records from six hours
+  // earlier and nothing saying either thing (plan-startup-ergonomics.md item 3). The console's
+  // Records browser had the same bug and was fixed; the CLI kept it. The server already returned
+  // `nextAfter` and the explain notes: only the printing was missing.
+  const { startServer } = await import("../src/server/http.ts");
+  const { Space } = await import("../src/core/space.ts");
+  const { SqliteAdapter } = await import("../src/storage/sqlite.ts");
+  const { runCli } = await import("../src/surfaces/cli.ts");
+  const adapter = new SqliteAdapter(":memory:");
+  await adapter.init();
+  const stopping = new AbortController();
+  const dir = await Deno.makeTempDir({ prefix: "radia-cliquery-" });
+  Deno.env.set("RADIA_CREDENTIALS", `${dir}/credentials.json`);
+  const log = console.log;
+  const lines: string[] = [];
+  console.log = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
+  try {
+    const space = new Space(adapter);
+    space.registerKind({ kind: "note", indexedPaths: [{ path: "i", type: "number" }], claimable: false });
+    for (let i = 1; i <= 5; i++) await space.put({ kind: "note", body: { i } });
+    const port = 7899;
+    const url = `http://127.0.0.1:${port}`;
+    startServer({ port, space, artifactPort: undefined, signal: stopping.signal }); // auth open: no credential in play
+
+    assertEquals(await runCli("query", ["note", "--limit", "2", "--url", url]), 0);
+    const out = lines.join("\n");
+    lines.length = 0;
+    assert(/\{"i":5\}[\s\S]*\{"i":4\}/.test(out), `newest first, or a limit answers with history: ${out}`);
+    assert(/more \(newest first\): radia query note .*--limit 2 --after \S+/.test(out), `a full page must hand over its cursor: ${out}`);
+    assert(/more \(newest first\): radia query note --url/.test(out), `…carrying the flags that shaped the page: ${out}`);
+    assert(out.includes("PAGE and not a population"), `…and carry the explain note that says why: ${out}`);
+
+    // The cursor continues the page it came from, and --oldest is the way back to the old order.
+    const cursor = out.match(/--after (\S+)/)?.[1];
+    assert(cursor, "no cursor to follow");
+    assertEquals(await runCli("query", ["note", "--limit", "2", "--after", cursor!, "--url", url]), 0);
+    assert(/\{"i":3\}[\s\S]*\{"i":2\}/.test(lines.join("\n")), `the cursor must continue, not restart: ${lines.join("\n")}`);
+    lines.length = 0;
+
+    assertEquals(await runCli("query", ["note", "--limit", "2", "--oldest", "--url", url]), 0);
+    assert(/\{"i":1\}[\s\S]*\{"i":2\}/.test(lines.join("\n")), `--oldest must restore ascending id order: ${lines.join("\n")}`);
+    lines.length = 0;
+
+    // A last page is not a page: no cursor, nothing to follow.
+    assertEquals(await runCli("query", ["note", "--limit", "50", "--url", url]), 0);
+    assert(!lines.join("\n").includes("more ("), `a complete answer must not offer a next page: ${lines.join("\n")}`);
+  } finally {
+    console.log = log;
+    stopping.abort();
+    await adapter.close();
+    Deno.env.delete("RADIA_CREDENTIALS");
+    await Deno.remove(dir, { recursive: true });
+  }
+});

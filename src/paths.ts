@@ -60,6 +60,17 @@ export function defaultSealPath(): string {
 }
 
 /**
+ * The single-writer lock for a local database, a sibling of it like the blob directory.
+ *
+ * Beside the DATABASE rather than in the runtime directory, because the resource two processes
+ * fight over is the database files: `--db` can point anywhere, and two spaces sharing a runtime
+ * directory but not a database are fine.
+ */
+export function lockPath(dbPath: string): string {
+  return `${dbPath}.lock`;
+}
+
+/**
  * Create the directory a path will be written into.
  *
  * SQLite will not create a missing parent, and neither will the KEK writer: pointing `--db` at

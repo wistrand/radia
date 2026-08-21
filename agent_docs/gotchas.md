@@ -619,6 +619,13 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Storage, SQL and the planner
 
+- **Two processes on one local database are refused by `src/lock.ts`, not by the adapter.** PGlite
+  is a single-writer WASM Postgres with no locking of its own: a second `radia dev --db <same dir>`
+  used to serve a private copy, both answering `health` 200 and `integrity` "chain OK" at different
+  heads (5 and 7, measured 2026-08-20), with the last to exit winning the files. The lock is an OS
+  advisory lock on `<db>.lock` taken before `storage.init()`, so a SIGKILLed holder leaves nothing
+  stale; the file is never unlinked, because a waiting process would then lock an invisible inode.
+  Both local backends take it, in-memory and postgres take none.
 - **The events table needs `idx_events_xid_seq`, or the seal walk seq-scans the whole log**
   (`src/storage/pgbase.ts`). `sealableEvents` (verify's per-page fetch and the seal-first pass)
   asks for the next N events in (xid, seq) order; the PK is on `seq` alone, so without this index
@@ -1636,6 +1643,20 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Surfaces: HTTP, console, CLI and the SDKs
 
+- **`radia query` reads NEWEST first and its `--json` is an OBJECT.** The natural order is
+  ascending id, so the old default answered "the records" with the oldest ones and capped at 500 in
+  silence (`Math.min(j.limit, 500)`, `server/handlers/records.ts`). The verb now sends `dir: "desc"`,
+  prints the explain notes and the `nextAfter` cursor as a runnable `--after` line, and `--oldest`
+  restores the old order. `--json` therefore emits `{records, nextAfter, explain, scope}`, not a
+  bare array: a script reading `.[0]` needs `.records[0]`. An `--order` pattern sends no `dir`,
+  since `Space.query` rejects the pair.
+- **An OBSERVER verb writes a record; an operator verb does not.** The observer credential is a
+  DEFINITION token, so every `stats`/`doctor`/`events`/`flows`/`integrity`/`permissions`/`lineage`/
+  `children`/`otlp` exchanges it for a run and appends one `agent_run` (measured 2026-08-20: 765 →
+  766 across three `query` calls, the one new record being the measuring `stats` itself). So
+  inspection grows the space, `doctor`'s own `available=` rises each run, and `events --tail` on an
+  idle space shows the reader their own inspection. Compaction keeps newest-per-run and cannot
+  reduce the count of runs. Do not poll an observer verb in a loop without knowing this.
 - **Three rules the OTLP exporter learned from live Jaeger, for any second exporter or binding**
   (2026-08-06, each found by an operator reading a real trace, none by the design pass).
   A `run:<ulid>` principal carries NO agent name: the first exporter parsed a fictional format

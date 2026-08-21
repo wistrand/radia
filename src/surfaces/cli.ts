@@ -70,7 +70,8 @@ Inspect
 
 Coordinate
   put <kind> <json-body> [--idempotency-key <k>] [--parent <id>]...
-  query <kind> [--match <json>] [--order <json>] [--limit <n>]
+  query <kind> [--match <json>] [--order <json>] [--limit <n>] [--oldest] [--after <id>]
+                                      newest first; a full page says so and prints the next cursor
   read-one <kind> [--match <json>] [--order <json>]
   take <kind> [--match <json>] [--lease <seconds>] [--untainted | --allow-taint <l,l>]
   ack <lease-json> [--result-kind <k> --result <json>] [--idempotency-key <k>]
@@ -875,9 +876,33 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
 
     case "query": {
       const [kind] = positional(argv, 1);
-      if (!kind) return usage("query <kind> [--match <json>]");
-      const recs = await client.query(pattern(kind, argv), Number(flag(argv, "--limit") ?? "50"));
-      return out(ctx, recs, () => recordTable(recs));
+      if (!kind) return usage("query <kind> [--match <json>] [--limit <n>] [--oldest] [--after <id>]");
+      const limit = Number(flag(argv, "--limit") ?? "50");
+      const pat = pattern(kind, argv);
+      const after = flag(argv, "--after");
+      // NEWEST first, unless `--oldest` or an explicit `--order` says otherwise. The natural order
+      // is ascending id, so the old default answered "the 50 records" with the 50 OLDEST, which on
+      // a four-day-old space is history rather than anything current. The console's Records browser
+      // hit this and was fixed; the CLI kept it. `dir` is only defined for the natural order, so an
+      // `--order` pattern passes none (`Space.query` rejects the combination).
+      const dir = pat.orderBy ? undefined : (has(argv, "--oldest") ? "asc" as const : "desc" as const);
+      const page = dir || after ? { ...(dir ? { dir } : {}), ...(after ? { after } : {}) } : undefined;
+      const r = await client.queryPage(pat, limit, page, { explain: true });
+      return out(ctx, r, () => {
+        const lines = [recordTable(r.records)];
+        for (const n of r.explain ?? []) lines.push(`note: ${n}`);
+        if (r.scope) lines.push(`note: ${r.scope.note}`);
+        // The explain notes say a full page is a page; this is the command that continues it,
+        // carrying the flags that shaped the page so the next one is the same query.
+        if (r.nextAfter && pat.orderBy) {
+          lines.push(`(one page of ${limit}. A cursor is only defined for the natural order, so raise --limit or drop --order)`);
+        } else if (r.nextAfter) {
+          const carry = ["--match", "--order", "--url"].flatMap((f) => (flag(argv, f) ? [`${f} '${flag(argv, f)}'`] : []));
+          const rest = [...carry, `--limit ${limit}`, ...(has(argv, "--oldest") ? ["--oldest"] : []), `--after ${r.nextAfter}`];
+          lines.push(`more (${dir === "asc" ? "oldest" : "newest"} first): radia query ${kind} ${rest.join(" ")}`);
+        }
+        return lines.join("\n");
+      });
     }
 
     case "read-one": {
