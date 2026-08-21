@@ -1,6 +1,6 @@
 # Radia examples
 
-Four runnable applications exercise different parts of the public API. Each directory contains its
+Five runnable applications exercise different parts of the public API. Each directory contains its
 own setup and source guide. The Keycloak configuration in
 [`../docker/keycloak/`](../docker/keycloak/) is a local deployment recipe, not an example.
 
@@ -9,6 +9,7 @@ own setup and source guide. The Keycloak configuration in
 | [`pipeline/`](pipeline/) | Fan-out and fan-in through records, competitive claims, leases and lineage. | no |
 | [`stress/`](stress/) | Retry churn, dead letters and abandoned leases for inspecting the console under load. | no |
 | [`analysis/`](analysis/) | A web application whose stages are keyed by dataset, input digest and code digest. | no |
+| [`mud/`](mud/) | A shared world where NPCs are principals with their own grants, not branches in a game loop. | no |
 | [`chat/`](chat/) | A multi-process LLM application with discovered tools, artifacts, encrypted conversations and sandboxed code. | for live model calls |
 
 ```bash
@@ -16,6 +17,7 @@ deno task dev      # a space + web console at http://127.0.0.1:7788
 
 deno task demo     # pipeline: planner + workers + aggregator against that space
 deno task stress   # stress:   fill the space with waves of activity
+deno task mud -- --player alice   # mud: a scripted world; run the play command it prints
 
 radia login human:you                     # chat: the LLM agent needs a session of its own
 RADIA_CHAT_TOKEN=<token> deno task chat   #       plus OPENROUTER_API_KEY
@@ -41,6 +43,10 @@ bug in the example.
 **`stress/`** populates the Space tab and exercises retry churn, dead-lettering and stuck leases.
 
 **`analysis/`** demonstrates content-keyed recomputation and workspace-backed stage promotion.
+
+**`mud/`** makes an NPC a principal: its grants pin which room it may speak in and whose name it may
+speak under, so misbehaviour is refused at the write rather than checked for. Phase 1 of
+[agent_docs/plan-mud.md](../agent_docs/plan-mud.md); the contest over a scarce item is phase 3.
 
 **`chat/`** exercises the broadest surface: model routing, capability records, turn persistence,
 artifacts, delegation, encryption and sandboxed execution.

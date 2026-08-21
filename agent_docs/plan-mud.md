@@ -1,7 +1,12 @@
 # Plan: a MUD-like graphical adventure as an example
 
-**Status: PLANNED.** Analysis 2026-08-21, claims verified against source the same day. A shared
-world with several players and NPCs, rendered in a browser with plain DOM and JS, built on
+**Status: PHASE 1 BUILT 2026-08-21** (`examples/mud/`, `deno task mud`, `deno task test:mud`): the
+kinds, a four-room scripted world, the narrator, two NPC workers, a terminal client, and a smoke
+test that runs with no API key. Building it corrected three things in the design below, each marked
+BUILT-CORRECTION where it appears. Phases 2 to 6 remain planned; analysis 2026-08-21, claims
+verified against source the same day.
+
+A shared world with several players and NPCs, rendered in a browser with plain DOM and JS, built on
 `examples/melkrox` (an LLM text adventure in the melker repo) as the content model and on
 `examples/analysis/` as the web-app shape. NPCs are Radia workers holding their own principals.
 
@@ -37,9 +42,9 @@ The design is entirely in what is declared. Prose stays unindexed, which is also
 | `world`       | no        | `worldId`                           | `[worldId]`           | title, setting, style, image constraints  |
 | `room`        | no        | `worldId`, `roomId`                 | `[worldId, roomId]`   | description, exits, scene prompt          |
 | `presence`    | no        | `worldId`, `actor`, `roomId`        | `[worldId, actor]`    | where an actor is; latest wins            |
-| `fact`        | no        | `worldId`, `key`                    | `[worldId, key]`      | melkrox's `facts`, one record per key     |
-| `command`     | yes       | `worldId`, `roomId`, `actor`        |                       | a player's freeform input                 |
-| `event`       | no        | `worldId`, `roomId`, `index`        |                       | what happened; the room's feed            |
+| `fact`        | no        | `worldId`, `key`                    | `[worldId, key]`      | melkrox's `facts`, one record per key (phase 4) |
+| `command`     | yes       | `worldId`, `actor`                  |                       | a player's freeform input                 |
+| `event`       | no        | `worldId`, `roomId`, `actor`, `verb`, `audience`, `causedBy` | | what happened; the room's feed |
 | `npc`         | no        | `worldId`, `npc`, `roomId`          | `[worldId, npc]`      | an NPC's definition and disposition       |
 | `npc_turn`    | yes       | `worldId`, `npc`, `roomId`          |                       | an NPC's cue to act                       |
 | `contest`     | yes       | `worldId`, `roomId`, `target`       |                       | a scarce thing; `take` decides who gets it |
@@ -52,11 +57,26 @@ QUERY, never an idempotency key: content-keyed idempotency expires with
 `idempotencyRetentionSeconds` (7 days), and a memo that quietly stops memoizing is worse than none
 (`examples/analysis/README.md`, "Operational constraints").
 
-**`event.index` needs the chat's slot claim.** Two players acting in one room in the same instant
-both append. `Thread.append` (`examples/chat/client/thread.ts`) claims the slot with the key
-`evt:<roomId>:<index>`, so the loser of the race takes the next slot. Never order by record id:
-ULIDs sort to the millisecond only (`src/core/ids.ts`), and the index is what a client's
-"have I rendered this" test needs.
+**BUILT-CORRECTION: there is no `event.index`, and a feed is ordered by RECORD ID.** The plan said
+to claim each slot the way `Thread.append` does (`evt:<roomId>:<index>`,
+`examples/chat/client/thread.ts`). That does not work here: an idempotency key is scoped to the
+AGENT behind the caller (audit package U), so the narrator and an NPC would both write index N and
+neither would see a conflict. The chat gets away with it because one session writes its own
+transcript. Ordering is `{dir: "asc", after: lastId}` instead, which is a total, gap-free cursor
+because one runtime process mints monotonic ULIDs (`src/core/ids.ts`); the honest limit is several
+instances over one database, where ids tie inside a millisecond.
+
+**BUILT-CORRECTION: `event` carries `causedBy`, and `command` carries no `roomId`.** A key derived
+from the claimed record dedupes an exact repeat, and it is not enough for the narrator: a redelivery
+re-reads `presence`, which the first attempt may already have moved, so the second attempt walks a
+different branch and collides with the first under the same keys. `causedBy` (indexed) makes "have I
+already narrated this command" a coordination-plane query; `parent_ids` holds the same fact and is
+reachable only through lineage, which is the ops plane and no worker holds it. `command.roomId` is
+gone for the opposite reason: a room named by a client is a claim, and `presence` is the authority.
+
+**BUILT-CORRECTION: an NPC's `event: put` pin names the ACTOR as well as the room.** The room stops
+it speaking where it is not standing; the actor stops it writing a line attributed to a player. Both
+are refused by `bodyMatchesGrant`, and the smoke test plants all three writes.
 
 **Every registry kind declares a `contentKey`.** A per-move `presence` successor is an append-only
 log; `gc` compaction keeps newest-per-key and sweeps the surplus (`src/core/gc.ts`). Without the
@@ -168,7 +188,8 @@ registries to newest-per-key, and offboarding a player or an NPC as `radia runs 
 ## Phases
 
 1. **Kinds and a scripted world, no model.** Narrator worker claims `command`, writes `event`,
-   updates `presence`. Two scripted NPCs. Smoke test with no API key.
+   updates `presence`. Two scripted NPCs. Smoke test with no API key. BUILT: `examples/mud/`, plus
+   a terminal client (`play.ts`) so the world can be walked by hand before the page exists.
 2. **The page.** Relay, `ui.html` + `app.js`, SSO gate, the `after`-cursor tick. Two tabs in one
    room seeing each other is the point at which the example justifies itself.
 3. **Contention.** `contest` records, `take` under a lease, two players racing for one item.
