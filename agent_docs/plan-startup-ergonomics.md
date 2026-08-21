@@ -3,7 +3,7 @@
 Ergonomics backlog, measured 2026-08-20 by starting, restarting, killing and inspecting real
 spaces: an isolated lab (`RADIA_DIR`/`RADIA_CREDENTIALS` in a scratchpad, ports 7911-7922) plus
 read-only verbs against a four-day-old live space. Every number below was observed, not inferred.
-Items 1-3 are BUILT (2026-08-21); the rest is open, in the order to spend effort in.
+Items 1-6 are BUILT (2026-08-21); 7-9 are open, in the order to spend effort in.
 
 The target property: a person restarts a space, or looks at one, and is never surprised. The two
 failures that broke it (items 1 and 2) are closed, and the rest is residue nobody reports.
@@ -71,7 +71,7 @@ wrong and now visible in the CLI, so it went with it: an undeclared kind CAN ret
 undeclared put is allowed), and the note said "can only ever return nothing" above rows a reader
 could see. Guard: `conformance/defaults.test.ts`, "query reads NEWEST first".
 
-## 4. Inspecting a space grows the space
+## 4. Inspecting a space grows the space (BUILT)
 
 Measured: `agent_run` 765, three `radia query` calls, 766 — the one new record came from the
 measuring `stats` call. Operator verbs (`query`/`put`/`get`) mint nothing; every OBSERVER verb
@@ -82,7 +82,17 @@ writes one `agent_run` because it exchanges its definition token for a run. Cons
 the reader their own inspection. Compaction keeps newest-per-run and so cannot reduce the count of
 RUNS, only their renewals.
 
-## 5. The credential file accumulates and nothing prunes it
+BUILT: `POST /v0/agent-runs {reuse: true}` (`Space.mintRun`), which derives the run token from the
+definition token and a 12h bucket and returns the run that credential already holds. The mechanism
+is `mintDelegatedRun`'s, and both now share `Space.reuseRun`. OPT-IN, because reuse collapses run
+identity: two processes on one definition token share a run principal and `runs --stop` stops both,
+which is right for a person's CLI and wrong for a fleet. The CLI and the MCP adapter ask for it
+(`ClientAuth.reuseRun`); nothing else changes. Measured after: six observer verbs, one `agent_run`,
+where six was the count before. The cost to know about: a stopped reused run stays stopped until the
+bucket rolls, so `runs --stop` on the observer blocks read-only verbs for up to 12h. Guard:
+`conformance/exchange.test.ts`, "a credential exchanged per process gets its run back".
+
+## 5. The credential file accumulates and nothing prunes it (BUILT)
 
 `~/.radia/credentials.json`: 23KB, 57 entries after four days — 43 `#observer`, 10 stale operator,
 1 login, 3 content keys, across 43 distinct ports. Clean shutdown removes only the operator entry
@@ -92,7 +102,20 @@ mint-only definition token for a space that no longer exists. The entries are ke
 an ephemeral-port space (every smoke run) can never reuse one. Nothing prunes and no verb owns it:
 `doctor` reports on a space, and this file belongs to the user.
 
-## 6. `health` identifies neither the instance nor whether it persists
+BUILT: `radia credentials [--prune]`, the verb that owns this file. Two rules decide what it may
+delete. WHAT A RESTART REBUILDS: an operator or `#observer` entry comes back by starting `radia dev`
+again, while a `#login` durable half and a content key do not, and the key is the only copy of what
+opens a person's conversations, so those two are never pruned whatever their age. And AGE IS NOT
+PERMISSION: an entry is rewritten only when a space starts, so a dev up for a month looks exactly
+like one that died a month ago. `--prune` therefore probes each dormant entry's base URL and keeps
+the ones that still answer, saying which. Nothing prunes as a side effect of a write, which is where
+this first landed and what the suite caught: an unrelated `radia login` deleted a live space's
+operator entry, the port-race bug wearing a clock. `radia dev` reports the dormant count and deletes
+nothing. Clean shutdown does drop the `#observer` entry for an IN-MEMORY space, whose base URL will
+never answer again; a persisted one keeps it, because the identity is still in its database. Guard:
+`conformance/exchange.test.ts`, "prunes what a restart can rebuild, and nothing else".
+
+## 6. `health` identifies neither the instance nor whether it persists (BUILT)
 
 The payload is status/version/api/storage/now/principal/oidc. No start time, no instance id, no
 persistence flag, so "where did my records go" is answerable from the startup log and nowhere else,
@@ -100,6 +123,15 @@ and a reconnecting client cannot tell "same space, memory intact" from "same por
 space". `startedAt` plus `persistent: true|false` is ADDITIVE to the frozen contract (spec and
 router are checked in both directions by `conformance/openapi.test.ts`) and turns the most
 confusing restart symptom into one line of `radia health`.
+
+BUILT, three fields: `instance` (a ULID per `Space`, so a restart is visible as a different space
+rather than inferred from a changed clock), `startedAt` (the DATABASE clock, or uptime would be a
+cross-clock subtraction) and `persistent`. The last two are absent unless the boot path stamped
+them, since a `Space` is handed an adapter and cannot see where it writes, and `storage` reads
+`pglite` either way. Still PUBLIC, like `principal` and `storage` before them: the reconnecting
+client is the one that needs the answer and it has not signed in yet. `radia health` prints
+`persisted`/`in-memory` on its first line and `instance=… started=…` on a second. Guard:
+`conformance/http.test.ts`, "health says WHICH space this is".
 
 ## 7. `doctor` undercounts what `gc` would reclaim
 

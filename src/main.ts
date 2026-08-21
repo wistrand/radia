@@ -12,7 +12,15 @@ import { BlobCipher, loadKek } from "./storage/crypto.ts";
 import { loadSealKey } from "./core/seal.ts";
 import { Space } from "./core/space.ts";
 import { startServer } from "./server/http.ts";
-import { clearCredential, OBSERVER_PRINCIPAL, provisionObserver, saveCredential } from "./credentials.ts";
+import {
+  clearCredential,
+  clearObserver,
+  CREDENTIAL_STALE_DAYS,
+  listCredentials,
+  OBSERVER_PRINCIPAL,
+  provisionObserver,
+  saveCredential,
+} from "./credentials.ts";
 import { runCli } from "./surfaces/cli.ts";
 import { runMcp } from "./surfaces/mcp/server.ts";
 import { flag, optionalFlag } from "./flags.ts";
@@ -184,6 +192,10 @@ async function dev(args: string[]): Promise<number> {
   space.sealKey = await loadSealKey({ env: env("RADIA_SEAL_KEY"), file: sealPath, retiredEnv: env("RADIA_SEAL_KEY_RETIRED") });
   if (space.sealKey) console.log(`radia dev: event chain signed (key from ${space.sealKey.source})`);
   await space.loadKinds(); // restore persisted kind declarations
+  // What `GET /v0/health` reports about this process: which space it is, since when, and whether
+  // anything survives a restart. Only the boot path knows the last one (`--db`, or a server).
+  space.persistent = backend === "postgres" ? true : !!dbPath;
+  await space.markStarted();
   const operatorToken = await space.mintOperatorToken(); // for the CLI, the MCP adapter and curl
   // Shut down on a signal instead of being killed mid-flight, so the cleanup below actually runs.
   // Without this, Ctrl-C or SIGTERM leaves a dead token on disk and the next CLI call 401s with
@@ -231,6 +243,13 @@ async function dev(args: string[]): Promise<number> {
     // The console requires a credential in EVERY mode, not only `--auth required`, so print one
     // unconditionally. The console and `curl` both need this; the CLI and MCP adapter read the
     // file above instead.
+    // A nudge, not a sweep: this file is the USER's, an entry is only rewritten when a space
+    // starts, and a month-old entry may belong to a space that has been up for a month. So the
+    // count is reported here and `radia credentials --prune` checks each one before deleting it.
+    const dormant = listCredentials().filter((c) => c.stale).length;
+    if (dormant > 0) {
+      console.log(`radia dev: ${dormant} credential ${dormant === 1 ? "entry has" : "entries have"} not been rewritten in ${CREDENTIAL_STALE_DAYS} days (radia credentials --prune)`);
+    }
     console.log(`radia dev: operator token (console sign-in, curl): ${operatorToken}`);
     if (!authRequired) {
       console.log(`radia dev: --auth open. A request with no Authorization header is the OPERATOR.`);
@@ -243,6 +262,10 @@ async function dev(args: string[]): Promise<number> {
     // it on disk would only mislead the next CLI invocation into a 401. Conditional on the entry
     // still being OURS: another dev on this base may have replaced it since.
     clearCredential(base, operatorToken);
+    // An in-memory space is gone: its observer entry names a base URL nothing will answer on again,
+    // and one per ephemeral port is how the credential file reached 43 dead spaces. A persisted
+    // one keeps its entry, since the identity is still in the database the next start opens.
+    if (!dbPath) clearObserver(base);
     await storage.close();
     unlock?.(); // after the adapter closed, so nothing else can open these files first
   }

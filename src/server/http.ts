@@ -519,6 +519,11 @@ export function makeHandler(space: Space, ui: string, authRequired: boolean) {
           storage: space.storageName,
           now: await space.now(),
           principal, // the resolved caller (so the console can show who it's authenticated as)
+          instance: space.instance,
+          // WHICH space, and whether it will still be here. A restart on the same port answers 200
+          // either way, so a client watching `now` alone cannot see that its records are gone.
+          ...(space.startedAt ? { startedAt: space.startedAt } : {}),
+          ...(space.persistent === undefined ? {} : { persistent: space.persistent }),
           // Pre-auth SSO discovery for the console's sign-in screen (the `principal` field's
           // precedent: health is where a signed-out page learns what this space offers). The
           // issuer and client id are public knowledge by OIDC's own design; never a secret here.

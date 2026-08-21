@@ -1643,6 +1643,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
 
 ### Surfaces: HTTP, console, CLI and the SDKs
 
+- **Never prune the credential file as a side effect of a write, and never on age alone.** An entry
+  is rewritten only when a space STARTS, so a dev up for a month is indistinguishable from one that
+  died a month ago; deleting the first leaves every operator verb at 401 with nothing to point at
+  (caught by "a person's login does not overwrite the operator credential", the port-race guard).
+  `radia credentials --prune` probes each dormant base URL and keeps whatever answers. A `#login`
+  durable half and a `#enckey:` content key are never pruned at all: the key is the only copy of
+  what opens that person's conversations. A new entry kind must be added to `credentialKind`, or it
+  defaults to "operator" and becomes prunable.
 - **`radia query` reads NEWEST first and its `--json` is an OBJECT.** The natural order is
   ascending id, so the old default answered "the records" with the oldest ones and capped at 500 in
   silence (`Math.min(j.limit, 500)`, `server/handlers/records.ts`). The verb now sends `dir: "desc"`,
@@ -1650,13 +1658,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   restores the old order. `--json` therefore emits `{records, nextAfter, explain, scope}`, not a
   bare array: a script reading `.[0]` needs `.records[0]`. An `--order` pattern sends no `dir`,
   since `Space.query` rejects the pair.
-- **An OBSERVER verb writes a record; an operator verb does not.** The observer credential is a
-  DEFINITION token, so every `stats`/`doctor`/`events`/`flows`/`integrity`/`permissions`/`lineage`/
-  `children`/`otlp` exchanges it for a run and appends one `agent_run` (measured 2026-08-20: 765 →
-  766 across three `query` calls, the one new record being the measuring `stats` itself). So
-  inspection grows the space, `doctor`'s own `available=` rises each run, and `events --tail` on an
-  idle space shows the reader their own inspection. Compaction keeps newest-per-run and cannot
-  reduce the count of runs. Do not poll an observer verb in a loop without knowing this.
+- **A definition token exchanged per process appends an `agent_run` unless it asks for `reuse`.**
+  The observer credential is a definition token, so every `stats`/`doctor`/`events`/`flows`/
+  `integrity`/`permissions` used to write one per command (765 → 766 across three calls, measured
+  2026-08-20). `POST /v0/agent-runs {reuse: true}` (`ClientAuth.reuseRun`, set by the CLI and the
+  MCP adapter) returns the run the credential already holds. Two consequences: holders of one
+  definition token now SHARE a run principal, so never set it for a worker fleet; and a stopped
+  reused run stays stopped until the 12h bucket rolls, so `runs --stop` on the observer blocks
+  read-only verbs until then.
 - **Three rules the OTLP exporter learned from live Jaeger, for any second exporter or binding**
   (2026-08-06, each found by an operator reading a real trace, none by the design pass).
   A `run:<ulid>` principal carries NO agent name: the first exporter parsed a fictional format

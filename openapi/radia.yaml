@@ -69,7 +69,7 @@ paths:
   /health:
     get:
       operationId: health
-      summary: Liveness + storage backend + DB clock
+      summary: Liveness, storage backend, DB clock, and which run of the space this is
       x-stability: stable
       responses:
         "200":
@@ -85,6 +85,9 @@ paths:
                   storage: { type: string }
                   now: { type: string }
                   principal: { type: string, description: "the resolved caller (from the bearer token, or the operator default)" }
+                  instance: { type: string, description: "identity of THIS run of the space; changes on every restart, so a client can tell 'same space' from 'same port'" }
+                  startedAt: { type: string, description: "database clock at boot; absent when the boot path did not stamp one" }
+                  persistent: { type: boolean, description: "whether records survive a restart (storage alone cannot say: pglite runs both ways)" }
                   oidc:
                     type: object
                     description: "present when OIDC sign-in is configured; pre-auth discovery for the console (issuer and client id are public by OIDC's design)"
@@ -852,6 +855,16 @@ paths:
       summary: Mint a short-lived run token from a definition token
       description: "Present the definition token as `Authorization: Bearer`. Returns a run:* principal + run token (once)."
       x-stability: experimental
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reuse:
+                  type: boolean
+                  description: "return the run this credential already holds, minting only when there is none. For a credential exchanged by short-lived processes (every CLI verb is one), the default appends a permanent agent_run per exchange. Opt-in: reuse collapses run identity, so two holders of one definition token share a run principal."
       responses:
         "201":
           description: run minted

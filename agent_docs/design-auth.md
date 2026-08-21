@@ -74,6 +74,17 @@ resolution is per request from records: what a revoke cannot reach is a run alre
 the 15-minute blast radius the short token was always buying. Pinned by
 `conformance/exchange.test.ts`.
 
+**`POST /v0/agent-runs {reuse: true}` returns the run this credential already holds.** A run is a
+permanent record, so a credential exchanged by SHORT-LIVED processes appends one per invocation:
+every read-only CLI verb did, and inspecting a space grew it (766 `agent_run` rows in four days).
+Reuse derives the token from the presented definition token and a `runMaxLifetimeSeconds` bucket,
+the mechanism `mintDelegatedRun` already used, so the same credential finds its own run through the
+`tokenHash` lookup and writes nothing while that run is live; both paths share `Space.reuseRun`, so
+the three rules cannot drift (stopped stays stopped, live returns unwritten, expired-inside-the-
+ceiling extends in place). OPT-IN, because reuse collapses run identity: two processes holding one
+definition token share a run principal, and `runs --stop` stops both. The CLI and the MCP adapter
+ask for it; a worker fleet does not.
+
 Requests authenticate with
 `Authorization: Bearer <run-token>` → a `run:*` principal that **inherits its agent
 definition's grants** (`Space.grantSubject` maps `run:` → its `agent:`). Tokens are secrets:

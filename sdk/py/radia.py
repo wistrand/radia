@@ -468,9 +468,15 @@ class RadiaClient:
         """Operator: define an agent with its grants. Returns the definition token, shown once."""
         return self._req("POST", "/v0/agent-definitions", {"agent": agent, "grants": grants or []})
 
-    def create_run(self, definition_token: str) -> Dict[str, Any]:
-        """Mint a short-lived run token from a definition token."""
-        return self._req("POST", "/v0/agent-runs", {}, {"Authorization": f"Bearer {definition_token}"})
+    def create_run(self, definition_token: str, reuse: bool = False) -> Dict[str, Any]:
+        """Mint a short-lived run token from a definition token.
+
+        ``reuse`` returns the run this credential already holds when one is live, instead of
+        minting another. A run is a permanent record, so a short-lived process that exchanges per
+        invocation grows the space it is reading; leave it off for a worker fleet, where two
+        processes sharing a run principal would be indistinguishable by author.
+        """
+        return self._req("POST", "/v0/agent-runs", {"reuse": bool(reuse)}, {"Authorization": f"Bearer {definition_token}"})
 
     def create_delegated_run(self, for_record_id: str) -> Dict[str, Any]:
         """Mint a DELEGATED run: this client's capability, bounded by its caller's reach.

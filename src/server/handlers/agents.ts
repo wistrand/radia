@@ -45,8 +45,12 @@ export async function handleCreateDefinition(space: Space, req: Request, princip
 export async function handleCreateRun(space: Space, req: Request): Promise<Response> {
   const token = bearer(req);
   if (!token) return problem(401, "missing_credential", "minting a run requires a definition token (Authorization: Bearer)");
+  // `{reuse: true}`: give me the run this credential already has rather than a new one. For a
+  // credential exchanged by short-lived processes (every CLI verb is one), the default appends a
+  // permanent `agent_run` per command. Opt-in, since reuse collapses run identity; see `mintRun`.
+  const j = await readJson(req);
   try {
-    const out = await space.mintRun(token);
+    const out = await space.mintRun(token, { reuse: j?.reuse === true });
     return new Response(JSON.stringify(out), { status: 201, headers: { "content-type": "application/json" } });
   } catch (e) {
     if (e instanceof RadiaError) return problem(401, e.code, e.message);

@@ -1367,24 +1367,88 @@ export class Space {
     }
   }
 
-  /** Mint a short-lived run token for the agent behind `definitionToken`. Records an `agent_run`
-   *  and returns the run principal + token (once). Fails if the token is not a definition token. */
-  async mintRun(definitionToken: string): Promise<{ run: string; agent: string; runToken: string; expiresAt: string }> {
+  /**
+   * Mint a short-lived run token for the agent behind `definitionToken`. Records an `agent_run`
+   * and returns the run principal + token (once). Fails if the token is not a definition token.
+   *
+   * `reuse` is for a credential that is exchanged over and over by SHORT-LIVED processes: every CLI
+   * verb is a fresh process, so inspecting a space grew it by one permanent `agent_run` per command
+   * (766 rows in four days, `radia events --tail` showing the reader their own reads). It derives
+   * the token instead of randomising it, exactly as `mintDelegatedRun` does, so the same
+   * (definition token, 12h bucket) finds its own run and writes nothing while that run is live.
+   *
+   * OPT-IN, because reuse collapses run identity: two processes holding one definition token would
+   * share a run principal, and `runs --stop` would stop both. That is right for a person's CLI and
+   * wrong for a worker fleet, so the caller says which it is. A stopped run stays stopped until the
+   * bucket rolls, the same rule delegation keeps and for the same reason.
+   */
+  async mintRun(
+    definitionToken: string,
+    opts: { reuse?: boolean } = {},
+  ): Promise<{ run: string; agent: string; runToken: string; expiresAt: string }> {
     const now = await this.storage.now();
     const resolved = await this.resolveCredential(definitionToken, now); // hydrates a cross-instance def token
     if (!resolved.ok || resolved.kind !== "def") {
       throw new RadiaError("invalid_credential", "a valid agent-definition token is required to mint a run");
     }
     const agent = resolved.agent;
+    // Derived from the PRESENTED token and never from its hash: the hash is in a record anyone with
+    // read access can see, and would otherwise be enough to compute a live credential.
+    const bucket = Math.floor(Date.parse(now) / (this.ctx.runMaxLifetimeSeconds * 1000));
+    const derived = opts.reuse ? (await sha256Hex(`radia-run\n${definitionToken}\n${bucket}`)).slice(0, 48) : undefined;
+    const { token, hash } = derived ? { token: derived, hash: await hashToken(derived) } : await mintCredential();
+    if (derived) {
+      const reused = await this.reuseRun(hash, now, agent, {}, (run) => this.creds.rememberRun(run, agent));
+      if (reused) return { run: reused.run, agent, runToken: token, expiresAt: reused.expiresAt };
+    }
     const run = `run:${newUlid()}`;
     const expiresAt = addSeconds(now, this.ctx.runTokenSeconds);
-    const { token, hash } = await mintCredential();
     // `mintedAt` is what bounds renewal: it is copied onto every successor, so the absolute deadline
     // is a property of the RUN and cannot be pushed forward by renewing.
     await this.putRaw({ kind: AGENT_RUN, body: { run, agent, tokenHash: hash, status: "active", expiresAt, mintedAt: now } });
     this.creds.rememberRun(run, agent);
     this.notifier.notify();
     return { run, agent, runToken: token, expiresAt };
+  }
+
+  /**
+   * Keep alive the run a DERIVED token already names, or report that there is none to keep.
+   *
+   * Both derived mints need the same three answers and must not drift apart on any of them: a
+   * stopped run stays stopped (or the deprovisioning cascade is undone by the holder's next call),
+   * a live one is returned with NO write, and one expired inside its ceiling is EXTENDED in place
+   * (the `renewRun` successor shape, so compaction still keeps exactly one row per run).
+   *
+   * Undefined means past the ceiling. The caller then mints a fresh run under the same derived
+   * token, which cannot collide: the bucket is the ceiling, so a run whose ceiling has passed was
+   * derived in an earlier bucket and the next derivation differs.
+   */
+  private async reuseRun(
+    hash: string,
+    now: string,
+    agent: string,
+    bodyExtra: Record<string, unknown>,
+    remember: (run: string) => void,
+  ): Promise<{ run: string; expiresAt: string } | undefined> {
+    const prior = await this.newestByHash(AGENT_RUN, hash) as RunBody | undefined;
+    if (!prior?.run) return undefined;
+    if (prior.status === "stopped") throw new RadiaError("run_stopped", `run ${prior.run} was stopped`);
+    if ((prior.expiresAt ?? "") > now) {
+      remember(prior.run);
+      return { run: prior.run, expiresAt: prior.expiresAt! };
+    }
+    const mintedAt = prior.mintedAt ?? now;
+    if (addSeconds(mintedAt, this.ctx.runMaxLifetimeSeconds) > now) {
+      const expiresAt = addSeconds(now, this.ctx.runTokenSeconds);
+      await this.putRaw({
+        kind: AGENT_RUN,
+        body: { run: prior.run, agent, tokenHash: hash, status: "active", expiresAt, mintedAt, ...bodyExtra },
+      });
+      remember(prior.run);
+      this.notifier.notify();
+      return { run: prior.run, expiresAt };
+    }
+    return undefined;
   }
 
   /**
@@ -1504,33 +1568,17 @@ export class Space {
       : undefined;
 
     if (derived) {
-      const hash = await hashToken(derived);
-      const prior = await this.newestByHash(AGENT_RUN, hash) as RunBody | undefined;
-      if (prior?.run) {
-        // A stopped delegation stays stopped. Reviving it here would make the deprovisioning
-        // cascade (`radia runs --acting-for … --stop`) undone by the worker's next call.
-        if (prior.status === "stopped") throw new RadiaError("run_stopped", `run ${prior.run} was stopped`);
-        if ((prior.expiresAt ?? "") > now) {
-          this.creds.rememberRun(prior.run, agent, delegation);
-          return { run: prior.run, agent, runToken: derived, expiresAt: prior.expiresAt!, actingFor };
-        }
-        // Expired but inside its ceiling: extend the SAME run rather than making a new one. Same
-        // successor shape as `renewRun`, so compaction still keeps exactly one row for it.
-        const mintedAt = prior.mintedAt ?? now;
-        if (addSeconds(mintedAt, this.ctx.runMaxLifetimeSeconds) > now) {
-          const expiresAt = addSeconds(now, this.ctx.runTokenSeconds);
-          await this.putRaw({
-            kind: AGENT_RUN,
-            body: { run: prior.run, agent, tokenHash: hash, status: "active", expiresAt, mintedAt, actingFor, delegated: { grants } },
-          });
-          this.creds.rememberRun(prior.run, agent, delegation);
-          this.notifier.notify();
-          return { run: prior.run, agent, runToken: derived, expiresAt, actingFor };
-        }
-        // Past the ceiling. The bucket above has rolled or is about to, so the next derivation
-        // differs and this cannot collide with the run below; two runs must never share a
-        // tokenHash, or stopping one would shadow the other.
-      }
+      // `reuseRun` holds the three rules this shares with `mintRun`'s reuse: stopped stays stopped
+      // (or `radia runs --acting-for … --stop` is undone by the worker's next call), live returns
+      // with no write, and expired-inside-the-ceiling extends the same run.
+      const reused = await this.reuseRun(
+        await hashToken(derived),
+        now,
+        agent,
+        { actingFor, delegated: { grants } },
+        (run) => this.creds.rememberRun(run, agent, delegation),
+      );
+      if (reused) return { run: reused.run, agent, runToken: derived, expiresAt: reused.expiresAt, actingFor };
     }
 
     const run = `run:${newUlid()}`;
@@ -2522,6 +2570,25 @@ export class Space {
    *  built against it so a browser opens artifact bytes somewhere that shares no origin with the
    *  console. Empty means artifacts are served only from the main origin, as downloads. */
   artifactOrigin = "";
+
+  /**
+   * Identity and lifetime of THIS process's space, reported by `GET /v0/health`.
+   *
+   * A reconnecting client could not tell "same space, records intact" from "same port, fresh empty
+   * space": the payload named the backend but not which run of it, and `storage` reads `pglite`
+   * whether the data is on disk or in memory. `instance` changes on every restart, `startedAt` is
+   * the DB clock (so uptime is not a cross-clock subtraction) and `persistent` is set by whoever
+   * boots the space, since a `Space` is handed an adapter and cannot see where it writes.
+   */
+  readonly instance = newUlid();
+  startedAt?: string;
+  persistent?: boolean;
+
+  /** Stamp the start instant, from the database clock. Called by the boot path once the adapter is
+   *  open; an unstamped space reports no `startedAt` rather than the moment it was first asked. */
+  async markStarted(): Promise<void> {
+    this.startedAt ??= await this.storage.now();
+  }
 
   /** Registered kind declarations (dev UI). */
   listKinds(): KindDef[] {

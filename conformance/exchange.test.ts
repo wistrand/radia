@@ -22,7 +22,16 @@ import { makeHandler } from "../src/server/http.ts";
 import { Space } from "../src/core/space.ts";
 import { SqliteAdapter } from "../src/storage/sqlite.ts";
 import { RadiaClient, RadiaClientError } from "../sdk/ts/client.ts";
-import { resolveDefinitionToken, resolveToken, saveCredential, saveLogin, storedLogin } from "../src/credentials.ts";
+import {
+  credentialsPath,
+  listCredentials,
+  removeCredentials,
+  resolveDefinitionToken,
+  resolveToken,
+  saveCredential,
+  saveLogin,
+  storedLogin,
+} from "../src/credentials.ts";
 
 /** A space behind a real port, with one definition that can `put` and `query` tasks. `count` says
  *  how many runs have been minted, which is how "exchanged once, not per call" is checked. */
@@ -354,5 +363,95 @@ Deno.test("[exchange] a restarted worker's interest survives its predecessor's i
     assertEquals(row!.runs, 1, "…counted under its live run only; the dead one is dropped");
   } finally {
     await s.close();
+  }
+});
+
+Deno.test("[exchange] reuse: a credential exchanged per process gets its run back, not another one", async () => {
+  // Inspecting a space grew it: every CLI verb is a whole process, so each one exchanged and
+  // appended a permanent `agent_run` (766 rows in four days, and `radia events --tail` showing the
+  // reader their own reads — plan-startup-ergonomics.md item 4). Reuse derives the token from the
+  // definition token and a 12h bucket, so the same credential finds its own run and writes nothing.
+  const s = await newSpace();
+  try {
+    const runsNow = async () => (await s.space.query({ kind: "agent_run" }, 500)).length;
+    const before = await runsNow();
+
+    const a = await new RadiaClient(s.base).createRun(s.definitionToken, { reuse: true });
+    const b = await new RadiaClient(s.base).createRun(s.definitionToken, { reuse: true });
+    assertEquals(b.run, a.run, "two processes with one credential must land on one run");
+    assertEquals(b.runToken, a.runToken, "…and be handed a token that already works");
+    assertEquals(await runsNow() - before, 1, "reuse wrote a record for a run that already existed");
+
+    // The token is usable, and it is a RUN: the whole point is that the caller needs no other.
+    const client = new RadiaClient(s.base, { token: a.runToken });
+    assertEquals((await client.health()).principal, a.run);
+
+    // Opt-in, and the default is untouched: a fleet keeps one run per process.
+    const c = await new RadiaClient(s.base).createRun(s.definitionToken);
+    assert(c.run !== a.run, "the default must still mint a fresh run");
+    assertEquals(await runsNow() - before, 2, "…and exactly one record for it");
+
+    // Stopping a reused run STOPS it. It must not be revived by the next exchange, or the
+    // deprovisioning cascade would be undone by whoever holds the credential.
+    await new RadiaClient(s.base, { token: a.runToken }).stopRun(a.run);
+    await assertRejects(
+      () => new RadiaClient(s.base).createRun(s.definitionToken, { reuse: true }),
+      RadiaClientError,
+      "run_stopped",
+    );
+  } finally {
+    await s.close();
+  }
+});
+
+Deno.test("[exchange] the credential file prunes what a restart can rebuild, and nothing else", async () => {
+  // Measured after four days: 23KB, 57 entries across 43 distinct ports, 43 of them `#observer`
+  // definition tokens for spaces that no longer exist (plan-startup-ergonomics.md item 5). Entries
+  // are keyed by base URL, so an ephemeral-port space can never reuse one, and nothing owned the
+  // file: `doctor` reports on a space, and this belongs to the user.
+  //
+  // The rule is what may be REBUILT. An operator or observer entry comes back by restarting
+  // `radia dev`; a person's login and an app's content key do not, and the content key is the only
+  // copy of what opens their conversations. So age prunes the first two and never the last two.
+  const dir = await Deno.makeTempDir({ prefix: "radia-prune-" });
+  Deno.env.set("RADIA_CREDENTIALS", `${dir}/credentials.json`);
+  try {
+    const old = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const recent = new Date(Date.now() - 86_400_000).toISOString();
+    await Deno.writeTextFile(
+      credentialsPath(),
+      JSON.stringify({
+        "http://127.0.0.1:1111": { token: "a", mintedAt: old },
+        "http://127.0.0.1:1111#observer": { token: "", mintedAt: old, definitionToken: "d" },
+        "http://127.0.0.1:1111#login": { token: "l", mintedAt: old, definitionToken: "dl" },
+        "http://127.0.0.1:1111#enckey:human:e": { token: "k", mintedAt: old },
+        "http://127.0.0.1:2222": { token: "b", mintedAt: recent },
+        "http://127.0.0.1:3333#observer": { token: "", mintedAt: "not-a-date", definitionToken: "d" },
+      }),
+    );
+
+    const candidates = listCredentials().filter((r) => r.stale).map((r) => r.key).sort();
+    assertEquals(candidates, ["http://127.0.0.1:1111", "http://127.0.0.1:1111#observer"]);
+    assert(
+      listCredentials().some((r) => r.key.includes("3333") && !r.stale),
+      "an unparseable mintedAt is not evidence of age and must keep the entry",
+    );
+
+    removeCredentials(candidates);
+    const left = listCredentials().map((r) => r.kind).sort();
+    assertEquals(left, ["content-key", "login", "observer", "operator"], "a login or a content key was pruned by age");
+
+    // AGE IS NOT PERMISSION. An entry is rewritten only when a space starts, so a dev that has been
+    // up for a month looks exactly like one that died a month ago, and deleting the first leaves
+    // every operator verb answering 401 with nothing to point at. So no write prunes as a side
+    // effect: an unrelated `saveLogin` used to take an old operator entry with it, which is the
+    // port-race bug above wearing a clock.
+    const before = listCredentials().length;
+    saveLogin("http://127.0.0.1:1111", { principal: "human:a", token: "t", definitionToken: "d", mintedAt: new Date(0).toISOString() });
+    saveCredential("http://127.0.0.1:4444", { token: "c", mintedAt: new Date().toISOString() });
+    assertEquals(listCredentials().length, before + 1, "a write deleted an entry it was not asked to touch");
+  } finally {
+    Deno.env.delete("RADIA_CREDENTIALS");
+    await Deno.remove(dir, { recursive: true });
   }
 });

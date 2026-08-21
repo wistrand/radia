@@ -91,6 +91,16 @@ export interface ClientAuth {
    * token lives 15 minutes, renews until a 12-hour ceiling, and then the process is finished.
    */
   definitionToken?: string;
+  /**
+   * Ask each exchange for the run this credential already holds, instead of a new one
+   * (`POST /v0/agent-runs {reuse: true}`).
+   *
+   * For a SHORT-LIVED process this is the difference between inspecting a space and growing it: a
+   * run is a permanent record, and a CLI verb that exchanges once per invocation appends one every
+   * time. Leave it off for a worker fleet, where two processes sharing a run principal would make
+   * their records indistinguishable by author and `runs --stop` stop both.
+   */
+  reuseRun?: boolean;
 }
 
 /** What a grant narrowed a read to. Absent when nothing was narrowed. */
@@ -173,7 +183,7 @@ export class RadiaClient {
   private exchange(): Promise<void> {
     this.exchanging ??= (async () => {
       try {
-        const { run, runToken } = await this.rawReq("POST", "/v0/agent-runs", {}, {
+        const { run, runToken } = await this.rawReq("POST", "/v0/agent-runs", { reuse: this.auth.reuseRun === true }, {
           "Authorization": `Bearer ${this.auth.definitionToken}`,
         }) as { run: string; runToken: string };
         this.auth.token = runToken;
@@ -214,7 +224,12 @@ export class RadiaClient {
     return this.auth.token;
   }
 
-  health(): Promise<{ storage: string; now: string; version: string; principal: string }> {
+  /** `instance` changes on every restart and `persistent` says whether anything survived one, so a
+   *  reconnecting client can tell "same space" from "same port". Both are absent from a space too
+   *  old to report them. */
+  health(): Promise<
+    { storage: string; now: string; version: string; principal: string; instance?: string; startedAt?: string; persistent?: boolean }
+  > {
     return this.req("GET", "/v0/health");
   }
 
@@ -411,9 +426,13 @@ export class RadiaClient {
     return this.req("POST", "/v0/agent-definitions", { agent, grants });
   }
 
-  /** Mint a short-lived run token from a definition token. */
-  createRun(definitionToken: string): Promise<{ run: string; agent: string; runToken: string; expiresAt: string }> {
-    return this.req("POST", "/v0/agent-runs", {}, { "Authorization": `Bearer ${definitionToken}` });
+  /** Mint a short-lived run token from a definition token. `reuse` returns the run this credential
+   *  already holds when there is a live one; see `ClientAuth.reuseRun`. */
+  createRun(
+    definitionToken: string,
+    opts: { reuse?: boolean } = {},
+  ): Promise<{ run: string; agent: string; runToken: string; expiresAt: string }> {
+    return this.req("POST", "/v0/agent-runs", { reuse: opts.reuse === true }, { "Authorization": `Bearer ${definitionToken}` });
   }
 
   /**

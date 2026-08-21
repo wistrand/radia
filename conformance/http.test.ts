@@ -1315,3 +1315,32 @@ Deno.test("records: read-one answers with the OLDEST match, and a newest-first q
     await close();
   }
 });
+
+Deno.test("http: health says WHICH space this is, and whether it survives a restart", async () => {
+  // "Where did my records go" was answerable from the startup log and nowhere else: a restart on
+  // the same port answers 200 either way, and `storage` reads `pglite` whether the data is on disk
+  // or in memory (plan-startup-ergonomics.md item 6). Public on purpose: the reconnecting client
+  // is the one that needs it, and it has not signed in yet.
+  const a = await newHandler();
+  const b = await newHandler();
+  try {
+    const unstamped = await (await a.handler(get("/v0/health"))).json();
+    assert(typeof unstamped.instance === "string" && unstamped.instance.length > 0, "health must name the running space");
+    assertEquals(unstamped.startedAt, undefined, "an unstamped space must not invent a start time");
+    assertEquals(unstamped.persistent, undefined, "…nor guess at persistence it was never told");
+
+    a.space.persistent = true;
+    await a.space.markStarted();
+    const stamped = await (await a.handler(get("/v0/health"))).json();
+    assertEquals(stamped.persistent, true);
+    assert(stamped.startedAt <= stamped.now, `startedAt must come from the DB clock, not a second one: ${stamped.startedAt} > ${stamped.now}`);
+    assertEquals(stamped.instance, unstamped.instance, "the instance id must not change under a live space");
+
+    // Two spaces are two instances: this is the whole point of the field.
+    const other = await (await b.handler(get("/v0/health"))).json();
+    assert(other.instance !== stamped.instance, "a second space reported the first one's identity");
+  } finally {
+    await a.close();
+    await b.close();
+  }
+});

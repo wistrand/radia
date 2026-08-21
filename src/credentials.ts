@@ -93,6 +93,87 @@ function writeEntry(key: string, cred: StoredCredential): { path: string; ok: bo
   }
 }
 
+// ---- pruning: the file grows, and nothing owned it ----
+//
+// Measured after four days of local work: 23KB, 57 entries, 43 distinct ports, 43 of them
+// `#observer` definition tokens for spaces that no longer exist (plan-startup-ergonomics.md item
+// 5). Entries are keyed by base URL, so an ephemeral-port space can never reuse one, and a clean
+// shutdown removes only the operator entry.
+//
+// PRUNING IS NEVER A SIDE EFFECT of writing an entry, and never age alone: see `stale`.
+//
+// WHAT MAY BE DROPPED is the whole design: an operator or `#observer` entry is AUTO-PROVISIONED and
+// regenerable by restarting `radia dev`, so losing one costs a restart. A `#login` durable half and
+// a content key are neither: the first is a person's session and the second is the only copy of key
+// material that opens their conversations. Those are never pruned, whatever their age.
+
+/** How long an auto-provisioned entry survives without being rewritten. */
+export const CREDENTIAL_STALE_DAYS = 14;
+
+export type CredentialKind = "operator" | "observer" | "login" | "content-key";
+
+/** Which identity an entry holds, from its key suffix. */
+export function credentialKind(key: string): CredentialKind {
+  if (key.endsWith(OBSERVER)) return "observer";
+  if (key.endsWith(LOGIN)) return "login";
+  if (key.includes(CONTENT_KEY)) return "content-key";
+  return "operator";
+}
+
+/**
+ * A CANDIDATE for pruning: prunable kind, and old enough that nothing has rewritten it. An
+ * unparseable `mintedAt` is not evidence of age, so it keeps the entry.
+ *
+ * Age alone is NOT permission to delete. An entry is rewritten only when a space STARTS, so a dev
+ * that has been up for a month looks exactly like one that died a month ago, and deleting the
+ * former leaves every operator verb answering 401 with nothing to point at. So this names
+ * candidates and the caller checks whether anything still answers there (`radia credentials
+ * --prune`), which is also why pruning is never a side effect of an unrelated write.
+ */
+function stale(key: string, cred: StoredCredential, nowMs: number): boolean {
+  const kind = credentialKind(key);
+  if (kind !== "operator" && kind !== "observer") return false;
+  const at = Date.parse(cred?.mintedAt ?? "");
+  return Number.isFinite(at) && nowMs - at > CREDENTIAL_STALE_DAYS * 86_400_000;
+}
+
+/** Every entry, for `radia credentials`. The token itself never leaves this module. */
+export function listCredentials(): { key: string; kind: CredentialKind; mintedAt: string; durable: boolean; storage?: string; stale: boolean }[] {
+  const all = read(credentialsPath());
+  const nowMs = Date.now();
+  return Object.entries(all).map(([key, cred]) => ({
+    key,
+    kind: credentialKind(key),
+    mintedAt: cred?.mintedAt ?? "",
+    durable: !!cred?.definitionToken,
+    ...(cred?.storage ? { storage: cred.storage } : {}),
+    stale: stale(key, cred, nowMs),
+  }));
+}
+
+/** Delete these entries. The caller decides which, since only it can tell a dead space from a
+ *  long-running one. Returns how many were actually there. */
+export function removeCredentials(keys: string[]): { path: string; removed: number } {
+  const path = credentialsPath();
+  const all = read(path);
+  let removed = 0;
+  for (const key of keys) {
+    if (key in all) {
+      delete all[key];
+      removed++;
+    }
+  }
+  if (removed === 0) return { path, removed };
+  try {
+    if (Object.keys(all).length === 0) removeFile(path);
+    else {
+      writeTextFile(path, JSON.stringify(all, null, 2) + "\n");
+      restrictToOwner(path);
+    }
+  } catch { /* read-only home: reported as nothing removed rather than a crash */ }
+  return { path, removed };
+}
+
 /** Drop a base URL's credential (clean shutdown), removing the file once it is empty.
  *  `onlyIfToken` makes the delete conditional on the entry still being the caller's own write:
  *  two dev processes aimed at one base share this file, and the loser of a port race must not
@@ -176,6 +257,19 @@ export const OBSERVER_PRINCIPAL = "agent:local-observer";
 /** The observer credential `radia dev` provisioned for this space, if any. */
 export function storedObserver(base: string): StoredCredential | undefined {
   return read(credentialsPath())[baseKey(base) + OBSERVER];
+}
+
+/** Drop it, for a space that cannot come back: an in-memory `radia dev` is gone at shutdown, and
+ *  its entry names a base URL nothing will ever answer on again. A PERSISTED space keeps its entry,
+ *  because the identity record is still in its database and the next start reuses both. */
+export function clearObserver(base: string): void {
+  const path = credentialsPath();
+  try {
+    const all = read(path);
+    delete all[baseKey(base) + OBSERVER];
+    if (Object.keys(all).length === 0) removeFile(path);
+    else writeTextFile(path, JSON.stringify(all, null, 2) + "\n");
+  } catch { /* nothing to clean up */ }
 }
 
 /** Record the observer credential (the definition token is the piece that matters). */

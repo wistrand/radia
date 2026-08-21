@@ -40,6 +40,8 @@ export async function bootBrowserSpace(o: BrowserSpaceOptions = {}): Promise<{
   await storage.init();
   const space = new Space(storage, o.ctx ?? {}, new MemoryBlobStore());
   await space.loadKinds(); // a persisted (idb://) space restores its declarations
+  space.persistent = !!o.db; // an `idb://` space survives the tab; an in-memory one does not
+  await space.markStarted();
   const operatorToken = await space.mintOperatorToken();
   const handler = makeHandler(space, o.ui ?? "<!doctype html><title>radia space</title>a radia space is running here", o.authRequired ?? false);
   return {

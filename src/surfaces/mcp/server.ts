@@ -59,7 +59,9 @@ export async function runMcp(argv: string[]): Promise<void> {
   const explicit = env("RADIA_TOKEN");
   const observer = explicit ? undefined : storedObserver(base)?.definitionToken;
   const token = observer ? undefined : resolveToken(base);
-  const client = new RadiaClient(base, observer ? { definitionToken: observer } : token ? { token } : {});
+  // `reuseRun`: one adapter process holding one definition token is exactly the case reuse is for,
+  // and the observer credential it defaults to is the one a model exchanges all day.
+  const client = new RadiaClient(base, observer ? { definitionToken: observer, reuseRun: true } : token ? { token } : {});
   const claims = new Map<string, Claim>();
 
   log(`radia mcp: space=${base} auth=${

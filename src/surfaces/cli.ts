@@ -22,10 +22,20 @@ import { declareExecRequest, pinnedDigests, promote } from "../../extensions/ts/
 import { BINDING, type Binding, declareBinding, type Outcome, readBindings, sandboxInvoker, WorkspaceHost } from "../../extensions/ts/host.ts";
 import { brokeredInvoker } from "../../extensions/ts/broker.ts";
 import { auditCompartment } from "../../extensions/ts/compartment.ts";
-import { defaultBase, resolveDefinitionToken, resolveToken, saveLogin, storedObserver } from "../credentials.ts";
+import {
+  CREDENTIAL_STALE_DAYS,
+  credentialsPath,
+  defaultBase,
+  listCredentials,
+  removeCredentials,
+  resolveDefinitionToken,
+  resolveToken,
+  saveLogin,
+  storedObserver,
+} from "../credentials.ts";
 import { flag, flags, has, positional } from "../flags.ts";
 import { API_VERSION, VERSION } from "../version.ts";
-import { env, onShutdown, serve, stdin, UsageError } from "../platform.ts";
+import { env, httpRequest, onShutdown, serve, stdin, UsageError } from "../platform.ts";
 import type { Lease } from "../storage/adapter.ts";
 
 const HELP = `radia <command> [options]
@@ -60,6 +70,8 @@ Inspect
   runs --for <principal> [--stop]     every run that principal can act through — their OWN sessions
                                       and the DELEGATED ones workers hold on their behalf. --stop is
                                       the offboarding cascade; revoke does not stop a live run
+  credentials [--prune]               what this MACHINE holds, per space, and what has gone stale.
+                                      Needs no space; prunes auto-provisioned entries only
   kinds                               declared kinds (a query for kind_def records)
   get <record-id>                     one record
   lineage <record-id>                 ancestry via parent_ids
@@ -301,7 +313,14 @@ export async function runCli(cmd: string, argv: string[]): Promise<number> {
   // half, so it rides the same exchange.
   const definitionToken = observer ?? resolveDefinitionToken(base);
   const ctx: Ctx = {
-    client: new RadiaClient(base, { ...(token ? { token } : {}), ...(definitionToken ? { definitionToken } : {}) }),
+    // `reuseRun`: a CLI verb is a whole process, so exchanging per invocation appended one
+    // permanent `agent_run` per command and inspection grew the space it was inspecting (766 rows
+    // in four days). Reuse is right here for the same reason it is wrong for a fleet: one person,
+    // one credential, one run (plan-startup-ergonomics.md item 4).
+    client: new RadiaClient(base, {
+      ...(token ? { token } : {}),
+      ...(definitionToken ? { definitionToken, reuseRun: true } : {}),
+    }),
     json: has(argv, "--json"),
     token: !!token || !!definitionToken,
   };
@@ -328,7 +347,11 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
     case "health": {
       const h = await client.health();
       return out(ctx, h, () => {
-        let line = `${h.storage}  principal=${h.principal}  now=${h.now}  v${h.version}`;
+        // `persisted`/`in-memory` and the instance id answer "where did my records go": a restart
+        // on the same port is a 200 either way, and only these two lines say which one happened.
+        const where = h.persistent === undefined ? "" : `  ${h.persistent ? "persisted" : "in-memory"}`;
+        let line = `${h.storage}${where}  principal=${h.principal}  now=${h.now}  v${h.version}`;
+        if (h.instance) line += `\ninstance=${h.instance}${h.startedAt ? `  started=${h.startedAt}` : ""}`;
         // `GET /v0/health` is public, so a REJECTED token still returns 200, as `anonymous`.
         // Without this note that reads as "no credential" rather than "bad credential".
         if (ctx.token && h.principal === "anonymous") {
@@ -900,6 +923,57 @@ async function dispatch(cmd: string, argv: string[], ctx: Ctx): Promise<number> 
           const carry = ["--match", "--order", "--url"].flatMap((f) => (flag(argv, f) ? [`${f} '${flag(argv, f)}'`] : []));
           const rest = [...carry, `--limit ${limit}`, ...(has(argv, "--oldest") ? ["--oldest"] : []), `--after ${r.nextAfter}`];
           lines.push(`more (${dir === "asc" ? "oldest" : "newest"} first): radia query ${kind} ${rest.join(" ")}`);
+        }
+        return lines.join("\n");
+      });
+    }
+
+    case "credentials": {
+      // This file belongs to the USER, not to a space: `doctor` reports on a space and cannot see
+      // it, and nothing else owned it, so it reached 57 entries across 43 dead ports in four days
+      // (plan-startup-ergonomics.md item 5). Needs no space of its own, and never prints a token.
+      //
+      // `--prune` CHECKS before deleting. An entry is only rewritten when a space starts, so age
+      // alone cannot tell a dead space from one that has been up for a month, and deleting the
+      // second leaves every operator verb answering 401 with nothing to point at. So each stale
+      // entry's base URL is probed, and one that still answers is kept and said to be kept.
+      const rows = listCredentials();
+      let removed: string[] = [];
+      let alive: string[] = [];
+      if (has(argv, "--prune")) {
+        const bases = [...new Set(rows.filter((r) => r.stale).map((r) => r.key.replace(/#.*$/, "")))];
+        const answered = new Set(
+          (await Promise.all(bases.map(async (b) => (await reachable(b)) ? b : ""))).filter(Boolean),
+        );
+        alive = bases.filter((b) => answered.has(b));
+        removed = rows.filter((r) => r.stale && !answered.has(r.key.replace(/#.*$/, ""))).map((r) => r.key);
+        removeCredentials(removed);
+      }
+      const after = listCredentials();
+      return out(ctx, { path: credentialsPath(), entries: after, ...(has(argv, "--prune") ? { removed, keptAlive: alive } : {}) }, () => {
+        const lines = [credentialsPath()];
+        if (after.length === 0) return lines.concat("(no credentials stored)").join("\n");
+        lines.push(table(
+          ["SPACE", "IDENTITY", "MINTED", "DURABLE", ""],
+          after.map((r) => [
+            r.key.replace(/#.*$/, ""),
+            r.kind,
+            r.mintedAt.slice(0, 16),
+            r.durable ? "yes" : "no",
+            r.stale ? "dormant" : "",
+          ]),
+        ));
+        if (has(argv, "--prune")) {
+          lines.push(`removed ${removed.length} ${removed.length === 1 ? "entry" : "entries"} for spaces that did not answer`);
+          if (alive.length) lines.push(`kept ${alive.length} dormant ${alive.length === 1 ? "entry: a space answers" : "entries: a space answers"} at ${alive.join(", ")}`);
+        } else {
+          const dormant = after.filter((r) => r.stale).length;
+          if (dormant) {
+            lines.push(
+              `${dormant} auto-provisioned ${dormant === 1 ? "entry has" : "entries have"} not been rewritten in ` +
+                `${CREDENTIAL_STALE_DAYS} days: radia credentials --prune (a login and a content key are never pruned)`,
+            );
+          }
         }
         return lines.join("\n");
       });
@@ -1707,6 +1781,19 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> 
 function out(ctx: Ctx, data: unknown, human: () => string): number {
   console.log(ctx.json ? JSON.stringify(data, null, 2) : human());
   return 0;
+}
+
+/** Does a space still answer at this base URL? Short timeout, and a failure of any kind is "no":
+ *  the caller only ever uses this to decide whether an entry is worth keeping. `/v0/health` is
+ *  public, so this authenticates nothing and proves only that something is listening. */
+async function reachable(base: string): Promise<boolean> {
+  try {
+    const res = await httpRequest(`${base}/v0/health`, { signal: AbortSignal.timeout(1500) });
+    await res.body?.cancel();
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 function usage(line: string): number {
