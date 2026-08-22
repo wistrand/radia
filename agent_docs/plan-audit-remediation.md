@@ -1,7 +1,9 @@
 # Plan: audit remediation
 
-> Status: **every package is closed** — A–G and J–O by 2026-08-03, **H, I, N, P, Q, R and S** on
-> 2026-08-04. What remains is the deferred low-severity batch below. The two pooled-Postgres races
+> Status: **A third audit opened package W on 2026-08-22 and it is OPEN** (fourteen findings, all
+> re-derived against source, none yet reproduced; two reported findings did not survive the check
+> and are recorded with the correction). Package T is also open. Everything else closed: A–G and
+> J–O by 2026-08-03, **H, I, N, P, Q, R and S** on 2026-08-04. What remains is the deferred low-severity batch below. The two pooled-Postgres races
 > package S fixed without a failing test now have one each (`test/concurrency.test.ts`, both
 > validated against the pre-fix adapter planted back in). The guards pass: `deno task test:runtime`
 > is 518 passed, 0 failed, and 734 with a live Postgres (counts move as suites are added; the
@@ -48,8 +50,9 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | **T** | **Module loading escapes the Deno jail's read permission** | **P1** | **CLOSED on Linux + macOS 2026-08-06** (macOS confiner unexecuted in CI); **OPEN on Windows** |
 | ~~U~~ | ~~Idempotency keys scoped to one run token~~ | ~~P2~~ | **CLOSED 2026-08-09** |
 | ~~V~~ | ~~A worker dereferences a body field with its OWN authority~~ | ~~P1~~ | **CLOSED 2026-08-16** (reproduced, then fixed) |
+| **W** | **Third audit: SDK parity, audit-event integrity, two orderings of "newest"** | **P1/P2** | **OPEN 2026-08-22** (14 findings, all verified, none reproduced) |
 
-Every package is closed (A–S, U, V); **T is open**. Their lessons are rules in
+Packages A–S, U and V are closed; **T and W are open**. Closed lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -136,6 +139,162 @@ read to records the caller could have read themselves, because their own put gra
 gets an EMPTY context at BOTH window settings, and her own thread still loads. Proved red by
 restoring the unconjoined query — it fails on `window=0` and passes at 40, which is exactly why a
 guard covering only the default would have missed this.
+
+## Package W: the third audit (2026-08-22) — OPEN
+
+Fourteen findings from a four-agent read of the whole tree. Every one below was re-derived against
+source the same day before it was written down, so all are **VERIFIED** in the sense round two
+established: checked, not merely reported. None was executed, so none is **reproduced**; the guard
+column says what would turn each into one.
+
+**Two of the reported findings did not survive the check, and are recorded because a wrong
+mechanism is the expensive kind of wrong:**
+
+- The report said the OpenAPI info block "still says OIDC, keyset cursors and the event-log sweep
+  are not implemented". It says no such thing; the phrase appears nowhere in the file. The other
+  half of that finding stands (see W7).
+- The report attributed the newest-record split to "two instances whose wall clocks skew". It
+  cannot be that: `created_at` comes from the DATABASE clock on every instance
+  (`Space.putRaw` -> `storage.now()`), which is the invariant. The real split is that record IDs are
+  ULIDs minted from the PROCESS clock (`core/ids.ts` -> `monotonicUlid`), so the two orderings
+  diverge exactly as far as the app-server clocks diverge from each other. Same defect, different
+  fix surface: see W3.
+
+Grouped by root cause, because fixing them per site re-creates the class.
+
+### W1. A second implementation that never learned the first one's rule (P2)
+
+The recurrence of closed package I, which is the finding. The TS client carries the rule in a
+comment; Python was written from the wire and skipped it.
+
+- **`put_artifact(taint=True)` is a live bug.** It sends `X-Radia-Taint: true` (`sdk/py/radia.py`),
+  and since the boolean-to-label migration the server refuses that: `clientTaint` splits the header,
+  `normalizeTaint` rejects `true` as an unknown label, and the write fails `invalid_taint`. Every
+  Python caller raising taint on an artifact gets a 4xx. Python also cannot express `allowTaint`, so
+  a Python worker cannot claim a classified record at all.
+- **`register_kind` computes a non-normative idempotency key**: `json.dumps(..., sort_keys=True)`
+  instead of `kindDefKey` (`sdk/ts/wire.ts`), which `wire.ts` declares NORMATIVE for both sides. A
+  kind declared from Python and from TS appends two records instead of deduping.
+- **`agent_loop` has no failure-streak suppression or backoff**, while `sdk/README.md` describes
+  both under a heading that reads as the loop's behaviour in general.
+
+**Rule.** A NORMATIVE pure function is implemented once per language and pinned by the parity
+suite, or it is not normative. **Guard.** `test/py-parity.test.ts` covers `content_key` only; extend
+it to `kindDefKey` and to a live `put_artifact` raise against a real space. Both fail today.
+
+### W2. An event written from a read rather than from the write it describes (P1)
+
+- **`quarantineLeasesOf` derives its events and its return count from the SELECT, not from the
+  guarded UPDATE** (`src/storage/pgbase.ts`, and the sqlite twin). A lease acked between the two
+  statements gets a `quarantine` event in the tamper-evident chain for a transition that never
+  happened, and the caller is told one more record was quarantined than was.
+- **Admin and quarantine events record `runId: "admin"`**, so the acting operator is lost on
+  precisely the operations that bypass fencing.
+
+**Rule.** An event describes a write, so it is emitted from the write's own result set, and it names
+the principal who caused it. A chain over an event nobody performed protects the wrong fact, which
+is the sentence design-auth.md already uses about declassify. **Guard.** A conformance case that
+acks one of two held leases inside the quarantine window and asserts one event and a count of one;
+and an assertion that no `admin`-operation event carries a literal `"admin"` run.
+
+### W3. Two orderings of "newest" over one append-only log (P2 today, P1 the day a second instance shares a database)
+
+`sdk/ts/registry.ts` `newer()` compares `createdAt` first (DB clock) and falls back to id. GC
+compaction keeps the FIRST record per key while paging by id (`src/core/gc.ts`), as do credential
+resolution and the run fold. On one instance the two agree. Across instances they diverge by the
+app-server clock skew, because ids carry the process clock, and the dangerous direction is
+compaction: it can delete the record the projection considers newest, which for an authorization
+registry is a `retired: true` tombstone or a run's stop successor. That is the resurrection failure
+plan-gc.md says compaction exists to prevent.
+
+**Rule.** One definition of newest, used by the projection and by the sweep that deletes on it.
+**Fix surface.** Either make the projection id-only (ids are already the tie-break, and the DB clock
+buys nothing an id does not) or make compaction order by `createdAt`. The first is cheaper and
+removes a clock from the comparison entirely. **Guard.** A conformance case with two records whose
+id order and `createdAt` order disagree, asserting the projection's winner survives compaction.
+
+### W4. A bounded read standing in for a population, still (P2)
+
+The disease CLAUDE.md names as the most repeated in the codebase, now in the SDK's own grant helper.
+
+- **`RadiaClient.grant()` scans 500 records** to find the retirement anchor a revival must key on
+  (`sdk/ts/client.ts`, mirrored in `sdk/py/radia.py`). Past 500 records for one (principal, kind),
+  the anchor is missed, the write dedupes against the original, and the call reports success while
+  the principal holds nothing. **It fails CLOSED**, so this is a silent no-op rather than the silent
+  widening the report implied, and that is the whole difference in severity.
+- Smaller instances, same shape: `turn.ts` reconciles over the newest 50 messages globally,
+  `forksOf` reads 500 versions, `listSandboxes` reads 200 rows.
+
+**Rule.** `readRegistry`/`queryAll` semantics, or report `complete: false`; never a plausible prefix.
+**Guard.** A case that retires and re-grants past the page size and asserts the principal actually
+holds the grant afterwards.
+
+### W5. A check placed before the replay decision (P2)
+
+`Space.ack` authorizes the result body (`authorize(owner, "put", result.kind)`) before
+`storage.ack` decides whether this is an idempotent replay. A retry of an ack that already succeeded,
+arriving after the worker's put grant was narrowed, gets `forbidden` instead of the stored response.
+The FOREIGN branch of the same function already does this correctly and says why in its comment
+("storage still decides, so a stored response for this key replays instead of being fenced"), which
+is what makes this an oversight rather than a decision.
+
+**Rule.** The invariant is not only "idempotency before lease validation" (CLAUDE.md); it is
+idempotency before every check that can have changed since the first attempt. **Guard.** Ack, narrow
+the grant, retry with the same key, assert the stored response.
+
+### W6. Loops that stop while there is more to do (P2)
+
+- **`pollForForeignChanges` reads `getEvents(cursor, 1)`**, so a burst of K foreign-instance events
+  takes K polls at 250ms, and each one returns "changed" and fires the kind-blind `notify()` that
+  wakes every parked stream. It partially defeats the kind-aware wakeup in the multi-instance case
+  the wakeup was built for. Jumping to `latestCursor()` on a hit is the cheap fix.
+- **The SSE loop parks on its 15s race after draining a full 200-event batch**
+  (`src/server/handlers/watches.ts`), so a watch resuming from an old cursor over an idle space
+  crawls through its backlog 200 events per 15 seconds. Loop while the batch is full.
+
+### W7. Contracts nothing checks (P2)
+
+The recurrence of closed package P.
+
+- **`explain` is live on the frozen data plane and absent from `openapi/radia.yaml`** (zero
+  occurrences). `test/openapi.test.ts` checks paths and methods, which is one level above where this
+  sits.
+- **The broker's `read_one` returns an ARRAY** (`extensions/ts/broker.ts` wraps it and filters),
+  while the SDK call of the same name returns `record | null`. The broker frame format is one of the
+  four NORMATIVE extension surfaces and the conformance suite does not pin this.
+- **`ENCRYPTED_FIELDS` is a hand-maintained kind-to-field table** (`extensions/ts/encrypted.ts`). A
+  new prose-bearing chat kind without an entry ships plaintext, and the fail-closed `enc` marker
+  cannot catch it: nothing stamped a marker to refuse. It is the one direction the whole
+  fail-closed design is blind to.
+
+**Guard.** Extend the openapi test one level down, to request-body and query-parameter fields on
+stable paths; pin the broker's read_one shape in `extensions/conformance/`; and assert in the chat
+suite that every kind carrying a prose field appears in `ENCRYPTED_FIELDS`.
+
+### Structural debt, not defects
+
+Recorded here because the audit named them and they have no other home; none is a bug.
+
+- **`src/core/space.ts` is 4,044 lines** and holds credential lifecycle, authorization and chain
+  verification that its own extraction pattern (flows, inspection, artifacts, GC each went out
+  through a narrow port) says belong outside. The measurable symptom is orphaned and doubled doc
+  comments where a comment now describes the declaration above the one it precedes; two were
+  sampled and both confirmed. Extract while the pattern is still warm.
+- **Core verbs do not authorize themselves.** Enforcement lives in the handlers, and the core's own
+  comments record what that produced once. `Space.access` is the seam; any new surface calling
+  `Space` directly has to remember to use it.
+- **`agent_docs/` is guarded by nothing**, and a prose-only commit runs no tests by design. The
+  project's own thesis is that an invariant naming a guard that is not running is worthless, and
+  this is its largest unguarded artifact. It points at symbols by design, so a symbol-existence
+  checker over the doc set is mechanically possible and would extend the doctrine to itself.
+
+### Order to work in
+
+1. **W2** (audit integrity is the product's pitch, and the fix is local).
+2. **W1** (a live bug in a shipped SDK, and the cheapest item here).
+3. **W3** before a second instance shares a database, which is the trigger rather than a date.
+4. **W5**, **W4**, then **W6** and **W7**, each with the guard that would have caught it.
+5. The structural debt, starting with the extraction, because every later fix lands in that file.
 
 ## Package T: module loading escapes the read permission (P1) — OPEN
 
