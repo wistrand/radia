@@ -17,7 +17,8 @@ import { operatorToken } from "../operator.ts";
 import { registerChatKinds } from "./space/kinds.ts";
 import { assignUserGrants, bootstrap, mintSession, setSessionOwner } from "./space/roles.ts";
 import { Thread } from "./client/thread.ts";
-import { newFleetKeyPair, NoConversationKeyError, openBody, openConversation, sealConversation } from "../../extensions/ts/encrypted.ts";
+import {
+  ENCRYPTED_FIELDS, newFleetKeyPair, NoConversationKeyError, openBody, openConversation, sealConversation } from "../../extensions/ts/encrypted.ts";
 import { serveTools } from "../../extensions/ts/tool-worker.ts";
 
 const PORT = 7811;
@@ -501,6 +502,44 @@ const lostConv = await aliceC.put({ kind: "conversation", body: {} });
   // Converges: erasing an already-erased conversation is success, not a fault.
   check("…and erasing twice is a no-op rather than an error",
     await eraseConversation(admin, conv.id).then(() => true, () => false));
+}
+
+// ---- every kind this app declares has been DECIDED about ----
+//
+// `ENCRYPTED_FIELDS` is hand-maintained, and the fail-closed `enc` marker cannot cover a gap in it:
+// a new prose-bearing kind with no entry ships plaintext, and nothing stamps a marker for a reader
+// to refuse (audit package W7). So the guard is a decided SET rather than a detector: every kind
+// the chat declares appears either in the sealed table or in the list below, and a kind in neither
+// fails here until somebody chooses. Mechanical detection is not available: prose is by definition
+// the part no kind_def declares.
+{
+  const CLEAR_BY_DECISION = new Set([
+    // Key material and routing, which must stay readable for the crypto to work at all.
+    "fleet_key", "person_key", "conversation_key", "chat_fleet",
+    // No prose in the body. `conversation` is an empty anchor; the rest carry ids, names and counts.
+    "conversation", "model", "progress", "turn_complete", "interest", "capability",
+    // Bytes live in the blob store, and the record carries a digest and a media type.
+    "artifact", "workspace", "procedure",
+    // Routing-only bodies. `llm_call` carries no `content` (that is what leaves the turn worker
+    // outside the key, plan-encryption.md); `llm_result` is the INLINE reply shape, used by the
+    // router's classifier, whose input and output are both classifications rather than prose.
+    "llm_call", "llm_result",
+    // A person asking for a grant, addressed to an operator who must be able to read it.
+    "grant_request",
+    // Found undecided by this guard on its first run, which is what it is for. `cancel` is a stop
+    // signal keyed by conversation and turn, read by the turn worker before each next link;
+    // `sandbox` declares which jails a host offers. Both are routing and neither carries prose.
+    "cancel", "sandbox",
+  ]);
+  const declared = (await admin.query({ kind: "kind_def" }, 200))
+    .map((r) => (r.body as { kind: string }).kind)
+    .filter((k) => k !== "kind_def");
+  const undecided = [...new Set(declared)].filter((k) => !(k in ENCRYPTED_FIELDS) && !CLEAR_BY_DECISION.has(k));
+  check(
+    "every kind this app declares is either sealed or deliberately clear",
+    undecided.length === 0,
+    undecided.length ? `undecided: ${undecided.join(", ")} — seal it, or add it to CLEAR_BY_DECISION` : "",
+  );
 }
 
 console.log(`\n${failures === 0 ? "ok" : `${failures} FAILED`}`);

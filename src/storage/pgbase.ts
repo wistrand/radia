@@ -756,7 +756,13 @@ export class PgSqlAdapter implements StorageAdapter {
     });
   }
 
-  async ack(ref: LeaseRef, result?: PutInput, idem?: IdempotencyKey): Promise<AckResult> {
+  async ack(ref: LeaseRef, result?: PutInput, idem?: IdempotencyKey, beforeWrite?: () => Promise<void>): Promise<AckResult> {
+    // OUTSIDE the transaction, deliberately. The caller's check reads the space, so running it
+    // inside an open transaction would re-enter storage on a different pooled connection. The
+    // pre-read below is advisory: `withIdem` inside the transaction is still the authority, so the
+    // narrow race (a concurrent first attempt storing its response in between) costs one
+    // unnecessary check and never a wrong answer.
+    if (beforeWrite && !await this.hasStoredResponse(idem)) await beforeWrite();
     return await this.txIdem(idem, async (tx): Promise<AckResult> => {
       const now = await this.txNow(tx);
       const row = await this.fetchEnvelopeRow(tx, ref.recordId);
@@ -1010,22 +1016,22 @@ export class PgSqlAdapter implements StorageAdapter {
     });
   }
 
-  async quarantineLeasesOf(ownerRun: string, now: string): Promise<number> {
+  async quarantineLeasesOf(ownerRun: string, now: string, actor: string): Promise<number> {
     return await this.sql.transaction(async (tx) => {
-      const held = (await tx.query<{ record_id: string; kind: string }>(
-        "select record_id, kind from record_runtime where state='leased' and lease_owner=$1",
-        [ownerRun],
-      )).rows;
-      if (held.length === 0) return 0;
-      await tx.query(
+      // RETURNING, so the events and the count come from the rows that ACTUALLY MOVED. Reading the
+      // held set first and emitting from that put a `quarantine` event in the tamper-evident chain
+      // for a lease acked between the two statements, and told the caller one more record was
+      // quarantined than was. An event describes a write, so it is derived from the write.
+      const moved = (await tx.query<{ record_id: string; kind: string }>(
         `update record_runtime set state='available', available_at=$1, attempt=attempt+1,
            lease_epoch=lease_epoch+1, lease_id=null
-         where state='leased' and lease_owner=$2`,
+         where state='leased' and lease_owner=$2
+         returning record_id, kind`,
         [now, ownerRun],
-      );
-      for (const r of held) {
+      )).rows;
+      for (const r of moved) {
         await this.appendEvent(tx, {
-          runId: "admin",
+          runId: actor, // WHO stopped it. `"admin"` lost that on the one operation that bypasses fencing.
           operation: "quarantine",
           recordId: r.record_id,
           kind: r.kind,
@@ -1033,7 +1039,7 @@ export class PgSqlAdapter implements StorageAdapter {
           detail: { ownerRun },
         }, now);
       }
-      return held.length;
+      return moved.length;
     });
   }
 
@@ -1366,6 +1372,16 @@ export class PgSqlAdapter implements StorageAdapter {
   }
 
   // Run a state-changing op in a transaction with idempotency + concurrent-insert replay.
+  /** Is there already a stored response for this key? Advisory only; see `ack`. */
+  private async hasStoredResponse(idem?: IdempotencyKey): Promise<boolean> {
+    if (!idem) return false;
+    const r = await this.sql.query<RawRow>(
+      "select 1 as hit from idempotency where principal=$1 and operation=$2 and idem_key=$3",
+      [idem.principal, idem.operation, idem.key],
+    );
+    return r.rows.length > 0;
+  }
+
   private txIdem<T>(idem: IdempotencyKey | undefined, body: (tx: Sql) => Promise<T>): Promise<T> {
     return this.withRetry(() => this.sql.transaction((tx) => this.withIdem(tx, idem, () => body(tx))));
   }

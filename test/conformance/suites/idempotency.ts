@@ -24,6 +24,44 @@ async function code(fn: () => Promise<unknown>): Promise<string | undefined> {
 
 export const idempotencySuites: Suite[] = [
   {
+    // The invariant is not only "idempotency before lease validation"; it is idempotency before
+    // every check that can have CHANGED since the first attempt. Authorizing the emitted result
+    // eagerly in core turned the retry of an already-succeeded ack into `forbidden` the moment the
+    // worker's put grant narrowed in between (audit package W5).
+    name: "ack: a retry replays even after the worker's put grant has narrowed",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({ kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] });
+      space.registerKind({ kind: "answer", indexedPaths: [{ path: "tag", type: "keyword" }], claimable: false });
+      // Grants are records; the space's own identity may write them.
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "task", operations: ["take"] } });
+      await space.put({ kind: "grant", body: { principal: "agent:w", kind: "answer", operations: ["put"] } });
+
+      const { id } = await space.put({ kind: "task", body: { tag: "t" } });
+      const claim = await space.take({ recordId: id }, { leaseSeconds: 300 }, "agent:w");
+      assert(claim, "expected a claim");
+      const key = "ack-once";
+      const result = { kind: "answer", body: { tag: "t" } };
+      assertEquals((await space.ack(claim!.lease, result, key, "agent:w")).status, "ok");
+
+      // The grant is narrowed to something the result no longer satisfies. A pattern-scoped
+      // successor on the same triple supersedes the unpatterned one.
+      await space.put({
+        kind: "grant",
+        body: { principal: "agent:w", kind: "answer", operations: ["put"], pattern: { tag: "other" } },
+      });
+      await space.put({
+        kind: "grant",
+        body: { principal: "agent:w", kind: "answer", operations: ["put"], retired: true },
+      });
+
+      // The retry must REPLAY, not be refused: the write it describes already happened.
+      const again = await space.ack(claim!.lease, result, key, "agent:w");
+      assertEquals(again.status, "ok", "the stored response, not a refusal");
+      assertEquals((await space.query({ kind: "answer" }, 10)).length, 1, "and nothing written twice");
+    },
+  },
+  {
     name: "put replay with the same key returns the same id and inserts once",
     run: async (adapter) => {
       const space = newSpace(adapter);

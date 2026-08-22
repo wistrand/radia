@@ -48,8 +48,14 @@ export function isRetired(body: unknown): boolean {
  * reverted for breaking revival). NOT commit order — `created_at` is read before commit, so a
  * same-millisecond cross-instance race stays undefined; closing it needs the event cursor's `xid8`
  * machinery carried on the record, i.e. through the frozen wire contract.
+ *
+ * EXPORTED because a second definition of newest is a bug with a delay on it. `radia gc`'s
+ * compaction kept the first record per key while paging by id, which is precisely the
+ * "ordering by id alone" this comment warns against, and the sweep is the side that DELETES: it
+ * could drop the record the projection considers current, which for an authorization registry is a
+ * `retired: true` tombstone (audit package W3).
  */
-function newer(a: RadiaRecord, b: RadiaRecord): boolean {
+export function newer(a: RadiaRecord, b: RadiaRecord): boolean {
   const at = a.runtimeMeta?.createdAt, bt = b.runtimeMeta?.createdAt;
   if (at && bt && at !== bt) return bt > at;
   return a.id < b.id;

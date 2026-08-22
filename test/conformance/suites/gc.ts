@@ -13,6 +13,7 @@ import { MemoryBlobStore } from "../../../src/storage/blobs.ts";
 import { RadiaError } from "../../../src/core/errors.ts";
 import { activeByKey } from "../../../sdk/ts/registry.ts";
 import { SealKey } from "../../../src/core/seal.ts";
+import { newUlid, sha256Hex } from "../../../src/core/ids.ts";
 import { rawExec } from "./integrity.ts";
 
 const PAST = "2020-01-01T00:00:00.000Z";
@@ -398,6 +399,62 @@ export const gcSuites: Suite[] = [
       assert(await space.getRecord(bNew), "b's newest survives");
       assertEquals(await space.getRecord(bOld), null, "b's OLD record, met two pages after its newest, still goes");
       assertEquals((await space.query({ kind: "cap" }, 600)).length, 2);
+    },
+  },
+  {
+    // The two definitions of "newest", staged so they DISAGREE. Compaction pages by id because that
+    // is what a keyset cursor can do, but a ULID carries the writing PROCESS's clock while
+    // `created_at` carries the DATABASE's, so on two instances with skewed processes the orders
+    // diverge. Keeping the first record per page-order then deletes the record every reader
+    // considers current, tombstones included (audit package W3).
+    //
+    // Written through the ADAPTER rather than `Space.put`, because staging the skew is exactly what
+    // the runtime refuses to let a caller do: it stamps both fields itself, consistently.
+    name: "gc compaction keeps the record the PROJECTION reads, not the one with the highest id",
+    run: async (adapter) => {
+      const space = new Space(adapter);
+      space.registerKind({
+        kind: "cap",
+        indexedPaths: [{ path: "tool", type: "keyword" }],
+        claimable: false,
+        contentKey: ["tool"],
+      });
+      const now = await adapter.now();
+      const earlier = new Date(Date.parse(now) - 5_000).toISOString();
+      // Two ids in ascending order, handed out in the OPPOSITE order to the timestamps: the record
+      // written later by the database clock gets the LOWER id, as a lagging instance would give it.
+      const lowId = newUlid();
+      const highId = newUlid();
+      assert(lowId < highId, "monotonic ids, so this test stages what it means to");
+
+      const write = async (id: string, createdAt: string, v: number) => {
+        const body = { tool: "t", v };
+        const bodyJson = JSON.stringify(body);
+        await adapter.put({
+          record: {
+            id,
+            kind: "cap",
+            body,
+            bodySha256: await sha256Hex(bodyJson),
+            runtimeMeta: { createdBy: "instance", parentIds: [], taint: [], schemaVersion: 1, createdAt },
+          },
+          bodyJson,
+          envelope: { kind: "cap", availableAt: createdAt, claimUntil: undefined, deadlineAt: undefined, effectivePriority: 0 },
+        });
+      };
+      await write(highId, earlier, 1); // highest id, OLDEST by the database clock
+      await write(lowId, now, 2); // the real successor, from the lagging instance
+
+      // The projection is unambiguous about which is current.
+      const view = activeByKey<{ tool: string }>(
+        await space.query({ kind: "cap" }, 50),
+        (b) => b.tool,
+      );
+      assertEquals(view.get("t")?.id, lowId, "the projection reads the newest by the DATABASE clock");
+
+      await space.gc();
+      assert(await space.getRecord(lowId), "compaction must keep what every reader considers current");
+      assertEquals(await space.getRecord(highId), null, "and delete the superseded one, high id or not");
     },
   },
   {

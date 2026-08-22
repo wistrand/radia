@@ -177,6 +177,37 @@ Deno.test("[broker] a brokered write is the AGENT's, and carries the claimed rec
   });
 });
 
+Deno.test("[broker] read_one answers with the record or null, the shape that name has everywhere", async () => {
+  await withSpace(async ({ operator, hostFor, agent }) => {
+    // `read_one` is its own coordination verb with its own grant; the harness grants `note: put`.
+    await operator.grant(agent, "note", ["read_one"]);
+    await operator.put({ kind: "note", body: { tag: "findme" } });
+    // The entrypoint reports the SHAPE it was handed, so the assertion is about the frame format
+    // rather than about what the query found. It used to be a one-element array (or an empty one),
+    // which no other caller of `readOne` gets, on a surface broker.ts declares NORMATIVE.
+    const host = await hostFor(`
+      export default async (record, space) => {
+        const hit = await space.readOne({ kind: "note", match: { tag: "findme" } });
+        const miss = await space.readOne({ kind: "note", match: { tag: "nothing-here" } });
+        return {
+          kind: "exec_result",
+          body: {
+            hitIsArray: Array.isArray(hit),
+            hitTag: hit && hit.body ? hit.body.tag : null,
+            missIsNull: miss === null,
+          },
+        };
+      };
+    `);
+    assertEquals((await host.tick()).map((o) => o.status), ["acked"]);
+    const out = (await operator.query({ kind: "exec_result" }, 5, { dir: "desc" }))[0];
+    const body = out.body as { hitIsArray: boolean; hitTag: string | null; missIsNull: boolean };
+    assertEquals(body.hitIsArray, false, "a record, not a one-element array");
+    assertEquals(body.hitTag, "findme");
+    assertEquals(body.missIsNull, true, "and null when nothing matched, never an empty array");
+  });
+});
+
 Deno.test("[broker] the code cannot lie about what it touched, or write outside its compartment", async () => {
   await withSpace(async ({ operator, hostFor }) => {
     // The entrypoint declares no labels and names another compartment. Both are host decisions,

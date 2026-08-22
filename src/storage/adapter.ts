@@ -447,7 +447,14 @@ export interface StorageAdapter {
   renew(ref: LeaseRef, leaseSeconds: number, idem?: IdempotencyKey): Promise<RenewResult>;
 
   /** Consume the record and optionally emit a result record, in one transaction. Fenced. (Phase 3) */
-  ack(ref: LeaseRef, result?: PutInput, idem?: IdempotencyKey): Promise<AckResult>;
+  /**
+   * `beforeWrite` runs only when this ack is NOT an idempotent replay, and before anything is
+   * written. Authorization of the emitted result belongs there: run eagerly in core, it turned a
+   * retry of an already-succeeded ack into `forbidden` whenever the worker's put grant had narrowed
+   * in between, instead of replaying the stored response. Same rule as "idempotency before lease
+   * validation", extended to every check that can have changed since the first attempt.
+   */
+  ack(ref: LeaseRef, result?: PutInput, idem?: IdempotencyKey, beforeWrite?: () => Promise<void>): Promise<AckResult>;
 
   /** Retryable failure: attempt +1, backoff via available_at, dead-letter past max. Fenced. (Phase 3) */
   nack(ref: LeaseRef, backoffSeconds: number, maxAttempts: number, idem?: IdempotencyKey): Promise<SettleResult>;
@@ -633,7 +640,7 @@ export interface StorageAdapter {
    * attempt, and appending a `quarantine` event per record. Returns how many were invalidated.
    * Not a lease settlement; used when a run is stopped-with-quarantine.
    */
-  quarantineLeasesOf(ownerRun: string, now: string): Promise<number>;
+  quarantineLeasesOf(ownerRun: string, now: string, actor: string): Promise<number>;
 
   /**
    * Admin/control-plane forced state transition (bypasses lease fencing, used to remediate

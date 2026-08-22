@@ -264,7 +264,11 @@ export class RadiaClient {
     const identity = grantKey(body);
     if (identity !== undefined) {
       try {
-        const rows = await this.query({ kind: "grant", match: { principal, kind } }, 500, { dir: "desc" });
+        // PAGED TO EXHAUSTION, not one bounded page. The anchor is the newest RETIREMENT of this
+        // identity, and past 500 records for one (principal, kind) a single page could miss it: the
+        // write then dedupes against the original record, and this call reports success while the
+        // principal holds nothing. It fails CLOSED, which is why it went unnoticed (audit W4).
+        const rows = await this.queryAll({ kind: "grant", match: { principal, kind } });
         // Anchor on the NEWEST RETIREMENT of this identity, not on whether the newest record
         // happens to be retired. That keeps the key stable across repeats: once revived, calling
         // again reuses the revival's key and writes nothing, where anchoring on "newest is

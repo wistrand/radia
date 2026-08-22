@@ -214,7 +214,7 @@ export async function handleStopRun(space: Space, req: Request, principal: strin
   if (!allowed) return problem(403, "forbidden", "stopping a run requires an operator or the run's own definition/run token");
   const j = await readJson(req);
   const quarantine = j?.quarantine === true;
-  const { applied, quarantined } = await space.stopRun(runId, { quarantine });
+  const { applied, quarantined } = await space.stopRun(runId, { quarantine, by: principal });
   if (!applied) return problem(404, "not_found", `no run ${runId}`);
   return Response.json({ run: runId, status: "stopped", applied, quarantined });
 }

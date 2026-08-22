@@ -123,7 +123,10 @@ fenced). A FAILURE is never silent: a handler that throws, a take that errors, a
 an interest that could not be published go to `console.error` / `stderr` when no `log` was given.
 A REPEATED failure is one line, not one per tick: an unreachable space is reported once per streak
 (with the address and the transport cause unpacked from Deno's bare "fetch failed"), counted with a
-once-a-minute reminder, retried with a capped backoff, and announced on recovery.
+once-a-minute reminder, retried with a capped backoff, and announced on recovery. **That paragraph
+is TS only.** Python's `agent_loop` reports every failure and does not back off, so an unreachable
+space is one line per tick there. Stated rather than left to be discovered: the section above reads
+as describing the loop in general, and a third audit read it that way.
 Pass a `log` to route them elsewhere; there is no way to switch them off. A swallowed handler
 exception is indistinguishable from a hang, because the record is claimed, nacked, reclaimed and
 nacked again with nothing anywhere saying why.

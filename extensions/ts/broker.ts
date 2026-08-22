@@ -677,8 +677,14 @@ async function perform(
       if (!pattern || typeof pattern.kind !== "string") throw new Error("query needs a pattern with a kind");
       // deno-lint-ignore no-explicit-any
       const p = pattern as any;
-      const rows = call.op === "query" ? await ctx.client.query(p, Math.min(Number(limit) || 50, 500)) : [await ctx.client.readOne(p)];
-      return { id: call.id, ok: true, result: rows.filter(Boolean) };
+      // `read_one` answers with the RECORD or null, the same shape the SDK call of that name has.
+      // It used to answer with a one-element array (or an empty one), so jailed code calling
+      // `space.readOne` got back something no other caller of that name gets, on a surface this
+      // file declares NORMATIVE (audit package W7).
+      if (call.op !== "query") {
+        return { id: call.id, ok: true, result: (await ctx.client.readOne(p)) ?? null };
+      }
+      return { id: call.id, ok: true, result: await ctx.client.query(p, Math.min(Number(limit) || 50, 500)) };
     }
     throw new Error(`unsupported op '${call.op}': the broker serves put, query and read_one`);
   } catch (e) {

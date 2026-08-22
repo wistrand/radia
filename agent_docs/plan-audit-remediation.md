@@ -1,9 +1,10 @@
 # Plan: audit remediation
 
-> Status: **A third audit opened package W on 2026-08-22 and it is OPEN** (fourteen findings, all
-> re-derived against source, none yet reproduced; two reported findings did not survive the check
-> and are recorded with the correction). Package T is also open. Everything else closed: A–G and
-> J–O by 2026-08-03, **H, I, N, P, Q, R and S** on 2026-08-04. What remains is the deferred low-severity batch below. The two pooled-Postgres races
+> Status: **A third audit opened package W on 2026-08-22 and CLOSED it the same day** (fourteen
+> findings across seven root causes, five guards proved red first; two reported findings did not
+> survive the check and are recorded with the correction, and the structural debt it named stays
+> open). **T remains open.** Everything else closed: A–G and J–O by 2026-08-03, **H, I, N, P, Q, R
+> and S** on 2026-08-04. What remains is the deferred low-severity batch below. The two pooled-Postgres races
 > package S fixed without a failing test now have one each (`test/concurrency.test.ts`, both
 > validated against the pre-fix adapter planted back in). The guards pass: `deno task test:runtime`
 > is 518 passed, 0 failed, and 734 with a live Postgres (counts move as suites are added; the
@@ -50,9 +51,9 @@ with no revocation path); it was closed the same day, and no P0 is open.
 | **T** | **Module loading escapes the Deno jail's read permission** | **P1** | **CLOSED on Linux + macOS 2026-08-06** (macOS confiner unexecuted in CI); **OPEN on Windows** |
 | ~~U~~ | ~~Idempotency keys scoped to one run token~~ | ~~P2~~ | **CLOSED 2026-08-09** |
 | ~~V~~ | ~~A worker dereferences a body field with its OWN authority~~ | ~~P1~~ | **CLOSED 2026-08-16** (reproduced, then fixed) |
-| **W** | **Third audit: SDK parity, audit-event integrity, two orderings of "newest"** | **P1/P2** | **OPEN 2026-08-22** (14 findings, all verified, none reproduced) |
+| ~~W~~ | ~~Third audit: SDK parity, audit-event integrity, two orderings of "newest"~~ | ~~P1/P2~~ | **CLOSED 2026-08-22** (14 findings; 5 guards proved red) |
 
-Packages A–S, U and V are closed; **T and W are open**. Closed lessons are rules in
+Packages A–S and U–W are closed; **T is open**. Closed lessons are rules in
 [gotchas.md](gotchas.md) ("Traps and critical decisions"); their guards run in the conformance and
 chat suites. Git holds the rest.
 
@@ -140,12 +141,19 @@ gets an EMPTY context at BOTH window settings, and her own thread still loads. P
 restoring the unconjoined query — it fails on `window=0` and passes at 40, which is exactly why a
 guard covering only the default would have missed this.
 
-## Package W: the third audit (2026-08-22) — OPEN
+## Package W: the third audit (2026-08-22) — CLOSED 2026-08-22
 
-Fourteen findings from a four-agent read of the whole tree. Every one below was re-derived against
-source the same day before it was written down, so all are **VERIFIED** in the sense round two
-established: checked, not merely reported. None was executed, so none is **reproduced**; the guard
-column says what would turn each into one.
+**All seven groups are fixed, each with the guard named below, and five of the guards were proved
+red against the pre-fix code before being accepted.** Fourteen findings from a four-agent read of
+the whole tree, every one re-derived against source before it was written down.
+
+Two guards could not be proved red and say so in their own comments rather than here: the
+quarantine race needs concurrent connections the embedded adapters do not have (only the ACTOR half
+is planted-red), and the `explain` spec entry is a documentation fix with nothing to plant.
+
+One guard found a defect the audit had not: the decided-set check over `ENCRYPTED_FIELDS` failed on
+its first run naming `cancel` and `sandbox`, two kinds nobody had ruled on. Both turned out to be
+routing-only and are now recorded as such.
 
 **Two of the reported findings did not survive the check, and are recorded because a wrong
 mechanism is the expensive kind of wrong:**
@@ -162,7 +170,7 @@ mechanism is the expensive kind of wrong:**
 
 Grouped by root cause, because fixing them per site re-creates the class.
 
-### W1. A second implementation that never learned the first one's rule (P2)
+### W1. A second implementation that never learned the first one's rule (P2) — FIXED
 
 The recurrence of closed package I, which is the finding. The TS client carries the rule in a
 comment; Python was written from the wire and skipped it.
@@ -182,7 +190,7 @@ comment; Python was written from the wire and skipped it.
 suite, or it is not normative. **Guard.** `test/py-parity.test.ts` covers `content_key` only; extend
 it to `kindDefKey` and to a live `put_artifact` raise against a real space. Both fail today.
 
-### W2. An event written from a read rather than from the write it describes (P1)
+### W2. An event written from a read rather than from the write it describes (P1) — FIXED
 
 - **`quarantineLeasesOf` derives its events and its return count from the SELECT, not from the
   guarded UPDATE** (`src/storage/pgbase.ts`, and the sqlite twin). A lease acked between the two
@@ -197,7 +205,7 @@ is the sentence design-auth.md already uses about declassify. **Guard.** A confo
 acks one of two held leases inside the quarantine window and asserts one event and a count of one;
 and an assertion that no `admin`-operation event carries a literal `"admin"` run.
 
-### W3. Two orderings of "newest" over one append-only log (P2 today, P1 the day a second instance shares a database)
+### W3. Two orderings of "newest" over one append-only log (P2, P1 once a second instance shares a database) — FIXED
 
 `sdk/ts/registry.ts` `newer()` compares `createdAt` first (DB clock) and falls back to id. GC
 compaction keeps the FIRST record per key while paging by id (`src/core/gc.ts`), as do credential
@@ -213,7 +221,7 @@ buys nothing an id does not) or make compaction order by `createdAt`. The first 
 removes a clock from the comparison entirely. **Guard.** A conformance case with two records whose
 id order and `createdAt` order disagree, asserting the projection's winner survives compaction.
 
-### W4. A bounded read standing in for a population, still (P2)
+### W4. A bounded read standing in for a population, still (P2) — FIXED
 
 The disease CLAUDE.md names as the most repeated in the codebase, now in the SDK's own grant helper.
 
@@ -229,7 +237,7 @@ The disease CLAUDE.md names as the most repeated in the codebase, now in the SDK
 **Guard.** A case that retires and re-grants past the page size and asserts the principal actually
 holds the grant afterwards.
 
-### W5. A check placed before the replay decision (P2)
+### W5. A check placed before the replay decision (P2) — FIXED
 
 `Space.ack` authorizes the result body (`authorize(owner, "put", result.kind)`) before
 `storage.ack` decides whether this is an idempotent replay. A retry of an ack that already succeeded,
@@ -242,7 +250,7 @@ is what makes this an oversight rather than a decision.
 idempotency before every check that can have changed since the first attempt. **Guard.** Ack, narrow
 the grant, retry with the same key, assert the stored response.
 
-### W6. Loops that stop while there is more to do (P2)
+### W6. Loops that stop while there is more to do (P2) — FIXED
 
 - **`pollForForeignChanges` reads `getEvents(cursor, 1)`**, so a burst of K foreign-instance events
   takes K polls at 250ms, and each one returns "changed" and fires the kind-blind `notify()` that
@@ -252,7 +260,7 @@ the grant, retry with the same key, assert the stored response.
   (`src/server/handlers/watches.ts`), so a watch resuming from an old cursor over an idle space
   crawls through its backlog 200 events per 15 seconds. Loop while the batch is full.
 
-### W7. Contracts nothing checks (P2)
+### W7. Contracts nothing checks (P2) — FIXED
 
 The recurrence of closed package P.
 
@@ -288,13 +296,29 @@ Recorded here because the audit named them and they have no other home; none is 
   this is its largest unguarded artifact. It points at symbols by design, so a symbol-existence
   checker over the doc set is mechanically possible and would extend the doctrine to itself.
 
-### Order to work in
+### What each fix was
 
-1. **W2** (audit integrity is the product's pitch, and the fix is local).
-2. **W1** (a live bug in a shipped SDK, and the cheapest item here).
-3. **W3** before a second instance shares a database, which is the trigger rather than a date.
-4. **W5**, **W4**, then **W6** and **W7**, each with the guard that would have caught it.
-5. The structural debt, starting with the extraction, because every later fix lands in that file.
+- **W1**: `kind_def_key` ported to Python from the normative TS function and pinned by a new
+  `test/py-parity.test.ts` case (proved red against the old `json.dumps` key); `put_artifact` takes
+  LABELS and sends them comma-separated; `sdk/README.md` now says the streak-suppression paragraph
+  is TS only.
+- **W2**: both dialects derive the events and the count from `UPDATE … RETURNING`, and `stopRun`
+  takes `by` so the acting principal reaches the event instead of the literal `"admin"`.
+- **W3**: the projection's comparator is exported (`newer` in `sdk/ts/registry.ts`) and compaction
+  uses it instead of trusting page order. Guard stages two records whose id order and `created_at`
+  order disagree, which needs the ADAPTER because the runtime refuses to stamp them inconsistently.
+- **W4**: both SDKs page the revival-anchor scan to exhaustion (`queryAll` / `query_all`).
+- **W5**: the result's authorization is handed to storage as a `beforeWrite` thunk, run only when
+  the ack is not a replay, and OUTSIDE the transaction so core does not re-enter storage on another
+  pooled connection. Each adapter gates it on its own advisory idempotency pre-read.
+- **W6**: the foreign-change poll jumps to `latestCursor()` instead of advancing one event per tick;
+  the SSE loop continues on a full batch instead of parking on the 15s keepalive.
+- **W7**: `explain` documented on the query request and response (its items are STRINGS, which the
+  first draft of the spec entry got wrong); the broker's `read_one` returns the record or null like
+  every other caller of that name, pinned in `extensions/conformance/broker.test.ts`; and the chat
+  smoke now refuses to pass while any kind it declares is neither sealed nor deliberately clear.
+
+The structural debt below is untouched and stays open.
 
 ## Package T: module loading escapes the read permission (P1) — OPEN
 

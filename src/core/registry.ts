@@ -9,6 +9,7 @@ export {
   activeSet,
   grantKey,
   isRetired,
+  newer,
   newestByKey,
   oidcIdentityKey,
   opsGrantKey,

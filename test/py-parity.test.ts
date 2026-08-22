@@ -16,6 +16,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { fromFileUrl } from "@std/path";
 import { contentKey } from "../sdk/ts/registry.ts";
+import { kindDefKey } from "../sdk/ts/wire.ts";
 
 const pyDir = fromFileUrl(new URL("../sdk/py", import.meta.url));
 
@@ -129,5 +130,49 @@ Deno.test({
     );
     assertEquals(ok.trim(), await contentKey("t", 9007199254740992));
     assert(ok.startsWith("t:"));
+  },
+});
+
+/**
+ * The SECOND normative pure function, added after a third audit found Python computing this one by
+ * serializing the whole definition (`json.dumps(sort_keys=True)`). It agreed with TS by accident on
+ * nothing: a kind declared from both SDKs appended two `kind_def` records instead of deduping, and
+ * the parity suite could not see it because it covered `content_key` alone.
+ *
+ * The corpus is the shape space that decides the key: which optional fields are present, how the
+ * two list fields sort, and the claimable/reference split.
+ */
+const KIND_DEFS = [
+  { kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }] },
+  { kind: "task", indexedPaths: [{ path: "tag", type: "keyword" }], claimable: false },
+  // order must not matter: both sides sort
+  { kind: "m", indexedPaths: [{ path: "b", type: "integer" }, { path: "a", type: "keyword" }] },
+  { kind: "m", indexedPaths: [{ path: "a", type: "keyword" }, { path: "b", type: "integer" }] },
+  { kind: "s", indexedPaths: [{ path: "i", type: "integer" }], sortablePaths: ["i"] },
+  // the two fields that are OMITTED when absent, so an old key stays byte-identical
+  { kind: "r", indexedPaths: [], contentKey: ["b", "a"] },
+  { kind: "r", indexedPaths: [], defaultRetentionSeconds: 3600 },
+  { kind: "r", indexedPaths: [], contentKey: ["a"], defaultRetentionSeconds: 60, claimable: false },
+  { kind: "bare", indexedPaths: [] },
+];
+
+Deno.test({
+  name: "sdk parity: kind_def_key(py) === kindDefKey(ts), or a kind declared twice is two records",
+  ignore: !hasPython,
+  fn: async () => {
+    const script = [
+      "import json, sys",
+      `sys.path.insert(0, ${JSON.stringify(pyDir)})`,
+      "from radia import kind_def_key",
+      "defs = json.load(sys.stdin)",
+      "print(json.dumps([kind_def_key(d) for d in defs]))",
+    ].join("\n");
+    const pyKeys = JSON.parse(await py(script, JSON.stringify(KIND_DEFS))) as string[];
+    const tsKeys = KIND_DEFS.map((d) => kindDefKey(d as never));
+    for (let i = 0; i < KIND_DEFS.length; i++) {
+      assertEquals(pyKeys[i], tsKeys[i], `keys diverge for ${JSON.stringify(KIND_DEFS[i])}`);
+    }
+    // And the corpus has to be able to TELL keys apart, or agreement proves nothing.
+    assertEquals(new Set(tsKeys).size, tsKeys.length - 1, "only the two order-permuted defs may share a key");
   },
 });

@@ -159,6 +159,11 @@ export async function handleWatchEvents(
           }
         }
         if (closed) break;
+        // A FULL batch means there is more behind it, so read again instead of parking. Waiting on
+        // the 15s keepalive after every full page made a watch resuming from an old cursor over an
+        // idle space crawl its backlog at 200 events per 15 seconds: nothing wakes it, because the
+        // events it is behind on were written before it reconnected (audit package W6).
+        if (events.length >= 200) continue;
         // Wake on a mutation or the 15s keepalive. A disconnect resolves immediately.
         // Wake on a write of THIS watch's kind (Space.notify is kind-aware), an authorization
         // change (woken as everyone), a foreign-instance poll, or the 15s keepalive.

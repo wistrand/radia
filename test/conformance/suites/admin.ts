@@ -198,6 +198,43 @@ export const remediateSuites: Suite[] = [
     },
   },
   {
+    // Quarantine's events describe the rows that MOVED (`RETURNING`), not the rows a prior read
+    // happened to see. WHAT THIS PINS, exactly, because the honest scope matters: the actor on the
+    // event (planted-red: restoring `runId: "admin"` fails this), that an already-settled lease is
+    // neither moved nor counted, and the RETURNING semantics both dialects now rely on.
+    //
+    // WHAT IT CANNOT STAGE is the race the fix exists for: a lease acked BETWEEN the old SELECT and
+    // its UPDATE. That needs two concurrent connections, which the embedded adapters do not have
+    // (the same limit package S recorded for its pooled-Postgres races). Reverting to the
+    // SELECT-then-emit shape leaves this test GREEN, and that is stated rather than discovered:
+    // a Postgres-only case in `test/concurrency.test.ts` is where that half belongs.
+    name: "quarantine: events and count describe the leases that actually moved",
+    run: async (adapter) => {
+      const space = newSpace(adapter);
+      const a = await space.put({ kind: "task", body: { tag: "a" } });
+      const b = await space.put({ kind: "task", body: { tag: "b" } });
+      const first = await space.take({ recordId: a.id }, { leaseSeconds: 300 });
+      const second = await space.take({ recordId: b.id }, { leaseSeconds: 300 });
+      assert(first && second, "both must be claimable");
+      const run = first!.lease.ownerRun;
+      assertEquals(second!.lease.ownerRun, run, "one taker, so one owner run");
+
+      // One of them settles before the quarantine, exactly as a worker racing a stop would.
+      assertEquals((await space.ack(first!.lease)).status, "ok");
+
+      const moved = await adapter.quarantineLeasesOf(run, await adapter.now(), "human:operator");
+      assertEquals(moved, 1, "only the still-held lease moved");
+      assertEquals((await space.getEnvelope(b.id))?.state, "available");
+      assertEquals((await space.getEnvelope(a.id))?.state, "consumed", "the acked one is untouched");
+
+      const quarantines = (await adapter.getEvents("0", 500)).filter((e) => e.operation === "quarantine");
+      assertEquals(quarantines.length, 1, "one event, for the one transition that happened");
+      assertEquals(quarantines[0].recordId, b.id);
+      // And WHO did it. `"admin"` lost the actor on the one operation that bypasses fencing.
+      assertEquals(quarantines[0].runId, "human:operator");
+    },
+  },
+  {
     name: "remediate: a VALID lease is never reclaimed by the expired selector",
     run: async (adapter) => {
       const space = newSpace(adapter);

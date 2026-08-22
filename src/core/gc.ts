@@ -29,6 +29,7 @@ import type { KindDef } from "./kinds.ts";
 import { AGENT_DEFINITION, AGENT_RUN, GRANT, INTEREST, KIND_DEF, OIDC_IDENTITY, OPS_GRANT, SIGNAL } from "./kinds.ts";
 import { getPath } from "./matching.ts";
 import type { RadiaRecord } from "../storage/adapter.ts";
+import { newer } from "./registry.ts";
 
 /** Reserved kinds compaction knows how to key IN CODE. Everything else reserved is excluded.
  *  A runtime key also NEUTRALIZES a hostile redeclaration: `RUNTIME_KEYS[kind] ?? contentKey`
@@ -121,7 +122,12 @@ export async function compactRegistries(
     if (paths && paths.length > 0) keyed.push({ kind: def.kind, paths });
   }
   for (const { kind, paths } of keyed) {
-    const seen = new Set<string>();
+    // The winner per key, decided by the SAME comparator the projection uses (`newer`), never by
+    // the order this loop happens to page in. Paging is id-descending because that is what a keyset
+    // cursor can do; ids carry the writing PROCESS's clock, so on two instances they can disagree
+    // with `created_at`, and this loop is the one that DELETES. Trusting page order here could drop
+    // the record every reader considers current, tombstones included (audit package W3).
+    const winner = new Map<string, RadiaRecord>();
     const doomed: string[] = [];
     let after: string | undefined;
     let walked = 0;
@@ -130,10 +136,13 @@ export async function compactRegistries(
       for (const rec of page) {
         const key = keyOf(rec, paths);
         if (key === null) continue; // unclassifiable: keep
-        // Newest-first, so the FIRST record per key is the projection's winner — tombstone or not —
-        // and everything after it is superseded. This line is the resurrection guard.
-        if (seen.has(key)) doomed.push(rec.id);
-        else seen.add(key);
+        const held = winner.get(key);
+        if (!held) winner.set(key, rec);
+        else if (newer(held, rec)) {
+          // A later page carried the real winner. Doom the one we were holding, not this.
+          doomed.push(held.id);
+          winner.set(key, rec);
+        } else doomed.push(rec.id);
       }
       walked += page.length;
       if (page.length < PAGE) break;

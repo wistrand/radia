@@ -177,6 +177,13 @@ paths:
                       enum: [asc, desc]
                       default: asc
                       description: Direction of the natural (record id) order.
+                    explain:
+                      type: boolean
+                      default: false
+                      description: >
+                        Annotate the answer with the traps this query walked into (a full page read as a
+                        population, an ordering that was not asked for, a registry read that should have
+                        been paged). Opt-in, so an ordinary read is byte-identical without it.
       responses:
         "200":
           description: page
@@ -201,6 +208,12 @@ paths:
                       narrowedBy: { type: array, items: { type: object, additionalProperties: true } }
                       ownRecordsOnly: { type: boolean }
                       note: { type: string }
+                  explain:
+                    type: array
+                    items: { type: string }
+                    description: >
+                      One note per trap this query walked into. Present only when `explain: true` was asked
+                      for AND there was something to say, so an unremarkable read stays byte-identical.
         "400": { $ref: "#/components/responses/Problem" }
 
   /takes:

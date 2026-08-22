@@ -506,8 +506,11 @@ export class SqliteAdapter implements StorageAdapter {
     );
   }
 
-  async ack(ref: LeaseRef, result?: PutInput, idem?: IdempotencyKey): Promise<AckResult> {
+  async ack(ref: LeaseRef, result?: PutInput, idem?: IdempotencyKey, beforeWrite?: () => Promise<void>): Promise<AckResult> {
     const now = await this.now();
+    // Outside the transaction, for the reason the pg twin gives: the caller's check reads the
+    // space, and `withIdem` below stays the authority on whether this is a replay.
+    if (beforeWrite && !this.hasStoredResponse(idem)) await beforeWrite();
     return this.tx(() =>
       this.withIdem(idem, (): AckResult => {
         const row = this.fetchEnvelopeRow(ref.recordId);
@@ -743,20 +746,19 @@ export class SqliteAdapter implements StorageAdapter {
     }));
   }
 
-  quarantineLeasesOf(ownerRun: string, now: string): Promise<number> {
+  quarantineLeasesOf(ownerRun: string, now: string, actor: string): Promise<number> {
     return Promise.resolve(this.tx(() => {
-      const held = this.db
-        .prepare("select record_id, kind from record_runtime where state='leased' and lease_owner=?")
-        .all(ownerRun) as { record_id: string; kind: string }[];
-      if (held.length === 0) return 0;
-      this.db.prepare(
+      // RETURNING, for the reason the pg twin gives: the events and the count describe the rows
+      // that moved, never the rows a prior read happened to see.
+      const moved = this.db.prepare(
         `update record_runtime set state='available', available_at=?, attempt=attempt+1,
            lease_epoch=lease_epoch+1, lease_id=null
-         where state='leased' and lease_owner=?`,
-      ).run(now, ownerRun);
-      for (const r of held) {
+         where state='leased' and lease_owner=?
+         returning record_id, kind`,
+      ).all(now, ownerRun) as { record_id: string; kind: string }[];
+      for (const r of moved) {
         this.appendEvent({
-          runId: "admin",
+          runId: actor,
           operation: "quarantine",
           recordId: r.record_id,
           kind: r.kind,
@@ -764,7 +766,7 @@ export class SqliteAdapter implements StorageAdapter {
           detail: { ownerRun },
         }, now);
       }
-      return held.length;
+      return moved.length;
     }));
   }
 
@@ -1082,6 +1084,15 @@ export class SqliteAdapter implements StorageAdapter {
   // Idempotency wrapper. Runs INSIDE the op's transaction and checks the stored response
   // BEFORE the effect (which includes lease validation), so a retry replays the original
   // outcome. A key reused with a different request is a conflict.
+  /** Is there already a stored response for this key? Advisory only; see `ack`. */
+  private hasStoredResponse(idem?: IdempotencyKey): boolean {
+    if (!idem) return false;
+    const row = this.db
+      .prepare("select 1 as hit from idempotency where principal=? and operation=? and idem_key=?")
+      .get(idem.principal, idem.operation, idem.key);
+    return row !== undefined;
+  }
+
   private withIdem<T>(idem: IdempotencyKey | undefined, run: () => T): T {
     if (!idem) return run();
     const found = this.db

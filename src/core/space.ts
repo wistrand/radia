@@ -1946,7 +1946,12 @@ export class Space {
    * their own clocks. `quarantine: true` is emergency revocation: it additionally force-releases
    * the run's in-flight leases now (epoch-bumped, so a late ack/renew fences out as `lease_lost`).
    */
-  async stopRun(run: string, opts: { quarantine?: boolean } = {}): Promise<{ applied: boolean; quarantined: number }> {
+  async stopRun(
+    run: string,
+    /** `by` is WHO stopped it, and it lands in the quarantine events. Absent means the space's own
+     *  identity: an in-process caller is the runtime itself, not an anonymous "admin". */
+    opts: { quarantine?: boolean; by?: string } = {},
+  ): Promise<{ applied: boolean; quarantined: number }> {
     // Looked up in the SPACE, never in a cache. Consulting an in-memory index here makes stopping
     // a run this process has not seen (another instance's run, or one written before a restart)
     // silently report `applied: false` and leave the token working.
@@ -1978,7 +1983,7 @@ export class Space {
     let quarantined = 0;
     if (opts.quarantine) {
       const now = await this.storage.now();
-      quarantined = await this.storage.quarantineLeasesOf(run, now);
+      quarantined = await this.storage.quarantineLeasesOf(run, now, opts.by ?? this.ctx.principal);
     }
     this.notifier.notify();
     return { applied: true, quarantined };
@@ -2696,6 +2701,8 @@ export class Space {
     }
     let resultInput: PutInput | undefined;
     let declared: KindDef | undefined;
+    /** Authorization of the emitted result, run by storage only when this is not a replay (W5). */
+    let authorizeResult: (() => Promise<void>) | undefined;
     if (result) {
       // A result body the runtime reads back is validated exactly as a `put` body is, before
       // anything is consumed: emitting a record through a lease is not a way around the rule.
@@ -2707,14 +2714,19 @@ export class Space {
       ];
       // Emitting a result IS a put: authorize the ACTING principal to put this kind (this closes
       // the gap where ack-emitted records bypassed put-authorization). Pipeline-friendly: each
-      // agent needs only its own grant. A pattern-scoped grant also constrains the result body.
-      // Throws forbidden before anything is consumed.
-      if (owner) {
-        const constraint = await this.authorize(owner, "put", result.kind);
-        if (constraint && !this.bodyMatchesGrant(result.kind, result.body, constraint)) {
-          throw new RadiaError("forbidden", `result body is outside the pattern scope of the put grant for '${result.kind}'`);
+      // agent needs only its own grant. A pattern-scoped grant also constrains the result body, and
+      // it still throws before anything is consumed. DEFERRED to storage, which runs it only when this is not an idempotent replay (audit
+      // package W5). Run here, a retry of an already-succeeded ack threw `forbidden` whenever the
+      // worker's put grant had narrowed in between, instead of replaying the stored response. The
+      // FOREIGN branch above already had this right and says so; this is the same rule.
+      authorizeResult = owner
+        ? async () => {
+          const constraint = await this.authorize(owner, "put", result.kind);
+          if (constraint && !this.bodyMatchesGrant(result.kind, result.body, constraint)) {
+            throw new RadiaError("forbidden", `result body is outside the pattern scope of the put grant for '${result.kind}'`);
+          }
         }
-      }
+        : undefined;
       // Derive the audit authority chain from the lease (undefined for operator/root owners).
       const delegationContext = owner ? await this.deriveDelegation(owner, lease.recordId) : undefined;
       // Taint propagates along data lineage: the leased record is a parent, so a tainted task
@@ -2758,7 +2770,7 @@ export class Space {
       ...this.ref(lease),
       result: result ? { kind: result.kind, body: result.body } : null,
     }, principal);
-    const r = await this.storage.ack(this.ref(lease, principal), resultInput, idem);
+    const r = await this.storage.ack(this.ref(lease, principal), resultInput, idem, authorizeResult);
     if (declared && r.status === "ok") await this.adoptKind(declared);
     // The emitted result is a new available record: wake streams watching ITS kind (the chat's
     // ack path — a worker's answer IS its ack). No result, or an authorization-kind result: wake
@@ -3247,9 +3259,15 @@ export class Space {
       this.changeCursor = await this.storage.latestCursor();
       return true;
     }
+    // JUMP to the head, rather than advancing one event per poll. Reading a single event meant a
+    // burst of K foreign writes took K polls at CHANGE_POLL_MS, and every one of them returned
+    // "changed" and fired the kind-blind `notify()` that wakes EVERY parked stream. That turned one
+    // remote burst into K full fan-outs, in exactly the multi-instance case the kind-aware wakeup
+    // was built for (audit package W6). One event is still enough to answer "did anything change";
+    // what the cursor must not do is crawl.
     const events = await this.storage.getEvents(this.changeCursor, 1);
     if (events.length === 0) return false;
-    this.changeCursor = events[events.length - 1].cursor;
+    this.changeCursor = await this.storage.latestCursor();
     return true;
   }
 

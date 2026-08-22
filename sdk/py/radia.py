@@ -226,6 +226,27 @@ def _iso_seconds_from_now(iso: Optional[str]) -> Optional[float]:
 # ---------------------------------------------------------------------------
 
 
+def kind_def_key(definition: Dict[str, Any]) -> str:
+    """The idempotency key for a kind declaration. NORMATIVE: the same declaration from any language
+    must produce the same key, or a kind declared from two SDKs appends two records instead of
+    deduping. Ported from ``kindDefKey`` in ``sdk/ts/wire.ts``; keep the two byte-identical, and
+    ``test/py-parity.test.ts`` is what says they are.
+
+    A serialization of the whole definition is NOT a substitute: key order, separators and defaults
+    differ per language, so the two sides agreed only by accident. This hashes the fields that
+    decide whether a declaration CHANGED, in a fixed order.
+    """
+    paths = sorted(f"{p['path']}:{p['type']}" for p in definition.get("indexedPaths") or [])
+    sortable = sorted(definition.get("sortablePaths") or [])
+    shape = "ref" if definition.get("claimable") is False else "work"
+    # Omitted entirely when absent, so a key minted before the field existed stays byte-identical.
+    content_key = definition.get("contentKey") or []
+    ck = f":ck={','.join(sorted(content_key))}" if content_key else ""
+    retention = definition.get("defaultRetentionSeconds")
+    rt = f":rt={retention}" if retention else ""
+    return f"kind_def:{definition['kind']}:{','.join(paths)}:{','.join(sortable)}:{shape}{ck}{rt}"
+
+
 class RadiaClient:
     """A client for one space. Thread-safe: it holds no per-request state."""
 
@@ -272,8 +293,7 @@ class RadiaClient:
 
     def register_kind(self, definition: Dict[str, Any]) -> Dict[str, str]:
         """Declare a kind by putting a ``kind_def`` record. Kinds are records, not an endpoint."""
-        key = "kind_def:" + json.dumps(definition, sort_keys=True, separators=(",", ":"))
-        self.put({"kind": KIND_DEF, "body": definition}, idempotency_key=key)
+        self.put({"kind": KIND_DEF, "body": definition}, idempotency_key=kind_def_key(definition))
         return {"kind": definition["kind"]}
 
     def query_all(self, pattern: Dict[str, Any], max_pages: int = 40) -> List[Dict[str, Any]]:
@@ -337,7 +357,7 @@ class RadiaClient:
         media_type: str = "application/octet-stream",
         filename: Optional[str] = None,
         parent_ids: Optional[List[str]] = None,
-        taint: bool = False,
+        taint: Optional[Sequence[str]] = None,
         idempotency_key: Optional[str] = None,
         meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
@@ -364,7 +384,11 @@ class RadiaClient:
         if parent_ids:
             hdrs["X-Radia-Parent-Ids"] = ",".join(parent_ids)
         if taint:
-            hdrs["X-Radia-Taint"] = "true"
+            # LABELS, comma-separated. This sent the string "true" until 2026-08-22, which the
+            # server has refused since taint stopped being a boolean: `normalizeTaint` rejects an
+            # unknown label, so every Python caller raising taint got `invalid_taint`. The TS client
+            # carried the migration in a comment and this side was never updated.
+            hdrs["X-Radia-Taint"] = ",".join(taint)
         if idempotency_key:
             hdrs["Idempotency-Key"] = idempotency_key
         # A caller-supplied Authorization wins: minting a run authenticates with the DEFINITION
@@ -431,9 +455,12 @@ class RadiaClient:
         )
         want_ops = sorted(operations)
         try:
-            # Newest first, so the first identity match IS the current state of that grant.
-            rows = self.query(
-                {"kind": "grant", "match": {"principal": principal, "kind": kind}}, 500, dir="desc"
+            # Newest first, and PAGED TO EXHAUSTION. The anchor is the newest RETIREMENT of this
+            # identity, and one bounded page could miss it past 500 records for this (principal,
+            # kind): the write then dedupes against the original and this reports success while the
+            # principal holds nothing. It fails CLOSED, which is why it went unnoticed (audit W4).
+            rows = self.query_all(
+                {"kind": "grant", "match": {"principal": principal, "kind": kind}}
             )
         except RadiaError:
             # A caller that may write grants but not read them cannot tell a retirement from a
