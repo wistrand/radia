@@ -16,7 +16,7 @@ compute identically. The runtime imports these definitions; the SDK imports noth
 | Paging      | `query` / `queryPage` → `{records, nextAfter, scope}` | `query` / `query_page` → `(records, next_after, scope)` |
 | Watches     | `client.watch()` async generator | `client.watch()` generator |
 | Artifacts   | `putArtifact` / `getArtifact` / `artifactMeta` (HEAD: digest and size, no bytes) / `artifactCapability` | `put_artifact` / `get_artifact` / `artifact_capability` |
-| Remediation | `admin(action, id)` / `remediate(action, selector)` | `admin(action, id)` / `remediate(action, state=…, expired=…)` |
+| Remediation | `admin(action, id)` / `remediate(action, selector)` | `admin(action, id)` / `remediate(action, state=…, expired=…, kind=…)` |
 | Ops queries | `queryEnvelopes` / `diagnostics` / `erasures` / `getStats` / `getEvents` / `getEventsPage` | `query_envelopes` / `diagnostics` / `erasures` / `get_stats` / `get_events` / `get_events_page` |
 | Bootstrap   | `grant` / `createAgentDefinition` / `createRun` / `stopRun` | `grant` / `create_agent_definition` / `create_run` / `stop_run` |
 | Delegation  | `createDelegatedRun` / `delegatedClient`                    | `create_delegated_run` / `delegated_client`                     |

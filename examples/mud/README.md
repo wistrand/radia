@@ -34,7 +34,7 @@ at the write by `bodyMatchesGrant`. No code in this example checks for either. S
 | `feed.ts`    | writing an event, and reading one room's stream                       |
 | `narrator.ts`| claims what a player typed, decides what happened, writes it down     |
 | `npc.ts`     | `agentLoop` plus a pure function; the behaviour a model replaces later |
-| `play.ts`    | a terminal client: writes `command`, reads three kinds                |
+| `play.ts`    | a terminal client: writes `command`, reads `event` and `presence`     |
 | `run.ts`     | brings it all up                                                     |
 | `smoke.ts`   | the proof: `deno task test:mud`                                      |
 

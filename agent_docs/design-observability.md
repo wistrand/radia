@@ -12,7 +12,7 @@ consume the log (`src/core/notifier.ts`). The web console surfaces these: a live
 **relationship graph** (`Space.getGraph` over `childrenOf`, `GET /v0/ops/records/{id}/graph`)
 that renders the `parent_ids` DAG around a record. The runtime **envelope** (state/attempt/
 lease, the dimension the content-routing query language deliberately omits) is queryable at
-`GET /v0/ops/records?state=…[&expired=1&stale=<s>]` (`Space.queryEnvelopes`); a first
+`GET /v0/ops/records?state=…[&expired=1&stale=<s>&kind=<k>…]` (`Space.queryEnvelopes`); a first
 **derived-diagnostics** report (`Space.diagnostics`, `GET /v0/ops/diagnostics`) is a
 *composition* of those envelope queries (counts, dead-letters, expired-but-stuck leases, and
 stale-available records), and **remediation** (`adminTransition`,

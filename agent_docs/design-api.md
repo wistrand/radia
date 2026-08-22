@@ -85,6 +85,11 @@ stateDiagram-v2
 - `renew` / `ack` / `nack` / `release` present `lease_id + epoch`; a mismatch returns a
   distinct **`lease_lost`** status (not an error).
 - Expiry → `available`, `attempt += 1`, backoff via `available_at`.
+- **`available` is not the same as claimable.** `available_at` gates the state, so a record whose
+  writer deferred it (`PutRequest.availableAt`) or whose worker nacked it with a backoff sits
+  `available` and is not a take candidate until the database clock passes it. Nothing fires at that
+  instant: the next `take` simply starts matching it (`rankClaimable`), which is why an idle space
+  runs nothing. See [design-data-model.md](design-data-model.md), "Timing fields".
 - **Attempt semantics per path:** `nack` +1 (agent backoff); expiry +1 (policy backoff);
   `release` +0 (cooperative cancel: an explicit operation, not a client-chosen nack
   flavor; server policy may override the +0).

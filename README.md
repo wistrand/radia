@@ -147,8 +147,9 @@ that lineage (nothing declares them), and open a record for its body + lineage. 
 the URL, so any of it is a link you can send. The **Auth** tab
 shows the bootstrap chain and, as an operator, mints a session for a person; paste any session
 token into the principal pill to see the space as they see it. See
-[examples/README.md](examples/README.md) for the three examples (a keyless coordination
-pipeline, a load generator, and the full LLM agent), each with its own directory and README.
+[examples/README.md](examples/README.md) for the five examples (a keyless coordination pipeline, a
+load generator, a content-keyed analysis application, a shared world whose NPCs are principals, and
+the full LLM agent), each with its own directory and README.
 
 ### The CLI
 

@@ -48,6 +48,7 @@
   <a href="#pipeline">Coordination pipeline</a>
   <a href="#chat">Multi-process chat agent</a>
   <a href="#analysis">Content-keyed analysis application</a>
+  <a href="#mud">A shared world with NPC principals</a>
   <a href="#console">Inspect the examples</a>
   <a href="#flows">Mine their flow shapes</a>
 </aside>
@@ -278,6 +279,56 @@ a reply          <span class="cmt">// carrying the provider's own token and doll
       input. Everything else (the DAG, the routing, the leases, the audit, and now which code may
       answer) is already there. That split is the property to look for in any coordination runtime: the part
       left to you should be the part only you could know.
+    </div>
+  </div>
+</section>
+
+<section id="mud">
+  <div class="container">
+    <h2>A shared world with NPC principals</h2>
+    <p>
+      Run <code>deno task test:mud</code> for the headless suite, or
+      <code>deno task mud -- --player alice</code> to walk around. It needs no API key and calls no
+      model. Rooms, players and non-player characters share one space: a player writes what they
+      typed, a narrator claims it and decides what happened, and the characters standing there
+      react.
+    </p>
+    <p>
+      Each character is a principal, not a branch in a game loop. The gatekeeper's permission to
+      speak is pinned to the room she stands in and to the name she may speak under. A
+      gatekeeper that tried to speak in the tavern, or to put words in a player's mouth, is refused
+      when the record is written. No code in the example checks for either, and the test plants both
+      writes to show the refusal comes from the runtime.
+    </p>
+
+    <div class="code-block">
+      <div class="code-title">what one typed line becomes</div>
+      <pre><code>a command        <span class="cmt">// "north", claimed by the narrator under a lease</span>
+  an event       <span class="cmt">// "alice goes north." in the room she left</span>
+  a presence     <span class="cmt">// where she is now, which is the authority on it</span>
+  an event       <span class="cmt">// "alice arrives from the south." in the room she entered</span>
+  a cue          <span class="cmt">// one per character standing where it happened</span>
+    an event     <span class="cmt">// the character's line, written as the character</span></code></pre>
+    </div>
+
+    <p>
+      A player writes one kind of record and the client reads two. Everything else they see was
+      written by somebody else, under a permission the player does not hold: they cannot narrate,
+      cannot move themselves by declaring where they are, and cannot type as another player. What a room
+      contains is a question about the newest record per actor rather than a query for records
+      mentioning the room, because the log keeps every place everyone has ever stood.
+    </p>
+    <p>
+      Characters also act when nobody is watching, and no process holds a timer to make that happen.
+      Each one answers its cue with the next cue, marked to become claimable half a minute later, so
+      a wandering guard is a chain of records. That matters beyond tidiness: code that Radia runs in
+      a jail is handed one record and then exits, so a timer is not available to it at all, while a
+      deferred record is.
+    </p>
+    <div class="callout">
+      <strong>Stopping a character is an ordinary operation</strong>, because it is an ordinary
+      principal: stop its runs and it falls silent, change what it may write and the world enforces
+      that on the next line it tries to say. Nothing in the game code participates in either.
     </div>
   </div>
 </section>

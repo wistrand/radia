@@ -60,6 +60,10 @@ barriers rather than complete information-flow control.
   tool list by watching these, and a `tool_call` routes to whichever worker claims that tool's name
 - **compartment**: containment for a class of data as a dedicated kind plus pattern-scoped grants;
   crossing data out is reserved to a principal deliberately granted both sides
+- **delayed visibility**: a writer may say when a record becomes CLAIMABLE (`availableAt`). Nothing
+  fires at that instant and there is no scheduler: the record is simply not a take candidate until
+  the database clock passes it, so a worker picks it up on its next poll and an idle space still
+  runs nothing
 - **flow**: a recurring shape of work, mined from lineage rather than declared
 - **workspace**: a multi-file tree as a manifest record plus one artifact per file. An EXTENSION
   convention, not a runtime concept: the runtime has no idea what a file or a path is
@@ -77,7 +81,8 @@ The repository is the authority; these pages summarize it.
 - `CLAUDE.md` for the routing map, invariants and conventions
 - `agent_docs/` for the design, one topic per file
 - `openapi/radia.yaml` for the frozen wire contract
-- `conformance/` for the port contracts every storage backend must satisfy
+- `test/conformance/` for the port contracts every storage backend must satisfy, and
+  `extensions/conformance/` for the extension contracts
 
 ## Status
 

@@ -187,11 +187,14 @@ Grouped for skimming, and every entry is one rule with its reasoning. Jump to:
   The content-routing pattern DSL matches record *bodies* (for routing) and deliberately can't
   see the runtime envelope (state/attempt/lease). So observability that needs the envelope
   (diagnostics, "what's stuck") is NOT a pattern query; it's `GET /v0/ops/records?state=…`
-  (`Space.queryEnvelopes`), and diagnostics composes that. Don't try to fold envelope-state,
+  (`Space.queryEnvelopes`, which also takes `expired`, `stale` and `kind`), and diagnostics
+  composes that. Don't try to fold envelope-state,
   aggregation (stats), DAG-traversal (lineage/graph), or get-by-id into the pattern DSL:
   those are legitimately first-class ops capabilities, not endpoints pretending to be queries.
 - **Timing fields are never overloaded.** Reusing `deadline_at` as `available_at` (or any
-  such shortcut) breaks retention-vs-lease separation. Keep the five distinct.
+  such shortcut) breaks retention-vs-lease separation. Keep the five distinct. `available_at` is
+  the one a writer may SEED (`PutRequest.availableAt`, delayed visibility), and it stays the
+  runtime's afterwards: nack, requeue and quarantine all rewrite it.
 
 ### Registries, and reads that must not truncate
 
